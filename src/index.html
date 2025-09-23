@@ -1,0 +1,1096 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Docker Container Monitor</title>
+    <style>
+        :root {
+            /* Material Design 3 Color Scheme */
+            --md-sys-color-primary: #6750A4;
+            --md-sys-color-on-primary: #FFFFFF;
+            --md-sys-color-primary-container: #EADDFF;
+            --md-sys-color-on-primary-container: #21005D;
+            --md-sys-color-secondary: #625B71;
+            --md-sys-color-secondary-container: #E8DEF8;
+            --md-sys-color-tertiary: #7D5260;
+            --md-sys-color-tertiary-container: #FFD8E4;
+            --md-sys-color-error: #BA1A1A;
+            --md-sys-color-error-container: #FFDAD6;
+            --md-sys-color-background: #FFFBFE;
+            --md-sys-color-surface: #FFFBFE;
+            --md-sys-color-surface-variant: #E7E0EC;
+            --md-sys-color-outline: #79747E;
+            --md-sys-color-outline-variant: #CAC4D0;
+            --md-sys-color-inverse-surface: #313033;
+            --md-sys-color-inverse-on-surface: #F4EFF4;
+            --md-sys-color-surface-container-low: #F7F2FA;
+            --md-sys-color-surface-container: #F3EDF7;
+            --md-sys-color-surface-container-high: #ECE6F0;
+            --md-sys-color-surface-container-highest: #E6E0E9;
+            
+            /* Elevation */
+            --md-sys-elevation-1: 0 1px 2px rgba(0, 0, 0, 0.3), 0 1px 3px 1px rgba(0, 0, 0, 0.15);
+            --md-sys-elevation-2: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 6px 2px rgba(0, 0, 0, 0.15);
+            --md-sys-elevation-3: 0 4px 8px 3px rgba(0, 0, 0, 0.15), 0 1px 3px rgba(0, 0, 0, 0.3);
+            
+            /* Spacing */
+            --spacing-xs: 4px;
+            --spacing-sm: 8px;
+            --spacing-md: 16px;
+            --spacing-lg: 24px;
+            --spacing-xl: 32px;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: var(--md-sys-color-on-surface);
+            line-height: 1.6;
+        }
+
+        .app-container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: var(--spacing-lg);
+            animation: fadeIn 0.5s ease-out;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Header */
+        .header {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 24px;
+            padding: var(--spacing-lg);
+            margin-bottom: var(--spacing-xl);
+            box-shadow: var(--md-sys-elevation-2);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: var(--spacing-md);
+            animation: slideDown 0.6s ease-out;
+        }
+
+        @keyframes slideDown {
+            from { opacity: 0; transform: translateY(-30px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .header h1 {
+            font-size: 2rem;
+            font-weight: 500;
+            background: linear-gradient(135deg, var(--md-sys-color-primary), var(--md-sys-color-tertiary));
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+            display: flex;
+            align-items: center;
+            gap: var(--spacing-sm);
+        }
+
+        .header-actions {
+            display: flex;
+            gap: var(--spacing-sm);
+            flex-wrap: wrap;
+        }
+
+        /* Buttons */
+        .btn {
+            padding: 12px 24px;
+            border-radius: 20px;
+            border: none;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            display: inline-flex;
+            align-items: center;
+            gap: var(--spacing-sm);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .btn::before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 0;
+            height: 0;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.3);
+            transform: translate(-50%, -50%);
+            transition: width 0.6s, height 0.6s;
+        }
+
+        .btn:hover::before {
+            width: 300px;
+            height: 300px;
+        }
+
+        .btn-primary {
+            background: var(--md-sys-color-primary);
+            color: var(--md-sys-color-on-primary);
+            box-shadow: var(--md-sys-elevation-1);
+        }
+
+        .btn-primary:hover {
+            box-shadow: var(--md-sys-elevation-2);
+            transform: translateY(-2px);
+        }
+
+        .btn-secondary {
+            background: var(--md-sys-color-surface-container-high);
+            color: var(--md-sys-color-primary);
+        }
+
+        .btn-icon {
+            padding: 10px;
+            border-radius: 50%;
+            background: var(--md-sys-color-surface-container);
+        }
+
+        /* Cards */
+        .card {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 16px;
+            padding: var(--spacing-lg);
+            box-shadow: var(--md-sys-elevation-1);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            animation: scaleIn 0.5s ease-out backwards;
+        }
+
+        @keyframes scaleIn {
+            from { opacity: 0; transform: scale(0.95); }
+            to { opacity: 1; transform: scale(1); }
+        }
+
+        .card:hover {
+            box-shadow: var(--md-sys-elevation-2);
+            transform: translateY(-4px);
+        }
+
+        /* Grid Layout */
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: var(--spacing-lg);
+            margin-bottom: var(--spacing-xl);
+        }
+
+        /* Host Card */
+        .host-card {
+            animation-delay: calc(var(--index) * 0.1s);
+        }
+
+        .host-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: var(--spacing-md);
+            padding-bottom: var(--spacing-md);
+            border-bottom: 1px solid var(--md-sys-color-outline-variant);
+        }
+
+        .host-name {
+            font-size: 1.25rem;
+            font-weight: 500;
+            color: var(--md-sys-color-primary);
+        }
+
+        .host-status {
+            padding: 6px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .status-online {
+            background: #E8F5E9;
+            color: #2E7D32;
+        }
+
+        .status-offline {
+            background: #FFEBEE;
+            color: #C62828;
+        }
+
+        /* Container List */
+        .container-list {
+            display: flex;
+            flex-direction: column;
+            gap: var(--spacing-sm);
+        }
+
+        .container-item {
+            padding: var(--spacing-md);
+            background: var(--md-sys-color-surface-container-low);
+            border-radius: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: all 0.2s ease;
+            cursor: pointer;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .container-item::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 3px;
+            height: 100%;
+            background: var(--md-sys-color-primary);
+            transform: scaleY(0);
+            transition: transform 0.3s ease;
+        }
+
+        .container-item:hover {
+            background: var(--md-sys-color-surface-container);
+            transform: translateX(4px);
+        }
+
+        .container-item:hover::after {
+            transform: scaleY(1);
+        }
+
+        .container-info {
+            display: flex;
+            align-items: center;
+            gap: var(--spacing-md);
+        }
+
+        .container-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+        }
+
+        .container-running {
+            background: linear-gradient(135deg, #66BB6A, #43A047);
+            color: white;
+        }
+
+        .container-stopped {
+            background: linear-gradient(135deg, #EF5350, #E53935);
+            color: white;
+        }
+
+        .container-paused {
+            background: linear-gradient(135deg, #FFA726, #FF9800);
+            color: white;
+        }
+
+        .container-name {
+            font-weight: 500;
+            color: var(--md-sys-color-on-surface);
+        }
+
+        .container-id {
+            font-size: 12px;
+            color: var(--md-sys-color-outline);
+        }
+
+        .container-state {
+            padding: 4px 12px;
+            border-radius: 8px;
+            font-size: 12px;
+            font-weight: 500;
+            text-transform: uppercase;
+        }
+
+        /* Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(5px);
+            z-index: 1000;
+            animation: fadeIn 0.3s ease;
+        }
+
+        .modal.active {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal-content {
+            background: white;
+            border-radius: 24px;
+            padding: var(--spacing-xl);
+            max-width: 600px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+            animation: slideUp 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        @keyframes slideUp {
+            from { opacity: 0; transform: translateY(50px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: var(--spacing-lg);
+        }
+
+        .modal-title {
+            font-size: 1.5rem;
+            font-weight: 500;
+            color: var(--md-sys-color-on-surface);
+        }
+
+        .modal-close {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            border: none;
+            background: var(--md-sys-color-surface-container);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease;
+        }
+
+        .modal-close:hover {
+            background: var(--md-sys-color-surface-container-high);
+            transform: rotate(90deg);
+        }
+
+        /* Form Elements */
+        .form-group {
+            margin-bottom: var(--spacing-lg);
+        }
+
+        .form-label {
+            display: block;
+            margin-bottom: var(--spacing-sm);
+            font-weight: 500;
+            color: var(--md-sys-color-on-surface);
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 12px 16px;
+            border: 1px solid var(--md-sys-color-outline-variant);
+            border-radius: 12px;
+            font-size: 16px;
+            transition: all 0.2s ease;
+            background: var(--md-sys-color-surface);
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: var(--md-sys-color-primary);
+            box-shadow: 0 0 0 3px rgba(103, 80, 164, 0.1);
+        }
+
+        .checkbox-group {
+            display: flex;
+            flex-wrap: wrap;
+            gap: var(--spacing-md);
+            padding: var(--spacing-md);
+            background: var(--md-sys-color-surface-container-low);
+            border-radius: 12px;
+        }
+
+        .checkbox-item {
+            display: flex;
+            align-items: center;
+            gap: var(--spacing-sm);
+        }
+
+        .checkbox-item input[type="checkbox"] {
+            width: 20px;
+            height: 20px;
+            cursor: pointer;
+        }
+
+        /* Alert Rules Section */
+        .alert-rules {
+            margin-top: var(--spacing-xl);
+        }
+
+        .alert-rule-card {
+            background: var(--md-sys-color-primary-container);
+            padding: var(--spacing-md);
+            border-radius: 12px;
+            margin-bottom: var(--spacing-md);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            animation: slideInRight 0.3s ease backwards;
+        }
+
+        @keyframes slideInRight {
+            from { opacity: 0; transform: translateX(30px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+
+        .alert-rule-info {
+            flex: 1;
+        }
+
+        .alert-rule-title {
+            font-weight: 500;
+            margin-bottom: var(--spacing-xs);
+        }
+
+        .alert-rule-details {
+            font-size: 14px;
+            color: var(--md-sys-color-outline);
+        }
+
+        .alert-channels {
+            display: flex;
+            gap: var(--spacing-sm);
+            margin-top: var(--spacing-sm);
+        }
+
+        .channel-badge {
+            padding: 4px 8px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        .channel-telegram {
+            background: #0088cc20;
+            color: #0088cc;
+        }
+
+        .channel-discord {
+            background: #5865F220;
+            color: #5865F2;
+        }
+
+        .channel-pushover {
+            background: #4FC3F720;
+            color: #4FC3F7;
+        }
+
+        /* Stats Dashboard */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: var(--spacing-md);
+            margin-bottom: var(--spacing-xl);
+        }
+
+        .stat-card {
+            background: white;
+            padding: var(--spacing-lg);
+            border-radius: 16px;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 4px;
+            background: linear-gradient(90deg, var(--md-sys-color-primary), var(--md-sys-color-tertiary));
+        }
+
+        .stat-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--md-sys-color-primary);
+            margin-bottom: var(--spacing-xs);
+        }
+
+        .stat-label {
+            font-size: 14px;
+            color: var(--md-sys-color-outline);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        /* Floating Action Button */
+        .fab {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            width: 56px;
+            height: 56px;
+            border-radius: 16px;
+            background: linear-gradient(135deg, var(--md-sys-color-primary), var(--md-sys-color-tertiary));
+            color: white;
+            border: none;
+            cursor: pointer;
+            box-shadow: var(--md-sys-elevation-3);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            z-index: 100;
+        }
+
+        .fab:hover {
+            transform: scale(1.1) rotate(90deg);
+            box-shadow: 0 6px 20px rgba(103, 80, 164, 0.4);
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .app-container {
+                padding: var(--spacing-md);
+            }
+
+            .header h1 {
+                font-size: 1.5rem;
+            }
+
+            .dashboard-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .modal-content {
+                width: 95%;
+                padding: var(--spacing-lg);
+            }
+        }
+
+        /* Loading Animation */
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top-color: white;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Toast Notifications */
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--md-sys-color-inverse-surface);
+            color: var(--md-sys-color-inverse-on-surface);
+            padding: var(--spacing-md) var(--spacing-lg);
+            border-radius: 12px;
+            box-shadow: var(--md-sys-elevation-3);
+            z-index: 2000;
+            animation: toastSlideUp 0.3s ease;
+            display: none;
+        }
+
+        .toast.show {
+            display: block;
+        }
+
+        @keyframes toastSlideUp {
+            from { opacity: 0; transform: translate(-50%, 100px); }
+            to { opacity: 1; transform: translate(-50%, 0); }
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <div class="header">
+            <h1>
+                <span>🐳</span>
+                Docker Monitor
+            </h1>
+            <div class="header-actions">
+                <button class="btn btn-secondary" onclick="openHostModal()">
+                    <span>➕</span> Add Host
+                </button>
+                <button class="btn btn-secondary" onclick="openNotificationSettings()">
+                    <span>🔔</span> Notifications
+                </button>
+                <button class="btn btn-primary" onclick="refreshAll()">
+                    <span>🔄</span> Refresh All
+                </button>
+            </div>
+        </div>
+
+        <!-- Stats Dashboard -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-value" id="totalHosts">3</div>
+                <div class="stat-label">Total Hosts</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="totalContainers">12</div>
+                <div class="stat-label">Containers</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="runningContainers">8</div>
+                <div class="stat-label">Running</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="alertRules">5</div>
+                <div class="stat-label">Alert Rules</div>
+            </div>
+        </div>
+
+        <!-- Hosts Grid -->
+        <div class="dashboard-grid" id="hostsGrid">
+            <!-- Host cards will be dynamically inserted here -->
+        </div>
+
+        <!-- Alert Rules Section -->
+        <div class="card alert-rules">
+            <h2 style="margin-bottom: var(--spacing-lg);">Active Alert Rules</h2>
+            <div id="alertRulesList">
+                <!-- Alert rules will be dynamically inserted here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Floating Action Button -->
+    <button class="fab" onclick="openAlertRuleModal()">
+        <span>⚡</span>
+    </button>
+
+    <!-- Add Host Modal -->
+    <div class="modal" id="hostModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="modal-title">Add Docker Host</h2>
+                <button class="modal-close" onclick="closeModal('hostModal')">✕</button>
+            </div>
+            <form onsubmit="addHost(event)">
+                <div class="form-group">
+                    <label class="form-label">Host Name</label>
+                    <input type="text" class="form-input" placeholder="Production Server" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Host URL</label>
+                    <input type="text" class="form-input" placeholder="tcp://192.168.1.100:2376" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">API Key (Optional)</label>
+                    <input type="text" class="form-input" placeholder="Enter API key if required">
+                </div>
+                <button type="submit" class="btn btn-primary" style="width: 100%;">
+                    Add Host
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Alert Rule Modal -->
+    <div class="modal" id="alertRuleModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="modal-title">Create Alert Rule</h2>
+                <button class="modal-close" onclick="closeModal('alertRuleModal')">✕</button>
+            </div>
+            <form onsubmit="createAlertRule(event)">
+                <div class="form-group">
+                    <label class="form-label">Select Container</label>
+                    <select class="form-input" required>
+                        <option>production-server / nginx-web</option>
+                        <option>production-server / postgres-db</option>
+                        <option>staging-server / app-backend</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Monitor States</label>
+                    <div class="checkbox-group">
+                        <label class="checkbox-item">
+                            <input type="checkbox" checked> Running → Stopped
+                        </label>
+                        <label class="checkbox-item">
+                            <input type="checkbox" checked> Running → Paused
+                        </label>
+                        <label class="checkbox-item">
+                            <input type="checkbox"> Stopped → Running
+                        </label>
+                        <label class="checkbox-item">
+                            <input type="checkbox"> Paused → Running
+                        </label>
+                        <label class="checkbox-item">
+                            <input type="checkbox" checked> Any → Error
+                        </label>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Alert Channels</label>
+                    <div class="checkbox-group">
+                        <label class="checkbox-item">
+                            <input type="checkbox" onchange="toggleChannelConfig('telegram', this.checked)"> Telegram
+                        </label>
+                        <label class="checkbox-item">
+                            <input type="checkbox" onchange="toggleChannelConfig('discord', this.checked)"> Discord
+                        </label>
+                        <label class="checkbox-item">
+                            <input type="checkbox" onchange="toggleChannelConfig('pushover', this.checked)"> Pushover
+                        </label>
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-primary" style="width: 100%;">
+                    Create Alert Rule
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Notification Settings Modal -->
+    <div class="modal" id="notificationModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="modal-title">Notification Settings</h2>
+                <button class="modal-close" onclick="closeModal('notificationModal')">✕</button>
+            </div>
+            <form onsubmit="saveNotificationSettings(event)">
+                <div class="form-group">
+                    <h3 style="margin-bottom: var(--spacing-md);">Telegram Configuration</h3>
+                    <label class="form-label">Bot Token</label>
+                    <input type="text" class="form-input" placeholder="Enter Telegram bot token">
+                    <label class="form-label" style="margin-top: var(--spacing-md);">Chat ID</label>
+                    <input type="text" class="form-input" placeholder="Enter chat ID">
+                </div>
+                <div class="form-group">
+                    <h3 style="margin-bottom: var(--spacing-md);">Discord Configuration</h3>
+                    <label class="form-label">Webhook URL</label>
+                    <input type="text" class="form-input" placeholder="Enter Discord webhook URL">
+                </div>
+                <div class="form-group">
+                    <h3 style="margin-bottom: var(--spacing-md);">Pushover Configuration</h3>
+                    <label class="form-label">App Token</label>
+                    <input type="text" class="form-input" placeholder="Enter Pushover app token">
+                    <label class="form-label" style="margin-top: var(--spacing-md);">User Key</label>
+                    <input type="text" class="form-input" placeholder="Enter user key">
+                </div>
+                <button type="submit" class="btn btn-primary" style="width: 100%;">
+                    Save Settings
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Toast Notification -->
+    <div class="toast" id="toast"></div>
+
+    <script>
+        // Sample data structure
+        let hosts = [
+            {
+                id: 1,
+                name: 'production-server',
+                url: 'tcp://192.168.1.100:2376',
+                status: 'online',
+                containers: [
+                    { id: 'abc123', name: 'nginx-web', state: 'running' },
+                    { id: 'def456', name: 'postgres-db', state: 'running' },
+                    { id: 'ghi789', name: 'redis-cache', state: 'running' },
+                    { id: 'jkl012', name: 'backup-service', state: 'stopped' }
+                ]
+            },
+            {
+                id: 2,
+                name: 'staging-server',
+                url: 'tcp://192.168.1.101:2376',
+                status: 'online',
+                containers: [
+                    { id: 'mno345', name: 'app-backend', state: 'running' },
+                    { id: 'pqr678', name: 'app-frontend', state: 'running' },
+                    { id: 'stu901', name: 'mongodb', state: 'paused' }
+                ]
+            },
+            {
+                id: 3,
+                name: 'development-server',
+                url: 'tcp://192.168.1.102:2376',
+                status: 'offline',
+                containers: [
+                    { id: 'vwx234', name: 'test-app', state: 'stopped' },
+                    { id: 'yza567', name: 'test-db', state: 'stopped' }
+                ]
+            }
+        ];
+
+        let alertRules = [
+            {
+                id: 1,
+                container: 'production-server / nginx-web',
+                states: ['running → stopped', 'any → error'],
+                channels: ['telegram', 'discord']
+            },
+            {
+                id: 2,
+                container: 'production-server / postgres-db',
+                states: ['running → stopped'],
+                channels: ['telegram', 'pushover']
+            },
+            {
+                id: 3,
+                container: 'staging-server / app-backend',
+                states: ['any → error'],
+                channels: ['discord']
+            }
+        ];
+
+        // Initialize the dashboard
+        function init() {
+            renderHosts();
+            renderAlertRules();
+            updateStats();
+            
+            // Simulate real-time updates
+            setInterval(() => {
+                simulateStateChanges();
+            }, 10000);
+        }
+
+        // Render hosts grid
+        function renderHosts() {
+            const hostsGrid = document.getElementById('hostsGrid');
+            hostsGrid.innerHTML = '';
+            
+            hosts.forEach((host, index) => {
+                const hostCard = document.createElement('div');
+                hostCard.className = 'card host-card';
+                hostCard.style.setProperty('--index', index);
+                
+                const containersList = host.containers.map(container => `
+                    <div class="container-item" onclick="showContainerDetails('${container.id}')">
+                        <div class="container-info">
+                            <div class="container-icon container-${container.state}">
+                                ${getContainerIcon(container.state)}
+                            </div>
+                            <div>
+                                <div class="container-name">${container.name}</div>
+                                <div class="container-id">${container.id}</div>
+                            </div>
+                        </div>
+                        <span class="container-state ${getStateClass(container.state)}">
+                            ${container.state}
+                        </span>
+                    </div>
+                `).join('');
+                
+                hostCard.innerHTML = `
+                    <div class="host-header">
+                        <div class="host-name">${host.name}</div>
+                        <span class="host-status status-${host.status}">${host.status}</span>
+                    </div>
+                    <div class="container-list">
+                        ${containersList}
+                    </div>
+                `;
+                
+                hostsGrid.appendChild(hostCard);
+            });
+        }
+
+        // Render alert rules
+        function renderAlertRules() {
+            const alertRulesList = document.getElementById('alertRulesList');
+            alertRulesList.innerHTML = '';
+            
+            alertRules.forEach((rule, index) => {
+                const ruleCard = document.createElement('div');
+                ruleCard.className = 'alert-rule-card';
+                ruleCard.style.animationDelay = `${index * 0.1}s`;
+                
+                const channelBadges = rule.channels.map(channel => 
+                    `<span class="channel-badge channel-${channel}">${channel}</span>`
+                ).join('');
+                
+                ruleCard.innerHTML = `
+                    <div class="alert-rule-info">
+                        <div class="alert-rule-title">${rule.container}</div>
+                        <div class="alert-rule-details">Monitoring: ${rule.states.join(', ')}</div>
+                        <div class="alert-channels">${channelBadges}</div>
+                    </div>
+                    <button class="btn btn-icon" onclick="deleteAlertRule(${rule.id})">
+                        <span>🗑️</span>
+                    </button>
+                `;
+                
+                alertRulesList.appendChild(ruleCard);
+            });
+        }
+
+        // Update statistics
+        function updateStats() {
+            const totalContainers = hosts.reduce((acc, host) => acc + host.containers.length, 0);
+            const runningContainers = hosts.reduce((acc, host) => 
+                acc + host.containers.filter(c => c.state === 'running').length, 0);
+            
+            document.getElementById('totalHosts').textContent = hosts.length;
+            document.getElementById('totalContainers').textContent = totalContainers;
+            document.getElementById('runningContainers').textContent = runningContainers;
+            document.getElementById('alertRules').textContent = alertRules.length;
+        }
+
+        // Helper functions
+        function getContainerIcon(state) {
+            switch(state) {
+                case 'running': return '▶';
+                case 'stopped': return '■';
+                case 'paused': return '⏸';
+                default: return '?';
+            }
+        }
+
+        function getStateClass(state) {
+            switch(state) {
+                case 'running': return 'status-online';
+                case 'stopped': return 'status-offline';
+                case 'paused': return 'channel-pushover';
+                default: return '';
+            }
+        }
+
+        // Modal functions
+        function openHostModal() {
+            document.getElementById('hostModal').classList.add('active');
+        }
+
+        function openAlertRuleModal() {
+            document.getElementById('alertRuleModal').classList.add('active');
+        }
+
+        function openNotificationSettings() {
+            document.getElementById('notificationModal').classList.add('active');
+        }
+
+        function closeModal(modalId) {
+            document.getElementById(modalId).classList.remove('active');
+        }
+
+        // Form submissions
+        function addHost(event) {
+            event.preventDefault();
+            showToast('Host added successfully!');
+            closeModal('hostModal');
+            // In a real app, this would send data to backend
+        }
+
+        function createAlertRule(event) {
+            event.preventDefault();
+            const newRule = {
+                id: alertRules.length + 1,
+                container: event.target.querySelector('select').value,
+                states: ['running → stopped'],
+                channels: ['telegram']
+            };
+            alertRules.push(newRule);
+            renderAlertRules();
+            updateStats();
+            showToast('Alert rule created successfully!');
+            closeModal('alertRuleModal');
+        }
+
+        function saveNotificationSettings(event) {
+            event.preventDefault();
+            showToast('Notification settings saved!');
+            closeModal('notificationModal');
+        }
+
+        // Other functions
+        function refreshAll() {
+            showToast('Refreshing all containers...');
+            // Simulate refresh with animation
+            const cards = document.querySelectorAll('.host-card');
+            cards.forEach(card => {
+                card.style.animation = 'none';
+                setTimeout(() => {
+                    card.style.animation = '';
+                }, 10);
+            });
+        }
+
+        function showContainerDetails(containerId) {
+            showToast(`Container details: ${containerId}`);
+        }
+
+        function deleteAlertRule(ruleId) {
+            alertRules = alertRules.filter(rule => rule.id !== ruleId);
+            renderAlertRules();
+            updateStats();
+            showToast('Alert rule deleted');
+        }
+
+        function toggleChannelConfig(channel, enabled) {
+            if (enabled) {
+                showToast(`${channel} notifications enabled`);
+            }
+        }
+
+        function showToast(message) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.classList.add('show');
+            setTimeout(() => {
+                toast.classList.remove('show');
+            }, 3000);
+        }
+
+        // Simulate state changes for demo
+        function simulateStateChanges() {
+            const randomHost = hosts[Math.floor(Math.random() * hosts.length)];
+            if (randomHost.containers.length > 0) {
+                const randomContainer = randomHost.containers[Math.floor(Math.random() * randomHost.containers.length)];
+                const states = ['running', 'stopped', 'paused'];
+                const oldState = randomContainer.state;
+                randomContainer.state = states[Math.floor(Math.random() * states.length)];
+                
+                if (oldState !== randomContainer.state) {
+                    renderHosts();
+                    updateStats();
+                    // Check if this triggers any alert
+                    const relevantRule = alertRules.find(rule => 
+                        rule.container.includes(randomContainer.name)
+                    );
+                    if (relevantRule) {
+                        showToast(`⚠️ Alert: ${randomContainer.name} changed from ${oldState} to ${randomContainer.state}`);
+                    }
+                }
+            }
+        }
+
+        // Initialize on load
+        window.addEventListener('DOMContentLoaded', init);
+    </script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+version: '3.8'
+services:
+  dockmon:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: dockmon
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    environment:
+      - TZ=UTC

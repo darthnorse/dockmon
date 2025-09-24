@@ -259,9 +259,6 @@ class DockerMonitor:
         """Update an existing Docker host"""
         # Remove the existing host first
         if host_id in self.hosts:
-            # Save existing host for cleanup
-            old_host = self.hosts[host_id]
-
             # Close existing client
             if host_id in self.clients:
                 self.clients[host_id].close()
@@ -270,10 +267,7 @@ class DockerMonitor:
             # Remove from memory
             del self.hosts[host_id]
 
-        # Add the host with updated configuration but keep the same ID
-        host = self.add_host(config, existing_id=host_id)
-
-        # Update database
+        # Update database first
         self.db.update_host(host_id, {
             'name': config.name,
             'url': config.url,
@@ -282,8 +276,79 @@ class DockerMonitor:
             'tls_ca': config.tls_ca
         })
 
-        logger.info(f"Updated host {host_id}: {host.name} ({host.url})")
-        return host
+        # Create new connection with updated config
+        try:
+            # Set up TLS if certificates are provided
+            tls_config = None
+            if config.tls_cert and config.tls_key and config.tls_ca:
+                # Write temporary files for TLS configuration
+                import tempfile
+                import os
+
+                temp_dir = tempfile.mkdtemp()
+                cert_file = os.path.join(temp_dir, 'cert.pem')
+                key_file = os.path.join(temp_dir, 'key.pem')
+                ca_file = os.path.join(temp_dir, 'ca.pem')
+
+                with open(cert_file, 'w') as f:
+                    f.write(config.tls_cert)
+                with open(key_file, 'w') as f:
+                    f.write(config.tls_key)
+                with open(ca_file, 'w') as f:
+                    f.write(config.tls_ca)
+
+                tls_config = docker.tls.TLSConfig(
+                    client_cert=(cert_file, key_file),
+                    ca_cert=ca_file,
+                    verify=True
+                )
+                client = docker.DockerClient(
+                    base_url=config.url,
+                    tls=tls_config,
+                    timeout=self.settings.connection_timeout
+                )
+            else:
+                client = docker.DockerClient(
+                    base_url=config.url,
+                    timeout=self.settings.connection_timeout
+                )
+
+            # Test connection
+            client.ping()
+
+            # Validate TLS configuration for TCP connections
+            security_status = self._validate_host_security(config)
+
+            # Create host object with existing ID
+            host = DockerHost(
+                id=host_id,
+                name=config.name,
+                url=config.url,
+                status="online",
+                security_status=security_status
+            )
+
+            # Store client and host
+            self.clients[host.id] = client
+            self.hosts[host.id] = host
+
+            # Start Docker event monitoring for this host
+            asyncio.create_task(self.realtime.start_event_monitor(client, host.id))
+
+            # Log host update
+            self.event_logger.log_host_connection(
+                host_name=host.name,
+                host_id=host.id,
+                host_url=config.url,
+                connected=True
+            )
+
+            logger.info(f"Updated host {host_id}: {host.name} ({host.url})")
+            return host
+
+        except Exception as e:
+            logger.error(f"Failed to update host {host_id}: {e}")
+            raise
 
     def get_containers(self, host_id: Optional[str] = None) -> List[Container]:
         """Get containers from one or all hosts"""

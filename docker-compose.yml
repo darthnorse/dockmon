@@ -1,12 +1,52 @@
 version: '3.8'
+
 services:
-  dockmon:
+  # DockMon Backend API
+  dockmon-backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: dockmon-backend
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - TZ=UTC
+      - PYTHONPATH=/app
+    volumes:
+      - dockmon_data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock  # For local Docker monitoring
+    networks:
+      - dockmon
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/settings"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # DockMon Frontend (Nginx serving static files)
+  dockmon-frontend:
     build:
       context: .
       dockerfile: docker/Dockerfile
-    container_name: dockmon
+    container_name: dockmon-frontend
     restart: unless-stopped
     ports:
-      - "8080:80"
+      - "8000:80"  # Frontend on port 8000
     environment:
       - TZ=UTC
+      - DOCKMON_API_URL=http://dockmon-backend:8080  # Backend API URL
+    depends_on:
+      dockmon-backend:
+        condition: service_healthy
+    networks:
+      - dockmon
+
+volumes:
+  dockmon_data:
+    driver: local
+
+networks:
+  dockmon:
+    driver: bridge

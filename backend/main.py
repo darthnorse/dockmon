@@ -22,6 +22,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+from database import DatabaseManager, DockerHostDB
+from realtime import RealtimeMonitor, LiveUpdateManager
+from notifications import NotificationService, AlertProcessor
+from event_logger import EventLogger, EventContext, EventCategory, EventType, EventSeverity, PerformanceTimer
 
 # Configure logging
 logging.basicConfig(
@@ -127,13 +131,22 @@ class DockerMonitor:
     def __init__(self):
         self.hosts: Dict[str, DockerHost] = {}
         self.clients: Dict[str, DockerClient] = {}
-        self.settings = GlobalSettings()
+        self.db = DatabaseManager()  # Initialize database
+        self.settings = self.db.get_settings()  # Load settings from DB
         self.alert_rules: List[AlertRule] = []
         self.notification_settings = NotificationSettings()
         self.auto_restart_status: Dict[str, bool] = {}
         self.restart_attempts: Dict[str, int] = {}
         self.monitoring_task: Optional[asyncio.Task] = None
         self.manager = ConnectionManager()
+        self.realtime = RealtimeMonitor()  # Real-time monitoring
+        self.live_updates = LiveUpdateManager()  # Live update batching
+        self.notification_service = NotificationService(self.db)  # Notification service
+        self.alert_processor = AlertProcessor(self.notification_service)  # Alert processor
+        self.event_logger = EventLogger(self.db)  # Event logging service
+        self._container_states: Dict[str, str] = {}  # Track container states for change detection
+        self.cleanup_task: Optional[asyncio.Task] = None  # Background cleanup task
+        self._load_persistent_config()  # Load saved hosts and configs
         
     def add_host(self, config: DockerHostConfig) -> DockerHost:
         """Add a new Docker host to monitor"""
@@ -169,7 +182,28 @@ class DockerMonitor:
             # Store client and host
             self.clients[host.id] = client
             self.hosts[host.id] = host
-            
+
+            # Save to database
+            db_host = self.db.add_host({
+                'id': host.id,
+                'name': config.name,
+                'url': config.url,
+                'tls_cert': config.tls_cert,
+                'tls_key': config.tls_key,
+                'tls_ca': config.tls_ca
+            })
+
+            # Start Docker event monitoring for this host
+            asyncio.create_task(self.realtime.start_event_monitor(client, host.id))
+
+            # Log host connection
+            self.event_logger.log_host_connection(
+                host_name=host.name,
+                host_id=host.id,
+                host_url=config.url,
+                connected=True
+            )
+
             logger.info(f"Added Docker host: {host.name} ({host.url})")
             return host
             
@@ -184,6 +218,8 @@ class DockerMonitor:
             if host_id in self.clients:
                 self.clients[host_id].close()
                 del self.clients[host_id]
+            # Remove from database
+            self.db.delete_host(host_id)
             logger.info(f"Removed host {host_id}")
     
     def get_containers(self, host_id: Optional[str] = None) -> List[Container]:
@@ -217,7 +253,7 @@ class DockerMonitor:
                         host_name=host.name,
                         image=dc.image.tags[0] if dc.image.tags else dc.image.short_id,
                         created=dc.attrs['Created'],
-                        auto_restart=self.auto_restart_status.get(container_id, False),
+                        auto_restart=self._get_auto_restart_status(hid, container_id),
                         restart_attempts=self.restart_attempts.get(container_id, 0)
                     )
                     containers.append(container)
@@ -235,52 +271,156 @@ class DockerMonitor:
         """Restart a specific container"""
         if host_id not in self.clients:
             raise HTTPException(status_code=404, detail="Host not found")
-            
+
+        host = self.hosts.get(host_id)
+        host_name = host.name if host else 'Unknown Host'
+
+        start_time = time.time()
         try:
             client = self.clients[host_id]
             container = client.containers.get(container_id)
+            container_name = container.name
+
             container.restart(timeout=10)
+            duration_ms = int((time.time() - start_time) * 1000)
+
             logger.info(f"Restarted container {container_id} on host {host_id}")
+
+            # Log the successful restart
+            self.event_logger.log_container_action(
+                action="restart",
+                container_name=container_name,
+                container_id=container_id,
+                host_name=host_name,
+                host_id=host_id,
+                success=True,
+                triggered_by="user",
+                duration_ms=duration_ms
+            )
             return True
         except Exception as e:
+            duration_ms = int((time.time() - start_time) * 1000)
             logger.error(f"Failed to restart container {container_id}: {e}")
+
+            # Log the failed restart
+            self.event_logger.log_container_action(
+                action="restart",
+                container_name=container_id,  # Use ID if name unavailable
+                container_id=container_id,
+                host_name=host_name,
+                host_id=host_id,
+                success=False,
+                triggered_by="user",
+                error_message=str(e),
+                duration_ms=duration_ms
+            )
             raise HTTPException(status_code=500, detail=str(e))
     
     def stop_container(self, host_id: str, container_id: str) -> bool:
         """Stop a specific container"""
         if host_id not in self.clients:
             raise HTTPException(status_code=404, detail="Host not found")
-            
+
+        host = self.hosts.get(host_id)
+        host_name = host.name if host else 'Unknown Host'
+
+        start_time = time.time()
         try:
             client = self.clients[host_id]
             container = client.containers.get(container_id)
+            container_name = container.name
+
             container.stop(timeout=10)
+            duration_ms = int((time.time() - start_time) * 1000)
+
             logger.info(f"Stopped container {container_id} on host {host_id}")
+
+            # Log the successful stop
+            self.event_logger.log_container_action(
+                action="stop",
+                container_name=container_name,
+                container_id=container_id,
+                host_name=host_name,
+                host_id=host_id,
+                success=True,
+                triggered_by="user",
+                duration_ms=duration_ms
+            )
             return True
         except Exception as e:
+            duration_ms = int((time.time() - start_time) * 1000)
             logger.error(f"Failed to stop container {container_id}: {e}")
+
+            # Log the failed stop
+            self.event_logger.log_container_action(
+                action="stop",
+                container_name=container_id,
+                container_id=container_id,
+                host_name=host_name,
+                host_id=host_id,
+                success=False,
+                triggered_by="user",
+                error_message=str(e),
+                duration_ms=duration_ms
+            )
             raise HTTPException(status_code=500, detail=str(e))
     
     def start_container(self, host_id: str, container_id: str) -> bool:
         """Start a specific container"""
         if host_id not in self.clients:
             raise HTTPException(status_code=404, detail="Host not found")
-            
+
+        host = self.hosts.get(host_id)
+        host_name = host.name if host else 'Unknown Host'
+
+        start_time = time.time()
         try:
             client = self.clients[host_id]
             container = client.containers.get(container_id)
+            container_name = container.name
+
             container.start()
+            duration_ms = int((time.time() - start_time) * 1000)
+
             logger.info(f"Started container {container_id} on host {host_id}")
+
+            # Log the successful start
+            self.event_logger.log_container_action(
+                action="start",
+                container_name=container_name,
+                container_id=container_id,
+                host_name=host_name,
+                host_id=host_id,
+                success=True,
+                triggered_by="user",
+                duration_ms=duration_ms
+            )
             return True
         except Exception as e:
+            duration_ms = int((time.time() - start_time) * 1000)
             logger.error(f"Failed to start container {container_id}: {e}")
+
+            # Log the failed start
+            self.event_logger.log_container_action(
+                action="start",
+                container_name=container_id,
+                container_id=container_id,
+                host_name=host_name,
+                host_id=host_id,
+                success=False,
+                triggered_by="user",
+                error_message=str(e),
+                duration_ms=duration_ms
+            )
             raise HTTPException(status_code=500, detail=str(e))
     
-    def toggle_auto_restart(self, container_id: str, enabled: bool):
+    def toggle_auto_restart(self, host_id: str, container_id: str, container_name: str, enabled: bool):
         """Toggle auto-restart for a container"""
         self.auto_restart_status[container_id] = enabled
         if not enabled:
             self.restart_attempts[container_id] = 0
+        # Save to database
+        self.db.set_auto_restart(host_id, container_id, container_name, enabled)
         logger.info(f"Auto-restart {'enabled' if enabled else 'disabled'} for {container_id}")
     
     async def monitor_containers(self):
@@ -290,18 +430,42 @@ class DockerMonitor:
         while True:
             try:
                 containers = self.get_containers()
-                
+
+                # Track container state changes and log them
+                for container in containers:
+                    container_key = f"{container.host_id}:{container.id}"
+                    current_state = container.status
+                    previous_state = self._container_states.get(container_key)
+
+                    # Log state changes
+                    if previous_state is not None and previous_state != current_state:
+                        self.event_logger.log_container_state_change(
+                            container_name=container.name,
+                            container_id=container.short_id,
+                            host_name=container.host_name,
+                            host_id=container.host_id,
+                            old_state=previous_state,
+                            new_state=current_state,
+                            triggered_by="system"
+                        )
+
+                    # Update tracked state
+                    self._container_states[container_key] = current_state
+
                 # Check for containers that need auto-restart
                 for container in containers:
-                    if (container.status == "exited" and 
-                        self.auto_restart_status.get(container.short_id, False)):
-                        
+                    if (container.status == "exited" and
+                        self._get_auto_restart_status(container.host_id, container.short_id)):
+
                         attempts = self.restart_attempts.get(container.short_id, 0)
                         if attempts < self.settings.max_retries:
                             asyncio.create_task(
                                 self.auto_restart_container(container)
                             )
-                
+
+                # Process alerts for container state changes
+                await self.alert_processor.process_container_update(containers, self.hosts)
+
                 # Broadcast update to all connected clients
                 await self.manager.broadcast({
                     "type": "containers_update",
@@ -322,19 +486,34 @@ class DockerMonitor:
         container_id = container.short_id
         self.restart_attempts[container_id] = self.restart_attempts.get(container_id, 0) + 1
         attempt = self.restart_attempts[container_id]
-        
+
+        correlation_id = self.event_logger.create_correlation_id()
+
         logger.info(
             f"Auto-restart attempt {attempt}/{self.settings.max_retries} "
             f"for {container.name}"
         )
-        
+
         # Wait before attempting restart
         await asyncio.sleep(self.settings.retry_delay)
-        
+
         try:
             success = self.restart_container(container.host_id, container.id)
             if success:
                 self.restart_attempts[container_id] = 0
+
+                # Log successful auto-restart
+                self.event_logger.log_auto_restart_attempt(
+                    container_name=container.name,
+                    container_id=container_id,
+                    host_name=container.host_name,
+                    host_id=container.host_id,
+                    attempt=attempt,
+                    max_attempts=self.settings.max_retries,
+                    success=True,
+                    correlation_id=correlation_id
+                )
+
                 await self.manager.broadcast({
                     "type": "auto_restart_success",
                     "data": {
@@ -345,7 +524,20 @@ class DockerMonitor:
                 })
         except Exception as e:
             logger.error(f"Auto-restart failed for {container.name}: {e}")
-            
+
+            # Log failed auto-restart
+            self.event_logger.log_auto_restart_attempt(
+                container_name=container.name,
+                container_id=container_id,
+                host_name=container.host_name,
+                host_id=container.host_id,
+                attempt=attempt,
+                max_attempts=self.settings.max_retries,
+                success=False,
+                error_message=str(e),
+                correlation_id=correlation_id
+            )
+
             if attempt >= self.settings.max_retries:
                 self.auto_restart_status[container_id] = False
                 await self.manager.broadcast({
@@ -358,6 +550,83 @@ class DockerMonitor:
                     }
                 })
 
+    def _load_persistent_config(self):
+        """Load saved configuration from database"""
+        try:
+            # Load saved hosts
+            db_hosts = self.db.get_hosts(active_only=True)
+            for db_host in db_hosts:
+                try:
+                    config = DockerHostConfig(
+                        name=db_host.name,
+                        url=db_host.url,
+                        tls_cert=db_host.tls_cert,
+                        tls_key=db_host.tls_key,
+                        tls_ca=db_host.tls_ca
+                    )
+                    # Try to connect to the host
+                    self.add_host(config)
+                except Exception as e:
+                    logger.error(f"Failed to reconnect to saved host {db_host.name}: {e}")
+
+            # Load auto-restart configurations
+            for host_id in self.hosts.keys():
+                configs = self.db.get_session().query(self.db.AutoRestartConfig).filter(
+                    self.db.AutoRestartConfig.host_id == host_id,
+                    self.db.AutoRestartConfig.enabled == True
+                ).all()
+                for config in configs:
+                    self.auto_restart_status[config.container_id] = True
+                    self.restart_attempts[config.container_id] = config.restart_count
+
+            logger.info(f"Loaded {len(self.hosts)} hosts from database")
+        except Exception as e:
+            logger.error(f"Error loading persistent config: {e}")
+
+    def _get_auto_restart_status(self, host_id: str, container_id: str) -> bool:
+        """Get auto-restart status for a container"""
+        # Check in-memory cache first
+        if container_id in self.auto_restart_status:
+            return self.auto_restart_status[container_id]
+
+        # Check database
+        config = self.db.get_auto_restart_config(host_id, container_id)
+        if config:
+            self.auto_restart_status[container_id] = config.enabled
+            return config.enabled
+
+        return False
+
+    async def cleanup_old_data(self):
+        """Periodic cleanup of old data"""
+        logger.info("Starting periodic data cleanup...")
+
+        while True:
+            try:
+                settings = self.db.get_settings()
+
+                if settings.auto_cleanup_events:
+                    # Clean up old events
+                    event_deleted = self.db.cleanup_old_events(settings.event_retention_days)
+                    if event_deleted > 0:
+                        self.event_logger.log_system_event(
+                            "Automatic Event Cleanup",
+                            f"Cleaned up {event_deleted} events older than {settings.event_retention_days} days",
+                            EventSeverity.INFO,
+                            EventType.STARTUP
+                        )
+
+                    # Clean up old container history (legacy table)
+                    self.db.cleanup_old_history(settings.log_retention_days)
+
+                # Sleep for 24 hours before next cleanup
+                await asyncio.sleep(24 * 60 * 60)  # 24 hours
+
+            except Exception as e:
+                logger.error(f"Error in cleanup task: {e}")
+                # Wait 1 hour before retrying
+                await asyncio.sleep(60 * 60)  # 1 hour
+
 # ==================== FastAPI Application ====================
 
 # Create monitor instance
@@ -368,12 +637,22 @@ async def lifespan(app: FastAPI):
     """Manage application lifecycle"""
     # Startup
     logger.info("Starting DockMon backend...")
+    await monitor.event_logger.start()
+    monitor.event_logger.log_system_event("DockMon Backend Starting", "DockMon backend is initializing", EventSeverity.INFO, EventType.STARTUP)
     monitor.monitoring_task = asyncio.create_task(monitor.monitor_containers())
+    monitor.cleanup_task = asyncio.create_task(monitor.cleanup_old_data())
     yield
     # Shutdown
     logger.info("Shutting down DockMon backend...")
+    monitor.event_logger.log_system_event("DockMon Backend Shutting Down", "DockMon backend is shutting down", EventSeverity.INFO, EventType.SHUTDOWN)
     if monitor.monitoring_task:
         monitor.monitoring_task.cancel()
+    if monitor.cleanup_task:
+        monitor.cleanup_task.cancel()
+    # Close notification service
+    await monitor.notification_service.close()
+    # Stop event logger
+    await monitor.event_logger.stop()
 
 app = FastAPI(
     title="DockMon API",
@@ -498,64 +777,564 @@ async def stream_logs(websocket: WebSocket, host_id: str, container_id: str):
         logger.error(f"Error streaming logs: {e}")
         await websocket.close(code=4000, reason=str(e))
 
+class AutoRestartRequest(BaseModel):
+    host_id: str
+    container_name: str
+    enabled: bool
+
 @app.post("/api/containers/{container_id}/auto-restart")
-async def toggle_auto_restart(container_id: str, enabled: bool):
+async def toggle_auto_restart(container_id: str, request: AutoRestartRequest):
     """Toggle auto-restart for a container"""
-    monitor.toggle_auto_restart(container_id, enabled)
-    return {"container_id": container_id, "auto_restart": enabled}
+    monitor.toggle_auto_restart(request.host_id, container_id, request.container_name, request.enabled)
+    return {"container_id": container_id, "auto_restart": request.enabled}
 
 @app.get("/api/settings")
 async def get_settings():
     """Get global settings"""
-    return monitor.settings
+    settings = monitor.db.get_settings()
+    return {
+        "max_retries": settings.max_retries,
+        "retry_delay": settings.retry_delay,
+        "default_auto_restart": settings.default_auto_restart,
+        "polling_interval": settings.polling_interval,
+        "connection_timeout": settings.connection_timeout,
+        "log_retention_days": settings.log_retention_days,
+        "enable_notifications": settings.enable_notifications
+    }
 
 @app.post("/api/settings")
 async def update_settings(settings: GlobalSettings):
     """Update global settings"""
-    monitor.settings = settings
+    updated = monitor.db.update_settings(settings.dict())
+    monitor.settings = updated  # Update in-memory settings
     return settings
 
 @app.get("/api/alerts")
 async def get_alert_rules():
     """Get all alert rules"""
-    return monitor.alert_rules
+    rules = monitor.db.get_alert_rules(enabled_only=False)
+    return [{
+        "id": rule.id,
+        "name": rule.name,
+        "host_id": rule.host_id,
+        "container_pattern": rule.container_pattern,
+        "trigger_states": rule.trigger_states,
+        "notification_channels": rule.notification_channels,
+        "cooldown_minutes": rule.cooldown_minutes,
+        "enabled": rule.enabled,
+        "last_triggered": rule.last_triggered.isoformat() if rule.last_triggered else None,
+        "created_at": rule.created_at.isoformat(),
+        "updated_at": rule.updated_at.isoformat()
+    } for rule in rules]
+
+class AlertRuleCreate(BaseModel):
+    """Request model for creating alert rules"""
+    name: str
+    host_id: Optional[str] = None  # None means all hosts
+    container_pattern: str
+    trigger_states: List[str]
+    notification_channels: List[int]
+    cooldown_minutes: int = 15
+    enabled: bool = True
 
 @app.post("/api/alerts")
-async def create_alert_rule(rule: AlertRule):
+async def create_alert_rule(rule: AlertRuleCreate):
     """Create a new alert rule"""
-    monitor.alert_rules.append(rule)
-    return rule
+    try:
+        rule_id = str(uuid.uuid4())
+        db_rule = monitor.db.add_alert_rule({
+            "id": rule_id,
+            "name": rule.name,
+            "host_id": rule.host_id,
+            "container_pattern": rule.container_pattern,
+            "trigger_states": rule.trigger_states,
+            "notification_channels": rule.notification_channels,
+            "cooldown_minutes": rule.cooldown_minutes,
+            "enabled": rule.enabled
+        })
+        return {
+            "id": db_rule.id,
+            "name": db_rule.name,
+            "host_id": db_rule.host_id,
+            "container_pattern": db_rule.container_pattern,
+            "trigger_states": db_rule.trigger_states,
+            "notification_channels": db_rule.notification_channels,
+            "cooldown_minutes": db_rule.cooldown_minutes,
+            "enabled": db_rule.enabled,
+            "last_triggered": None,
+            "created_at": db_rule.created_at.isoformat(),
+            "updated_at": db_rule.updated_at.isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Failed to create alert rule: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
 
 @app.delete("/api/alerts/{rule_id}")
 async def delete_alert_rule(rule_id: str):
     """Delete an alert rule"""
-    monitor.alert_rules = [r for r in monitor.alert_rules if r.id != rule_id]
-    return {"status": "success"}
+    try:
+        success = monitor.db.delete_alert_rule(rule_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Alert rule not found")
+        return {"status": "success", "message": f"Alert rule {rule_id} deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete alert rule: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+# ==================== Notification Channel Routes ====================
+
+class NotificationChannelCreate(BaseModel):
+    """Request model for creating notification channels"""
+    name: str
+    type: str  # telegram, discord, pushover
+    config: Dict[str, Any]  # Channel-specific configuration
+    enabled: bool = True
+
+class NotificationChannelUpdate(BaseModel):
+    """Request model for updating notification channels"""
+    name: Optional[str] = None
+    config: Optional[Dict[str, Any]] = None
+    enabled: Optional[bool] = None
+
+@app.get("/api/notifications/channels")
+async def get_notification_channels():
+    """Get all notification channels"""
+    channels = monitor.db.get_notification_channels(enabled_only=False)
+    return [{
+        "id": ch.id,
+        "name": ch.name,
+        "type": ch.type,
+        "config": ch.config,
+        "enabled": ch.enabled,
+        "created_at": ch.created_at.isoformat(),
+        "updated_at": ch.updated_at.isoformat()
+    } for ch in channels]
+
+@app.post("/api/notifications/channels")
+async def create_notification_channel(channel: NotificationChannelCreate):
+    """Create a new notification channel"""
+    try:
+        db_channel = monitor.db.add_notification_channel({
+            "name": channel.name,
+            "type": channel.type,
+            "config": channel.config,
+            "enabled": channel.enabled
+        })
+        return {
+            "id": db_channel.id,
+            "name": db_channel.name,
+            "type": db_channel.type,
+            "config": db_channel.config,
+            "enabled": db_channel.enabled,
+            "created_at": db_channel.created_at.isoformat(),
+            "updated_at": db_channel.updated_at.isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Failed to create notification channel: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.put("/api/notifications/channels/{channel_id}")
+async def update_notification_channel(channel_id: int, updates: NotificationChannelUpdate):
+    """Update a notification channel"""
+    try:
+        update_data = {k: v for k, v in updates.dict().items() if v is not None}
+        db_channel = monitor.db.update_notification_channel(channel_id, update_data)
+
+        if not db_channel:
+            raise HTTPException(status_code=404, detail="Channel not found")
+
+        return {
+            "id": db_channel.id,
+            "name": db_channel.name,
+            "type": db_channel.type,
+            "config": db_channel.config,
+            "enabled": db_channel.enabled,
+            "created_at": db_channel.created_at.isoformat(),
+            "updated_at": db_channel.updated_at.isoformat()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update notification channel: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.delete("/api/notifications/channels/{channel_id}")
+async def delete_notification_channel(channel_id: int):
+    """Delete a notification channel"""
+    try:
+        success = monitor.db.delete_notification_channel(channel_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Channel not found")
+        return {"status": "success", "message": f"Channel {channel_id} deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete notification channel: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/notifications/channels/{channel_id}/test")
+async def test_notification_channel(channel_id: int):
+    """Test a notification channel"""
+    try:
+        if not hasattr(monitor, 'notification_service'):
+            raise HTTPException(status_code=503, detail="Notification service not available")
+
+        result = await monitor.notification_service.test_channel(channel_id)
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to test notification channel: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==================== Event Log Routes ====================
+
+class EventLogFilter(BaseModel):
+    """Request model for filtering events"""
+    category: Optional[str] = None
+    event_type: Optional[str] = None
+    severity: Optional[str] = None
+    host_id: Optional[str] = None
+    container_id: Optional[str] = None
+    container_name: Optional[str] = None
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    correlation_id: Optional[str] = None
+    search: Optional[str] = None
+    limit: int = 100
+    offset: int = 0
+
+@app.get("/api/events")
+async def get_events(category: Optional[str] = None,
+                    event_type: Optional[str] = None,
+                    severity: Optional[str] = None,
+                    host_id: Optional[str] = None,
+                    container_id: Optional[str] = None,
+                    container_name: Optional[str] = None,
+                    start_date: Optional[str] = None,
+                    end_date: Optional[str] = None,
+                    correlation_id: Optional[str] = None,
+                    search: Optional[str] = None,
+                    limit: int = 100,
+                    offset: int = 0):
+    """Get events with filtering and pagination"""
+    try:
+        # Parse dates
+        parsed_start_date = None
+        parsed_end_date = None
+
+        if start_date:
+            try:
+                parsed_start_date = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid start_date format")
+
+        if end_date:
+            try:
+                parsed_end_date = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid end_date format")
+
+        events, total_count = monitor.db.get_events(
+            category=category,
+            event_type=event_type,
+            severity=severity,
+            host_id=host_id,
+            container_id=container_id,
+            container_name=container_name,
+            start_date=parsed_start_date,
+            end_date=parsed_end_date,
+            correlation_id=correlation_id,
+            search=search,
+            limit=limit,
+            offset=offset
+        )
+
+        return {
+            "events": [{
+                "id": event.id,
+                "correlation_id": event.correlation_id,
+                "category": event.category,
+                "event_type": event.event_type,
+                "severity": event.severity,
+                "host_id": event.host_id,
+                "host_name": event.host_name,
+                "container_id": event.container_id,
+                "container_name": event.container_name,
+                "title": event.title,
+                "message": event.message,
+                "old_state": event.old_state,
+                "new_state": event.new_state,
+                "triggered_by": event.triggered_by,
+                "details": event.details,
+                "duration_ms": event.duration_ms,
+                "timestamp": event.timestamp.isoformat()
+            } for event in events],
+            "pagination": {
+                "total": total_count,
+                "limit": limit,
+                "offset": offset,
+                "has_more": (offset + limit) < total_count
+            }
+        }
+    except Exception as e:
+        logger.error(f"Failed to get events: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/events/{event_id}")
+async def get_event(event_id: int):
+    """Get a specific event by ID"""
+    try:
+        event = monitor.db.get_event_by_id(event_id)
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+
+        return {
+            "id": event.id,
+            "correlation_id": event.correlation_id,
+            "category": event.category,
+            "event_type": event.event_type,
+            "severity": event.severity,
+            "host_id": event.host_id,
+            "host_name": event.host_name,
+            "container_id": event.container_id,
+            "container_name": event.container_name,
+            "title": event.title,
+            "message": event.message,
+            "old_state": event.old_state,
+            "new_state": event.new_state,
+            "triggered_by": event.triggered_by,
+            "details": event.details,
+            "duration_ms": event.duration_ms,
+            "timestamp": event.timestamp.isoformat()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get event {event_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/events/correlation/{correlation_id}")
+async def get_events_by_correlation(correlation_id: str):
+    """Get all events with the same correlation ID"""
+    try:
+        events = monitor.db.get_events_by_correlation(correlation_id)
+
+        return {
+            "correlation_id": correlation_id,
+            "events": [{
+                "id": event.id,
+                "correlation_id": event.correlation_id,
+                "category": event.category,
+                "event_type": event.event_type,
+                "severity": event.severity,
+                "host_id": event.host_id,
+                "host_name": event.host_name,
+                "container_id": event.container_id,
+                "container_name": event.container_name,
+                "title": event.title,
+                "message": event.message,
+                "old_state": event.old_state,
+                "new_state": event.new_state,
+                "triggered_by": event.triggered_by,
+                "details": event.details,
+                "duration_ms": event.duration_ms,
+                "timestamp": event.timestamp.isoformat()
+            } for event in events]
+        }
+    except Exception as e:
+        logger.error(f"Failed to get events by correlation {correlation_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/events/statistics")
+async def get_event_statistics(start_date: Optional[str] = None,
+                             end_date: Optional[str] = None):
+    """Get event statistics for dashboard"""
+    try:
+        # Parse dates
+        parsed_start_date = None
+        parsed_end_date = None
+
+        if start_date:
+            try:
+                parsed_start_date = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid start_date format")
+
+        if end_date:
+            try:
+                parsed_end_date = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid end_date format")
+
+        stats = monitor.db.get_event_statistics(
+            start_date=parsed_start_date,
+            end_date=parsed_end_date
+        )
+
+        return stats
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get event statistics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/events/container/{container_id}")
+async def get_container_events(container_id: str, limit: int = 50):
+    """Get events for a specific container"""
+    try:
+        events, total_count = monitor.db.get_events(
+            container_id=container_id,
+            limit=limit,
+            offset=0
+        )
+
+        return {
+            "container_id": container_id,
+            "events": [{
+                "id": event.id,
+                "correlation_id": event.correlation_id,
+                "category": event.category,
+                "event_type": event.event_type,
+                "severity": event.severity,
+                "host_id": event.host_id,
+                "host_name": event.host_name,
+                "container_id": event.container_id,
+                "container_name": event.container_name,
+                "title": event.title,
+                "message": event.message,
+                "old_state": event.old_state,
+                "new_state": event.new_state,
+                "triggered_by": event.triggered_by,
+                "details": event.details,
+                "duration_ms": event.duration_ms,
+                "timestamp": event.timestamp.isoformat()
+            } for event in events],
+            "total_count": total_count
+        }
+    except Exception as e:
+        logger.error(f"Failed to get events for container {container_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/events/host/{host_id}")
+async def get_host_events(host_id: str, limit: int = 50):
+    """Get events for a specific host"""
+    try:
+        events, total_count = monitor.db.get_events(
+            host_id=host_id,
+            limit=limit,
+            offset=0
+        )
+
+        return {
+            "host_id": host_id,
+            "events": [{
+                "id": event.id,
+                "correlation_id": event.correlation_id,
+                "category": event.category,
+                "event_type": event.event_type,
+                "severity": event.severity,
+                "host_id": event.host_id,
+                "host_name": event.host_name,
+                "container_id": event.container_id,
+                "container_name": event.container_name,
+                "title": event.title,
+                "message": event.message,
+                "old_state": event.old_state,
+                "new_state": event.new_state,
+                "triggered_by": event.triggered_by,
+                "details": event.details,
+                "duration_ms": event.duration_ms,
+                "timestamp": event.timestamp.isoformat()
+            } for event in events],
+            "total_count": total_count
+        }
+    except Exception as e:
+        logger.error(f"Failed to get events for host {host_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/events/cleanup")
+async def cleanup_old_events(days: int = 30):
+    """Clean up old events"""
+    try:
+        if days < 1:
+            raise HTTPException(status_code=400, detail="Days must be at least 1")
+
+        deleted_count = monitor.db.cleanup_old_events(days)
+
+        monitor.event_logger.log_system_event(
+            "Event Cleanup Completed",
+            f"Cleaned up {deleted_count} events older than {days} days",
+            EventSeverity.INFO,
+            EventType.STARTUP
+        )
+
+        return {
+            "status": "success",
+            "message": f"Cleaned up {deleted_count} events older than {days} days",
+            "deleted_count": deleted_count
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to cleanup events: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for real-time updates"""
     await monitor.manager.connect(websocket)
-    
+    await monitor.realtime.subscribe_to_events(websocket)
+
     # Send initial state
     initial_state = {
         "type": "initial_state",
         "data": {
             "hosts": [h.dict() for h in monitor.hosts.values()],
             "containers": [c.dict() for c in monitor.get_containers()],
-            "settings": monitor.settings.dict(),
+            "settings": monitor.settings.dict() if hasattr(monitor.settings, 'dict') else {},
             "alerts": [r.dict() for r in monitor.alert_rules]
         }
     }
     await websocket.send_json(initial_state)
-    
+
     try:
         while True:
-            # Keep connection alive
-            data = await websocket.receive_text()
-            # Process any incoming messages if needed
+            # Keep connection alive and handle incoming messages
+            message = await websocket.receive_json()
+
+            # Handle different message types
+            if message.get("type") == "subscribe_stats":
+                container_id = message.get("container_id")
+                if container_id:
+                    await monitor.realtime.subscribe_to_stats(websocket, container_id)
+                    # Find the host and start monitoring
+                    for host_id, client in monitor.clients.items():
+                        try:
+                            client.containers.get(container_id)
+                            await monitor.realtime.start_container_stats_stream(
+                                client, container_id, interval=2
+                            )
+                            break
+                        except:
+                            continue
+
+            elif message.get("type") == "unsubscribe_stats":
+                container_id = message.get("container_id")
+                if container_id:
+                    await monitor.realtime.unsubscribe_from_stats(websocket, container_id)
+
+            elif message.get("type") == "ping":
+                await websocket.send_json({"type": "pong"})
+
     except WebSocketDisconnect:
         monitor.manager.disconnect(websocket)
+        await monitor.realtime.unsubscribe_from_events(websocket)
+        # Unsubscribe from all stats
+        for container_id in list(monitor.realtime.stats_subscribers.keys()):
+            await monitor.realtime.unsubscribe_from_stats(websocket, container_id)
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")

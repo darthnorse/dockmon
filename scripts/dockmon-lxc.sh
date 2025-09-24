@@ -440,28 +440,81 @@ apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
 
 # Install required packages
-echo "Installing nginx and git..."
-DEBIAN_FRONTEND=noninteractive apt-get install -y nginx git curl
+echo "Installing nginx, git, Python 3, and required dependencies..."
+DEBIAN_FRONTEND=noninteractive apt-get install -y nginx git curl python3 python3-pip python3-venv supervisor
 
 # Clone DockMon repository
 echo "Cloning DockMon repository..."
 cd /opt
 git clone https://github.com/darthnorse/dockmon.git
 
+# Set up Python backend
+echo "Setting up DockMon backend..."
+cd /opt/dockmon/backend
+
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate
+
+# Install Python dependencies
+pip install --no-cache-dir -r requirements.txt
+
+# Create data directory
+mkdir -p /opt/dockmon/backend/data
+chown -R www-data:www-data /opt/dockmon/backend/data
+
 # Copy application to web root
-echo "Setting up DockMon..."
+echo "Setting up DockMon frontend..."
 cp /opt/dockmon/src/index.html /var/www/html/index.html
+
+# Update frontend to point to backend API (if needed)
+sed -i 's|http://localhost:8080|http://localhost:8080|g' /var/www/html/index.html
 
 # Configure nginx to start on boot
 systemctl enable nginx
 systemctl restart nginx
 
-# Create a simple systemd service for DockMon
-cat << 'SERVICE' > /etc/systemd/system/dockmon.service
+# Create systemd service for DockMon backend
+cat << 'BACKEND_SERVICE' > /etc/systemd/system/dockmon-backend.service
+[Unit]
+Description=DockMon Backend API
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/dockmon/backend
+Environment=PYTHONPATH=/opt/dockmon/backend
+ExecStart=/opt/dockmon/backend/venv/bin/python main.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+BACKEND_SERVICE
+
+# Create supervisor configuration as backup process manager
+cat << 'SUPERVISOR_CONF' > /etc/supervisor/conf.d/dockmon-backend.conf
+[program:dockmon-backend]
+command=/opt/dockmon/backend/venv/bin/python main.py
+directory=/opt/dockmon/backend
+user=www-data
+autostart=true
+autorestart=true
+stderr_logfile=/var/log/dockmon-backend.err.log
+stdout_logfile=/var/log/dockmon-backend.out.log
+environment=PYTHONPATH="/opt/dockmon/backend"
+SUPERVISOR_CONF
+
+# Create a simple frontend systemd service
+cat << 'FRONTEND_SERVICE' > /etc/systemd/system/dockmon-frontend.service
 [Unit]
 Description=DockMon Web Interface
-After=network.target nginx.service
+After=network.target nginx.service dockmon-backend.service
 Requires=nginx.service
+Wants=dockmon-backend.service
 
 [Service]
 Type=oneshot
@@ -470,10 +523,16 @@ RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target
-SERVICE
+FRONTEND_SERVICE
 
 systemctl daemon-reload
-systemctl enable dockmon.service
+systemctl enable dockmon-backend.service
+systemctl enable dockmon-frontend.service
+systemctl start dockmon-backend.service
+
+# Start supervisor as backup
+systemctl enable supervisor
+systemctl start supervisor
 
 # Create update script
 echo "Creating update script..."
@@ -727,10 +786,12 @@ echo "Console:   pct console $CONTAINER_ID"
 echo "Remove:    pct destroy $CONTAINER_ID"
 echo ""
 echo -e "${YELLOW}Notes:${NC}"
-echo "• Default nginx serves on port 80"
+echo "• Frontend (nginx) serves on port 80"
+echo "• Backend API runs on port 8080"
 echo "• Root password: (the password you set)"
-echo "• To update DockMon, run inside container:"
-echo "    cd /opt/dockmon && git pull"
-echo "    cp src/index.html /var/www/html/index.html"
+echo "• Services: dockmon-backend, dockmon-frontend, nginx, supervisor"
+echo "• To update DockMon, run inside container: update"
+echo "• Backend logs: journalctl -u dockmon-backend -f"
+echo "• Supervisor logs: tail -f /var/log/dockmon-backend.out.log"
 echo ""
 echo -e "${GREEN}Enjoy DockMon!${NC} 🐳"

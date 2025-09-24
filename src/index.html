@@ -1192,7 +1192,6 @@
                     <a class="nav-item active" onclick="switchPage('dashboard')">
                         <span class="nav-icon">📊</span>
                         <span>Dashboard</span>
-                        <span class="nav-badge" id="navContainerCount">0</span>
                     </a>
                     <a class="nav-item" onclick="switchPage('hosts')">
                         <span class="nav-icon">🖥️</span>
@@ -1201,7 +1200,6 @@
                     <a class="nav-item" onclick="switchPage('alerts')">
                         <span class="nav-icon">⚡</span>
                         <span>Alert Rules</span>
-                        <span class="nav-badge" id="navAlertCount">0</span>
                     </a>
                 </div>
                 <div class="nav-section">
@@ -1252,7 +1250,7 @@
                     <!-- Dashboard Actions -->
                     <div style="margin-bottom: var(--spacing-lg); display: flex; gap: var(--spacing-md);">
                         <button class="btn btn-secondary" onclick="toggleDashboardLock()" id="dashboardLockBtn">
-                            <span id="lockBtnIcon">🔓</span> <span id="lockBtnText">Lock Dashboard</span>
+                            <span id="lockBtnIcon">🔓</span> <span id="lockBtnText">Lock Layout</span>
                         </button>
                         <button class="btn btn-secondary" onclick="resetDashboardLayout()">
                             🔄 Reset Layout
@@ -2058,11 +2056,7 @@
         }
 
         function updateNavBadges() {
-            const navContainerCountEl = document.getElementById('navContainerCount');
-            const navAlertCountEl = document.getElementById('navAlertCount');
-
-            if (navContainerCountEl) navContainerCountEl.textContent = containers.length;
-            if (navAlertCountEl) navAlertCountEl.textContent = alertRules.length;
+            // Navigation badges removed - stats are shown in dashboard widget instead
         }
 
         // Helper functions
@@ -3182,14 +3176,14 @@
 
             if (dashboardLocked) {
                 icon.textContent = '🔒';
-                text.textContent = 'Unlock Dashboard';
+                text.textContent = 'Unlock Layout';
                 document.querySelectorAll('.lock-btn').forEach(btn => {
                     btn.textContent = '🔒';
                     btn.classList.add('locked');
                 });
             } else {
                 icon.textContent = '🔓';
-                text.textContent = 'Lock Dashboard';
+                text.textContent = 'Lock Layout';
                 document.querySelectorAll('.lock-btn').forEach(btn => {
                     btn.textContent = '🔓';
                     btn.classList.remove('locked');

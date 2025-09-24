@@ -575,6 +575,7 @@ chown -R www-data:www-data /opt/dockmon/backend/data
 # Copy application to web root
 echo "Setting up DockMon frontend..."
 cp /opt/dockmon/src/index.html /var/www/html/index.html
+cp -r /opt/dockmon/images /var/www/html/
 
 # Update frontend to point to backend API (if needed)
 sed -i 's|http://localhost:8080|http://localhost:8080|g' /var/www/html/index.html
@@ -795,6 +796,7 @@ fi
 # Update the web application
 print_info "Deploying updated application..."
 cp -f /opt/dockmon/src/index.html /var/www/html/index.html
+cp -rf /opt/dockmon/images /var/www/html/
 
 if [ \$? -eq 0 ]; then
     print_success "Application deployed successfully!"

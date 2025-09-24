@@ -141,6 +141,7 @@ supervisorctl stop dockmon-backend 2>/dev/null || true
 # Update the web application
 print_info "Deploying updated application..."
 cp -f /opt/dockmon/src/index.html /var/www/html/index.html
+cp -rf /opt/dockmon/images /var/www/html/
 
 if [ $? -eq 0 ]; then
     print_success "Frontend deployed successfully!"

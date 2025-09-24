@@ -212,6 +212,95 @@ sudo systemctl start nginx supervisor
    - Go to Settings → Alert Rules
    - Define which containers trigger notifications
 
+### 🐳 Docker Remote Access Configuration
+
+To monitor remote Docker hosts, you need to configure the Docker daemon to accept remote connections.
+
+#### Enable Remote Access on Target Host
+
+By default, Docker only listens on a Unix socket and doesn't accept remote connections. Follow these steps on each remote Docker host you want to monitor:
+
+**Method 1: Using systemd override (Recommended)**
+
+1. Create a systemd override file:
+```bash
+sudo systemctl edit docker
+```
+
+2. Add the following content:
+```ini
+[Service]
+ExecStart=
+ExecStart=/usr/bin/dockerd -H unix:///var/run/docker.sock -H tcp://0.0.0.0:2376
+```
+
+3. Restart Docker:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart docker
+```
+
+4. Verify Docker is listening on port 2376:
+```bash
+ss -tlnp | grep docker
+```
+
+**Method 2: Using daemon.json (Alternative)**
+
+1. Create or edit `/etc/docker/daemon.json`:
+```bash
+sudo nano /etc/docker/daemon.json
+```
+
+2. Add the following content:
+```json
+{
+  "hosts": ["unix:///var/run/docker.sock", "tcp://0.0.0.0:2376"]
+}
+```
+
+3. Restart Docker:
+```bash
+sudo systemctl restart docker
+```
+
+**Note:** If you get conflicts with systemd socket activation, use Method 1 instead.
+
+#### Docker Host Connection Formats
+
+When adding hosts in DockMon, use these formats:
+
+- **Local Docker**: `unix:///var/run/docker.sock`
+- **Remote Docker (TCP)**: `tcp://192.168.1.100:2376`
+- **Remote Docker (custom port)**: `tcp://192.168.1.100:2375`
+
+#### Security Considerations
+
+**⚠️ Important:** The above configuration opens Docker API to all network interfaces without authentication. For production environments, consider:
+
+- **TLS Authentication**: Configure Docker with TLS certificates
+- **Firewall Rules**: Restrict access to specific IP addresses
+- **VPN Access**: Use VPN for remote Docker management
+- **Bind to Specific IP**: Replace `0.0.0.0` with specific network interface
+
+**Example with IP binding:**
+```ini
+ExecStart=/usr/bin/dockerd -H unix:///var/run/docker.sock -H tcp://192.168.1.100:2376
+```
+
+#### Troubleshooting
+
+**Connection Refused Error:**
+```
+Failed to establish a new connection: [Errno 111] Connection refused
+```
+- Verify Docker daemon is listening: `ss -tlnp | grep docker`
+- Check firewall settings: `sudo ufw status` or `iptables -L`
+- Test connectivity: `telnet <host-ip> 2376`
+
+**Systemd Conflicts:**
+If you get systemd socket activation conflicts, always use Method 1 (systemd override) instead of daemon.json.
+
 ### 📡 Notification Channels Setup
 
 #### Discord

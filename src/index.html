@@ -2020,16 +2020,12 @@
 
         function refreshContainerModalIfOpen() {
             const containerModal = document.getElementById('containerModal');
-            if (containerModal && containerModal.classList.contains('active')) {
-                // Find which container is currently displayed
-                const currentModalTitle = document.querySelector('#containerModal .modal-title').textContent;
-                const containerName = currentModalTitle.replace('Container Details - ', '');
-
-                // Find the updated container data
-                const updatedContainer = containers.find(c => c.name === containerName);
+            if (containerModal && containerModal.classList.contains('active') && window.currentContainer) {
+                // Find the updated container data using the stored container ID
+                const updatedContainer = containers.find(c => c.short_id === window.currentContainer.short_id);
                 if (updatedContainer) {
                     // Re-populate the modal with updated data
-                    showContainerModal(updatedContainer);
+                    showContainerDetails(updatedContainer.short_id);
                 }
             }
         }
@@ -2337,7 +2333,7 @@
                 closeModal('notificationModal');
 
                 // Refresh notification channels for alert creation
-                await loadNotificationChannels();
+                await populateNotificationChannels();
 
             } catch (error) {
                 console.error('Error saving notification settings:', error);

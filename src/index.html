@@ -1196,16 +1196,13 @@
                 </div>
                 <div class="form-group">
                     <label class="form-label">Alert Channels</label>
-                    <div class="checkbox-group">
-                        <label class="checkbox-item">
-                            <input type="checkbox"> Telegram
-                        </label>
-                        <label class="checkbox-item">
-                            <input type="checkbox"> Discord
-                        </label>
-                        <label class="checkbox-item">
-                            <input type="checkbox"> Pushover
-                        </label>
+                    <div id="notificationChannelsSection">
+                        <p style="color: var(--text-tertiary); font-size: 14px; margin-bottom: 15px;">
+                            Configure notification channels first in Settings to enable alerts.
+                        </p>
+                        <button type="button" class="btn btn-secondary" onclick="openNotificationSettings()">
+                            Configure Channels
+                        </button>
                     </div>
                 </div>
                 <button type="submit" class="btn btn-primary" style="width: 100%;">
@@ -1630,7 +1627,7 @@
                                  onclick="event.stopPropagation()">
                                 <span>🔄 Auto</span>
                                 <div class="toggle-switch ${container.auto_restart ? 'active' : ''}" 
-                                     onclick="toggleAutoRestart('${host.id}', '${container.short_id}', event)"></div>
+                                     onclick="toggleAutoRestart('${container.host_id}', '${container.short_id}', event)"></div>
                             </div>
                             <span class="container-state ${getStateClass(container.state)}">
                                 ${container.state}
@@ -1786,7 +1783,56 @@
                 }
             });
 
+            // Populate notification channels
+            populateNotificationChannels();
+
             document.getElementById('alertRuleModal').classList.add('active');
+        }
+
+        async function populateNotificationChannels() {
+            try {
+                const response = await fetch(`${API_BASE}/api/notifications/channels`);
+                const channels = await response.json();
+
+                const channelsSection = document.getElementById('notificationChannelsSection');
+
+                if (channels && channels.length > 0) {
+                    // Show available channels as checkboxes
+                    let channelsHtml = '<div class="checkbox-group">';
+                    channels.forEach(channel => {
+                        channelsHtml += `
+                            <label class="checkbox-item">
+                                <input type="checkbox" name="channels" value="${channel.id}">
+                                ${channel.name} (${channel.type})
+                            </label>
+                        `;
+                    });
+                    channelsHtml += '</div>';
+
+                    channelsSection.innerHTML = channelsHtml;
+                } else {
+                    // No channels configured yet
+                    channelsSection.innerHTML = `
+                        <p style="color: var(--text-tertiary); font-size: 14px; margin-bottom: 15px;">
+                            No notification channels configured yet. Set up Discord, Telegram, or Pushover to receive alerts.
+                        </p>
+                        <button type="button" class="btn btn-secondary" onclick="openNotificationSettings()">
+                            Configure Channels
+                        </button>
+                    `;
+                }
+            } catch (error) {
+                console.error('Error fetching notification channels:', error);
+                const channelsSection = document.getElementById('notificationChannelsSection');
+                channelsSection.innerHTML = `
+                    <p style="color: var(--text-tertiary); font-size: 14px; margin-bottom: 15px;">
+                        Configure notification channels first in Settings to enable alerts.
+                    </p>
+                    <button type="button" class="btn btn-secondary" onclick="openNotificationSettings()">
+                        Configure Channels
+                    </button>
+                `;
+            }
         }
 
         function openNotificationSettings() {
@@ -1830,32 +1876,45 @@
 
         async function toggleAutoRestart(hostId, containerId, event) {
             event.stopPropagation();
-            
-            // Find the container to get current state
-            const container = containers.find(c => c.short_id === containerId);
-            if (!container) return;
-            
+
+            // Find the container to get current state (handle both short_id and full id)
+            const container = containers.find(c => c.short_id === containerId || c.id === containerId);
+            if (!container) {
+                console.error('Container not found:', containerId);
+                return;
+            }
+
             const newState = !container.auto_restart;
-            
+
             try {
-                const response = await fetch(`${API_BASE}/api/containers/${containerId}/auto-restart?enabled=${newState}`, {
-                    method: 'POST'
+                const response = await fetch(`${API_BASE}/api/containers/${container.short_id}/auto-restart`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        host_id: hostId,
+                        container_name: container.name,
+                        enabled: newState
+                    })
                 });
-                
+
                 if (response.ok) {
                     // Update local state
                     container.auto_restart = newState;
                     container.restart_attempts = 0;
-                    
+
                     renderHosts();
-                    
+
                     const status = newState ? 'enabled' : 'disabled';
-                    showToast(`Auto-restart ${status} for ${container.name}`);
-                    
+                    showToast(`🔄 Auto-restart ${status} for ${container.name}`);
+
                     if (newState && container.state === 'exited') {
                         // Trigger restart attempt
                         restartContainer(hostId, container.id);
                     }
+                } else {
+                    showToast('❌ Failed to toggle auto-restart');
                 }
             } catch (error) {
                 console.error('Error toggling auto-restart:', error);
@@ -1910,10 +1969,12 @@
             
             // Get selected states
             event.target.querySelectorAll('input[type="checkbox"]:checked').forEach(cb => {
-                if (cb.parentElement.textContent.includes('→')) {
-                    states.push(cb.parentElement.textContent.trim());
+                if (cb.name === 'channels') {
+                    // This is a notification channel
+                    channels.push(parseInt(cb.value));
                 } else {
-                    channels.push(cb.parentElement.textContent.trim().toLowerCase());
+                    // This is a state change
+                    states.push(cb.parentElement.textContent.trim());
                 }
             });
             

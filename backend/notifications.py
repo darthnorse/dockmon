@@ -124,13 +124,22 @@ class NotificationService:
         cooldown_key = f"{rule.id}:{event.host_id}:{event.container_id}"
 
         if cooldown_key not in self._last_alerts:
+            logger.info(f"Alert allowed: No previous alert for key {cooldown_key}")
             return True
 
         # Check cooldown period
         time_since_last = datetime.now() - self._last_alerts[cooldown_key]
         cooldown_minutes = rule.cooldown_minutes or 15
+        cooldown_seconds = cooldown_minutes * 60
 
-        return time_since_last.total_seconds() >= (cooldown_minutes * 60)
+        logger.info(f"Cooldown check: {time_since_last.total_seconds():.1f}s since last alert, cooldown is {cooldown_seconds}s")
+
+        if time_since_last.total_seconds() >= cooldown_seconds:
+            logger.info(f"Alert allowed: Cooldown period exceeded")
+            return True
+        else:
+            logger.info(f"Alert blocked: Still in cooldown period ({cooldown_seconds - time_since_last.total_seconds():.1f}s remaining)")
+            return False
 
     async def _send_rule_notifications(self, rule: AlertRuleDB, event: AlertEvent) -> bool:
         """Send notifications for a specific rule"""

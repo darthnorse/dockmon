@@ -338,21 +338,30 @@
             height: 100%;
         }
 
-        /* Responsive adjustments */
-        .grid-stack-item[gs-w="12"] .stats-grid {
+        /* Responsive adjustments for 24-column grid */
+        .grid-stack-item[gs-w="24"] .stats-grid,
+        .grid-stack-item[gs-w="23"] .stats-grid,
+        .grid-stack-item[gs-w="22"] .stats-grid,
+        .grid-stack-item[gs-w="21"] .stats-grid,
+        .grid-stack-item[gs-w="20"] .stats-grid {
             grid-template-columns: repeat(4, 1fr);
         }
 
-        .grid-stack-item[gs-w="6"] .stats-grid {
+        .grid-stack-item[gs-w="19"] .stats-grid,
+        .grid-stack-item[gs-w="18"] .stats-grid,
+        .grid-stack-item[gs-w="17"] .stats-grid,
+        .grid-stack-item[gs-w="16"] .stats-grid,
+        .grid-stack-item[gs-w="15"] .stats-grid,
+        .grid-stack-item[gs-w="14"] .stats-grid,
+        .grid-stack-item[gs-w="13"] .stats-grid,
+        .grid-stack-item[gs-w="12"] .stats-grid {
             grid-template-columns: repeat(2, 1fr);
         }
 
-        .grid-stack-item[gs-w="4"] .stats-grid {
-            grid-template-columns: repeat(2, 1fr);
-        }
-
-        .grid-stack-item[gs-w="3"] .stats-grid,
-        .grid-stack-item[gs-w="2"] .stats-grid {
+        .grid-stack-item[gs-w="11"] .stats-grid,
+        .grid-stack-item[gs-w="10"] .stats-grid,
+        .grid-stack-item[gs-w="9"] .stats-grid,
+        .grid-stack-item[gs-w="8"] .stats-grid {
             grid-template-columns: 1fr;
         }
 
@@ -363,20 +372,31 @@
             gap: var(--spacing-md);
         }
 
-        .grid-stack-item[gs-w="4"] .widget-hosts .hosts-grid,
-        .grid-stack-item[gs-w="3"] .widget-hosts .hosts-grid {
-            grid-template-columns: 1fr;
-        }
-
+        .grid-stack-item[gs-w="8"] .widget-hosts .hosts-grid,
+        .grid-stack-item[gs-w="7"] .widget-hosts .hosts-grid,
         .grid-stack-item[gs-w="6"] .widget-hosts .hosts-grid {
             grid-template-columns: 1fr;
         }
 
-        .grid-stack-item[gs-w="8"] .widget-hosts .hosts-grid,
-        .grid-stack-item[gs-w="9"] .widget-hosts .hosts-grid,
-        .grid-stack-item[gs-w="10"] .widget-hosts .hosts-grid,
+        .grid-stack-item[gs-w="12"] .widget-hosts .hosts-grid,
         .grid-stack-item[gs-w="11"] .widget-hosts .hosts-grid,
-        .grid-stack-item[gs-w="12"] .widget-hosts .hosts-grid {
+        .grid-stack-item[gs-w="10"] .widget-hosts .hosts-grid,
+        .grid-stack-item[gs-w="9"] .widget-hosts .hosts-grid {
+            grid-template-columns: 1fr;
+        }
+
+        .grid-stack-item[gs-w="24"] .widget-hosts .hosts-grid,
+        .grid-stack-item[gs-w="23"] .widget-hosts .hosts-grid,
+        .grid-stack-item[gs-w="22"] .widget-hosts .hosts-grid,
+        .grid-stack-item[gs-w="21"] .widget-hosts .hosts-grid,
+        .grid-stack-item[gs-w="20"] .widget-hosts .hosts-grid,
+        .grid-stack-item[gs-w="19"] .widget-hosts .hosts-grid,
+        .grid-stack-item[gs-w="18"] .widget-hosts .hosts-grid,
+        .grid-stack-item[gs-w="17"] .widget-hosts .hosts-grid,
+        .grid-stack-item[gs-w="16"] .widget-hosts .hosts-grid,
+        .grid-stack-item[gs-w="15"] .widget-hosts .hosts-grid,
+        .grid-stack-item[gs-w="14"] .widget-hosts .hosts-grid,
+        .grid-stack-item[gs-w="13"] .widget-hosts .hosts-grid {
             grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
         }
 
@@ -2961,12 +2981,12 @@
                 return;
             }
 
-            // Initialize GridStack with smaller cells for more flexibility
+            // Initialize GridStack with very flexible cells
             try {
                 grid = GridStack.init({
-                    column: 12,
-                    cellHeight: 50,  // Reduced from 80 to 50 for more flexibility
-                    margin: 6,       // Reduced from 10 to 6 for tighter spacing
+                    column: 24,      // Double the columns for more flexibility
+                    cellHeight: 30,  // Even smaller cells
+                    margin: 3,       // Very tight margins
                     animate: true,
                     float: true,
                     draggable: {
@@ -3001,16 +3021,16 @@
         }
 
         function createDefaultDashboard() {
-            // Stats Widget - made taller to show labels properly
+            // Stats Widget - adjusted for 24-column grid
             const statsWidget = createWidget('stats', 'Statistics', '📊', {
-                x: 0, y: 0, w: 12, h: 3,
-                minW: 4, minH: 3, maxH: 4
+                x: 0, y: 0, w: 24, h: 4,
+                minW: 8, minH: 4, maxH: 6
             });
 
-            // Hosts Overview Widget - smaller minimum size
+            // Hosts Overview Widget - adjusted for 24-column grid
             const hostsWidget = createWidget('hosts', 'Hosts Overview', '🖥️', {
-                x: 0, y: 3, w: 12, h: 8,
-                minW: 3, minH: 2  // Reduced minimum size
+                x: 0, y: 4, w: 24, h: 12,
+                minW: 6, minH: 4
             });
 
             // Use setTimeout to ensure widgets are fully created before rendering
@@ -3050,30 +3070,31 @@
         }
 
         function renderDashboardWidgets() {
+            console.log('Rendering dashboard widgets - hosts:', hosts.length, 'containers:', containers.length);
 
-            // Render stats widget
+            // Render stats widget - fix: target the widget body, not the whole widget
             const statsWidget = document.getElementById('widget-stats');
             if (statsWidget) {
                 statsWidget.innerHTML = `
                     <div class="stats-grid">
                         <div class="stat-card">
                             <div class="stat-icon">🖥️</div>
-                            <div class="stat-value" id="totalHosts">${hosts.length}</div>
+                            <div class="stat-value">${hosts.length}</div>
                             <div class="stat-label">Total Hosts</div>
                         </div>
                         <div class="stat-card">
                             <div class="stat-icon">📦</div>
-                            <div class="stat-value" id="totalContainers">${containers.length}</div>
+                            <div class="stat-value">${containers.length}</div>
                             <div class="stat-label">Total Containers</div>
                         </div>
                         <div class="stat-card">
                             <div class="stat-icon">✅</div>
-                            <div class="stat-value" id="runningContainers">${containers.filter(c => c.state === 'running').length}</div>
+                            <div class="stat-value">${containers.filter(c => c.state === 'running').length}</div>
                             <div class="stat-label">Running</div>
                         </div>
                         <div class="stat-card">
                             <div class="stat-icon">⚡</div>
-                            <div class="stat-value" id="alertRules">${alertRules.length}</div>
+                            <div class="stat-value">${alertRules.length}</div>
                             <div class="stat-label">Alert Rules</div>
                         </div>
                     </div>
@@ -3230,8 +3251,8 @@
 
         function getWidgetConfig(id) {
             const configs = {
-                'stats': { id: 'stats', title: 'Statistics', icon: '📊', minW: 4, minH: 3, maxH: 4 },
-                'hosts': { id: 'hosts', title: 'Hosts Overview', icon: '🖥️', minW: 3, minH: 2 }
+                'stats': { id: 'stats', title: 'Statistics', icon: '📊', minW: 8, minH: 4, maxH: 6 },
+                'hosts': { id: 'hosts', title: 'Hosts Overview', icon: '🖥️', minW: 6, minH: 4 }
             };
             return configs[id];
         }

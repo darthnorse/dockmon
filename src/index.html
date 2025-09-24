@@ -359,16 +359,36 @@
         /* Widget-specific styles */
         .widget-hosts .hosts-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
             gap: var(--spacing-md);
+        }
+
+        .grid-stack-item[gs-w="4"] .widget-hosts .hosts-grid,
+        .grid-stack-item[gs-w="3"] .widget-hosts .hosts-grid {
+            grid-template-columns: 1fr;
         }
 
         .grid-stack-item[gs-w="6"] .widget-hosts .hosts-grid {
             grid-template-columns: 1fr;
         }
 
+        .grid-stack-item[gs-w="8"] .widget-hosts .hosts-grid,
+        .grid-stack-item[gs-w="9"] .widget-hosts .hosts-grid,
+        .grid-stack-item[gs-w="10"] .widget-hosts .hosts-grid,
+        .grid-stack-item[gs-w="11"] .widget-hosts .hosts-grid,
         .grid-stack-item[gs-w="12"] .widget-hosts .hosts-grid {
-            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        }
+
+        /* Compact layout for smaller widgets */
+        .grid-stack-item[gs-h="3"] .widget-hosts .container-list {
+            max-height: 120px;
+            overflow-y: auto;
+        }
+
+        .grid-stack-item[gs-h="4"] .widget-hosts .container-list {
+            max-height: 160px;
+            overflow-y: auto;
         }
 
         /* Host card improvements */
@@ -2918,7 +2938,7 @@
             // Hosts Overview Widget
             const hostsWidget = createWidget('hosts', 'Hosts Overview', '🖥️', {
                 x: 0, y: 2, w: 12, h: 6,
-                minW: 6, minH: 4
+                minW: 4, minH: 3
             });
 
             // Use setTimeout to ensure widgets are fully created before rendering
@@ -3005,46 +3025,45 @@
 
                 hosts.forEach(host => {
                     const hostContainers = (containersByHost[host.id] || []).sort((a, b) => a.name.localeCompare(b.name));
-                    const containersList = hostContainers.slice(0, 5).map(container => `
-                        <div class="container-item" style="display: flex; align-items: center; gap: 8px; padding: 8px 0;">
-                            <span class="status-indicator ${container.state}"></span>
-                            <span style="flex: 1; font-size: 13px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-                                ${container.name}
-                            </span>
-                            <span style="font-size: 11px; color: var(--text-tertiary);">
-                                ${container.state}
-                            </span>
+                    const maxContainersToShow = hostsWidget.closest('.grid-stack-item').getAttribute('gs-h') > 4 ? 8 : 4;
+                    const containersList = hostContainers.slice(0, maxContainersToShow).map(container => `
+                        <div class="container-item">
+                            <div class="container-info" onclick="showContainerDetails('${container.short_id}')">
+                                <div class="container-icon container-${container.state}">
+                                    ${getContainerIcon(container.state)}
+                                </div>
+                                <div class="container-details">
+                                    <div class="container-name">${container.name}</div>
+                                    <div class="container-id">${container.short_id}</div>
+                                </div>
+                            </div>
+                            <div class="container-actions">
+                                <div class="auto-restart-toggle ${container.auto_restart ? 'enabled' : ''}"
+                                     onclick="event.stopPropagation()">
+                                    <span>🔄</span>
+                                    <div class="toggle-switch ${container.auto_restart ? 'active' : ''}"
+                                         onclick="toggleAutoRestart('${container.host_id}', '${container.short_id}', event)"></div>
+                                </div>
+                                <span class="container-state ${getStateClass(container.state)}">
+                                    ${container.state}
+                                </span>
+                            </div>
                         </div>
                     `).join('');
 
-                    const moreCount = hostContainers.length > 5 ? hostContainers.length - 5 : 0;
+                    const moreCount = hostContainers.length > maxContainersToShow ? hostContainers.length - maxContainersToShow : 0;
 
                     hostsWidget.innerHTML += `
                         <div class="host-card">
-                            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
-                                <span class="status-indicator ${host.status}"></span>
-                                <div style="flex: 1;">
-                                    <h3 style="font-size: 16px; font-weight: 600; margin-bottom: 4px;">${host.name}</h3>
-                                    <p style="font-size: 12px; color: var(--text-tertiary);">${host.url}</p>
+                            <div class="host-header">
+                                <div class="host-name">
+                                    <span>🖥️</span> ${host.name}
                                 </div>
+                                <span class="host-status status-${host.status}">${host.status}</span>
                             </div>
-                            <div class="container-stats" style="display: flex; gap: 16px; margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px solid var(--border);">
-                                <div style="flex: 1;">
-                                    <div style="font-size: 20px; font-weight: 600; color: var(--primary);">${hostContainers.filter(c => c.state === 'running').length}</div>
-                                    <div style="font-size: 12px; color: var(--text-tertiary);">Running</div>
-                                </div>
-                                <div style="flex: 1;">
-                                    <div style="font-size: 20px; font-weight: 600; color: var(--text-secondary);">${hostContainers.filter(c => c.state !== 'running').length}</div>
-                                    <div style="font-size: 12px; color: var(--text-tertiary);">Stopped</div>
-                                </div>
-                                <div style="flex: 1;">
-                                    <div style="font-size: 20px; font-weight: 600; color: var(--text-primary);">${hostContainers.length}</div>
-                                    <div style="font-size: 12px; color: var(--text-tertiary);">Total</div>
-                                </div>
-                            </div>
-                            <div class="containers-list">
-                                ${containersList}
-                                ${moreCount > 0 ? `<div style="padding: 8px 0; font-size: 12px; color: var(--text-tertiary);">+${moreCount} more containers</div>` : ''}
+                            <div class="container-list">
+                                ${containersList || '<div style="padding: 12px; color: var(--text-tertiary); text-align: center;">No containers</div>'}
+                                ${moreCount > 0 ? `<div style="padding: 8px 12px; font-size: 12px; color: var(--text-tertiary); text-align: center; border-top: 1px solid var(--border);">+${moreCount} more containers</div>` : ''}
                             </div>
                         </div>
                     `;
@@ -3140,7 +3159,7 @@
         function getWidgetConfig(id) {
             const configs = {
                 'stats': { id: 'stats', title: 'Statistics', icon: '📊', minW: 4, minH: 2, maxH: 3 },
-                'hosts': { id: 'hosts', title: 'Hosts Overview', icon: '🖥️', minW: 6, minH: 4 }
+                'hosts': { id: 'hosts', title: 'Hosts Overview', icon: '🖥️', minW: 4, minH: 3 }
             };
             return configs[id];
         }

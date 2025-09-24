@@ -86,9 +86,16 @@ class GlobalSettings(BaseModel):
 class AlertRule(BaseModel):
     """Alert rule configuration"""
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    container: str
-    states: List[str]
-    channels: List[str]
+    name: str
+    host_id: Optional[str] = None
+    container_pattern: str
+    trigger_states: List[str]
+    notification_channels: List[int]
+    cooldown_minutes: int = 15
+    enabled: bool = True
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    last_triggered: Optional[datetime] = None
 
 class NotificationSettings(BaseModel):
     """Notification channel settings"""

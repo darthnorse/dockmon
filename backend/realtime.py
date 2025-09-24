@@ -14,6 +14,13 @@ from docker.models.containers import Container as DockerContainer
 
 logger = logging.getLogger(__name__)
 
+# Custom JSON encoder for datetime objects
+class DateTimeEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        return super().default(obj)
+
 @dataclass
 class ContainerStats:
     """Real-time container statistics"""
@@ -107,10 +114,10 @@ class RealtimeMonitor:
                 dead_sockets = []
                 for websocket in self.stats_subscribers.get(container_id, []):
                     try:
-                        await websocket.send_json({
+                        await websocket.send_text(json.dumps({
                             "type": "container_stats",
                             "data": asdict(stats)
-                        })
+                        }, cls=DateTimeEncoder))
                     except Exception as e:
                         logger.error(f"Error sending stats to websocket: {e}")
                         dead_sockets.append(websocket)
@@ -235,10 +242,10 @@ class RealtimeMonitor:
                 dead_sockets = []
                 for websocket in self.event_subscribers:
                     try:
-                        await websocket.send_json({
+                        await websocket.send_text(json.dumps({
                             "type": "docker_event",
                             "data": asdict(docker_event)
-                        })
+                        }, cls=DateTimeEncoder))
                     except Exception as e:
                         logger.error(f"Error sending event to websocket: {e}")
                         dead_sockets.append(websocket)
@@ -271,7 +278,7 @@ class RealtimeMonitor:
         dead_sockets = []
         for websocket in self.event_subscribers:
             try:
-                await websocket.send_json(message)
+                await websocket.send_text(json.dumps(message, cls=DateTimeEncoder))
             except Exception as e:
                 logger.error(f"Error broadcasting update: {e}")
                 dead_sockets.append(websocket)
@@ -335,7 +342,7 @@ class LiveUpdateManager:
         dead_sockets = []
         for websocket in self.subscribers:
             try:
-                await websocket.send_json(message)
+                await websocket.send_text(json.dumps(message, cls=DateTimeEncoder))
             except Exception as e:
                 logger.error(f"Error sending batch update: {e}")
                 dead_sockets.append(websocket)

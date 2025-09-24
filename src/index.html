@@ -1605,7 +1605,7 @@
                 const hostCard = document.createElement('div');
                 hostCard.className = 'host-card';
                 
-                const hostContainers = containersByHost[host.id] || [];
+                const hostContainers = (containersByHost[host.id] || []).sort((a, b) => a.name.localeCompare(b.name));
                 const containersList = hostContainers.map(container => `
                     <div class="container-item">
                         <div class="container-info" onclick="showContainerDetails('${container.short_id}')">

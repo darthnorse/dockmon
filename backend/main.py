@@ -163,7 +163,7 @@ class DockerMonitor:
         self.cleanup_task: Optional[asyncio.Task] = None  # Background cleanup task
         self._load_persistent_config()  # Load saved hosts and configs
         
-    def add_host(self, config: DockerHostConfig, existing_id: str = None) -> DockerHost:
+    def add_host(self, config: DockerHostConfig, existing_id: str = None, skip_db_insert: bool = False) -> DockerHost:
         """Add a new Docker host to monitor"""
         try:
             # Create Docker client
@@ -203,15 +203,16 @@ class DockerMonitor:
             self.clients[host.id] = client
             self.hosts[host.id] = host
 
-            # Save to database
-            db_host = self.db.add_host({
-                'id': host.id,
-                'name': config.name,
-                'url': config.url,
-                'tls_cert': config.tls_cert,
-                'tls_key': config.tls_key,
-                'tls_ca': config.tls_ca
-            })
+            # Save to database (unless skipped for updates)
+            if not skip_db_insert:
+                db_host = self.db.add_host({
+                    'id': host.id,
+                    'name': config.name,
+                    'url': config.url,
+                    'tls_cert': config.tls_cert,
+                    'tls_key': config.tls_key,
+                    'tls_ca': config.tls_ca
+                })
 
             # Start Docker event monitoring for this host
             asyncio.create_task(self.realtime.start_event_monitor(client, host.id))
@@ -276,76 +277,12 @@ class DockerMonitor:
             'tls_ca': config.tls_ca
         })
 
-        # Create new connection with updated config
+        # Use the existing add_host logic but skip database INSERT
         try:
-            # Set up TLS if certificates are provided
-            tls_config = None
-            if config.tls_cert and config.tls_key and config.tls_ca:
-                # Write temporary files for TLS configuration
-                import tempfile
-                import os
-
-                temp_dir = tempfile.mkdtemp()
-                cert_file = os.path.join(temp_dir, 'cert.pem')
-                key_file = os.path.join(temp_dir, 'key.pem')
-                ca_file = os.path.join(temp_dir, 'ca.pem')
-
-                with open(cert_file, 'w') as f:
-                    f.write(config.tls_cert)
-                with open(key_file, 'w') as f:
-                    f.write(config.tls_key)
-                with open(ca_file, 'w') as f:
-                    f.write(config.tls_ca)
-
-                tls_config = docker.tls.TLSConfig(
-                    client_cert=(cert_file, key_file),
-                    ca_cert=ca_file,
-                    verify=True
-                )
-                client = docker.DockerClient(
-                    base_url=config.url,
-                    tls=tls_config,
-                    timeout=self.settings.connection_timeout
-                )
-            else:
-                client = docker.DockerClient(
-                    base_url=config.url,
-                    timeout=self.settings.connection_timeout
-                )
-
-            # Test connection
-            client.ping()
-
-            # Validate TLS configuration for TCP connections
-            security_status = self._validate_host_security(config)
-
-            # Create host object with existing ID
-            host = DockerHost(
-                id=host_id,
-                name=config.name,
-                url=config.url,
-                status="online",
-                security_status=security_status
-            )
-
-            # Store client and host
-            self.clients[host.id] = client
-            self.hosts[host.id] = host
-
-            # Start Docker event monitoring for this host
-            asyncio.create_task(self.realtime.start_event_monitor(client, host.id))
-
-            # Log host update
-            self.event_logger.log_host_connection(
-                host_name=host.name,
-                host_id=host.id,
-                host_url=config.url,
-                connected=True
-            )
-
+            # Temporarily store the existing ID to prevent new ID generation
+            host = self.add_host(config, existing_id=host_id, skip_db_insert=True)
             logger.info(f"Updated host {host_id}: {host.name} ({host.url})")
             return host
-
         except Exception as e:
             logger.error(f"Failed to update host {host_id}: {e}")
             raise

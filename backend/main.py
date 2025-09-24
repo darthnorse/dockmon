@@ -34,6 +34,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Custom JSON encoder for datetime objects
+class DateTimeEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        return super().default(obj)
+
 # ==================== Data Models ====================
 
 class DockerHostConfig(BaseModel):
@@ -113,7 +120,7 @@ class ConnectionManager:
         dead_connections = []
         for connection in self.active_connections:
             try:
-                await connection.send_json(message)
+                await connection.send_text(json.dumps(message, cls=DateTimeEncoder))
             except Exception as e:
                 logger.error(f"Error sending message: {e}")
                 dead_connections.append(connection)
@@ -1298,7 +1305,7 @@ async def websocket_endpoint(websocket: WebSocket):
             "alerts": [r.dict() for r in monitor.alert_rules]
         }
     }
-    await websocket.send_json(initial_state)
+    await websocket.send_text(json.dumps(initial_state, cls=DateTimeEncoder))
 
     try:
         while True:
@@ -1327,7 +1334,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     await monitor.realtime.unsubscribe_from_stats(websocket, container_id)
 
             elif message.get("type") == "ping":
-                await websocket.send_json({"type": "pong"})
+                await websocket.send_text(json.dumps({"type": "pong"}, cls=DateTimeEncoder))
 
     except WebSocketDisconnect:
         monitor.manager.disconnect(websocket)

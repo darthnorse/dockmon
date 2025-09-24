@@ -673,8 +673,8 @@ app.add_middleware(
 
 @app.get("/")
 async def root():
-    """Serve the frontend"""
-    return FileResponse("static/index.html")
+    """Backend API root - frontend is served separately"""
+    return {"message": "DockMon Backend API", "version": "1.0.0", "docs": "/docs"}
 
 @app.get("/api/hosts")
 async def get_hosts():
@@ -1336,8 +1336,10 @@ async def websocket_endpoint(websocket: WebSocket):
         for container_id in list(monitor.realtime.stats_subscribers.keys()):
             await monitor.realtime.unsubscribe_from_stats(websocket, container_id)
 
-# Mount static files
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# Mount static files (optional - only if directory exists)
+import os
+if os.path.exists("static"):
+    app.mount("/static", StaticFiles(directory="static"), name="static")
 
 if __name__ == "__main__":
     uvicorn.run(

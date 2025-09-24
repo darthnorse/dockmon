@@ -7,6 +7,8 @@ Supports multiple Docker hosts with auto-restart and alerts
 import asyncio
 import json
 import logging
+import os
+import tempfile
 import time
 import uuid
 from datetime import datetime
@@ -257,14 +259,96 @@ class DockerMonitor:
 
     def update_host(self, host_id: str, config: DockerHostConfig):
         """Update an existing Docker host"""
-        # Remove the old host
-        self.remove_host(host_id)
+        try:
+            # Remove the existing host from memory first
+            if host_id in self.hosts:
+                # Close existing client
+                if host_id in self.clients:
+                    self.clients[host_id].close()
+                    del self.clients[host_id]
+                # Remove from memory
+                del self.hosts[host_id]
 
-        # Add the host back with the same ID and updated config
-        host = self.add_host(config, existing_id=host_id)
+            # Update database
+            updated_db_host = self.db.update_host(host_id, {
+                'name': config.name,
+                'url': config.url,
+                'tls_cert': config.tls_cert,
+                'tls_key': config.tls_key,
+                'tls_ca': config.tls_ca
+            })
 
-        logger.info(f"Updated host {host_id}: {host.name} ({host.url})")
-        return host
+            if not updated_db_host:
+                raise Exception(f"Host {host_id} not found in database")
+
+            # Create new Docker client with updated config
+            if config.url.startswith("unix://"):
+                client = docker.DockerClient(base_url=config.url)
+            else:
+                # For TCP connections
+                tls_config = None
+                if config.tls_cert and config.tls_key:
+                    # Write temporary files for TLS configuration
+                    temp_dir = tempfile.mkdtemp()
+                    cert_file = os.path.join(temp_dir, 'cert.pem')
+                    key_file = os.path.join(temp_dir, 'key.pem')
+                    ca_file = os.path.join(temp_dir, 'ca.pem') if config.tls_ca else None
+
+                    with open(cert_file, 'w') as f:
+                        f.write(config.tls_cert)
+                    with open(key_file, 'w') as f:
+                        f.write(config.tls_key)
+                    if ca_file and config.tls_ca:
+                        with open(ca_file, 'w') as f:
+                            f.write(config.tls_ca)
+
+                    tls_config = docker.tls.TLSConfig(
+                        client_cert=(cert_file, key_file),
+                        ca_cert=ca_file,
+                        verify=bool(config.tls_ca)
+                    )
+                client = docker.DockerClient(
+                    base_url=config.url,
+                    tls=tls_config,
+                    timeout=self.settings.connection_timeout
+                )
+
+            # Test connection
+            client.ping()
+
+            # Validate TLS configuration
+            security_status = self._validate_host_security(config)
+
+            # Create host object with existing ID
+            host = DockerHost(
+                id=host_id,
+                name=config.name,
+                url=config.url,
+                status="online",
+                security_status=security_status
+            )
+
+            # Store client and host
+            self.clients[host.id] = client
+            self.hosts[host.id] = host
+
+            # Start Docker event monitoring for this host
+            asyncio.create_task(self.realtime.start_event_monitor(client, host.id))
+
+            # Log host update
+            self.event_logger.log_host_connection(
+                host_name=host.name,
+                host_id=host.id,
+                host_url=config.url,
+                connected=True
+            )
+
+            logger.info(f"Updated host {host_id}: {host.name} ({host.url})")
+            return host
+
+        except Exception as e:
+            logger.error(f"Failed to update host {host_id}: {e}")
+            raise
 
     def get_containers(self, host_id: Optional[str] = None) -> List[Container]:
         """Get containers from one or all hosts"""

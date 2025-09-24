@@ -1892,7 +1892,7 @@
                     channels.forEach(channel => {
                         channelsHtml += `
                             <label class="checkbox-item">
-                                <input type="checkbox" name="channels" value="${channel.id}">
+                                <input type="checkbox" name="channels" value="${channel.id}" data-channel-id="${channel.id}">
                                 ${channel.name} (${channel.type})
                             </label>
                         `;

@@ -30,6 +30,13 @@ A comprehensive Docker container monitoring and management platform with real-ti
 - Support for TCP/TLS and Unix socket connections
 - Automatic host connection health monitoring
 
+### 📐 **Customizable Widget Dashboard**
+- **Drag-and-drop interface** for intuitive dashboard customization
+- **Resizable widgets** for personalized dashboard layouts
+- **Persistent layout** saves your custom arrangement
+- **Lock/unlock mode** to prevent accidental changes
+- **12-column responsive grid** adapts to any screen size
+
 ### 🔄 **Intelligent Auto-Restart System**
 - Per-container auto-restart configuration
 - Configurable retry attempts (0-10) and delays (5-300 seconds)

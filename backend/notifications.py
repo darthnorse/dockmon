@@ -36,6 +36,7 @@ class NotificationService:
         self.db = db
         self.http_client = httpx.AsyncClient(timeout=30.0)
         self._last_alerts: Dict[str, datetime] = {}  # For cooldown tracking
+        self._last_container_state: Dict[str, str] = {}  # Track last known state per container
 
     async def send_alert(self, event: AlertEvent) -> bool:
         """Process an alert event and send notifications"""
@@ -57,8 +58,9 @@ class NotificationService:
                 if await self._should_send_alert(rule, event):
                     if await self._send_rule_notifications(rule, event):
                         success_count += 1
-                        # Update last triggered time for this container + rule + state combination
-                        cooldown_key = f"{rule.id}:{event.host_id}:{event.container_id}:{event.new_state}"
+                        # Update last triggered time for this container + rule combination
+                        container_key = f"{event.host_id}:{event.container_id}"
+                        cooldown_key = f"{rule.id}:{container_key}"
                         self._last_alerts[cooldown_key] = datetime.now()
 
                         # Also update the rule's global last_triggered for backward compatibility
@@ -120,11 +122,27 @@ class NotificationService:
 
     async def _should_send_alert(self, rule: AlertRuleDB, event: AlertEvent) -> bool:
         """Check if alert should be sent based on cooldown per container"""
-        # Create unique key for this container + rule combination + state
-        cooldown_key = f"{rule.id}:{event.host_id}:{event.container_id}:{event.new_state}"
+        container_key = f"{event.host_id}:{event.container_id}"
+        cooldown_key = f"{rule.id}:{container_key}"
+
+        # Check if container recovered (went to a non-alert state) since last alert
+        last_known_state = self._last_container_state.get(container_key)
+
+        # Update the last known state
+        self._last_container_state[container_key] = event.new_state
+
+        # If container was in a "good" state (running) and now in "bad" state (exited),
+        # this is a new incident - reset cooldown
+        good_states = ['running', 'created']
+        if last_known_state in good_states and event.new_state in rule.trigger_states:
+            logger.info(f"Alert allowed: Container recovered ({last_known_state}) and failed again ({event.new_state})")
+            # Remove the cooldown for this container
+            if cooldown_key in self._last_alerts:
+                del self._last_alerts[cooldown_key]
+            return True
 
         if cooldown_key not in self._last_alerts:
-            logger.info(f"Alert allowed: No previous alert for key {cooldown_key}")
+            logger.info(f"Alert allowed: No previous alert for this container")
             return True
 
         # Check cooldown period

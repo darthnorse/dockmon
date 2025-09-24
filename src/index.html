@@ -2662,26 +2662,37 @@
                     body: JSON.stringify(hostData)
                 });
                 
+                console.log('Response status:', response.status, 'OK:', response.ok);
+
                 if (response.ok) {
+                    console.log('Response is OK, parsing JSON...');
                     const updatedHost = await response.json();
+                    console.log('JSON parsed successfully:', updatedHost);
 
                     if (isEditing) {
+                        console.log('Showing success toast for edit');
                         showToast('✅ Host updated successfully!');
                     } else {
+                        console.log('Showing success toast for add');
                         showToast('✅ Host added successfully!');
                     }
 
+                    console.log('Loading hosts...');
                     // Refresh hosts list from server to ensure we have complete data
                     await loadHosts();
+                    console.log('Hosts loaded, rendering...');
                     renderHosts();
                     updateStats();
                     updateNavBadges();
                     closeModal('hostModal');
                     event.target.reset();
                     window.editingHost = null;
+                    console.log('Host operation completed successfully');
                 } else {
+                    console.log('Response not OK:', response.status);
                     const error = await response.text();
                     const action = isEditing ? 'update' : 'add';
+                    console.log('Error response:', error);
                     showToast(`❌ Failed to ${action} host: ${error}`);
                 }
             } catch (error) {

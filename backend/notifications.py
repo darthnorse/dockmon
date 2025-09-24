@@ -128,6 +128,8 @@ class NotificationService:
         # Check if container recovered (went to a non-alert state) since last alert
         last_known_state = self._last_container_state.get(container_key)
 
+        logger.info(f"State tracking for {container_key}: last_known={last_known_state}, current={event.new_state}")
+
         # Update the last known state
         self._last_container_state[container_key] = event.new_state
 

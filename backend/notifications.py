@@ -386,6 +386,10 @@ class AlertProcessor:
             # Update tracked state
             self._container_states[container_key] = current_state
 
+            # IMPORTANT: Update the notification service's state tracking too
+            # This ensures recovery states are tracked even when they don't trigger alerts
+            self.notification_service._last_container_state[container_key] = current_state
+
             # Skip if this is the first time we see this container
             if previous_state is None:
                 continue

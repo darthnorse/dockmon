@@ -1979,20 +1979,27 @@
 
         // Update functions
         function updateStats() {
-            const totalHosts = hosts.length;
-            const totalContainers = containers.length;
-            const runningContainers = containers.filter(c => c.state === 'running').length;
-            
-            document.getElementById('totalHosts').textContent = totalHosts;
-            document.getElementById('totalContainers').textContent = totalContainers;
-            document.getElementById('runningContainers').textContent = runningContainers;
-            document.getElementById('alertRules').textContent = alertRules.length;
+            // Stats are now handled by dashboard widgets
+            // Only update if we're not on the dashboard page (for backward compatibility)
+            if (currentPage !== 'dashboard') {
+                const totalHostsEl = document.getElementById('totalHosts');
+                const totalContainersEl = document.getElementById('totalContainers');
+                const runningContainersEl = document.getElementById('runningContainers');
+                const alertRulesEl = document.getElementById('alertRules');
+
+                if (totalHostsEl) totalHostsEl.textContent = hosts.length;
+                if (totalContainersEl) totalContainersEl.textContent = containers.length;
+                if (runningContainersEl) runningContainersEl.textContent = containers.filter(c => c.state === 'running').length;
+                if (alertRulesEl) alertRulesEl.textContent = alertRules.length;
+            }
         }
 
         function updateNavBadges() {
-            const totalContainers = containers.length;
-            document.getElementById('navContainerCount').textContent = totalContainers;
-            document.getElementById('navAlertCount').textContent = alertRules.length;
+            const navContainerCountEl = document.getElementById('navContainerCount');
+            const navAlertCountEl = document.getElementById('navAlertCount');
+
+            if (navContainerCountEl) navContainerCountEl.textContent = containers.length;
+            if (navAlertCountEl) navAlertCountEl.textContent = alertRules.length;
         }
 
         // Helper functions

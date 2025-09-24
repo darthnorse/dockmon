@@ -1410,7 +1410,7 @@
                 <div class="form-group">
                     <label class="form-label">Host URL</label>
                     <input type="text" name="hosturl" class="form-input" placeholder="tcp://192.168.1.100:2376" required
-                           onchange="checkHostSecurity(this.value)">
+                           onchange="checkHostSecurity(this.value)" oninput="checkHostSecurity(this.value)">
                     <small style="color: var(--text-tertiary);">
                         Examples: <code>unix:///var/run/docker.sock</code> (local), <code>tcp://host:2376</code> (remote with mTLS)
                     </small>
@@ -2195,6 +2195,23 @@
 
         // Modal functions
         function openHostModal() {
+            // Reset form for adding new host
+            const modalTitle = document.querySelector('#hostModal .modal-title');
+            const submitButton = document.querySelector('#hostModal button[type="submit"]');
+
+            modalTitle.textContent = 'Add Docker Host';
+            submitButton.textContent = 'Add Host';
+
+            // Clear the form
+            document.querySelector('input[name="hostname"]').value = '';
+            document.querySelector('input[name="hosturl"]').value = '';
+
+            // Clear editing state
+            window.editingHost = null;
+
+            // Hide security warning and certificates
+            checkHostSecurity('');
+
             document.getElementById('hostModal').classList.add('active');
             // Initialize certificate mode to file upload
             switchCertMode('file');
@@ -2632,9 +2649,13 @@
             if (tlsKey) hostData.tls_key = tlsKey;
             if (tlsCa) hostData.tls_ca = tlsCa;
 
+            const isEditing = window.editingHost !== null;
+            const url = isEditing ? `${API_BASE}/api/hosts/${window.editingHost.id}` : `${API_BASE}/api/hosts`;
+            const method = isEditing ? 'PUT' : 'POST';
+
             try {
-                const response = await fetch(`${API_BASE}/api/hosts`, {
-                    method: 'POST',
+                const response = await fetch(url, {
+                    method: method,
                     headers: {
                         'Content-Type': 'application/json'
                     },
@@ -2642,21 +2663,36 @@
                 });
                 
                 if (response.ok) {
-                    const newHost = await response.json();
-                    hosts.push(newHost);
+                    const updatedHost = await response.json();
+
+                    if (isEditing) {
+                        // Update existing host in array
+                        const index = hosts.findIndex(h => h.id === window.editingHost.id);
+                        if (index !== -1) {
+                            hosts[index] = updatedHost;
+                        }
+                        showToast('✅ Host updated successfully!');
+                    } else {
+                        // Add new host to array
+                        hosts.push(updatedHost);
+                        showToast('✅ Host added successfully!');
+                    }
+
                     renderHosts();
                     updateStats();
                     updateNavBadges();
-                    showToast('✅ Host added successfully!');
                     closeModal('hostModal');
                     event.target.reset();
+                    window.editingHost = null;
                 } else {
                     const error = await response.text();
-                    showToast(`❌ Failed to add host: ${error}`);
+                    const action = isEditing ? 'update' : 'add';
+                    showToast(`❌ Failed to ${action} host: ${error}`);
                 }
             } catch (error) {
-                console.error('Error adding host:', error);
-                showToast('❌ Failed to add host');
+                const action = isEditing ? 'update' : 'add';
+                console.error(`Error ${action}ing host:`, error);
+                showToast(`❌ Failed to ${action} host`);
             }
         }
 
@@ -2943,7 +2979,32 @@
         }
 
         function editHost(hostId) {
-            showToast('Edit functionality coming soon...');
+            // Find the host to edit
+            const host = hosts.find(h => h.id === hostId);
+            if (!host) {
+                showToast('❌ Host not found');
+                return;
+            }
+
+            // Populate the form with existing host data
+            document.querySelector('input[name="hostname"]').value = host.name;
+            document.querySelector('input[name="hosturl"]').value = host.url;
+
+            // Set up the modal for editing
+            const modalTitle = document.querySelector('#hostModal .modal-title');
+            const submitButton = document.querySelector('#hostModal button[type="submit"]');
+
+            modalTitle.textContent = 'Edit Docker Host';
+            submitButton.textContent = 'Update Host';
+
+            // Store the host being edited
+            window.editingHost = host;
+
+            // Check security and show certificate fields if needed
+            checkHostSecurity(host.url);
+
+            // Show the modal
+            document.getElementById('hostModal').classList.add('active');
         }
 
         async function refreshAll() {

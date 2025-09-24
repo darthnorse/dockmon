@@ -254,7 +254,37 @@ class DockerMonitor:
             # Remove from database
             self.db.delete_host(host_id)
             logger.info(f"Removed host {host_id}")
-    
+
+    def update_host(self, host_id: str, config: DockerHostConfig):
+        """Update an existing Docker host"""
+        # Remove the existing host first
+        if host_id in self.hosts:
+            # Save existing host for cleanup
+            old_host = self.hosts[host_id]
+
+            # Close existing client
+            if host_id in self.clients:
+                self.clients[host_id].close()
+                del self.clients[host_id]
+
+            # Remove from memory
+            del self.hosts[host_id]
+
+        # Add the host with updated configuration but keep the same ID
+        host = self.add_host(config, existing_id=host_id)
+
+        # Update database
+        self.db.update_host(host_id, {
+            'name': config.name,
+            'url': config.url,
+            'tls_cert': config.tls_cert,
+            'tls_key': config.tls_key,
+            'tls_ca': config.tls_ca
+        })
+
+        logger.info(f"Updated host {host_id}: {host.name} ({host.url})")
+        return host
+
     def get_containers(self, host_id: Optional[str] = None) -> List[Container]:
         """Get containers from one or all hosts"""
         containers = []
@@ -747,6 +777,12 @@ async def get_hosts():
 async def add_host(config: DockerHostConfig):
     """Add a new Docker host"""
     host = monitor.add_host(config)
+    return host
+
+@app.put("/api/hosts/{host_id}")
+async def update_host(host_id: str, config: DockerHostConfig):
+    """Update an existing Docker host"""
+    host = monitor.update_host(host_id, config)
     return host
 
 @app.delete("/api/hosts/{host_id}")

@@ -323,7 +323,7 @@ In DockMon, add the host with:
 
 ### Insecure Mode (Development Only)
 
-**⚠️ NEVER USE IN PRODUCTION - YOUR SYSTEM WILL BE COMPROMISED**
+**⚠️ NEVER USE IN PRODUCTION - SIGNIFICANT SECURITY RISK**
 
 For isolated test environments only:
 ```ini

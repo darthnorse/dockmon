@@ -435,12 +435,13 @@
 
         .grid-stack-item[gs-w="4"] .stat-value,
         .grid-stack-item[gs-w="5"] .stat-value {
-            font-size: 20px;
+            font-size: 22px;
         }
 
         .grid-stack-item[gs-w="4"] .stat-label,
         .grid-stack-item[gs-w="5"] .stat-label {
             font-size: 10px;
+            margin-bottom: 4px;
         }
 
         /* Host card improvements */
@@ -501,22 +502,22 @@
             margin-bottom: var(--spacing-md);
         }
 
-        .stat-value {
-            font-size: 24px;
-            font-weight: 700;
-            color: var(--text-primary);
-            margin: var(--spacing-xs) 0;
-            line-height: 1;
-        }
-
         .stat-label {
-            font-size: 11px;
-            color: var(--text-primary); /* Made highly visible */
+            font-size: 12px;
+            color: var(--text-secondary);
             text-transform: uppercase;
             letter-spacing: 0.5px;
-            font-weight: 600;
-            margin-top: var(--spacing-xs);
-            opacity: 0.8;
+            font-weight: 500;
+            margin-bottom: var(--spacing-xs);
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 28px;
+            font-weight: 700;
+            color: var(--text-primary);
+            line-height: 1;
+            text-align: center;
         }
 
         .stat-change {
@@ -3081,30 +3082,26 @@
         function renderDashboardWidgets() {
             console.log('Rendering dashboard widgets - hosts:', hosts.length, 'containers:', containers.length);
 
-            // Render stats widget - fix: target the widget body, not the whole widget
+            // Render stats widget - simplified layout without icons
             const statsWidget = document.getElementById('widget-stats');
             if (statsWidget) {
                 statsWidget.innerHTML = `
                     <div class="stats-grid">
                         <div class="stat-card">
-                            <div class="stat-icon">🖥️</div>
-                            <div class="stat-value">${hosts.length}</div>
                             <div class="stat-label">Total Hosts</div>
+                            <div class="stat-value">${hosts.length}</div>
                         </div>
                         <div class="stat-card">
-                            <div class="stat-icon">📦</div>
-                            <div class="stat-value">${containers.length}</div>
                             <div class="stat-label">Total Containers</div>
+                            <div class="stat-value">${containers.length}</div>
                         </div>
                         <div class="stat-card">
-                            <div class="stat-icon">✅</div>
-                            <div class="stat-value">${containers.filter(c => c.state === 'running').length}</div>
                             <div class="stat-label">Running</div>
+                            <div class="stat-value">${containers.filter(c => c.state === 'running').length}</div>
                         </div>
                         <div class="stat-card">
-                            <div class="stat-icon">⚡</div>
-                            <div class="stat-value">${alertRules.length}</div>
                             <div class="stat-label">Alert Rules</div>
+                            <div class="stat-value">${alertRules.length}</div>
                         </div>
                     </div>
                 `;

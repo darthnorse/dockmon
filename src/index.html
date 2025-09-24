@@ -3,7 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Docker Container Monitor</title>
+    <title>DockMon</title>
+    <link rel="icon" type="image/x-icon" href="/images/favicon.ico">
     <style>
         :root {
             /* Modern color scheme */
@@ -78,12 +79,16 @@
         .logo {
             width: 36px;
             height: 36px;
-            background: var(--primary);
             border-radius: 8px;
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 20px;
+        }
+
+        .logo img {
+            width: 32px;
+            height: 32px;
+            border-radius: 6px;
         }
 
         .logo-text {
@@ -962,8 +967,10 @@
         <!-- Sidebar -->
         <aside class="sidebar">
             <div class="sidebar-header">
-                <div class="logo">🐳</div>
-                <div class="logo-text">Docker Monitor</div>
+                <div class="logo">
+                    <img src="/images/logo.png" alt="DockMon Logo">
+                </div>
+                <div class="logo-text">DockMon</div>
             </div>
             <nav class="sidebar-nav">
                 <div class="nav-section">
@@ -1906,6 +1913,11 @@
 
                     renderHosts();
 
+                    // Update modal content if it's open and showing this container
+                    if (window.currentContainer && window.currentContainer.id === container.id) {
+                        showContainerDetails(container.short_id);
+                    }
+
                     const status = newState ? 'enabled' : 'disabled';
                     showToast(`🔄 Auto-restart ${status} for ${container.name}`);
 
@@ -1978,10 +1990,16 @@
                 }
             });
             
+            // Parse container selection (format: "host_id:container_id")
+            const [hostId, containerId] = container.split(':');
+            const selectedContainer = containers.find(c => c.host_id === hostId && c.id === containerId);
+
             const newRule = {
-                container: container,
-                states: states,
-                channels: channels
+                container_pattern: selectedContainer ? selectedContainer.name : container,
+                trigger_states: states.map(state => state.replace(/.*→\s*/, '').toLowerCase()),
+                notification_channels: channels,
+                cooldown_minutes: 15,
+                enabled: true
             };
             
             try {
@@ -2001,6 +2019,10 @@
                     updateNavBadges();
                     showToast('✅ Alert rule created successfully!');
                     closeModal('alertRuleModal');
+                } else {
+                    const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
+                    console.error('Alert creation failed:', errorData);
+                    showToast(`❌ Failed to create alert: ${errorData.detail || response.statusText}`);
                 }
             } catch (error) {
                 console.error('Error creating alert rule:', error);

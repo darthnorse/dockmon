@@ -220,12 +220,12 @@ class NotificationService:
     async def _send_telegram(self, config: Dict[str, Any], message: str) -> bool:
         """Send notification via Telegram"""
         try:
-            logger.debug(f"Telegram config keys: {config.keys()}")
-            token = config.get('bot_token')
+            # Support both 'token' and 'bot_token' for backward compatibility
+            token = config.get('token') or config.get('bot_token')
             chat_id = config.get('chat_id')
 
             if not token or not chat_id:
-                logger.error(f"Telegram config missing bot_token or chat_id. Config: {config}")
+                logger.error(f"Telegram config missing token or chat_id")
                 return False
 
             url = f"https://api.telegram.org/bot{token}/sendMessage"

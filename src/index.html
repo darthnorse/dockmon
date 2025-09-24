@@ -1842,8 +1842,47 @@
             }
         }
 
-        function openNotificationSettings() {
+        async function openNotificationSettings() {
+            await loadNotificationSettings();
             document.getElementById('notificationModal').classList.add('active');
+        }
+
+        async function loadNotificationSettings() {
+            try {
+                const response = await fetch(`${API_BASE}/api/notifications/channels`);
+                const channels = await response.json();
+
+                // Clear existing values
+                document.querySelectorAll('#notificationModal .form-input').forEach(input => {
+                    input.value = '';
+                });
+
+                // Populate existing settings
+                channels.forEach(channel => {
+                    if (channel.type === 'telegram') {
+                        const tokenInput = document.querySelector('#notificationModal .form-input[placeholder*="Telegram bot token"]');
+                        const chatInput = document.querySelector('#notificationModal .form-input[placeholder*="chat ID"]');
+                        if (tokenInput && chatInput && channel.config) {
+                            tokenInput.value = channel.config.token || '';
+                            chatInput.value = channel.config.chat_id || '';
+                        }
+                    } else if (channel.type === 'discord') {
+                        const webhookInput = document.querySelector('#notificationModal .form-input[placeholder*="Discord webhook"]');
+                        if (webhookInput && channel.config) {
+                            webhookInput.value = channel.config.webhook_url || '';
+                        }
+                    } else if (channel.type === 'pushover') {
+                        const tokenInput = document.querySelector('#notificationModal .form-input[placeholder*="Pushover app token"]');
+                        const userInput = document.querySelector('#notificationModal .form-input[placeholder*="user key"]');
+                        if (tokenInput && userInput && channel.config) {
+                            tokenInput.value = channel.config.app_token || '';
+                            userInput.value = channel.config.user_key || '';
+                        }
+                    }
+                });
+            } catch (error) {
+                console.error('Error loading notification settings:', error);
+            }
         }
 
         function createAlertForContainer(containerId) {
@@ -2035,9 +2074,109 @@
 
         async function saveNotificationSettings(event) {
             event.preventDefault();
-            // TODO: Implement notification settings API
-            showToast('Notification settings saved!');
-            closeModal('notificationModal');
+
+            try {
+                // Get form values
+                const telegramToken = document.querySelector('#notificationModal .form-input[placeholder*="Telegram bot token"]').value;
+                const telegramChatId = document.querySelector('#notificationModal .form-input[placeholder*="chat ID"]').value;
+                const discordWebhook = document.querySelector('#notificationModal .form-input[placeholder*="Discord webhook"]').value;
+                const pushoverToken = document.querySelector('#notificationModal .form-input[placeholder*="Pushover app token"]').value;
+                const pushoverUserKey = document.querySelector('#notificationModal .form-input[placeholder*="user key"]').value;
+
+                // Get existing channels to update or create
+                const response = await fetch(`${API_BASE}/api/notifications/channels`);
+                const existingChannels = await response.json();
+
+                const promises = [];
+
+                // Handle Telegram
+                if (telegramToken && telegramChatId) {
+                    const telegramChannel = existingChannels.find(ch => ch.type === 'telegram');
+                    const telegramData = {
+                        name: 'Telegram',
+                        type: 'telegram',
+                        config: { token: telegramToken, chat_id: telegramChatId },
+                        enabled: true
+                    };
+
+                    if (telegramChannel) {
+                        promises.push(fetch(`${API_BASE}/api/notifications/channels/${telegramChannel.id}`, {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(telegramData)
+                        }));
+                    } else {
+                        promises.push(fetch(`${API_BASE}/api/notifications/channels`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(telegramData)
+                        }));
+                    }
+                }
+
+                // Handle Discord
+                if (discordWebhook) {
+                    const discordChannel = existingChannels.find(ch => ch.type === 'discord');
+                    const discordData = {
+                        name: 'Discord',
+                        type: 'discord',
+                        config: { webhook_url: discordWebhook },
+                        enabled: true
+                    };
+
+                    if (discordChannel) {
+                        promises.push(fetch(`${API_BASE}/api/notifications/channels/${discordChannel.id}`, {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(discordData)
+                        }));
+                    } else {
+                        promises.push(fetch(`${API_BASE}/api/notifications/channels`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(discordData)
+                        }));
+                    }
+                }
+
+                // Handle Pushover
+                if (pushoverToken && pushoverUserKey) {
+                    const pushoverChannel = existingChannels.find(ch => ch.type === 'pushover');
+                    const pushoverData = {
+                        name: 'Pushover',
+                        type: 'pushover',
+                        config: { app_token: pushoverToken, user_key: pushoverUserKey },
+                        enabled: true
+                    };
+
+                    if (pushoverChannel) {
+                        promises.push(fetch(`${API_BASE}/api/notifications/channels/${pushoverChannel.id}`, {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(pushoverData)
+                        }));
+                    } else {
+                        promises.push(fetch(`${API_BASE}/api/notifications/channels`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(pushoverData)
+                        }));
+                    }
+                }
+
+                // Wait for all requests to complete
+                await Promise.all(promises);
+
+                showToast('✅ Notification settings saved!');
+                closeModal('notificationModal');
+
+                // Refresh notification channels for alert creation
+                await loadNotificationChannels();
+
+            } catch (error) {
+                console.error('Error saving notification settings:', error);
+                showToast('❌ Failed to save notification settings');
+            }
         }
 
         async function saveGlobalSettings() {

@@ -33,7 +33,8 @@ SSH_KEY=""  # Optional: path to SSH public key file
 START_ON_BOOT="1"  # 1 for yes, 0 for no
 PROXMOX_NODE=$(hostname)
 
-# Template options
+# Template configuration
+TEMPLATE_BASE_URL="http://download.proxmox.com/images/system"
 DEBIAN_12_TEMPLATE="debian-12-standard_12.2-1_amd64.tar.zst"
 DEBIAN_13_TEMPLATE="debian-13-standard_13.0-1_amd64.tar.zst"
 
@@ -286,60 +287,167 @@ echo ""
 echo -e "${CYAN}Step 5: Container ID Assignment${NC}"
 echo "══════════════════════════════════════"
 
+# Show existing containers for reference
+print_info "Existing containers:"
+pct list | head -10
+echo ""
+
+# Ask user if they want to specify their own ID
+read -p "Do you want to specify a custom container ID? (y/n) [n]: " -n 1 -r
+echo
+
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    while true; do
+        read -p "Enter desired container ID (e.g., 200): " CUSTOM_ID
+
+        # Validate input is a number
+        if ! [[ "$CUSTOM_ID" =~ ^[0-9]+$ ]]; then
+            print_error "Container ID must be a number"
+            continue
+        fi
+
+        # Check if ID is in valid range (typically 100-999999)
+        if [ "$CUSTOM_ID" -lt 100 ] || [ "$CUSTOM_ID" -gt 999999 ]; then
+            print_error "Container ID should be between 100 and 999999"
+            continue
+        fi
+
+        # Check if ID already exists
+        if check_ctid_exists $CUSTOM_ID; then
+            print_error "Container ID $CUSTOM_ID already exists!"
+            read -p "Try a different ID? (y/n): " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                break
+            fi
+        else
+            CONTAINER_ID=$CUSTOM_ID
+            print_success "Will use Container ID: $CONTAINER_ID"
+            break
+        fi
+    done
+fi
+
+# If no custom ID was set or user cancelled, use next available
 if [ -z "$CONTAINER_ID" ]; then
     CONTAINER_ID=$(get_next_ctid)
     print_info "Using next available Container ID: $CONTAINER_ID"
-else
-    if check_ctid_exists $CONTAINER_ID; then
-        print_error "Container ID $CONTAINER_ID already exists!"
-        read -p "Use next available ID? (y/n): " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            CONTAINER_ID=$(get_next_ctid)
-            print_info "Using Container ID: $CONTAINER_ID"
-        else
-            exit 1
-        fi
-    fi
 fi
 echo ""
 
-# Check if template exists
+# Download and prepare template
 echo -e "${CYAN}Step 6: Template Preparation${NC}"
 echo "══════════════════════════════════════"
-print_info "Checking for Debian $DEBIAN_VERSION template..."
-TEMPLATE_PATH="/var/lib/vz/template/cache/$TEMPLATE"
 
-if [ ! -f "$TEMPLATE_PATH" ]; then
-    print_warning "Template not found. Attempting to download Debian $DEBIAN_VERSION..."
-    pveam update
-    
-    # Try to download the template
-    if ! pveam download local $TEMPLATE 2>/dev/null; then
-        print_warning "Standard template not available, searching for alternatives..."
-        
-        # Find available Debian templates
-        available_templates=$(pveam available | grep "debian-$DEBIAN_VERSION" | awk '{print $2}')
-        
-        if [ -n "$available_templates" ]; then
-            echo "Available Debian $DEBIAN_VERSION templates:"
-            echo "$available_templates" | nl
-            read -p "Select template number: " template_num
-            TEMPLATE=$(echo "$available_templates" | sed -n "${template_num}p")
-            TEMPLATE_PATH="/var/lib/vz/template/cache/$TEMPLATE"
-            pveam download local $TEMPLATE
-        else
-            print_error "No Debian $DEBIAN_VERSION templates available!"
-            exit 1
-        fi
+# Function to get latest Debian template
+get_latest_debian_template() {
+    local version=$1
+    print_info "Fetching latest Debian $version templates from Proxmox..."
+
+    # Update template list
+    pveam update >/dev/null 2>&1
+
+    # Find the latest Debian template for the specified version
+    local available_template=$(pveam available | grep "debian-$version" | grep "standard" | head -1 | awk '{print $2}')
+
+    if [ -n "$available_template" ]; then
+        echo "$available_template"
+        return 0
+    else
+        return 1
     fi
-    
-    if [ ! -f "$TEMPLATE_PATH" ]; then
-        print_error "Failed to download template!"
+}
+
+# Function to download template
+download_template() {
+    local template_name=$1
+    local template_path="/var/lib/vz/template/cache/$template_name"
+
+    print_info "Checking if template exists locally..."
+
+    if [ -f "$template_path" ]; then
+        print_success "Template already available: $template_name"
+        return 0
+    fi
+
+    print_info "Downloading template: $template_name"
+    print_info "This may take several minutes depending on your connection..."
+
+    # Download the template
+    if pveam download local "$template_name"; then
+        print_success "Template downloaded successfully: $template_name"
+        return 0
+    else
+        print_error "Failed to download template: $template_name"
+        return 1
+    fi
+}
+
+# Get the latest template for selected Debian version
+print_info "Determining latest Debian $DEBIAN_VERSION template..."
+
+LATEST_TEMPLATE=$(get_latest_debian_template $DEBIAN_VERSION)
+
+if [ -n "$LATEST_TEMPLATE" ]; then
+    print_info "Latest available: $LATEST_TEMPLATE"
+    TEMPLATE=$LATEST_TEMPLATE
+else
+    print_warning "Could not find latest template, using fallback..."
+    if [ "$DEBIAN_VERSION" == "12" ]; then
+        TEMPLATE=$DEBIAN_12_TEMPLATE
+    else
+        TEMPLATE=$DEBIAN_13_TEMPLATE
+    fi
+
+    # Check if fallback template exists in available list
+    if ! pveam available | grep -q "$TEMPLATE"; then
+        print_error "Fallback template $TEMPLATE not available!"
+        print_info "Available Debian $DEBIAN_VERSION templates:"
+        pveam available | grep "debian-$DEBIAN_VERSION" | awk '{print "  - " $2}'
         exit 1
     fi
 fi
 
+# Download the template
+if ! download_template "$TEMPLATE"; then
+    # If download fails, try to find any available Debian template for this version
+    print_warning "Primary download failed, searching for alternative templates..."
+
+    available_templates=$(pveam available | grep "debian-$DEBIAN_VERSION" | awk '{print $2}')
+
+    if [ -n "$available_templates" ]; then
+        print_info "Available Debian $DEBIAN_VERSION templates:"
+        echo "$available_templates" | nl -w2 -s'. '
+        echo ""
+
+        while true; do
+            read -p "Select template number (or 0 to exit): " template_num
+
+            if [ "$template_num" == "0" ]; then
+                print_error "Template selection cancelled"
+                exit 1
+            fi
+
+            selected_template=$(echo "$available_templates" | sed -n "${template_num}p")
+
+            if [ -n "$selected_template" ]; then
+                TEMPLATE=$selected_template
+                if download_template "$TEMPLATE"; then
+                    break
+                else
+                    print_error "Failed to download selected template"
+                fi
+            else
+                print_error "Invalid selection. Please try again."
+            fi
+        done
+    else
+        print_error "No Debian $DEBIAN_VERSION templates available!"
+        exit 1
+    fi
+fi
+
+TEMPLATE_PATH="/var/lib/vz/template/cache/$TEMPLATE"
 print_success "Template ready: $TEMPLATE"
 echo ""
 
@@ -357,12 +465,14 @@ fi
 echo -e "${CYAN}Step 7: Creating LXC Container${NC}"
 echo "══════════════════════════════════════"
 print_info "Creating container with ID $CONTAINER_ID..."
+print_info "Using template: $TEMPLATE"
 
 # Create temporary file for password
 PASS_FILE=$(mktemp)
 echo -e "$ROOT_PASSWORD\n$ROOT_PASSWORD" > "$PASS_FILE"
 
 # Create container with password from file
+print_info "Executing container creation..."
 pct create $CONTAINER_ID "$TEMPLATE_PATH" \
     --hostname $CONTAINER_NAME \
     --storage $STORAGE \
@@ -786,6 +896,7 @@ echo "Console:   pct console $CONTAINER_ID"
 echo "Remove:    pct destroy $CONTAINER_ID"
 echo ""
 echo -e "${YELLOW}Notes:${NC}"
+echo "• Template used: $TEMPLATE (downloaded automatically)"
 echo "• Frontend (nginx) serves on port 80"
 echo "• Backend API runs on port 8080"
 echo "• Root password: (the password you set)"

@@ -57,8 +57,8 @@ class NotificationService:
                 if await self._should_send_alert(rule, event):
                     if await self._send_rule_notifications(rule, event):
                         success_count += 1
-                        # Update last triggered time for this container + rule combination
-                        cooldown_key = f"{rule.id}:{event.host_id}:{event.container_id}"
+                        # Update last triggered time for this container + rule + state combination
+                        cooldown_key = f"{rule.id}:{event.host_id}:{event.container_id}:{event.new_state}"
                         self._last_alerts[cooldown_key] = datetime.now()
 
                         # Also update the rule's global last_triggered for backward compatibility
@@ -120,8 +120,8 @@ class NotificationService:
 
     async def _should_send_alert(self, rule: AlertRuleDB, event: AlertEvent) -> bool:
         """Check if alert should be sent based on cooldown per container"""
-        # Create unique key for this container + rule combination
-        cooldown_key = f"{rule.id}:{event.host_id}:{event.container_id}"
+        # Create unique key for this container + rule combination + state
+        cooldown_key = f"{rule.id}:{event.host_id}:{event.container_id}:{event.new_state}"
 
         if cooldown_key not in self._last_alerts:
             logger.info(f"Alert allowed: No previous alert for key {cooldown_key}")

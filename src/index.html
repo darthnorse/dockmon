@@ -1388,9 +1388,9 @@
         let reconnectAttempts = 0;
         const MAX_RECONNECT_ATTEMPTS = 10;
 
-        // API Base URL - adjust if backend is on different host/port
-        const API_BASE = window.location.origin;
-        const WS_URL = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
+        // API Base URL - backend always runs on port 8080
+        const API_BASE = `${window.location.protocol}//${window.location.hostname}:8080`;
+        const WS_URL = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.hostname}:8080/ws`;
 
         // Initialize WebSocket connection
         function connectWebSocket() {
@@ -2081,8 +2081,8 @@
                 return;
             }
             
-            // Start streaming
-            const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/logs/${window.currentContainer.host_id}/${window.currentContainer.id}`;
+            // Start streaming - backend always on port 8080
+            const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.hostname}:8080/ws/logs/${window.currentContainer.host_id}/${window.currentContainer.id}`;
             
             window.logStreamWs = new WebSocket(wsUrl);
             

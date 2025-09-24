@@ -89,14 +89,20 @@ class NotificationService:
         rules = self.db.get_alert_rules(enabled_only=True)
         matching_rules = []
 
+        logger.info(f"Checking {len(rules)} alert rules for container {event.container_name} (state: {event.new_state})")
+
         for rule in rules:
+            logger.info(f"Rule {rule.id}: name='{rule.name}', pattern='{rule.container_pattern}', triggers={rule.trigger_states}, host_id={rule.host_id}")
+
             # Check if rule applies to this host (None means all hosts)
             if rule.host_id and rule.host_id != event.host_id:
+                logger.info(f"Rule {rule.id} skipped: host mismatch (rule: {rule.host_id}, event: {event.host_id})")
                 continue
 
             # Check if container name matches pattern
             try:
                 if not re.search(rule.container_pattern, event.container_name):
+                    logger.info(f"Rule {rule.id} skipped: pattern '{rule.container_pattern}' doesn't match '{event.container_name}'")
                     continue
             except re.error:
                 logger.warning(f"Invalid regex pattern in rule {rule.id}: {rule.container_pattern}")
@@ -104,8 +110,10 @@ class NotificationService:
 
             # Check if new state triggers alert
             if event.new_state not in rule.trigger_states:
+                logger.info(f"Rule {rule.id} skipped: state '{event.new_state}' not in triggers {rule.trigger_states}")
                 continue
 
+            logger.info(f"Rule {rule.id} MATCHES!")
             matching_rules.append(rule)
 
         return matching_rules

@@ -2680,8 +2680,9 @@
                     // Refresh hosts list from server to ensure we have complete data
                     await fetchHosts();
 
-                    // Refresh whatever page is currently active
-                    renderAll();
+                    // Explicitly refresh the host list on the Host Management page
+                    renderHosts();
+                    renderHostsPage(); // Make sure the Host Management page is updated too
                     updateStats();
                     updateNavBadges();
                     closeModal('hostModal');

@@ -1744,36 +1744,36 @@
 
         // Initialize
         async function init() {
-            try {
-                // First establish WebSocket connection with a small delay
-                connectWebSocket();
+            console.log('Starting initialization...');
 
-                // Give WebSocket a moment to connect, then fetch data as fallback
-                await new Promise(resolve => setTimeout(resolve, 1000));
+            // First establish WebSocket connection with a small delay
+            connectWebSocket();
 
-                // Fetch initial data with fallback handling
-                const results = await Promise.allSettled([
-                    fetchHosts(),
-                    fetchContainers(),
-                    fetchSettings(),
-                    fetchAlertRules()
-                ]);
+            // Give WebSocket a moment to connect, then fetch data as fallback
+            await new Promise(resolve => setTimeout(resolve, 1000));
 
-                // Check if any critical operations failed
-                const criticalFailures = results.filter((result, index) =>
-                    result.status === 'rejected' && index < 2 // hosts and containers are critical
-                );
+            // Fetch initial data with fallback handling
+            console.log('Fetching initial data...');
+            const results = await Promise.allSettled([
+                fetchHosts(),
+                fetchContainers(),
+                fetchSettings(),
+                fetchAlertRules()
+            ]);
 
-                if (criticalFailures.length > 0) {
-                    console.warn('Some API calls failed, relying on WebSocket data');
+            // Check results but don't fail initialization
+            results.forEach((result, index) => {
+                const names = ['hosts', 'containers', 'settings', 'alertRules'];
+                if (result.status === 'rejected') {
+                    console.warn(`Failed to fetch ${names[index]}:`, result.reason);
+                } else {
+                    console.log(`Successfully fetched ${names[index]}`);
                 }
+            });
 
-                renderAll();
-            } catch (error) {
-                console.error('Initialization error:', error);
-                // Only show warning for actual initialization failures, not API failures
-                showToast('⚠️ Application initialization failed');
-            }
+            console.log('Rendering initial UI...');
+            renderAll();
+            console.log('Initialization completed successfully');
         }
 
         function renderAll() {
@@ -3179,12 +3179,16 @@
 
 
         // Initialize on load
-        window.addEventListener('DOMContentLoaded', () => {
-            init().then(() => {
+        window.addEventListener('DOMContentLoaded', async () => {
+            try {
+                await init();
                 if (currentPage === 'dashboard') {
                     initDashboard();
                 }
-            });
+            } catch (error) {
+                console.error('Failed to initialize application:', error);
+                // Don't show error toast - WebSocket will handle data delivery
+            }
         });
     </script>
 

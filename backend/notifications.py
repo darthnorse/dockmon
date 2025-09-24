@@ -91,20 +91,20 @@ class NotificationService:
         rules = self.db.get_alert_rules(enabled_only=True)
         matching_rules = []
 
-        logger.info(f"Checking {len(rules)} alert rules for container {event.container_name} (state: {event.new_state})")
+        logger.debug(f"Checking {len(rules)} alert rules for container {event.container_name} (state: {event.new_state})")
 
         for rule in rules:
-            logger.info(f"Rule {rule.id}: name='{rule.name}', pattern='{rule.container_pattern}', triggers={rule.trigger_states}, host_id={rule.host_id}")
+            logger.debug(f"Rule {rule.id}: name='{rule.name}', pattern='{rule.container_pattern}', triggers={rule.trigger_states}, host_id={rule.host_id}")
 
             # Check if rule applies to this host (None means all hosts)
             if rule.host_id and rule.host_id != event.host_id:
-                logger.info(f"Rule {rule.id} skipped: host mismatch (rule: {rule.host_id}, event: {event.host_id})")
+                logger.debug(f"Rule {rule.id} skipped: host mismatch (rule: {rule.host_id}, event: {event.host_id})")
                 continue
 
             # Check if container name matches pattern
             try:
                 if not re.search(rule.container_pattern, event.container_name):
-                    logger.info(f"Rule {rule.id} skipped: pattern '{rule.container_pattern}' doesn't match '{event.container_name}'")
+                    logger.debug(f"Rule {rule.id} skipped: pattern '{rule.container_pattern}' doesn't match '{event.container_name}'")
                     continue
             except re.error:
                 logger.warning(f"Invalid regex pattern in rule {rule.id}: {rule.container_pattern}")
@@ -112,10 +112,10 @@ class NotificationService:
 
             # Check if new state triggers alert
             if event.new_state not in rule.trigger_states:
-                logger.info(f"Rule {rule.id} skipped: state '{event.new_state}' not in triggers {rule.trigger_states}")
+                logger.debug(f"Rule {rule.id} skipped: state '{event.new_state}' not in triggers {rule.trigger_states}")
                 continue
 
-            logger.info(f"Rule {rule.id} MATCHES!")
+            logger.debug(f"Rule {rule.id} MATCHES!")
             matching_rules.append(rule)
 
         return matching_rules
@@ -127,20 +127,20 @@ class NotificationService:
 
         # Check if container recovered (went to a non-alert state) since last alert
         # Use old_state from the event, not our tracked state!
-        logger.info(f"State tracking for {container_key}: previous={event.old_state}, current={event.new_state}")
+        logger.debug(f"Alert check for {event.container_name}: {event.old_state} → {event.new_state}")
 
         # If container was in a "good" state (running) and now in "bad" state (exited),
         # this is a new incident - reset cooldown
         good_states = ['running', 'created']
         if event.old_state in good_states and event.new_state in rule.trigger_states:
-            logger.info(f"Alert allowed: Container recovered ({event.old_state}) and failed again ({event.new_state})")
+            logger.info(f"Alert allowed for {event.container_name}: Container recovered ({event.old_state}) then failed ({event.new_state}) - new incident detected")
             # Remove the cooldown for this container
             if cooldown_key in self._last_alerts:
                 del self._last_alerts[cooldown_key]
             return True
 
         if cooldown_key not in self._last_alerts:
-            logger.info(f"Alert allowed: No previous alert for this container")
+            logger.debug(f"Alert allowed: No previous alert for this container")
             return True
 
         # Check cooldown period
@@ -148,13 +148,11 @@ class NotificationService:
         cooldown_minutes = rule.cooldown_minutes or 15
         cooldown_seconds = cooldown_minutes * 60
 
-        logger.info(f"Cooldown check: {time_since_last.total_seconds():.1f}s since last alert, cooldown is {cooldown_seconds}s")
-
         if time_since_last.total_seconds() >= cooldown_seconds:
-            logger.info(f"Alert allowed: Cooldown period exceeded")
+            logger.debug(f"Alert allowed: Cooldown period exceeded ({time_since_last.total_seconds():.1f}s > {cooldown_seconds}s)")
             return True
         else:
-            logger.info(f"Alert blocked: Still in cooldown period ({cooldown_seconds - time_since_last.total_seconds():.1f}s remaining)")
+            logger.info(f"Alert blocked for {event.container_name}: Still in cooldown ({cooldown_seconds - time_since_last.total_seconds():.1f}s remaining)")
             return False
 
     async def _send_rule_notifications(self, rule: AlertRuleDB, event: AlertEvent) -> bool:
@@ -222,11 +220,12 @@ class NotificationService:
     async def _send_telegram(self, config: Dict[str, Any], message: str) -> bool:
         """Send notification via Telegram"""
         try:
+            logger.debug(f"Telegram config keys: {config.keys()}")
             token = config.get('bot_token')
             chat_id = config.get('chat_id')
 
             if not token or not chat_id:
-                logger.error("Telegram config missing bot_token or chat_id")
+                logger.error(f"Telegram config missing bot_token or chat_id. Config: {config}")
                 return False
 
             url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -387,7 +386,7 @@ class AlertProcessor:
             # IMPORTANT: Update the notification service's state tracking too
             # This ensures recovery states are tracked even when they don't trigger alerts
             self.notification_service._last_container_state[container_key] = current_state
-            logger.info(f"Updated state tracking for {container.name}: {previous_state} → {current_state}")
+            logger.debug(f"State transition for {container.name}: {previous_state} → {current_state}")
 
             # Skip if this is the first time we see this container
             if previous_state is None:
@@ -410,7 +409,7 @@ class AlertProcessor:
             )
 
             # Send alert
-            logger.info(f"Sending alert for container {container.name}: {previous_state} → {current_state}")
+            logger.debug(f"Processing state change for {container.name}: {previous_state} → {current_state}")
             await self.notification_service.send_alert(alert_event)
 
     def get_container_states(self) -> Dict[str, str]:

@@ -6,6 +6,20 @@ A modern Docker container monitoring solution with auto-restart capabilities and
 ![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
+## 📸 Screenshots
+
+### Dashboard Overview
+![DockMon Dashboard](screenshots/dashboard.png)
+*Real-time monitoring of multiple Docker hosts with container status and auto-restart controls*
+
+### Container Management
+![Container Management](screenshots/containers.png)
+*Individual container controls with auto-restart toggles and state monitoring*
+
+### Settings Panel
+![Settings](screenshots/settings.png)
+*Configure global auto-restart policies and monitoring intervals*
+
 ## ✨ Features
 
 - 📊 **Multi-host Docker monitoring** - Monitor containers across multiple Docker hosts
@@ -138,6 +152,34 @@ sudo cp dockmon/src/index.html /var/www/html/index.html
 sudo systemctl restart nginx
 ```
 
+## 🎯 Key Features in Detail
+
+### Real-time Monitoring
+- Live container status updates
+- Multi-host support with connection status
+- Container state visualization (running, stopped, paused)
+- Quick stats overview with total hosts, containers, and active alerts
+
+### Auto-Restart System
+- Per-container auto-restart toggle
+- Configurable retry attempts (0-10)
+- Adjustable retry delays (5-300 seconds)
+- Automatic disable after max attempts reached
+- Visual feedback for restart attempts
+
+### Alert Management
+- Create custom alert rules per container
+- Monitor specific state transitions
+- Multiple notification channels per rule
+- Support for Telegram, Discord, and Pushover
+
+### Modern Interface
+- Dark theme optimized for extended viewing
+- Responsive design works on all devices
+- Intuitive sidebar navigation
+- Smooth animations and transitions
+- Clean, organized layout inspired by Portainer
+
 ## 🔧 Configuration
 
 ### Auto-Restart Settings
@@ -176,6 +218,10 @@ dockmon/
 ├── docker/
 │   ├── Dockerfile       # Docker container definition
 │   └── nginx.conf       # Nginx configuration
+├── screenshots/         # Application screenshots
+│   ├── dashboard.png
+│   ├── containers.png
+│   └── settings.png
 ├── docker-compose.yml   # Docker Compose configuration
 ├── LICENSE             # MIT License
 └── README.md          # This file
@@ -190,6 +236,19 @@ To modify:
 2. Test locally by opening in a browser
 3. Commit and push changes
 
+### Running Locally
+
+```bash
+# Option 1: Open directly
+open src/index.html
+
+# Option 2: Use Python's simple HTTP server
+python3 -m http.server 8080 --directory src
+
+# Option 3: Use Node's http-server (if installed)
+npx http-server src -p 8080
+```
+
 ## 🤝 Contributing
 
 Contributions are welcome! Feel free to:
@@ -198,6 +257,19 @@ Contributions are welcome! Feel free to:
 3. Commit changes (`git commit -m 'Add some AmazingFeature'`)
 4. Push to branch (`git push origin feature/AmazingFeature`)
 5. Open a Pull Request
+
+## 🚧 Roadmap
+
+- [ ] Backend API integration for actual Docker monitoring
+- [ ] WebSocket support for real-time updates
+- [ ] Database persistence for settings and history
+- [ ] Docker Swarm support
+- [ ] Kubernetes support
+- [ ] Metrics and performance graphs
+- [ ] Container log viewer
+- [ ] Multi-user support with authentication
+- [ ] Export/import configuration
+- [ ] Mobile app
 
 ## 📝 License
 
@@ -212,6 +284,10 @@ MIT License - see [LICENSE](LICENSE) file for details
 ## 👤 Author
 
 Created by [darthnorse](https://github.com/darthnorse)
+
+## ⭐ Show Your Support
+
+Give a ⭐️ if this project helped you!
 
 ---
 

@@ -2679,7 +2679,9 @@
 
                     // Refresh hosts list from server to ensure we have complete data
                     await fetchHosts();
-                    renderHosts();
+
+                    // Refresh whatever page is currently active
+                    renderAll();
                     updateStats();
                     updateNavBadges();
                     closeModal('hostModal');

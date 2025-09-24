@@ -1616,6 +1616,9 @@
                     // Initialize dashboard if we're on that page and it hasn't been initialized
                     if (currentPage === 'dashboard' && grid === null) {
                         setTimeout(() => initDashboard(), 100);
+                    } else if (currentPage === 'dashboard' && grid !== null) {
+                        // Dashboard already exists, just refresh the widgets
+                        renderDashboardWidgets();
                     }
                     break;
 
@@ -3182,9 +3185,8 @@
         window.addEventListener('DOMContentLoaded', async () => {
             try {
                 await init();
-                if (currentPage === 'dashboard') {
-                    initDashboard();
-                }
+                // Dashboard will be initialized when WebSocket data arrives
+                // or when user navigates to dashboard page
             } catch (error) {
                 console.error('Failed to initialize application:', error);
                 // Don't show error toast - WebSocket will handle data delivery

@@ -338,30 +338,27 @@
             height: 100%;
         }
 
-        /* Responsive adjustments for 24-column grid */
-        .grid-stack-item[gs-w="24"] .stats-grid,
-        .grid-stack-item[gs-w="23"] .stats-grid,
-        .grid-stack-item[gs-w="22"] .stats-grid,
-        .grid-stack-item[gs-w="21"] .stats-grid,
-        .grid-stack-item[gs-w="20"] .stats-grid {
+        /* Responsive adjustments */
+        .grid-stack-item[gs-w="12"] .stats-grid {
             grid-template-columns: repeat(4, 1fr);
         }
 
-        .grid-stack-item[gs-w="19"] .stats-grid,
-        .grid-stack-item[gs-w="18"] .stats-grid,
-        .grid-stack-item[gs-w="17"] .stats-grid,
-        .grid-stack-item[gs-w="16"] .stats-grid,
-        .grid-stack-item[gs-w="15"] .stats-grid,
-        .grid-stack-item[gs-w="14"] .stats-grid,
-        .grid-stack-item[gs-w="13"] .stats-grid,
-        .grid-stack-item[gs-w="12"] .stats-grid {
+        .grid-stack-item[gs-w="8"] .stats-grid,
+        .grid-stack-item[gs-w="9"] .stats-grid,
+        .grid-stack-item[gs-w="10"] .stats-grid,
+        .grid-stack-item[gs-w="11"] .stats-grid {
             grid-template-columns: repeat(2, 1fr);
         }
 
-        .grid-stack-item[gs-w="11"] .stats-grid,
-        .grid-stack-item[gs-w="10"] .stats-grid,
-        .grid-stack-item[gs-w="9"] .stats-grid,
-        .grid-stack-item[gs-w="8"] .stats-grid {
+        .grid-stack-item[gs-w="4"] .stats-grid,
+        .grid-stack-item[gs-w="5"] .stats-grid,
+        .grid-stack-item[gs-w="6"] .stats-grid,
+        .grid-stack-item[gs-w="7"] .stats-grid {
+            grid-template-columns: repeat(2, 1fr);
+        }
+
+        .grid-stack-item[gs-w="3"] .stats-grid,
+        .grid-stack-item[gs-w="2"] .stats-grid {
             grid-template-columns: 1fr;
         }
 
@@ -372,31 +369,19 @@
             gap: var(--spacing-md);
         }
 
-        .grid-stack-item[gs-w="8"] .widget-hosts .hosts-grid,
-        .grid-stack-item[gs-w="7"] .widget-hosts .hosts-grid,
+        .grid-stack-item[gs-w="3"] .widget-hosts .hosts-grid,
+        .grid-stack-item[gs-w="4"] .widget-hosts .hosts-grid,
+        .grid-stack-item[gs-w="5"] .widget-hosts .hosts-grid,
         .grid-stack-item[gs-w="6"] .widget-hosts .hosts-grid {
             grid-template-columns: 1fr;
         }
 
-        .grid-stack-item[gs-w="12"] .widget-hosts .hosts-grid,
-        .grid-stack-item[gs-w="11"] .widget-hosts .hosts-grid,
+        .grid-stack-item[gs-w="7"] .widget-hosts .hosts-grid,
+        .grid-stack-item[gs-w="8"] .widget-hosts .hosts-grid,
+        .grid-stack-item[gs-w="9"] .widget-hosts .hosts-grid,
         .grid-stack-item[gs-w="10"] .widget-hosts .hosts-grid,
-        .grid-stack-item[gs-w="9"] .widget-hosts .hosts-grid {
-            grid-template-columns: 1fr;
-        }
-
-        .grid-stack-item[gs-w="24"] .widget-hosts .hosts-grid,
-        .grid-stack-item[gs-w="23"] .widget-hosts .hosts-grid,
-        .grid-stack-item[gs-w="22"] .widget-hosts .hosts-grid,
-        .grid-stack-item[gs-w="21"] .widget-hosts .hosts-grid,
-        .grid-stack-item[gs-w="20"] .widget-hosts .hosts-grid,
-        .grid-stack-item[gs-w="19"] .widget-hosts .hosts-grid,
-        .grid-stack-item[gs-w="18"] .widget-hosts .hosts-grid,
-        .grid-stack-item[gs-w="17"] .widget-hosts .hosts-grid,
-        .grid-stack-item[gs-w="16"] .widget-hosts .hosts-grid,
-        .grid-stack-item[gs-w="15"] .widget-hosts .hosts-grid,
-        .grid-stack-item[gs-w="14"] .widget-hosts .hosts-grid,
-        .grid-stack-item[gs-w="13"] .widget-hosts .hosts-grid {
+        .grid-stack-item[gs-w="11"] .widget-hosts .hosts-grid,
+        .grid-stack-item[gs-w="12"] .widget-hosts .hosts-grid {
             grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
         }
 
@@ -2981,12 +2966,12 @@
                 return;
             }
 
-            // Initialize GridStack with very flexible cells
+            // Initialize GridStack with better flexibility
             try {
                 grid = GridStack.init({
-                    column: 24,      // Double the columns for more flexibility
-                    cellHeight: 30,  // Even smaller cells
-                    margin: 3,       // Very tight margins
+                    column: 12,      // Keep standard 12 columns
+                    cellHeight: 40,  // Smaller cells for better control
+                    margin: 4,       // Tighter margins
                     animate: true,
                     float: true,
                     draggable: {
@@ -3021,16 +3006,16 @@
         }
 
         function createDefaultDashboard() {
-            // Stats Widget - adjusted for 24-column grid
+            // Stats Widget - proper size for stats display
             const statsWidget = createWidget('stats', 'Statistics', '📊', {
-                x: 0, y: 0, w: 24, h: 4,
-                minW: 8, minH: 4, maxH: 6
+                x: 0, y: 0, w: 12, h: 3,
+                minW: 4, minH: 3, maxH: 4
             });
 
-            // Hosts Overview Widget - adjusted for 24-column grid
+            // Hosts Overview Widget
             const hostsWidget = createWidget('hosts', 'Hosts Overview', '🖥️', {
-                x: 0, y: 4, w: 24, h: 12,
-                minW: 6, minH: 4
+                x: 0, y: 3, w: 12, h: 8,
+                minW: 3, minH: 3
             });
 
             // Use setTimeout to ensure widgets are fully created before rendering
@@ -3251,8 +3236,8 @@
 
         function getWidgetConfig(id) {
             const configs = {
-                'stats': { id: 'stats', title: 'Statistics', icon: '📊', minW: 8, minH: 4, maxH: 6 },
-                'hosts': { id: 'hosts', title: 'Hosts Overview', icon: '🖥️', minW: 6, minH: 4 }
+                'stats': { id: 'stats', title: 'Statistics', icon: '📊', minW: 4, minH: 3, maxH: 4 },
+                'hosts': { id: 'hosts', title: 'Hosts Overview', icon: '🖥️', minW: 3, minH: 3 }
             };
             return configs[id];
         }

@@ -1896,18 +1896,18 @@
         }
 
         function openGlobalSettings() {
-            document.getElementById('maxRetries').value = globalSettings.maxRetries;
-            document.getElementById('retryDelay').value = globalSettings.retryDelay;
-            document.getElementById('pollingInterval').value = globalSettings.pollingInterval;
-            document.getElementById('connectionTimeout').value = globalSettings.connectionTimeout;
-            
+            document.getElementById('maxRetries').value = globalSettings.max_retries;
+            document.getElementById('retryDelay').value = globalSettings.retry_delay;
+            document.getElementById('pollingInterval').value = globalSettings.polling_interval;
+            document.getElementById('connectionTimeout').value = globalSettings.connection_timeout;
+
             const defaultToggle = document.getElementById('defaultAutoRestart');
-            if (globalSettings.defaultAutoRestart) {
+            if (globalSettings.default_auto_restart) {
                 defaultToggle.classList.add('active');
             } else {
                 defaultToggle.classList.remove('active');
             }
-            
+
             document.getElementById('globalSettingsModal').classList.add('active');
         }
 
@@ -2203,11 +2203,11 @@
         }
 
         async function saveGlobalSettings() {
-            globalSettings.maxRetries = parseInt(document.getElementById('maxRetries').value);
-            globalSettings.retryDelay = parseInt(document.getElementById('retryDelay').value);
-            globalSettings.pollingInterval = parseInt(document.getElementById('pollingInterval').value);
-            globalSettings.connectionTimeout = parseInt(document.getElementById('connectionTimeout').value);
-            globalSettings.defaultAutoRestart = document.getElementById('defaultAutoRestart').classList.contains('active');
+            globalSettings.max_retries = parseInt(document.getElementById('maxRetries').value);
+            globalSettings.retry_delay = parseInt(document.getElementById('retryDelay').value);
+            globalSettings.polling_interval = parseInt(document.getElementById('pollingInterval').value);
+            globalSettings.connection_timeout = parseInt(document.getElementById('connectionTimeout').value);
+            globalSettings.default_auto_restart = document.getElementById('defaultAutoRestart').classList.contains('active');
             
             try {
                 const response = await fetch(`${API_BASE}/api/settings`, {

@@ -1194,7 +1194,10 @@
                     <label class="form-label">Monitor States</label>
                     <div class="checkbox-group">
                         <label class="checkbox-item">
-                            <input type="checkbox" checked data-state="stopped"> Running → Stopped
+                            <input type="checkbox" checked data-state="exited"> Running → Exited
+                        </label>
+                        <label class="checkbox-item">
+                            <input type="checkbox" data-state="stopped"> Running → Stopped
                         </label>
                         <label class="checkbox-item">
                             <input type="checkbox" checked data-state="paused"> Running → Paused
@@ -1204,6 +1207,9 @@
                         </label>
                         <label class="checkbox-item">
                             <input type="checkbox" data-state="running"> Paused → Running
+                        </label>
+                        <label class="checkbox-item">
+                            <input type="checkbox" data-state="running"> Exited → Running
                         </label>
                         <label class="checkbox-item">
                             <input type="checkbox" checked data-state="error"> Any → Error
@@ -1881,6 +1887,10 @@
                     document.querySelectorAll('#alertRuleModal input[type="checkbox"]').forEach(cb => cb.checked = false);
 
                     // Check boxes based on rule's trigger_states
+                    if (editRule.trigger_states && editRule.trigger_states.includes('exited')) {
+                        const exitedCheckbox = document.querySelector('input[type="checkbox"][data-state="exited"]');
+                        if (exitedCheckbox) exitedCheckbox.checked = true;
+                    }
                     if (editRule.trigger_states && editRule.trigger_states.includes('stopped')) {
                         const stoppedCheckbox = document.querySelector('input[type="checkbox"][data-state="stopped"]');
                         if (stoppedCheckbox) stoppedCheckbox.checked = true;

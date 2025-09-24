@@ -381,14 +381,46 @@
         }
 
         /* Compact layout for smaller widgets */
+        .grid-stack-item[gs-h="2"] .widget-hosts .container-list {
+            max-height: 60px;
+            overflow-y: auto;
+        }
+
         .grid-stack-item[gs-h="3"] .widget-hosts .container-list {
-            max-height: 120px;
+            max-height: 90px;
             overflow-y: auto;
         }
 
         .grid-stack-item[gs-h="4"] .widget-hosts .container-list {
-            max-height: 160px;
+            max-height: 130px;
             overflow-y: auto;
+        }
+
+        /* Make host cards more compact in small widgets */
+        .grid-stack-item[gs-w="3"] .host-card,
+        .grid-stack-item[gs-w="4"] .host-card {
+            padding: var(--spacing-sm);
+        }
+
+        .grid-stack-item[gs-w="3"] .host-header,
+        .grid-stack-item[gs-w="4"] .host-header {
+            margin-bottom: var(--spacing-sm);
+        }
+
+        .grid-stack-item[gs-w="3"] .container-item,
+        .grid-stack-item[gs-w="4"] .container-item {
+            padding: 4px 0;
+        }
+
+        /* Ensure stats grid is always visible */
+        .grid-stack-item[gs-h="3"] .stats-grid {
+            height: 100%;
+            align-content: center;
+        }
+
+        .grid-stack-item[gs-h="4"] .stats-grid {
+            height: 100%;
+            align-content: space-evenly;
         }
 
         /* Host card improvements */
@@ -451,10 +483,11 @@
         }
 
         .stat-label {
-            font-size: 13px;
-            color: var(--text-tertiary);
+            font-size: 12px;
+            color: var(--text-secondary); /* Made more visible */
             text-transform: uppercase;
             letter-spacing: 0.5px;
+            font-weight: 500;
         }
 
         .stat-change {
@@ -2928,12 +2961,12 @@
                 return;
             }
 
-            // Initialize GridStack
+            // Initialize GridStack with smaller cells for more flexibility
             try {
                 grid = GridStack.init({
                     column: 12,
-                    cellHeight: 80,
-                    margin: 10,
+                    cellHeight: 50,  // Reduced from 80 to 50 for more flexibility
+                    margin: 6,       // Reduced from 10 to 6 for tighter spacing
                     animate: true,
                     float: true,
                     draggable: {
@@ -2968,16 +3001,16 @@
         }
 
         function createDefaultDashboard() {
-            // Stats Widget
+            // Stats Widget - made taller to show labels properly
             const statsWidget = createWidget('stats', 'Statistics', '📊', {
-                x: 0, y: 0, w: 12, h: 2,
-                minW: 4, minH: 2, maxH: 3
+                x: 0, y: 0, w: 12, h: 3,
+                minW: 4, minH: 3, maxH: 4
             });
 
-            // Hosts Overview Widget
+            // Hosts Overview Widget - smaller minimum size
             const hostsWidget = createWidget('hosts', 'Hosts Overview', '🖥️', {
-                x: 0, y: 2, w: 12, h: 6,
-                minW: 4, minH: 3
+                x: 0, y: 3, w: 12, h: 8,
+                minW: 3, minH: 2  // Reduced minimum size
             });
 
             // Use setTimeout to ensure widgets are fully created before rendering
@@ -3197,8 +3230,8 @@
 
         function getWidgetConfig(id) {
             const configs = {
-                'stats': { id: 'stats', title: 'Statistics', icon: '📊', minW: 4, minH: 2, maxH: 3 },
-                'hosts': { id: 'hosts', title: 'Hosts Overview', icon: '🖥️', minW: 4, minH: 3 }
+                'stats': { id: 'stats', title: 'Statistics', icon: '📊', minW: 4, minH: 3, maxH: 4 },
+                'hosts': { id: 'hosts', title: 'Hosts Overview', icon: '🖥️', minW: 3, minH: 2 }
             };
             return configs[id];
         }

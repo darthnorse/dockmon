@@ -196,24 +196,14 @@ class NotificationService:
 
     def _format_message(self, event: AlertEvent, rule: AlertRuleDB) -> str:
         """Format alert message"""
-        state_emoji = {
-            'running': '✅',
-            'stopped': '⏹️',
-            'exited': '❌',
-            'paused': '⏸️',
-            'restarting': '🔄',
-            'removing': '🗑️',
-            'dead': '💀'
-        }.get(event.new_state, '🔔')
+        message = f"""🚨 **DockMon Alert**
 
-        message = f"""🐳 **DockMon Alert**
-
-{state_emoji} **Container:** `{event.container_name}`
-📍 **Host:** {event.host_name}
-🔄 **State Change:** `{event.old_state}` → `{event.new_state}`
-🖼️ **Image:** {event.image}
-⏰ **Time:** {event.timestamp.strftime('%Y-%m-%d %H:%M:%S')}
-📋 **Rule:** {rule.name}"""
+**Container:** `{event.container_name}`
+**Host:** {event.host_name}
+**State Change:** `{event.old_state}` → `{event.new_state}`
+**Image:** {event.image}
+**Time:** {event.timestamp.strftime('%Y-%m-%d %H:%M:%S')}
+**Rule:** {rule.name}"""
 
         return message
 
@@ -287,7 +277,7 @@ class NotificationService:
             # Strip markdown for Pushover
             plain_message = re.sub(r'\*\*(.*?)\*\*', r'\1', message)  # Bold
             plain_message = re.sub(r'`(.*?)`', r'\1', plain_message)   # Code
-            plain_message = re.sub(r'[🐳📍🔄🖼️⏰📋✅⏹️❌⏸️🔄🗑️💀🔔]', '', plain_message)  # Emojis
+            plain_message = re.sub(r'🚨', '', plain_message)  # Remove alert emoji
 
             # Determine priority based on state
             priority = 0  # Normal

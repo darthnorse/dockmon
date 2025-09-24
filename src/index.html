@@ -357,6 +357,16 @@
             border-color: var(--primary);
         }
 
+        .btn-danger {
+            background: var(--danger);
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #d32f2f;
+            transform: translateY(-1px);
+        }
+
         .btn-success {
             background: var(--success);
             color: white;
@@ -1989,7 +1999,7 @@
                 
                 // Populate container details
                 const detailsHtml = `
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px;">
                         <div>
                             <strong>Name:</strong> ${container.name}<br>
                             <strong>ID:</strong> ${container.short_id}<br>
@@ -1999,6 +2009,24 @@
                             <strong>State:</strong> <span class="${getStateClass(container.state)}">${container.state}</span><br>
                             <strong>Host:</strong> ${container.host_name}<br>
                             <strong>Created:</strong> ${new Date(container.created).toLocaleString()}<br>
+                        </div>
+                    </div>
+                    <div class="container-actions" style="display: flex; gap: 10px; flex-wrap: wrap;">
+                        ${container.state === 'running' ? `
+                            <button class="btn btn-danger" onclick="stopContainer('${container.host_id}', '${container.id}')">
+                                ⏹️ Stop Container
+                            </button>
+                        ` : `
+                            <button class="btn btn-primary" onclick="startContainer('${container.host_id}', '${container.id}')">
+                                ▶️ Start Container
+                            </button>
+                        `}
+                        <button class="btn btn-secondary" onclick="restartContainer('${container.host_id}', '${container.id}')">
+                            🔄 Restart Container
+                        </button>
+                        <div class="auto-restart-toggle ${container.auto_restart ? 'enabled' : ''}"
+                             onclick="toggleAutoRestart('${container.host_id}', '${container.id}', event)">
+                            <span>🔄 Auto-restart: ${container.auto_restart ? 'ON' : 'OFF'}</span>
                         </div>
                     </div>
                 `;
@@ -2169,6 +2197,40 @@
             } catch (error) {
                 console.error('Error restarting container:', error);
                 showToast('❌ Failed to restart container');
+            }
+        }
+
+        async function startContainer(hostId, containerId) {
+            try {
+                const response = await fetch(`${API_BASE}/api/hosts/${hostId}/containers/${containerId}/start`, {
+                    method: 'POST'
+                });
+
+                if (response.ok) {
+                    showToast('▶️ Container starting...');
+                } else {
+                    showToast('❌ Failed to start container');
+                }
+            } catch (error) {
+                console.error('Error starting container:', error);
+                showToast('❌ Failed to start container');
+            }
+        }
+
+        async function stopContainer(hostId, containerId) {
+            try {
+                const response = await fetch(`${API_BASE}/api/hosts/${hostId}/containers/${containerId}/stop`, {
+                    method: 'POST'
+                });
+
+                if (response.ok) {
+                    showToast('⏹️ Container stopping...');
+                } else {
+                    showToast('❌ Failed to stop container');
+                }
+            } catch (error) {
+                console.error('Error stopping container:', error);
+                showToast('❌ Failed to stop container');
             }
         }
 

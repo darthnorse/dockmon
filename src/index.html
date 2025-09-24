@@ -1583,16 +1583,22 @@
         // Handle incoming WebSocket messages
         function handleWebSocketMessage(message) {
             console.log('WebSocket message:', message.type);
-            
+
             switch(message.type) {
                 case 'initial_state':
                     hosts = message.data.hosts || [];
                     containers = message.data.containers || [];
                     globalSettings = message.data.settings || globalSettings;
                     alertRules = message.data.alerts || [];
+                    console.log('Received initial state - hosts:', hosts.length, 'containers:', containers.length);
                     renderAll();
+
+                    // Initialize dashboard if we're on that page and it hasn't been initialized
+                    if (currentPage === 'dashboard' && grid === null) {
+                        setTimeout(() => initDashboard(), 100);
+                    }
                     break;
-                    
+
                 case 'containers_update':
                     containers = message.data.containers || [];
                     hosts = message.data.hosts || [];
@@ -1652,25 +1658,45 @@
         // API Functions
         async function fetchHosts() {
             try {
-                const response = await fetch(`${API_BASE}/api/hosts`);
-                hosts = await response.json();
-                renderHosts();
-                updateStats();
+                const response = await fetch(`${API_BASE}/api/hosts`, {
+                    timeout: 10000
+                });
+                if (response.ok) {
+                    hosts = await response.json();
+                    console.log('Fetched hosts:', hosts.length);
+                } else {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
             } catch (error) {
                 console.error('Error fetching hosts:', error);
-                showToast('❌ Failed to fetch hosts');
+                // Don't show toast during initial load, WebSocket will handle it
+                if (hosts.length === 0) {
+                    console.log('Will wait for WebSocket data...');
+                } else {
+                    showToast('❌ Failed to fetch hosts');
+                }
             }
         }
 
         async function fetchContainers() {
             try {
-                const response = await fetch(`${API_BASE}/api/containers`);
-                containers = await response.json();
-                renderHosts();
-                updateStats();
+                const response = await fetch(`${API_BASE}/api/containers`, {
+                    timeout: 10000
+                });
+                if (response.ok) {
+                    containers = await response.json();
+                    console.log('Fetched containers:', containers.length);
+                } else {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
             } catch (error) {
                 console.error('Error fetching containers:', error);
-                showToast('❌ Failed to fetch containers');
+                // Don't show toast during initial load, WebSocket will handle it
+                if (containers.length === 0) {
+                    console.log('Will wait for WebSocket data...');
+                } else {
+                    showToast('❌ Failed to fetch containers');
+                }
             }
         }
 
@@ -1702,18 +1728,26 @@
 
         // Initialize
         async function init() {
-            // Connect WebSocket
-            connectWebSocket();
-            
-            // Fetch initial data
-            await Promise.all([
-                fetchHosts(),
-                fetchContainers(),
-                fetchSettings(),
-                fetchAlertRules()
-            ]);
-            
-            renderAll();
+            try {
+                // First establish WebSocket connection with a small delay
+                connectWebSocket();
+
+                // Give WebSocket a moment to connect, then fetch data as fallback
+                await new Promise(resolve => setTimeout(resolve, 1000));
+
+                // Fetch initial data with retries
+                await Promise.allSettled([
+                    fetchHosts(),
+                    fetchContainers(),
+                    fetchSettings(),
+                    fetchAlertRules()
+                ]);
+
+                renderAll();
+            } catch (error) {
+                console.error('Initialization error:', error);
+                showToast('⚠️ Some features may not work properly');
+            }
         }
 
         function renderAll() {
@@ -2924,7 +2958,6 @@
         }
 
         function renderDashboardWidgets() {
-            console.log('Rendering dashboard widgets - hosts:', hosts.length, 'containers:', containers.length);
 
             // Render stats widget
             const statsWidget = document.getElementById('widget-stats');

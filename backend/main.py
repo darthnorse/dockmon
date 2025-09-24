@@ -844,6 +844,16 @@ class AlertRuleCreate(BaseModel):
     cooldown_minutes: int = 15
     enabled: bool = True
 
+class AlertRuleUpdate(BaseModel):
+    """Request model for updating alert rules"""
+    name: Optional[str] = None
+    host_id: Optional[str] = None
+    container_pattern: Optional[str] = None
+    trigger_states: Optional[List[str]] = None
+    notification_channels: Optional[List[int]] = None
+    cooldown_minutes: Optional[int] = None
+    enabled: Optional[bool] = None
+
 @app.post("/api/alerts")
 async def create_alert_rule(rule: AlertRuleCreate):
     """Create a new alert rule"""
@@ -874,6 +884,35 @@ async def create_alert_rule(rule: AlertRuleCreate):
         }
     except Exception as e:
         logger.error(f"Failed to create alert rule: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.put("/api/alerts/{rule_id}")
+async def update_alert_rule(rule_id: str, updates: AlertRuleUpdate):
+    """Update an alert rule"""
+    try:
+        update_data = {k: v for k, v in updates.dict().items() if v is not None}
+        db_rule = monitor.db.update_alert_rule(rule_id, update_data)
+
+        if not db_rule:
+            raise HTTPException(status_code=404, detail="Alert rule not found")
+
+        return {
+            "id": db_rule.id,
+            "name": db_rule.name,
+            "host_id": db_rule.host_id,
+            "container_pattern": db_rule.container_pattern,
+            "trigger_states": db_rule.trigger_states,
+            "notification_channels": db_rule.notification_channels,
+            "cooldown_minutes": db_rule.cooldown_minutes,
+            "enabled": db_rule.enabled,
+            "last_triggered": db_rule.last_triggered.isoformat() if db_rule.last_triggered else None,
+            "created_at": db_rule.created_at.isoformat(),
+            "updated_at": db_rule.updated_at.isoformat()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update alert rule: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.delete("/api/alerts/{rule_id}")

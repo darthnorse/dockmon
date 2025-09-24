@@ -855,6 +855,11 @@
             margin-top: var(--spacing-sm);
         }
 
+        .alert-rule-actions {
+            display: flex;
+            gap: var(--spacing-xs);
+        }
+
         .channel-badge {
             padding: 2px 8px;
             border-radius: 4px;
@@ -1176,6 +1181,10 @@
             </div>
             <form onsubmit="createAlertRule(event)">
                 <div class="form-group">
+                    <label class="form-label">Rule Name</label>
+                    <input type="text" class="form-input" id="alertRuleName" placeholder="Enter a name for this alert rule" required>
+                </div>
+                <div class="form-group">
                     <label class="form-label">Select Container</label>
                     <select class="form-input" id="containerSelect" required>
                         <!-- Options will be populated dynamically -->
@@ -1185,19 +1194,19 @@
                     <label class="form-label">Monitor States</label>
                     <div class="checkbox-group">
                         <label class="checkbox-item">
-                            <input type="checkbox" checked> Running → Stopped
+                            <input type="checkbox" checked data-state="stopped"> Running → Stopped
                         </label>
                         <label class="checkbox-item">
-                            <input type="checkbox" checked> Running → Paused
+                            <input type="checkbox" checked data-state="paused"> Running → Paused
                         </label>
                         <label class="checkbox-item">
-                            <input type="checkbox"> Stopped → Running
+                            <input type="checkbox" data-state="running"> Stopped → Running
                         </label>
                         <label class="checkbox-item">
-                            <input type="checkbox"> Paused → Running
+                            <input type="checkbox" data-state="running"> Paused → Running
                         </label>
                         <label class="checkbox-item">
-                            <input type="checkbox" checked> Any → Error
+                            <input type="checkbox" checked data-state="error"> Any → Error
                         </label>
                     </div>
                 </div>
@@ -1395,6 +1404,7 @@
         let alertRules = [];
         let ws = null;
         let reconnectInterval = null;
+        let editingAlertRule = null; // Track which rule is being edited
         let reconnectAttempts = 0;
         const MAX_RECONNECT_ATTEMPTS = 10;
 
@@ -1704,9 +1714,14 @@
                         <div class="alert-rule-details">Monitoring: ${rule.states.join(', ')}</div>
                         <div class="alert-channels">${channelBadges}</div>
                     </div>
-                    <button class="btn-icon" onclick="deleteAlertRule(${rule.id})">
-                        🗑️
-                    </button>
+                    <div class="alert-rule-actions">
+                        <button class="btn-icon" onclick="editAlertRule('${rule.id}')" title="Edit Alert Rule">
+                            ✏️
+                        </button>
+                        <button class="btn-icon" onclick="deleteAlertRule('${rule.id}')" title="Delete Alert Rule">
+                            🗑️
+                        </button>
+                    </div>
                 `;
                 
                 alertRulesList.appendChild(ruleCard);
@@ -1755,7 +1770,24 @@
             document.getElementById('hostModal').classList.add('active');
         }
 
-        function openAlertRuleModal(preselectedContainer = null) {
+        function openAlertRuleModal(preselectedContainer = null, editRule = null) {
+            // Update modal title and button text based on mode
+            const modalTitle = document.querySelector('#alertRuleModal .modal-title');
+            const submitButton = document.querySelector('#alertRuleModal button[type="submit"]');
+
+            if (editRule) {
+                modalTitle.textContent = 'Edit Alert Rule';
+                submitButton.textContent = 'Update Alert Rule';
+                // Populate form with existing rule data
+                document.getElementById('alertRuleName').value = editRule.name || '';
+            } else {
+                modalTitle.textContent = 'Create Alert Rule';
+                submitButton.textContent = 'Create Alert Rule';
+                // Clear the form
+                document.getElementById('alertRuleName').value = '';
+                editingAlertRule = null;
+            }
+
             // Populate container dropdown with all available containers
             const containerSelect = document.getElementById('containerSelect');
             containerSelect.innerHTML = '';
@@ -1780,8 +1812,10 @@
                         option.value = `${container.host_id}:${container.id}`;
                         option.textContent = `${hostData.name} / ${container.name}`;
 
-                        // Pre-select if specified
+                        // Pre-select if specified or if editing and matches pattern
                         if (preselectedContainer && container.id === preselectedContainer.id) {
+                            option.selected = true;
+                        } else if (editRule && container.name === editRule.container_pattern) {
                             option.selected = true;
                         }
 
@@ -1792,6 +1826,34 @@
 
             // Populate notification channels
             populateNotificationChannels();
+
+            // If editing, populate form fields
+            if (editRule) {
+                // Set trigger state checkboxes
+                setTimeout(() => {
+                    // Clear all checkboxes first
+                    document.querySelectorAll('#alertRuleModal input[type="checkbox"]').forEach(cb => cb.checked = false);
+
+                    // Check boxes based on rule's trigger_states
+                    if (editRule.trigger_states && editRule.trigger_states.includes('stopped')) {
+                        document.querySelector('input[type="checkbox"][data-state="stopped"]')?.checked = true;
+                    }
+                    if (editRule.trigger_states && editRule.trigger_states.includes('paused')) {
+                        document.querySelector('input[type="checkbox"][data-state="paused"]')?.checked = true;
+                    }
+                    if (editRule.trigger_states && editRule.trigger_states.includes('error')) {
+                        document.querySelector('input[type="checkbox"][data-state="error"]')?.checked = true;
+                    }
+
+                    // Set notification channels
+                    if (editRule.notification_channels) {
+                        editRule.notification_channels.forEach(channelId => {
+                            const channelCheckbox = document.querySelector(`input[type="checkbox"][data-channel-id="${channelId}"]`);
+                            if (channelCheckbox) channelCheckbox.checked = true;
+                        });
+                    }
+                }, 100); // Small delay to ensure notification channels are loaded
+            }
 
             document.getElementById('alertRuleModal').classList.add('active');
         }
@@ -1892,6 +1954,23 @@
                 // Close current modal and open alert modal with pre-selected container
                 closeModal('containerModal');
                 openAlertRuleModal(container);
+            }
+        }
+
+        async function editAlertRule(ruleId) {
+            try {
+                // Find the rule in the current alertRules array
+                const rule = alertRules.find(r => r.id === ruleId);
+                if (!rule) {
+                    showToast('❌ Alert rule not found');
+                    return;
+                }
+
+                editingAlertRule = rule;
+                openAlertRuleModal(null, rule);
+            } catch (error) {
+                console.error('Error opening alert rule for editing:', error);
+                showToast('❌ Failed to open alert rule for editing');
             }
         }
 
@@ -2013,62 +2092,86 @@
 
         async function createAlertRule(event) {
             event.preventDefault();
-            
+
             const container = event.target.querySelector('select').value;
             const states = [];
             const channels = [];
-            
+
             // Get selected states
             event.target.querySelectorAll('input[type="checkbox"]:checked').forEach(cb => {
                 if (cb.name === 'channels') {
                     // This is a notification channel
                     channels.push(parseInt(cb.value));
+                } else if (cb.dataset.state) {
+                    // This is a state change - use data attribute for cleaner mapping
+                    states.push(cb.dataset.state);
                 } else {
-                    // This is a state change
-                    states.push(cb.parentElement.textContent.trim());
+                    // Fallback to text parsing for backwards compatibility
+                    states.push(cb.parentElement.textContent.trim().replace(/.*→\s*/, '').toLowerCase());
                 }
             });
-            
+
             // Parse container selection (format: "host_id:container_id")
             const [hostId, containerId] = container.split(':');
             const selectedContainer = containers.find(c => c.host_id === hostId && c.id === containerId);
 
-            const newRule = {
+            const ruleName = document.getElementById('alertRuleName').value;
+
+            const ruleData = {
+                name: ruleName,
+                host_id: hostId || null,
                 container_pattern: selectedContainer ? selectedContainer.name : container,
-                trigger_states: states.map(state => state.replace(/.*→\s*/, '').toLowerCase()),
+                trigger_states: states,
                 notification_channels: channels,
                 cooldown_minutes: 15,
                 enabled: true
             };
+
+            const isEditing = editingAlertRule !== null;
+            const url = isEditing ? `${API_BASE}/api/alerts/${editingAlertRule.id}` : `${API_BASE}/api/alerts`;
+            const method = isEditing ? 'PUT' : 'POST';
             
             try {
-                const response = await fetch(`${API_BASE}/api/alerts`, {
-                    method: 'POST',
+                const response = await fetch(url, {
+                    method: method,
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify(newRule)
+                    body: JSON.stringify(ruleData)
                 });
                 
                 if (response.ok) {
                     const rule = await response.json();
-                    alertRules.push(rule);
+
+                    if (isEditing) {
+                        // Update existing rule in array
+                        const index = alertRules.findIndex(r => r.id === editingAlertRule.id);
+                        if (index !== -1) {
+                            alertRules[index] = rule;
+                        }
+                        showToast('✅ Alert rule updated successfully!');
+                        editingAlertRule = null;
+                    } else {
+                        // Add new rule to array
+                        alertRules.push(rule);
+                        showToast('✅ Alert rule created successfully!');
+                    }
+
                     renderAlertRules();
                     updateStats();
                     updateNavBadges();
-                    showToast('✅ Alert rule created successfully!');
                     closeModal('alertRuleModal');
                 } else {
                     const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
-                    console.error('Alert creation failed:', errorData);
+                    console.error(`Alert ${isEditing ? 'update' : 'creation'} failed:`, errorData);
                     const errorMessage = typeof errorData.detail === 'string'
                         ? errorData.detail
                         : JSON.stringify(errorData.detail) || response.statusText;
-                    showToast(`❌ Failed to create alert: ${errorMessage}`);
+                    showToast(`❌ Failed to ${isEditing ? 'update' : 'create'} alert: ${errorMessage}`);
                 }
             } catch (error) {
-                console.error('Error creating alert rule:', error);
-                showToast('❌ Failed to create alert rule');
+                console.error(`Error ${editingAlertRule ? 'updating' : 'creating'} alert rule:`, error);
+                showToast(`❌ Failed to ${editingAlertRule ? 'update' : 'create'} alert rule`);
             }
         }
 

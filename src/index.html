@@ -663,6 +663,18 @@
             color: var(--danger);
         }
 
+        .status-starting {
+            background: rgba(144, 238, 144, 0.1);
+            color: #90ee90;
+            font-style: italic;
+        }
+
+        .status-stopping {
+            background: rgba(255, 165, 0, 0.1);
+            color: #ffa500;
+            font-style: italic;
+        }
+
         /* Container List */
         .container-list {
             padding: var(--spacing-md);
@@ -2721,6 +2733,11 @@
             if (container) {
                 // Store current container info globally for modal functions
                 window.currentContainer = container;
+
+                // Check if there's an alert rule for this container
+                const hasAlert = alertRules.some(rule =>
+                    new RegExp(rule.container_pattern).test(container.name)
+                );
                 
                 // Populate container details
                 const detailsHtml = `
@@ -2736,13 +2753,13 @@
                             <strong>Created:</strong> ${new Date(container.created).toLocaleString()}<br>
                         </div>
                     </div>
-                    <div class="container-actions" style="display: flex; gap: 10px; flex-wrap: wrap;">
+                    <div class="container-actions" style="display: flex; gap: 10px; flex-wrap: wrap;" id="container-actions-${container.short_id}">
                         ${container.state === 'running' ? `
-                            <button class="btn btn-danger" onclick="stopContainer('${container.host_id}', '${container.id}')">
+                            <button class="btn btn-danger" id="container-state-btn-${container.short_id}" onclick="stopContainer('${container.host_id}', '${container.id}')">
                                 ⏹️ Stop Container
                             </button>
                         ` : `
-                            <button class="btn btn-primary" onclick="startContainer('${container.host_id}', '${container.id}')">
+                            <button class="btn btn-primary" id="container-state-btn-${container.short_id}" onclick="startContainer('${container.host_id}', '${container.id}')">
                                 ▶️ Start Container
                             </button>
                         `}
@@ -2750,7 +2767,7 @@
                             🔄 Restart Container
                         </button>
                         <button class="btn btn-secondary" onclick="createAlertForContainer('${container.id}')">
-                            ⚡ Create Alert
+                            ⚡ ${hasAlert ? 'Edit Alert' : 'Create Alert'}
                         </button>
                         <div class="auto-restart-toggle ${container.auto_restart ? 'enabled' : ''}"
                              onclick="toggleAutoRestart('${container.host_id}', '${container.id}', event)">
@@ -2929,6 +2946,20 @@
         }
 
         async function startContainer(hostId, containerId) {
+            // Find container to update UI immediately
+            const container = containers.find(c => c.id === containerId);
+            if (container) {
+                // Update button immediately to show transitional state
+                const btn = document.getElementById(`container-state-btn-${container.short_id}`);
+                if (btn) {
+                    btn.innerHTML = '🔄 Starting...';
+                    btn.className = 'btn';
+                    btn.style.backgroundColor = '#90ee90';
+                    btn.style.color = '#333';
+                    btn.disabled = true;
+                }
+            }
+
             try {
                 const response = await fetch(`${API_BASE}/api/hosts/${hostId}/containers/${containerId}/start`, {
                     method: 'POST'
@@ -2938,14 +2969,50 @@
                     showToast('▶️ Container starting...');
                 } else {
                     showToast('❌ Failed to start container');
+                    // Revert button state on failure
+                    if (container) {
+                        const btn = document.getElementById(`container-state-btn-${container.short_id}`);
+                        if (btn) {
+                            btn.innerHTML = '▶️ Start Container';
+                            btn.className = 'btn btn-primary';
+                            btn.style.backgroundColor = '';
+                            btn.style.color = '';
+                            btn.disabled = false;
+                        }
+                    }
                 }
             } catch (error) {
                 console.error('Error starting container:', error);
                 showToast('❌ Failed to start container');
+                // Revert button state on error
+                if (container) {
+                    const btn = document.getElementById(`container-state-btn-${container.short_id}`);
+                    if (btn) {
+                        btn.innerHTML = '▶️ Start Container';
+                        btn.className = 'btn btn-primary';
+                        btn.style.backgroundColor = '';
+                        btn.style.color = '';
+                        btn.disabled = false;
+                    }
+                }
             }
         }
 
         async function stopContainer(hostId, containerId) {
+            // Find container to update UI immediately
+            const container = containers.find(c => c.id === containerId);
+            if (container) {
+                // Update button immediately to show transitional state
+                const btn = document.getElementById(`container-state-btn-${container.short_id}`);
+                if (btn) {
+                    btn.innerHTML = '🔄 Stopping...';
+                    btn.className = 'btn';
+                    btn.style.backgroundColor = '#ffa500';
+                    btn.style.color = '#fff';
+                    btn.disabled = true;
+                }
+            }
+
             try {
                 const response = await fetch(`${API_BASE}/api/hosts/${hostId}/containers/${containerId}/stop`, {
                     method: 'POST'
@@ -2955,10 +3022,32 @@
                     showToast('⏹️ Container stopping...');
                 } else {
                     showToast('❌ Failed to stop container');
+                    // Revert button state on failure
+                    if (container) {
+                        const btn = document.getElementById(`container-state-btn-${container.short_id}`);
+                        if (btn) {
+                            btn.innerHTML = '⏹️ Stop Container';
+                            btn.className = 'btn btn-danger';
+                            btn.style.backgroundColor = '';
+                            btn.style.color = '';
+                            btn.disabled = false;
+                        }
+                    }
                 }
             } catch (error) {
                 console.error('Error stopping container:', error);
                 showToast('❌ Failed to stop container');
+                // Revert button state on error
+                if (container) {
+                    const btn = document.getElementById(`container-state-btn-${container.short_id}`);
+                    if (btn) {
+                        btn.innerHTML = '⏹️ Stop Container';
+                        btn.className = 'btn btn-danger';
+                        btn.style.backgroundColor = '';
+                        btn.style.color = '';
+                        btn.disabled = false;
+                    }
+                }
             }
         }
 

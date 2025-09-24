@@ -126,18 +126,14 @@ class NotificationService:
         cooldown_key = f"{rule.id}:{container_key}"
 
         # Check if container recovered (went to a non-alert state) since last alert
-        last_known_state = self._last_container_state.get(container_key)
-
-        logger.info(f"State tracking for {container_key}: last_known={last_known_state}, current={event.new_state}")
-
-        # Update the last known state
-        self._last_container_state[container_key] = event.new_state
+        # Use old_state from the event, not our tracked state!
+        logger.info(f"State tracking for {container_key}: previous={event.old_state}, current={event.new_state}")
 
         # If container was in a "good" state (running) and now in "bad" state (exited),
         # this is a new incident - reset cooldown
         good_states = ['running', 'created']
-        if last_known_state in good_states and event.new_state in rule.trigger_states:
-            logger.info(f"Alert allowed: Container recovered ({last_known_state}) and failed again ({event.new_state})")
+        if event.old_state in good_states and event.new_state in rule.trigger_states:
+            logger.info(f"Alert allowed: Container recovered ({event.old_state}) and failed again ({event.new_state})")
             # Remove the cooldown for this container
             if cooldown_key in self._last_alerts:
                 del self._last_alerts[cooldown_key]

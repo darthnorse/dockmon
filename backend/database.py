@@ -11,6 +11,9 @@ from sqlalchemy.orm import sessionmaker, Session, relationship
 from sqlalchemy.pool import StaticPool
 import json
 import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 Base = declarative_base()
 

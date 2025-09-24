@@ -52,86 +52,67 @@ docker run -d -p 8080:80 --name dockmon dockmon
 
 ### Option 2: Proxmox LXC Container Deployment
 
-#### Step 1: Create LXC Container in Proxmox
+#### Automated Installation (Recommended)
 
-1. In Proxmox VE, click on your node
-2. Click "Create CT" button
-3. **General:**
-   - Node: Select your node
-   - CT ID: (auto-assigned or choose one)
-   - Hostname: `dockmon`
-   - Password: Set a root password
-4. **Template:**
-   - Template: `debian-12-standard` or `debian-13-standard`
-5. **Disks:**
-   - Disk size: 4GB is plenty
-6. **CPU:**
-   - Cores: 1 (minimum)
-7. **Memory:**
-   - Memory: 512MB
-   - Swap: 512MB
-8. **Network:**
-   - Bridge: `vmbr0` (or your preferred bridge)
-   - IPv4: DHCP or Static
-9. **DNS:**
-   - Use host settings or configure custom
-10. Click "Finish" and wait for container creation
-
-#### Step 2: Start and Access the Container
-
-1. Select your new container → Click "Start"
-2. Click "Console" or SSH into it:
+Run this single command on your Proxmox host:
 
 ```bash
-ssh root@<container-ip>
+curl -sSL https://raw.githubusercontent.com/darthnorse/dockmon/main/scripts/dockmon-lxc.sh | bash
 ```
 
-#### Step 3: Install DockMon
+Or download and run the script:
 
-Inside the LXC container, run:
+```bash
+wget https://raw.githubusercontent.com/darthnorse/dockmon/main/scripts/dockmon-lxc.sh
+chmod +x dockmon-lxc.sh
+./dockmon-lxc.sh
+```
+
+The script will:
+- Let you choose between Debian 12 or 13
+- Prompt for root password
+- Select storage location
+- Configure network settings
+- Create and start the container
+- Install DockMon automatically
+- Set up the `update` command for easy updates
+
+#### Keeping DockMon Updated
+
+Once installed, simply SSH into your container and run:
+
+```bash
+update
+```
+
+This will update both Debian and DockMon to the latest versions.
+
+#### Manual Installation (Alternative)
+
+If you prefer to create the container manually:
+
+1. Create an LXC container with Debian 12 or 13
+2. Start the container and SSH into it
+3. Run these commands:
 
 ```bash
 # Update system
 apt update && apt upgrade -y
 
-# Install git and nginx
+# Install dependencies
 apt install -y git nginx curl
 
-# Clone DockMon
+# Clone and install DockMon
 cd /opt
 git clone https://github.com/darthnorse/dockmon.git
-cd dockmon
+cp dockmon/src/index.html /var/www/html/index.html
 
-# Copy application file
-cp src/index.html /var/www/html/index.html
-
-# Configure nginx (optional - it works with defaults)
+# Start nginx
 systemctl restart nginx
 systemctl enable nginx
 ```
 
-#### Step 4: Access DockMon
-
-Open your browser and navigate to:
-
-```
-http://<lxc-container-ip>
-```
-
-#### Optional: Configure nginx for port 8080
-
-If you want to use port 8080 instead of 80:
-
-```bash
-# Edit nginx config
-nano /etc/nginx/sites-available/default
-
-# Find the line "listen 80 default_server;" and change to:
-# listen 8080 default_server;
-
-# Restart nginx
-systemctl restart nginx
-```
+Access DockMon at: `http://<container-ip>`
 
 ### Option 3: Direct Deployment (Any Linux Server)
 
@@ -218,6 +199,9 @@ dockmon/
 ├── docker/
 │   ├── Dockerfile       # Docker container definition
 │   └── nginx.conf       # Nginx configuration
+├── scripts/
+│   ├── dockmon-lxc.sh   # Automated Proxmox LXC deployment
+│   └── update.sh        # Update script for LXC containers
 ├── screenshots/         # Application screenshots
 │   ├── dashboard.png
 │   ├── containers.png

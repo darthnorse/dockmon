@@ -1463,6 +1463,9 @@
                     containers = message.data.containers || [];
                     hosts = message.data.hosts || [];
                     renderAll();
+
+                    // Refresh container modal if open
+                    refreshContainerModalIfOpen();
                     break;
                     
                 case 'host_added':
@@ -2013,6 +2016,22 @@
 
         function closeModal(modalId) {
             document.getElementById(modalId).classList.remove('active');
+        }
+
+        function refreshContainerModalIfOpen() {
+            const containerModal = document.getElementById('containerModal');
+            if (containerModal && containerModal.classList.contains('active')) {
+                // Find which container is currently displayed
+                const currentModalTitle = document.querySelector('#containerModal .modal-title').textContent;
+                const containerName = currentModalTitle.replace('Container Details - ', '');
+
+                // Find the updated container data
+                const updatedContainer = containers.find(c => c.name === containerName);
+                if (updatedContainer) {
+                    // Re-populate the modal with updated data
+                    showContainerModal(updatedContainer);
+                }
+            }
         }
 
         // Toggle functions

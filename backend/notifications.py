@@ -43,8 +43,10 @@ class NotificationService:
             # Get matching alert rules
             alert_rules = await self._get_matching_rules(event)
 
+            logger.info(f"Found {len(alert_rules) if alert_rules else 0} matching alert rules for {event.container_name}")
+
             if not alert_rules:
-                logger.debug(f"No alert rules match container {event.container_name}")
+                logger.warning(f"No alert rules match container {event.container_name} (state: {event.old_state} → {event.new_state})")
                 return False
 
             success_count = 0
@@ -363,6 +365,7 @@ class AlertProcessor:
             )
 
             # Send alert
+            logger.info(f"Sending alert for container {container.name}: {previous_state} → {current_state}")
             await self.notification_service.send_alert(alert_event)
 
     def get_container_states(self) -> Dict[str, str]:

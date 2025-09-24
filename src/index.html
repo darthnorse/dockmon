@@ -1407,6 +1407,7 @@
         let reconnectInterval = null;
         let editingAlertRule = null; // Track which rule is being edited
         let reconnectAttempts = 0;
+        let isConnecting = false; // Prevent multiple simultaneous connections
         const MAX_RECONNECT_ATTEMPTS = 10;
 
         // API Base URL - backend always runs on port 8080
@@ -1415,14 +1416,27 @@
 
         // Initialize WebSocket connection
         function connectWebSocket() {
+            // Prevent multiple simultaneous connection attempts
+            if (isConnecting) {
+                console.log('Connection attempt already in progress, skipping...');
+                return;
+            }
+
+            // Close existing connection if any
+            if (ws && ws.readyState !== WebSocket.CLOSED) {
+                ws.close();
+            }
+
             console.log('Connecting to WebSocket:', WS_URL);
-            
+            isConnecting = true;
+
             ws = new WebSocket(WS_URL);
             
             ws.onopen = function() {
                 console.log('WebSocket connected');
                 showToast('✅ Connected to backend');
                 reconnectAttempts = 0;
+                isConnecting = false;
                 if (reconnectInterval) {
                     clearInterval(reconnectInterval);
                     reconnectInterval = null;
@@ -1437,11 +1451,13 @@
             ws.onerror = function(error) {
                 console.error('WebSocket error:', error);
                 showToast('⚠️ Connection error');
+                isConnecting = false; // Reset flag on error
             };
-            
+
             ws.onclose = function() {
                 console.log('WebSocket disconnected');
                 showToast('🔌 Disconnected - attempting to reconnect...');
+                isConnecting = false; // Reset flag on close
                 attemptReconnect();
             };
         }
@@ -1496,14 +1512,23 @@
                 showToast('❌ Could not reconnect to backend');
                 return;
             }
-            
-            if (!reconnectInterval) {
-                reconnectInterval = setInterval(() => {
-                    reconnectAttempts++;
-                    console.log(`Reconnect attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}`);
-                    connectWebSocket();
-                }, 5000);
+
+            // Clear any existing reconnect interval
+            if (reconnectInterval) {
+                clearInterval(reconnectInterval);
+                reconnectInterval = null;
             }
+
+            // Use exponential backoff: 2s, 4s, 8s, 16s, then 30s
+            const delay = Math.min(2000 * Math.pow(2, reconnectAttempts), 30000);
+
+            console.log(`Will attempt reconnect in ${delay}ms (attempt ${reconnectAttempts + 1}/${MAX_RECONNECT_ATTEMPTS})`);
+
+            setTimeout(() => {
+                reconnectAttempts++;
+                console.log(`Reconnect attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}`);
+                connectWebSocket();
+            }, delay);
         }
 
         // API Functions

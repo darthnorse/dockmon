@@ -820,6 +820,7 @@ async def update_settings(settings: GlobalSettings):
 async def get_alert_rules():
     """Get all alert rules"""
     rules = monitor.db.get_alert_rules(enabled_only=False)
+    logger.info(f"Retrieved {len(rules)} alert rules from database")
     return [{
         "id": rule.id,
         "name": rule.name,
@@ -859,6 +860,7 @@ async def create_alert_rule(rule: AlertRuleCreate):
     """Create a new alert rule"""
     try:
         rule_id = str(uuid.uuid4())
+        logger.info(f"Creating alert rule: {rule.name} for container: {rule.container_pattern}")
         db_rule = monitor.db.add_alert_rule({
             "id": rule_id,
             "name": rule.name,
@@ -869,6 +871,7 @@ async def create_alert_rule(rule: AlertRuleCreate):
             "cooldown_minutes": rule.cooldown_minutes,
             "enabled": rule.enabled
         })
+        logger.info(f"Successfully created alert rule with ID: {db_rule.id}")
         return {
             "id": db_rule.id,
             "name": db_rule.name,

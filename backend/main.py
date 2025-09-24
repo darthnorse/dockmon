@@ -263,9 +263,11 @@ class DockerMonitor:
             # Remove the existing host from memory first
             if host_id in self.hosts:
                 # Stop event monitoring for this host
+                logger.info(f"Stopping event monitoring for host {host_id}")
                 self.realtime.stop_event_monitoring(host_id)
                 # Close existing client
                 if host_id in self.clients:
+                    logger.info(f"Closing Docker client for host {host_id}")
                     self.clients[host_id].close()
                     del self.clients[host_id]
                 # Remove from memory
@@ -336,6 +338,7 @@ class DockerMonitor:
             self.hosts[host.id] = host
 
             # Start Docker event monitoring for this host
+            logger.info(f"Starting event monitoring for updated host {host.id}")
             asyncio.create_task(self.realtime.start_event_monitor(client, host.id))
 
             # Log host update

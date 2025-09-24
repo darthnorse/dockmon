@@ -1678,9 +1678,7 @@
         // API Functions
         async function fetchHosts() {
             try {
-                const response = await fetch(`${API_BASE}/api/hosts`, {
-                    timeout: 10000
-                });
+                const response = await fetch(`${API_BASE}/api/hosts`);
                 if (response.ok) {
                     hosts = await response.json();
                     console.log('Fetched hosts:', hosts.length);
@@ -1700,9 +1698,7 @@
 
         async function fetchContainers() {
             try {
-                const response = await fetch(`${API_BASE}/api/containers`, {
-                    timeout: 10000
-                });
+                const response = await fetch(`${API_BASE}/api/containers`);
                 if (response.ok) {
                     containers = await response.json();
                     console.log('Fetched containers:', containers.length);
@@ -1755,18 +1751,28 @@
                 // Give WebSocket a moment to connect, then fetch data as fallback
                 await new Promise(resolve => setTimeout(resolve, 1000));
 
-                // Fetch initial data with retries
-                await Promise.allSettled([
+                // Fetch initial data with fallback handling
+                const results = await Promise.allSettled([
                     fetchHosts(),
                     fetchContainers(),
                     fetchSettings(),
                     fetchAlertRules()
                 ]);
 
+                // Check if any critical operations failed
+                const criticalFailures = results.filter((result, index) =>
+                    result.status === 'rejected' && index < 2 // hosts and containers are critical
+                );
+
+                if (criticalFailures.length > 0) {
+                    console.warn('Some API calls failed, relying on WebSocket data');
+                }
+
                 renderAll();
             } catch (error) {
                 console.error('Initialization error:', error);
-                showToast('⚠️ Some features may not work properly');
+                // Only show warning for actual initialization failures, not API failures
+                showToast('⚠️ Application initialization failed');
             }
         }
 

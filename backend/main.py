@@ -262,6 +262,8 @@ class DockerMonitor:
         try:
             # Remove the existing host from memory first
             if host_id in self.hosts:
+                # Stop event monitoring for this host
+                self.realtime.stop_event_monitoring(host_id)
                 # Close existing client
                 if host_id in self.clients:
                     self.clients[host_id].close()

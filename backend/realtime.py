@@ -215,6 +215,13 @@ class RealtimeMonitor:
         task = asyncio.create_task(self._monitor_docker_events(client, host_id))
         self.event_tasks[host_id] = task
 
+    def stop_event_monitoring(self, host_id: str):
+        """Stop event monitoring for a specific host"""
+        if host_id in self.event_tasks:
+            logger.info(f"Stopping Docker event monitoring for host {host_id}")
+            self.event_tasks[host_id].cancel()
+            del self.event_tasks[host_id]
+
     async def _monitor_docker_events(self, client: docker.DockerClient, host_id: str):
         """Monitor and broadcast Docker events"""
         logger.info(f"Starting Docker event monitoring for host {host_id}")

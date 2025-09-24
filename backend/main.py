@@ -259,17 +259,24 @@ class DockerMonitor:
 
     def update_host(self, host_id: str, config: DockerHostConfig):
         """Update an existing Docker host"""
+        logger.info(f"Starting update for host {host_id}")
+        logger.debug(f"Update config: name={config.name}, url={config.url}, has_certs={bool(config.tls_cert)}")
+
         try:
             # Remove the existing host from memory first
+            logger.debug(f"Removing host {host_id} from memory")
             if host_id in self.hosts:
                 # Close existing client
                 if host_id in self.clients:
+                    logger.debug(f"Closing existing client for host {host_id}")
                     self.clients[host_id].close()
                     del self.clients[host_id]
                 # Remove from memory
                 del self.hosts[host_id]
+                logger.debug(f"Host {host_id} removed from memory")
 
             # Update database
+            logger.debug(f"Updating database for host {host_id}")
             updated_db_host = self.db.update_host(host_id, {
                 'name': config.name,
                 'url': config.url,
@@ -279,15 +286,23 @@ class DockerMonitor:
             })
 
             if not updated_db_host:
+                logger.error(f"Host {host_id} not found in database")
                 raise Exception(f"Host {host_id} not found in database")
 
+            logger.debug(f"Database updated successfully for host {host_id}")
+
             # Create new Docker client with updated config
+            logger.debug(f"Creating new Docker client for {config.url}")
+
             if config.url.startswith("unix://"):
+                logger.debug("Creating Unix socket client")
                 client = docker.DockerClient(base_url=config.url)
             else:
                 # For TCP connections
+                logger.debug("Creating TCP client")
                 tls_config = None
                 if config.tls_cert and config.tls_key:
+                    logger.debug("Setting up TLS configuration")
                     # Write temporary files for TLS configuration
                     temp_dir = tempfile.mkdtemp()
                     cert_file = os.path.join(temp_dir, 'cert.pem')
@@ -307,6 +322,10 @@ class DockerMonitor:
                         ca_cert=ca_file,
                         verify=bool(config.tls_ca)
                     )
+                    logger.debug(f"TLS config created with cert={cert_file}, key={key_file}, ca={ca_file}")
+                else:
+                    logger.debug("No TLS configuration - using plain TCP")
+
                 client = docker.DockerClient(
                     base_url=config.url,
                     tls=tls_config,
@@ -314,12 +333,17 @@ class DockerMonitor:
                 )
 
             # Test connection
+            logger.debug(f"Testing connection to {config.url}")
             client.ping()
+            logger.debug("Connection test successful")
 
             # Validate TLS configuration
+            logger.debug("Validating host security")
             security_status = self._validate_host_security(config)
+            logger.debug(f"Security status: {security_status}")
 
             # Create host object with existing ID
+            logger.debug(f"Creating host object with ID {host_id}")
             host = DockerHost(
                 id=host_id,
                 name=config.name,
@@ -329,13 +353,16 @@ class DockerMonitor:
             )
 
             # Store client and host
+            logger.debug("Storing client and host in memory")
             self.clients[host.id] = client
             self.hosts[host.id] = host
 
             # Start Docker event monitoring for this host
+            logger.debug("Starting event monitoring")
             asyncio.create_task(self.realtime.start_event_monitor(client, host.id))
 
             # Log host update
+            logger.debug("Logging host connection event")
             self.event_logger.log_host_connection(
                 host_name=host.name,
                 host_id=host.id,
@@ -343,11 +370,11 @@ class DockerMonitor:
                 connected=True
             )
 
-            logger.info(f"Updated host {host_id}: {host.name} ({host.url})")
+            logger.info(f"Successfully updated host {host_id}: {host.name} ({host.url})")
             return host
 
         except Exception as e:
-            logger.error(f"Failed to update host {host_id}: {e}")
+            logger.error(f"Failed to update host {host_id} at step: {e}", exc_info=True)
             raise
 
     def get_containers(self, host_id: Optional[str] = None) -> List[Container]:

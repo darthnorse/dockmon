@@ -2103,7 +2103,11 @@
                         promises.push(fetch(`${API_BASE}/api/notifications/channels/${telegramChannel.id}`, {
                             method: 'PUT',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(telegramData)
+                            body: JSON.stringify({
+                                name: telegramData.name,
+                                config: telegramData.config,
+                                enabled: telegramData.enabled
+                            })
                         }));
                     } else {
                         promises.push(fetch(`${API_BASE}/api/notifications/channels`, {
@@ -2128,7 +2132,11 @@
                         promises.push(fetch(`${API_BASE}/api/notifications/channels/${discordChannel.id}`, {
                             method: 'PUT',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(discordData)
+                            body: JSON.stringify({
+                                name: discordData.name,
+                                config: discordData.config,
+                                enabled: discordData.enabled
+                            })
                         }));
                     } else {
                         promises.push(fetch(`${API_BASE}/api/notifications/channels`, {
@@ -2153,7 +2161,11 @@
                         promises.push(fetch(`${API_BASE}/api/notifications/channels/${pushoverChannel.id}`, {
                             method: 'PUT',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(pushoverData)
+                            body: JSON.stringify({
+                                name: pushoverData.name,
+                                config: pushoverData.config,
+                                enabled: pushoverData.enabled
+                            })
                         }));
                     } else {
                         promises.push(fetch(`${API_BASE}/api/notifications/channels`, {
@@ -2164,8 +2176,19 @@
                     }
                 }
 
-                // Wait for all requests to complete
-                await Promise.all(promises);
+                // Wait for all requests to complete and check for errors
+                const responses = await Promise.all(promises);
+
+                // Check if any request failed
+                for (const response of responses) {
+                    if (!response.ok) {
+                        const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
+                        const errorMessage = typeof errorData.detail === 'string'
+                            ? errorData.detail
+                            : JSON.stringify(errorData.detail) || response.statusText;
+                        throw new Error(`API Error: ${errorMessage}`);
+                    }
+                }
 
                 showToast('✅ Notification settings saved!');
                 closeModal('notificationModal');
@@ -2175,7 +2198,7 @@
 
             } catch (error) {
                 console.error('Error saving notification settings:', error);
-                showToast('❌ Failed to save notification settings');
+                showToast(`❌ Failed to save notification settings: ${error.message}`);
             }
         }
 

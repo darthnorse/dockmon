@@ -162,7 +162,7 @@ class DockerMonitor:
         self.cleanup_task: Optional[asyncio.Task] = None  # Background cleanup task
         self._load_persistent_config()  # Load saved hosts and configs
         
-    def add_host(self, config: DockerHostConfig) -> DockerHost:
+    def add_host(self, config: DockerHostConfig, existing_id: str = None) -> DockerHost:
         """Add a new Docker host to monitor"""
         try:
             # Create Docker client
@@ -182,12 +182,13 @@ class DockerMonitor:
                     tls=tls_config,
                     timeout=self.settings.connection_timeout
                 )
-            
+
             # Test connection
             client.ping()
-            
-            # Create host object
+
+            # Create host object with existing ID if provided (for persistence after restarts)
             host = DockerHost(
+                id=existing_id or str(uuid.uuid4()),
                 name=config.name,
                 url=config.url,
                 status="online"
@@ -578,8 +579,8 @@ class DockerMonitor:
                         tls_key=db_host.tls_key,
                         tls_ca=db_host.tls_ca
                     )
-                    # Try to connect to the host
-                    self.add_host(config)
+                    # Try to connect to the host with existing ID
+                    self.add_host(config, existing_id=db_host.id)
                 except Exception as e:
                     logger.error(f"Failed to reconnect to saved host {db_host.name}: {e}")
 

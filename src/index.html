@@ -1540,11 +1540,17 @@
         async function fetchAlertRules() {
             try {
                 const response = await fetch(`${API_BASE}/api/alerts`);
-                alertRules = await response.json();
-                renderAlertRules();
-                updateNavBadges();
+                if (response.ok) {
+                    alertRules = await response.json() || [];
+                    renderAlertRules();
+                    updateNavBadges();
+                } else {
+                    console.warn('Failed to fetch alert rules:', response.status);
+                    alertRules = [];
+                }
             } catch (error) {
                 console.error('Error fetching alert rules:', error);
+                alertRules = [];
             }
         }
 
@@ -1557,8 +1563,8 @@
             await Promise.all([
                 fetchHosts(),
                 fetchContainers(),
-                fetchSettings()
-                // Temporarily disabled: fetchAlertRules()
+                fetchSettings(),
+                fetchAlertRules()
             ]);
             
             renderAll();

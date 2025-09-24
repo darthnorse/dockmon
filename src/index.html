@@ -333,9 +333,10 @@
         /* Stats Grid */
         .stats-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-            gap: var(--spacing-md);
+            grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+            gap: var(--spacing-sm);
             height: 100%;
+            padding: var(--spacing-sm);
         }
 
         /* Responsive adjustments */
@@ -418,14 +419,28 @@
         }
 
         /* Ensure stats grid is always visible */
-        .grid-stack-item[gs-h="3"] .stats-grid {
-            height: 100%;
+        .grid-stack-item[gs-h="4"] .stats-grid,
+        .grid-stack-item[gs-h="5"] .stats-grid,
+        .grid-stack-item[gs-h="6"] .stats-grid {
             align-content: center;
+            align-items: stretch;
         }
 
-        .grid-stack-item[gs-h="4"] .stats-grid {
-            height: 100%;
-            align-content: space-evenly;
+        /* Make stat cards smaller in compact widgets */
+        .grid-stack-item[gs-w="4"] .stat-card,
+        .grid-stack-item[gs-w="5"] .stat-card {
+            min-height: 60px;
+            padding: var(--spacing-sm);
+        }
+
+        .grid-stack-item[gs-w="4"] .stat-value,
+        .grid-stack-item[gs-w="5"] .stat-value {
+            font-size: 20px;
+        }
+
+        .grid-stack-item[gs-w="4"] .stat-label,
+        .grid-stack-item[gs-w="5"] .stat-label {
+            font-size: 10px;
         }
 
         /* Host card improvements */
@@ -446,10 +461,16 @@
             background: var(--surface);
             border: 1px solid var(--border);
             border-radius: 8px;
-            padding: var(--spacing-lg);
+            padding: var(--spacing-md);
             position: relative;
             overflow: hidden;
             transition: var(--transition);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            min-height: 80px;
         }
 
         .stat-card:hover {
@@ -481,18 +502,21 @@
         }
 
         .stat-value {
-            font-size: 28px;
+            font-size: 24px;
             font-weight: 700;
             color: var(--text-primary);
-            margin-bottom: var(--spacing-xs);
+            margin: var(--spacing-xs) 0;
+            line-height: 1;
         }
 
         .stat-label {
-            font-size: 12px;
-            color: var(--text-secondary); /* Made more visible */
+            font-size: 11px;
+            color: var(--text-primary); /* Made highly visible */
             text-transform: uppercase;
             letter-spacing: 0.5px;
-            font-weight: 500;
+            font-weight: 600;
+            margin-top: var(--spacing-xs);
+            opacity: 0.8;
         }
 
         .stat-change {
@@ -3006,15 +3030,15 @@
         }
 
         function createDefaultDashboard() {
-            // Stats Widget - proper size for stats display
+            // Stats Widget - taller to ensure content fits
             const statsWidget = createWidget('stats', 'Statistics', '📊', {
-                x: 0, y: 0, w: 12, h: 3,
-                minW: 4, minH: 3, maxH: 4
+                x: 0, y: 0, w: 12, h: 4,
+                minW: 4, minH: 4, maxH: 6
             });
 
             // Hosts Overview Widget
             const hostsWidget = createWidget('hosts', 'Hosts Overview', '🖥️', {
-                x: 0, y: 3, w: 12, h: 8,
+                x: 0, y: 4, w: 12, h: 8,
                 minW: 3, minH: 3
             });
 
@@ -3236,7 +3260,7 @@
 
         function getWidgetConfig(id) {
             const configs = {
-                'stats': { id: 'stats', title: 'Statistics', icon: '📊', minW: 4, minH: 3, maxH: 4 },
+                'stats': { id: 'stats', title: 'Statistics', icon: '📊', minW: 4, minH: 4, maxH: 6 },
                 'hosts': { id: 'hosts', title: 'Hosts Overview', icon: '🖥️', minW: 3, minH: 3 }
             };
             return configs[id];

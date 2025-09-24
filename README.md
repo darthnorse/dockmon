@@ -161,7 +161,7 @@ systemctl start nginx supervisor
 ```
 
 **Access URLs:**
-- **Frontend:** `http://<container-ip>`
+- **Frontend:** `http://<container-ip>:8000`
 - **Backend API:** `http://<container-ip>:8080`
 
 ### Option 3: Direct Deployment (Any Linux Server)
@@ -399,7 +399,7 @@ Coming soon:
 
 ```bash
 docker pull darthnorse/dockmon:latest
-docker run -d -p 8080:80 darthnorse/dockmon:latest
+docker run -d -p 8000:8000 -p 8080:8080 darthnorse/dockmon:latest
 ```
 
 ## 📁 Project Structure

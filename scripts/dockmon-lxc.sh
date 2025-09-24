@@ -33,8 +33,7 @@ SSH_KEY=""  # Optional: path to SSH public key file
 START_ON_BOOT="1"  # 1 for yes, 0 for no
 PROXMOX_NODE=$(hostname)
 
-# Template configuration
-TEMPLATE_BASE_URL="http://download.proxmox.com/images/system"
+# Template options
 DEBIAN_12_TEMPLATE="debian-12-standard_12.2-1_amd64.tar.zst"
 DEBIAN_13_TEMPLATE="debian-13-standard_13.0-1_amd64.tar.zst"
 
@@ -335,7 +334,7 @@ if [ -z "$CONTAINER_ID" ]; then
 fi
 echo ""
 
-# Download and prepare template
+# Download and prepare template dynamically
 echo -e "${CYAN}Step 6: Template Preparation${NC}"
 echo "══════════════════════════════════════"
 
@@ -579,6 +578,33 @@ cp /opt/dockmon/src/index.html /var/www/html/index.html
 
 # Update frontend to point to backend API (if needed)
 sed -i 's|http://localhost:8080|http://localhost:8080|g' /var/www/html/index.html
+
+# Configure nginx to serve on port 8000
+echo "Configuring nginx for port 8000..."
+cat << 'NGINX_CONF' > /etc/nginx/sites-available/dockmon
+server {
+    listen 8000 default_server;
+    listen [::]:8000 default_server;
+
+    root /var/www/html;
+    index index.html;
+
+    server_name _;
+
+    location / {
+        try_files \$uri \$uri/ =404;
+    }
+
+    # Optional: Add some basic security headers
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+}
+NGINX_CONF
+
+# Enable the new site and disable default
+ln -sf /etc/nginx/sites-available/dockmon /etc/nginx/sites-enabled/
+rm -f /etc/nginx/sites-enabled/default
 
 # Configure nginx to start on boot
 systemctl enable nginx
@@ -884,7 +910,7 @@ echo "Start on Boot:    $([ $START_ON_BOOT -eq 1 ] && echo 'Yes' || echo 'No')"
 echo ""
 echo -e "${BLUE}Access DockMon:${NC}"
 echo "══════════════════════════════════════"
-echo -e "Web Interface:    ${GREEN}http://$CONTAINER_IP${NC}"
+echo -e "Web Interface:    ${GREEN}http://$CONTAINER_IP:8000${NC}"
 echo -e "SSH Access:       ${GREEN}ssh root@$CONTAINER_IP${NC}"
 echo ""
 echo -e "${BLUE}Container Management:${NC}"
@@ -897,7 +923,7 @@ echo "Remove:    pct destroy $CONTAINER_ID"
 echo ""
 echo -e "${YELLOW}Notes:${NC}"
 echo "• Template used: $TEMPLATE (downloaded automatically)"
-echo "• Frontend (nginx) serves on port 80"
+echo "• Frontend (nginx) serves on port 8000"
 echo "• Backend API runs on port 8080"
 echo "• Root password: (the password you set)"
 echo "• Services: dockmon-backend, dockmon-frontend, nginx, supervisor"

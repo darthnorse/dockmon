@@ -262,14 +262,16 @@ class DockerMonitor:
         try:
             # Remove the existing host from memory first
             if host_id in self.hosts:
-                # Stop event monitoring for this host
-                logger.info(f"Stopping event monitoring for host {host_id}")
-                self.realtime.stop_event_monitoring(host_id)
-                # Close existing client
+                # Close existing client first (this should stop the monitoring task)
                 if host_id in self.clients:
                     logger.info(f"Closing Docker client for host {host_id}")
                     self.clients[host_id].close()
                     del self.clients[host_id]
+
+                # Then explicitly stop event monitoring
+                logger.info(f"Stopping event monitoring for host {host_id}")
+                self.realtime.stop_event_monitoring(host_id)
+
                 # Remove from memory
                 del self.hosts[host_id]
 

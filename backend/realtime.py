@@ -221,6 +221,18 @@ class RealtimeMonitor:
             logger.info(f"Stopping Docker event monitoring for host {host_id}")
             self.event_tasks[host_id].cancel()
             del self.event_tasks[host_id]
+        else:
+            logger.info(f"No active event monitoring found for host {host_id} (already stopped)")
+
+        # Also clean up any lingering tasks that might not be tracked properly
+        # This is a safety net for edge cases
+        import asyncio
+        all_tasks = asyncio.all_tasks()
+        for task in all_tasks:
+            # Check if this task looks like a monitoring task for this host
+            if hasattr(task, '_host_id') and task._host_id == host_id:
+                logger.info(f"Found and cancelling orphaned monitoring task for host {host_id}")
+                task.cancel()
 
     async def _monitor_docker_events(self, client: docker.DockerClient, host_id: str):
         """Monitor and broadcast Docker events"""

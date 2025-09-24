@@ -1432,6 +1432,12 @@
                         </button>
                     </div>
                 </div>
+                <div class="form-group">
+                    <label class="form-label">Cooldown Period (minutes)</label>
+                    <input type="number" class="form-input" id="cooldownMinutes" min="1" max="1440" value="15"
+                           placeholder="Minutes between alerts">
+                    <small style="color: var(--text-tertiary);">Minimum time between alerts for the same container (default: 15 minutes)</small>
+                </div>
                 <button type="submit" class="btn btn-primary" style="width: 100%;">
                     Create Alert Rule
                 </button>
@@ -2103,8 +2109,35 @@
             if (editRule) {
                 modalTitle.textContent = 'Edit Alert Rule';
                 submitButton.textContent = 'Update Alert Rule';
+                // Store the rule being edited
+                editingAlertRule = editRule;
                 // Populate form with existing rule data
                 document.getElementById('alertRuleName').value = editRule.name || '';
+
+                // We'll populate other fields after the form is built
+                setTimeout(() => {
+                    // Select trigger states
+                    if (editRule.trigger_states) {
+                        editRule.trigger_states.forEach(state => {
+                            const checkbox = document.querySelector(`input[value="${state}"]`);
+                            if (checkbox) checkbox.checked = true;
+                        });
+                    }
+
+                    // Select notification channels
+                    if (editRule.notification_channels) {
+                        editRule.notification_channels.forEach(channelId => {
+                            const checkbox = document.querySelector(`input[value="${channelId}"]`);
+                            if (checkbox) checkbox.checked = true;
+                        });
+                    }
+
+                    // Set cooldown
+                    const cooldownInput = document.getElementById('cooldownMinutes');
+                    if (cooldownInput && editRule.cooldown_minutes) {
+                        cooldownInput.value = editRule.cooldown_minutes;
+                    }
+                }, 100);
             } else {
                 modalTitle.textContent = 'Create Alert Rule';
                 submitButton.textContent = 'Create Alert Rule';
@@ -2140,8 +2173,18 @@
                         // Pre-select if specified or if editing and matches pattern
                         if (preselectedContainer && container.id === preselectedContainer.id) {
                             option.selected = true;
-                        } else if (editRule && container.name === editRule.container_pattern) {
-                            option.selected = true;
+                        } else if (editRule) {
+                            // Check if this container matches the rule pattern
+                            try {
+                                if (new RegExp(editRule.container_pattern).test(container.name)) {
+                                    option.selected = true;
+                                }
+                            } catch (e) {
+                                // Fallback to exact match if regex fails
+                                if (container.name === editRule.container_pattern) {
+                                    option.selected = true;
+                                }
+                            }
                         }
 
                         containerSelect.appendChild(option);
@@ -2283,9 +2326,25 @@
             // Find the container
             const container = containers.find(c => c.id === containerId);
             if (container) {
-                // Close current modal and open alert modal with pre-selected container
+                // Check if there's an existing alert rule for this container
+                const existingRule = alertRules.find(rule => {
+                    try {
+                        return new RegExp(rule.container_pattern).test(container.name);
+                    } catch (e) {
+                        return rule.container_pattern === container.name;
+                    }
+                });
+
+                // Close current modal
                 closeModal('containerModal');
-                openAlertRuleModal(container);
+
+                if (existingRule) {
+                    // Edit existing rule
+                    openAlertRuleModal(container, existingRule);
+                } else {
+                    // Create new rule with container pre-selected
+                    openAlertRuleModal(container);
+                }
             }
         }
 
@@ -2460,6 +2519,7 @@
             const selectedContainer = containers.find(c => c.host_id === hostId && c.id === containerId);
 
             const ruleName = document.getElementById('alertRuleName').value;
+            const cooldownMinutes = parseInt(document.getElementById('cooldownMinutes').value) || 15;
 
             const ruleData = {
                 name: ruleName,
@@ -2467,7 +2527,7 @@
                 container_pattern: selectedContainer ? selectedContainer.name : container,
                 trigger_states: states,
                 notification_channels: channels,
-                cooldown_minutes: 15,
+                cooldown_minutes: cooldownMinutes,
                 enabled: true
             };
 

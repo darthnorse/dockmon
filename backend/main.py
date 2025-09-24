@@ -163,7 +163,7 @@ class DockerMonitor:
         self.cleanup_task: Optional[asyncio.Task] = None  # Background cleanup task
         self._load_persistent_config()  # Load saved hosts and configs
         
-    def add_host(self, config: DockerHostConfig, existing_id: str = None, skip_db_insert: bool = False) -> DockerHost:
+    def add_host(self, config: DockerHostConfig, existing_id: str = None) -> DockerHost:
         """Add a new Docker host to monitor"""
         try:
             # Create Docker client
@@ -203,16 +203,15 @@ class DockerMonitor:
             self.clients[host.id] = client
             self.hosts[host.id] = host
 
-            # Save to database (unless skipped for updates)
-            if not skip_db_insert:
-                db_host = self.db.add_host({
-                    'id': host.id,
-                    'name': config.name,
-                    'url': config.url,
-                    'tls_cert': config.tls_cert,
-                    'tls_key': config.tls_key,
-                    'tls_ca': config.tls_ca
-                })
+            # Save to database
+            db_host = self.db.add_host({
+                'id': host.id,
+                'name': config.name,
+                'url': config.url,
+                'tls_cert': config.tls_cert,
+                'tls_key': config.tls_key,
+                'tls_ca': config.tls_ca
+            })
 
             # Start Docker event monitoring for this host
             asyncio.create_task(self.realtime.start_event_monitor(client, host.id))
@@ -258,34 +257,14 @@ class DockerMonitor:
 
     def update_host(self, host_id: str, config: DockerHostConfig):
         """Update an existing Docker host"""
-        # Remove the existing host first
-        if host_id in self.hosts:
-            # Close existing client
-            if host_id in self.clients:
-                self.clients[host_id].close()
-                del self.clients[host_id]
+        # Remove the old host
+        self.remove_host(host_id)
 
-            # Remove from memory
-            del self.hosts[host_id]
+        # Add the host back with the same ID and updated config
+        host = self.add_host(config, existing_id=host_id)
 
-        # Update database first
-        self.db.update_host(host_id, {
-            'name': config.name,
-            'url': config.url,
-            'tls_cert': config.tls_cert,
-            'tls_key': config.tls_key,
-            'tls_ca': config.tls_ca
-        })
-
-        # Use the existing add_host logic but skip database INSERT
-        try:
-            # Temporarily store the existing ID to prevent new ID generation
-            host = self.add_host(config, existing_id=host_id, skip_db_insert=True)
-            logger.info(f"Updated host {host_id}: {host.name} ({host.url})")
-            return host
-        except Exception as e:
-            logger.error(f"Failed to update host {host_id}: {e}")
-            raise
+        logger.info(f"Updated host {host_id}: {host.name} ({host.url})")
+        return host
 
     def get_containers(self, host_id: Optional[str] = None) -> List[Container]:
         """Get containers from one or all hosts"""

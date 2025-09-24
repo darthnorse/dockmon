@@ -220,39 +220,56 @@ class RealtimeMonitor:
         logger.info(f"Starting Docker event monitoring for host {host_id}")
 
         try:
-            # Get event generator
+            # Get event generator with timeout to prevent blocking
             events = client.events(decode=True, filters={"type": "container"})
 
-            for event in events:
-                if not self.event_subscribers:
-                    break  # No subscribers, stop monitoring
+            # Use asyncio to make the blocking iterator non-blocking
+            loop = asyncio.get_event_loop()
 
-                # Parse event
-                docker_event = DockerEvent(
-                    action=event.get("Action", ""),
-                    container_id=event.get("id", "")[:12],
-                    container_name=event.get("Actor", {}).get("Attributes", {}).get("name", ""),
-                    image=event.get("Actor", {}).get("Attributes", {}).get("image", ""),
-                    host_id=host_id,
-                    timestamp=datetime.fromtimestamp(event.get("time", 0)).isoformat(),
-                    attributes=event.get("Actor", {}).get("Attributes", {})
-                )
+            while self.event_subscribers:
+                try:
+                    # Use run_in_executor to make the blocking next() call non-blocking
+                    event = await asyncio.wait_for(
+                        loop.run_in_executor(None, lambda: next(events, None)),
+                        timeout=5.0
+                    )
 
-                # Broadcast to all subscribers
-                dead_sockets = []
-                for websocket in self.event_subscribers:
-                    try:
-                        await websocket.send_text(json.dumps({
-                            "type": "docker_event",
-                            "data": asdict(docker_event)
-                        }, cls=DateTimeEncoder))
-                    except Exception as e:
-                        logger.error(f"Error sending event to websocket: {e}")
-                        dead_sockets.append(websocket)
+                    if event is None:
+                        break
 
-                # Clean up dead sockets
-                for ws in dead_sockets:
-                    await self.unsubscribe_from_events(ws)
+                    # Parse event
+                    docker_event = DockerEvent(
+                        action=event.get("Action", ""),
+                        container_id=event.get("id", "")[:12],
+                        container_name=event.get("Actor", {}).get("Attributes", {}).get("name", ""),
+                        image=event.get("Actor", {}).get("Attributes", {}).get("image", ""),
+                        host_id=host_id,
+                        timestamp=datetime.fromtimestamp(event.get("time", 0)).isoformat(),
+                        attributes=event.get("Actor", {}).get("Attributes", {})
+                    )
+
+                    # Broadcast to all subscribers
+                    dead_sockets = []
+                    for websocket in self.event_subscribers:
+                        try:
+                            await websocket.send_text(json.dumps({
+                                "type": "docker_event",
+                                "data": asdict(docker_event)
+                            }, cls=DateTimeEncoder))
+                        except Exception as e:
+                            logger.error(f"Error sending event to websocket: {e}")
+                            dead_sockets.append(websocket)
+
+                    # Clean up dead sockets
+                    for ws in dead_sockets:
+                        await self.unsubscribe_from_events(ws)
+
+                except asyncio.TimeoutError:
+                    # Timeout is normal - just continue the loop
+                    continue
+                except Exception as e:
+                    logger.error(f"Error in event monitoring loop: {e}")
+                    await asyncio.sleep(1)  # Brief pause before retrying
 
                 # Small delay to prevent overwhelming
                 await asyncio.sleep(0.1)

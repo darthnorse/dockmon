@@ -24,34 +24,34 @@ A comprehensive Docker container monitoring and management platform with real-ti
 
 ## ✨ Core Features
 
-### 🖥️ **Multi-Host Docker Monitoring**
+### **Multi-Host Docker Monitoring**
 - Monitor containers across unlimited Docker hosts (local and remote)
 - Real-time container status tracking with WebSocket updates
 - Support for TCP/TLS and Unix socket connections
 - Automatic host connection health monitoring
 
-### 📐 **Customizable Widget Dashboard**
+### **Customizable Widget Dashboard**
 - **Drag-and-drop interface** for intuitive dashboard customization
 - **Resizable widgets** for personalized dashboard layouts
 - **Persistent layout** saves your custom arrangement
 - **Lock/unlock mode** to prevent accidental changes
 - **12-column responsive grid** adapts to any screen size
 
-### 🔄 **Intelligent Auto-Restart System**
+### **Intelligent Auto-Restart System**
 - Per-container auto-restart configuration
 - Configurable retry attempts (0-10) and delays (5-300 seconds)
 - Smart failure detection with exponential backoff
 - Automatic disable after max attempts reached
 - Comprehensive logging of all restart attempts
 
-### 🔔 **Advanced Alerting & Notifications**
+### **Advanced Alerting & Notifications**
 - **Multi-channel support:** Discord, Telegram, Pushover
 - **Flexible alert rules** with regex pattern matching
 - **Cooldown periods** to prevent notification spam
 - **State-based triggers** (container start, stop, crash, etc.)
 - **Real-time notification delivery** with success tracking
 
-### 📊 **Comprehensive Event Logging**
+### **Comprehensive Event Logging**
 - **Complete audit trail** of all container and system events
 - **Structured event categorization** (container, host, system, alert, notification)
 - **Severity levels** (debug, info, warning, error, critical)
@@ -634,12 +634,6 @@ Contributions are welcome! Feel free to:
 ## 📝 License
 
 MIT License - see [LICENSE](LICENSE) file for details
-
-## 🙏 Acknowledgments
-
-- UI design inspired by [Portainer](https://www.portainer.io/)
-- Built with vanilla HTML, CSS, and JavaScript
-- No external dependencies
 
 ## 👤 Author
 

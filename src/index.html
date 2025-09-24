@@ -2022,7 +2022,10 @@
                 } else {
                     const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
                     console.error('Alert creation failed:', errorData);
-                    showToast(`❌ Failed to create alert: ${errorData.detail || response.statusText}`);
+                    const errorMessage = typeof errorData.detail === 'string'
+                        ? errorData.detail
+                        : JSON.stringify(errorData.detail) || response.statusText;
+                    showToast(`❌ Failed to create alert: ${errorMessage}`);
                 }
             } catch (error) {
                 console.error('Error creating alert rule:', error);

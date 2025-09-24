@@ -1611,14 +1611,19 @@
                     globalSettings = message.data.settings || globalSettings;
                     alertRules = message.data.alerts || [];
                     console.log('Received initial state - hosts:', hosts.length, 'containers:', containers.length);
+                    console.log('Current page:', currentPage, 'Grid exists:', grid !== null);
+
                     renderAll();
 
-                    // Initialize dashboard if we're on that page and it hasn't been initialized
-                    if (currentPage === 'dashboard' && grid === null) {
-                        setTimeout(() => initDashboard(), 100);
-                    } else if (currentPage === 'dashboard' && grid !== null) {
-                        // Dashboard already exists, just refresh the widgets
-                        renderDashboardWidgets();
+                    // Initialize dashboard if we're on that page
+                    if (currentPage === 'dashboard') {
+                        if (grid === null) {
+                            console.log('Initializing dashboard with WebSocket data...');
+                            setTimeout(() => initDashboard(), 100);
+                        } else {
+                            console.log('Refreshing existing dashboard widgets...');
+                            renderDashboardWidgets();
+                        }
                     }
                     break;
 
@@ -2907,34 +2912,52 @@
         let dashboardLocked = false;
 
         function initDashboard() {
-            // Initialize GridStack
-            grid = GridStack.init({
-                column: 12,
-                cellHeight: 80,
-                margin: 10,
-                animate: true,
-                float: true,
-                draggable: {
-                    handle: '.widget-header'
-                },
-                resizable: {
-                    handles: 'e, se, s, sw, w'
-                }
-            }, '#dashboard-grid');
+            console.log('initDashboard called');
 
-            // Load saved layout or use default
-            const savedLayout = localStorage.getItem('dashboardLayout');
-            if (savedLayout) {
-                loadDashboardLayout(JSON.parse(savedLayout));
-            } else {
-                createDefaultDashboard();
+            // Check if dashboard grid container exists
+            const dashboardGridElement = document.getElementById('dashboard-grid');
+            if (!dashboardGridElement) {
+                console.error('Dashboard grid element not found!');
+                return;
             }
 
-            // Save layout on change
-            grid.on('change', saveDashboardLayout);
+            // Initialize GridStack
+            try {
+                grid = GridStack.init({
+                    column: 12,
+                    cellHeight: 80,
+                    margin: 10,
+                    animate: true,
+                    float: true,
+                    draggable: {
+                        handle: '.widget-header'
+                    },
+                    resizable: {
+                        handles: 'e, se, s, sw, w'
+                    }
+                }, '#dashboard-grid');
 
-            // Render widgets with current data
-            renderDashboardWidgets();
+                console.log('GridStack initialized successfully');
+
+                // Load saved layout or use default
+                const savedLayout = localStorage.getItem('dashboardLayout');
+                if (savedLayout) {
+                    console.log('Loading saved dashboard layout');
+                    loadDashboardLayout(JSON.parse(savedLayout));
+                } else {
+                    console.log('Creating default dashboard layout');
+                    createDefaultDashboard();
+                }
+
+                // Save layout on change
+                grid.on('change', saveDashboardLayout);
+
+                // Render widgets with current data
+                renderDashboardWidgets();
+                console.log('Dashboard initialization completed');
+            } catch (error) {
+                console.error('Failed to initialize dashboard:', error);
+            }
         }
 
         function createDefaultDashboard() {

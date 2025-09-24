@@ -1703,15 +1703,15 @@
             alertRules.forEach(rule => {
                 const ruleCard = document.createElement('div');
                 ruleCard.className = 'alert-rule-card';
-                
-                const channelBadges = rule.channels.map(channel => 
+
+                const channelBadges = (rule.notification_channels || []).map(channel =>
                     `<span class="channel-badge channel-${channel}">${channel}</span>`
                 ).join('');
-                
+
                 ruleCard.innerHTML = `
                     <div class="alert-rule-info">
-                        <div class="alert-rule-title">${rule.container}</div>
-                        <div class="alert-rule-details">Monitoring: ${rule.states.join(', ')}</div>
+                        <div class="alert-rule-title">${rule.name || rule.container_pattern}</div>
+                        <div class="alert-rule-details">Container: ${rule.container_pattern} | States: ${(rule.trigger_states || []).join(', ')}</div>
                         <div class="alert-channels">${channelBadges}</div>
                     </div>
                     <div class="alert-rule-actions">

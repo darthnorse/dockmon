@@ -140,7 +140,7 @@ class DockerMonitor:
         self.clients: Dict[str, DockerClient] = {}
         self.db = DatabaseManager()  # Initialize database
         self.settings = self.db.get_settings()  # Load settings from DB
-        self.alert_rules: List[AlertRule] = []
+        self.alert_rules: List[AlertRule] = self._load_alert_rules()  # Load alert rules from DB
         self.notification_settings = NotificationSettings()
         self.auto_restart_status: Dict[str, bool] = {}
         self.restart_attempts: Dict[str, int] = {}
@@ -590,6 +590,35 @@ class DockerMonitor:
         except Exception as e:
             logger.error(f"Error loading persistent config: {e}")
 
+    def _load_alert_rules(self) -> List[AlertRule]:
+        """Load alert rules from database"""
+        try:
+            db_rules = self.db.get_alert_rules(enabled_only=False)
+            alert_rules = []
+            for rule in db_rules:
+                alert_rule = AlertRule(
+                    id=rule.id,
+                    name=rule.name,
+                    host_id=rule.host_id,
+                    container_pattern=rule.container_pattern,
+                    trigger_states=rule.trigger_states,
+                    notification_channels=rule.notification_channels,
+                    cooldown_minutes=rule.cooldown_minutes,
+                    enabled=rule.enabled,
+                    created_at=rule.created_at,
+                    last_triggered=rule.last_triggered
+                )
+                alert_rules.append(alert_rule)
+            logger.info(f"Loaded {len(alert_rules)} alert rules from database")
+            return alert_rules
+        except Exception as e:
+            logger.error(f"Error loading alert rules: {e}")
+            return []
+
+    def refresh_alert_rules(self):
+        """Refresh alert rules from database"""
+        self.alert_rules = self._load_alert_rules()
+
     def _get_auto_restart_status(self, host_id: str, container_id: str) -> bool:
         """Get auto-restart status for a container"""
         # Check in-memory cache first
@@ -872,6 +901,10 @@ async def create_alert_rule(rule: AlertRuleCreate):
             "enabled": rule.enabled
         })
         logger.info(f"Successfully created alert rule with ID: {db_rule.id}")
+
+        # Refresh in-memory alert rules
+        monitor.refresh_alert_rules()
+
         return {
             "id": db_rule.id,
             "name": db_rule.name,
@@ -899,6 +932,9 @@ async def update_alert_rule(rule_id: str, updates: AlertRuleUpdate):
         if not db_rule:
             raise HTTPException(status_code=404, detail="Alert rule not found")
 
+        # Refresh in-memory alert rules
+        monitor.refresh_alert_rules()
+
         return {
             "id": db_rule.id,
             "name": db_rule.name,
@@ -925,6 +961,10 @@ async def delete_alert_rule(rule_id: str):
         success = monitor.db.delete_alert_rule(rule_id)
         if not success:
             raise HTTPException(status_code=404, detail="Alert rule not found")
+
+        # Refresh in-memory alert rules
+        monitor.refresh_alert_rules()
+
         return {"status": "success", "message": f"Alert rule {rule_id} deleted"}
     except HTTPException:
         raise
@@ -1347,6 +1387,7 @@ async def websocket_endpoint(websocket: WebSocket):
             "alerts": [r.dict() for r in monitor.alert_rules]
         }
     }
+    logger.info(f"Sending initial_state with {len(monitor.alert_rules)} alert rules via WebSocket")
     await websocket.send_text(json.dumps(initial_state, cls=DateTimeEncoder))
 
     try:

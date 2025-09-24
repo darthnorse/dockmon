@@ -1170,10 +1170,8 @@
             <form onsubmit="createAlertRule(event)">
                 <div class="form-group">
                     <label class="form-label">Select Container</label>
-                    <select class="form-input" required>
-                        <option>production-server / nginx-web</option>
-                        <option>production-server / postgres-db</option>
-                        <option>staging-server / app-backend</option>
+                    <select class="form-input" id="containerSelect" required>
+                        <!-- Options will be populated dynamically -->
                     </select>
                 </div>
                 <div class="form-group">
@@ -1753,12 +1751,56 @@
             document.getElementById('hostModal').classList.add('active');
         }
 
-        function openAlertRuleModal() {
+        function openAlertRuleModal(preselectedContainer = null) {
+            // Populate container dropdown with all available containers
+            const containerSelect = document.getElementById('containerSelect');
+            containerSelect.innerHTML = '';
+
+            // Group containers by host for better organization
+            const containersByHost = {};
+            hosts.forEach(host => {
+                containersByHost[host.id] = { name: host.name, containers: [] };
+            });
+
+            containers.forEach(container => {
+                if (containersByHost[container.host_id]) {
+                    containersByHost[container.host_id].containers.push(container);
+                }
+            });
+
+            // Add options to select
+            Object.values(containersByHost).forEach(hostData => {
+                if (hostData.containers.length > 0) {
+                    hostData.containers.forEach(container => {
+                        const option = document.createElement('option');
+                        option.value = `${container.host_id}:${container.id}`;
+                        option.textContent = `${hostData.name} / ${container.name}`;
+
+                        // Pre-select if specified
+                        if (preselectedContainer && container.id === preselectedContainer.id) {
+                            option.selected = true;
+                        }
+
+                        containerSelect.appendChild(option);
+                    });
+                }
+            });
+
             document.getElementById('alertRuleModal').classList.add('active');
         }
 
         function openNotificationSettings() {
             document.getElementById('notificationModal').classList.add('active');
+        }
+
+        function createAlertForContainer(containerId) {
+            // Find the container
+            const container = containers.find(c => c.id === containerId);
+            if (container) {
+                // Close current modal and open alert modal with pre-selected container
+                closeModal('containerModal');
+                openAlertRuleModal(container);
+            }
         }
 
         function openGlobalSettings() {
@@ -2023,6 +2065,9 @@
                         `}
                         <button class="btn btn-secondary" onclick="restartContainer('${container.host_id}', '${container.id}')">
                             🔄 Restart Container
+                        </button>
+                        <button class="btn btn-secondary" onclick="createAlertForContainer('${container.id}')">
+                            ⚡ Create Alert
                         </button>
                         <div class="auto-restart-toggle ${container.auto_restart ? 'enabled' : ''}"
                              onclick="toggleAutoRestart('${container.host_id}', '${container.id}', event)">

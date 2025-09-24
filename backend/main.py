@@ -57,6 +57,7 @@ class DockerHost(BaseModel):
     name: str
     url: str
     status: str = "offline"
+    security_status: Optional[str] = None  # "secure", "insecure", "unknown"
     last_checked: datetime = Field(default_factory=datetime.now)
     container_count: int = 0
     error: Optional[str] = None
@@ -186,12 +187,16 @@ class DockerMonitor:
             # Test connection
             client.ping()
 
+            # Validate TLS configuration for TCP connections
+            security_status = self._validate_host_security(config)
+
             # Create host object with existing ID if provided (for persistence after restarts)
             host = DockerHost(
                 id=existing_id or str(uuid.uuid4()),
                 name=config.name,
                 url=config.url,
-                status="online"
+                status="online",
+                security_status=security_status
             )
             
             # Store client and host
@@ -225,7 +230,20 @@ class DockerMonitor:
         except Exception as e:
             logger.error(f"Failed to add host {config.name}: {e}")
             raise HTTPException(status_code=400, detail=str(e))
-    
+
+    def _validate_host_security(self, config: DockerHostConfig) -> str:
+        """Validate the security configuration of a Docker host"""
+        if config.url.startswith("unix://"):
+            return "secure"  # Unix sockets are secure (local only)
+        elif config.url.startswith("tcp://"):
+            if config.tls_cert and config.tls_key and config.tls_ca:
+                return "secure"  # Has TLS certificates
+            else:
+                logger.warning(f"Host {config.name} configured without TLS - connection is insecure!")
+                return "insecure"  # TCP without TLS
+        else:
+            return "unknown"  # Unknown protocol
+
     def remove_host(self, host_id: str):
         """Remove a Docker host"""
         if host_id in self.hosts:

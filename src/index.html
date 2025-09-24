@@ -675,6 +675,43 @@
             font-style: italic;
         }
 
+        .security-warning {
+            color: #ff6b35;
+            margin-left: 8px;
+            font-size: 14px;
+            cursor: help;
+        }
+
+        .security-alert {
+            background: linear-gradient(135deg, #ff6b35, #f7931e);
+            color: white;
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            border-left: 4px solid #e55039;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .security-alert strong {
+            font-weight: 600;
+        }
+
+        .form-input[name$="-text"] {
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            line-height: 1.4;
+            resize: vertical;
+            min-height: 80px;
+        }
+
+        .form-input[name$="-text"]::placeholder {
+            font-family: inherit;
+            color: var(--text-tertiary);
+            opacity: 0.7;
+        }
+
         /* Container List */
         .container-list {
             padding: var(--spacing-md);
@@ -1358,17 +1395,76 @@
                 <button class="modal-close" onclick="closeModal('hostModal')">✕</button>
             </div>
             <form onsubmit="addHost(event)">
+                <div class="security-alert" id="security-warning" style="display: none;">
+                    <span>⚠️</span>
+                    <div>
+                        <strong>Security Warning:</strong> This connection is not encrypted! Anyone on the network can take control of your Docker host.
+                        <a href="https://github.com/darthnorse/dockmon#-security-mtls-configuration-strongly-recommended" target="_blank" style="color: white; text-decoration: underline;">Learn how to set up mTLS</a>
+                    </div>
+                </div>
+
                 <div class="form-group">
                     <label class="form-label">Host Name</label>
                     <input type="text" name="hostname" class="form-input" placeholder="Production Server" required>
                 </div>
                 <div class="form-group">
                     <label class="form-label">Host URL</label>
-                    <input type="text" name="hosturl" class="form-input" placeholder="tcp://192.168.1.100:2376" required>
+                    <input type="text" name="hosturl" class="form-input" placeholder="tcp://192.168.1.100:2376" required
+                           onchange="checkHostSecurity(this.value)">
+                    <small style="color: var(--text-tertiary);">
+                        Examples: <code>unix:///var/run/docker.sock</code> (local), <code>tcp://host:2376</code> (remote with mTLS)
+                    </small>
                 </div>
-                <div class="form-group">
-                    <label class="form-label">API Key (Optional)</label>
-                    <input type="text" class="form-input" placeholder="Enter API key if required">
+
+                <div class="form-group" id="tls-certificates" style="display: none;">
+                    <label class="form-label">TLS Certificates (Required for secure remote connections)</label>
+
+                    <div style="margin-bottom: 15px;">
+                        <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                            <button type="button" class="btn btn-secondary" style="flex: 1;" onclick="switchCertMode('file')" id="cert-mode-file">
+                                📁 Upload Files
+                            </button>
+                            <button type="button" class="btn btn-secondary" style="flex: 1;" onclick="switchCertMode('paste')" id="cert-mode-paste">
+                                📋 Copy/Paste
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- File Upload Mode -->
+                    <div id="cert-upload-mode" style="display: grid; gap: 10px;">
+                        <div>
+                            <label style="font-size: 14px; color: var(--text-secondary);">CA Certificate (ca.pem)</label>
+                            <input type="file" name="tlsca-file" class="form-input" accept=".pem,.crt">
+                        </div>
+                        <div>
+                            <label style="font-size: 14px; color: var(--text-secondary);">Client Certificate (client-cert.pem)</label>
+                            <input type="file" name="tlscert-file" class="form-input" accept=".pem,.crt">
+                        </div>
+                        <div>
+                            <label style="font-size: 14px; color: var(--text-secondary);">Client Key (client-key.pem)</label>
+                            <input type="file" name="tlskey-file" class="form-input" accept=".pem,.key">
+                        </div>
+                    </div>
+
+                    <!-- Copy/Paste Mode -->
+                    <div id="cert-paste-mode" style="display: none; gap: 10px;">
+                        <div>
+                            <label style="font-size: 14px; color: var(--text-secondary);">CA Certificate (ca.pem)</label>
+                            <textarea name="tlsca-text" class="form-input" placeholder="-----BEGIN CERTIFICATE-----&#10;...paste CA certificate content...&#10;-----END CERTIFICATE-----" rows="4"></textarea>
+                        </div>
+                        <div>
+                            <label style="font-size: 14px; color: var(--text-secondary);">Client Certificate (client-cert.pem)</label>
+                            <textarea name="tlscert-text" class="form-input" placeholder="-----BEGIN CERTIFICATE-----&#10;...paste client certificate content...&#10;-----END CERTIFICATE-----" rows="4"></textarea>
+                        </div>
+                        <div>
+                            <label style="font-size: 14px; color: var(--text-secondary);">Client Key (client-key.pem)</label>
+                            <textarea name="tlskey-text" class="form-input" placeholder="-----BEGIN PRIVATE KEY-----&#10;...paste client private key content...&#10;-----END PRIVATE KEY-----" rows="4"></textarea>
+                        </div>
+                    </div>
+
+                    <small style="color: var(--text-tertiary);">
+                        Use our <a href="https://github.com/darthnorse/dockmon/blob/main/scripts/setup-docker-mtls.sh" target="_blank">mTLS setup script</a> to generate these certificates.
+                    </small>
                 </div>
                 <button type="submit" class="btn btn-primary" style="width: 100%;">
                     Add Host
@@ -1974,6 +2070,7 @@
                     <div class="host-header">
                         <div class="host-name">
                             <span>🖥️</span> ${host.name}
+                            ${host.url && !host.url.includes('unix://') && !host.tls_cert ? '<span class="security-warning" title="Insecure connection - no TLS">⚠️</span>' : ''}
                         </div>
                         <span class="host-status status-${host.status}">${host.status}</span>
                     </div>
@@ -2099,6 +2196,67 @@
         // Modal functions
         function openHostModal() {
             document.getElementById('hostModal').classList.add('active');
+            // Initialize certificate mode to file upload
+            switchCertMode('file');
+        }
+
+        function checkHostSecurity(url) {
+            const securityWarning = document.getElementById('security-warning');
+            const tlsCertificates = document.getElementById('tls-certificates');
+
+            // Show warning and certificate fields for TCP connections
+            if (url && url.toLowerCase().startsWith('tcp://')) {
+                securityWarning.style.display = 'flex';
+                tlsCertificates.style.display = 'block';
+            } else {
+                securityWarning.style.display = 'none';
+                tlsCertificates.style.display = 'none';
+            }
+        }
+
+        function switchCertMode(mode) {
+            const fileMode = document.getElementById('cert-upload-mode');
+            const pasteMode = document.getElementById('cert-paste-mode');
+            const fileModeBtn = document.getElementById('cert-mode-file');
+            const pasteModeBtn = document.getElementById('cert-mode-paste');
+
+            if (mode === 'file') {
+                fileMode.style.display = 'grid';
+                pasteMode.style.display = 'none';
+                fileModeBtn.classList.add('btn-primary');
+                fileModeBtn.classList.remove('btn-secondary');
+                pasteModeBtn.classList.add('btn-secondary');
+                pasteModeBtn.classList.remove('btn-primary');
+            } else {
+                fileMode.style.display = 'none';
+                pasteMode.style.display = 'grid';
+                pasteModeBtn.classList.add('btn-primary');
+                pasteModeBtn.classList.remove('btn-secondary');
+                fileModeBtn.classList.add('btn-secondary');
+                fileModeBtn.classList.remove('btn-primary');
+            }
+        }
+
+        async function getCertificateData(formData, certType) {
+            // Try to get from text input first (paste mode)
+            const textData = formData.get(`${certType}-text`);
+            if (textData && textData.trim()) {
+                return textData.trim();
+            }
+
+            // Try to get from file input (upload mode)
+            const fileData = formData.get(`${certType}-file`);
+            if (fileData && fileData.size > 0) {
+                try {
+                    return await fileData.text();
+                } catch (error) {
+                    console.error(`Error reading ${certType} file:`, error);
+                    showToast(`❌ Error reading ${certType} file`);
+                    return null;
+                }
+            }
+
+            return null;
         }
 
         function openAlertRuleModal(preselectedContainer = null, editRule = null) {
@@ -2459,12 +2617,21 @@
         async function addHost(event) {
             event.preventDefault();
             const formData = new FormData(event.target);
-            
+
             const hostData = {
                 name: formData.get('hostname'),
                 url: formData.get('hosturl')
             };
-            
+
+            // Handle certificate data from either file upload or text input
+            const tlsCertificate = await getCertificateData(formData, 'tlscert');
+            const tlsKey = await getCertificateData(formData, 'tlskey');
+            const tlsCa = await getCertificateData(formData, 'tlsca');
+
+            if (tlsCertificate) hostData.tls_cert = tlsCertificate;
+            if (tlsKey) hostData.tls_key = tlsKey;
+            if (tlsCa) hostData.tls_ca = tlsCa;
+
             try {
                 const response = await fetch(`${API_BASE}/api/hosts`, {
                     method: 'POST',
@@ -3300,6 +3467,7 @@
                             <div class="host-header">
                                 <div class="host-name">
                                     <span>🖥️</span> ${host.name}
+                                    ${host.url && !host.url.includes('unix://') && !host.tls_cert ? '<span class="security-warning" title="Insecure connection - no TLS">⚠️</span>' : ''}
                                 </div>
                                 <span class="host-status status-${host.status}">${host.status}</span>
                             </div>

@@ -161,8 +161,18 @@ class DatabaseManager:
 
     def __init__(self, db_path: str = "data/dockmon.db"):
         """Initialize database connection"""
+        self.db_path = db_path
+
         # Ensure data directory exists
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        data_dir = os.path.dirname(db_path)
+        os.makedirs(data_dir, exist_ok=True)
+
+        # Set secure permissions on data directory (rwx for owner only)
+        try:
+            os.chmod(data_dir, 0o700)
+            logger.info(f"Set secure permissions (700) on data directory: {data_dir}")
+        except OSError as e:
+            logger.warning(f"Could not set permissions on data directory {data_dir}: {e}")
 
         # Create engine with connection pooling
         self.engine = create_engine(
@@ -178,8 +188,39 @@ class DatabaseManager:
         # Create tables if they don't exist
         Base.metadata.create_all(bind=self.engine)
 
+        # Set secure permissions on database file (rw for owner only)
+        self._secure_database_file()
+
         # Initialize default settings if needed
         self._initialize_defaults()
+
+    def _secure_database_file(self):
+        """Set secure file permissions on the SQLite database file"""
+        try:
+            if os.path.exists(self.db_path):
+                # Set file permissions to 600 (read/write for owner only)
+                os.chmod(self.db_path, 0o600)
+                logger.info(f"Set secure permissions (600) on database file: {self.db_path}")
+            else:
+                # File doesn't exist yet - will be created by SQLAlchemy
+                # Schedule permission setting for after first connection
+                self._schedule_file_permissions()
+        except OSError as e:
+            logger.warning(f"Could not set permissions on database file {self.db_path}: {e}")
+
+    def _schedule_file_permissions(self):
+        """Schedule file permission setting for after database file is created"""
+        # Create a connection to ensure the file exists
+        with self.engine.connect() as conn:
+            pass
+
+        # Now set permissions
+        try:
+            if os.path.exists(self.db_path):
+                os.chmod(self.db_path, 0o600)
+                logger.info(f"Set secure permissions (600) on newly created database file: {self.db_path}")
+        except OSError as e:
+            logger.warning(f"Could not set permissions on newly created database file {self.db_path}: {e}")
 
     def _initialize_defaults(self):
         """Initialize default settings if they don't exist"""

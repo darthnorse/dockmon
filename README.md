@@ -281,19 +281,65 @@ When adding hosts in DockMon, use these formats:
 - **Remote Docker (TCP)**: `tcp://192.168.1.100:2376`
 - **Remote Docker (custom port)**: `tcp://192.168.1.100:2375`
 
-#### Security Considerations
+## 🔐 Security: mTLS Configuration (Strongly Recommended)
 
-**⚠️ Important:** The above configuration opens Docker API to all network interfaces without authentication. For production environments, consider:
+### Why Use mTLS?
 
-- **TLS Authentication**: Configure Docker with TLS certificates
-- **Firewall Rules**: Restrict access to specific IP addresses
-- **VPN Access**: Use VPN for remote Docker management
-- **Bind to Specific IP**: Replace `0.0.0.0` with specific network interface
+**⚠️ CRITICAL:** Running Docker API over plain TCP without TLS exposes your entire system to attack. Anyone who can reach port 2375/2376 can take complete control of your host.
 
-**Example with IP binding:**
-```ini
-ExecStart=/usr/bin/dockerd -H unix:///var/run/docker.sock -H tcp://192.168.1.100:2376
+mTLS (mutual TLS) provides:
+- **Mutual authentication** - Both DockMon and Docker verify each other's identity
+- **Encrypted communication** - All data is encrypted in transit
+- **Certificate-based access** - Only clients with valid certificates can connect
+
+### Quick mTLS Setup
+
+We provide a script to generate all necessary certificates:
+
+```bash
+# On your Docker host, generate certificates
+curl -sSL https://raw.githubusercontent.com/darthnorse/dockmon/main/scripts/setup-docker-mtls.sh | bash
+
+# This creates in ~/.docker/certs/:
+# - ca.pem (Certificate Authority)
+# - server-cert.pem, server-key.pem (Server certificates)
+# - client-cert.pem, client-key.pem (Client certificates)
 ```
+
+Then configure Docker to use mTLS:
+
+```bash
+# Copy the generated systemd override file
+sudo cp ~/.docker/systemd-override.conf /etc/systemd/system/docker.service.d/override.conf
+sudo systemctl daemon-reload
+sudo systemctl restart docker
+```
+
+In DockMon, add the host with:
+- **URL**: `tcp://your-host:2376`
+- **CA Certificate**: Upload `ca.pem`
+- **Client Certificate**: Upload `client-cert.pem`
+- **Client Key**: Upload `client-key.pem`
+
+### Insecure Mode (Development Only)
+
+**⚠️ NEVER USE IN PRODUCTION - YOUR SYSTEM WILL BE COMPROMISED**
+
+For isolated test environments only:
+```ini
+ExecStart=/usr/bin/dockerd -H unix:///var/run/docker.sock -H tcp://0.0.0.0:2375
+```
+
+Then connect with `tcp://192.168.1.100:2375` (no certificates needed)
+
+### Security Best Practices
+
+1. **Always use mTLS for remote connections** - Never expose Docker API without TLS
+2. **Rotate certificates regularly** - Generate new certificates every 90-365 days
+3. **Protect private keys** - Set permissions to 400, never commit to git
+4. **Use firewall rules** - Restrict port 2376 to specific IPs if possible
+5. **Monitor access logs** - Check Docker logs for unauthorized access attempts
+6. **Secure database storage** - DockMon automatically sets secure permissions (600) on the SQLite database containing certificates
 
 #### Troubleshooting
 

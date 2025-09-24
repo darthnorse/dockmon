@@ -6,33 +6,23 @@
     <title>Docker Container Monitor</title>
     <style>
         :root {
-            /* Material Design 3 Color Scheme */
-            --md-sys-color-primary: #6750A4;
-            --md-sys-color-on-primary: #FFFFFF;
-            --md-sys-color-primary-container: #EADDFF;
-            --md-sys-color-on-primary-container: #21005D;
-            --md-sys-color-secondary: #625B71;
-            --md-sys-color-secondary-container: #E8DEF8;
-            --md-sys-color-tertiary: #7D5260;
-            --md-sys-color-tertiary-container: #FFD8E4;
-            --md-sys-color-error: #BA1A1A;
-            --md-sys-color-error-container: #FFDAD6;
-            --md-sys-color-background: #FFFBFE;
-            --md-sys-color-surface: #FFFBFE;
-            --md-sys-color-surface-variant: #E7E0EC;
-            --md-sys-color-outline: #79747E;
-            --md-sys-color-outline-variant: #CAC4D0;
-            --md-sys-color-inverse-surface: #313033;
-            --md-sys-color-inverse-on-surface: #F4EFF4;
-            --md-sys-color-surface-container-low: #F7F2FA;
-            --md-sys-color-surface-container: #F3EDF7;
-            --md-sys-color-surface-container-high: #ECE6F0;
-            --md-sys-color-surface-container-highest: #E6E0E9;
-            
-            /* Elevation */
-            --md-sys-elevation-1: 0 1px 2px rgba(0, 0, 0, 0.3), 0 1px 3px 1px rgba(0, 0, 0, 0.15);
-            --md-sys-elevation-2: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 6px 2px rgba(0, 0, 0, 0.15);
-            --md-sys-elevation-3: 0 4px 8px 3px rgba(0, 0, 0, 0.15), 0 1px 3px rgba(0, 0, 0, 0.3);
+            /* Modern color scheme */
+            --primary: #0084F4;
+            --primary-dark: #0066CC;
+            --primary-light: #E8F4FD;
+            --success: #00C48C;
+            --warning: #FFA26B;
+            --danger: #FF647C;
+            --dark: #1A1D29;
+            --dark-secondary: #252837;
+            --dark-tertiary: #2D3142;
+            --text-primary: #FFFFFF;
+            --text-secondary: #A0A3BD;
+            --text-tertiary: #6E7191;
+            --border: #353849;
+            --surface: #1E2139;
+            --surface-light: #262A41;
+            --background: #161821;
             
             /* Spacing */
             --spacing-xs: 4px;
@@ -40,6 +30,10 @@
             --spacing-md: 16px;
             --spacing-lg: 24px;
             --spacing-xl: 32px;
+            --spacing-2xl: 48px;
+            
+            /* Transitions */
+            --transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
         }
 
         * {
@@ -49,276 +43,539 @@
         }
 
         body {
-            font-family: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            color: var(--md-sys-color-on-surface);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: var(--background);
+            color: var(--text-primary);
             line-height: 1.6;
+            overflow-x: hidden;
         }
 
-        .app-container {
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: var(--spacing-lg);
-            animation: fadeIn 0.5s ease-out;
-        }
-
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(20px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-
-        /* Header */
-        .header {
-            background: rgba(255, 255, 255, 0.95);
-            backdrop-filter: blur(10px);
-            border-radius: 24px;
-            padding: var(--spacing-lg);
-            margin-bottom: var(--spacing-xl);
-            box-shadow: var(--md-sys-elevation-2);
+        /* Layout */
+        .app-layout {
             display: flex;
-            align-items: center;
-            justify-content: space-between;
-            flex-wrap: wrap;
-            gap: var(--spacing-md);
-            animation: slideDown 0.6s ease-out;
+            height: 100vh;
         }
 
-        @keyframes slideDown {
-            from { opacity: 0; transform: translateY(-30px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-
-        .header h1 {
-            font-size: 2rem;
-            font-weight: 500;
-            background: linear-gradient(135deg, var(--md-sys-color-primary), var(--md-sys-color-tertiary));
-            -webkit-background-clip: text;
-            background-clip: text;
-            -webkit-text-fill-color: transparent;
-            display: flex;
-            align-items: center;
-            gap: var(--spacing-sm);
-        }
-
-        .header-actions {
-            display: flex;
-            gap: var(--spacing-sm);
-            flex-wrap: wrap;
-        }
-
-        /* Buttons */
-        .btn {
-            padding: 12px 24px;
-            border-radius: 20px;
-            border: none;
-            font-size: 14px;
-            font-weight: 500;
-            cursor: pointer;
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-            display: inline-flex;
-            align-items: center;
-            gap: var(--spacing-sm);
-            position: relative;
-            overflow: hidden;
-        }
-
-        .btn::before {
-            content: '';
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            width: 0;
-            height: 0;
-            border-radius: 50%;
-            background: rgba(255, 255, 255, 0.3);
-            transform: translate(-50%, -50%);
-            transition: width 0.6s, height 0.6s;
-        }
-
-        .btn:hover::before {
-            width: 300px;
-            height: 300px;
-        }
-
-        .btn-primary {
-            background: var(--md-sys-color-primary);
-            color: var(--md-sys-color-on-primary);
-            box-shadow: var(--md-sys-elevation-1);
-        }
-
-        .btn-primary:hover {
-            box-shadow: var(--md-sys-elevation-2);
-            transform: translateY(-2px);
-        }
-
-        .btn-secondary {
-            background: var(--md-sys-color-surface-container-high);
-            color: var(--md-sys-color-primary);
-        }
-
-        .btn-icon {
-            padding: 10px;
-            border-radius: 50%;
-            background: var(--md-sys-color-surface-container);
-        }
-
-        /* Cards */
-        .card {
-            background: rgba(255, 255, 255, 0.95);
-            backdrop-filter: blur(10px);
-            border-radius: 16px;
-            padding: var(--spacing-lg);
-            box-shadow: var(--md-sys-elevation-1);
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-            animation: scaleIn 0.5s ease-out backwards;
-        }
-
-        @keyframes scaleIn {
-            from { opacity: 0; transform: scale(0.95); }
-            to { opacity: 1; transform: scale(1); }
-        }
-
-        .card:hover {
-            box-shadow: var(--md-sys-elevation-2);
-            transform: translateY(-4px);
-        }
-
-        /* Grid Layout */
-        .dashboard-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: var(--spacing-lg);
-            margin-bottom: var(--spacing-xl);
-        }
-
-        /* Host Card */
-        .host-card {
-            animation-delay: calc(var(--index) * 0.1s);
-        }
-
-        .host-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: var(--spacing-md);
-            padding-bottom: var(--spacing-md);
-            border-bottom: 1px solid var(--md-sys-color-outline-variant);
-        }
-
-        .host-name {
-            font-size: 1.25rem;
-            font-weight: 500;
-            color: var(--md-sys-color-primary);
-        }
-
-        .host-status {
-            padding: 6px 12px;
-            border-radius: 12px;
-            font-size: 12px;
-            font-weight: 500;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        .status-online {
-            background: #E8F5E9;
-            color: #2E7D32;
-        }
-
-        .status-offline {
-            background: #FFEBEE;
-            color: #C62828;
-        }
-
-        /* Container List */
-        .container-list {
+        /* Sidebar */
+        .sidebar {
+            width: 260px;
+            background: var(--dark);
+            border-right: 1px solid var(--border);
             display: flex;
             flex-direction: column;
-            gap: var(--spacing-sm);
+            transition: var(--transition);
+            z-index: 100;
         }
 
-        .container-item {
-            padding: var(--spacing-md);
-            background: var(--md-sys-color-surface-container-low);
-            border-radius: 12px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            transition: all 0.2s ease;
-            cursor: pointer;
-            position: relative;
-            overflow: hidden;
-        }
-
-        .container-item::after {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 3px;
-            height: 100%;
-            background: var(--md-sys-color-primary);
-            transform: scaleY(0);
-            transition: transform 0.3s ease;
-        }
-
-        .container-item:hover {
-            background: var(--md-sys-color-surface-container);
-            transform: translateX(4px);
-        }
-
-        .container-item:hover::after {
-            transform: scaleY(1);
-        }
-
-        .container-info {
+        .sidebar-header {
+            padding: var(--spacing-lg);
+            border-bottom: 1px solid var(--border);
             display: flex;
             align-items: center;
             gap: var(--spacing-md);
         }
 
-        .container-icon {
-            width: 40px;
-            height: 40px;
-            border-radius: 10px;
+        .logo {
+            width: 36px;
+            height: 36px;
+            background: var(--primary);
+            border-radius: 8px;
             display: flex;
             align-items: center;
             justify-content: center;
             font-size: 20px;
         }
 
-        .container-running {
-            background: linear-gradient(135deg, #66BB6A, #43A047);
+        .logo-text {
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .sidebar-nav {
+            flex: 1;
+            padding: var(--spacing-lg) 0;
+            overflow-y: auto;
+        }
+
+        .nav-section {
+            margin-bottom: var(--spacing-xl);
+        }
+
+        .nav-section-title {
+            padding: 0 var(--spacing-lg);
+            margin-bottom: var(--spacing-sm);
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-tertiary);
+        }
+
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: var(--spacing-md);
+            padding: var(--spacing-md) var(--spacing-lg);
+            color: var(--text-secondary);
+            text-decoration: none;
+            transition: var(--transition);
+            cursor: pointer;
+            border: none;
+            background: none;
+            width: 100%;
+            font-size: 14px;
+            position: relative;
+        }
+
+        .nav-item::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 3px;
+            background: var(--primary);
+            opacity: 0;
+            transition: var(--transition);
+        }
+
+        .nav-item:hover {
+            background: var(--surface);
+            color: var(--text-primary);
+        }
+
+        .nav-item.active {
+            background: var(--surface);
+            color: var(--primary);
+        }
+
+        .nav-item.active::before {
+            opacity: 1;
+        }
+
+        .nav-icon {
+            width: 20px;
+            height: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+        }
+
+        .nav-badge {
+            margin-left: auto;
+            padding: 2px 8px;
+            background: var(--primary);
             color: white;
+            border-radius: 10px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        /* Main Content */
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: var(--background);
+            overflow: hidden;
+        }
+
+        /* Top Bar */
+        .topbar {
+            height: 60px;
+            background: var(--dark);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 var(--spacing-xl);
+        }
+
+        .topbar-title {
+            font-size: 20px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .topbar-actions {
+            display: flex;
+            align-items: center;
+            gap: var(--spacing-md);
+        }
+
+        /* Content Area */
+        .content {
+            flex: 1;
+            padding: var(--spacing-xl);
+            overflow-y: auto;
+            overflow-x: hidden;
+        }
+
+        /* Cards */
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: var(--spacing-lg);
+            margin-bottom: var(--spacing-lg);
+            transition: var(--transition);
+        }
+
+        .card:hover {
+            border-color: var(--primary);
+            box-shadow: 0 4px 12px rgba(0, 132, 244, 0.1);
+        }
+
+        .card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: var(--spacing-lg);
+            padding-bottom: var(--spacing-md);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .card-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: var(--spacing-sm);
+        }
+
+        /* Stats Grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: var(--spacing-lg);
+            margin-bottom: var(--spacing-xl);
+        }
+
+        .stat-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: var(--spacing-lg);
+            position: relative;
+            overflow: hidden;
+            transition: var(--transition);
+        }
+
+        .stat-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        }
+
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, var(--primary), var(--primary-dark));
+        }
+
+        .stat-icon {
+            width: 40px;
+            height: 40px;
+            background: var(--primary);
+            background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            margin-bottom: var(--spacing-md);
+        }
+
+        .stat-value {
+            font-size: 28px;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: var(--spacing-xs);
+        }
+
+        .stat-label {
+            font-size: 13px;
+            color: var(--text-tertiary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .stat-change {
+            position: absolute;
+            top: var(--spacing-md);
+            right: var(--spacing-md);
+            padding: 4px 8px;
+            background: var(--success);
+            color: white;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .stat-change.negative {
+            background: var(--danger);
+        }
+
+        /* Buttons */
+        .btn {
+            padding: 10px 20px;
+            border-radius: 6px;
+            border: none;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: var(--transition);
+            display: inline-flex;
+            align-items: center;
+            gap: var(--spacing-sm);
+        }
+
+        .btn-primary {
+            background: var(--primary);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: var(--primary-dark);
+            transform: translateY(-1px);
+        }
+
+        .btn-secondary {
+            background: var(--surface-light);
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+        }
+
+        .btn-secondary:hover {
+            background: var(--dark-tertiary);
+            border-color: var(--primary);
+        }
+
+        .btn-success {
+            background: var(--success);
+            color: white;
+        }
+
+        .btn-danger {
+            background: var(--danger);
+            color: white;
+        }
+
+        .btn-icon {
+            padding: 8px;
+            border-radius: 6px;
+            background: var(--surface-light);
+            border: 1px solid var(--border);
+            cursor: pointer;
+            transition: var(--transition);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .btn-icon:hover {
+            background: var(--dark-tertiary);
+            border-color: var(--primary);
+        }
+
+        /* Host Grid */
+        .hosts-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+            gap: var(--spacing-lg);
+        }
+
+        .host-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+            transition: var(--transition);
+        }
+
+        .host-card:hover {
+            border-color: var(--primary);
+            box-shadow: 0 4px 12px rgba(0, 132, 244, 0.1);
+        }
+
+        .host-header {
+            padding: var(--spacing-md) var(--spacing-lg);
+            background: var(--surface-light);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .host-name {
+            font-weight: 600;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: var(--spacing-sm);
+        }
+
+        .host-status {
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .status-online {
+            background: rgba(0, 196, 140, 0.1);
+            color: var(--success);
+        }
+
+        .status-offline {
+            background: rgba(255, 100, 124, 0.1);
+            color: var(--danger);
+        }
+
+        /* Container List */
+        .container-list {
+            padding: var(--spacing-md);
+        }
+
+        .container-item {
+            padding: var(--spacing-md);
+            background: var(--dark);
+            border-radius: 6px;
+            margin-bottom: var(--spacing-sm);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            transition: var(--transition);
+            cursor: pointer;
+        }
+
+        .container-item:hover {
+            background: var(--surface-light);
+            transform: translateX(4px);
+        }
+
+        .container-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .container-info {
+            display: flex;
+            align-items: center;
+            gap: var(--spacing-md);
+            flex: 1;
+        }
+
+        .container-icon {
+            width: 32px;
+            height: 32px;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+        }
+
+        .container-running {
+            background: rgba(0, 196, 140, 0.2);
+            color: var(--success);
         }
 
         .container-stopped {
-            background: linear-gradient(135deg, #EF5350, #E53935);
-            color: white;
+            background: rgba(255, 100, 124, 0.2);
+            color: var(--danger);
         }
 
         .container-paused {
-            background: linear-gradient(135deg, #FFA726, #FF9800);
-            color: white;
+            background: rgba(255, 162, 107, 0.2);
+            color: var(--warning);
+        }
+
+        .container-details {
+            flex: 1;
         }
 
         .container-name {
+            font-size: 14px;
             font-weight: 500;
-            color: var(--md-sys-color-on-surface);
+            color: var(--text-primary);
+            margin-bottom: 2px;
         }
 
         .container-id {
             font-size: 12px;
-            color: var(--md-sys-color-outline);
+            color: var(--text-tertiary);
+            font-family: 'Monaco', 'Courier New', monospace;
+        }
+
+        .container-actions {
+            display: flex;
+            align-items: center;
+            gap: var(--spacing-md);
         }
 
         .container-state {
-            padding: 4px 12px;
-            border-radius: 8px;
-            font-size: 12px;
-            font-weight: 500;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
             text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        /* Auto Restart Toggle */
+        .auto-restart-toggle {
+            display: flex;
+            align-items: center;
+            gap: var(--spacing-sm);
+            padding: 6px 12px;
+            background: var(--surface-light);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-size: 12px;
+            transition: var(--transition);
+        }
+
+        .auto-restart-toggle.enabled {
+            background: rgba(0, 132, 244, 0.1);
+            border-color: var(--primary);
+            color: var(--primary);
+        }
+
+        .toggle-switch {
+            position: relative;
+            width: 36px;
+            height: 20px;
+            background: var(--dark-tertiary);
+            border-radius: 20px;
+            cursor: pointer;
+            transition: var(--transition);
+        }
+
+        .toggle-switch.active {
+            background: var(--primary);
+        }
+
+        .toggle-switch::after {
+            content: '';
+            position: absolute;
+            width: 16px;
+            height: 16px;
+            background: white;
+            border-radius: 50%;
+            top: 2px;
+            left: 2px;
+            transition: transform 0.2s ease;
+        }
+
+        .toggle-switch.active::after {
+            transform: translateX(16px);
         }
 
         /* Modal */
@@ -329,10 +586,9 @@
             left: 0;
             width: 100%;
             height: 100%;
-            background: rgba(0, 0, 0, 0.5);
+            background: rgba(0, 0, 0, 0.7);
             backdrop-filter: blur(5px);
             z-index: 1000;
-            animation: fadeIn 0.3s ease;
         }
 
         .modal.active {
@@ -342,19 +598,26 @@
         }
 
         .modal-content {
-            background: white;
-            border-radius: 24px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
             padding: var(--spacing-xl);
             max-width: 600px;
             width: 90%;
             max-height: 80vh;
             overflow-y: auto;
-            animation: slideUp 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            animation: modalSlideIn 0.3s ease;
         }
 
-        @keyframes slideUp {
-            from { opacity: 0; transform: translateY(50px); }
-            to { opacity: 1; transform: translateY(0); }
+        @keyframes modalSlideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
         }
 
         .modal-header {
@@ -362,30 +625,70 @@
             justify-content: space-between;
             align-items: center;
             margin-bottom: var(--spacing-lg);
+            padding-bottom: var(--spacing-md);
+            border-bottom: 1px solid var(--border);
         }
 
         .modal-title {
-            font-size: 1.5rem;
-            font-weight: 500;
-            color: var(--md-sys-color-on-surface);
+            font-size: 20px;
+            font-weight: 600;
+            color: var(--text-primary);
         }
 
         .modal-close {
-            width: 40px;
-            height: 40px;
-            border-radius: 50%;
-            border: none;
-            background: var(--md-sys-color-surface-container);
+            width: 32px;
+            height: 32px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: var(--surface-light);
             cursor: pointer;
             display: flex;
             align-items: center;
             justify-content: center;
-            transition: all 0.2s ease;
+            transition: var(--transition);
         }
 
         .modal-close:hover {
-            background: var(--md-sys-color-surface-container-high);
+            background: var(--danger);
+            border-color: var(--danger);
             transform: rotate(90deg);
+        }
+
+        /* Tab styles */
+        .tab-content {
+            animation: fadeIn 0.3s ease;
+        }
+
+        .tab-content pre {
+            margin: 0;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        #container-logs, #exec-output {
+            scrollbar-width: thin;
+            scrollbar-color: var(--border) var(--dark);
+        }
+
+        #container-logs::-webkit-scrollbar,
+        #exec-output::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        #container-logs::-webkit-scrollbar-track,
+        #exec-output::-webkit-scrollbar-track {
+            background: var(--dark);
+        }
+
+        #container-logs::-webkit-scrollbar-thumb,
+        #exec-output::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 4px;
+        }
+
+        #container-logs::-webkit-scrollbar-thumb:hover,
+        #exec-output::-webkit-scrollbar-thumb:hover {
+            background: var(--primary);
         }
 
         /* Form Elements */
@@ -396,24 +699,26 @@
         .form-label {
             display: block;
             margin-bottom: var(--spacing-sm);
+            font-size: 14px;
             font-weight: 500;
-            color: var(--md-sys-color-on-surface);
+            color: var(--text-secondary);
         }
 
         .form-input {
             width: 100%;
-            padding: 12px 16px;
-            border: 1px solid var(--md-sys-color-outline-variant);
-            border-radius: 12px;
-            font-size: 16px;
-            transition: all 0.2s ease;
-            background: var(--md-sys-color-surface);
+            padding: 10px 14px;
+            background: var(--dark);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text-primary);
+            font-size: 14px;
+            transition: var(--transition);
         }
 
         .form-input:focus {
             outline: none;
-            border-color: var(--md-sys-color-primary);
-            box-shadow: 0 0 0 3px rgba(103, 80, 164, 0.1);
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(0, 132, 244, 0.1);
         }
 
         .checkbox-group {
@@ -421,41 +726,97 @@
             flex-wrap: wrap;
             gap: var(--spacing-md);
             padding: var(--spacing-md);
-            background: var(--md-sys-color-surface-container-low);
-            border-radius: 12px;
+            background: var(--dark);
+            border-radius: 6px;
         }
 
         .checkbox-item {
             display: flex;
             align-items: center;
             gap: var(--spacing-sm);
+            color: var(--text-secondary);
         }
 
         .checkbox-item input[type="checkbox"] {
-            width: 20px;
-            height: 20px;
+            width: 18px;
+            height: 18px;
             cursor: pointer;
         }
 
-        /* Alert Rules Section */
-        .alert-rules {
-            margin-top: var(--spacing-xl);
+        /* Settings Section */
+        .settings-section {
+            background: var(--dark);
+            padding: var(--spacing-lg);
+            border-radius: 8px;
+            margin-bottom: var(--spacing-lg);
         }
 
+        .settings-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: var(--spacing-md) 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .settings-row:last-child {
+            border-bottom: none;
+        }
+
+        .settings-label {
+            display: flex;
+            flex-direction: column;
+            gap: var(--spacing-xs);
+        }
+
+        .settings-title {
+            font-weight: 500;
+            color: var(--text-primary);
+        }
+
+        .settings-description {
+            font-size: 12px;
+            color: var(--text-tertiary);
+        }
+
+        .settings-value {
+            display: flex;
+            align-items: center;
+            gap: var(--spacing-md);
+        }
+
+        .number-input {
+            width: 80px;
+            padding: 8px 12px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text-primary);
+            text-align: center;
+            font-size: 14px;
+            font-weight: 500;
+            transition: var(--transition);
+        }
+
+        .number-input:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+
+        /* Alert Rules */
         .alert-rule-card {
-            background: var(--md-sys-color-primary-container);
+            background: var(--dark);
             padding: var(--spacing-md);
-            border-radius: 12px;
+            border-radius: 8px;
             margin-bottom: var(--spacing-md);
             display: flex;
             justify-content: space-between;
             align-items: center;
-            animation: slideInRight 0.3s ease backwards;
+            transition: var(--transition);
         }
 
-        @keyframes slideInRight {
-            from { opacity: 0; transform: translateX(30px); }
-            to { opacity: 1; transform: translateX(0); }
+        .alert-rule-card:hover {
+            background: var(--surface-light);
         }
 
         .alert-rule-info {
@@ -464,12 +825,13 @@
 
         .alert-rule-title {
             font-weight: 500;
+            color: var(--text-primary);
             margin-bottom: var(--spacing-xs);
         }
 
         .alert-rule-details {
-            font-size: 14px;
-            color: var(--md-sys-color-outline);
+            font-size: 13px;
+            color: var(--text-tertiary);
         }
 
         .alert-channels {
@@ -479,215 +841,290 @@
         }
 
         .channel-badge {
-            padding: 4px 8px;
-            border-radius: 6px;
-            font-size: 12px;
-            font-weight: 500;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
         }
 
         .channel-telegram {
-            background: #0088cc20;
+            background: rgba(0, 136, 204, 0.2);
             color: #0088cc;
         }
 
         .channel-discord {
-            background: #5865F220;
+            background: rgba(88, 101, 242, 0.2);
             color: #5865F2;
         }
 
         .channel-pushover {
-            background: #4FC3F720;
+            background: rgba(79, 195, 247, 0.2);
             color: #4FC3F7;
         }
 
-        /* Stats Dashboard */
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: var(--spacing-md);
-            margin-bottom: var(--spacing-xl);
-        }
-
-        .stat-card {
-            background: white;
-            padding: var(--spacing-lg);
-            border-radius: 16px;
-            text-align: center;
-            position: relative;
-            overflow: hidden;
-        }
-
-        .stat-card::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 4px;
-            background: linear-gradient(90deg, var(--md-sys-color-primary), var(--md-sys-color-tertiary));
-        }
-
-        .stat-value {
-            font-size: 2rem;
-            font-weight: 700;
-            color: var(--md-sys-color-primary);
-            margin-bottom: var(--spacing-xs);
-        }
-
-        .stat-label {
-            font-size: 14px;
-            color: var(--md-sys-color-outline);
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        /* Floating Action Button */
-        .fab {
-            position: fixed;
-            bottom: 24px;
-            right: 24px;
-            width: 56px;
-            height: 56px;
-            border-radius: 16px;
-            background: linear-gradient(135deg, var(--md-sys-color-primary), var(--md-sys-color-tertiary));
-            color: white;
-            border: none;
-            cursor: pointer;
-            box-shadow: var(--md-sys-elevation-3);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 24px;
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-            z-index: 100;
-        }
-
-        .fab:hover {
-            transform: scale(1.1) rotate(90deg);
-            box-shadow: 0 6px 20px rgba(103, 80, 164, 0.4);
-        }
-
-        /* Responsive */
-        @media (max-width: 768px) {
-            .app-container {
-                padding: var(--spacing-md);
-            }
-
-            .header h1 {
-                font-size: 1.5rem;
-            }
-
-            .dashboard-grid {
-                grid-template-columns: 1fr;
-            }
-
-            .modal-content {
-                width: 95%;
-                padding: var(--spacing-lg);
-            }
-        }
-
-        /* Loading Animation */
-        .loading {
-            display: inline-block;
-            width: 20px;
-            height: 20px;
-            border: 3px solid rgba(255, 255, 255, 0.3);
-            border-radius: 50%;
-            border-top-color: white;
-            animation: spin 0.8s linear infinite;
-        }
-
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-
-        /* Toast Notifications */
+        /* Toast */
         .toast {
             position: fixed;
-            bottom: 24px;
-            left: 50%;
-            transform: translateX(-50%);
-            background: var(--md-sys-color-inverse-surface);
-            color: var(--md-sys-color-inverse-on-surface);
+            bottom: var(--spacing-xl);
+            right: var(--spacing-xl);
+            background: var(--surface-light);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
             padding: var(--spacing-md) var(--spacing-lg);
-            border-radius: 12px;
-            box-shadow: var(--md-sys-elevation-3);
+            border-radius: 6px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
             z-index: 2000;
-            animation: toastSlideUp 0.3s ease;
             display: none;
+            animation: toastSlideIn 0.3s ease;
         }
 
         .toast.show {
             display: block;
         }
 
-        @keyframes toastSlideUp {
-            from { opacity: 0; transform: translate(-50%, 100px); }
-            to { opacity: 1; transform: translate(-50%, 0); }
+        @keyframes toastSlideIn {
+            from {
+                opacity: 0;
+                transform: translateX(100px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .sidebar {
+                width: 60px;
+            }
+
+            .sidebar-header .logo-text,
+            .nav-item span:not(.nav-icon),
+            .nav-badge,
+            .nav-section-title {
+                display: none;
+            }
+
+            .hosts-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* Page Sections */
+        .page-section {
+            display: none;
+        }
+
+        .page-section.active {
+            display: block;
+            animation: fadeIn 0.3s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        /* Mobile Menu Toggle */
+        .menu-toggle {
+            display: none;
+            padding: 8px;
+            background: var(--surface-light);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            cursor: pointer;
+        }
+
+        @media (max-width: 768px) {
+            .menu-toggle {
+                display: flex;
+            }
         }
     </style>
 </head>
 <body>
-    <div class="app-container">
-        <!-- Header -->
-        <div class="header">
-            <h1>
-                <span>🐳</span>
-                Docker Monitor
-            </h1>
-            <div class="header-actions">
-                <button class="btn btn-secondary" onclick="openHostModal()">
-                    <span>➕</span> Add Host
-                </button>
-                <button class="btn btn-secondary" onclick="openNotificationSettings()">
-                    <span>🔔</span> Notifications
-                </button>
-                <button class="btn btn-primary" onclick="refreshAll()">
-                    <span>🔄</span> Refresh All
-                </button>
+    <div class="app-layout">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">🐳</div>
+                <div class="logo-text">Docker Monitor</div>
             </div>
-        </div>
+            <nav class="sidebar-nav">
+                <div class="nav-section">
+                    <div class="nav-section-title">Main</div>
+                    <a class="nav-item active" onclick="switchPage('dashboard')">
+                        <span class="nav-icon">📊</span>
+                        <span>Dashboard</span>
+                        <span class="nav-badge" id="navContainerCount">12</span>
+                    </a>
+                    <a class="nav-item" onclick="switchPage('hosts')">
+                        <span class="nav-icon">🖥️</span>
+                        <span>Host Management</span>
+                    </a>
+                    <a class="nav-item" onclick="switchPage('alerts')">
+                        <span class="nav-icon">⚡</span>
+                        <span>Alert Rules</span>
+                        <span class="nav-badge" id="navAlertCount">3</span>
+                    </a>
+                </div>
+                <div class="nav-section">
+                    <div class="nav-section-title">Configuration</div>
+                    <a class="nav-item" onclick="openGlobalSettings()">
+                        <span class="nav-icon">⚙️</span>
+                        <span>Settings</span>
+                    </a>
+                    <a class="nav-item" onclick="openNotificationSettings()">
+                        <span class="nav-icon">🔔</span>
+                        <span>Notifications</span>
+                    </a>
+                </div>
+                <div class="nav-section">
+                    <div class="nav-section-title">System</div>
+                    <a class="nav-item" onclick="switchPage('logs')">
+                        <span class="nav-icon">📋</span>
+                        <span>Logs</span>
+                    </a>
+                    <a class="nav-item" onclick="switchPage('about')">
+                        <span class="nav-icon">ℹ️</span>
+                        <span>About</span>
+                    </a>
+                </div>
+            </nav>
+        </aside>
 
-        <!-- Stats Dashboard -->
-        <div class="stats-grid">
-            <div class="stat-card">
-                <div class="stat-value" id="totalHosts">3</div>
-                <div class="stat-label">Total Hosts</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-value" id="totalContainers">12</div>
-                <div class="stat-label">Containers</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-value" id="runningContainers">8</div>
-                <div class="stat-label">Running</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-value" id="alertRules">5</div>
-                <div class="stat-label">Alert Rules</div>
-            </div>
-        </div>
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Top Bar -->
+            <header class="topbar">
+                <button class="menu-toggle" onclick="toggleSidebar()">☰</button>
+                <h1 class="topbar-title" id="pageTitle">Dashboard</h1>
+                <div class="topbar-actions">
+                    <button class="btn btn-secondary" onclick="refreshAll()">
+                        <span>🔄</span> Refresh
+                    </button>
+                    <button class="btn btn-primary" onclick="openHostModal()">
+                        <span>➕</span> Add Host
+                    </button>
+                </div>
+            </header>
 
-        <!-- Hosts Grid -->
-        <div class="dashboard-grid" id="hostsGrid">
-            <!-- Host cards will be dynamically inserted here -->
-        </div>
+            <!-- Content Area -->
+            <div class="content">
+                <!-- Dashboard Page -->
+                <div id="dashboard-page" class="page-section active">
+                    <!-- Stats Grid -->
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-icon">🖥️</div>
+                            <div class="stat-value" id="totalHosts">3</div>
+                            <div class="stat-label">Total Hosts</div>
+                            <span class="stat-change">+1</span>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon">📦</div>
+                            <div class="stat-value" id="totalContainers">12</div>
+                            <div class="stat-label">Total Containers</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon">✅</div>
+                            <div class="stat-value" id="runningContainers">8</div>
+                            <div class="stat-label">Running</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon">⚡</div>
+                            <div class="stat-value" id="alertRules">5</div>
+                            <div class="stat-label">Alert Rules</div>
+                            <span class="stat-change negative">-2</span>
+                        </div>
+                    </div>
 
-        <!-- Alert Rules Section -->
-        <div class="card alert-rules">
-            <h2 style="margin-bottom: var(--spacing-lg);">Active Alert Rules</h2>
-            <div id="alertRulesList">
-                <!-- Alert rules will be dynamically inserted here -->
+                    <!-- Hosts Overview -->
+                    <div class="hosts-grid" id="hostsGrid">
+                        <!-- Host cards will be dynamically inserted here -->
+                    </div>
+                </div>
+
+                <!-- Hosts Management Page -->
+                <div id="hosts-page" class="page-section">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title">
+                                <span>🖥️</span> Docker Hosts
+                            </h2>
+                            <button class="btn btn-primary" onclick="openHostModal()">
+                                Add New Host
+                            </button>
+                        </div>
+                        <div id="hostsList">
+                            <!-- Hosts list will be rendered here -->
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Alert Rules Page -->
+                <div id="alerts-page" class="page-section">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title">
+                                <span>⚡</span> Alert Rules
+                            </h2>
+                            <button class="btn btn-primary" onclick="openAlertRuleModal()">
+                                Create Rule
+                            </button>
+                        </div>
+                        <div id="alertRulesList">
+                            <!-- Alert rules will be rendered here -->
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Logs Page -->
+                <div id="logs-page" class="page-section">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title">
+                                <span>📋</span> System Logs
+                            </h2>
+                        </div>
+                        <div style="padding: var(--spacing-lg); text-align: center; color: var(--text-tertiary);">
+                            <p>Log viewer coming soon...</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- About Page -->
+                <div id="about-page" class="page-section">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title">
+                                <span>ℹ️</span> About
+                            </h2>
+                        </div>
+                        <div style="padding: var(--spacing-lg); color: var(--text-secondary);">
+                            <p><strong>Docker Monitor v1.0.0</strong></p>
+                            <p style="margin-top: var(--spacing-md);">A modern web-based Docker container monitoring solution with real-time alerts and auto-restart capabilities.</p>
+                            <p style="margin-top: var(--spacing-md);">Features:</p>
+                            <ul style="margin-left: var(--spacing-lg); margin-top: var(--spacing-sm);">
+                                <li>Multi-host Docker monitoring</li>
+                                <li>Container auto-restart with configurable retries</li>
+                                <li>Multi-channel alerting (Telegram, Discord, Pushover)</li>
+                                <li>Real-time status updates</li>
+                                <li>Modern, responsive interface</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
             </div>
-        </div>
+        </main>
     </div>
 
-    <!-- Floating Action Button -->
-    <button class="fab" onclick="openAlertRuleModal()">
-        <span>⚡</span>
-    </button>
-
+    <!-- Modals -->
     <!-- Add Host Modal -->
     <div class="modal" id="hostModal">
         <div class="modal-content">
@@ -698,11 +1135,11 @@
             <form onsubmit="addHost(event)">
                 <div class="form-group">
                     <label class="form-label">Host Name</label>
-                    <input type="text" class="form-input" placeholder="Production Server" required>
+                    <input type="text" name="hostname" class="form-input" placeholder="Production Server" required>
                 </div>
                 <div class="form-group">
                     <label class="form-label">Host URL</label>
-                    <input type="text" class="form-input" placeholder="tcp://192.168.1.100:2376" required>
+                    <input type="text" name="hosturl" class="form-input" placeholder="tcp://192.168.1.100:2376" required>
                 </div>
                 <div class="form-group">
                     <label class="form-label">API Key (Optional)</label>
@@ -755,13 +1192,13 @@
                     <label class="form-label">Alert Channels</label>
                     <div class="checkbox-group">
                         <label class="checkbox-item">
-                            <input type="checkbox" onchange="toggleChannelConfig('telegram', this.checked)"> Telegram
+                            <input type="checkbox"> Telegram
                         </label>
                         <label class="checkbox-item">
-                            <input type="checkbox" onchange="toggleChannelConfig('discord', this.checked)"> Discord
+                            <input type="checkbox"> Discord
                         </label>
                         <label class="checkbox-item">
-                            <input type="checkbox" onchange="toggleChannelConfig('pushover', this.checked)"> Pushover
+                            <input type="checkbox"> Pushover
                         </label>
                     </div>
                 </div>
@@ -769,6 +1206,74 @@
                     Create Alert Rule
                 </button>
             </form>
+        </div>
+    </div>
+
+    <!-- Global Settings Modal -->
+    <div class="modal" id="globalSettingsModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="modal-title">Global Settings</h2>
+                <button class="modal-close" onclick="closeModal('globalSettingsModal')">✕</button>
+            </div>
+            <div class="settings-section">
+                <h3 style="margin-bottom: var(--spacing-lg); color: var(--text-primary);">Auto-Restart Configuration</h3>
+                <div class="settings-row">
+                    <div class="settings-label">
+                        <div class="settings-title">Maximum Retry Attempts</div>
+                        <div class="settings-description">Number of times to attempt restarting a container before giving up</div>
+                    </div>
+                    <div class="settings-value">
+                        <input type="number" class="number-input" id="maxRetries" min="0" max="10" value="3">
+                        <span style="font-size: 14px; color: var(--text-tertiary);">retries</span>
+                    </div>
+                </div>
+                <div class="settings-row">
+                    <div class="settings-label">
+                        <div class="settings-title">Retry Delay</div>
+                        <div class="settings-description">Time to wait between restart attempts</div>
+                    </div>
+                    <div class="settings-value">
+                        <input type="number" class="number-input" id="retryDelay" min="5" max="300" value="30">
+                        <span style="font-size: 14px; color: var(--text-tertiary);">seconds</span>
+                    </div>
+                </div>
+                <div class="settings-row">
+                    <div class="settings-label">
+                        <div class="settings-title">Enable Auto-Restart by Default</div>
+                        <div class="settings-description">New containers will have auto-restart enabled automatically</div>
+                    </div>
+                    <div class="settings-value">
+                        <div class="toggle-switch" id="defaultAutoRestart" onclick="toggleSwitch(this)"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="settings-section">
+                <h3 style="margin-bottom: var(--spacing-lg); color: var(--text-primary);">Monitoring Settings</h3>
+                <div class="settings-row">
+                    <div class="settings-label">
+                        <div class="settings-title">Polling Interval</div>
+                        <div class="settings-description">How often to check container states</div>
+                    </div>
+                    <div class="settings-value">
+                        <input type="number" class="number-input" id="pollingInterval" min="5" max="60" value="10">
+                        <span style="font-size: 14px; color: var(--text-tertiary);">seconds</span>
+                    </div>
+                </div>
+                <div class="settings-row">
+                    <div class="settings-label">
+                        <div class="settings-title">Connection Timeout</div>
+                        <div class="settings-description">Maximum time to wait for host response</div>
+                    </div>
+                    <div class="settings-value">
+                        <input type="number" class="number-input" id="connectionTimeout" min="5" max="30" value="10">
+                        <span style="font-size: 14px; color: var(--text-tertiary);">seconds</span>
+                    </div>
+                </div>
+            </div>
+            <button class="btn btn-primary" style="width: 100%;" onclick="saveGlobalSettings()">
+                Save Settings
+            </button>
         </div>
     </div>
 
@@ -781,19 +1286,19 @@
             </div>
             <form onsubmit="saveNotificationSettings(event)">
                 <div class="form-group">
-                    <h3 style="margin-bottom: var(--spacing-md);">Telegram Configuration</h3>
+                    <h3 style="margin-bottom: var(--spacing-md); color: var(--text-primary);">Telegram Configuration</h3>
                     <label class="form-label">Bot Token</label>
                     <input type="text" class="form-input" placeholder="Enter Telegram bot token">
                     <label class="form-label" style="margin-top: var(--spacing-md);">Chat ID</label>
                     <input type="text" class="form-input" placeholder="Enter chat ID">
                 </div>
                 <div class="form-group">
-                    <h3 style="margin-bottom: var(--spacing-md);">Discord Configuration</h3>
+                    <h3 style="margin-bottom: var(--spacing-md); color: var(--text-primary);">Discord Configuration</h3>
                     <label class="form-label">Webhook URL</label>
                     <input type="text" class="form-input" placeholder="Enter Discord webhook URL">
                 </div>
                 <div class="form-group">
-                    <h3 style="margin-bottom: var(--spacing-md);">Pushover Configuration</h3>
+                    <h3 style="margin-bottom: var(--spacing-md); color: var(--text-primary);">Pushover Configuration</h3>
                     <label class="form-label">App Token</label>
                     <input type="text" class="form-input" placeholder="Enter Pushover app token">
                     <label class="form-label" style="margin-top: var(--spacing-md);">User Key</label>
@@ -806,114 +1311,337 @@
         </div>
     </div>
 
+    <!-- Container Details Modal -->
+    <div class="modal" id="containerModal">
+        <div class="modal-content" style="max-width: 900px;">
+            <div class="modal-header">
+                <h2 class="modal-title">Container Details</h2>
+                <button class="modal-close" onclick="closeModal('containerModal')">✕</button>
+            </div>
+            <div id="containerDetails">
+                <!-- Container info will be populated here -->
+            </div>
+            <div style="margin-top: 20px;">
+                <ul style="display: flex; gap: 10px; list-style: none; border-bottom: 1px solid var(--border); margin-bottom: 20px;">
+                    <li><button class="btn btn-secondary" onclick="showTab('info')" id="tab-info">Info</button></li>
+                    <li><button class="btn btn-secondary" onclick="showTab('logs')" id="tab-logs">Logs</button></li>
+                    <li><button class="btn btn-secondary" onclick="showTab('exec')" id="tab-exec">Execute Command</button></li>
+                </ul>
+                
+                <!-- Info Tab -->
+                <div id="info-tab" class="tab-content">
+                    <div id="container-info-content"></div>
+                </div>
+                
+                <!-- Logs Tab -->
+                <div id="logs-tab" class="tab-content" style="display: none;">
+                    <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                        <button class="btn btn-secondary" onclick="fetchContainerLogs()">Refresh Logs</button>
+                        <button class="btn btn-secondary" id="streamLogsBtn" onclick="toggleLogStream()">Start Live Stream</button>
+                        <input type="number" id="logTailCount" value="100" min="1" max="1000" style="width: 80px; padding: 8px;" placeholder="Lines">
+                    </div>
+                    <div id="container-logs" style="background: var(--dark); padding: 15px; border-radius: 6px; max-height: 400px; overflow-y: auto; font-family: 'Monaco', 'Courier New', monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all;">
+                        <div style="color: var(--text-tertiary);">Click "Refresh Logs" to load container logs...</div>
+                    </div>
+                </div>
+                
+                <!-- Exec Tab -->
+                <div id="exec-tab" class="tab-content" style="display: none;">
+                    <div style="margin-bottom: 10px;">
+                        <input type="text" id="exec-command" class="form-input" placeholder="Enter command (e.g., ls -la, ps aux, cat /etc/hostname)" onkeypress="if(event.key==='Enter') executeCommand()">
+                        <button class="btn btn-primary" style="margin-top: 10px;" onclick="executeCommand()">Execute</button>
+                    </div>
+                    <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                        <button class="btn btn-secondary" onclick="setCommand('ls -la')">ls -la</button>
+                        <button class="btn btn-secondary" onclick="setCommand('ps aux')">ps aux</button>
+                        <button class="btn btn-secondary" onclick="setCommand('cat /etc/hostname')">hostname</button>
+                        <button class="btn btn-secondary" onclick="setCommand('df -h')">df -h</button>
+                        <button class="btn btn-secondary" onclick="setCommand('env')">env</button>
+                    </div>
+                    <div id="exec-output" style="background: var(--dark); padding: 15px; border-radius: 6px; max-height: 400px; overflow-y: auto; font-family: 'Monaco', 'Courier New', monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all;">
+                        <div style="color: var(--text-tertiary);">Command output will appear here...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Toast Notification -->
     <div class="toast" id="toast"></div>
 
     <script>
-        // Sample data structure
-        let hosts = [
-            {
-                id: 1,
-                name: 'production-server',
-                url: 'tcp://192.168.1.100:2376',
-                status: 'online',
-                containers: [
-                    { id: 'abc123', name: 'nginx-web', state: 'running' },
-                    { id: 'def456', name: 'postgres-db', state: 'running' },
-                    { id: 'ghi789', name: 'redis-cache', state: 'running' },
-                    { id: 'jkl012', name: 'backup-service', state: 'stopped' }
-                ]
-            },
-            {
-                id: 2,
-                name: 'staging-server',
-                url: 'tcp://192.168.1.101:2376',
-                status: 'online',
-                containers: [
-                    { id: 'mno345', name: 'app-backend', state: 'running' },
-                    { id: 'pqr678', name: 'app-frontend', state: 'running' },
-                    { id: 'stu901', name: 'mongodb', state: 'paused' }
-                ]
-            },
-            {
-                id: 3,
-                name: 'development-server',
-                url: 'tcp://192.168.1.102:2376',
-                status: 'offline',
-                containers: [
-                    { id: 'vwx234', name: 'test-app', state: 'stopped' },
-                    { id: 'yza567', name: 'test-db', state: 'stopped' }
-                ]
-            }
-        ];
+        // Global state
+        let currentPage = 'dashboard';
+        let globalSettings = {
+            maxRetries: 3,
+            retryDelay: 30,
+            defaultAutoRestart: false,
+            pollingInterval: 10,
+            connectionTimeout: 10
+        };
 
-        let alertRules = [
-            {
-                id: 1,
-                container: 'production-server / nginx-web',
-                states: ['running → stopped', 'any → error'],
-                channels: ['telegram', 'discord']
-            },
-            {
-                id: 2,
-                container: 'production-server / postgres-db',
-                states: ['running → stopped'],
-                channels: ['telegram', 'pushover']
-            },
-            {
-                id: 3,
-                container: 'staging-server / app-backend',
-                states: ['any → error'],
-                channels: ['discord']
-            }
-        ];
+        let hosts = [];
+        let containers = [];
+        let alertRules = [];
+        let ws = null;
+        let reconnectInterval = null;
+        let reconnectAttempts = 0;
+        const MAX_RECONNECT_ATTEMPTS = 10;
 
-        // Initialize the dashboard
-        function init() {
+        // API Base URL - adjust if backend is on different host/port
+        const API_BASE = window.location.origin;
+        const WS_URL = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
+
+        // Initialize WebSocket connection
+        function connectWebSocket() {
+            console.log('Connecting to WebSocket:', WS_URL);
+            
+            ws = new WebSocket(WS_URL);
+            
+            ws.onopen = function() {
+                console.log('WebSocket connected');
+                showToast('✅ Connected to backend');
+                reconnectAttempts = 0;
+                if (reconnectInterval) {
+                    clearInterval(reconnectInterval);
+                    reconnectInterval = null;
+                }
+            };
+            
+            ws.onmessage = function(event) {
+                const message = JSON.parse(event.data);
+                handleWebSocketMessage(message);
+            };
+            
+            ws.onerror = function(error) {
+                console.error('WebSocket error:', error);
+                showToast('⚠️ Connection error');
+            };
+            
+            ws.onclose = function() {
+                console.log('WebSocket disconnected');
+                showToast('🔌 Disconnected - attempting to reconnect...');
+                attemptReconnect();
+            };
+        }
+
+        // Handle incoming WebSocket messages
+        function handleWebSocketMessage(message) {
+            console.log('WebSocket message:', message.type);
+            
+            switch(message.type) {
+                case 'initial_state':
+                    hosts = message.data.hosts || [];
+                    containers = message.data.containers || [];
+                    globalSettings = message.data.settings || globalSettings;
+                    alertRules = message.data.alerts || [];
+                    renderAll();
+                    break;
+                    
+                case 'containers_update':
+                    containers = message.data.containers || [];
+                    hosts = message.data.hosts || [];
+                    renderAll();
+                    break;
+                    
+                case 'host_added':
+                    fetchHosts();
+                    showToast('✅ Host added successfully');
+                    break;
+                    
+                case 'auto_restart_success':
+                    showToast(`✅ Successfully restarted ${message.data.container_name}`);
+                    break;
+                    
+                case 'auto_restart_failed':
+                    showToast(`❌ Failed to restart ${message.data.container_name} after ${message.data.attempts} attempts`);
+                    break;
+                    
+                case 'container_restarted':
+                    showToast(`🔄 Container restarted`);
+                    break;
+                    
+                default:
+                    console.log('Unknown message type:', message.type);
+            }
+        }
+
+        // Attempt to reconnect to WebSocket
+        function attemptReconnect() {
+            if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+                showToast('❌ Could not reconnect to backend');
+                return;
+            }
+            
+            if (!reconnectInterval) {
+                reconnectInterval = setInterval(() => {
+                    reconnectAttempts++;
+                    console.log(`Reconnect attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}`);
+                    connectWebSocket();
+                }, 5000);
+            }
+        }
+
+        // API Functions
+        async function fetchHosts() {
+            try {
+                const response = await fetch(`${API_BASE}/api/hosts`);
+                hosts = await response.json();
+                renderHosts();
+                updateStats();
+            } catch (error) {
+                console.error('Error fetching hosts:', error);
+                showToast('❌ Failed to fetch hosts');
+            }
+        }
+
+        async function fetchContainers() {
+            try {
+                const response = await fetch(`${API_BASE}/api/containers`);
+                containers = await response.json();
+                renderHosts();
+                updateStats();
+            } catch (error) {
+                console.error('Error fetching containers:', error);
+                showToast('❌ Failed to fetch containers');
+            }
+        }
+
+        async function fetchSettings() {
+            try {
+                const response = await fetch(`${API_BASE}/api/settings`);
+                globalSettings = await response.json();
+            } catch (error) {
+                console.error('Error fetching settings:', error);
+            }
+        }
+
+        async function fetchAlertRules() {
+            try {
+                const response = await fetch(`${API_BASE}/api/alerts`);
+                alertRules = await response.json();
+                renderAlertRules();
+                updateNavBadges();
+            } catch (error) {
+                console.error('Error fetching alert rules:', error);
+            }
+        }
+
+        // Initialize
+        async function init() {
+            // Connect WebSocket
+            connectWebSocket();
+            
+            // Fetch initial data
+            await Promise.all([
+                fetchHosts(),
+                fetchContainers(),
+                fetchSettings(),
+                fetchAlertRules()
+            ]);
+            
+            renderAll();
+        }
+
+        function renderAll() {
             renderHosts();
             renderAlertRules();
             updateStats();
-            
-            // Simulate real-time updates
-            setInterval(() => {
-                simulateStateChanges();
-            }, 10000);
+            updateNavBadges();
         }
 
-        // Render hosts grid
+        // Page switching
+        function switchPage(page) {
+            // Update active nav item
+            document.querySelectorAll('.nav-item').forEach(item => {
+                item.classList.remove('active');
+            });
+            event.currentTarget.classList.add('active');
+            
+            // Hide all pages
+            document.querySelectorAll('.page-section').forEach(section => {
+                section.classList.remove('active');
+            });
+            
+            // Show selected page
+            document.getElementById(`${page}-page`).classList.add('active');
+            
+            // Update page title
+            const titles = {
+                'dashboard': 'Dashboard',
+                'hosts': 'Host Management',
+                'alerts': 'Alert Rules',
+                'logs': 'System Logs',
+                'about': 'About'
+            };
+            document.getElementById('pageTitle').textContent = titles[page] || 'Dashboard';
+            
+            currentPage = page;
+            
+            // Render page-specific content
+            if (page === 'hosts') {
+                renderHostsPage();
+            } else if (page === 'alerts') {
+                renderAlertsPage();
+            }
+        }
+
+        // Render functions
         function renderHosts() {
             const hostsGrid = document.getElementById('hostsGrid');
             hostsGrid.innerHTML = '';
             
-            hosts.forEach((host, index) => {
+            // Group containers by host
+            const containersByHost = {};
+            hosts.forEach(host => {
+                containersByHost[host.id] = [];
+            });
+            
+            containers.forEach(container => {
+                if (containersByHost[container.host_id]) {
+                    containersByHost[container.host_id].push(container);
+                }
+            });
+            
+            hosts.forEach(host => {
                 const hostCard = document.createElement('div');
-                hostCard.className = 'card host-card';
-                hostCard.style.setProperty('--index', index);
+                hostCard.className = 'host-card';
                 
-                const containersList = host.containers.map(container => `
-                    <div class="container-item" onclick="showContainerDetails('${container.id}')">
-                        <div class="container-info">
+                const hostContainers = containersByHost[host.id] || [];
+                const containersList = hostContainers.map(container => `
+                    <div class="container-item">
+                        <div class="container-info" onclick="showContainerDetails('${container.short_id}')">
                             <div class="container-icon container-${container.state}">
                                 ${getContainerIcon(container.state)}
                             </div>
-                            <div>
+                            <div class="container-details">
                                 <div class="container-name">${container.name}</div>
-                                <div class="container-id">${container.id}</div>
+                                <div class="container-id">${container.short_id}</div>
                             </div>
                         </div>
-                        <span class="container-state ${getStateClass(container.state)}">
-                            ${container.state}
-                        </span>
+                        <div class="container-actions">
+                            <div class="auto-restart-toggle ${container.auto_restart ? 'enabled' : ''}" 
+                                 onclick="event.stopPropagation()">
+                                <span>🔄 Auto</span>
+                                <div class="toggle-switch ${container.auto_restart ? 'active' : ''}" 
+                                     onclick="toggleAutoRestart('${host.id}', '${container.short_id}', event)"></div>
+                            </div>
+                            <span class="container-state ${getStateClass(container.state)}">
+                                ${container.state}
+                            </span>
+                        </div>
                     </div>
                 `).join('');
                 
                 hostCard.innerHTML = `
                     <div class="host-header">
-                        <div class="host-name">${host.name}</div>
+                        <div class="host-name">
+                            <span>🖥️</span> ${host.name}
+                        </div>
                         <span class="host-status status-${host.status}">${host.status}</span>
                     </div>
                     <div class="container-list">
-                        ${containersList}
+                        ${containersList || '<div style="padding: 12px; color: var(--text-tertiary); text-align: center;">No containers</div>'}
                     </div>
                 `;
                 
@@ -921,15 +1649,40 @@
             });
         }
 
-        // Render alert rules
+        function renderHostsPage() {
+            const hostsList = document.getElementById('hostsList');
+            hostsList.innerHTML = hosts.map(host => {
+                const hostContainers = containers.filter(c => c.host_id === host.id);
+                return `
+                    <div class="alert-rule-card">
+                        <div class="alert-rule-info">
+                            <div class="alert-rule-title">${host.name}</div>
+                            <div class="alert-rule-details">${host.url} • ${hostContainers.length} containers</div>
+                            <div class="alert-rule-details" style="margin-top: 4px;">
+                                Status: <span class="status-${host.status}">${host.status}</span>
+                                ${host.error ? `• Error: ${host.error}` : ''}
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: var(--spacing-sm);">
+                            <button class="btn-icon" onclick="editHost('${host.id}')">✏️</button>
+                            <button class="btn-icon" onclick="deleteHost('${host.id}')">🗑️</button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function renderAlertsPage() {
+            renderAlertRules();
+        }
+
         function renderAlertRules() {
             const alertRulesList = document.getElementById('alertRulesList');
             alertRulesList.innerHTML = '';
             
-            alertRules.forEach((rule, index) => {
+            alertRules.forEach(rule => {
                 const ruleCard = document.createElement('div');
                 ruleCard.className = 'alert-rule-card';
-                ruleCard.style.animationDelay = `${index * 0.1}s`;
                 
                 const channelBadges = rule.channels.map(channel => 
                     `<span class="channel-badge channel-${channel}">${channel}</span>`
@@ -941,8 +1694,8 @@
                         <div class="alert-rule-details">Monitoring: ${rule.states.join(', ')}</div>
                         <div class="alert-channels">${channelBadges}</div>
                     </div>
-                    <button class="btn btn-icon" onclick="deleteAlertRule(${rule.id})">
-                        <span>🗑️</span>
+                    <button class="btn-icon" onclick="deleteAlertRule(${rule.id})">
+                        🗑️
                     </button>
                 `;
                 
@@ -950,23 +1703,29 @@
             });
         }
 
-        // Update statistics
+        // Update functions
         function updateStats() {
-            const totalContainers = hosts.reduce((acc, host) => acc + host.containers.length, 0);
-            const runningContainers = hosts.reduce((acc, host) => 
-                acc + host.containers.filter(c => c.state === 'running').length, 0);
+            const totalHosts = hosts.length;
+            const totalContainers = containers.length;
+            const runningContainers = containers.filter(c => c.state === 'running').length;
             
-            document.getElementById('totalHosts').textContent = hosts.length;
+            document.getElementById('totalHosts').textContent = totalHosts;
             document.getElementById('totalContainers').textContent = totalContainers;
             document.getElementById('runningContainers').textContent = runningContainers;
             document.getElementById('alertRules').textContent = alertRules.length;
+        }
+
+        function updateNavBadges() {
+            const totalContainers = containers.length;
+            document.getElementById('navContainerCount').textContent = totalContainers;
+            document.getElementById('navAlertCount').textContent = alertRules.length;
         }
 
         // Helper functions
         function getContainerIcon(state) {
             switch(state) {
                 case 'running': return '▶';
-                case 'stopped': return '■';
+                case 'exited': return '■';
                 case 'paused': return '⏸';
                 default: return '?';
             }
@@ -975,7 +1734,7 @@
         function getStateClass(state) {
             switch(state) {
                 case 'running': return 'status-online';
-                case 'stopped': return 'status-offline';
+                case 'exited': return 'status-offline';
                 case 'paused': return 'channel-pushover';
                 default: return '';
             }
@@ -994,66 +1753,424 @@
             document.getElementById('notificationModal').classList.add('active');
         }
 
+        function openGlobalSettings() {
+            document.getElementById('maxRetries').value = globalSettings.maxRetries;
+            document.getElementById('retryDelay').value = globalSettings.retryDelay;
+            document.getElementById('pollingInterval').value = globalSettings.pollingInterval;
+            document.getElementById('connectionTimeout').value = globalSettings.connectionTimeout;
+            
+            const defaultToggle = document.getElementById('defaultAutoRestart');
+            if (globalSettings.defaultAutoRestart) {
+                defaultToggle.classList.add('active');
+            } else {
+                defaultToggle.classList.remove('active');
+            }
+            
+            document.getElementById('globalSettingsModal').classList.add('active');
+        }
+
         function closeModal(modalId) {
             document.getElementById(modalId).classList.remove('active');
         }
 
-        // Form submissions
-        function addHost(event) {
-            event.preventDefault();
-            showToast('Host added successfully!');
-            closeModal('hostModal');
-            // In a real app, this would send data to backend
+        // Toggle functions
+        function toggleSwitch(element) {
+            element.classList.toggle('active');
         }
 
-        function createAlertRule(event) {
+        async function toggleAutoRestart(hostId, containerId, event) {
+            event.stopPropagation();
+            
+            // Find the container to get current state
+            const container = containers.find(c => c.short_id === containerId);
+            if (!container) return;
+            
+            const newState = !container.auto_restart;
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/containers/${containerId}/auto-restart?enabled=${newState}`, {
+                    method: 'POST'
+                });
+                
+                if (response.ok) {
+                    // Update local state
+                    container.auto_restart = newState;
+                    container.restart_attempts = 0;
+                    
+                    renderHosts();
+                    
+                    const status = newState ? 'enabled' : 'disabled';
+                    showToast(`Auto-restart ${status} for ${container.name}`);
+                    
+                    if (newState && container.state === 'exited') {
+                        // Trigger restart attempt
+                        restartContainer(hostId, container.id);
+                    }
+                }
+            } catch (error) {
+                console.error('Error toggling auto-restart:', error);
+                showToast('❌ Failed to toggle auto-restart');
+            }
+        }
+
+        // Actions
+        async function addHost(event) {
             event.preventDefault();
-            const newRule = {
-                id: alertRules.length + 1,
-                container: event.target.querySelector('select').value,
-                states: ['running → stopped'],
-                channels: ['telegram']
+            const formData = new FormData(event.target);
+            
+            const hostData = {
+                name: formData.get('hostname'),
+                url: formData.get('hosturl')
             };
-            alertRules.push(newRule);
-            renderAlertRules();
-            updateStats();
-            showToast('Alert rule created successfully!');
-            closeModal('alertRuleModal');
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/hosts`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(hostData)
+                });
+                
+                if (response.ok) {
+                    const newHost = await response.json();
+                    hosts.push(newHost);
+                    renderHosts();
+                    updateStats();
+                    updateNavBadges();
+                    showToast('✅ Host added successfully!');
+                    closeModal('hostModal');
+                    event.target.reset();
+                } else {
+                    const error = await response.text();
+                    showToast(`❌ Failed to add host: ${error}`);
+                }
+            } catch (error) {
+                console.error('Error adding host:', error);
+                showToast('❌ Failed to add host');
+            }
         }
 
-        function saveNotificationSettings(event) {
+        async function createAlertRule(event) {
             event.preventDefault();
+            
+            const container = event.target.querySelector('select').value;
+            const states = [];
+            const channels = [];
+            
+            // Get selected states
+            event.target.querySelectorAll('input[type="checkbox"]:checked').forEach(cb => {
+                if (cb.parentElement.textContent.includes('→')) {
+                    states.push(cb.parentElement.textContent.trim());
+                } else {
+                    channels.push(cb.parentElement.textContent.trim().toLowerCase());
+                }
+            });
+            
+            const newRule = {
+                container: container,
+                states: states,
+                channels: channels
+            };
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/alerts`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(newRule)
+                });
+                
+                if (response.ok) {
+                    const rule = await response.json();
+                    alertRules.push(rule);
+                    renderAlertRules();
+                    updateStats();
+                    updateNavBadges();
+                    showToast('✅ Alert rule created successfully!');
+                    closeModal('alertRuleModal');
+                }
+            } catch (error) {
+                console.error('Error creating alert rule:', error);
+                showToast('❌ Failed to create alert rule');
+            }
+        }
+
+        async function saveNotificationSettings(event) {
+            event.preventDefault();
+            // TODO: Implement notification settings API
             showToast('Notification settings saved!');
             closeModal('notificationModal');
         }
 
-        // Other functions
-        function refreshAll() {
-            showToast('Refreshing all containers...');
-            // Simulate refresh with animation
-            const cards = document.querySelectorAll('.host-card');
-            cards.forEach(card => {
-                card.style.animation = 'none';
-                setTimeout(() => {
-                    card.style.animation = '';
-                }, 10);
-            });
+        async function saveGlobalSettings() {
+            globalSettings.maxRetries = parseInt(document.getElementById('maxRetries').value);
+            globalSettings.retryDelay = parseInt(document.getElementById('retryDelay').value);
+            globalSettings.pollingInterval = parseInt(document.getElementById('pollingInterval').value);
+            globalSettings.connectionTimeout = parseInt(document.getElementById('connectionTimeout').value);
+            globalSettings.defaultAutoRestart = document.getElementById('defaultAutoRestart').classList.contains('active');
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/settings`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(globalSettings)
+                });
+                
+                if (response.ok) {
+                    showToast('✅ Settings saved successfully!');
+                    closeModal('globalSettingsModal');
+                }
+            } catch (error) {
+                console.error('Error saving settings:', error);
+                showToast('❌ Failed to save settings');
+            }
+        }
+
+        async function deleteAlertRule(ruleId) {
+            try {
+                const response = await fetch(`${API_BASE}/api/alerts/${ruleId}`, {
+                    method: 'DELETE'
+                });
+                
+                if (response.ok) {
+                    alertRules = alertRules.filter(rule => rule.id !== ruleId);
+                    renderAlertRules();
+                    updateStats();
+                    updateNavBadges();
+                    showToast('Alert rule deleted');
+                }
+            } catch (error) {
+                console.error('Error deleting alert rule:', error);
+                showToast('❌ Failed to delete alert rule');
+            }
+        }
+
+        async function deleteHost(hostId) {
+            try {
+                const response = await fetch(`${API_BASE}/api/hosts/${hostId}`, {
+                    method: 'DELETE'
+                });
+                
+                if (response.ok) {
+                    hosts = hosts.filter(host => host.id !== hostId);
+                    containers = containers.filter(c => c.host_id !== hostId);
+                    renderHostsPage();
+                    renderHosts();
+                    updateStats();
+                    updateNavBadges();
+                    showToast('Host removed');
+                }
+            } catch (error) {
+                console.error('Error deleting host:', error);
+                showToast('❌ Failed to delete host');
+            }
+        }
+
+        function editHost(hostId) {
+            showToast('Edit functionality coming soon...');
+        }
+
+        async function refreshAll() {
+            showToast('🔄 Refreshing all containers...');
+            await Promise.all([
+                fetchHosts(),
+                fetchContainers()
+            ]);
+            renderHosts();
         }
 
         function showContainerDetails(containerId) {
-            showToast(`Container details: ${containerId}`);
+            const container = containers.find(c => c.short_id === containerId);
+            if (container) {
+                // Store current container info globally for modal functions
+                window.currentContainer = container;
+                
+                // Populate container details
+                const detailsHtml = `
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                        <div>
+                            <strong>Name:</strong> ${container.name}<br>
+                            <strong>ID:</strong> ${container.short_id}<br>
+                            <strong>Image:</strong> ${container.image}<br>
+                        </div>
+                        <div>
+                            <strong>State:</strong> <span class="${getStateClass(container.state)}">${container.state}</span><br>
+                            <strong>Host:</strong> ${container.host_name}<br>
+                            <strong>Created:</strong> ${new Date(container.created).toLocaleString()}<br>
+                        </div>
+                    </div>
+                `;
+                
+                document.getElementById('container-info-content').innerHTML = detailsHtml;
+                
+                // Show modal
+                document.getElementById('containerModal').classList.add('active');
+                
+                // Show info tab by default
+                showTab('info');
+            }
         }
 
-        function deleteAlertRule(ruleId) {
-            alertRules = alertRules.filter(rule => rule.id !== ruleId);
-            renderAlertRules();
-            updateStats();
-            showToast('Alert rule deleted');
+        // Container Modal Functions
+        function showTab(tab) {
+            // Hide all tabs
+            document.querySelectorAll('.tab-content').forEach(content => {
+                content.style.display = 'none';
+            });
+            
+            // Remove active class from all tab buttons
+            document.querySelectorAll('[id^="tab-"]').forEach(btn => {
+                btn.classList.remove('btn-primary');
+                btn.classList.add('btn-secondary');
+            });
+            
+            // Show selected tab
+            document.getElementById(`${tab}-tab`).style.display = 'block';
+            document.getElementById(`tab-${tab}`).classList.remove('btn-secondary');
+            document.getElementById(`tab-${tab}`).classList.add('btn-primary');
+            
+            // Clear log stream if switching away from logs
+            if (tab !== 'logs' && window.logStreamWs) {
+                window.logStreamWs.close();
+                window.logStreamWs = null;
+                document.getElementById('streamLogsBtn').textContent = 'Start Live Stream';
+            }
         }
 
-        function toggleChannelConfig(channel, enabled) {
-            if (enabled) {
-                showToast(`${channel} notifications enabled`);
+        async function fetchContainerLogs() {
+            if (!window.currentContainer) return;
+            
+            const tailCount = document.getElementById('logTailCount').value || 100;
+            const logsDiv = document.getElementById('container-logs');
+            logsDiv.innerHTML = '<div style="color: var(--text-secondary);">Loading logs...</div>';
+            
+            try {
+                const response = await fetch(
+                    `${API_BASE}/api/hosts/${window.currentContainer.host_id}/containers/${window.currentContainer.id}/logs?tail=${tailCount}`
+                );
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    const logs = data.logs.filter(line => line.trim()).join('\n');
+                    logsDiv.innerHTML = logs || '<div style="color: var(--text-tertiary);">No logs available</div>';
+                    logsDiv.scrollTop = logsDiv.scrollHeight;
+                } else {
+                    logsDiv.innerHTML = '<div style="color: var(--danger);">Failed to fetch logs</div>';
+                }
+            } catch (error) {
+                console.error('Error fetching logs:', error);
+                logsDiv.innerHTML = '<div style="color: var(--danger);">Error loading logs</div>';
+            }
+        }
+
+        function toggleLogStream() {
+            if (!window.currentContainer) return;
+            
+            const btn = document.getElementById('streamLogsBtn');
+            const logsDiv = document.getElementById('container-logs');
+            
+            if (window.logStreamWs) {
+                // Stop streaming
+                window.logStreamWs.close();
+                window.logStreamWs = null;
+                btn.textContent = 'Start Live Stream';
+                return;
+            }
+            
+            // Start streaming
+            const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/logs/${window.currentContainer.host_id}/${window.currentContainer.id}`;
+            
+            window.logStreamWs = new WebSocket(wsUrl);
+            
+            window.logStreamWs.onopen = function() {
+                btn.textContent = 'Stop Live Stream';
+                logsDiv.innerHTML = '<div style="color: var(--success);">Live streaming started...</div>\n';
+            };
+            
+            window.logStreamWs.onmessage = function(event) {
+                logsDiv.innerHTML += event.data + '\n';
+                
+                // Auto-scroll to bottom
+                logsDiv.scrollTop = logsDiv.scrollHeight;
+                
+                // Limit log size to prevent memory issues
+                const lines = logsDiv.innerHTML.split('\n');
+                if (lines.length > 1000) {
+                    logsDiv.innerHTML = lines.slice(-1000).join('\n');
+                }
+            };
+            
+            window.logStreamWs.onerror = function(error) {
+                console.error('Log stream error:', error);
+                btn.textContent = 'Start Live Stream';
+                logsDiv.innerHTML += '<div style="color: var(--danger);">Stream error occurred</div>\n';
+            };
+            
+            window.logStreamWs.onclose = function() {
+                btn.textContent = 'Start Live Stream';
+                if (window.logStreamWs) {
+                    logsDiv.innerHTML += '<div style="color: var(--text-tertiary);">Stream closed</div>\n';
+                }
+                window.logStreamWs = null;
+            };
+        }
+
+        function setCommand(cmd) {
+            document.getElementById('exec-command').value = cmd;
+        }
+
+        async function executeCommand() {
+            if (!window.currentContainer) return;
+            
+            const command = document.getElementById('exec-command').value.trim();
+            if (!command) {
+                showToast('Please enter a command');
+                return;
+            }
+            
+            const outputDiv = document.getElementById('exec-output');
+            outputDiv.innerHTML = `<div style="color: var(--text-secondary);">Executing: ${command}...</div>\n`;
+            
+            try {
+                const response = await fetch(
+                    `${API_BASE}/api/hosts/${window.currentContainer.host_id}/containers/${window.currentContainer.id}/exec?command=${encodeURIComponent(command)}`,
+                    { method: 'POST' }
+                );
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    outputDiv.innerHTML = `<div style="color: var(--text-tertiary);">$ ${data.command}</div>\n`;
+                    outputDiv.innerHTML += `<div style="color: var(--text-primary);">${data.output}</div>`;
+                    if (data.exit_code !== 0) {
+                        outputDiv.innerHTML += `<div style="color: var(--warning);">Exit code: ${data.exit_code}</div>`;
+                    }
+                } else {
+                    outputDiv.innerHTML = `<div style="color: var(--danger);">Failed to execute command</div>`;
+                }
+            } catch (error) {
+                console.error('Error executing command:', error);
+                outputDiv.innerHTML = `<div style="color: var(--danger);">Error executing command</div>`;
+            }
+        }
+
+        async function restartContainer(hostId, containerId) {
+            try {
+                const response = await fetch(`${API_BASE}/api/hosts/${hostId}/containers/${containerId}/restart`, {
+                    method: 'POST'
+                });
+                
+                if (response.ok) {
+                    showToast('🔄 Container restarting...');
+                } else {
+                    showToast('❌ Failed to restart container');
+                }
+            } catch (error) {
+                console.error('Error restarting container:', error);
+                showToast('❌ Failed to restart container');
             }
         }
 
@@ -1064,29 +2181,6 @@
             setTimeout(() => {
                 toast.classList.remove('show');
             }, 3000);
-        }
-
-        // Simulate state changes for demo
-        function simulateStateChanges() {
-            const randomHost = hosts[Math.floor(Math.random() * hosts.length)];
-            if (randomHost.containers.length > 0) {
-                const randomContainer = randomHost.containers[Math.floor(Math.random() * randomHost.containers.length)];
-                const states = ['running', 'stopped', 'paused'];
-                const oldState = randomContainer.state;
-                randomContainer.state = states[Math.floor(Math.random() * states.length)];
-                
-                if (oldState !== randomContainer.state) {
-                    renderHosts();
-                    updateStats();
-                    // Check if this triggers any alert
-                    const relevantRule = alertRules.find(rule => 
-                        rule.container.includes(randomContainer.name)
-                    );
-                    if (relevantRule) {
-                        showToast(`⚠️ Alert: ${randomContainer.name} changed from ${oldState} to ${randomContainer.state}`);
-                    }
-                }
-            }
         }
 
         // Initialize on load

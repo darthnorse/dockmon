@@ -1389,6 +1389,7 @@
     <div class="toast" id="toast"></div>
 
     <script>
+        console.log('DockMon JavaScript loaded');
         // Global state
         let currentPage = 'dashboard';
         let globalSettings = {
@@ -1556,8 +1557,8 @@
             await Promise.all([
                 fetchHosts(),
                 fetchContainers(),
-                fetchSettings(),
-                fetchAlertRules()
+                fetchSettings()
+                // Temporarily disabled: fetchAlertRules()
             ]);
             
             renderAll();
@@ -1697,10 +1698,18 @@
         }
 
         function renderAlertRules() {
-            const alertRulesList = document.getElementById('alertRulesList');
-            alertRulesList.innerHTML = '';
-            
-            alertRules.forEach(rule => {
+            try {
+                const alertRulesList = document.getElementById('alertRulesList');
+                if (!alertRulesList) return;
+
+                alertRulesList.innerHTML = '';
+
+                if (!alertRules || !Array.isArray(alertRules)) {
+                    console.warn('alertRules is not an array:', alertRules);
+                    return;
+                }
+
+                alertRules.forEach(rule => {
                 const ruleCard = document.createElement('div');
                 ruleCard.className = 'alert-rule-card';
 
@@ -1725,7 +1734,10 @@
                 `;
                 
                 alertRulesList.appendChild(ruleCard);
-            });
+                });
+            } catch (error) {
+                console.error('Error rendering alert rules:', error);
+            }
         }
 
         // Update functions
@@ -1836,13 +1848,16 @@
 
                     // Check boxes based on rule's trigger_states
                     if (editRule.trigger_states && editRule.trigger_states.includes('stopped')) {
-                        document.querySelector('input[type="checkbox"][data-state="stopped"]')?.checked = true;
+                        const stoppedCheckbox = document.querySelector('input[type="checkbox"][data-state="stopped"]');
+                        if (stoppedCheckbox) stoppedCheckbox.checked = true;
                     }
                     if (editRule.trigger_states && editRule.trigger_states.includes('paused')) {
-                        document.querySelector('input[type="checkbox"][data-state="paused"]')?.checked = true;
+                        const pausedCheckbox = document.querySelector('input[type="checkbox"][data-state="paused"]');
+                        if (pausedCheckbox) pausedCheckbox.checked = true;
                     }
                     if (editRule.trigger_states && editRule.trigger_states.includes('error')) {
-                        document.querySelector('input[type="checkbox"][data-state="error"]')?.checked = true;
+                        const errorCheckbox = document.querySelector('input[type="checkbox"][data-state="error"]');
+                        if (errorCheckbox) errorCheckbox.checked = true;
                     }
 
                     // Set notification channels

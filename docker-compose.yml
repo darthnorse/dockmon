@@ -33,7 +33,7 @@ services:
     container_name: dockmon-frontend
     restart: unless-stopped
     ports:
-      - "8000:80"  # Frontend on port 8000
+      - "8001:80"  # Frontend on port 8001
     environment:
       - TZ=UTC
       - DOCKMON_API_URL=http://dockmon-backend:8080  # Backend API URL

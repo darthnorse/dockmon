@@ -579,12 +579,12 @@ cp /opt/dockmon/src/index.html /var/www/html/index.html
 # Update frontend to point to backend API (if needed)
 sed -i 's|http://localhost:8080|http://localhost:8080|g' /var/www/html/index.html
 
-# Configure nginx to serve on port 8000
-echo "Configuring nginx for port 8000..."
+# Configure nginx to serve on port 8001
+echo "Configuring nginx for port 8001..."
 cat << 'NGINX_CONF' > /etc/nginx/sites-available/dockmon
 server {
-    listen 8000 default_server;
-    listen [::]:8000 default_server;
+    listen 8001 default_server;
+    listen [::]:8001 default_server;
 
     root /var/www/html;
     index index.html;
@@ -910,7 +910,7 @@ echo "Start on Boot:    $([ $START_ON_BOOT -eq 1 ] && echo 'Yes' || echo 'No')"
 echo ""
 echo -e "${BLUE}Access DockMon:${NC}"
 echo "══════════════════════════════════════"
-echo -e "Web Interface:    ${GREEN}http://$CONTAINER_IP:8000${NC}"
+echo -e "Web Interface:    ${GREEN}http://$CONTAINER_IP:8001${NC}"
 echo -e "SSH Access:       ${GREEN}ssh root@$CONTAINER_IP${NC}"
 echo ""
 echo -e "${BLUE}Container Management:${NC}"
@@ -923,7 +923,7 @@ echo "Remove:    pct destroy $CONTAINER_ID"
 echo ""
 echo -e "${YELLOW}Notes:${NC}"
 echo "• Template used: $TEMPLATE (downloaded automatically)"
-echo "• Frontend (nginx) serves on port 8000"
+echo "• Frontend (nginx) serves on port 8001"
 echo "• Backend API runs on port 8080"
 echo "• Root password: (the password you set)"
 echo "• Services: dockmon-backend, dockmon-frontend, nginx, supervisor"

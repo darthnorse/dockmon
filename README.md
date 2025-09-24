@@ -81,7 +81,7 @@ docker-compose up -d
 ```
 
 **Access URLs:**
-- **Frontend UI:** `http://localhost:8000`
+- **Frontend UI:** `http://localhost:8001`
 - **Backend API:** `http://localhost:8080`
 - **API Documentation:** `http://localhost:8080/docs` (Swagger UI)
 
@@ -161,7 +161,7 @@ systemctl start nginx supervisor
 ```
 
 **Access URLs:**
-- **Frontend:** `http://<container-ip>:8000`
+- **Frontend:** `http://<container-ip>:8001`
 - **Backend API:** `http://<container-ip>:8080`
 
 ### Option 3: Direct Deployment (Any Linux Server)
@@ -399,7 +399,7 @@ Coming soon:
 
 ```bash
 docker pull darthnorse/dockmon:latest
-docker run -d -p 8000:8000 -p 8080:8080 darthnorse/dockmon:latest
+docker run -d -p 8001:8001 -p 8080:8080 darthnorse/dockmon:latest
 ```
 
 ## 📁 Project Structure
@@ -462,10 +462,10 @@ The frontend is a single HTML file with embedded CSS/JavaScript:
 open src/index.html
 
 # Option 2: Use Python's HTTP server
-python3 -m http.server 8000 --directory src
+python3 -m http.server 8001 --directory src
 
 # Option 3: Use Node's http-server
-npx http-server src -p 8000
+npx http-server src -p 8001
 ```
 
 ### Full Development Stack
@@ -479,7 +479,7 @@ docker-compose up -d
 cd backend && python main.py
 
 # Terminal 2 - Frontend
-python3 -m http.server 8000 --directory src
+python3 -m http.server 8001 --directory src
 ```
 
 ### Database Development

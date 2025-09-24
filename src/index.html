@@ -2666,18 +2666,13 @@
                     const updatedHost = await response.json();
 
                     if (isEditing) {
-                        // Update existing host in array
-                        const index = hosts.findIndex(h => h.id === window.editingHost.id);
-                        if (index !== -1) {
-                            hosts[index] = updatedHost;
-                        }
                         showToast('✅ Host updated successfully!');
                     } else {
-                        // Add new host to array
-                        hosts.push(updatedHost);
                         showToast('✅ Host added successfully!');
                     }
 
+                    // Refresh hosts list from server to ensure we have complete data
+                    await loadHosts();
                     renderHosts();
                     updateStats();
                     updateNavBadges();

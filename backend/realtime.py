@@ -209,38 +209,22 @@ class RealtimeMonitor:
 
     def start_event_monitor(self, client: docker.DockerClient, host_id: str):
         """Start monitoring Docker events for a host"""
-        print(f"DEBUG: start_event_monitor called for host {host_id}")  # Using print to ensure it shows
-        logger.info(f"start_event_monitor called for host {host_id}")
-        logger.info(f"Current event_tasks: {list(self.event_tasks.keys())}")
 
         # Always stop any existing monitor first to prevent duplicates
         if host_id in self.event_tasks:
-            logger.warning(f"Found existing monitor for host {host_id} - stopping it first")
             existing_task = self.event_tasks[host_id]
             existing_task.cancel()
             del self.event_tasks[host_id]
-            logger.info(f"Cancelled existing task for host {host_id}")
 
-        logger.info(f"Creating new monitoring task for host {host_id}")
         task = asyncio.create_task(self._monitor_docker_events(client, host_id))
         self.event_tasks[host_id] = task
-        logger.info(f"Added task for {host_id}. Total active monitors: {len(self.event_tasks)}")
 
     def stop_event_monitoring(self, host_id: str):
         """Stop event monitoring for a specific host"""
-        logger.info(f"stop_event_monitoring called for host {host_id}")
-        logger.info(f"Current event_tasks before stop: {list(self.event_tasks.keys())}")
-
         if host_id in self.event_tasks:
-            logger.info(f"Found active monitoring task for host {host_id} - cancelling it")
             task = self.event_tasks[host_id]
             task.cancel()
             del self.event_tasks[host_id]
-            logger.info(f"Cancelled and removed task for {host_id}. Remaining monitors: {len(self.event_tasks)}")
-        else:
-            logger.warning(f"No active event monitoring found for host {host_id} in event_tasks")
-
-        logger.info(f"Current event_tasks after stop: {list(self.event_tasks.keys())}")
 
     async def _monitor_docker_events(self, client: docker.DockerClient, host_id: str):
         """Monitor and broadcast Docker events"""
@@ -275,12 +259,11 @@ class RealtimeMonitor:
                         attributes=event.get("Actor", {}).get("Attributes", {})
                     )
 
-                    # Debug: Log the actual Docker event details
-                    logger.info(f"[{host_id[:8]}] Docker event: {docker_event.action} - {docker_event.container_name} ({docker_event.container_id})")
-
                     # Filter out noisy health check events
-                    if docker_event.action.startswith('exec_') and 'healthcheck' in docker_event.action:
-                        logger.debug(f"Filtering out health check event: {docker_event.action}")
+                    # Check if this is a health check by looking at the original event
+                    event_str = str(event)
+                    if docker_event.action.startswith('exec_') and 'healthcheck' in event_str:
+                        # Skip health check events - they're too noisy
                         continue
 
                     # Broadcast to all subscribers

@@ -3534,22 +3534,42 @@
             );
             existingHostWidgets.forEach(widget => grid.removeWidget(widget));
 
-            // Create a widget for each host with dynamic sizing
+            // Create a widget for each host with dynamic sizing and smart positioning
+            let currentY = 5; // Start below stats widget
+            let leftColumnY = 5;
+            let rightColumnY = 5;
+
             hosts.forEach((host, index) => {
                 const widgetId = `host-${host.id}`;
                 const hostContainers = containers.filter(c => c.host_id === host.id);
 
-                // Calculate height based on container count (2 containers per row + header + padding)
-                const containersPerRow = 1; // Single column layout for cleaner look
-                const containerRows = Math.max(1, Math.min(6, hostContainers.length)); // Min 1, max 6 containers shown
-                const headerHeight = 2; // Height for widget header and host header
-                const dynamicHeight = headerHeight + containerRows * 1.5; // 1.5 units per container row
+                // Calculate height based on container count
+                const containerRows = Math.max(1, hostContainers.length);
+                const headerHeight = 3;
+                const dynamicHeight = headerHeight + containerRows * 1.2;
+                const widgetHeight = Math.ceil(dynamicHeight);
+
+                console.log(`Host ${host.name}: ${hostContainers.length} containers, height: ${widgetHeight}`);
+
+                // Smart column placement - use the shorter column
+                let x, y;
+                if (leftColumnY <= rightColumnY) {
+                    // Place in left column
+                    x = 0;
+                    y = leftColumnY;
+                    leftColumnY = y + widgetHeight + 1; // Add gap
+                } else {
+                    // Place in right column
+                    x = 6;
+                    y = rightColumnY;
+                    rightColumnY = y + widgetHeight + 1; // Add gap
+                }
 
                 const widget = createWidget(widgetId, host.name, '🖥️', {
-                    x: (index % 2) * 6, // Alternate between left (0) and right (6)
-                    y: 5 + Math.floor(index / 2) * Math.ceil(dynamicHeight + 1), // Dynamic spacing
+                    x: x,
+                    y: y,
                     w: 6,
-                    h: Math.ceil(dynamicHeight),
+                    h: widgetHeight,
                     minW: 3, minH: 3
                 });
             });

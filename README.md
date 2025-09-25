@@ -99,79 +99,7 @@ docker compose up -d
 **Docker Socket Access:**
 The backend automatically mounts `/var/run/docker.sock` for local Docker monitoring.
 
-### Option 2: Proxmox LXC Container Deployment
-
-#### Automated Installation (Recommended)
-
-Run this single command on your Proxmox host:
-
-```bash
-curl -sSL https://raw.githubusercontent.com/darthnorse/dockmon/main/scripts/dockmon-lxc.sh | bash
-```
-
-Or download and run the script:
-
-```bash
-wget https://raw.githubusercontent.com/darthnorse/dockmon/main/scripts/dockmon-lxc.sh
-chmod +x dockmon-lxc.sh
-./dockmon-lxc.sh
-```
-
-The script will:
-- Let you choose between Debian 12 or 13
-- Prompt for root password and configure networking
-- Install Python 3.11, nginx, and all dependencies
-- Set up the FastAPI backend with virtual environment
-- Configure systemd services and supervisor for reliability
-- Create and start both frontend and backend services
-- Set up the `update` command for easy maintenance
-
-#### Keeping DockMon Updated
-
-Once installed, simply SSH into your container and run:
-
-```bash
-update
-```
-
-This will update both Debian and DockMon to the latest versions.
-
-#### Manual Installation (Alternative)
-
-If you prefer to create the container manually:
-
-1. Create an LXC container with Debian 12 or 13
-2. Start the container and SSH into it
-3. Run these commands:
-
-```bash
-# Update system and install dependencies
-apt update && apt upgrade -y
-apt install -y git nginx curl python3 python3-pip python3-venv supervisor
-
-# Clone DockMon
-cd /opt
-git clone https://github.com/darthnorse/dockmon.git
-
-# Set up Python backend
-cd /opt/dockmon/backend
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-
-# Set up frontend
-cp /opt/dockmon/src/index.html /var/www/html/index.html
-
-# Configure services (see installation script for complete systemd setup)
-systemctl enable nginx supervisor
-systemctl start nginx supervisor
-```
-
-**Access URLs:**
-- **Frontend:** `http://<container-ip>:8001`
-- **Backend API:** `http://<container-ip>:8080`
-
-### Option 3: Direct Deployment (Any Linux Server)
+### Option 2: Direct Deployment (Any Linux Server)
 
 For any Debian/Ubuntu based system with full backend:
 
@@ -196,7 +124,7 @@ sudo systemctl enable nginx supervisor
 sudo systemctl start nginx supervisor
 ```
 
-**Note:** For production deployment, configure proper systemd services (see LXC script for examples).
+**Note:** For production deployment, configure proper systemd services for auto-start and reliability.
 
 ## Configuration & Setup
 
@@ -659,6 +587,7 @@ Contributions are welcome! Feel free to:
 - [ ] **Resource Usage Alerts** - Alert on CPU/memory thresholds
 - [ ] **Log Analysis** - Search and filter container logs with regex
 - [ ] **Configuration Export/Import** - Backup and restore settings
+- [ ] **Automatic Proxmox LXC Installation** - One-click LXC container deployment script
 
 ## License
 

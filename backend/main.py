@@ -175,25 +175,29 @@ class DockerMonitor:
                 # For TCP connections
                 tls_config = None
                 if config.tls_cert and config.tls_key:
-                    # Write temporary files for TLS configuration
-                    import tempfile
-                    cert_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.pem')
-                    key_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.pem')
-                    ca_file = None
+                    # Create persistent certificate storage directory
+                    import os
+                    cert_dir = os.path.join('data', 'certs', existing_id or str(uuid.uuid4()))
+                    os.makedirs(cert_dir, exist_ok=True)
 
-                    cert_file.write(config.tls_cert)
-                    cert_file.flush()
-                    key_file.write(config.tls_key)
-                    key_file.flush()
+                    # Write certificate files
+                    cert_file = os.path.join(cert_dir, 'client-cert.pem')
+                    key_file = os.path.join(cert_dir, 'client-key.pem')
+                    ca_file = os.path.join(cert_dir, 'ca.pem') if config.tls_ca else None
 
-                    if config.tls_ca:
-                        ca_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.pem')
-                        ca_file.write(config.tls_ca)
-                        ca_file.flush()
-                        ca_file = ca_file.name
+                    with open(cert_file, 'w') as f:
+                        f.write(config.tls_cert)
+                    with open(key_file, 'w') as f:
+                        f.write(config.tls_key)
+                    if ca_file and config.tls_ca:
+                        with open(ca_file, 'w') as f:
+                            f.write(config.tls_ca)
 
-                    cert_file = cert_file.name
-                    key_file = key_file.name
+                    # Set secure permissions
+                    os.chmod(cert_file, 0o600)
+                    os.chmod(key_file, 0o600)
+                    if ca_file:
+                        os.chmod(ca_file, 0o600)
 
                     tls_config = docker.tls.TLSConfig(
                         client_cert=(cert_file, key_file),
@@ -209,17 +213,6 @@ class DockerMonitor:
 
             # Test connection
             client.ping()
-
-            # Clean up temporary certificate files after successful connection
-            if config.tls_cert and config.tls_key and not config.url.startswith("unix://"):
-                import os
-                try:
-                    os.unlink(cert_file)
-                    os.unlink(key_file)
-                    if ca_file:
-                        os.unlink(ca_file)
-                except OSError:
-                    pass  # Ignore cleanup errors
 
             # Validate TLS configuration for TCP connections
             security_status = self._validate_host_security(config)
@@ -278,6 +271,18 @@ class DockerMonitor:
         else:
             return "unknown"  # Unknown protocol
 
+    def _cleanup_host_certificates(self, host_id: str):
+        """Clean up certificate files for a host"""
+        import shutil
+        import os
+        cert_dir = os.path.join('data', 'certs', host_id)
+        if os.path.exists(cert_dir):
+            try:
+                shutil.rmtree(cert_dir)
+                logger.info(f"Cleaned up certificate files for host {host_id}")
+            except Exception as e:
+                logger.warning(f"Failed to clean up certificates for host {host_id}: {e}")
+
     def remove_host(self, host_id: str):
         """Remove a Docker host"""
         if host_id in self.hosts:
@@ -287,6 +292,8 @@ class DockerMonitor:
                 del self.clients[host_id]
             # Stop event monitoring
             self.realtime.stop_event_monitoring(host_id)
+            # Clean up certificate files
+            self._cleanup_host_certificates(host_id)
             # Remove from database
             self.db.delete_host(host_id)
             # Refresh alert rules cache since host-specific rules may have been deleted
@@ -330,11 +337,14 @@ class DockerMonitor:
                 # For TCP connections
                 tls_config = None
                 if config.tls_cert and config.tls_key:
-                    # Write temporary files for TLS configuration
-                    temp_dir = tempfile.mkdtemp()
-                    cert_file = os.path.join(temp_dir, 'cert.pem')
-                    key_file = os.path.join(temp_dir, 'key.pem')
-                    ca_file = os.path.join(temp_dir, 'ca.pem') if config.tls_ca else None
+                    # Create persistent certificate storage directory
+                    cert_dir = os.path.join('data', 'certs', host_id)
+                    os.makedirs(cert_dir, exist_ok=True)
+
+                    # Write certificate files
+                    cert_file = os.path.join(cert_dir, 'client-cert.pem')
+                    key_file = os.path.join(cert_dir, 'client-key.pem')
+                    ca_file = os.path.join(cert_dir, 'ca.pem') if config.tls_ca else None
 
                     with open(cert_file, 'w') as f:
                         f.write(config.tls_cert)
@@ -343,6 +353,12 @@ class DockerMonitor:
                     if ca_file and config.tls_ca:
                         with open(ca_file, 'w') as f:
                             f.write(config.tls_ca)
+
+                    # Set secure permissions
+                    os.chmod(cert_file, 0o600)
+                    os.chmod(key_file, 0o600)
+                    if ca_file:
+                        os.chmod(ca_file, 0o600)
 
                     tls_config = docker.tls.TLSConfig(
                         client_cert=(cert_file, key_file),

@@ -6,6 +6,9 @@
 
 set -e
 
+# Ensure /usr/sbin is in PATH for Proxmox commands
+export PATH="/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+
 # Color codes for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -68,50 +71,41 @@ echo -e "${GREEN}     DockMon LXC Container Auto-Creation for Proxmox     ${NC}"
 echo -e "${GREEN}════════════════════════════════════════════════════════${NC}"
 echo ""
 
-# Check if running on Proxmox (unless bypass flag is set)
-if [ "$1" != "--bypass-proxmox-check" ]; then
-    # Check for Proxmox VE using multiple methods (v8 has /etc/pve/version, v9+ has different structure)
-    PROXMOX_CHECK_FAILED=0
-
-    # Check 1: /etc/pve directory
-    if [ ! -d /etc/pve ]; then
-        print_error "Missing /etc/pve directory"
-        PROXMOX_CHECK_FAILED=1
-    fi
-
-    # Check 2: storage.cfg file
-    if [ ! -f /etc/pve/storage.cfg ]; then
-        print_error "Missing /etc/pve/storage.cfg file"
-        PROXMOX_CHECK_FAILED=1
-    fi
-
-    # Check 3: pct command
-    if ! which pct >/dev/null 2>&1; then
-        print_error "Missing 'pct' command (Proxmox Container Toolkit)"
-        PROXMOX_CHECK_FAILED=1
-    fi
-
-    if [ "$PROXMOX_CHECK_FAILED" -eq 1 ]; then
-        print_error "This script must be run on a Proxmox VE host!"
-        print_info "If you're testing on a non-Proxmox system, use: $0 --bypass-proxmox-check"
+# Check if running on Proxmox VE (community-scripts approach)
+check_root() {
+    if [[ $EUID -ne 0 ]]; then
+        print_error "This script must be run as root"
         exit 1
     fi
-fi
+}
 
-# Get Proxmox version info
-PROXMOX_VERSION="Unknown"
-if [ -f /etc/pve/version ]; then
-    PROXMOX_VERSION=$(cat /etc/pve/version)
-elif command -v pveversion >/dev/null 2>&1; then
-    PROXMOX_VERSION=$(pveversion | head -n1)
-fi
-print_info "Detected Proxmox VE: $PROXMOX_VERSION"
+check_proxmox() {
+    if [ "$1" = "--bypass-proxmox-check" ]; then
+        print_info "Bypassing Proxmox check for testing"
+        return 0
+    fi
 
-# Check if running as root
-if [ "$EUID" -ne 0 ]; then 
-    print_error "This script must be run as root!"
-    exit 1
-fi
+    if ! command -v pveversion >/dev/null 2>&1; then
+        print_error "No PVE Detected!"
+        print_error "This script must be run on a Proxmox VE host"
+        exit 1
+    fi
+
+    # Get Proxmox version and validate
+    local pve=$(pveversion | grep "pve-manager" | awk '{print substr($2, 1, 3)}')
+    if [[ ! "$pve" =~ ^(8\.[0-9]|9\.[0-9])$ ]]; then
+        print_error "This version of Proxmox VE is not supported"
+        print_info "Requires PVE Version 8.0 or higher"
+        print_info "Detected: $(pveversion | grep pve-manager)"
+        exit 1
+    fi
+
+    print_info "Detected Proxmox VE: $(pveversion | grep pve-manager | awk '{print $2}')"
+}
+
+# Perform checks
+check_root
+check_proxmox "$1"
 
 # Function to get next available container ID
 get_next_ctid() {

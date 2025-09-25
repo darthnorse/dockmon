@@ -154,6 +154,7 @@ class DockerMonitor:
         self.notification_settings = NotificationSettings()
         self.auto_restart_status: Dict[str, bool] = {}
         self.restart_attempts: Dict[str, int] = {}
+        self.restarting_containers: Dict[str, bool] = {}  # Track containers currently being restarted
         self.monitoring_task: Optional[asyncio.Task] = None
         self.manager = ConnectionManager()
         self.realtime = RealtimeMonitor()  # Real-time monitoring
@@ -612,6 +613,7 @@ class DockerMonitor:
         self.auto_restart_status[container_id] = enabled
         if not enabled:
             self.restart_attempts[container_id] = 0
+            self.restarting_containers[container_id] = False
         # Save to database
         self.db.set_auto_restart(host_id, container_id, container_name, enabled)
         logger.info(f"Auto-restart {'enabled' if enabled else 'disabled'} for {container_id}")
@@ -651,7 +653,10 @@ class DockerMonitor:
                         self._get_auto_restart_status(container.host_id, container.short_id)):
 
                         attempts = self.restart_attempts.get(container.short_id, 0)
-                        if attempts < self.settings.max_retries:
+                        is_restarting = self.restarting_containers.get(container.short_id, False)
+
+                        if attempts < self.settings.max_retries and not is_restarting:
+                            self.restarting_containers[container.short_id] = True
                             asyncio.create_task(
                                 self.auto_restart_container(container)
                             )
@@ -742,6 +747,9 @@ class DockerMonitor:
                         "max_retries": self.settings.max_retries
                     }
                 })
+        finally:
+            # Always clear the restarting flag when done (success or failure)
+            self.restarting_containers[container_id] = False
 
     def _load_persistent_config(self):
         """Load saved configuration from database"""

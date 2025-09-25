@@ -84,7 +84,7 @@ Clone and run with Docker Compose for full functionality:
 ```bash
 git clone https://github.com/darthnorse/dockmon.git
 cd dockmon
-docker-compose up -d
+docker compose up -d
 ```
 
 **Access URLs:**
@@ -614,7 +614,7 @@ npx http-server src -p 8001
 
 ```bash
 # Run both frontend and backend
-docker-compose up -d
+docker compose up -d
 
 # Or run manually:
 # Terminal 1 - Backend

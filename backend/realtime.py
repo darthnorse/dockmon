@@ -209,6 +209,7 @@ class RealtimeMonitor:
 
     def start_event_monitor(self, client: docker.DockerClient, host_id: str):
         """Start monitoring Docker events for a host"""
+        print(f"DEBUG: start_event_monitor called for host {host_id}")  # Using print to ensure it shows
         logger.info(f"start_event_monitor called for host {host_id}")
         logger.info(f"Current event_tasks: {list(self.event_tasks.keys())}")
 

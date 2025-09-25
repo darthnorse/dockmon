@@ -212,9 +212,14 @@ class RealtimeMonitor:
         logger.info(f"start_event_monitor called for host {host_id}")
         logger.info(f"Current event_tasks: {list(self.event_tasks.keys())}")
 
+        # Always stop any existing monitor first to prevent duplicates
         if host_id in self.event_tasks:
-            logger.warning(f"Already monitoring host {host_id} - skipping new monitor")
-            return  # Already monitoring
+            logger.warning(f"Found existing monitor for host {host_id} - stopping it first")
+            existing_task = self.event_tasks[host_id]
+            existing_task.cancel()
+            del self.event_tasks[host_id]
+            # Small delay to ensure cancellation completes
+            await asyncio.sleep(0.1)
 
         logger.info(f"Creating new monitoring task for host {host_id}")
         task = asyncio.create_task(self._monitor_docker_events(client, host_id))

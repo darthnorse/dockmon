@@ -68,11 +68,25 @@ echo -e "${GREEN}     DockMon LXC Container Auto-Creation for Proxmox     ${NC}"
 echo -e "${GREEN}════════════════════════════════════════════════════════${NC}"
 echo ""
 
-# Check if running on Proxmox
-if [ ! -f /etc/pve/version ]; then
-    print_error "This script must be run on a Proxmox VE host!"
-    exit 1
+# Check if running on Proxmox (unless bypass flag is set)
+if [ "$1" != "--bypass-proxmox-check" ]; then
+    # Check for Proxmox VE using multiple methods (v8 has /etc/pve/version, v9+ has different structure)
+    if [ ! -d /etc/pve ] || [ ! -f /etc/pve/storage.cfg ] || ! command -v pct >/dev/null 2>&1; then
+        print_error "This script must be run on a Proxmox VE host!"
+        print_info "Required: /etc/pve/ directory, storage.cfg, and pct command"
+        print_info "If you're testing on a non-Proxmox system, use: $0 --bypass-proxmox-check"
+        exit 1
+    fi
 fi
+
+# Get Proxmox version info
+PROXMOX_VERSION="Unknown"
+if [ -f /etc/pve/version ]; then
+    PROXMOX_VERSION=$(cat /etc/pve/version)
+elif command -v pveversion >/dev/null 2>&1; then
+    PROXMOX_VERSION=$(pveversion | head -n1)
+fi
+print_info "Detected Proxmox VE: $PROXMOX_VERSION"
 
 # Check if running as root
 if [ "$EUID" -ne 0 ]; then 

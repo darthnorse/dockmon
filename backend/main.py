@@ -904,11 +904,7 @@ async def root():
 @app.get("/api/hosts")
 async def get_hosts():
     """Get all configured Docker hosts"""
-    hosts_list = list(monitor.hosts.values())
-    # Debug logging
-    for host in hosts_list:
-        logger.info(f"Host {host.name}: security_status={getattr(host, 'security_status', 'NOT SET')}")
-    return hosts_list
+    return list(monitor.hosts.values())
 
 @app.post("/api/hosts")
 async def add_host(config: DockerHostConfig):

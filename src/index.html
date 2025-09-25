@@ -2611,9 +2611,6 @@
         }
 
         function getSecurityStatusBadge(host) {
-            // Debug logging
-            console.log(`Host ${host.name}: security_status="${host.security_status}", url="${host.url}"`);
-
             if (!host.url || host.url.includes('unix://')) {
                 return ''; // Local connections don't need security status
             }
@@ -3523,14 +3520,30 @@
                 minW: 4, minH: 4, maxH: 6
             });
 
-            // Hosts Overview Widget - small gap below stats widget
-            const hostsWidget = createWidget('hosts', 'Hosts Overview', '🖥️', {
-                x: 0, y: 5, w: 12, h: 8,  // y: 5 instead of 4 creates small gap
-                minW: 3, minH: 3
-            });
+            // Create individual widgets for each host
+            createHostWidgets();
 
             // Use setTimeout to ensure widgets are fully created before rendering
             setTimeout(() => renderDashboardWidgets(), 50);
+        }
+
+        function createHostWidgets() {
+            // Remove existing host widgets first
+            const existingHostWidgets = grid.getGridItems().filter(item =>
+                item.getAttribute('data-widget-id').startsWith('host-')
+            );
+            existingHostWidgets.forEach(widget => grid.removeWidget(widget));
+
+            // Create a widget for each host
+            hosts.forEach((host, index) => {
+                const widgetId = `host-${host.id}`;
+                const widget = createWidget(widgetId, host.name, '🖥️', {
+                    x: (index % 2) * 6, // Alternate between left (0) and right (6)
+                    y: 5 + Math.floor(index / 2) * 9, // Stack vertically for pairs
+                    w: 6, h: 8,
+                    minW: 3, minH: 3
+                });
+            });
         }
 
         function createWidget(id, title, icon, gridOptions) {
@@ -3568,6 +3581,11 @@
         function renderDashboardWidgets() {
             console.log('Rendering dashboard widgets - hosts:', hosts.length, 'containers:', containers.length);
 
+            // Update host widgets if hosts have changed
+            if (grid) {
+                createHostWidgets();
+            }
+
             // Render stats widget - simplified layout without icons
             const statsWidget = document.getElementById('widget-stats');
             if (statsWidget) {
@@ -3593,24 +3611,12 @@
                 `;
             }
 
-            // Render hosts widget
-            const hostsWidget = document.getElementById('widget-hosts');
-            if (hostsWidget) {
-                hostsWidget.className = 'widget-hosts';
-
-                const containersByHost = {};
-                containers.forEach(container => {
-                    if (!containersByHost[container.host_id]) {
-                        containersByHost[container.host_id] = [];
-                    }
-                    containersByHost[container.host_id].push(container);
-                });
-
-                hostsWidget.innerHTML = '<div class="hosts-grid">';
-
-                hosts.forEach(host => {
-                    const hostContainers = (containersByHost[host.id] || []).sort((a, b) => a.name.localeCompare(b.name));
-                    const maxContainersToShow = hostsWidget.closest('.grid-stack-item').getAttribute('gs-h') > 4 ? 8 : 4;
+            // Render individual host widgets
+            hosts.forEach(host => {
+                const hostWidget = document.getElementById(`widget-host-${host.id}`);
+                if (hostWidget) {
+                    const hostContainers = containers.filter(c => c.host_id === host.id).sort((a, b) => a.name.localeCompare(b.name));
+                    const maxContainersToShow = 6; // Fixed number for individual widgets
                     const containersList = hostContainers.slice(0, maxContainersToShow).map(container => `
                         <div class="container-item">
                             <div class="container-info" onclick="showContainerDetails('${container.short_id}')">
@@ -3638,13 +3644,13 @@
 
                     const moreCount = hostContainers.length > maxContainersToShow ? hostContainers.length - maxContainersToShow : 0;
 
-                    hostsWidget.innerHTML += `
+                    hostWidget.innerHTML = `
                         <div class="host-card">
                             <div class="host-header">
                                 <div class="host-name">
                                     <span>🖥️</span> ${host.name}
+                                    <span class="host-status status-${host.status}">${host.status}</span>
                                 </div>
-                                <span class="host-status status-${host.status}">${host.status}</span>
                             </div>
                             <div class="container-list">
                                 ${containersList || '<div style="padding: 12px; color: var(--text-tertiary); text-align: center;">No containers</div>'}
@@ -3652,10 +3658,8 @@
                             </div>
                         </div>
                     `;
-                });
-
-                hostsWidget.innerHTML += '</div>';
-            }
+                }
+            });
         }
 
         function toggleDashboardLock() {

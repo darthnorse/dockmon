@@ -175,11 +175,42 @@ class DockerMonitor:
                 # For TCP connections
                 tls_config = None
                 if config.tls_cert and config.tls_key:
+                    # Write temporary files for TLS configuration
+                    import tempfile
+                    cert_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.pem')
+                    key_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.pem')
+                    ca_file = None
+
+                    cert_file.write(config.tls_cert)
+                    cert_file.flush()
+                    key_file.write(config.tls_key)
+                    key_file.flush()
+
+                    if config.tls_ca:
+                        ca_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.pem')
+                        ca_file.write(config.tls_ca)
+                        ca_file.flush()
+                        ca_file = ca_file.name
+
+                    cert_file = cert_file.name
+                    key_file = key_file.name
+
                     tls_config = docker.tls.TLSConfig(
-                        client_cert=(config.tls_cert, config.tls_key),
-                        ca_cert=config.tls_ca,
-                        verify=True
+                        client_cert=(cert_file, key_file),
+                        ca_cert=ca_file,
+                        verify=bool(config.tls_ca)
                     )
+
+                    # Clean up temporary certificate files after client creation
+                    import os
+                    try:
+                        os.unlink(cert_file)
+                        os.unlink(key_file)
+                        if ca_file:
+                            os.unlink(ca_file)
+                    except OSError:
+                        pass  # Ignore cleanup errors
+
                 client = docker.DockerClient(
                     base_url=config.url,
                     tls=tls_config,

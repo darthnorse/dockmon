@@ -2138,7 +2138,7 @@
                 return `
                     <div class="alert-rule-card">
                         <div class="alert-rule-info">
-                            <div class="alert-rule-title">${host.name}</div>
+                            <div class="alert-rule-title">${host.name} ${getSecurityStatusBadge(host)}</div>
                             <div class="alert-rule-details">${host.url} • ${hostContainers.length} containers</div>
                             <div class="alert-rule-details" style="margin-top: 4px;">
                                 Status: <span class="status-${host.status}">${host.status}</span>

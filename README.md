@@ -658,24 +658,7 @@ Contributions are welcome! Feel free to:
 - [ ] **Container Health Checks** - Custom health check definitions
 - [ ] **Resource Usage Alerts** - Alert on CPU/memory thresholds
 - [ ] **Log Analysis** - Search and filter container logs with regex
-
-#### Platform Support
-- [ ] **Docker Swarm Support** - Monitor swarm services and nodes
-- [ ] **Kubernetes Support** - Pod and deployment monitoring
-- [ ] **Container Orchestration** - Basic container deployment capabilities
-
-#### Advanced Features
-- [ ] **Multi-user Support** - User authentication and role-based access
-- [ ] **API Authentication** - JWT tokens and API keys
 - [ ] **Configuration Export/Import** - Backup and restore settings
-- [ ] **Mobile App** - Native mobile application
-- [ ] **Plugin System** - Custom notification channels and integrations
-
-#### Enterprise Features
-- [ ] **LDAP/SSO Integration** - Enterprise authentication
-- [ ] **Audit Logging** - Enhanced security event tracking
-- [ ] **High Availability** - Multi-instance deployment
-- [ ] **Performance Optimization** - Handle 1000+ containers efficiently
 
 ## 📝 License
 

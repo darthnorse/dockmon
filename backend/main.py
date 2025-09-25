@@ -253,8 +253,12 @@ class DockerMonitor:
             if host_id in self.clients:
                 self.clients[host_id].close()
                 del self.clients[host_id]
+            # Stop event monitoring
+            self.realtime.stop_event_monitoring(host_id)
             # Remove from database
             self.db.delete_host(host_id)
+            # Refresh alert rules cache since host-specific rules may have been deleted
+            self.refresh_alert_rules()
             logger.info(f"Removed host {host_id}")
 
     def update_host(self, host_id: str, config: DockerHostConfig):

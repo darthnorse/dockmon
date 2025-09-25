@@ -278,6 +278,11 @@ class RealtimeMonitor:
                     # Debug: Log the actual Docker event details
                     logger.info(f"[{host_id[:8]}] Docker event: {docker_event.action} - {docker_event.container_name} ({docker_event.container_id})")
 
+                    # Filter out noisy health check events
+                    if docker_event.action.startswith('exec_') and 'healthcheck' in docker_event.action:
+                        logger.debug(f"Filtering out health check event: {docker_event.action}")
+                        continue
+
                     # Broadcast to all subscribers
                     dead_sockets = []
                     for websocket in self.event_subscribers:

@@ -3534,13 +3534,22 @@
             );
             existingHostWidgets.forEach(widget => grid.removeWidget(widget));
 
-            // Create a widget for each host
+            // Create a widget for each host with dynamic sizing
             hosts.forEach((host, index) => {
                 const widgetId = `host-${host.id}`;
+                const hostContainers = containers.filter(c => c.host_id === host.id);
+
+                // Calculate height based on container count (2 containers per row + header + padding)
+                const containersPerRow = 1; // Single column layout for cleaner look
+                const containerRows = Math.max(1, Math.min(6, hostContainers.length)); // Min 1, max 6 containers shown
+                const headerHeight = 2; // Height for widget header and host header
+                const dynamicHeight = headerHeight + containerRows * 1.5; // 1.5 units per container row
+
                 const widget = createWidget(widgetId, host.name, '🖥️', {
                     x: (index % 2) * 6, // Alternate between left (0) and right (6)
-                    y: 5 + Math.floor(index / 2) * 9, // Stack vertically for pairs
-                    w: 6, h: 8,
+                    y: 5 + Math.floor(index / 2) * Math.ceil(dynamicHeight + 1), // Dynamic spacing
+                    w: 6,
+                    h: Math.ceil(dynamicHeight),
                     minW: 3, minH: 3
                 });
             });
@@ -3616,7 +3625,7 @@
                 const hostWidget = document.getElementById(`widget-host-${host.id}`);
                 if (hostWidget) {
                     const hostContainers = containers.filter(c => c.host_id === host.id).sort((a, b) => a.name.localeCompare(b.name));
-                    const maxContainersToShow = 6; // Fixed number for individual widgets
+                    const maxContainersToShow = hostContainers.length; // Show all containers now that widgets are dynamically sized
                     const containersList = hostContainers.slice(0, maxContainersToShow).map(container => `
                         <div class="container-item">
                             <div class="container-info" onclick="showContainerDetails('${container.short_id}')">
@@ -3747,9 +3756,18 @@
 
         function getWidgetConfig(id) {
             const configs = {
-                'stats': { id: 'stats', title: 'Statistics', icon: '📊', minW: 4, minH: 4, maxH: 6 },
-                'hosts': { id: 'hosts', title: 'Hosts Overview', icon: '🖥️', minW: 3, minH: 3 }
+                'stats': { id: 'stats', title: 'Statistics', icon: '📊', minW: 4, minH: 4, maxH: 6 }
             };
+
+            // Dynamic configs for host widgets
+            if (id.startsWith('host-')) {
+                const hostId = id.replace('host-', '');
+                const host = hosts.find(h => h.id === hostId);
+                if (host) {
+                    return { id: id, title: host.name, icon: '🖥️', minW: 3, minH: 3 };
+                }
+            }
+
             return configs[id];
         }
 

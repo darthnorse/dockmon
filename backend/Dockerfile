@@ -1,6 +1,6 @@
 # DockMon Backend Dockerfile
-# Using pinned SHA256 to avoid Docker Hub registry issues
-FROM python:3.11-slim@sha256:2ec5a4a5c3e919570f57675471f081d6299668d909feabd8d4803c6c61af666c
+# Using Python 3.11 (not 3.13) to ensure pre-compiled wheels are available
+FROM python:3.11.10-slim
 
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -20,8 +20,7 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 
 # Install Python dependencies
-# Use pre-compiled wheels to avoid Rust compilation issues
-RUN pip install --no-cache-dir --only-binary=all -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy backend source code
 COPY . .

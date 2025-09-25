@@ -207,7 +207,7 @@ class RealtimeMonitor:
                 timestamp=datetime.now().isoformat()
             )
 
-    async def start_event_monitor(self, client: docker.DockerClient, host_id: str):
+    def start_event_monitor(self, client: docker.DockerClient, host_id: str):
         """Start monitoring Docker events for a host"""
         logger.info(f"start_event_monitor called for host {host_id}")
         logger.info(f"Current event_tasks: {list(self.event_tasks.keys())}")
@@ -218,8 +218,7 @@ class RealtimeMonitor:
             existing_task = self.event_tasks[host_id]
             existing_task.cancel()
             del self.event_tasks[host_id]
-            # Small delay to ensure cancellation completes
-            await asyncio.sleep(0.1)
+            logger.info(f"Cancelled existing task for host {host_id}")
 
         logger.info(f"Creating new monitoring task for host {host_id}")
         task = asyncio.create_task(self._monitor_docker_events(client, host_id))

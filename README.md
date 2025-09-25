@@ -1,4 +1,4 @@
-# 🐳 DockMon
+# DockMon
 
 A comprehensive Docker container monitoring and management platform with real-time monitoring, intelligent auto-restart, multi-channel alerting, and complete event logging.
 
@@ -8,7 +8,7 @@ A comprehensive Docker container monitoring and management platform with real-ti
 ![FastAPI](https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
-## 📸 Screenshots
+## Screenshots
 
 ### Dashboard Overview
 ![DockMon Dashboard](screenshots/dashboard.png)
@@ -22,7 +22,7 @@ A comprehensive Docker container monitoring and management platform with real-ti
 ![Settings](screenshots/settings.png)
 *Configure global auto-restart policies and monitoring intervals*
 
-## ✨ Core Features
+## Core Features
 
 ### **Multi-Host Docker Monitoring**
 - Monitor containers across unlimited Docker hosts (local and remote)
@@ -60,14 +60,14 @@ A comprehensive Docker container monitoring and management platform with real-ti
 - **Advanced filtering and search** capabilities
 - **Automatic cleanup** with configurable retention
 
-### 🎛️ **Container Management**
+### **Container Management**
 - Start, stop, restart containers remotely
 - View real-time container logs
 - Execute commands inside containers
 - Live container statistics (CPU, memory, network, I/O)
 - Container lifecycle management
 
-### 🎨 **Modern Architecture**
+### **Modern Architecture**
 - **FastAPI backend** with async/await for high performance
 - **WebSocket real-time updates** for instant UI refresh
 - **SQLite database** for persistent configuration and event storage
@@ -75,7 +75,7 @@ A comprehensive Docker container monitoring and management platform with real-ti
 - **RESTful API** for programmatic access
 - **Responsive design** works on all devices
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Option 1: Docker Deployment (Recommended)
 
@@ -198,7 +198,7 @@ sudo systemctl start nginx supervisor
 
 **Note:** For production deployment, configure proper systemd services (see LXC script for examples).
 
-## 🔧 Configuration & Setup
+## Configuration & Setup
 
 ### First Time Setup
 
@@ -219,7 +219,7 @@ sudo systemctl start nginx supervisor
    - Go to Settings → Alert Rules
    - Define which containers trigger notifications
 
-### 🐳 Docker Remote Access Configuration
+### Docker Remote Access Configuration
 
 To monitor remote Docker hosts, you need to configure the Docker daemon to accept remote connections.
 
@@ -281,7 +281,7 @@ When adding hosts in DockMon, use these formats:
 - **Remote Docker (TCP)**: `tcp://192.168.1.100:2376`
 - **Remote Docker (custom port)**: `tcp://192.168.1.100:2375`
 
-## 🔐 Security: mTLS Configuration (Strongly Recommended)
+## Security: mTLS Configuration (Strongly Recommended)
 
 ### Why Use mTLS?
 
@@ -354,7 +354,7 @@ Failed to establish a new connection: [Errno 111] Connection refused
 **Systemd Conflicts:**
 If you get systemd socket activation conflicts, always use Method 1 (systemd override) instead of daemon.json.
 
-### 📡 Notification Channels Setup
+### Notification Channels Setup
 
 #### Discord
 ```json
@@ -391,7 +391,7 @@ If you get systemd socket activation conflicts, always use Method 1 (systemd ove
 }
 ```
 
-### 🚨 Alert Rules Configuration
+### Alert Rules Configuration
 
 Create sophisticated alert rules with regex patterns:
 
@@ -406,7 +406,7 @@ Create sophisticated alert rules with regex patterns:
 }
 ```
 
-### ⚙️ Global Settings
+### Global Settings
 
 - **Auto-restart attempts:** 0-10 retries
 - **Retry delay:** 5-300 seconds between attempts
@@ -414,7 +414,7 @@ Create sophisticated alert rules with regex patterns:
 - **Event retention:** How long to keep event logs
 - **Notification settings:** Global notification preferences
 
-## 📊 Usage Examples
+## Usage Examples
 
 ### Basic Workflow
 
@@ -438,7 +438,7 @@ Create sophisticated alert rules with regex patterns:
    - View container logs and execute commands
    - Track all events in the comprehensive event log
 
-## 🔌 REST API Documentation
+## REST API Documentation
 
 DockMon provides a comprehensive REST API for programmatic access:
 
@@ -535,7 +535,7 @@ Currently uses basic authentication. For production deployments, consider implem
 - JWT tokens for web interface
 - Role-based access control
 
-## 🐳 Docker Hub
+## Docker Hub
 
 Coming soon:
 
@@ -544,7 +544,7 @@ docker pull darthnorse/dockmon:latest
 docker run -d -p 8001:8001 -p 8080:8080 darthnorse/dockmon:latest
 ```
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 dockmon/
@@ -575,7 +575,7 @@ dockmon/
 └── README.md                 # This documentation
 ```
 
-## 🛠️ Development
+## Development
 
 DockMon uses a modern full-stack architecture:
 
@@ -631,7 +631,7 @@ python3 -m http.server 8001 --directory src
 - Use SQLite browser for manual inspection
 - Event logs and configuration persist between restarts
 
-## 🤝 Contributing
+## Contributing
 
 Contributions are welcome! Feel free to:
 1. Fork the repository
@@ -640,9 +640,9 @@ Contributions are welcome! Feel free to:
 4. Push to branch (`git push origin feature/AmazingFeature`)
 5. Open a Pull Request
 
-## 🚧 Roadmap
+## Roadmap
 
-### ✅ Completed (v1.0.0)
+### Completed (v1.0.0)
 - [x] Full backend API with FastAPI
 - [x] WebSocket support for real-time updates
 - [x] Database persistence (SQLite)
@@ -651,7 +651,7 @@ Contributions are welcome! Feel free to:
 - [x] Container management (logs, exec, lifecycle)
 - [x] Auto-restart with intelligent retry logic
 
-### 🎯 Planned Features (v1.1+)
+### Planned Features (v1.1+)
 
 #### Enhanced Monitoring
 - [ ] **Performance Metrics Dashboard** - CPU, memory, network graphs over time
@@ -660,19 +660,19 @@ Contributions are welcome! Feel free to:
 - [ ] **Log Analysis** - Search and filter container logs with regex
 - [ ] **Configuration Export/Import** - Backup and restore settings
 
-## 📝 License
+## License
 
 MIT License - see [LICENSE](LICENSE) file for details
 
-## 👤 Author
+## Author
 
 Created by [darthnorse](https://github.com/darthnorse)
 
-## ⭐ Show Your Support
+## Show Your Support
 
-Give a ⭐️ if this project helped you!
+Give a star if this project helped you!
 
-## 🤖 Development Notes
+## Development Notes
 
 This project has been developed with **vibe coding** and **AI assistance** for full transparency. The architecture, implementation, and documentation have been created through collaborative human-AI development using Claude Code. This approach allowed for rapid development of a comprehensive, production-ready Docker monitoring solution with modern best practices.
 
@@ -685,4 +685,4 @@ The codebase includes:
 
 ---
 
-**DockMon** - Keep your containers in check! 🐳
+**DockMon** - Keep your containers in check!

@@ -757,8 +757,11 @@ class DockerMonitor:
                         tls_key=db_host.tls_key,
                         tls_ca=db_host.tls_ca
                     )
-                    # Try to connect to the host with existing ID
-                    self.add_host(config, existing_id=db_host.id)
+                    # Try to connect to the host with existing ID and preserve security status
+                    host = self.add_host(config, existing_id=db_host.id)
+                    # Override with stored security status
+                    if hasattr(host, 'security_status') and db_host.security_status:
+                        host.security_status = db_host.security_status
                 except Exception as e:
                     logger.error(f"Failed to reconnect to saved host {db_host.name}: {e}")
 

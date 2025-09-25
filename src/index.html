@@ -1768,6 +1768,10 @@
         let alertRules = [];
         let ws = null;
         let reconnectInterval = null;
+
+        // Auto-restart notification batching
+        let restartNotificationBatch = [];
+        let restartNotificationTimer = null;
         let editingAlertRule = null; // Track which rule is being edited
         let reconnectAttempts = 0;
         let isConnecting = false; // Prevent multiple simultaneous connections
@@ -1825,6 +1829,26 @@
             };
         }
 
+        // Handle batched restart notifications
+        function handleRestartNotificationBatch() {
+            if (restartNotificationBatch.length === 0) return;
+
+            if (restartNotificationBatch.length === 1) {
+                showToast(`✅ Successfully restarted ${restartNotificationBatch[0]}`);
+            } else {
+                const containerNames = restartNotificationBatch.slice(0, 3).join(', ');
+                const remaining = restartNotificationBatch.length - 3;
+                const message = remaining > 0
+                    ? `✅ Successfully restarted ${containerNames} and ${remaining} more`
+                    : `✅ Successfully restarted ${containerNames}`;
+                showToast(message);
+            }
+
+            // Clear the batch
+            restartNotificationBatch = [];
+            restartNotificationTimer = null;
+        }
+
         // Handle incoming WebSocket messages
         function handleWebSocketMessage(message) {
             console.log('WebSocket message:', message.type);
@@ -1867,7 +1891,16 @@
                     break;
                     
                 case 'auto_restart_success':
-                    showToast(`✅ Successfully restarted ${message.data.container_name}`);
+                    // Add to batch instead of showing immediate toast
+                    restartNotificationBatch.push(message.data.container_name);
+
+                    // Clear any existing timer and set a new one
+                    if (restartNotificationTimer) {
+                        clearTimeout(restartNotificationTimer);
+                    }
+
+                    // Show batched notification after 2 seconds of no new restarts
+                    restartNotificationTimer = setTimeout(handleRestartNotificationBatch, 2000);
                     break;
                     
                 case 'auto_restart_failed':

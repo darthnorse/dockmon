@@ -71,9 +71,28 @@ echo ""
 # Check if running on Proxmox (unless bypass flag is set)
 if [ "$1" != "--bypass-proxmox-check" ]; then
     # Check for Proxmox VE using multiple methods (v8 has /etc/pve/version, v9+ has different structure)
-    if [ ! -d /etc/pve ] || [ ! -f /etc/pve/storage.cfg ] || ! command -v pct >/dev/null 2>&1; then
+    PROXMOX_CHECK_FAILED=0
+
+    # Check 1: /etc/pve directory
+    if [ ! -d /etc/pve ]; then
+        print_error "Missing /etc/pve directory"
+        PROXMOX_CHECK_FAILED=1
+    fi
+
+    # Check 2: storage.cfg file
+    if [ ! -f /etc/pve/storage.cfg ]; then
+        print_error "Missing /etc/pve/storage.cfg file"
+        PROXMOX_CHECK_FAILED=1
+    fi
+
+    # Check 3: pct command
+    if ! which pct >/dev/null 2>&1; then
+        print_error "Missing 'pct' command (Proxmox Container Toolkit)"
+        PROXMOX_CHECK_FAILED=1
+    fi
+
+    if [ "$PROXMOX_CHECK_FAILED" -eq 1 ]; then
         print_error "This script must be run on a Proxmox VE host!"
-        print_info "Required: /etc/pve/ directory, storage.cfg, and pct command"
         print_info "If you're testing on a non-Proxmox system, use: $0 --bypass-proxmox-check"
         exit 1
     fi

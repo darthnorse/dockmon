@@ -785,6 +785,11 @@
             color: var(--danger);
         }
 
+        .container-exited {
+            background: rgba(255, 100, 124, 0.2);
+            color: var(--danger);
+        }
+
         .container-paused {
             background: rgba(255, 162, 107, 0.2);
             color: var(--warning);
@@ -2555,12 +2560,14 @@
             // Find the container
             const container = containers.find(c => c.id === containerId);
             if (container) {
-                // Check if there's an existing alert rule for this container
+                // Check if there's an existing alert rule for this container on this specific host
                 const existingRule = alertRules.find(rule => {
                     try {
-                        return new RegExp(rule.container_pattern).test(container.name);
+                        return new RegExp(rule.container_pattern).test(container.name) &&
+                               (rule.host_id === null || rule.host_id === container.host_id);
                     } catch (e) {
-                        return rule.container_pattern === container.name;
+                        return rule.container_pattern === container.name &&
+                               (rule.host_id === null || rule.host_id === container.host_id);
                     }
                 });
 
@@ -3134,9 +3141,10 @@
                 // Store current container info globally for modal functions
                 window.currentContainer = container;
 
-                // Check if there's an alert rule for this container
+                // Check if there's an alert rule for this container on this specific host
                 const hasAlert = alertRules.some(rule =>
-                    new RegExp(rule.container_pattern).test(container.name)
+                    new RegExp(rule.container_pattern).test(container.name) &&
+                    (rule.host_id === null || rule.host_id === container.host_id)
                 );
                 
                 // Populate container details

@@ -201,16 +201,6 @@ class DockerMonitor:
                         verify=bool(config.tls_ca)
                     )
 
-                    # Clean up temporary certificate files after client creation
-                    import os
-                    try:
-                        os.unlink(cert_file)
-                        os.unlink(key_file)
-                        if ca_file:
-                            os.unlink(ca_file)
-                    except OSError:
-                        pass  # Ignore cleanup errors
-
                 client = docker.DockerClient(
                     base_url=config.url,
                     tls=tls_config,
@@ -219,6 +209,17 @@ class DockerMonitor:
 
             # Test connection
             client.ping()
+
+            # Clean up temporary certificate files after successful connection
+            if config.tls_cert and config.tls_key and not config.url.startswith("unix://"):
+                import os
+                try:
+                    os.unlink(cert_file)
+                    os.unlink(key_file)
+                    if ca_file:
+                        os.unlink(ca_file)
+                except OSError:
+                    pass  # Ignore cleanup errors
 
             # Validate TLS configuration for TCP connections
             security_status = self._validate_host_security(config)

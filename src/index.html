@@ -1704,6 +1704,23 @@
         </div>
     </div>
 
+    <!-- Confirmation Dialog Modal -->
+    <div class="modal" id="confirmationModal">
+        <div class="modal-content" style="max-width: 500px;">
+            <div class="modal-header">
+                <h2 class="modal-title" id="confirmationTitle">Confirm Action</h2>
+                <button class="modal-close" onclick="closeConfirmation()">✕</button>
+            </div>
+            <div class="modal-body" style="padding: 20px 0;">
+                <p id="confirmationMessage" style="margin-bottom: 20px; line-height: 1.5;"></p>
+                <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                    <button class="btn btn-secondary" onclick="closeConfirmation()">Cancel</button>
+                    <button class="btn" id="confirmationButton" style="background: var(--danger); border-color: var(--danger);" onclick="confirmAction()">Delete</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Toast Notification -->
     <div class="toast" id="toast"></div>
 
@@ -2577,6 +2594,29 @@
             document.getElementById(modalId).classList.remove('active');
         }
 
+        // Confirmation modal functions
+        let confirmationCallback = null;
+
+        function showConfirmation(title, message, buttonText, callback) {
+            document.getElementById('confirmationTitle').textContent = title;
+            document.getElementById('confirmationMessage').innerHTML = message;
+            document.getElementById('confirmationButton').textContent = buttonText;
+            confirmationCallback = callback;
+            document.getElementById('confirmationModal').classList.add('active');
+        }
+
+        function closeConfirmation() {
+            document.getElementById('confirmationModal').classList.remove('active');
+            confirmationCallback = null;
+        }
+
+        function confirmAction() {
+            if (confirmationCallback) {
+                confirmationCallback();
+            }
+            closeConfirmation();
+        }
+
         function refreshContainerModalIfOpen() {
             const containerModal = document.getElementById('containerModal');
             if (containerModal && containerModal.classList.contains('active') && window.currentContainer) {
@@ -2957,58 +2997,61 @@
             const rule = alertRules.find(r => r.id === ruleId);
             const ruleName = rule ? (rule.name || rule.container_pattern) : 'Unknown Rule';
 
-            const confirmed = confirm(`Are you sure you want to delete the alert rule "${ruleName}"?\n\nThis will permanently remove the alert rule and you will no longer receive notifications for this container.\n\nThis action cannot be undone.`);
+            const message = `Are you sure you want to delete the alert rule <strong>"${ruleName}"</strong>?<br><br>
+                This will permanently remove the alert rule and you will no longer receive notifications for this container.<br><br>
+                <strong>This action cannot be undone.</strong>`;
 
-            if (!confirmed) {
-                return;
-            }
+            showConfirmation('Delete Alert Rule', message, 'Delete Rule', async () => {
+                try {
+                    const response = await fetch(`${API_BASE}/api/alerts/${ruleId}`, {
+                        method: 'DELETE'
+                    });
 
-            try {
-                const response = await fetch(`${API_BASE}/api/alerts/${ruleId}`, {
-                    method: 'DELETE'
-                });
-
-                if (response.ok) {
-                    alertRules = alertRules.filter(rule => rule.id !== ruleId);
-                    renderAlertRules();
-                    updateStats();
-                    updateNavBadges();
-                    showToast('Alert rule deleted');
+                    if (response.ok) {
+                        alertRules = alertRules.filter(rule => rule.id !== ruleId);
+                        renderAlertRules();
+                        updateStats();
+                        updateNavBadges();
+                        showToast('Alert rule deleted');
+                    }
+                } catch (error) {
+                    console.error('Error deleting alert rule:', error);
+                    showToast('❌ Failed to delete alert rule');
                 }
-            } catch (error) {
-                console.error('Error deleting alert rule:', error);
-                showToast('❌ Failed to delete alert rule');
-            }
+            });
         }
 
         async function deleteHost(hostId) {
             const host = hosts.find(h => h.id === hostId);
             const hostName = host ? host.name : 'Unknown Host';
 
-            const confirmed = confirm(`Are you sure you want to delete the host "${hostName}"?\n\nThis will:\n• Remove the host and all its containers\n• Delete any associated alert rules\n• Stop all monitoring for this host\n\nThis action cannot be undone.`);
+            const message = `Are you sure you want to delete the host <strong>"${hostName}"</strong>?<br><br>
+                This will:<br>
+                • Remove the host and all its containers<br>
+                • Delete any associated alert rules<br>
+                • Stop all monitoring for this host<br><br>
+                <strong>This action cannot be undone.</strong>`;
 
-            if (!confirmed) {
-                return;
-            }
+            showConfirmation('Delete Host', message, 'Delete Host', async () => {
+                try {
+                    const response = await fetch(`${API_BASE}/api/hosts/${hostId}`, {
+                        method: 'DELETE'
+                    });
 
-            try {
-                const response = await fetch(`${API_BASE}/api/hosts/${hostId}`, {
-                    method: 'DELETE'
-                });
-
-                if (response.ok) {
-                    hosts = hosts.filter(host => host.id !== hostId);
-                    containers = containers.filter(c => c.host_id !== hostId);
-                    renderHostsPage();
-                    renderHosts();
-                    updateStats();
-                    updateNavBadges();
-                    showToast('Host removed');
+                    if (response.ok) {
+                        hosts = hosts.filter(host => host.id !== hostId);
+                        containers = containers.filter(c => c.host_id !== hostId);
+                        renderHostsPage();
+                        renderHosts();
+                        updateStats();
+                        updateNavBadges();
+                        showToast('Host removed');
+                    }
+                } catch (error) {
+                    console.error('Error deleting host:', error);
+                    showToast('❌ Failed to delete host');
                 }
-            } catch (error) {
-                console.error('Error deleting host:', error);
-                showToast('❌ Failed to delete host');
-            }
+            });
         }
 
         function editHost(hostId) {

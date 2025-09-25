@@ -1510,13 +1510,13 @@
                             <input type="checkbox" checked data-state="paused"> Running → Paused
                         </label>
                         <label class="checkbox-item">
-                            <input type="checkbox" data-state="running"> Stopped → Running
+                            <input type="checkbox" data-state="stopped-to-running"> Stopped → Running
                         </label>
                         <label class="checkbox-item">
-                            <input type="checkbox" data-state="running"> Paused → Running
+                            <input type="checkbox" data-state="paused-to-running"> Paused → Running
                         </label>
                         <label class="checkbox-item">
-                            <input type="checkbox" data-state="running"> Exited → Running
+                            <input type="checkbox" data-state="exited-to-running"> Exited → Running
                         </label>
                         <label class="checkbox-item">
                             <input type="checkbox" checked data-state="error"> Any → Error
@@ -2302,13 +2302,7 @@
 
                 // We'll populate other fields after the form is built
                 setTimeout(() => {
-                    // Select trigger states
-                    if (editRule.trigger_states) {
-                        editRule.trigger_states.forEach(state => {
-                            const checkbox = document.querySelector(`input[value="${state}"]`);
-                            if (checkbox) checkbox.checked = true;
-                        });
-                    }
+                    // Select trigger states - handled individually below for better control
 
                     // Select notification channels
                     if (editRule.notification_channels) {
@@ -2404,6 +2398,18 @@
                     if (editRule.trigger_states && editRule.trigger_states.includes('error')) {
                         const errorCheckbox = document.querySelector('input[type="checkbox"][data-state="error"]');
                         if (errorCheckbox) errorCheckbox.checked = true;
+                    }
+                    if (editRule.trigger_states && editRule.trigger_states.includes('stopped-to-running')) {
+                        const checkbox = document.querySelector('input[type="checkbox"][data-state="stopped-to-running"]');
+                        if (checkbox) checkbox.checked = true;
+                    }
+                    if (editRule.trigger_states && editRule.trigger_states.includes('paused-to-running')) {
+                        const checkbox = document.querySelector('input[type="checkbox"][data-state="paused-to-running"]');
+                        if (checkbox) checkbox.checked = true;
+                    }
+                    if (editRule.trigger_states && editRule.trigger_states.includes('exited-to-running')) {
+                        const checkbox = document.querySelector('input[type="checkbox"][data-state="exited-to-running"]');
+                        if (checkbox) checkbox.checked = true;
                     }
 
                     // Set notification channels
@@ -2948,11 +2954,20 @@
         }
 
         async function deleteAlertRule(ruleId) {
+            const rule = alertRules.find(r => r.id === ruleId);
+            const ruleName = rule ? (rule.name || rule.container_pattern) : 'Unknown Rule';
+
+            const confirmed = confirm(`Are you sure you want to delete the alert rule "${ruleName}"?\n\nThis will permanently remove the alert rule and you will no longer receive notifications for this container.\n\nThis action cannot be undone.`);
+
+            if (!confirmed) {
+                return;
+            }
+
             try {
                 const response = await fetch(`${API_BASE}/api/alerts/${ruleId}`, {
                     method: 'DELETE'
                 });
-                
+
                 if (response.ok) {
                     alertRules = alertRules.filter(rule => rule.id !== ruleId);
                     renderAlertRules();
@@ -2967,11 +2982,20 @@
         }
 
         async function deleteHost(hostId) {
+            const host = hosts.find(h => h.id === hostId);
+            const hostName = host ? host.name : 'Unknown Host';
+
+            const confirmed = confirm(`Are you sure you want to delete the host "${hostName}"?\n\nThis will:\n• Remove the host and all its containers\n• Delete any associated alert rules\n• Stop all monitoring for this host\n\nThis action cannot be undone.`);
+
+            if (!confirmed) {
+                return;
+            }
+
             try {
                 const response = await fetch(`${API_BASE}/api/hosts/${hostId}`, {
                     method: 'DELETE'
                 });
-                
+
                 if (response.ok) {
                     hosts = hosts.filter(host => host.id !== hostId);
                     containers = containers.filter(c => c.host_id !== hostId);

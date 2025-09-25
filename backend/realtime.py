@@ -275,6 +275,9 @@ class RealtimeMonitor:
                         attributes=event.get("Actor", {}).get("Attributes", {})
                     )
 
+                    # Debug: Log the actual Docker event details
+                    logger.info(f"[{host_id[:8]}] Docker event: {docker_event.action} - {docker_event.container_name} ({docker_event.container_id})")
+
                     # Broadcast to all subscribers
                     dead_sockets = []
                     for websocket in self.event_subscribers:

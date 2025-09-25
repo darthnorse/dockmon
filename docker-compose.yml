@@ -6,6 +6,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      pull: false  # Don't check Docker Hub for base image updates
     container_name: dockmon-backend
     restart: unless-stopped
     ports:
@@ -30,6 +31,7 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
+      pull: false  # Don't check Docker Hub for base image updates
     container_name: dockmon-frontend
     restart: unless-stopped
     ports:

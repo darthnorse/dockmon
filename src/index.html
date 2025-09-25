@@ -3546,7 +3546,7 @@
                 // Calculate height based on container count
                 const containerRows = Math.max(1, hostContainers.length);
                 const headerHeight = 4; // Widget header + host header
-                const containerHeight = 1.8; // Each container needs more space for proper display
+                const containerHeight = 2.2; // Each container needs more space for proper display
                 const dynamicHeight = headerHeight + containerRows * containerHeight;
                 const widgetHeight = Math.max(6, Math.ceil(dynamicHeight)); // Minimum height of 6
                 console.log(`Host ${host.name}: ${hostContainers.length} containers → height: ${widgetHeight} (${dynamicHeight})`);

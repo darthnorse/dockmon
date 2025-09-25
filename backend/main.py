@@ -216,7 +216,7 @@ class DockerMonitor:
             })
 
             # Start Docker event monitoring for this host
-            asyncio.create_task(self.realtime.start_event_monitor(client, host.id))
+            self.realtime.start_event_monitor(client, host.id)
 
             # Log host connection
             self.event_logger.log_host_connection(
@@ -341,7 +341,7 @@ class DockerMonitor:
 
             # Start Docker event monitoring for this host
             logger.info(f"Starting event monitoring for updated host {host.id}")
-            asyncio.create_task(self.realtime.start_event_monitor(client, host.id))
+            self.realtime.start_event_monitor(client, host.id)
 
             # Log host update
             self.event_logger.log_host_connection(

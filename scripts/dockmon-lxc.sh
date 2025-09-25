@@ -64,12 +64,39 @@ print_cyan() {
     echo -e "${CYAN}$1${NC}"
 }
 
+# Detect if running in non-interactive mode (curl | bash)
+INTERACTIVE=true
+if [[ ! -t 0 ]]; then
+    INTERACTIVE=false
+fi
+
+# Helper function for interactive prompts with defaults
+prompt_or_default() {
+    local prompt="$1"
+    local default="$2"
+    local result
+
+    if [[ "$INTERACTIVE" == "true" ]]; then
+        read -p "$prompt" result
+        echo "${result:-$default}"
+    else
+        echo "$default"
+    fi
+}
+
 # Header
 clear
 echo -e "${GREEN}════════════════════════════════════════════════════════${NC}"
 echo -e "${GREEN}     DockMon LXC Container Auto-Creation for Proxmox     ${NC}"
 echo -e "${GREEN}════════════════════════════════════════════════════════${NC}"
 echo ""
+
+# Non-interactive mode notification
+if [[ "$INTERACTIVE" == "false" ]]; then
+    print_info "Non-interactive mode detected - using default settings"
+    print_info "For customization, download and run the script directly"
+    echo ""
+fi
 
 # Check if running on Proxmox VE (community-scripts approach)
 check_root() {
@@ -147,26 +174,35 @@ echo "1) Debian 12 (Bookworm) - Stable, Recommended"
 echo "2) Debian 13 (Trixie) - Testing"
 echo ""
 
-while true; do
-    read -p "Select Debian version (1 or 2): " debian_choice
-    case $debian_choice in
-        1)
-            DEBIAN_VERSION="12"
-            TEMPLATE=$DEBIAN_12_TEMPLATE
-            print_success "Selected Debian 12 (Bookworm)"
-            break
-            ;;
-        2)
-            DEBIAN_VERSION="13"
-            TEMPLATE=$DEBIAN_13_TEMPLATE
-            print_success "Selected Debian 13 (Trixie)"
-            break
-            ;;
-        *)
-            print_error "Invalid selection. Please enter 1 or 2"
-            ;;
-    esac
-done
+# Interactive vs non-interactive selection
+if [[ "$INTERACTIVE" == "true" ]]; then
+    # Interactive mode
+    while true; do
+        read -p "Select Debian version (1 or 2): " debian_choice
+        case $debian_choice in
+            1)
+                DEBIAN_VERSION="12"
+                TEMPLATE=$DEBIAN_12_TEMPLATE
+                print_success "Selected Debian 12 (Bookworm)"
+                break
+                ;;
+            2)
+                DEBIAN_VERSION="13"
+                TEMPLATE=$DEBIAN_13_TEMPLATE
+                print_success "Selected Debian 13 (Trixie)"
+                break
+                ;;
+            *)
+                print_error "Invalid selection. Please enter 1 or 2"
+                ;;
+        esac
+    done
+else
+    # Non-interactive mode - use defaults
+    DEBIAN_VERSION="12"
+    TEMPLATE=$DEBIAN_12_TEMPLATE
+    print_success "Using Debian 12 (Bookworm) - default"
+fi
 echo ""
 
 # Set root password
@@ -176,23 +212,30 @@ echo "Enter the root password for the container"
 echo "(Password will not be visible while typing)"
 echo ""
 
-while true; do
-    read -s -p "Enter root password: " ROOT_PASSWORD
-    echo
-    read -s -p "Confirm root password: " ROOT_PASSWORD_CONFIRM
-    echo
-    
-    if [ "$ROOT_PASSWORD" != "$ROOT_PASSWORD_CONFIRM" ]; then
-        print_error "Passwords do not match! Please try again."
-        echo ""
-    elif [ -z "$ROOT_PASSWORD" ]; then
-        print_error "Password cannot be empty! Please try again."
-        echo ""
-    else
-        print_success "Root password set successfully"
-        break
-    fi
-done
+if [[ "$INTERACTIVE" == "true" ]]; then
+    while true; do
+        read -s -p "Enter root password: " ROOT_PASSWORD
+        echo
+        read -s -p "Confirm root password: " ROOT_PASSWORD_CONFIRM
+        echo
+
+        if [ "$ROOT_PASSWORD" != "$ROOT_PASSWORD_CONFIRM" ]; then
+            print_error "Passwords do not match! Please try again."
+            echo ""
+        elif [ -z "$ROOT_PASSWORD" ]; then
+            print_error "Password cannot be empty! Please try again."
+            echo ""
+        else
+            print_success "Root password set successfully"
+            break
+        fi
+    done
+else
+    # Non-interactive mode - generate random password
+    ROOT_PASSWORD=$(openssl rand -base64 12 2>/dev/null || echo "dockmon123")
+    print_success "Generated random root password: $ROOT_PASSWORD"
+    print_warning "Save this password! It will be displayed again at the end."
+fi
 echo ""
 
 # Select storage

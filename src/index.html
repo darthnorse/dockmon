@@ -2611,6 +2611,9 @@
         }
 
         function getSecurityStatusBadge(host) {
+            // Debug logging
+            console.log(`Host ${host.name}: security_status="${host.security_status}", url="${host.url}"`);
+
             if (!host.url || host.url.includes('unix://')) {
                 return ''; // Local connections don't need security status
             }

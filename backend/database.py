@@ -192,11 +192,40 @@ class DatabaseManager:
         # Create tables if they don't exist
         Base.metadata.create_all(bind=self.engine)
 
+        # Run database migrations
+        self._run_migrations()
+
         # Set secure permissions on database file (rw for owner only)
         self._secure_database_file()
 
         # Initialize default settings if needed
         self._initialize_defaults()
+
+    def _run_migrations(self):
+        """Run database migrations for schema updates"""
+        try:
+            with self.get_session() as session:
+                # Migration: Populate security_status for existing hosts
+                hosts_without_security_status = session.query(DockerHostDB).filter(
+                    DockerHostDB.security_status.is_(None)
+                ).all()
+
+                for host in hosts_without_security_status:
+                    # Determine security status based on existing data
+                    if host.url and not host.url.startswith('unix://'):
+                        if host.tls_cert and host.tls_key:
+                            host.security_status = 'secure'
+                        else:
+                            host.security_status = 'insecure'
+                    # Unix socket connections don't need security status
+
+                if hosts_without_security_status:
+                    session.commit()
+                    print(f"Migrated {len(hosts_without_security_status)} hosts with security status")
+
+        except Exception as e:
+            print(f"Migration warning: {e}")
+            # Don't fail startup on migration errors
 
     def _secure_database_file(self):
         """Set secure file permissions on the SQLite database file"""

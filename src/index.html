@@ -682,6 +682,26 @@
             cursor: help;
         }
 
+        .security-status {
+            margin-left: 8px;
+            font-size: 12px;
+            font-weight: 600;
+            padding: 2px 8px;
+            border-radius: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .security-status.secure {
+            color: var(--success);
+            background-color: rgba(34, 197, 94, 0.1);
+        }
+
+        .security-status.insecure {
+            color: #e67e22;
+            background-color: rgba(230, 126, 34, 0.1);
+        }
+
         .security-alert {
             background: linear-gradient(135deg, #ff6b35, #f7931e);
             color: white;
@@ -2098,7 +2118,7 @@
                     <div class="host-header">
                         <div class="host-name">
                             <span>🖥️</span> ${host.name}
-                            ${host.url && !host.url.includes('unix://') && !host.tls_cert ? '<span class="security-warning" title="Insecure connection - no TLS">⚠️</span>' : ''}
+                            ${getSecurityStatusBadge(host)}
                         </div>
                         <span class="host-status status-${host.status}">${host.status}</span>
                     </div>
@@ -2590,6 +2610,19 @@
             document.getElementById('globalSettingsModal').classList.add('active');
         }
 
+        function getSecurityStatusBadge(host) {
+            if (!host.url || host.url.includes('unix://')) {
+                return ''; // Local connections don't need security status
+            }
+
+            if (host.security_status === 'secure') {
+                return '<span class="security-status secure">Secure</span>';
+            } else if (host.security_status === 'insecure') {
+                return '<span class="security-status insecure">Insecure</span>';
+            }
+            return ''; // Unknown status - don't show anything
+        }
+
         function closeModal(modalId) {
             document.getElementById(modalId).classList.remove('active');
         }
@@ -2728,8 +2761,9 @@
                         showToast('✅ Host added successfully!');
                     }
 
-                    // Refresh hosts list from server to ensure we have complete data
+                    // Refresh hosts and containers from server to ensure we have complete data
                     await fetchHosts();
+                    await fetchContainers();
 
                     // Explicitly refresh the host list on the Host Management page
                     renderHosts();
@@ -3606,7 +3640,6 @@
                             <div class="host-header">
                                 <div class="host-name">
                                     <span>🖥️</span> ${host.name}
-                                    ${host.url && !host.url.includes('unix://') && !host.tls_cert ? '<span class="security-warning" title="Insecure connection - no TLS">⚠️</span>' : ''}
                                 </div>
                                 <span class="host-status status-${host.status}">${host.status}</span>
                             </div>

@@ -237,7 +237,8 @@ class DockerMonitor:
                 'url': config.url,
                 'tls_cert': config.tls_cert,
                 'tls_key': config.tls_key,
-                'tls_ca': config.tls_ca
+                'tls_ca': config.tls_ca,
+                'security_status': security_status
             })
 
             # Start Docker event monitoring for this host
@@ -318,13 +319,17 @@ class DockerMonitor:
                 # Remove from memory
                 del self.hosts[host_id]
 
+            # Validate TLS configuration
+            security_status = self._validate_host_security(config)
+
             # Update database
             updated_db_host = self.db.update_host(host_id, {
                 'name': config.name,
                 'url': config.url,
                 'tls_cert': config.tls_cert,
                 'tls_key': config.tls_key,
-                'tls_ca': config.tls_ca
+                'tls_ca': config.tls_ca,
+                'security_status': security_status
             })
 
             if not updated_db_host:

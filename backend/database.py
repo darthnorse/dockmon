@@ -27,6 +27,7 @@ class DockerHostDB(Base):
     tls_cert = Column(Text, nullable=True)
     tls_key = Column(Text, nullable=True)
     tls_ca = Column(Text, nullable=True)
+    security_status = Column(String, nullable=True)  # 'secure', 'insecure', 'unknown'
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)

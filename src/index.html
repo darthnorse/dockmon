@@ -3045,6 +3045,8 @@
                         renderHosts();
                         updateStats();
                         updateNavBadges();
+                        // Refresh alert rules since host-specific rules were deleted
+                        fetchAlertRules();
                         showToast('Host removed');
                     }
                 } catch (error) {

@@ -137,7 +137,7 @@ class NotificationChannelCreate(BaseModel):
         if not v or not v.strip():
             raise ValueError('Channel type cannot be empty')
 
-        valid_types = {'telegram', 'discord', 'pushover', 'email', 'webhook'}
+        valid_types = {'telegram', 'discord', 'pushover', 'slack'}
         v = v.strip().lower()
 
         if v not in valid_types:
@@ -173,6 +173,17 @@ class NotificationChannelCreate(BaseModel):
             webhook_url = v.get('webhook_url', '')
             if not webhook_url.startswith('https://discord.com/api/webhooks/'):
                 raise ValueError('Invalid Discord webhook URL')
+
+        elif channel_type == 'slack':
+            required_keys = {'webhook_url'}
+            if not all(key in v for key in required_keys):
+                raise ValueError(f'Slack config must contain: {required_keys}')
+
+            # Validate Slack webhook URL
+            webhook_url = v.get('webhook_url', '')
+            if not (webhook_url.startswith('https://hooks.slack.com/services/') or
+                    webhook_url.startswith('https://hooks.slack.com/workflows/')):
+                raise ValueError('Invalid Slack webhook URL')
 
         elif channel_type == 'pushover':
             required_keys = {'app_token', 'user_key'}

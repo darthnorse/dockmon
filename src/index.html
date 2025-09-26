@@ -1787,35 +1787,123 @@
 
     <!-- Notification Settings Modal -->
     <div class="modal" id="notificationModal">
-        <div class="modal-content">
+        <div class="modal-content" style="max-width: 800px;">
             <div class="modal-header">
                 <h2 class="modal-title">Notification Settings</h2>
                 <button class="modal-close" onclick="closeModal('notificationModal')">✕</button>
             </div>
-            <form onsubmit="saveNotificationSettings(event)">
-                <div class="form-group">
-                    <h3 style="margin-bottom: var(--spacing-md); color: var(--text-primary);">Telegram Configuration</h3>
-                    <label class="form-label">Bot Token</label>
-                    <input type="text" class="form-input" placeholder="Enter Telegram bot token">
-                    <label class="form-label" style="margin-top: var(--spacing-md);">Chat ID</label>
-                    <input type="text" class="form-input" placeholder="Enter chat ID">
+
+            <!-- Tab Navigation -->
+            <div style="display: flex; gap: var(--spacing-md); margin-bottom: var(--spacing-lg); border-bottom: 1px solid var(--surface-light);">
+                <button id="channelsTab" class="tab-btn active" onclick="switchNotificationTab('channels')" style="padding: var(--spacing-md); background: none; border: none; color: var(--primary); border-bottom: 2px solid var(--primary); cursor: pointer;">Channels</button>
+                <button id="templateTab" class="tab-btn" onclick="switchNotificationTab('template')" style="padding: var(--spacing-md); background: none; border: none; color: var(--text-secondary); cursor: pointer;">Message Template</button>
+                <button id="blackoutTab" class="tab-btn" onclick="switchNotificationTab('blackout')" style="padding: var(--spacing-md); background: none; border: none; color: var(--text-secondary); cursor: pointer;">🌙 Quiet Hours</button>
+            </div>
+
+            <!-- Channels Tab Content -->
+            <div id="channelsTabContent">
+                <div style="margin-bottom: var(--spacing-lg);">
+                    <button type="button" class="btn btn-secondary" onclick="addNotificationChannel()" style="margin-bottom: var(--spacing-md);">
+                        ➕ Add Channel
+                    </button>
                 </div>
-                <div class="form-group">
-                    <h3 style="margin-bottom: var(--spacing-md); color: var(--text-primary);">Discord Configuration</h3>
-                    <label class="form-label">Webhook URL</label>
-                    <input type="text" class="form-input" placeholder="Enter Discord webhook URL">
+                <div id="notificationChannelsList" style="max-height: 400px; overflow-y: auto;">
+                    <!-- Channels will be dynamically inserted here -->
                 </div>
-                <div class="form-group">
-                    <h3 style="margin-bottom: var(--spacing-md); color: var(--text-primary);">Pushover Configuration</h3>
-                    <label class="form-label">App Token</label>
-                    <input type="text" class="form-input" placeholder="Enter Pushover app token">
-                    <label class="form-label" style="margin-top: var(--spacing-md);">User Key</label>
-                    <input type="text" class="form-input" placeholder="Enter user key">
-                </div>
-                <button type="submit" class="btn btn-primary" style="width: 100%;">
-                    Save Settings
+                <button type="submit" class="btn btn-primary" onclick="saveAllChannels()" style="width: 100%; margin-top: var(--spacing-lg);">
+                    Save All Channels
                 </button>
-            </form>
+            </div>
+
+            <!-- Template Tab Content -->
+            <div id="templateTabContent" style="display: none;">
+                <div class="form-group">
+                    <label class="form-label">Notification Message Template</label>
+                    <textarea id="alertTemplate" class="form-input" rows="10" placeholder="Enter custom template or leave blank for default" style="font-family: 'Courier New', monospace; font-size: 13px;"></textarea>
+                    <small style="color: var(--text-secondary); display: block; margin-top: var(--spacing-sm);">
+                        Use variables like {CONTAINER_NAME}, {HOST_NAME}, {OLD_STATE}, {NEW_STATE}, etc.
+                    </small>
+                </div>
+
+                <div style="margin-top: var(--spacing-lg); padding: var(--spacing-md); background: var(--surface); border-radius: var(--radius-md); border: 1px solid var(--surface-light);">
+                    <h4 style="margin-bottom: var(--spacing-md); color: var(--text-primary);">Available Variables</h4>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: var(--spacing-sm); font-size: 12px;">
+                        <div><code>{CONTAINER_NAME}</code> - Container name</div>
+                        <div><code>{CONTAINER_ID}</code> - Container ID (short)</div>
+                        <div><code>{HOST_NAME}</code> - Host name</div>
+                        <div><code>{HOST_ID}</code> - Host ID</div>
+                        <div><code>{OLD_STATE}</code> - Previous state</div>
+                        <div><code>{NEW_STATE}</code> - New state</div>
+                        <div><code>{IMAGE}</code> - Docker image</div>
+                        <div><code>{TIMESTAMP}</code> - Full timestamp</div>
+                        <div><code>{TIME}</code> - Time only</div>
+                        <div><code>{DATE}</code> - Date only</div>
+                        <div><code>{RULE_NAME}</code> - Alert rule name</div>
+                        <div><code>{EVENT_TYPE}</code> - Docker event type</div>
+                    </div>
+                </div>
+
+                <div style="margin-top: var(--spacing-lg);">
+                    <h4 style="margin-bottom: var(--spacing-sm); color: var(--text-primary);">Template Examples</h4>
+                    <select id="templateExamples" class="form-input" onchange="applyTemplateExample(this.value)" style="margin-bottom: var(--spacing-md);">
+                        <option value="">-- Select an example template --</option>
+                        <option value="default">Default (Detailed)</option>
+                        <option value="simple">Simple</option>
+                        <option value="minimal">Minimal</option>
+                        <option value="emoji">With Emojis</option>
+                    </select>
+                </div>
+
+                <button type="button" class="btn btn-primary" onclick="saveNotificationTemplate()" style="width: 100%; margin-top: var(--spacing-lg);">
+                    Save Template
+                </button>
+            </div>
+
+            <!-- Blackout Tab Content -->
+            <div id="blackoutTabContent" style="display: none;">
+                <div style="margin-bottom: var(--spacing-md); color: var(--text-secondary); font-size: 14px;">
+                    Configure maintenance windows when alerts should be suppressed. Alerts will be deferred and checked after each window ends.
+                </div>
+
+                <div id="blackoutWindowsList" style="margin-bottom: var(--spacing-lg);">
+                    <!-- Blackout windows will be rendered here -->
+                </div>
+
+                <button type="button" class="btn btn-secondary" onclick="addBlackoutWindow()" style="margin-bottom: var(--spacing-lg);">
+                    ➕ Add Blackout Window
+                </button>
+
+                <!-- Current Status -->
+                <div id="blackoutStatus" style="padding: var(--spacing-md); background: var(--surface); border-radius: var(--radius-md); border: 1px solid var(--surface-light); margin-bottom: var(--spacing-lg);">
+                    <!-- Status will be updated here -->
+                </div>
+
+                <!-- Post-Blackout Information -->
+                <div id="postBlackoutInfo" style="padding: var(--spacing-md); background: var(--info-bg); border-radius: var(--radius-md); border: 1px solid var(--info-border);">
+                    <h4 style="margin-bottom: var(--spacing-sm); color: var(--text-primary);">How Blackout Windows Work</h4>
+                    <div style="font-size: 14px; color: var(--text-secondary); line-height: 1.6;">
+                        <p style="margin-bottom: var(--spacing-sm);">During a blackout window:</p>
+                        <ul style="margin-left: var(--spacing-lg); margin-bottom: var(--spacing-sm);">
+                            <li>All alerts are suppressed (not sent)</li>
+                            <li>Container events continue to be monitored</li>
+                            <li>No notifications will be sent to any channel</li>
+                        </ul>
+                        <p style="margin-bottom: var(--spacing-sm);">When the blackout window ends:</p>
+                        <ul style="margin-left: var(--spacing-lg);">
+                            <li>DockMon checks the current state of all containers</li>
+                            <li>Alerts are sent for any containers in problematic states</li>
+                            <li>This ensures you're notified of issues that occurred during maintenance</li>
+                        </ul>
+                        <p style="margin-top: var(--spacing-sm); font-style: italic;">
+                            💡 Tip: Define alert rules that monitor both events AND states for best coverage.
+                        </p>
+                    </div>
+                </div>
+
+                <button type="button" class="btn btn-primary" onclick="saveBlackoutWindows()" style="width: 100%; margin-top: var(--spacing-lg);">
+                    Save Blackout Settings
+                </button>
+            </div>
         </div>
     </div>
 
@@ -1939,7 +2027,8 @@
             retryDelay: 30,
             defaultAutoRestart: false,
             pollingInterval: 10,
-            connectionTimeout: 10
+            connectionTimeout: 10,
+            blackout_windows: []
         };
 
         let hosts = [];
@@ -2999,13 +3088,318 @@
             }
         }
 
+        let notificationChannels = [];
+        let templateVariables = {};
+
         async function openNotificationSettings() {
             try {
-                await loadNotificationSettings();
+                await loadNotificationChannels();
+                await loadNotificationTemplate();
+                await loadTemplateVariables();
                 document.getElementById('notificationModal').classList.add('active');
             } catch (error) {
                 console.error('Error opening notification settings:', error);
                 showToast('Failed to open notification settings', 'error');
+            }
+        }
+
+        function switchNotificationTab(tab) {
+            const channelsTab = document.getElementById('channelsTab');
+            const templateTab = document.getElementById('templateTab');
+            const blackoutTab = document.getElementById('blackoutTab');
+            const channelsContent = document.getElementById('channelsTabContent');
+            const templateContent = document.getElementById('templateTabContent');
+            const blackoutContent = document.getElementById('blackoutTabContent');
+
+            // Reset all tabs
+            [channelsTab, templateTab, blackoutTab].forEach(btn => {
+                btn.classList.remove('active');
+                btn.style.borderBottom = 'none';
+                btn.style.color = 'var(--text-secondary)';
+            });
+
+            // Hide all content
+            [channelsContent, templateContent, blackoutContent].forEach(content => {
+                if (content) content.style.display = 'none';
+            });
+
+            // Show selected tab
+            if (tab === 'channels') {
+                channelsTab.classList.add('active');
+                channelsTab.style.borderBottom = '2px solid var(--primary)';
+                channelsTab.style.color = 'var(--primary)';
+                channelsContent.style.display = 'block';
+            } else if (tab === 'template') {
+                templateTab.classList.add('active');
+                templateTab.style.borderBottom = '2px solid var(--primary)';
+                templateTab.style.color = 'var(--primary)';
+                templateContent.style.display = 'block';
+            } else if (tab === 'blackout') {
+                blackoutTab.classList.add('active');
+                blackoutTab.style.borderBottom = '2px solid var(--primary)';
+                blackoutTab.style.color = 'var(--primary)';
+                blackoutContent.style.display = 'block';
+                // Load blackout status when switching to this tab
+                updateBlackoutStatus();
+            }
+        }
+
+        async function loadNotificationChannels() {
+            try {
+                const response = await fetch(`${API_BASE}/api/notifications/channels`, {
+                    credentials: 'include'
+                });
+                notificationChannels = await response.json();
+                renderNotificationChannels();
+            } catch (error) {
+                console.error('Error loading notification channels:', error);
+                notificationChannels = [];
+            }
+        }
+
+        async function loadNotificationTemplate() {
+            try {
+                const response = await fetch(`${API_BASE}/api/settings`, {
+                    credentials: 'include'
+                });
+                const settings = await response.json();
+                const template = settings.alert_template || '';
+                document.getElementById('alertTemplate').value = template;
+            } catch (error) {
+                console.error('Error loading template:', error);
+            }
+        }
+
+        async function loadTemplateVariables() {
+            try {
+                const response = await fetch(`${API_BASE}/api/notifications/template-variables`, {
+                    credentials: 'include'
+                });
+                templateVariables = await response.json();
+            } catch (error) {
+                console.error('Error loading template variables:', error);
+            }
+        }
+
+        function renderNotificationChannels() {
+            const container = document.getElementById('notificationChannelsList');
+            if (!container) return;
+
+            if (notificationChannels.length === 0) {
+                container.innerHTML = `
+                    <div style="text-align: center; padding: var(--spacing-lg); color: var(--text-secondary);">
+                        No notification channels configured yet. Click "Add Channel" to get started.
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = notificationChannels.map((channel, index) => `
+                <div class="notification-channel-card" style="padding: var(--spacing-md); margin-bottom: var(--spacing-md); background: var(--surface); border: 1px solid var(--surface-light); border-radius: var(--radius-md);">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--spacing-md);">
+                        <h4 style="color: var(--text-primary); margin: 0;">${channel.name || 'Unnamed Channel'}</h4>
+                        <div style="display: flex; gap: var(--spacing-sm);">
+                            <button type="button" class="btn btn-small ${channel.enabled ? 'btn-success' : 'btn-secondary'}" onclick="toggleChannelStatus(${index})">
+                                ${channel.enabled ? '✓ Enabled' : 'Disabled'}
+                            </button>
+                            <button type="button" class="btn btn-small btn-danger" onclick="removeChannel(${index})">
+                                🗑️
+                            </button>
+                        </div>
+                    </div>
+                    <div style="display: grid; gap: var(--spacing-sm);">
+                        <label class="form-label">Channel Type</label>
+                        <select class="form-input" onchange="updateChannelType(${index}, this.value)">
+                            <option value="discord" ${channel.type === 'discord' ? 'selected' : ''}>Discord</option>
+                            <option value="slack" ${channel.type === 'slack' ? 'selected' : ''}>Slack</option>
+                            <option value="telegram" ${channel.type === 'telegram' ? 'selected' : ''}>Telegram</option>
+                            <option value="pushover" ${channel.type === 'pushover' ? 'selected' : ''}>Pushover</option>
+                        </select>
+                        ${renderChannelConfig(channel, index)}
+                    </div>
+                    <button type="button" class="btn btn-secondary btn-small" onclick="testChannel(${index})" style="margin-top: var(--spacing-md);">
+                        🔔 Test Channel
+                    </button>
+                </div>
+            `).join('');
+        }
+
+        function renderChannelConfig(channel, index) {
+            switch(channel.type) {
+                case 'discord':
+                    return `
+                        <label class="form-label">Webhook URL</label>
+                        <input type="text" class="form-input" placeholder="https://discord.com/api/webhooks/..."
+                               value="${channel.config?.webhook_url || ''}"
+                               onchange="updateChannelConfig(${index}, 'webhook_url', this.value)">
+                    `;
+                case 'slack':
+                    return `
+                        <label class="form-label">Webhook URL</label>
+                        <input type="text" class="form-input" placeholder="https://hooks.slack.com/services/..."
+                               value="${channel.config?.webhook_url || ''}"
+                               onchange="updateChannelConfig(${index}, 'webhook_url', this.value)">
+                    `;
+                case 'telegram':
+                    return `
+                        <label class="form-label">Bot Token</label>
+                        <input type="text" class="form-input" placeholder="Bot token from @BotFather"
+                               value="${channel.config?.bot_token || ''}"
+                               onchange="updateChannelConfig(${index}, 'bot_token', this.value)">
+                        <label class="form-label">Chat ID</label>
+                        <input type="text" class="form-input" placeholder="Chat ID"
+                               value="${channel.config?.chat_id || ''}"
+                               onchange="updateChannelConfig(${index}, 'chat_id', this.value)">
+                    `;
+                case 'pushover':
+                    return `
+                        <label class="form-label">App Token</label>
+                        <input type="text" class="form-input" placeholder="Pushover app token"
+                               value="${channel.config?.app_token || ''}"
+                               onchange="updateChannelConfig(${index}, 'app_token', this.value)">
+                        <label class="form-label">User Key</label>
+                        <input type="text" class="form-input" placeholder="User key"
+                               value="${channel.config?.user_key || ''}"
+                               onchange="updateChannelConfig(${index}, 'user_key', this.value)">
+                    `;
+                default:
+                    return '';
+            }
+        }
+
+        function addNotificationChannel() {
+            const newChannel = {
+                name: `Channel ${notificationChannels.length + 1}`,
+                type: 'discord',
+                config: {},
+                enabled: true,
+                isNew: true
+            };
+            notificationChannels.push(newChannel);
+            renderNotificationChannels();
+        }
+
+        function removeChannel(index) {
+            notificationChannels.splice(index, 1);
+            renderNotificationChannels();
+        }
+
+        function toggleChannelStatus(index) {
+            notificationChannels[index].enabled = !notificationChannels[index].enabled;
+            renderNotificationChannels();
+        }
+
+        function updateChannelType(index, type) {
+            notificationChannels[index].type = type;
+            notificationChannels[index].config = {};
+            renderNotificationChannels();
+        }
+
+        function updateChannelConfig(index, key, value) {
+            if (!notificationChannels[index].config) {
+                notificationChannels[index].config = {};
+            }
+            notificationChannels[index].config[key] = value;
+        }
+
+        async function saveAllChannels() {
+            try {
+                // Save each channel
+                for (const channel of notificationChannels) {
+                    if (channel.isNew) {
+                        // Create new channel
+                        await fetch(`${API_BASE}/api/notifications/channels`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            credentials: 'include',
+                            body: JSON.stringify(channel)
+                        });
+                    } else if (channel.id) {
+                        // Update existing channel
+                        await fetch(`${API_BASE}/api/notifications/channels/${channel.id}`, {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            credentials: 'include',
+                            body: JSON.stringify(channel)
+                        });
+                    }
+                }
+                showToast('✅ Notification channels saved successfully!');
+                await loadNotificationChannels();
+            } catch (error) {
+                console.error('Error saving channels:', error);
+                showToast('❌ Failed to save notification channels');
+            }
+        }
+
+        async function testChannel(index) {
+            const channel = notificationChannels[index];
+            if (!channel.id) {
+                showToast('❌ Please save the channel first');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE}/api/notifications/channels/${channel.id}/test`, {
+                    method: 'POST',
+                    credentials: 'include'
+                });
+
+                if (response.ok) {
+                    showToast('✅ Test notification sent!');
+                } else {
+                    showToast('❌ Failed to send test notification');
+                }
+            } catch (error) {
+                console.error('Error testing channel:', error);
+                showToast('❌ Failed to test channel');
+            }
+        }
+
+        function applyTemplateExample(exampleKey) {
+            if (!exampleKey || !templateVariables.examples) return;
+
+            const examples = {
+                'default': templateVariables.default_template,
+                'simple': 'Alert: {CONTAINER_NAME} on {HOST_NAME} changed from {OLD_STATE} to {NEW_STATE}',
+                'minimal': '{CONTAINER_NAME}: {NEW_STATE} at {TIME}',
+                'emoji': '🔴 {CONTAINER_NAME} is {NEW_STATE}\\n📍 Host: {HOST_NAME}\\n🕐 Time: {TIMESTAMP}'
+            };
+
+            const template = examples[exampleKey];
+            if (template) {
+                document.getElementById('alertTemplate').value = template;
+            }
+        }
+
+        async function saveNotificationTemplate() {
+            try {
+                const template = document.getElementById('alertTemplate').value;
+
+                // Get current settings
+                const response = await fetch(`${API_BASE}/api/settings`, {
+                    credentials: 'include'
+                });
+                const settings = await response.json();
+
+                // Update with new template
+                settings.alert_template = template;
+
+                const updateResponse = await fetch(`${API_BASE}/api/settings`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify(settings)
+                });
+
+                if (updateResponse.ok) {
+                    showToast('✅ Notification template saved!');
+                } else {
+                    showToast('❌ Failed to save template');
+                }
+            } catch (error) {
+                console.error('Error saving template:', error);
+                showToast('❌ Failed to save notification template');
             }
         }
 
@@ -3729,13 +4123,149 @@
             }
         }
 
+        // Blackout Windows Management
+        function renderBlackoutWindows() {
+            const container = document.getElementById('blackoutWindowsList');
+            if (!container) return;
+
+            if (!globalSettings.blackout_windows || globalSettings.blackout_windows.length === 0) {
+                container.innerHTML = '<div style="padding: var(--spacing-md); color: var(--text-secondary); text-align: center;">No blackout windows configured</div>';
+                return;
+            }
+
+            container.innerHTML = globalSettings.blackout_windows.map((window, index) => `
+                <div style="padding: var(--spacing-md); margin-bottom: var(--spacing-md); background: var(--surface); border: 1px solid var(--surface-light); border-radius: var(--radius-md);">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--spacing-sm);">
+                        <input type="text" placeholder="Window name (e.g., Nightly Maintenance)"
+                               value="${window.name || ''}"
+                               onchange="updateBlackoutWindow(${index}, 'name', this.value)"
+                               style="background: transparent; border: none; color: var(--text-primary); font-size: 14px; flex: 1;">
+                        <button type="button" class="btn btn-small btn-danger" onclick="removeBlackoutWindow(${index})">
+                            🗑️
+                        </button>
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr auto; gap: var(--spacing-sm); align-items: center;">
+                        <div>
+                            <label style="font-size: 12px; color: var(--text-secondary);">Start Time</label>
+                            <input type="time" class="form-input" value="${window.start || '02:00'}"
+                                   onchange="updateBlackoutWindow(${index}, 'start', this.value)">
+                        </div>
+                        <div>
+                            <label style="font-size: 12px; color: var(--text-secondary);">End Time</label>
+                            <input type="time" class="form-input" value="${window.end || '04:00'}"
+                                   onchange="updateBlackoutWindow(${index}, 'end', this.value)">
+                        </div>
+                        <div style="padding-top: 18px;">
+                            <label class="toggle-label">
+                                <input type="checkbox" ${window.enabled !== false ? 'checked' : ''}
+                                       onchange="updateBlackoutWindow(${index}, 'enabled', this.checked)">
+                                <span>Enabled</span>
+                            </label>
+                        </div>
+                    </div>
+                    <div style="margin-top: var(--spacing-sm);">
+                        <label style="font-size: 12px; color: var(--text-secondary); display: block; margin-bottom: var(--spacing-xs);">Active Days</label>
+                        <div style="display: flex; gap: var(--spacing-xs); flex-wrap: wrap;">
+                            ${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((day, dayIndex) => `
+                                <label class="day-checkbox" style="display: flex; align-items: center; gap: 4px; padding: 4px 8px; background: ${window.days && window.days.includes(dayIndex) ? 'var(--primary)' : 'var(--surface-light)'}; border-radius: var(--radius-sm); cursor: pointer;">
+                                    <input type="checkbox" ${window.days && window.days.includes(dayIndex) ? 'checked' : ''}
+                                           onchange="toggleBlackoutDay(${index}, ${dayIndex}, this.checked)"
+                                           style="display: none;">
+                                    <span style="font-size: 12px; color: ${window.days && window.days.includes(dayIndex) ? 'white' : 'var(--text-secondary)'};">${day}</span>
+                                </label>
+                            `).join('')}
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function addBlackoutWindow() {
+            if (!globalSettings.blackout_windows) {
+                globalSettings.blackout_windows = [];
+            }
+            globalSettings.blackout_windows.push({
+                name: `Window ${globalSettings.blackout_windows.length + 1}`,
+                start: '02:00',
+                end: '04:00',
+                days: [0, 1, 2, 3, 4, 5, 6], // All days by default
+                enabled: true
+            });
+            renderBlackoutWindows();
+        }
+
+        function removeBlackoutWindow(index) {
+            globalSettings.blackout_windows.splice(index, 1);
+            renderBlackoutWindows();
+        }
+
+        function updateBlackoutWindow(index, field, value) {
+            if (globalSettings.blackout_windows && globalSettings.blackout_windows[index]) {
+                globalSettings.blackout_windows[index][field] = value;
+            }
+        }
+
+        function toggleBlackoutDay(windowIndex, dayIndex, checked) {
+            if (!globalSettings.blackout_windows[windowIndex].days) {
+                globalSettings.blackout_windows[windowIndex].days = [];
+            }
+
+            const days = globalSettings.blackout_windows[windowIndex].days;
+            if (checked && !days.includes(dayIndex)) {
+                days.push(dayIndex);
+            } else if (!checked) {
+                const idx = days.indexOf(dayIndex);
+                if (idx > -1) days.splice(idx, 1);
+            }
+
+            renderBlackoutWindows();
+        }
+
+        async function updateBlackoutStatus() {
+            try {
+                const response = await fetch(`${API_BASE}/api/blackout/status`, {
+                    credentials: 'include'
+                });
+                const status = await response.json();
+
+                const statusDiv = document.getElementById('blackoutStatus');
+                if (statusDiv) {
+                    if (status.is_blackout) {
+                        statusDiv.innerHTML = `
+                            <div style="display: flex; align-items: center; gap: var(--spacing-sm);">
+                                <span style="color: var(--warning); font-size: 20px;">🌙</span>
+                                <div>
+                                    <div style="color: var(--warning); font-weight: bold;">Currently in Blackout Window</div>
+                                    <div style="color: var(--text-secondary); font-size: 12px;">${status.current_window}</div>
+                                </div>
+                            </div>
+                        `;
+                    } else {
+                        statusDiv.innerHTML = `
+                            <div style="display: flex; align-items: center; gap: var(--spacing-sm);">
+                                <span style="color: var(--success); font-size: 20px;">☀️</span>
+                                <div>
+                                    <div style="color: var(--text-primary);">No active blackout window</div>
+                                    <div style="color: var(--text-secondary); font-size: 12px;">Alerts are being sent normally</div>
+                                </div>
+                            </div>
+                        `;
+                    }
+                }
+            } catch (error) {
+                console.error('Error fetching blackout status:', error);
+            }
+        }
+
         async function saveGlobalSettings() {
             globalSettings.max_retries = parseInt(document.getElementById('maxRetries').value);
             globalSettings.retry_delay = parseInt(document.getElementById('retryDelay').value);
             globalSettings.polling_interval = parseInt(document.getElementById('pollingInterval').value);
             globalSettings.connection_timeout = parseInt(document.getElementById('connectionTimeout').value);
             globalSettings.default_auto_restart = document.getElementById('defaultAutoRestart').classList.contains('active');
-            
+
+            // Include blackout windows in the save
+
             try {
                 const response = await fetch(`${API_BASE}/api/settings`, {
                     method: 'POST',
@@ -3744,7 +4274,7 @@
                     },
                     body: JSON.stringify(globalSettings)
                 });
-                
+
                 if (response.ok) {
                     showToast('✅ Settings saved successfully!');
                     closeModal('globalSettingsModal');

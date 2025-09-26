@@ -29,6 +29,31 @@ from event_logger import EventLogger, EventSeverity, EventType
 logger = logging.getLogger(__name__)
 
 
+def sanitize_host_id(host_id: str) -> str:
+    """
+    Sanitize host ID to prevent path traversal attacks.
+    Only allows valid UUID format or alphanumeric + dash characters.
+    """
+    if not host_id:
+        raise ValueError("Host ID cannot be empty")
+
+    # Check for path traversal attempts
+    if ".." in host_id or "/" in host_id or "\\" in host_id:
+        raise ValueError(f"Invalid host ID format: {host_id}")
+
+    # Try to validate as UUID first
+    try:
+        uuid.UUID(host_id)
+        return host_id
+    except ValueError:
+        # If not a valid UUID, only allow alphanumeric and dashes
+        import re
+        if re.match(r'^[a-zA-Z0-9\-]+$', host_id):
+            return host_id
+        else:
+            raise ValueError(f"Invalid host ID format: {host_id}")
+
+
 class DockerMonitor:
     """Main monitoring class for Docker containers"""
 
@@ -67,8 +92,10 @@ class DockerMonitor:
                 tls_config = None
                 if config.tls_cert and config.tls_key:
                     # Create persistent certificate storage directory
-                    cert_dir = os.path.join(CERTS_DIR, existing_id or str(uuid.uuid4()))
-                    os.makedirs(cert_dir, exist_ok=True)
+                    safe_id = sanitize_host_id(existing_id or str(uuid.uuid4()))
+                    cert_dir = os.path.join(CERTS_DIR, safe_id)
+                    # Create with secure permissions to avoid TOCTOU race condition
+                    os.makedirs(cert_dir, mode=0o700, exist_ok=True)
 
                     # Write certificate files
                     cert_file = os.path.join(cert_dir, 'client-cert.pem')
@@ -108,8 +135,16 @@ class DockerMonitor:
             security_status = self._validate_host_security(config)
 
             # Create host object with existing ID if provided (for persistence after restarts)
+            # Sanitize the ID to prevent path traversal
+            host_id = existing_id or str(uuid.uuid4())
+            try:
+                host_id = sanitize_host_id(host_id)
+            except ValueError as e:
+                logger.error(f"Invalid host ID: {e}")
+                raise HTTPException(status_code=400, detail=str(e))
+
             host = DockerHost(
-                id=existing_id or str(uuid.uuid4()),
+                id=host_id,
                 name=config.name,
                 url=config.url,
                 status="online",
@@ -165,7 +200,8 @@ class DockerMonitor:
 
     def _cleanup_host_certificates(self, host_id: str):
         """Clean up certificate files for a host"""
-        cert_dir = os.path.join(CERTS_DIR, host_id)
+        safe_id = sanitize_host_id(host_id)
+        cert_dir = os.path.join(CERTS_DIR, safe_id)
         if os.path.exists(cert_dir):
             try:
                 shutil.rmtree(cert_dir)
@@ -175,6 +211,13 @@ class DockerMonitor:
 
     def remove_host(self, host_id: str):
         """Remove a Docker host"""
+        # Validate host_id to prevent path traversal
+        try:
+            host_id = sanitize_host_id(host_id)
+        except ValueError as e:
+            logger.error(f"Invalid host ID: {e}")
+            raise HTTPException(status_code=400, detail=str(e))
+
         if host_id in self.hosts:
             del self.hosts[host_id]
             if host_id in self.clients:
@@ -192,6 +235,13 @@ class DockerMonitor:
 
     def update_host(self, host_id: str, config: DockerHostConfig):
         """Update an existing Docker host"""
+        # Validate host_id to prevent path traversal
+        try:
+            host_id = sanitize_host_id(host_id)
+        except ValueError as e:
+            logger.error(f"Invalid host ID: {e}")
+            raise HTTPException(status_code=400, detail=str(e))
+
         try:
             # Remove the existing host from memory first
             if host_id in self.hosts:
@@ -232,8 +282,10 @@ class DockerMonitor:
                 tls_config = None
                 if config.tls_cert and config.tls_key:
                     # Create persistent certificate storage directory
-                    cert_dir = os.path.join(CERTS_DIR, host_id)
-                    os.makedirs(cert_dir, exist_ok=True)
+                    safe_id = sanitize_host_id(host_id)
+                    cert_dir = os.path.join(CERTS_DIR, safe_id)
+                    # Create with secure permissions to avoid TOCTOU race condition
+                    os.makedirs(cert_dir, mode=0o700, exist_ok=True)
 
                     # Write certificate files
                     cert_file = os.path.join(cert_dir, 'client-cert.pem')

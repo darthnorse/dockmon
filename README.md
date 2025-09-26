@@ -45,11 +45,13 @@ A comprehensive Docker container monitoring and management platform with real-ti
 - Comprehensive logging of all restart attempts
 
 ### **Advanced Alerting & Notifications**
-- **Multi-channel support:** Discord, Telegram, Pushover
+- **Multi-channel support:** Discord, Slack, Telegram, Pushover
+- **Customizable alert templates** with 15+ variables for personalized messages
 - **Flexible alert rules** with regex pattern matching
 - **Cooldown periods** to prevent notification spam
 - **State-based triggers** (container start, stop, crash, etc.)
 - **Real-time notification delivery** with success tracking
+- **Blackout windows (Quiet Hours)** for scheduled maintenance periods
 
 ### **Comprehensive Event Logging**
 - **Complete audit trail** of all container and system events
@@ -77,7 +79,7 @@ A comprehensive Docker container monitoring and management platform with real-ti
 
 ## Quick Start
 
-### Option 1: Docker Deployment (Recommended)
+### Docker Deployment
 
 Deploy DockMon as a single all-in-one container:
 
@@ -101,32 +103,7 @@ docker compose up -d
   - Supervisor process management
   - Automatic Docker socket mounting for local monitoring
 
-### Option 2: Direct Deployment (Any Linux Server)
-
-For any Debian/Ubuntu based system with full backend:
-
-```bash
-# Install dependencies
-sudo apt update && apt install -y nginx git python3 python3-pip python3-venv supervisor
-
-# Clone and set up DockMon
-cd /opt
-sudo git clone https://github.com/darthnorse/dockmon.git
-cd /opt/dockmon/backend
-
-# Set up Python environment
-sudo python3 -m venv venv
-sudo ./venv/bin/pip install -r requirements.txt
-
-# Set up frontend
-sudo cp /opt/dockmon/src/index.html /var/www/html/index.html
-
-# Configure and start services
-sudo systemctl enable nginx supervisor
-sudo systemctl start nginx supervisor
-```
-
-**Note:** For production deployment, configure proper systemd services for auto-start and reliability.
+**Security Note:** DockMon is designed to run as a Docker container for optimal security and isolation. Running the backend directly on a host system is not supported due to security considerations.
 
 ## Configuration & Setup
 
@@ -147,7 +124,7 @@ sudo systemctl start nginx supervisor
 
 3. **Configure Notification Channels** (Optional)
    - Go to Settings → Notifications
-   - Set up Discord, Telegram, and/or Pushover
+   - Set up Discord, Slack, Telegram, and/or Pushover
 
 4. **Create Alert Rules** (Optional)
    - Go to Settings → Alert Rules
@@ -172,7 +149,6 @@ sudo systemctl start nginx supervisor
 #### Reset Password (If Forgotten)
 If you forget your password, you can reset it using the command-line tool:
 
-**For Docker deployment:**
 ```bash
 # Auto-generate new password
 docker exec dockmon python /app/backend/reset_password.py admin
@@ -184,18 +160,137 @@ docker exec dockmon python /app/backend/reset_password.py admin --password NewPa
 docker exec -it dockmon python /app/backend/reset_password.py admin --interactive
 ```
 
-**For direct deployment:**
-```bash
-# Auto-generate new password
-cd backend
-python3 reset_password.py admin
+### Notification Channels Setup
 
-# Set specific password
-python3 reset_password.py admin --password NewPassword123
+#### Slack
+1. Create an Incoming Webhook in your Slack workspace:
+   - Go to https://api.slack.com/apps
+   - Click "Create New App" → "From scratch"
+   - Choose your workspace
+   - Go to "Incoming Webhooks" → Enable → "Add New Webhook"
+   - Select a channel and copy the webhook URL
 
-# Interactive mode (prompts for password)
-python3 reset_password.py admin --interactive
+2. In DockMon:
+   - Go to Settings → Notifications
+   - Add new channel with type "Slack"
+   - Paste your webhook URL
+   - Test the connection
+
+#### Discord
+1. Create a webhook in your Discord server:
+   - Right-click on a channel → Edit Channel → Integrations → Webhooks
+   - Create a new webhook and copy the URL
+
+2. In DockMon:
+   - Add new channel with type "Discord"
+   - Paste your webhook URL
+
+#### Telegram
+1. Create a bot via @BotFather on Telegram
+2. Get your chat ID (message @userinfobot)
+3. In DockMon: Add bot token and chat ID
+
+#### Pushover
+1. Register at pushover.net
+2. Create an application to get app token
+3. In DockMon: Add app token and user key
+
+### Custom Alert Templates
+
+DockMon supports fully customizable notification messages using template variables:
+
+#### Available Variables
+- `{CONTAINER_NAME}` - Container name
+- `{CONTAINER_ID}` - Short container ID
+- `{HOST_NAME}` - Docker host name
+- `{HOST_ID}` - Host identifier
+- `{OLD_STATE}` - Previous container state
+- `{NEW_STATE}` - Current container state
+- `{IMAGE}` - Docker image name
+- `{TIMESTAMP}` - Full timestamp (YYYY-MM-DD HH:MM:SS)
+- `{TIME}` - Time only (HH:MM:SS)
+- `{DATE}` - Date only (YYYY-MM-DD)
+- `{RULE_NAME}` - Alert rule that triggered
+- `{EVENT_TYPE}` - Docker event type (if applicable)
+- `{EXIT_CODE}` - Container exit code (if applicable)
+
+#### Example Templates
+
+**Default (Detailed):**
 ```
+🚨 **DockMon Alert**
+
+**Container:** `{CONTAINER_NAME}`
+**Host:** {HOST_NAME}
+**State Change:** `{OLD_STATE}` → `{NEW_STATE}`
+**Image:** {IMAGE}
+**Time:** {TIMESTAMP}
+**Rule:** {RULE_NAME}
+```
+
+**Simple:**
+```
+Alert: {CONTAINER_NAME} on {HOST_NAME} changed from {OLD_STATE} to {NEW_STATE}
+```
+
+**Minimal:**
+```
+{CONTAINER_NAME}: {NEW_STATE} at {TIME}
+```
+
+To customize your alert template:
+1. Go to Settings → Notifications
+2. Click the "Message Template" tab
+3. Enter your custom template using any combination of variables
+4. Save your changes
+
+### Blackout Windows (Quiet Hours)
+
+Blackout windows allow you to suppress all alerts during scheduled maintenance periods or quiet hours. This prevents unnecessary notifications when you're performing planned maintenance or updates.
+
+#### How Blackout Windows Work
+
+**During a blackout window:**
+- All alerts are suppressed (not sent to any notification channel)
+- Container events continue to be monitored and logged
+- The system tracks container states but doesn't send notifications
+
+**When a blackout window ends:**
+- DockMon automatically checks the current state of all containers
+- Alerts are sent for any containers found in problematic states (exited, dead, paused, etc.)
+- This ensures you're notified of any issues that occurred during maintenance
+
+#### Configuration
+
+To set up blackout windows:
+1. Go to Settings → Notifications
+2. Click the "🌙 Quiet Hours" tab
+3. Add one or more blackout windows with:
+   - **Name**: Descriptive name (e.g., "Nightly Maintenance", "Weekend Updates")
+   - **Time Range**: Start and end times (24-hour format)
+   - **Days**: Select which days of the week to apply
+   - **Enabled**: Toggle to activate/deactivate the window
+
+#### Best Practices
+
+⚠️ **Important:** When using blackout windows, configure your alert rules to monitor both **events AND states**. This ensures:
+- Events trigger immediate alerts during normal operations
+- State monitoring catches issues that occurred during blackout periods
+
+**Example Alert Rule Configuration:**
+```
+✅ Monitor Events: container_stop, container_die
+✅ Monitor States: exited, dead
+```
+
+This dual approach ensures you won't miss critical issues, whether they occur during normal operations or maintenance windows.
+
+#### Use Cases
+
+- **Scheduled maintenance**: Suppress alerts during planned Docker updates or system maintenance
+- **Batch deployments**: Prevent alert spam during large-scale container updates
+- **Night hours**: Avoid non-critical alerts during off-hours
+- **Testing periods**: Disable alerts while testing new configurations
 
 ### Docker Remote Access Configuration
 

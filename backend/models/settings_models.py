@@ -10,6 +10,8 @@ from typing import Optional, List
 from pydantic import BaseModel, Field, validator
 
 
+from typing import Optional, List
+
 class GlobalSettings(BaseModel):
     """Global monitoring settings"""
     max_retries: int = Field(3, ge=0, le=10)  # 0-10 retries
@@ -17,6 +19,8 @@ class GlobalSettings(BaseModel):
     default_auto_restart: bool = False
     polling_interval: int = Field(10, ge=5, le=300)  # 5 seconds to 5 minutes
     connection_timeout: int = Field(10, ge=1, le=60)  # 1-60 seconds
+    alert_template: Optional[str] = Field(None, max_length=2000)  # Global notification template
+    blackout_windows: Optional[List[dict]] = None  # Blackout windows configuration
 
     @validator('max_retries')
     def validate_max_retries(cls, v):

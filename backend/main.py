@@ -21,7 +21,6 @@ from docker.errors import DockerException, APIError
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Depends, status, Cookie, Response
 from fastapi.middleware.cors import CORSMiddleware
 # Session-based auth - no longer need HTTPBearer
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from database import DatabaseManager
 from realtime import RealtimeMonitor, LiveUpdateManager
@@ -40,6 +39,7 @@ from security.audit import security_audit
 from security.rate_limiting import rate_limiter, rate_limit_auth, rate_limit_hosts, rate_limit_containers, rate_limit_notifications, rate_limit_default
 from auth.routes import router as auth_router, verify_frontend_session
 from websocket.connection import ConnectionManager, DateTimeEncoder
+from websocket.rate_limiter import ws_rate_limiter
 from docker_monitor.monitor import DockerMonitor
 
 # Configure logging
@@ -110,7 +110,7 @@ logger.info(f"CORS configured for origins: {AppConfig.CORS_ORIGINS}")
 app.include_router(auth_router)
 
 @app.get("/")
-async def root():
+async def root(authenticated: bool = Depends(verify_session_auth)):
     """Backend API root - frontend is served separately"""
     return {"message": "DockMon Backend API", "version": "1.0.0", "docs": "/docs"}
 
@@ -350,7 +350,9 @@ async def get_settings(authenticated: bool = Depends(verify_session_auth)):
         "polling_interval": settings.polling_interval,
         "connection_timeout": settings.connection_timeout,
         "log_retention_days": settings.log_retention_days,
-        "enable_notifications": settings.enable_notifications
+        "enable_notifications": settings.enable_notifications,
+        "alert_template": getattr(settings, 'alert_template', None),
+        "blackout_windows": getattr(settings, 'blackout_windows', None)
     }
 
 @app.post("/api/settings")
@@ -361,7 +363,7 @@ async def update_settings(settings: GlobalSettings, authenticated: bool = Depend
     return settings
 
 @app.get("/api/alerts")
-async def get_alert_rules():
+async def get_alert_rules(authenticated: bool = Depends(verify_session_auth)):
     """Get all alert rules"""
     rules = monitor.db.get_alert_rules(enabled_only=False)
     logger.info(f"Retrieved {len(rules)} alert rules from database")
@@ -505,8 +507,65 @@ async def delete_alert_rule(rule_id: str, authenticated: bool = Depends(verify_s
         logger.error(f"Failed to delete alert rule: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
+# ==================== Blackout Window Routes ====================
+
+@app.get("/api/blackout/status")
+async def get_blackout_status(authenticated: bool = Depends(verify_session_auth)):
+    """Get current blackout window status"""
+    try:
+        is_blackout, window_name = monitor.notification_service.blackout_manager.is_in_blackout_window()
+        return {
+            "is_blackout": is_blackout,
+            "current_window": window_name
+        }
+    except Exception as e:
+        logger.error(f"Error getting blackout status: {e}")
+        return {"is_blackout": False, "current_window": None}
+
 # ==================== Notification Channel Routes ====================
 
+
+@app.get("/api/notifications/template-variables")
+async def get_template_variables():
+    """Get available template variables for notification messages"""
+    return {
+        "variables": [
+            {"name": "{CONTAINER_NAME}", "description": "Name of the container"},
+            {"name": "{CONTAINER_ID}", "description": "Short container ID (12 characters)"},
+            {"name": "{HOST_NAME}", "description": "Name of the Docker host"},
+            {"name": "{HOST_ID}", "description": "ID of the Docker host"},
+            {"name": "{OLD_STATE}", "description": "Previous state of the container"},
+            {"name": "{NEW_STATE}", "description": "New state of the container"},
+            {"name": "{IMAGE}", "description": "Docker image name"},
+            {"name": "{TIMESTAMP}", "description": "Full timestamp (YYYY-MM-DD HH:MM:SS)"},
+            {"name": "{TIME}", "description": "Time only (HH:MM:SS)"},
+            {"name": "{DATE}", "description": "Date only (YYYY-MM-DD)"},
+            {"name": "{RULE_NAME}", "description": "Name of the alert rule"},
+            {"name": "{RULE_ID}", "description": "ID of the alert rule"},
+            {"name": "{TRIGGERED_BY}", "description": "What triggered the alert"},
+            {"name": "{EVENT_TYPE}", "description": "Docker event type (if applicable)"},
+            {"name": "{EXIT_CODE}", "description": "Container exit code (if applicable)"}
+        ],
+        "default_template": """🚨 **DockMon Alert**
+
+**Container:** `{CONTAINER_NAME}`
+**Host:** {HOST_NAME}
+**State Change:** `{OLD_STATE}` → `{NEW_STATE}`
+**Image:** {IMAGE}
+**Time:** {TIMESTAMP}
+**Rule:** {RULE_NAME}""",
+        "examples": {
+            "simple": "Alert: {CONTAINER_NAME} on {HOST_NAME} changed from {OLD_STATE} to {NEW_STATE}",
+            "detailed": """🔴 Container Alert
+Container: {CONTAINER_NAME} ({CONTAINER_ID})
+Host: {HOST_NAME}
+Status: {OLD_STATE} → {NEW_STATE}
+Image: {IMAGE}
+Time: {TIMESTAMP}
+Triggered by: {RULE_NAME}""",
+            "minimal": "{CONTAINER_NAME}: {NEW_STATE} at {TIME}"
+        }
+    }
 
 @app.get("/api/notifications/channels")
 async def get_notification_channels():
@@ -881,6 +940,9 @@ async def cleanup_old_events(days: int = 30, authenticated: bool = Depends(verif
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for real-time updates"""
+    # Generate a unique connection ID for rate limiting
+    connection_id = f"ws_{id(websocket)}_{time.time()}"
+
     await monitor.manager.connect(websocket)
     await monitor.realtime.subscribe_to_events(websocket)
 
@@ -901,6 +963,18 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             # Keep connection alive and handle incoming messages
             message = await websocket.receive_json()
+
+            # Check rate limit for incoming messages
+            allowed, reason = ws_rate_limiter.check_rate_limit(connection_id)
+            if not allowed:
+                # Send rate limit error to client
+                await websocket.send_text(json.dumps({
+                    "type": "error",
+                    "error": "rate_limit",
+                    "message": reason
+                }))
+                # Don't process the message
+                continue
 
             # Handle different message types
             if message.get("type") == "subscribe_stats":
@@ -932,11 +1006,8 @@ async def websocket_endpoint(websocket: WebSocket):
         # Unsubscribe from all stats
         for container_id in list(monitor.realtime.stats_subscribers.keys()):
             await monitor.realtime.unsubscribe_from_stats(websocket, container_id)
-
-# Mount static files (optional - only if directory exists)
-import os
-if os.path.exists("static"):
-    app.mount("/static", StaticFiles(directory="static"), name="static")
+        # Clean up rate limiter tracking
+        ws_rate_limiter.cleanup_connection(connection_id)
 
 if __name__ == "__main__":
     import os

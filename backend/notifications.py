@@ -49,6 +49,10 @@ class NotificationService:
         self._last_alerts: Dict[str, datetime] = {}  # For cooldown tracking
         self._last_container_state: Dict[str, str] = {}  # Track last known state per container
 
+        # Initialize blackout manager
+        from blackout_manager import BlackoutManager
+        self.blackout_manager = BlackoutManager(db)
+
     async def process_docker_event(self, event: DockerEventAlert) -> bool:
         """Process a Docker event and send alerts if rules match"""
         try:
@@ -122,6 +126,12 @@ class NotificationService:
                     if time_since.total_seconds() < rule.cooldown_minutes * 60:
                         logger.debug(f"Skipping alert for {event.container_name} due to cooldown")
                         continue
+
+                # Check if we're in a blackout window
+                is_blackout, window_name = self.blackout_manager.is_in_blackout_window()
+                if is_blackout:
+                    logger.info(f"Alert suppressed during blackout window '{window_name}' for {event.container_name}")
+                    continue
 
                 # Send notification
                 if await self._send_event_notification(rule, event):
@@ -216,6 +226,9 @@ class NotificationService:
                         elif channel.type == 'pushover':
                             await self._send_pushover(channel.config, message, event)
                             success_count += 1
+                        elif channel.type == 'slack':
+                            await self._send_slack(channel.config, message, event)
+                            success_count += 1
                         logger.info(f"Event notification sent via {channel.type} for {event.container_name}")
                     except Exception as e:
                         logger.error(f"Failed to send {channel.type} notification: {e}")
@@ -241,6 +254,12 @@ class NotificationService:
 
             success_count = 0
             total_rules = len(alert_rules)
+
+            # Check if we're in a blackout window
+            is_blackout, window_name = self.blackout_manager.is_in_blackout_window()
+            if is_blackout:
+                logger.info(f"Suppressed {len(alert_rules)} alerts during blackout window '{window_name}' for {event.container_name}")
+                return False
 
             # Process each matching rule
             for rule in alert_rules:
@@ -380,7 +399,15 @@ class NotificationService:
     async def _send_to_channel(self, channel: NotificationChannel,
                              event: AlertEvent, rule: AlertRuleDB) -> bool:
         """Send notification to a specific channel"""
-        message = self._format_message(event, rule)
+        # Get global template from settings
+        settings = self.db.get_settings()
+        template = getattr(settings, 'alert_template', None) if settings else None
+
+        # Use global template or default
+        if not template:
+            template = self._get_default_template(channel.type)
+
+        message = self._format_message(event, rule, template)
 
         if channel.type == "telegram":
             return await self._send_telegram(channel.config, message)
@@ -388,20 +415,77 @@ class NotificationService:
             return await self._send_discord(channel.config, message)
         elif channel.type == "pushover":
             return await self._send_pushover(channel.config, message, event)
+        elif channel.type == "slack":
+            return await self._send_slack(channel.config, message, event)
         else:
             logger.warning(f"Unknown notification channel type: {channel.type}")
             return False
 
-    def _format_message(self, event: AlertEvent, rule: AlertRuleDB) -> str:
-        """Format alert message"""
-        message = f"""🚨 **DockMon Alert**
+    def _get_default_template(self, channel_type: str = None) -> str:
+        """Get default template for channel type"""
+        # Default template with variables
+        default = """🚨 **DockMon Alert**
 
-**Container:** `{event.container_name}`
-**Host:** {event.host_name}
-**State Change:** `{event.old_state}` → `{event.new_state}`
-**Image:** {event.image}
-**Time:** {event.timestamp.strftime('%Y-%m-%d %H:%M:%S')}
-**Rule:** {rule.name}"""
+**Container:** `{CONTAINER_NAME}`
+**Host:** {HOST_NAME}
+**State Change:** `{OLD_STATE}` → `{NEW_STATE}`
+**Image:** {IMAGE}
+**Time:** {TIMESTAMP}
+**Rule:** {RULE_NAME}"""
+
+        # Channel-specific defaults (can be customized per platform)
+        templates = {
+            'slack': default,
+            'discord': default,
+            'telegram': default,
+            'pushover': """DockMon Alert
+Container: {CONTAINER_NAME}
+Host: {HOST_NAME}
+State: {OLD_STATE} → {NEW_STATE}
+Image: {IMAGE}
+Time: {TIMESTAMP}
+Rule: {RULE_NAME}"""
+        }
+
+        return templates.get(channel_type, default)
+
+    def _format_message(self, event: AlertEvent, rule: AlertRuleDB, template: str = None) -> str:
+        """Format alert message using template with variable substitution"""
+        # Use provided template or default
+        if not template:
+            template = self._get_default_template()
+
+        # Prepare variables for substitution
+        variables = {
+            '{CONTAINER_NAME}': event.container_name,
+            '{CONTAINER_ID}': event.container_id[:12],  # Short ID
+            '{HOST_NAME}': event.host_name,
+            '{HOST_ID}': event.host_id,
+            '{OLD_STATE}': event.old_state,
+            '{NEW_STATE}': event.new_state,
+            '{IMAGE}': event.image,
+            '{TIMESTAMP}': event.timestamp.strftime('%Y-%m-%d %H:%M:%S'),
+            '{TIME}': event.timestamp.strftime('%H:%M:%S'),
+            '{DATE}': event.timestamp.strftime('%Y-%m-%d'),
+            '{RULE_NAME}': rule.name,
+            '{RULE_ID}': str(rule.id),
+            '{TRIGGERED_BY}': event.triggered_by,
+        }
+
+        # Handle optional Docker event attributes
+        if hasattr(event, 'event_type'):
+            variables['{EVENT_TYPE}'] = event.event_type
+            if hasattr(event, 'exit_code') and event.exit_code is not None:
+                variables['{EXIT_CODE}'] = str(event.exit_code)
+
+        # Replace all variables in template
+        message = template
+        for var, value in variables.items():
+            message = message.replace(var, value)
+
+        # Clean up any unused variables (remove them)
+        import re
+        message = re.sub(r'\{[A-Z_]+\}', '', message)
 
         return message
 
@@ -506,6 +590,57 @@ class NotificationService:
 
         except Exception as e:
             logger.error(f"Failed to send Pushover notification: {e}")
+            return False
+
+    async def _send_slack(self, config: Dict[str, Any], message: str, event: AlertEvent) -> bool:
+        """Send notification via Slack webhook"""
+        try:
+            webhook_url = config.get('webhook_url')
+
+            if not webhook_url:
+                logger.error("Slack config missing webhook_url")
+                return False
+
+            # Convert markdown to Slack format
+            # Slack uses mrkdwn format which is similar to markdown but with some differences
+            slack_message = message.replace('**', '*')  # Bold in Slack is single asterisk
+            slack_message = slack_message.replace('`', '`')  # Code blocks remain the same
+
+            # Determine color based on event type
+            color = "#ff0000"  # Default red for critical
+            if hasattr(event, 'new_state'):
+                if event.new_state == 'running':
+                    color = "#00ff00"  # Green for running
+                elif event.new_state in ['stopped', 'paused']:
+                    color = "#ffaa00"  # Orange for stopped/paused
+            elif hasattr(event, 'event_type'):
+                if event.event_type in ['start', 'unpause']:
+                    color = "#00ff00"  # Green for recovery events
+                elif event.event_type in ['stop', 'pause']:
+                    color = "#ffaa00"  # Orange for controlled stops
+
+            # Create rich Slack message with attachments
+            payload = {
+                'attachments': [{
+                    'color': color,
+                    'fallback': slack_message,
+                    'title': '🚨 DockMon Alert',
+                    'text': slack_message,
+                    'mrkdwn_in': ['text'],
+                    'footer': 'DockMon',
+                    'footer_icon': 'https://raw.githubusercontent.com/docker/compose/v2/logo.png',
+                    'ts': int(event.timestamp.timestamp())
+                }]
+            }
+
+            response = await self.http_client.post(webhook_url, json=payload)
+            response.raise_for_status()
+
+            logger.info("Slack notification sent successfully")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to send Slack notification: {e}")
             return False
 
     async def test_channel(self, channel_id: int) -> Dict[str, Any]:

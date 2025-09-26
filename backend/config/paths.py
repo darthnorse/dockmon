@@ -23,17 +23,5 @@ CERTS_DIR = os.path.join(DATA_DIR, 'certs')
 def ensure_data_dirs():
     """Create data directories if they don't exist"""
     for directory in [DATA_DIR, CERTS_DIR]:
-        os.makedirs(directory, exist_ok=True)
-        try:
-            os.chmod(directory, 0o700)
-        except OSError:
-            pass  # May not have permission in some environments
-
-# For development/testing outside Docker
-if not os.path.exists('/app'):
-    # Running locally, use relative paths
-    DATA_DIR = './data'
-    DATABASE_PATH = os.path.join(DATA_DIR, 'dockmon.db')
-    DATABASE_URL = f'sqlite:///{DATABASE_PATH}'
-    CREDENTIALS_FILE = os.path.join(DATA_DIR, 'frontend_credentials.txt')
-    CERTS_DIR = os.path.join(DATA_DIR, 'certs')
+        # Use mode parameter to avoid TOCTOU race condition
+        os.makedirs(directory, mode=0o700, exist_ok=True)

@@ -5,15 +5,44 @@ Centralizes all environment-based configuration and settings
 
 import os
 import logging
+from logging.handlers import RotatingFileHandler
 from typing import List
 
 
 def setup_logging():
-    """Configure application logging"""
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    """Configure application logging with rotation"""
+    from .paths import DATA_DIR
+
+    # Create logs directory with secure permissions
+    log_dir = os.path.join(DATA_DIR, 'logs')
+    os.makedirs(log_dir, mode=0o700, exist_ok=True)
+
+    # Set up root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+
+    # Console handler for stdout
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
+    console_handler.setFormatter(console_formatter)
+
+    # File handler with rotation for application logs
+    # Max 10MB per file, keep 14 backups
+    file_handler = RotatingFileHandler(
+        os.path.join(log_dir, 'dockmon.log'),
+        maxBytes=10*1024*1024,  # 10MB
+        backupCount=14,  # Keep 14 old files
+        encoding='utf-8'
+    )
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(console_formatter)
+
+    # Add handlers to root logger
+    root_logger.addHandler(console_handler)
+    root_logger.addHandler(file_handler)
 
 
 def _is_docker_container_id(hostname: str) -> bool:

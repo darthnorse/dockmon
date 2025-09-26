@@ -12,8 +12,8 @@ from sqlalchemy.pool import StaticPool
 import json
 import os
 import logging
-import hashlib
 import secrets
+import bcrypt
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +84,8 @@ class GlobalSettings(Base):
     event_retention_days = Column(Integer, default=30)  # Keep events for 30 days
     enable_notifications = Column(Boolean, default=True)
     auto_cleanup_events = Column(Boolean, default=True)  # Auto cleanup old events
+    alert_template = Column(Text, nullable=True)  # Global notification template
+    blackout_windows = Column(JSON, nullable=True)  # Array of blackout time windows
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 class NotificationChannel(Base):
@@ -92,7 +94,7 @@ class NotificationChannel(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String, nullable=False, unique=True)
-    type = Column(String, nullable=False)  # telegram, discord, email, webhook, pushover
+    type = Column(String, nullable=False)  # telegram, discord, slack, pushover
     config = Column(JSON, nullable=False)  # Channel-specific configuration
     enabled = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.now)
@@ -738,8 +740,15 @@ class DatabaseManager:
 
     # User management methods
     def _hash_password(self, password: str) -> str:
-        """Hash a password using SHA256"""
-        return hashlib.sha256(password.encode()).hexdigest()
+        """Hash a password using bcrypt with salt"""
+        # Generate salt and hash password
+        salt = bcrypt.gensalt(rounds=12)  # 12 rounds is a good balance of security/speed
+        hashed = bcrypt.hashpw(password.encode('utf-8'), salt)
+        return hashed.decode('utf-8')
+
+    def _verify_password(self, password: str, hashed: str) -> bool:
+        """Verify a password against a bcrypt hash"""
+        return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
 
     def get_or_create_default_user(self) -> None:
         """Create default admin user if no users exist"""
@@ -755,13 +764,13 @@ class DatabaseManager:
                 )
                 session.add(user)
                 session.commit()
-                logger.info("Created default admin user (password: dockmon123)")
+                logger.info("Created default admin user")
 
     def verify_user_credentials(self, username: str, password: str) -> Optional[Dict[str, Any]]:
         """Verify user credentials and return user info if valid"""
         with self.get_session() as session:
             user = session.query(User).filter(User.username == username).first()
-            if user and user.password_hash == self._hash_password(password):
+            if user and self._verify_password(password, user.password_hash):
                 # Update last login
                 user.last_login = datetime.now()
                 session.commit()

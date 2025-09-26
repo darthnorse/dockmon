@@ -6,6 +6,7 @@ Tracks all security-relevant events for incident response
 import json
 import logging
 import os
+from logging.handlers import RotatingFileHandler
 from typing import Dict, List, Optional
 
 
@@ -20,10 +21,16 @@ class SecurityAuditLogger:
         # Create separate log file for security events in persistent volume
         from config.paths import DATA_DIR
         log_dir = os.path.join(DATA_DIR, 'logs')
-        os.makedirs(log_dir, exist_ok=True)
+        os.makedirs(log_dir, mode=0o700, exist_ok=True)
 
-        # File handler for security audit logs
-        security_handler = logging.FileHandler(os.path.join(log_dir, 'security_audit.log'), encoding='utf-8')
+        # Rotating file handler for security audit logs
+        # Max 10MB per file, keep 14 backups (total max 150MB with current + 14 backups)
+        security_handler = RotatingFileHandler(
+            os.path.join(log_dir, 'security_audit.log'),
+            maxBytes=10*1024*1024,  # 10MB
+            backupCount=14,  # Keep 14 old files
+            encoding='utf-8'
+        )
         security_handler.setLevel(logging.INFO)
 
         # Structured logging format for security events

@@ -29,6 +29,17 @@ class AlertEvent:
     image: str
     triggered_by: str = "monitor"
 
+@dataclass
+class DockerEventAlert:
+    """Docker event that might trigger an alert"""
+    container_id: str
+    container_name: str
+    host_id: str
+    event_type: str  # e.g., "die", "oom", "kill", "health_status:unhealthy"
+    timestamp: datetime
+    attributes: Dict[str, Any] = None  # Additional event attributes
+    exit_code: Optional[int] = None
+
 class NotificationService:
     """Handles all notification channels and alert processing"""
 
@@ -37,6 +48,184 @@ class NotificationService:
         self.http_client = httpx.AsyncClient(timeout=30.0)
         self._last_alerts: Dict[str, datetime] = {}  # For cooldown tracking
         self._last_container_state: Dict[str, str] = {}  # Track last known state per container
+
+    async def process_docker_event(self, event: DockerEventAlert) -> bool:
+        """Process a Docker event and send alerts if rules match"""
+        try:
+            # Get matching alert rules for this event
+            rules = self.db.get_alert_rules(enabled_only=True)
+            matching_rules = []
+
+            logger.info(f"Processing Docker event: {event.event_type} for container {event.container_name} on host {event.host_id}")
+
+            for rule in rules:
+                # Check if rule has event triggers
+                if not rule.trigger_events:
+                    continue
+
+                # Check if this event type matches any triggers
+                event_matches = False
+                for trigger in rule.trigger_events:
+                    # Handle special event mappings
+                    if trigger == "die-nonzero" and event.event_type == "die" and event.exit_code and event.exit_code != 0:
+                        event_matches = True
+                        break
+                    elif trigger == "die-zero" and event.event_type == "die" and event.exit_code == 0:
+                        event_matches = True
+                        break
+                    elif trigger == event.event_type:
+                        event_matches = True
+                        break
+                    # Handle health status events
+                    elif trigger.startswith("health_status:") and event.event_type == "health_status":
+                        health_status = event.attributes.get("health_status") if event.attributes else None
+                        if health_status and trigger == f"health_status:{health_status}":
+                            event_matches = True
+                            break
+
+                if not event_matches:
+                    continue
+
+                # Check if this container+host matches the rule
+                # First check if rule has specific container+host pairs
+                if hasattr(rule, 'containers') and rule.containers:
+                    # Use specific container+host pairs
+                    matches = False
+                    for container in rule.containers:
+                        if (container.host_id == event.host_id and
+                            container.container_name == event.container_name):
+                            matches = True
+                            break
+
+                    if not matches:
+                        continue
+                else:
+                    continue
+
+                logger.info(f"Docker event matches rule {rule.id}: {rule.name}")
+                matching_rules.append(rule)
+
+            if not matching_rules:
+                logger.debug(f"No rules match Docker event {event.event_type} for {event.container_name}")
+                return False
+
+            # Send notifications for matching rules
+            success_count = 0
+            for rule in matching_rules:
+                # Check cooldown
+                container_key = f"{event.host_id}:{event.container_id}"
+                cooldown_key = f"event:{rule.id}:{container_key}:{event.event_type}"
+
+                # Check cooldown
+                if cooldown_key in self._last_alerts:
+                    time_since = datetime.now() - self._last_alerts[cooldown_key]
+                    if time_since.total_seconds() < rule.cooldown_minutes * 60:
+                        logger.debug(f"Skipping alert for {event.container_name} due to cooldown")
+                        continue
+
+                # Send notification
+                if await self._send_event_notification(rule, event):
+                    success_count += 1
+                    self._last_alerts[cooldown_key] = datetime.now()
+
+                    # Update rule's last triggered time
+                    self.db.update_alert_rule(rule.id, {
+                        'last_triggered': datetime.now()
+                    })
+
+            return success_count > 0
+
+        except Exception as e:
+            logger.error(f"Error processing Docker event for {event.container_name}: {e}")
+            return False
+
+    async def _send_event_notification(self, rule: AlertRuleDB, event: DockerEventAlert) -> bool:
+        """Send notifications for a Docker event"""
+        try:
+            # Get host name
+            host_name = event.host_id
+            try:
+                with self.db.get_session() as session:
+                    from database import DockerHostDB
+                    host = session.query(DockerHostDB).filter_by(id=event.host_id).first()
+                    if host:
+                        host_name = host.name
+            except Exception as e:
+                logger.warning(f"Could not get host name: {e}")
+
+            # Get container image
+            image = event.attributes.get('image', 'Unknown') if event.attributes else 'Unknown'
+
+            # Format event type description
+            if event.event_type == "die":
+                if event.exit_code == 0:
+                    event_desc = "Container stopped normally (exit code 0)"
+                    emoji = "🟢"
+                else:
+                    event_desc = f"Container died with exit code {event.exit_code}"
+                    emoji = "🔴"
+            elif event.event_type == "oom":
+                event_desc = "Container killed due to Out Of Memory (OOM)"
+                emoji = "💀"
+            elif event.event_type == "kill":
+                event_desc = "Container was killed"
+                emoji = "⚠️"
+            elif event.event_type.startswith("health_status"):
+                status = event.attributes.get("health_status", "unknown") if event.attributes else "unknown"
+                if status == "unhealthy":
+                    event_desc = "Container is UNHEALTHY"
+                    emoji = "🏥"
+                elif status == "healthy":
+                    event_desc = "Container is healthy again"
+                    emoji = "✅"
+                else:
+                    event_desc = f"Health status: {status}"
+                    emoji = "🏥"
+            elif event.event_type == "restart-loop":
+                event_desc = "Container is in a restart loop"
+                emoji = "🔄"
+            else:
+                event_desc = f"Docker event: {event.event_type}"
+                emoji = "📢"
+
+            # Format structured message like state alerts
+            message = f"""{emoji} **DockMon Alert**
+
+**Container:** `{event.container_name}`
+**Host:** {host_name}
+**Event:** {event_desc}
+**Image:** {image}
+**Time:** {event.timestamp.strftime('%Y-%m-%d %H:%M:%S')}
+**Rule:** {rule.name}"""
+
+            # Get notification channels
+            channels = self.db.get_notification_channels_by_ids(rule.notification_channels)
+
+            success_count = 0
+            total_channels = len(channels)
+
+            for channel in channels:
+                if channel.enabled:
+                    try:
+                        if channel.type == 'telegram':
+                            await self._send_telegram(channel.config, message)
+                            success_count += 1
+                        elif channel.type == 'discord':
+                            await self._send_discord(channel.config, message)
+                            success_count += 1
+                        elif channel.type == 'pushover':
+                            await self._send_pushover(channel.config, message, event)
+                            success_count += 1
+                        logger.info(f"Event notification sent via {channel.type} for {event.container_name}")
+                    except Exception as e:
+                        logger.error(f"Failed to send {channel.type} notification: {e}")
+
+            logger.info(f"Event alert sent to {success_count}/{total_channels} channels for {event.container_name}")
+            return success_count > 0
+
+        except Exception as e:
+            logger.error(f"Error sending event notification: {e}")
+            return False
 
     async def send_alert(self, event: AlertEvent) -> bool:
         """Process an alert event and send notifications"""
@@ -91,28 +280,37 @@ class NotificationService:
         rules = self.db.get_alert_rules(enabled_only=True)
         matching_rules = []
 
-        logger.debug(f"Checking {len(rules)} alert rules for container {event.container_name} (state: {event.new_state})")
+        logger.info(f"Checking {len(rules)} alert rules for container {event.container_name} on host {event.host_id} (state: {event.old_state} → {event.new_state})")
 
         for rule in rules:
-            logger.debug(f"Rule {rule.id}: name='{rule.name}', pattern='{rule.container_pattern}', triggers={rule.trigger_states}, host_id={rule.host_id}")
+            container_info = f"{len(rule.containers)} container+host pairs" if hasattr(rule, 'containers') and rule.containers else "no containers"
+            logger.debug(f"Rule {rule.id}: name='{rule.name}', containers={container_info}, states={rule.trigger_states}, events={rule.trigger_events}")
 
-            # Check if rule applies to this host (None means all hosts)
-            if rule.host_id and rule.host_id != event.host_id:
-                logger.debug(f"Rule {rule.id} skipped: host mismatch (rule: {rule.host_id}, event: {event.host_id})")
-                continue
+            # Check if this container+host matches the rule
+            # First check if rule has specific container+host pairs
+            if hasattr(rule, 'containers') and rule.containers:
+                # Use specific container+host pairs
+                matches = False
+                for container in rule.containers:
+                    if (container.host_id == event.host_id and
+                        container.container_name == event.container_name):
+                        matches = True
+                        break
 
-            # Check if container name matches pattern
-            try:
-                if not re.search(rule.container_pattern, event.container_name):
-                    logger.debug(f"Rule {rule.id} skipped: pattern '{rule.container_pattern}' doesn't match '{event.container_name}'")
+                if not matches:
+                    logger.debug(f"Rule {rule.id} skipped: no matching container+host pair")
                     continue
-            except re.error:
-                logger.warning(f"Invalid regex pattern in rule {rule.id}: {rule.container_pattern}")
+            else:
+                logger.debug(f"Rule {rule.id} skipped: no containers defined")
                 continue
 
-            # Check if new state triggers alert
-            if event.new_state not in rule.trigger_states:
+            # Check if new state triggers alert (only if trigger_states is defined)
+            if rule.trigger_states and event.new_state not in rule.trigger_states:
                 logger.debug(f"Rule {rule.id} skipped: state '{event.new_state}' not in triggers {rule.trigger_states}")
+                continue
+            elif not rule.trigger_states:
+                # This rule only has event triggers, not state triggers, skip for state changes
+                logger.debug(f"Rule {rule.id} skipped: no state triggers defined (events only)")
                 continue
 
             logger.debug(f"Rule {rule.id} MATCHES!")
@@ -132,7 +330,7 @@ class NotificationService:
         # If container was in a "good" state (running) and now in "bad" state (exited),
         # this is a new incident - reset cooldown
         good_states = ['running', 'created']
-        if event.old_state in good_states and event.new_state in rule.trigger_states:
+        if rule.trigger_states and event.old_state in good_states and event.new_state in rule.trigger_states:
             logger.info(f"Alert allowed for {event.container_name}: Container recovered ({event.old_state}) then failed ({event.new_state}) - new incident detected")
             # Remove the cooldown for this container
             if cooldown_key in self._last_alerts:
@@ -264,7 +462,7 @@ class NotificationService:
             return False
 
     async def _send_pushover(self, config: Dict[str, Any], message: str,
-                           event: AlertEvent) -> bool:
+                           event) -> bool:
         """Send notification via Pushover"""
         try:
             app_token = config.get('app_token')
@@ -279,10 +477,13 @@ class NotificationService:
             plain_message = re.sub(r'`(.*?)`', r'\1', plain_message)   # Code
             plain_message = re.sub(r'🚨', '', plain_message)  # Remove alert emoji
 
-            # Determine priority based on state
+            # Determine priority based on event type
             priority = 0  # Normal
-            if event.new_state in ['exited', 'dead']:
-                priority = 1  # High priority for failures
+            # Handle both AlertEvent and DockerEventAlert
+            if hasattr(event, 'new_state') and event.new_state in ['exited', 'dead']:
+                priority = 1  # High priority for state failures
+            elif hasattr(event, 'event_type') and event.event_type in ['die', 'oom', 'kill']:
+                priority = 1  # High priority for critical Docker events
 
             payload = {
                 'token': app_token,

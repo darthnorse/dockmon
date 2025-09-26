@@ -79,7 +79,7 @@ A comprehensive Docker container monitoring and management platform with real-ti
 
 ### Option 1: Docker Deployment (Recommended)
 
-Clone and run with Docker Compose for full functionality:
+Deploy DockMon as a single all-in-one container:
 
 ```bash
 git clone https://github.com/darthnorse/dockmon.git
@@ -87,17 +87,19 @@ cd dockmon
 docker compose up -d
 ```
 
-**Access URLs:**
-- **Frontend UI:** `http://localhost:8001`
-- **Backend API:** `http://localhost:8080`
-- **API Documentation:** `http://localhost:8080/docs` (Swagger UI)
+**Access:** `https://localhost:8001` (accept the self-signed certificate warning)
 
-**Services Started:**
-- `dockmon-backend` - FastAPI backend with database
-- `dockmon-frontend` - Nginx serving the web interface
+**Default Credentials:**
+- Username: `admin`
+- Password: `dockmon123`
+- **You will be required to change the password on first login**
 
-**Docker Socket Access:**
-The backend automatically mounts `/var/run/docker.sock` for local Docker monitoring.
+**What's Included:**
+- `dockmon` - All-in-one container with:
+  - Nginx frontend with HTTPS
+  - FastAPI backend with SQLite database
+  - Supervisor process management
+  - Automatic Docker socket mounting for local monitoring
 
 ### Option 2: Direct Deployment (Any Linux Server)
 
@@ -130,9 +132,13 @@ sudo systemctl start nginx supervisor
 
 ### First Time Setup
 
-1. **Access the Web Interface**
-   - Navigate to your DockMon frontend URL
-   - The interface will guide you through initial setup
+1. **Initial Login**
+   - Navigate to `https://localhost:8001` (or your configured URL)
+   - Accept the self-signed certificate warning
+   - Login with default credentials:
+     - **Username:** `admin`
+     - **Password:** `dockmon123`
+   - **Important:** You will be required to change the password immediately on first login
 
 2. **Add Docker Hosts**
    - Click "Add Host" in the dashboard
@@ -146,6 +152,50 @@ sudo systemctl start nginx supervisor
 4. **Create Alert Rules** (Optional)
    - Go to Settings → Alert Rules
    - Define which containers trigger notifications
+
+### Password Management
+
+#### Default Credentials
+- **Username:** `admin`
+- **Password:** `dockmon123`
+- **Important:** You will be required to change the password on first login
+
+#### Change Password
+**Via Web Interface (Recommended):**
+- Navigate to Settings → Account
+- Enter your current password and new password
+- Click "Change Password"
+
+**Via API:**
+- POST to `/api/auth/change-password` with current and new password
+
+#### Reset Password (If Forgotten)
+If you forget your password, you can reset it using the command-line tool:
+
+**For Docker deployment:**
+```bash
+# Auto-generate new password
+docker exec dockmon python /app/backend/reset_password.py admin
+
+# Set specific password
+docker exec dockmon python /app/backend/reset_password.py admin --password NewPassword123
+
+# Interactive mode (prompts for password)
+docker exec -it dockmon python /app/backend/reset_password.py admin --interactive
+```
+
+**For direct deployment:**
+```bash
+# Auto-generate new password
+cd backend
+python3 reset_password.py admin
+
+# Set specific password
+python3 reset_password.py admin --password NewPassword123
+
+# Interactive mode (prompts for password)
+python3 reset_password.py admin --interactive
+```
 
 ### Docker Remote Access Configuration
 
@@ -213,7 +263,7 @@ When adding hosts in DockMon, use these formats:
 
 ### Why Use mTLS?
 
-**⚠️ CRITICAL:** Running Docker API over plain TCP without TLS exposes your entire system to attack. Anyone who can reach port 2375/2376 can take complete control of your host.
+**CRITICAL:** Running Docker API over plain TCP without TLS exposes your entire system to attack. Anyone who can reach port 2375/2376 can take complete control of your host.
 
 mTLS (mutual TLS) provides:
 - **Mutual authentication** - Both DockMon and Docker verify each other's identity
@@ -251,7 +301,7 @@ In DockMon, add the host with:
 
 ### Insecure Mode (Development Only)
 
-**⚠️ NEVER USE IN PRODUCTION - SIGNIFICANT SECURITY RISK**
+**NEVER USE IN PRODUCTION - SIGNIFICANT SECURITY RISK**
 
 For isolated test environments only:
 ```ini
@@ -498,7 +548,7 @@ dockmon/
 │   ├── dashboard.png
 │   ├── containers.png
 │   └── settings.png
-├── docker-compose.yml         # Full-stack Docker Compose configuration
+├── docker-compose.yml         # All-in-one Docker container configuration
 ├── LICENSE                   # MIT License
 └── README.md                 # This documentation
 ```

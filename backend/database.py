@@ -5,17 +5,32 @@ Uses SQLite for persistent storage of configuration and settings
 
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
-from sqlalchemy import create_engine, Column, String, Integer, Boolean, DateTime, JSON, ForeignKey, Text
+from sqlalchemy import create_engine, Column, String, Integer, Boolean, DateTime, JSON, ForeignKey, Text, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from sqlalchemy.pool import StaticPool
 import json
 import os
 import logging
+import hashlib
+import secrets
 
 logger = logging.getLogger(__name__)
 
 Base = declarative_base()
+
+class User(Base):
+    """User authentication and settings"""
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    username = Column(String, nullable=False, unique=True)
+    password_hash = Column(String, nullable=False)
+    is_first_login = Column(Boolean, default=True)
+    must_change_password = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    last_login = Column(DateTime, nullable=True)
 
 class DockerHostDB(Base):
     """Docker host configuration"""
@@ -34,7 +49,6 @@ class DockerHostDB(Base):
 
     # Relationships
     auto_restart_configs = relationship("AutoRestartConfig", back_populates="host", cascade="all, delete-orphan")
-    alert_rules = relationship("AlertRuleDB", back_populates="host", cascade="all, delete-orphan")
 
 class AutoRestartConfig(Base):
     """Auto-restart configuration for containers"""
@@ -54,6 +68,7 @@ class AutoRestartConfig(Base):
 
     # Relationships
     host = relationship("DockerHostDB", back_populates="auto_restart_configs")
+
 
 class GlobalSettings(Base):
     """Global application settings"""
@@ -89,9 +104,8 @@ class AlertRuleDB(Base):
 
     id = Column(String, primary_key=True)
     name = Column(String, nullable=False)
-    host_id = Column(String, ForeignKey("docker_hosts.id"), nullable=True)  # null means all hosts
-    container_pattern = Column(String, nullable=False)  # regex pattern for container names
-    trigger_states = Column(JSON, nullable=False)  # list of states that trigger alert
+    trigger_events = Column(JSON, nullable=True)  # list of Docker events that trigger alert
+    trigger_states = Column(JSON, nullable=True)  # list of states that trigger alert
     notification_channels = Column(JSON, nullable=False)  # list of channel IDs
     cooldown_minutes = Column(Integer, default=15)  # prevent spam
     enabled = Column(Boolean, default=True)
@@ -100,7 +114,26 @@ class AlertRuleDB(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     # Relationships
-    host = relationship("DockerHostDB", back_populates="alert_rules")
+    containers = relationship("AlertRuleContainer", back_populates="alert_rule", cascade="all, delete-orphan")
+
+class AlertRuleContainer(Base):
+    """Container+Host pairs for alert rules"""
+    __tablename__ = "alert_rule_containers"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    alert_rule_id = Column(String, ForeignKey("alert_rules.id", ondelete="CASCADE"), nullable=False)
+    host_id = Column(String, ForeignKey("docker_hosts.id", ondelete="CASCADE"), nullable=False)
+    container_name = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.now)
+
+    # Relationships
+    alert_rule = relationship("AlertRuleDB", back_populates="containers")
+    host = relationship("DockerHostDB")
+
+    # Unique constraint to prevent duplicates
+    __table_args__ = (
+        UniqueConstraint('alert_rule_id', 'host_id', 'container_name', name='_alert_container_uc'),
+    )
 
 class EventLog(Base):
     """Comprehensive event logging for all DockMon activities"""
@@ -408,6 +441,18 @@ class DatabaseManager:
                 query = query.filter(NotificationChannel.enabled == True)
             return query.all()
 
+    def get_notification_channels_by_ids(self, channel_ids: List[int]) -> List[NotificationChannel]:
+        """Get notification channels by their IDs"""
+        with self.get_session() as session:
+            channels = session.query(NotificationChannel).filter(
+                NotificationChannel.id.in_(channel_ids),
+                NotificationChannel.enabled == True
+            ).all()
+
+            # Detach from session to avoid lazy loading issues
+            session.expunge_all()
+            return channels
+
     def update_notification_channel(self, channel_id: int, updates: dict) -> Optional[NotificationChannel]:
         """Update a notification channel"""
         with self.get_session() as session:
@@ -432,32 +477,104 @@ class DatabaseManager:
 
     # Alert Rules
     def add_alert_rule(self, rule_data: dict) -> AlertRuleDB:
-        """Add an alert rule"""
+        """Add an alert rule with container+host pairs"""
         with self.get_session() as session:
+            # Extract containers list if present
+            containers_data = rule_data.pop('containers', None)
+
             rule = AlertRuleDB(**rule_data)
             session.add(rule)
+            session.flush()  # Flush to get the ID without committing
+
+            # Add container+host pairs if provided
+            if containers_data:
+                for container in containers_data:
+                    container_pair = AlertRuleContainer(
+                        alert_rule_id=rule.id,
+                        host_id=container['host_id'],
+                        container_name=container['container_name']
+                    )
+                    session.add(container_pair)
+
             session.commit()
-            session.refresh(rule)
+
+            # Create a detached copy with all needed attributes
+            rule_dict = {
+                'id': rule.id,
+                'name': rule.name,
+                'trigger_events': rule.trigger_events,
+                'trigger_states': rule.trigger_states,
+                'notification_channels': rule.notification_channels,
+                'cooldown_minutes': rule.cooldown_minutes,
+                'enabled': rule.enabled,
+                'last_triggered': rule.last_triggered,
+                'created_at': rule.created_at,
+                'updated_at': rule.updated_at
+            }
+
+            # Return a new instance that's not attached to the session
+            detached_rule = AlertRuleDB(**rule_dict)
+            detached_rule.containers = []  # Initialize empty containers list
+
+            return detached_rule
+
+    def get_alert_rule(self, rule_id: str) -> Optional[AlertRuleDB]:
+        """Get a single alert rule by ID"""
+        with self.get_session() as session:
+            from sqlalchemy.orm import joinedload
+            rule = session.query(AlertRuleDB).options(joinedload(AlertRuleDB.containers)).filter(AlertRuleDB.id == rule_id).first()
+            if rule:
+                session.expunge(rule)
             return rule
 
     def get_alert_rules(self, enabled_only: bool = True) -> List[AlertRuleDB]:
         """Get all alert rules"""
         with self.get_session() as session:
-            query = session.query(AlertRuleDB)
+            from sqlalchemy.orm import joinedload
+            query = session.query(AlertRuleDB).options(joinedload(AlertRuleDB.containers))
             if enabled_only:
                 query = query.filter(AlertRuleDB.enabled == True)
-            return query.all()
+            rules = query.all()
+            # Detach from session to avoid lazy loading issues
+            for rule in rules:
+                session.expunge(rule)
+            return rules
 
     def update_alert_rule(self, rule_id: str, updates: dict) -> Optional[AlertRuleDB]:
-        """Update an alert rule"""
+        """Update an alert rule and its container+host pairs"""
         with self.get_session() as session:
-            rule = session.query(AlertRuleDB).filter(AlertRuleDB.id == rule_id).first()
+            from sqlalchemy.orm import joinedload
+            rule = session.query(AlertRuleDB).options(joinedload(AlertRuleDB.containers)).filter(AlertRuleDB.id == rule_id).first()
             if rule:
+                # Extract containers list if present
+                containers_data = updates.pop('containers', None)
+
+                # Update rule fields
                 for key, value in updates.items():
                     setattr(rule, key, value)
                 rule.updated_at = datetime.now()
+
+                # Update container+host pairs if provided
+                if containers_data is not None:
+                    # Delete existing container pairs
+                    session.query(AlertRuleContainer).filter(
+                        AlertRuleContainer.alert_rule_id == rule_id
+                    ).delete()
+
+                    # Add new container pairs
+                    for container in containers_data:
+                        container_pair = AlertRuleContainer(
+                            alert_rule_id=rule_id,
+                            host_id=container['host_id'],
+                            container_name=container['container_name']
+                        )
+                        session.add(container_pair)
+
                 session.commit()
                 session.refresh(rule)
+                # Load containers relationship
+                _ = rule.containers
+                session.expunge(rule)
             return rule
 
     def delete_alert_rule(self, rule_id: str) -> bool:
@@ -617,3 +734,96 @@ class DatabaseManager:
                 'period_start': start_date.isoformat() if start_date else None,
                 'period_end': end_date.isoformat() if end_date else None
             }
+
+
+    # User management methods
+    def _hash_password(self, password: str) -> str:
+        """Hash a password using SHA256"""
+        return hashlib.sha256(password.encode()).hexdigest()
+
+    def get_or_create_default_user(self) -> None:
+        """Create default admin user if no users exist"""
+        with self.get_session() as session:
+            user = session.query(User).filter(User.username == "admin").first()
+            if not user:
+                # Create default admin user with default password
+                user = User(
+                    username="admin",
+                    password_hash=self._hash_password("dockmon123"),  # Default password
+                    is_first_login=True,
+                    must_change_password=True
+                )
+                session.add(user)
+                session.commit()
+                logger.info("Created default admin user (password: dockmon123)")
+
+    def verify_user_credentials(self, username: str, password: str) -> Optional[Dict[str, Any]]:
+        """Verify user credentials and return user info if valid"""
+        with self.get_session() as session:
+            user = session.query(User).filter(User.username == username).first()
+            if user and user.password_hash == self._hash_password(password):
+                # Update last login
+                user.last_login = datetime.now()
+                session.commit()
+                return {
+                    "username": user.username,
+                    "is_first_login": user.is_first_login,
+                    "must_change_password": user.must_change_password
+                }
+            return None
+
+    def change_user_password(self, username: str, new_password: str) -> bool:
+        """Change user password"""
+        with self.get_session() as session:
+            user = session.query(User).filter(User.username == username).first()
+            if user:
+                user.password_hash = self._hash_password(new_password)
+                user.is_first_login = False
+                user.must_change_password = False
+                user.updated_at = datetime.now()
+                session.commit()
+                logger.info(f"Password changed for user: {username}")
+                return True
+            return False
+
+    def username_exists(self, username: str) -> bool:
+        """Check if username already exists"""
+        with self.get_session() as session:
+            user = session.query(User).filter(User.username == username).first()
+            return user is not None
+
+    def change_username(self, old_username: str, new_username: str) -> bool:
+        """Change user's username"""
+        with self.get_session() as session:
+            user = session.query(User).filter(User.username == old_username).first()
+            if user:
+                user.username = new_username
+                user.updated_at = datetime.now()
+                session.commit()
+                logger.info(f"Username changed from {old_username} to {new_username}")
+                return True
+            return False
+
+    def reset_user_password(self, username: str, new_password: str = None) -> str:
+        """Reset user password (for CLI tool)"""
+        with self.get_session() as session:
+            user = session.query(User).filter(User.username == username).first()
+            if not user:
+                return None
+
+            # Generate new password if not provided
+            if not new_password:
+                new_password = secrets.token_urlsafe(12)
+
+            user.password_hash = self._hash_password(new_password)
+            user.must_change_password = True
+            user.updated_at = datetime.now()
+            session.commit()
+            logger.info(f"Password reset for user: {username}")
+            return new_password
+
+    def list_users(self) -> List[str]:
+        """List all usernames"""
+        with self.get_session() as session:
+            users = session.query(User.username).all()
+            return [u[0] for u in users]

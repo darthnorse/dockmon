@@ -1,0 +1,7 @@
+
+# SSL Certificates
+docker/certs/
+*.crt
+*.key
+*.pem
+*.csr

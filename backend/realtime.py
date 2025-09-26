@@ -55,6 +55,7 @@ class RealtimeMonitor:
         self.event_subscribers: Set[Any] = set()  # websockets listening to all events
         self.monitoring_tasks: Dict[str, asyncio.Task] = {}
         self.event_tasks: Dict[str, asyncio.Task] = {}
+        self.notification_service = None  # Will be set after initialization to avoid circular imports
 
     async def subscribe_to_stats(self, websocket: Any, container_id: str):
         """Subscribe a websocket to container stats"""
@@ -237,7 +238,7 @@ class RealtimeMonitor:
             # Use asyncio to make the blocking iterator non-blocking
             loop = asyncio.get_event_loop()
 
-            while self.event_subscribers:
+            while host_id in self.event_tasks:
                 try:
                     # Use run_in_executor to make the blocking next() call non-blocking
                     event = await asyncio.wait_for(
@@ -265,6 +266,34 @@ class RealtimeMonitor:
                     if docker_event.action.startswith('exec_') and 'healthcheck' in event_str:
                         # Skip health check events - they're too noisy
                         continue
+
+                    # Process event for alerts if notification service is available
+                    if self.notification_service and docker_event.action in [
+                        'die', 'oom', 'kill', 'health_status', 'restart'
+                    ]:
+                        # Get exit code for die events
+                        exit_code = None
+                        if docker_event.action == 'die':
+                            exit_code_str = docker_event.attributes.get('exitCode', '0')
+                            try:
+                                exit_code = int(exit_code_str)
+                            except (ValueError, TypeError):
+                                exit_code = None
+
+                        # Create alert event
+                        from notifications import DockerEventAlert
+                        alert_event = DockerEventAlert(
+                            container_id=docker_event.container_id,
+                            container_name=docker_event.container_name,
+                            host_id=docker_event.host_id,
+                            event_type=docker_event.action,
+                            timestamp=datetime.now(),
+                            attributes=docker_event.attributes,
+                            exit_code=exit_code
+                        )
+
+                        # Process in background to not block event monitoring
+                        asyncio.create_task(self.notification_service.process_docker_event(alert_event))
 
                     # Broadcast to all subscribers
                     dead_sockets = []

@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DockMon - Login</title>
+    <style>
+        :root {
+            --primary: #0066cc;
+            --primary-dark: #0052a3;
+            --secondary: #6c757d;
+            --success: #28a745;
+            --danger: #dc3545;
+            --warning: #ffc107;
+            --info: #17a2b8;
+            --light: #f8f9fa;
+            --dark: #343a40;
+            --background: #1a1a1a;
+            --surface: #2d2d2d;
+            --surface-light: #3d3d3d;
+            --text-primary: #ffffff;
+            --text-secondary: #b3b3b3;
+            --border: #404040;
+            --spacing-xs: 0.25rem;
+            --spacing-sm: 0.5rem;
+            --spacing-md: 1rem;
+            --spacing-lg: 1.5rem;
+            --spacing-xl: 3rem;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'sans-serif';
+            background: linear-gradient(135deg, var(--background) 0%, #0f1419 100%);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            overflow: hidden;
+        }
+
+        /* Animated background particles */
+        .background-animation {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            z-index: 0;
+        }
+
+        .particle {
+            position: absolute;
+            background: rgba(0, 102, 204, 0.1);
+            border-radius: 50%;
+            animation: float 6s ease-in-out infinite;
+        }
+
+        .particle:nth-child(1) { width: 80px; height: 80px; left: 10%; animation-delay: 0s; }
+        .particle:nth-child(2) { width: 60px; height: 60px; left: 20%; animation-delay: 1s; }
+        .particle:nth-child(3) { width: 100px; height: 100px; left: 35%; animation-delay: 2s; }
+        .particle:nth-child(4) { width: 40px; height: 40px; left: 70%; animation-delay: 3s; }
+        .particle:nth-child(5) { width: 120px; height: 120px; left: 85%; animation-delay: 4s; }
+
+        @keyframes float {
+            0%, 100% { transform: translateY(0px) rotate(0deg); opacity: 0.1; }
+            50% { transform: translateY(-20px) rotate(180deg); opacity: 0.3; }
+        }
+
+        /* Login container */
+        .login-container {
+            background: var(--surface);
+            border-radius: 16px;
+            padding: var(--spacing-xl);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+            border: 1px solid var(--border);
+            width: 100%;
+            max-width: 400px;
+            position: relative;
+            z-index: 1;
+            backdrop-filter: blur(10px);
+        }
+
+        .login-header {
+            text-align: center;
+            margin-bottom: var(--spacing-xl);
+        }
+
+        .login-logo {
+            width: 80px;
+            height: 80px;
+            margin: 0 auto var(--spacing-lg);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .login-logo img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            filter: drop-shadow(0 8px 16px rgba(0, 102, 204, 0.3));
+        }
+
+        .login-title {
+            font-size: 28px;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: var(--spacing-sm);
+        }
+
+        .login-subtitle {
+            color: var(--text-secondary);
+            font-size: 16px;
+            margin-bottom: var(--spacing-lg);
+        }
+
+        .form-group {
+            margin-bottom: var(--spacing-lg);
+        }
+
+        .form-label {
+            display: block;
+            margin-bottom: var(--spacing-sm);
+            font-weight: 600;
+            color: var(--text-primary);
+            font-size: 14px;
+        }
+
+        .form-control {
+            width: 100%;
+            padding: var(--spacing-md);
+            background: var(--background);
+            border: 2px solid var(--border);
+            border-radius: 8px;
+            color: var(--text-primary);
+            font-size: 16px;
+            transition: all 0.3s ease;
+        }
+
+        .form-control:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(0, 102, 204, 0.1);
+        }
+
+        .form-control::placeholder {
+            color: var(--text-secondary);
+        }
+
+        .btn {
+            width: 100%;
+            padding: var(--spacing-md) var(--spacing-lg);
+            background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 16px rgba(0, 102, 204, 0.3);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .alert {
+            padding: var(--spacing-md);
+            border-radius: 8px;
+            margin-bottom: var(--spacing-lg);
+            font-size: 14px;
+            border: 1px solid transparent;
+        }
+
+        .alert-danger {
+            background: rgba(220, 53, 69, 0.1);
+            border-color: rgba(220, 53, 69, 0.3);
+            color: #ff6b6b;
+        }
+
+        .alert-success {
+            background: rgba(40, 167, 69, 0.1);
+            border-color: rgba(40, 167, 69, 0.3);
+            color: #51cf66;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            margin-top: var(--spacing-md);
+        }
+
+        .spinner {
+            width: 20px;
+            height: 20px;
+            border: 2px solid var(--border);
+            border-top: 2px solid var(--primary);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+            margin-right: var(--spacing-sm);
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .forgot-password {
+            text-align: center;
+            margin-top: var(--spacing-lg);
+            color: var(--text-secondary);
+            font-size: 14px;
+        }
+
+        .version {
+            position: absolute;
+            bottom: var(--spacing-md);
+            left: 50%;
+            transform: translateX(-50%);
+            color: var(--text-secondary);
+            font-size: 12px;
+            z-index: 1;
+        }
+
+        /* Responsive design */
+        @media (max-width: 480px) {
+            .login-container {
+                margin: var(--spacing-md);
+                padding: var(--spacing-lg);
+            }
+
+            .login-title {
+                font-size: 24px;
+            }
+        }
+
+        /* Focus animations */
+        .form-group {
+            position: relative;
+        }
+
+        .form-control:focus + .form-label {
+            color: var(--primary);
+        }
+    </style>
+</head>
+<body>
+    <!-- Background animation -->
+    <div class="background-animation">
+        <div class="particle"></div>
+        <div class="particle"></div>
+        <div class="particle"></div>
+        <div class="particle"></div>
+        <div class="particle"></div>
+    </div>
+
+    <!-- Login container -->
+    <div class="login-container">
+        <div class="login-header">
+            <div class="login-logo">
+                <img src="images/logo.png" alt="DockMon Logo">
+            </div>
+            <h1 class="login-title">DockMon</h1>
+            <p class="login-subtitle">Docker Container Monitoring & Management</p>
+        </div>
+
+        <form id="loginForm">
+            <div id="alertContainer"></div>
+
+            <div class="form-group">
+                <label class="form-label" for="username">Username</label>
+                <input type="text" id="username" name="username" class="form-control"
+                       placeholder="Enter your username" required autocomplete="username">
+            </div>
+
+            <div class="form-group">
+                <label class="form-label" for="password">Password</label>
+                <input type="password" id="password" name="password" class="form-control"
+                       placeholder="Enter your password" required autocomplete="current-password">
+            </div>
+
+            <button type="submit" class="btn" id="loginBtn">
+                Sign In
+            </button>
+
+            <div class="loading" id="loading">
+                <span class="spinner"></span>
+                Authenticating...
+            </div>
+        </form>
+
+        <div class="forgot-password">
+            <small>Default credentials are auto-generated.<br>Check the backend logs for the password.</small>
+        </div>
+    </div>
+
+    <div class="version">DockMon v1.0 - Secure Login</div>
+
+    <script>
+        const API_BASE = '';
+
+        // DOM elements
+        const loginForm = document.getElementById('loginForm');
+        const loginBtn = document.getElementById('loginBtn');
+        const loading = document.getElementById('loading');
+        const alertContainer = document.getElementById('alertContainer');
+        const usernameInput = document.getElementById('username');
+        const passwordInput = document.getElementById('password');
+
+        // Show alert message
+        function showAlert(message, type = 'danger') {
+            alertContainer.innerHTML = `
+                <div class="alert alert-${type}">
+                    ${message}
+                </div>
+            `;
+        }
+
+        // Clear alerts
+        function clearAlert() {
+            alertContainer.innerHTML = '';
+        }
+
+        // Show loading state
+        function setLoading(isLoading) {
+            if (isLoading) {
+                loginBtn.disabled = true;
+                loginBtn.style.display = 'none';
+                loading.style.display = 'block';
+            } else {
+                loginBtn.disabled = false;
+                loginBtn.style.display = 'block';
+                loading.style.display = 'none';
+            }
+        }
+
+        // Check if already authenticated
+        async function checkAuthStatus() {
+            try {
+                const response = await fetch(`${API_BASE}/api/auth/status`, {
+                    credentials: 'include'
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.authenticated) {
+                        // Redirect to main dashboard
+                        window.location.href = '/';
+                        return;
+                    }
+                }
+            } catch (error) {
+                console.log('Auth check failed:', error);
+            }
+        }
+
+        // Handle login form submission
+        async function handleLogin(event) {
+            event.preventDefault();
+
+            clearAlert();
+            setLoading(true);
+
+            const username = usernameInput.value.trim();
+            const password = passwordInput.value;
+
+            if (!username || !password) {
+                showAlert('Please enter both username and password');
+                setLoading(false);
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE}/api/auth/login`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    credentials: 'include',
+                    body: JSON.stringify({ username, password })
+                });
+
+                const data = await response.json();
+                console.log('Login response:', data);
+
+                if (response.ok) {
+                    // Store password change requirement in sessionStorage
+                    if (data.must_change_password || data.is_first_login) {
+                        sessionStorage.setItem('must_change_password', 'true');
+                        // Temporarily store password for auto-fill (will be cleared after use)
+                        sessionStorage.setItem('temp_current_password', password);
+                    }
+
+                    showAlert('Login successful! Redirecting...', 'success');
+                    console.log('Login successful, redirecting to dashboard in 1.5 seconds...');
+
+                    // Redirect to main dashboard after short delay
+                    setTimeout(() => {
+                        console.log('Redirecting to /');
+                        window.location.href = '/';
+                    }, 1500);
+                } else {
+                    showAlert(data.detail || 'Login failed. Please try again.');
+                    setLoading(false);
+                }
+            } catch (error) {
+                console.error('Login error:', error);
+                showAlert('Connection error. Please check if the backend is running.');
+                setLoading(false);
+            }
+        }
+
+        // Event listeners
+        loginForm.addEventListener('submit', handleLogin);
+
+        // Auto-focus username field
+        usernameInput.focus();
+
+        // Check auth status on page load
+        checkAuthStatus();
+
+        // Handle Enter key in password field
+        passwordInput.addEventListener('keypress', function(event) {
+            if (event.key === 'Enter') {
+                handleLogin(event);
+            }
+        });
+
+        // Add some visual feedback for form interactions
+        [usernameInput, passwordInput].forEach(input => {
+            input.addEventListener('focus', function() {
+                this.parentElement.style.transform = 'scale(1.02)';
+                this.parentElement.style.transition = 'transform 0.2s ease';
+            });
+
+            input.addEventListener('blur', function() {
+                this.parentElement.style.transform = 'scale(1)';
+            });
+        });
+    </script>
+</body>
+</html>

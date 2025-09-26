@@ -8,10 +8,9 @@ import asyncio
 import json
 import logging
 import os
-import tempfile
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from contextlib import asynccontextmanager
 
@@ -19,857 +18,58 @@ import docker
 import uvicorn
 from docker import DockerClient
 from docker.errors import DockerException, APIError
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Depends, status, Cookie, Response
 from fastapi.middleware.cors import CORSMiddleware
+# Session-based auth - no longer need HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
-from database import DatabaseManager, DockerHostDB
+from database import DatabaseManager
 from realtime import RealtimeMonitor, LiveUpdateManager
 from notifications import NotificationService, AlertProcessor
 from event_logger import EventLogger, EventContext, EventCategory, EventType, EventSeverity, PerformanceTimer
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+# Import extracted modules
+from config.settings import AppConfig, get_cors_origins, setup_logging
+from models.docker_models import DockerHostConfig, DockerHost
+from models.settings_models import GlobalSettings, AlertRule
+from models.request_models import (
+    AutoRestartRequest, AlertRuleCreate, AlertRuleUpdate,
+    NotificationChannelCreate, NotificationChannelUpdate, EventLogFilter
 )
+from security.audit import security_audit
+from security.rate_limiting import rate_limiter, rate_limit_auth, rate_limit_hosts, rate_limit_containers, rate_limit_notifications, rate_limit_default
+from auth.routes import router as auth_router, verify_frontend_session
+from websocket.connection import ConnectionManager, DateTimeEncoder
+from docker_monitor.monitor import DockerMonitor
+
+# Configure logging
+setup_logging()
 logger = logging.getLogger(__name__)
 
-# Custom JSON encoder for datetime objects
-class DateTimeEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, datetime):
-            return obj.isoformat()
-        return super().default(obj)
 
-# ==================== Data Models ====================
 
-class DockerHostConfig(BaseModel):
-    """Configuration for a Docker host"""
-    name: str
-    url: str
-    tls_cert: Optional[str] = None
-    tls_key: Optional[str] = None
-    tls_ca: Optional[str] = None
 
-class DockerHost(BaseModel):
-    """Docker host with connection status"""
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    name: str
-    url: str
-    status: str = "offline"
-    security_status: Optional[str] = None  # "secure", "insecure", "unknown"
-    last_checked: datetime = Field(default_factory=datetime.now)
-    container_count: int = 0
-    error: Optional[str] = None
 
-class Container(BaseModel):
-    """Container information"""
-    id: str
-    short_id: str
-    name: str
-    state: str
-    status: str
-    host_id: str
-    host_name: str
-    image: str
-    created: str
-    auto_restart: bool = False
-    restart_attempts: int = 0
-
-class GlobalSettings(BaseModel):
-    """Global monitoring settings"""
-    max_retries: int = 3
-    retry_delay: int = 30
-    default_auto_restart: bool = False
-    polling_interval: int = 10
-    connection_timeout: int = 10
-
-class AlertRule(BaseModel):
-    """Alert rule configuration"""
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    name: str
-    host_id: Optional[str] = None
-    container_pattern: str
-    trigger_states: List[str]
-    notification_channels: List[int]
-    cooldown_minutes: int = 15
-    enabled: bool = True
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
-    last_triggered: Optional[datetime] = None
-
-class NotificationSettings(BaseModel):
-    """Notification channel settings"""
-    telegram_token: Optional[str] = None
-    telegram_chat_id: Optional[str] = None
-    discord_webhook: Optional[str] = None
-    pushover_app_token: Optional[str] = None
-    pushover_user_key: Optional[str] = None
-
-# ==================== Connection Manager ====================
-
-class ConnectionManager:
-    """Manages WebSocket connections"""
-    
-    def __init__(self):
-        self.active_connections: List[WebSocket] = []
-
-    async def connect(self, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections.append(websocket)
-        logger.info(f"New WebSocket connection. Total connections: {len(self.active_connections)}")
-
-    def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
-        logger.info(f"WebSocket disconnected. Total connections: {len(self.active_connections)}")
-
-    async def broadcast(self, message: dict):
-        """Send message to all connected clients"""
-        dead_connections = []
-        for connection in self.active_connections:
-            try:
-                await connection.send_text(json.dumps(message, cls=DateTimeEncoder))
-            except Exception as e:
-                logger.error(f"Error sending message: {e}")
-                dead_connections.append(connection)
-        
-        # Clean up dead connections
-        for conn in dead_connections:
-            if conn in self.active_connections:
-                self.active_connections.remove(conn)
-
-# ==================== Docker Monitor ====================
-
-class DockerMonitor:
-    """Main monitoring class for Docker containers"""
-    
-    def __init__(self):
-        self.hosts: Dict[str, DockerHost] = {}
-        self.clients: Dict[str, DockerClient] = {}
-        self.db = DatabaseManager()  # Initialize database
-        self.settings = self.db.get_settings()  # Load settings from DB
-        self.alert_rules: List[AlertRule] = self._load_alert_rules()  # Load alert rules from DB
-        self.notification_settings = NotificationSettings()
-        self.auto_restart_status: Dict[str, bool] = {}
-        self.restart_attempts: Dict[str, int] = {}
-        self.restarting_containers: Dict[str, bool] = {}  # Track containers currently being restarted
-        self.monitoring_task: Optional[asyncio.Task] = None
-        self.manager = ConnectionManager()
-        self.realtime = RealtimeMonitor()  # Real-time monitoring
-        self.live_updates = LiveUpdateManager()  # Live update batching
-        self.notification_service = NotificationService(self.db)  # Notification service
-        self.alert_processor = AlertProcessor(self.notification_service)  # Alert processor
-        self.event_logger = EventLogger(self.db)  # Event logging service
-        self._container_states: Dict[str, str] = {}  # Track container states for change detection
-        self.cleanup_task: Optional[asyncio.Task] = None  # Background cleanup task
-        self._load_persistent_config()  # Load saved hosts and configs
-        
-    def add_host(self, config: DockerHostConfig, existing_id: str = None) -> DockerHost:
-        """Add a new Docker host to monitor"""
-        try:
-            # Create Docker client
-            if config.url.startswith("unix://"):
-                client = docker.DockerClient(base_url=config.url)
-            else:
-                # For TCP connections
-                tls_config = None
-                if config.tls_cert and config.tls_key:
-                    # Create persistent certificate storage directory
-                    import os
-                    cert_dir = os.path.join('data', 'certs', existing_id or str(uuid.uuid4()))
-                    os.makedirs(cert_dir, exist_ok=True)
-
-                    # Write certificate files
-                    cert_file = os.path.join(cert_dir, 'client-cert.pem')
-                    key_file = os.path.join(cert_dir, 'client-key.pem')
-                    ca_file = os.path.join(cert_dir, 'ca.pem') if config.tls_ca else None
-
-                    with open(cert_file, 'w') as f:
-                        f.write(config.tls_cert)
-                    with open(key_file, 'w') as f:
-                        f.write(config.tls_key)
-                    if ca_file and config.tls_ca:
-                        with open(ca_file, 'w') as f:
-                            f.write(config.tls_ca)
-
-                    # Set secure permissions
-                    os.chmod(cert_file, 0o600)
-                    os.chmod(key_file, 0o600)
-                    if ca_file:
-                        os.chmod(ca_file, 0o600)
-
-                    tls_config = docker.tls.TLSConfig(
-                        client_cert=(cert_file, key_file),
-                        ca_cert=ca_file,
-                        verify=bool(config.tls_ca)
-                    )
-
-                client = docker.DockerClient(
-                    base_url=config.url,
-                    tls=tls_config,
-                    timeout=self.settings.connection_timeout
-                )
-
-            # Test connection
-            client.ping()
-
-            # Validate TLS configuration for TCP connections
-            security_status = self._validate_host_security(config)
-
-            # Create host object with existing ID if provided (for persistence after restarts)
-            host = DockerHost(
-                id=existing_id or str(uuid.uuid4()),
-                name=config.name,
-                url=config.url,
-                status="online",
-                security_status=security_status
-            )
-            
-            # Store client and host
-            self.clients[host.id] = client
-            self.hosts[host.id] = host
-
-            # Save to database
-            db_host = self.db.add_host({
-                'id': host.id,
-                'name': config.name,
-                'url': config.url,
-                'tls_cert': config.tls_cert,
-                'tls_key': config.tls_key,
-                'tls_ca': config.tls_ca,
-                'security_status': security_status
-            })
-
-            # Start Docker event monitoring for this host
-            self.realtime.start_event_monitor(client, host.id)
-
-            # Log host connection
-            self.event_logger.log_host_connection(
-                host_name=host.name,
-                host_id=host.id,
-                host_url=config.url,
-                connected=True
-            )
-
-            logger.info(f"Added Docker host: {host.name} ({host.url})")
-            return host
-            
-        except Exception as e:
-            logger.error(f"Failed to add host {config.name}: {e}")
-            raise HTTPException(status_code=400, detail=str(e))
-
-    def _validate_host_security(self, config: DockerHostConfig) -> str:
-        """Validate the security configuration of a Docker host"""
-        if config.url.startswith("unix://"):
-            return "secure"  # Unix sockets are secure (local only)
-        elif config.url.startswith("tcp://"):
-            if config.tls_cert and config.tls_key and config.tls_ca:
-                return "secure"  # Has TLS certificates
-            else:
-                logger.warning(f"Host {config.name} configured without TLS - connection is insecure!")
-                return "insecure"  # TCP without TLS
-        else:
-            return "unknown"  # Unknown protocol
-
-    def _cleanup_host_certificates(self, host_id: str):
-        """Clean up certificate files for a host"""
-        import shutil
-        import os
-        cert_dir = os.path.join('data', 'certs', host_id)
-        if os.path.exists(cert_dir):
-            try:
-                shutil.rmtree(cert_dir)
-                logger.info(f"Cleaned up certificate files for host {host_id}")
-            except Exception as e:
-                logger.warning(f"Failed to clean up certificates for host {host_id}: {e}")
-
-    def remove_host(self, host_id: str):
-        """Remove a Docker host"""
-        if host_id in self.hosts:
-            del self.hosts[host_id]
-            if host_id in self.clients:
-                self.clients[host_id].close()
-                del self.clients[host_id]
-            # Stop event monitoring
-            self.realtime.stop_event_monitoring(host_id)
-            # Clean up certificate files
-            self._cleanup_host_certificates(host_id)
-            # Remove from database
-            self.db.delete_host(host_id)
-            # Refresh alert rules cache since host-specific rules may have been deleted
-            self.refresh_alert_rules()
-            logger.info(f"Removed host {host_id}")
-
-    def update_host(self, host_id: str, config: DockerHostConfig):
-        """Update an existing Docker host"""
-        try:
-            # Remove the existing host from memory first
-            if host_id in self.hosts:
-                # Close existing client first (this should stop the monitoring task)
-                if host_id in self.clients:
-                    logger.info(f"Closing Docker client for host {host_id}")
-                    self.clients[host_id].close()
-                    del self.clients[host_id]
-
-                # Then explicitly stop event monitoring
-                logger.info(f"Stopping event monitoring for host {host_id}")
-                self.realtime.stop_event_monitoring(host_id)
-
-                # Remove from memory
-                del self.hosts[host_id]
-
-            # Validate TLS configuration
-            security_status = self._validate_host_security(config)
-
-            # Update database
-            updated_db_host = self.db.update_host(host_id, {
-                'name': config.name,
-                'url': config.url,
-                'tls_cert': config.tls_cert,
-                'tls_key': config.tls_key,
-                'tls_ca': config.tls_ca,
-                'security_status': security_status
-            })
-
-            if not updated_db_host:
-                raise Exception(f"Host {host_id} not found in database")
-
-            # Create new Docker client with updated config
-            if config.url.startswith("unix://"):
-                client = docker.DockerClient(base_url=config.url)
-            else:
-                # For TCP connections
-                tls_config = None
-                if config.tls_cert and config.tls_key:
-                    # Create persistent certificate storage directory
-                    cert_dir = os.path.join('data', 'certs', host_id)
-                    os.makedirs(cert_dir, exist_ok=True)
-
-                    # Write certificate files
-                    cert_file = os.path.join(cert_dir, 'client-cert.pem')
-                    key_file = os.path.join(cert_dir, 'client-key.pem')
-                    ca_file = os.path.join(cert_dir, 'ca.pem') if config.tls_ca else None
-
-                    with open(cert_file, 'w') as f:
-                        f.write(config.tls_cert)
-                    with open(key_file, 'w') as f:
-                        f.write(config.tls_key)
-                    if ca_file and config.tls_ca:
-                        with open(ca_file, 'w') as f:
-                            f.write(config.tls_ca)
-
-                    # Set secure permissions
-                    os.chmod(cert_file, 0o600)
-                    os.chmod(key_file, 0o600)
-                    if ca_file:
-                        os.chmod(ca_file, 0o600)
-
-                    tls_config = docker.tls.TLSConfig(
-                        client_cert=(cert_file, key_file),
-                        ca_cert=ca_file,
-                        verify=bool(config.tls_ca)
-                    )
-
-                client = docker.DockerClient(
-                    base_url=config.url,
-                    tls=tls_config,
-                    timeout=self.settings.connection_timeout
-                )
-
-            # Test connection
-            client.ping()
-
-            # Validate TLS configuration
-            security_status = self._validate_host_security(config)
-
-            # Create host object with existing ID
-            host = DockerHost(
-                id=host_id,
-                name=config.name,
-                url=config.url,
-                status="online",
-                security_status=security_status
-            )
-
-            # Store client and host
-            self.clients[host.id] = client
-            self.hosts[host.id] = host
-
-            # Start Docker event monitoring for this host
-            logger.info(f"Starting event monitoring for updated host {host.id}")
-            self.realtime.start_event_monitor(client, host.id)
-
-            # Log host update
-            self.event_logger.log_host_connection(
-                host_name=host.name,
-                host_id=host.id,
-                host_url=config.url,
-                connected=True
-            )
-
-            logger.info(f"Successfully updated host {host_id}: {host.name} ({host.url})")
-            return host
-
-        except Exception as e:
-            logger.error(f"Failed to update host {host_id}: {e}")
-            raise
-
-    def get_containers(self, host_id: Optional[str] = None) -> List[Container]:
-        """Get containers from one or all hosts"""
-        containers = []
-        
-        hosts_to_check = [host_id] if host_id else list(self.hosts.keys())
-        
-        for hid in hosts_to_check:
-            if hid not in self.clients:
-                continue
-                
-            host = self.hosts[hid]
-            client = self.clients[hid]
-            
-            try:
-                docker_containers = client.containers.list(all=True)
-                host.status = "online"
-                host.container_count = len(docker_containers)
-                host.error = None
-                
-                for dc in docker_containers:
-                    container_id = dc.id[:12]
-                    container = Container(
-                        id=dc.id,
-                        short_id=container_id,
-                        name=dc.name,
-                        state=dc.status,
-                        status=dc.attrs['State']['Status'],
-                        host_id=hid,
-                        host_name=host.name,
-                        image=dc.image.tags[0] if dc.image.tags else dc.image.short_id,
-                        created=dc.attrs['Created'],
-                        auto_restart=self._get_auto_restart_status(hid, container_id),
-                        restart_attempts=self.restart_attempts.get(container_id, 0)
-                    )
-                    containers.append(container)
-                    
-            except Exception as e:
-                logger.error(f"Error getting containers from {host.name}: {e}")
-                host.status = "offline"
-                host.error = str(e)
-                
-            host.last_checked = datetime.now()
-            
-        return containers
-    
-    def restart_container(self, host_id: str, container_id: str) -> bool:
-        """Restart a specific container"""
-        if host_id not in self.clients:
-            raise HTTPException(status_code=404, detail="Host not found")
-
-        host = self.hosts.get(host_id)
-        host_name = host.name if host else 'Unknown Host'
-
-        start_time = time.time()
-        try:
-            client = self.clients[host_id]
-            container = client.containers.get(container_id)
-            container_name = container.name
-
-            container.restart(timeout=10)
-            duration_ms = int((time.time() - start_time) * 1000)
-
-            logger.info(f"Restarted container {container_id} on host {host_id}")
-
-            # Log the successful restart
-            self.event_logger.log_container_action(
-                action="restart",
-                container_name=container_name,
-                container_id=container_id,
-                host_name=host_name,
-                host_id=host_id,
-                success=True,
-                triggered_by="user",
-                duration_ms=duration_ms
-            )
-            return True
-        except Exception as e:
-            duration_ms = int((time.time() - start_time) * 1000)
-            logger.error(f"Failed to restart container {container_id}: {e}")
-
-            # Log the failed restart
-            self.event_logger.log_container_action(
-                action="restart",
-                container_name=container_id,  # Use ID if name unavailable
-                container_id=container_id,
-                host_name=host_name,
-                host_id=host_id,
-                success=False,
-                triggered_by="user",
-                error_message=str(e),
-                duration_ms=duration_ms
-            )
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    def stop_container(self, host_id: str, container_id: str) -> bool:
-        """Stop a specific container"""
-        if host_id not in self.clients:
-            raise HTTPException(status_code=404, detail="Host not found")
-
-        host = self.hosts.get(host_id)
-        host_name = host.name if host else 'Unknown Host'
-
-        start_time = time.time()
-        try:
-            client = self.clients[host_id]
-            container = client.containers.get(container_id)
-            container_name = container.name
-
-            container.stop(timeout=10)
-            duration_ms = int((time.time() - start_time) * 1000)
-
-            logger.info(f"Stopped container {container_id} on host {host_id}")
-
-            # Log the successful stop
-            self.event_logger.log_container_action(
-                action="stop",
-                container_name=container_name,
-                container_id=container_id,
-                host_name=host_name,
-                host_id=host_id,
-                success=True,
-                triggered_by="user",
-                duration_ms=duration_ms
-            )
-            return True
-        except Exception as e:
-            duration_ms = int((time.time() - start_time) * 1000)
-            logger.error(f"Failed to stop container {container_id}: {e}")
-
-            # Log the failed stop
-            self.event_logger.log_container_action(
-                action="stop",
-                container_name=container_id,
-                container_id=container_id,
-                host_name=host_name,
-                host_id=host_id,
-                success=False,
-                triggered_by="user",
-                error_message=str(e),
-                duration_ms=duration_ms
-            )
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    def start_container(self, host_id: str, container_id: str) -> bool:
-        """Start a specific container"""
-        if host_id not in self.clients:
-            raise HTTPException(status_code=404, detail="Host not found")
-
-        host = self.hosts.get(host_id)
-        host_name = host.name if host else 'Unknown Host'
-
-        start_time = time.time()
-        try:
-            client = self.clients[host_id]
-            container = client.containers.get(container_id)
-            container_name = container.name
-
-            container.start()
-            duration_ms = int((time.time() - start_time) * 1000)
-
-            logger.info(f"Started container {container_id} on host {host_id}")
-
-            # Log the successful start
-            self.event_logger.log_container_action(
-                action="start",
-                container_name=container_name,
-                container_id=container_id,
-                host_name=host_name,
-                host_id=host_id,
-                success=True,
-                triggered_by="user",
-                duration_ms=duration_ms
-            )
-            return True
-        except Exception as e:
-            duration_ms = int((time.time() - start_time) * 1000)
-            logger.error(f"Failed to start container {container_id}: {e}")
-
-            # Log the failed start
-            self.event_logger.log_container_action(
-                action="start",
-                container_name=container_id,
-                container_id=container_id,
-                host_name=host_name,
-                host_id=host_id,
-                success=False,
-                triggered_by="user",
-                error_message=str(e),
-                duration_ms=duration_ms
-            )
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    def toggle_auto_restart(self, host_id: str, container_id: str, container_name: str, enabled: bool):
-        """Toggle auto-restart for a container"""
-        self.auto_restart_status[container_id] = enabled
-        if not enabled:
-            self.restart_attempts[container_id] = 0
-            self.restarting_containers[container_id] = False
-        # Save to database
-        self.db.set_auto_restart(host_id, container_id, container_name, enabled)
-        logger.info(f"Auto-restart {'enabled' if enabled else 'disabled'} for {container_id}")
-    
-    async def monitor_containers(self):
-        """Main monitoring loop"""
-        logger.info("Starting container monitoring...")
-        
-        while True:
-            try:
-                containers = self.get_containers()
-
-                # Track container state changes and log them
-                for container in containers:
-                    container_key = f"{container.host_id}:{container.id}"
-                    current_state = container.status
-                    previous_state = self._container_states.get(container_key)
-
-                    # Log state changes
-                    if previous_state is not None and previous_state != current_state:
-                        self.event_logger.log_container_state_change(
-                            container_name=container.name,
-                            container_id=container.short_id,
-                            host_name=container.host_name,
-                            host_id=container.host_id,
-                            old_state=previous_state,
-                            new_state=current_state,
-                            triggered_by="system"
-                        )
-
-                    # Update tracked state
-                    self._container_states[container_key] = current_state
-
-                # Check for containers that need auto-restart
-                for container in containers:
-                    if (container.status == "exited" and
-                        self._get_auto_restart_status(container.host_id, container.short_id)):
-
-                        attempts = self.restart_attempts.get(container.short_id, 0)
-                        is_restarting = self.restarting_containers.get(container.short_id, False)
-
-                        if attempts < self.settings.max_retries and not is_restarting:
-                            self.restarting_containers[container.short_id] = True
-                            asyncio.create_task(
-                                self.auto_restart_container(container)
-                            )
-
-                # Process alerts for container state changes
-                await self.alert_processor.process_container_update(containers, self.hosts)
-
-                # Broadcast update to all connected clients
-                await self.manager.broadcast({
-                    "type": "containers_update",
-                    "data": {
-                        "containers": [c.dict() for c in containers],
-                        "hosts": [h.dict() for h in self.hosts.values()],
-                        "timestamp": datetime.now().isoformat()
-                    }
-                })
-                
-            except Exception as e:
-                logger.error(f"Error in monitoring loop: {e}")
-            
-            await asyncio.sleep(self.settings.polling_interval)
-    
-    async def auto_restart_container(self, container: Container):
-        """Attempt to auto-restart a container"""
-        container_id = container.short_id
-        self.restart_attempts[container_id] = self.restart_attempts.get(container_id, 0) + 1
-        attempt = self.restart_attempts[container_id]
-
-        correlation_id = self.event_logger.create_correlation_id()
-
-        logger.info(
-            f"Auto-restart attempt {attempt}/{self.settings.max_retries} "
-            f"for {container.name}"
-        )
-
-        # Wait before attempting restart
-        await asyncio.sleep(self.settings.retry_delay)
-
-        try:
-            success = self.restart_container(container.host_id, container.id)
-            if success:
-                self.restart_attempts[container_id] = 0
-
-                # Log successful auto-restart
-                self.event_logger.log_auto_restart_attempt(
-                    container_name=container.name,
-                    container_id=container_id,
-                    host_name=container.host_name,
-                    host_id=container.host_id,
-                    attempt=attempt,
-                    max_attempts=self.settings.max_retries,
-                    success=True,
-                    correlation_id=correlation_id
-                )
-
-                await self.manager.broadcast({
-                    "type": "auto_restart_success",
-                    "data": {
-                        "container_id": container_id,
-                        "container_name": container.name,
-                        "host": container.host_name
-                    }
-                })
-        except Exception as e:
-            logger.error(f"Auto-restart failed for {container.name}: {e}")
-
-            # Log failed auto-restart
-            self.event_logger.log_auto_restart_attempt(
-                container_name=container.name,
-                container_id=container_id,
-                host_name=container.host_name,
-                host_id=container.host_id,
-                attempt=attempt,
-                max_attempts=self.settings.max_retries,
-                success=False,
-                error_message=str(e),
-                correlation_id=correlation_id
-            )
-
-            if attempt >= self.settings.max_retries:
-                self.auto_restart_status[container_id] = False
-                await self.manager.broadcast({
-                    "type": "auto_restart_failed",
-                    "data": {
-                        "container_id": container_id,
-                        "container_name": container.name,
-                        "attempts": attempt,
-                        "max_retries": self.settings.max_retries
-                    }
-                })
-        finally:
-            # Always clear the restarting flag when done (success or failure)
-            self.restarting_containers[container_id] = False
-
-    def _load_persistent_config(self):
-        """Load saved configuration from database"""
-        try:
-            # Load saved hosts
-            db_hosts = self.db.get_hosts(active_only=True)
-            for db_host in db_hosts:
-                try:
-                    config = DockerHostConfig(
-                        name=db_host.name,
-                        url=db_host.url,
-                        tls_cert=db_host.tls_cert,
-                        tls_key=db_host.tls_key,
-                        tls_ca=db_host.tls_ca
-                    )
-                    # Try to connect to the host with existing ID and preserve security status
-                    host = self.add_host(config, existing_id=db_host.id)
-                    # Override with stored security status
-                    if hasattr(host, 'security_status') and db_host.security_status:
-                        host.security_status = db_host.security_status
-                except Exception as e:
-                    logger.error(f"Failed to reconnect to saved host {db_host.name}: {e}")
-
-            # Load auto-restart configurations
-            for host_id in self.hosts.keys():
-                configs = self.db.get_session().query(self.db.AutoRestartConfig).filter(
-                    self.db.AutoRestartConfig.host_id == host_id,
-                    self.db.AutoRestartConfig.enabled == True
-                ).all()
-                for config in configs:
-                    self.auto_restart_status[config.container_id] = True
-                    self.restart_attempts[config.container_id] = config.restart_count
-
-            logger.info(f"Loaded {len(self.hosts)} hosts from database")
-        except Exception as e:
-            logger.error(f"Error loading persistent config: {e}")
-
-    def _load_alert_rules(self) -> List[AlertRule]:
-        """Load alert rules from database"""
-        try:
-            db_rules = self.db.get_alert_rules(enabled_only=False)
-            alert_rules = []
-            for rule in db_rules:
-                alert_rule = AlertRule(
-                    id=rule.id,
-                    name=rule.name,
-                    host_id=rule.host_id,
-                    container_pattern=rule.container_pattern,
-                    trigger_states=rule.trigger_states,
-                    notification_channels=rule.notification_channels,
-                    cooldown_minutes=rule.cooldown_minutes,
-                    enabled=rule.enabled,
-                    created_at=rule.created_at,
-                    last_triggered=rule.last_triggered
-                )
-                alert_rules.append(alert_rule)
-            logger.info(f"Loaded {len(alert_rules)} alert rules from database")
-            return alert_rules
-        except Exception as e:
-            logger.error(f"Error loading alert rules: {e}")
-            return []
-
-    def refresh_alert_rules(self):
-        """Refresh alert rules from database"""
-        self.alert_rules = self._load_alert_rules()
-
-    def _get_auto_restart_status(self, host_id: str, container_id: str) -> bool:
-        """Get auto-restart status for a container"""
-        # Check in-memory cache first
-        if container_id in self.auto_restart_status:
-            return self.auto_restart_status[container_id]
-
-        # Check database
-        config = self.db.get_auto_restart_config(host_id, container_id)
-        if config:
-            self.auto_restart_status[container_id] = config.enabled
-            return config.enabled
-
-        return False
-
-    async def cleanup_old_data(self):
-        """Periodic cleanup of old data"""
-        logger.info("Starting periodic data cleanup...")
-
-        while True:
-            try:
-                settings = self.db.get_settings()
-
-                if settings.auto_cleanup_events:
-                    # Clean up old events
-                    event_deleted = self.db.cleanup_old_events(settings.event_retention_days)
-                    if event_deleted > 0:
-                        self.event_logger.log_system_event(
-                            "Automatic Event Cleanup",
-                            f"Cleaned up {event_deleted} events older than {settings.event_retention_days} days",
-                            EventSeverity.INFO,
-                            EventType.STARTUP
-                        )
-
-                    # Clean up old container history (legacy table)
-                    self.db.cleanup_old_history(settings.log_retention_days)
-
-                # Sleep for 24 hours before next cleanup
-                await asyncio.sleep(24 * 60 * 60)  # 24 hours
-
-            except Exception as e:
-                logger.error(f"Error in cleanup task: {e}")
-                # Wait 1 hour before retrying
-                await asyncio.sleep(60 * 60)  # 1 hour
 
 # ==================== FastAPI Application ====================
 
 # Create monitor instance
 monitor = DockerMonitor()
 
+
+# ==================== Authentication ====================
+
+# Session-based authentication only - no API keys needed
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle"""
     # Startup
     logger.info("Starting DockMon backend...")
+
+    # Ensure default user exists
+    monitor.db.get_or_create_default_user()
+
     await monitor.event_logger.start()
     monitor.event_logger.log_system_event("DockMon Backend Starting", "DockMon backend is initializing", EventSeverity.INFO, EventType.STARTUP)
     monitor.monitoring_task = asyncio.create_task(monitor.monitor_containers())
@@ -893,142 +93,254 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Configure CORS
+# Configure CORS - Production ready with environment-based configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+    allow_origins=AppConfig.CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
+logger.info(f"CORS configured for origins: {AppConfig.CORS_ORIGINS}")
+
 # ==================== API Routes ====================
+
+# Register authentication router
+app.include_router(auth_router)
 
 @app.get("/")
 async def root():
     """Backend API root - frontend is served separately"""
     return {"message": "DockMon Backend API", "version": "1.0.0", "docs": "/docs"}
 
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for Docker health checks - no authentication required"""
+    return {"status": "healthy", "service": "dockmon-backend"}
+
+def _is_localhost_or_internal(ip: str) -> bool:
+    """Check if IP is localhost or internal network (Docker networks, private networks)"""
+    import ipaddress
+    try:
+        addr = ipaddress.ip_address(ip)
+
+        # Allow localhost
+        if addr.is_loopback:
+            return True
+
+        # Allow private networks (RFC 1918) - for Docker networks and internal deployments
+        if addr.is_private:
+            return True
+
+        return False
+    except ValueError:
+        # Invalid IP format
+        return False
+
+
+# ==================== Frontend Authentication ====================
+
+async def verify_session_auth(request: Request):
+    """Verify authentication via session cookie only"""
+    from auth.routes import _get_session_from_cookie
+    from auth.session_manager import session_manager
+
+    # Since backend only listens on 127.0.0.1, all requests must come through nginx
+    # No need to check client IP - the backend binding ensures security
+
+    # Check session authentication
+    session_id = _get_session_from_cookie(request)
+    if session_id and session_manager.validate_session(session_id, request):
+        return True
+
+    # No valid session found
+    raise HTTPException(
+        status_code=401,
+        detail="Authentication required - please login"
+    )
+
+
+
 @app.get("/api/hosts")
-async def get_hosts():
+async def get_hosts(authenticated: bool = Depends(verify_session_auth)):
     """Get all configured Docker hosts"""
     return list(monitor.hosts.values())
 
 @app.post("/api/hosts")
-async def add_host(config: DockerHostConfig):
+async def add_host(config: DockerHostConfig, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_hosts, request: Request = None):
     """Add a new Docker host"""
-    host = monitor.add_host(config)
-    return host
+    try:
+        host = monitor.add_host(config)
+
+        # Security audit log - successful privileged action
+        if request:
+            security_audit.log_privileged_action(
+                client_ip=request.client.host if hasattr(request, 'client') else "unknown",
+                action="ADD_DOCKER_HOST",
+                target=f"{config.name} ({config.url})",
+                success=True,
+                user_agent=request.headers.get('user-agent', 'unknown')
+            )
+
+        return host
+    except Exception as e:
+        # Security audit log - failed privileged action
+        if request:
+            security_audit.log_privileged_action(
+                client_ip=request.client.host if hasattr(request, 'client') else "unknown",
+                action="ADD_DOCKER_HOST",
+                target=f"{config.name} ({config.url})",
+                success=False,
+                user_agent=request.headers.get('user-agent', 'unknown')
+            )
+        raise
 
 @app.put("/api/hosts/{host_id}")
-async def update_host(host_id: str, config: DockerHostConfig):
+async def update_host(host_id: str, config: DockerHostConfig, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_hosts):
     """Update an existing Docker host"""
     host = monitor.update_host(host_id, config)
     return host
 
 @app.delete("/api/hosts/{host_id}")
-async def remove_host(host_id: str):
+async def remove_host(host_id: str, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_hosts):
     """Remove a Docker host"""
     monitor.remove_host(host_id)
     return {"status": "success", "message": f"Host {host_id} removed"}
 
 @app.get("/api/containers")
-async def get_containers(host_id: Optional[str] = None):
+async def get_containers(host_id: Optional[str] = None, authenticated: bool = Depends(verify_session_auth)):
     """Get all containers"""
     return monitor.get_containers(host_id)
 
 @app.post("/api/hosts/{host_id}/containers/{container_id}/restart")
-async def restart_container(host_id: str, container_id: str):
+async def restart_container(host_id: str, container_id: str, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_containers):
     """Restart a container"""
     success = monitor.restart_container(host_id, container_id)
     return {"status": "success" if success else "failed"}
 
 @app.post("/api/hosts/{host_id}/containers/{container_id}/stop")
-async def stop_container(host_id: str, container_id: str):
+async def stop_container(host_id: str, container_id: str, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_containers):
     """Stop a container"""
     success = monitor.stop_container(host_id, container_id)
     return {"status": "success" if success else "failed"}
 
 @app.post("/api/hosts/{host_id}/containers/{container_id}/start")
-async def start_container(host_id: str, container_id: str):
+async def start_container(host_id: str, container_id: str, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_containers):
     """Start a container"""
     success = monitor.start_container(host_id, container_id)
     return {"status": "success" if success else "failed"}
 
 @app.get("/api/hosts/{host_id}/containers/{container_id}/logs")
-async def get_container_logs(host_id: str, container_id: str, tail: int = 100):
-    """Get container logs"""
+async def get_container_logs(
+    host_id: str,
+    container_id: str,
+    tail: int = 100,
+    since: Optional[str] = None,  # ISO timestamp for getting logs since a specific time
+    authenticated: bool = Depends(verify_session_auth),
+    rate_limit_check: bool = rate_limit_containers
+):
+    """Get container logs - Portainer-style polling approach"""
     if host_id not in monitor.clients:
         raise HTTPException(status_code=404, detail="Host not found")
-    
+
     try:
         client = monitor.clients[host_id]
-        container = client.containers.get(container_id)
-        logs = container.logs(tail=tail, timestamps=True).decode('utf-8')
+
+        # Run blocking Docker calls in executor with timeout
+        loop = asyncio.get_event_loop()
+
+        # Get container with timeout
+        try:
+            container = await asyncio.wait_for(
+                loop.run_in_executor(None, client.containers.get, container_id),
+                timeout=5.0
+            )
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=504, detail="Timeout getting container")
+
+        # Prepare log options
+        log_kwargs = {
+            'timestamps': True,
+            'tail': tail
+        }
+
+        # Add since parameter if provided (for getting only new logs)
+        if since:
+            try:
+                # Parse ISO timestamp and convert to Unix timestamp for Docker
+                import dateutil.parser
+                dt = dateutil.parser.parse(since)
+                # Docker's 'since' expects Unix timestamp as float
+                import time
+                unix_ts = time.mktime(dt.timetuple())
+                log_kwargs['since'] = unix_ts
+                log_kwargs['tail'] = 'all'  # Get all logs since timestamp
+            except Exception as e:
+                logger.debug(f"Could not parse 'since' parameter: {e}")
+                pass  # Invalid timestamp, ignore
+
+        # Fetch logs with timeout
+        try:
+            logs = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: container.logs(**log_kwargs).decode('utf-8', errors='ignore')
+                ),
+                timeout=5.0
+            )
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=504, detail="Timeout fetching logs")
+
+        # Return logs as array of lines
+        log_lines = [line for line in logs.split('\n') if line.strip()]
+
         return {
             "container_id": container_id,
-            "logs": logs.split('\n')
+            "logs": log_lines,
+            "last_timestamp": datetime.utcnow().isoformat() + 'Z'  # For next 'since' parameter
         }
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to get logs for {container_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/hosts/{host_id}/containers/{container_id}/exec")
-async def exec_container(host_id: str, container_id: str, command: str):
-    """Execute command in container"""
-    if host_id not in monitor.clients:
-        raise HTTPException(status_code=404, detail="Host not found")
-    
-    try:
-        client = monitor.clients[host_id]
-        container = client.containers.get(container_id)
-        result = container.exec_run(command, tty=True)
-        return {
-            "container_id": container_id,
-            "command": command,
-            "exit_code": result.exit_code,
-            "output": result.output.decode('utf-8')
-        }
-    except Exception as e:
-        logger.error(f"Failed to exec in {container_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+# Container exec endpoint removed for security reasons
+# Users should use direct SSH, Docker CLI, or other appropriate tools for container access
 
-@app.websocket("/ws/logs/{host_id}/{container_id}")
-async def stream_logs(websocket: WebSocket, host_id: str, container_id: str):
-    """WebSocket endpoint for streaming container logs"""
-    await websocket.accept()
-    
-    if host_id not in monitor.clients:
-        await websocket.close(code=4004, reason="Host not found")
-        return
-    
-    try:
-        client = monitor.clients[host_id]
-        container = client.containers.get(container_id)
-        
-        # Stream logs
-        for line in container.logs(stream=True, follow=True, timestamps=True):
-            await websocket.send_text(line.decode('utf-8'))
-            
-    except WebSocketDisconnect:
-        logger.info(f"Log stream disconnected for {container_id}")
-    except Exception as e:
-        logger.error(f"Error streaming logs: {e}")
-        await websocket.close(code=4000, reason=str(e))
 
-class AutoRestartRequest(BaseModel):
-    host_id: str
-    container_name: str
-    enabled: bool
+# WebSocket log streaming removed in favor of HTTP polling (Portainer-style)
+# This is more reliable for remote Docker hosts
+
 
 @app.post("/api/containers/{container_id}/auto-restart")
-async def toggle_auto_restart(container_id: str, request: AutoRestartRequest):
+async def toggle_auto_restart(container_id: str, request: AutoRestartRequest, authenticated: bool = Depends(verify_session_auth)):
     """Toggle auto-restart for a container"""
     monitor.toggle_auto_restart(request.host_id, container_id, request.container_name, request.enabled)
     return {"container_id": container_id, "auto_restart": request.enabled}
 
+@app.get("/api/rate-limit/stats")
+async def get_rate_limit_stats(authenticated: bool = Depends(verify_session_auth)):
+    """Get rate limiter statistics - admin only"""
+    return rate_limiter.get_stats()
+
+@app.get("/api/security/audit")
+async def get_security_audit_stats(authenticated: bool = Depends(verify_session_auth), request: Request = None):
+    """Get security audit statistics - admin only"""
+    if request:
+        security_audit.log_privileged_action(
+            client_ip=request.client.host if hasattr(request, 'client') else "unknown",
+            action="VIEW_SECURITY_AUDIT",
+            target="security_audit_logs",
+            success=True,
+            user_agent=request.headers.get('user-agent', 'unknown')
+        )
+    return security_audit.get_security_stats()
+
 @app.get("/api/settings")
-async def get_settings():
+async def get_settings(authenticated: bool = Depends(verify_session_auth)):
     """Get global settings"""
     settings = monitor.db.get_settings()
     return {
@@ -1042,7 +354,7 @@ async def get_settings():
     }
 
 @app.post("/api/settings")
-async def update_settings(settings: GlobalSettings):
+async def update_settings(settings: GlobalSettings, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_default):
     """Update global settings"""
     updated = monitor.db.update_settings(settings.dict())
     monitor.settings = updated  # Update in-memory settings
@@ -1056,8 +368,9 @@ async def get_alert_rules():
     return [{
         "id": rule.id,
         "name": rule.name,
-        "host_id": rule.host_id,
-        "container_pattern": rule.container_pattern,
+        "containers": [{"host_id": c.host_id, "container_name": c.container_name}
+                      for c in rule.containers] if rule.containers else [],
+        "trigger_events": rule.trigger_events,
         "trigger_states": rule.trigger_states,
         "notification_channels": rule.notification_channels,
         "cooldown_minutes": rule.cooldown_minutes,
@@ -1067,37 +380,26 @@ async def get_alert_rules():
         "updated_at": rule.updated_at.isoformat()
     } for rule in rules]
 
-class AlertRuleCreate(BaseModel):
-    """Request model for creating alert rules"""
-    name: str
-    host_id: Optional[str] = None  # None means all hosts
-    container_pattern: str
-    trigger_states: List[str]
-    notification_channels: List[int]
-    cooldown_minutes: int = 15
-    enabled: bool = True
-
-class AlertRuleUpdate(BaseModel):
-    """Request model for updating alert rules"""
-    name: Optional[str] = None
-    host_id: Optional[str] = None
-    container_pattern: Optional[str] = None
-    trigger_states: Optional[List[str]] = None
-    notification_channels: Optional[List[int]] = None
-    cooldown_minutes: Optional[int] = None
-    enabled: Optional[bool] = None
 
 @app.post("/api/alerts")
-async def create_alert_rule(rule: AlertRuleCreate):
+async def create_alert_rule(rule: AlertRuleCreate, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_default):
     """Create a new alert rule"""
     try:
         rule_id = str(uuid.uuid4())
-        logger.info(f"Creating alert rule: {rule.name} for container: {rule.container_pattern}")
+
+        # Convert ContainerHostPair objects to dicts for database
+        containers_data = None
+        if rule.containers:
+            containers_data = [{"host_id": c.host_id, "container_name": c.container_name}
+                             for c in rule.containers]
+
+        logger.info(f"Creating alert rule: {rule.name} with {len(containers_data) if containers_data else 0} container+host pairs")
+
         db_rule = monitor.db.add_alert_rule({
             "id": rule_id,
             "name": rule.name,
-            "host_id": rule.host_id,
-            "container_pattern": rule.container_pattern,
+            "containers": containers_data,
+            "trigger_events": rule.trigger_events,
             "trigger_states": rule.trigger_states,
             "notification_channels": rule.notification_channels,
             "cooldown_minutes": rule.cooldown_minutes,
@@ -1111,8 +413,9 @@ async def create_alert_rule(rule: AlertRuleCreate):
         return {
             "id": db_rule.id,
             "name": db_rule.name,
-            "host_id": db_rule.host_id,
-            "container_pattern": db_rule.container_pattern,
+            "containers": [{"host_id": c.host_id, "container_name": c.container_name}
+                          for c in db_rule.containers] if db_rule.containers else [],
+            "trigger_events": db_rule.trigger_events,
             "trigger_states": db_rule.trigger_states,
             "notification_channels": db_rule.notification_channels,
             "cooldown_minutes": db_rule.cooldown_minutes,
@@ -1126,10 +429,36 @@ async def create_alert_rule(rule: AlertRuleCreate):
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.put("/api/alerts/{rule_id}")
-async def update_alert_rule(rule_id: str, updates: AlertRuleUpdate):
+async def update_alert_rule(rule_id: str, updates: AlertRuleUpdate, authenticated: bool = Depends(verify_session_auth)):
     """Update an alert rule"""
     try:
-        update_data = {k: v for k, v in updates.dict().items() if v is not None}
+        # Include all fields that are explicitly set, even if empty
+        # This allows clearing trigger_events or trigger_states
+        update_data = {}
+        for k, v in updates.dict().items():
+            if v is not None:
+                # Convert empty lists to None for trigger fields
+                if k in ['trigger_events', 'trigger_states'] and isinstance(v, list) and len(v) == 0:
+                    update_data[k] = None
+                # Handle containers field separately
+                elif k == 'containers' and v is not None:
+                    # v is already a list of dicts after .dict() call
+                    update_data[k] = v
+                else:
+                    update_data[k] = v
+
+        # Validate that at least one trigger type remains after update
+        if 'trigger_events' in update_data or 'trigger_states' in update_data:
+            # Get current rule to check what will remain
+            current_rule = monitor.db.get_alert_rule(rule_id)
+            if current_rule:
+                final_events = update_data.get('trigger_events', current_rule.trigger_events)
+                final_states = update_data.get('trigger_states', current_rule.trigger_states)
+
+                if not final_events and not final_states:
+                    raise HTTPException(status_code=400,
+                        detail="Alert rule must have at least one trigger event or state")
+
         db_rule = monitor.db.update_alert_rule(rule_id, update_data)
 
         if not db_rule:
@@ -1141,8 +470,9 @@ async def update_alert_rule(rule_id: str, updates: AlertRuleUpdate):
         return {
             "id": db_rule.id,
             "name": db_rule.name,
-            "host_id": db_rule.host_id,
-            "container_pattern": db_rule.container_pattern,
+            "containers": [{"host_id": c.host_id, "container_name": c.container_name}
+                          for c in db_rule.containers] if db_rule.containers else [],
+            "trigger_events": db_rule.trigger_events,
             "trigger_states": db_rule.trigger_states,
             "notification_channels": db_rule.notification_channels,
             "cooldown_minutes": db_rule.cooldown_minutes,
@@ -1158,7 +488,7 @@ async def update_alert_rule(rule_id: str, updates: AlertRuleUpdate):
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.delete("/api/alerts/{rule_id}")
-async def delete_alert_rule(rule_id: str):
+async def delete_alert_rule(rule_id: str, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_default):
     """Delete an alert rule"""
     try:
         success = monitor.db.delete_alert_rule(rule_id)
@@ -1177,18 +507,6 @@ async def delete_alert_rule(rule_id: str):
 
 # ==================== Notification Channel Routes ====================
 
-class NotificationChannelCreate(BaseModel):
-    """Request model for creating notification channels"""
-    name: str
-    type: str  # telegram, discord, pushover
-    config: Dict[str, Any]  # Channel-specific configuration
-    enabled: bool = True
-
-class NotificationChannelUpdate(BaseModel):
-    """Request model for updating notification channels"""
-    name: Optional[str] = None
-    config: Optional[Dict[str, Any]] = None
-    enabled: Optional[bool] = None
 
 @app.get("/api/notifications/channels")
 async def get_notification_channels():
@@ -1205,7 +523,7 @@ async def get_notification_channels():
     } for ch in channels]
 
 @app.post("/api/notifications/channels")
-async def create_notification_channel(channel: NotificationChannelCreate):
+async def create_notification_channel(channel: NotificationChannelCreate, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_notifications):
     """Create a new notification channel"""
     try:
         db_channel = monitor.db.add_notification_channel({
@@ -1228,7 +546,7 @@ async def create_notification_channel(channel: NotificationChannelCreate):
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.put("/api/notifications/channels/{channel_id}")
-async def update_notification_channel(channel_id: int, updates: NotificationChannelUpdate):
+async def update_notification_channel(channel_id: int, updates: NotificationChannelUpdate, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_notifications):
     """Update a notification channel"""
     try:
         update_data = {k: v for k, v in updates.dict().items() if v is not None}
@@ -1253,7 +571,7 @@ async def update_notification_channel(channel_id: int, updates: NotificationChan
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.delete("/api/notifications/channels/{channel_id}")
-async def delete_notification_channel(channel_id: int):
+async def delete_notification_channel(channel_id: int, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_notifications):
     """Delete a notification channel"""
     try:
         success = monitor.db.delete_notification_channel(channel_id)
@@ -1267,7 +585,7 @@ async def delete_notification_channel(channel_id: int):
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/api/notifications/channels/{channel_id}/test")
-async def test_notification_channel(channel_id: int):
+async def test_notification_channel(channel_id: int, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_notifications):
     """Test a notification channel"""
     try:
         if not hasattr(monitor, 'notification_service'):
@@ -1283,20 +601,6 @@ async def test_notification_channel(channel_id: int):
 
 # ==================== Event Log Routes ====================
 
-class EventLogFilter(BaseModel):
-    """Request model for filtering events"""
-    category: Optional[str] = None
-    event_type: Optional[str] = None
-    severity: Optional[str] = None
-    host_id: Optional[str] = None
-    container_id: Optional[str] = None
-    container_name: Optional[str] = None
-    start_date: Optional[datetime] = None
-    end_date: Optional[datetime] = None
-    correlation_id: Optional[str] = None
-    search: Optional[str] = None
-    limit: int = 100
-    offset: int = 0
 
 @app.get("/api/events")
 async def get_events(category: Optional[str] = None,
@@ -1548,8 +852,8 @@ async def get_host_events(host_id: str, limit: int = 50):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/events/cleanup")
-async def cleanup_old_events(days: int = 30):
-    """Clean up old events"""
+async def cleanup_old_events(days: int = 30, authenticated: bool = Depends(verify_session_auth)):
+    """Clean up old events - DANGEROUS: Can delete audit logs"""
     try:
         if days < 1:
             raise HTTPException(status_code=400, detail="Days must be at least 1")
@@ -1635,10 +939,14 @@ if os.path.exists("static"):
     app.mount("/static", StaticFiles(directory="static"), name="static")
 
 if __name__ == "__main__":
+    import os
+    # Disable reload in production/container environment
+    reload_enabled = os.getenv("DEV_MODE", "false").lower() == "true"
+
     uvicorn.run(
         "main:app",
-        host="0.0.0.0",
+        host="0.0.0.0",  # Accept connections from any interface
         port=8080,
-        reload=True,
+        reload=reload_enabled,
         log_level="info"
     )

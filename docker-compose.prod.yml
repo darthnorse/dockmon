@@ -1,19 +1,17 @@
 services:
   dockmon:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile
+    image: dockmon:latest  # Use pre-built image instead of building
     container_name: dockmon
     restart: unless-stopped
     ports:
       - "8001:443"   # HTTPS
-      - "8080:8080"  # Backend direct (for testing)
     environment:
       - TZ=UTC
       - PYTHONPATH=/app/backend
       - PYTHONUNBUFFERED=1
     volumes:
-      - dockmon_data:/app/data
+      # Use bind mount to explicit host directory for data persistence
+      - ./dockmon-data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock  # For Docker monitoring
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost/health"]
@@ -24,7 +22,3 @@ services:
     labels:
       - "com.dockmon.description=All-in-One Docker Container Monitor"
       - "com.dockmon.version=1.0"
-
-volumes:
-  dockmon_data:
-    driver: local

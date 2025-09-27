@@ -77,8 +77,7 @@ A comprehensive Docker container monitoring and management platform with real-ti
 - **FastAPI backend** with async/await for high performance
 - **WebSocket real-time updates** for instant UI refresh
 - **SQLite database** for persistent configuration and event storage
-- **Modern dark UI** inspired by Portainer
-- **RESTful API** for programmatic access
+- **Modern dark UI** with professional design
 - **Responsive design** works on all devices
 
 ## Quick Start
@@ -297,63 +296,100 @@ This dual approach ensures you won't miss critical issues, whether they occur du
 
 To monitor remote Docker hosts, you need to configure the Docker daemon to accept remote connections.
 
+#### Understanding Docker Ports
+
+Docker uses these port conventions (but you can use any port):
+
+- **Port 2375**: Conventionally used for unencrypted TCP connections
+- **Port 2376**: Conventionally used for TLS/mTLS encrypted connections
+
+⚠️ **IMPORTANT:** The port number is just a convention - it doesn't enforce security. You must configure TLS certificates to make the connection secure, regardless of which port you use. This section covers basic unencrypted TCP setup. For production use, **always configure mTLS** (see [Security: mTLS Configuration](#security-mtls-configuration-strongly-recommended) section).
+
 #### Enable Remote Access on Target Host
 
 By default, Docker only listens on a Unix socket and doesn't accept remote connections. Follow these steps on each remote Docker host you want to monitor:
 
-**Method 1: Using systemd override (Recommended)**
+**⚠️ Important: Choose ONE method only**
+- Do NOT use both systemd override AND daemon.json together
+- If you see errors about "directives specified both as a flag and in the configuration file", you're using both methods
 
-1. Create a systemd override file:
-```bash
-sudo systemctl edit docker
-```
-
-2. Add the following content:
-```ini
-[Service]
-ExecStart=
-ExecStart=/usr/bin/dockerd -H unix:///var/run/docker.sock -H tcp://0.0.0.0:2376
-```
-
-3. Restart Docker:
-```bash
-sudo systemctl daemon-reload
-sudo systemctl restart docker
-```
-
-4. Verify Docker is listening on port 2376:
-```bash
-ss -tlnp | grep docker
-```
-
-**Method 2: Using daemon.json (Alternative)**
+**Method 1: Using daemon.json (Recommended)**
 
 1. Create or edit `/etc/docker/daemon.json`:
 ```bash
 sudo nano /etc/docker/daemon.json
 ```
 
-2. Add the following content:
+2. Add the following content (for development/testing without TLS):
 ```json
 {
-  "hosts": ["unix:///var/run/docker.sock", "tcp://0.0.0.0:2376"]
+  "hosts": ["unix:///var/run/docker.sock", "tcp://0.0.0.0:2375"]
 }
 ```
 
-3. Restart Docker:
+3. **If using systemd**, disable docker.socket to avoid conflicts:
 ```bash
+sudo systemctl stop docker.socket
+sudo systemctl disable docker.socket
+```
+
+4. Restart Docker:
+```bash
+sudo systemctl daemon-reload
 sudo systemctl restart docker
 ```
 
-**Note:** If you get conflicts with systemd socket activation, use Method 1 instead.
+5. Verify Docker is listening:
+```bash
+ss -tlnp | grep docker
+```
+
+**Method 2: Using systemd override (Alternative)**
+
+1. **Remove any `hosts` configuration from `/etc/docker/daemon.json`** if it exists
+
+2. Create a systemd override file:
+```bash
+sudo systemctl edit docker
+```
+
+3. Add the following content:
+```ini
+[Service]
+ExecStart=
+ExecStart=/usr/bin/dockerd -H unix:///var/run/docker.sock -H tcp://0.0.0.0:2375
+```
+
+4. Restart Docker:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart docker
+```
+
+5. Verify Docker is listening:
+```bash
+ss -tlnp | grep docker
+```
 
 #### Docker Host Connection Formats
 
 When adding hosts in DockMon, use these formats:
 
 - **Local Docker**: `unix:///var/run/docker.sock`
-- **Remote Docker (TCP)**: `tcp://192.168.1.100:2376`
-- **Remote Docker (custom port)**: `tcp://192.168.1.100:2375`
+- **Remote Docker (insecure)**: `tcp://192.168.1.100:2375`
+- **Remote Docker (with mTLS)**: `tcp://192.168.1.100:2376` (requires certificates - see mTLS section below)
+
+#### Troubleshooting Configuration Conflicts
+
+If you see this error:
+```
+the following directives are specified both as a flag and in the configuration file: hosts
+```
+
+**Solution:**
+1. Check if you have `hosts` in `/etc/docker/daemon.json`
+2. Check if you have `-H` flags in systemd override (`/etc/systemd/system/docker.service.d/override.conf`)
+3. Choose ONE method and remove the configuration from the other
 
 ## Security: mTLS Configuration (Strongly Recommended)
 

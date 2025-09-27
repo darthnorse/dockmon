@@ -53,6 +53,14 @@
             overflow-x: hidden;
         }
 
+        /* Lucide Icons */
+        .lucide-icon, [data-lucide] {
+            display: inline-block;
+            vertical-align: middle;
+            width: 16px;
+            height: 16px;
+        }
+
         /* Layout */
         .app-layout {
             display: flex;
@@ -232,7 +240,7 @@
         /* Content Area */
         .content {
             flex: 1;
-            padding: var(--spacing-xl);
+            padding: var(--spacing-lg) var(--spacing-xl);
             overflow-y: auto;
             overflow-x: hidden;
         }
@@ -432,7 +440,7 @@
 
         .grid-stack-item[gs-w="3"] .container-item,
         .grid-stack-item[gs-w="4"] .container-item {
-            padding: 4px 0;
+            padding: 4px 8px;
         }
 
         /* Ensure stats grid is always visible */
@@ -618,11 +626,13 @@
             display: flex;
             align-items: center;
             justify-content: center;
+            color: var(--text-secondary);
         }
 
         .btn-icon:hover {
             background: var(--dark-tertiary);
             border-color: var(--primary);
+            color: var(--text-primary);
         }
 
         /* Host Grid */
@@ -751,18 +761,18 @@
 
         /* Container List */
         .container-list {
-            padding: var(--spacing-md);
+            padding: var(--spacing-sm);
         }
 
         .container-item {
-            padding: var(--spacing-md);
+            padding: var(--spacing-sm);
             background: var(--dark);
             border-radius: 6px;
             margin-bottom: var(--spacing-sm);
             display: grid;
             grid-template-columns: 1fr 100px 85px;
             align-items: center;
-            gap: var(--spacing-md);
+            gap: var(--spacing-sm);
             transition: var(--transition);
             cursor: pointer;
         }
@@ -849,21 +859,12 @@
         .auto-restart-toggle {
             display: flex;
             align-items: center;
-            gap: 6px;
-            padding: 8px 16px;
-            background: var(--surface-light);
-            border: 1px solid var(--border);
-            border-radius: 6px;
-            font-size: 14px;
-            font-weight: 500;
+            gap: 3px;
             cursor: pointer;
             transition: var(--transition);
-            justify-content: center;
         }
 
         .auto-restart-toggle.enabled {
-            background: rgba(0, 132, 244, 0.1);
-            border-color: var(--primary);
             color: var(--primary);
         }
 
@@ -1298,6 +1299,8 @@
             }
         }
     </style>
+    <!-- Lucide Icons -->
+    <script src="/lucide.min.js"></script>
 </head>
 <body>
     <div class="app-layout">
@@ -1313,37 +1316,37 @@
                 <div class="nav-section">
                     <div class="nav-section-title">Main</div>
                     <a class="nav-item active" onclick="switchPage('dashboard')">
-                        <span class="nav-icon">📊</span>
+                        <span class="nav-icon" data-lucide="layout-dashboard"></span>
                         <span>Dashboard</span>
                     </a>
                     <a class="nav-item" onclick="switchPage('hosts')">
-                        <span class="nav-icon">🖥️</span>
+                        <span class="nav-icon" data-lucide="server"></span>
                         <span>Host Management</span>
                     </a>
                     <a class="nav-item" onclick="switchPage('alerts')">
-                        <span class="nav-icon">⚡</span>
+                        <span class="nav-icon" data-lucide="zap"></span>
                         <span>Alert Rules</span>
                     </a>
                 </div>
                 <div class="nav-section">
                     <div class="nav-section-title">Configuration</div>
                     <a class="nav-item" onclick="openGlobalSettings()">
-                        <span class="nav-icon">⚙️</span>
+                        <span class="nav-icon" data-lucide="settings"></span>
                         <span>Settings</span>
                     </a>
                     <a class="nav-item" onclick="openNotificationSettings()">
-                        <span class="nav-icon">🔔</span>
+                        <span class="nav-icon" data-lucide="bell"></span>
                         <span>Notifications</span>
                     </a>
                 </div>
                 <div class="nav-section">
                     <div class="nav-section-title">System</div>
                     <a class="nav-item" onclick="switchPage('logs')">
-                        <span class="nav-icon">📋</span>
+                        <span class="nav-icon" data-lucide="file-text"></span>
                         <span>Logs</span>
                     </a>
                     <a class="nav-item" onclick="switchPage('about')">
-                        <span class="nav-icon">ℹ️</span>
+                        <span class="nav-icon" data-lucide="info"></span>
                         <span>About</span>
                     </a>
                 </div>
@@ -1352,7 +1355,7 @@
             <!-- Logout at bottom of sidebar -->
             <div class="sidebar-footer">
                 <a class="nav-item logout-item" onclick="logout()">
-                    <span class="nav-icon">🚪</span>
+                    <span class="nav-icon" data-lucide="log-out"></span>
                     <span>Logout</span>
                 </a>
             </div>
@@ -1369,10 +1372,10 @@
                         <span>👤</span> <span id="topbarUsername">Account</span>
                     </button>
                     <button class="btn btn-secondary" onclick="refreshAll()">
-                        <span>🔄</span> Refresh
+                        <span data-lucide="refresh-cw"></span> Refresh
                     </button>
                     <button class="btn btn-primary" onclick="openHostModal()">
-                        <span>➕</span> Add Host
+                        <span data-lucide="plus"></span> Add Host
                     </button>
                 </div>
             </header>
@@ -1382,23 +1385,12 @@
                 <!-- Dashboard Page -->
                 <div id="dashboard-page" class="page-section active">
                     <!-- Dashboard Actions -->
-                    <div style="margin-bottom: var(--spacing-lg); display: flex; gap: var(--spacing-md); align-items: center; justify-content: space-between;">
-                        <div style="display: flex; gap: var(--spacing-md);">
-                            <button class="btn btn-primary" onclick="saveDashboardLayoutManual()">
-                                💾 Save Layout
-                            </button>
-                            <button class="btn btn-secondary" onclick="resetDashboardLayout()">
-                                🔄 Reset Layout
-                            </button>
-                        </div>
-
+                    <div style="margin-bottom: 8px; display: flex; gap: var(--spacing-md); align-items: center; justify-content: flex-end;">
                         <!-- Blackout Window Indicator -->
                         <div id="quietHoursIndicator" style="display: none; align-items: center; gap: 8px; padding: 8px 16px; background: var(--warning-bg, rgba(255, 193, 7, 0.1)); border: 1px solid var(--warning, #ffc107); border-radius: 6px; color: var(--warning, #ffc107); font-weight: 500; font-size: 14px;">
-                            <span style="font-size: 16px;">🌙</span>
+                            <span data-lucide="moon"></span>
                             <span>In Blackout Window</span>
                         </div>
-
-                        <div style="width: 150px;"></div> <!-- Spacer to balance layout -->
                     </div>
 
                     <!-- GridStack Container -->
@@ -1412,7 +1404,7 @@
                     <div class="card">
                         <div class="card-header">
                             <h2 class="card-title">
-                                <span>🖥️</span> Docker Hosts
+                                <span data-lucide="server"></span> Docker Hosts
                             </h2>
                             <button class="btn btn-primary" onclick="openHostModal()">
                                 Add New Host
@@ -1429,7 +1421,7 @@
                     <div class="card">
                         <div class="card-header">
                             <h2 class="card-title">
-                                <span>⚡</span> Alert Rules
+                                <span data-lucide="zap"></span> Alert Rules
                             </h2>
                             <button class="btn btn-primary" onclick="openAlertRuleModal()">
                                 Create Rule
@@ -1446,7 +1438,7 @@
                     <div class="card">
                         <div class="card-header">
                             <h2 class="card-title">
-                                <span>📋</span> System Logs
+                                <span data-lucide="file-text"></span> System Logs
                             </h2>
                         </div>
                         <div style="padding: var(--spacing-lg); text-align: center; color: var(--text-tertiary);">
@@ -1460,7 +1452,7 @@
                     <div class="card">
                         <div class="card-header">
                             <h2 class="card-title">
-                                <span>ℹ️</span> About
+                                <span data-lucide="info"></span> About
                             </h2>
                         </div>
                         <div style="padding: var(--spacing-lg); color: var(--text-secondary);">
@@ -1576,7 +1568,7 @@
                     <label class="form-label">Docker Events <span style="color: var(--text-tertiary); font-size: 12px; font-weight: normal;">(React to what happens)</span></label>
                     <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; margin-top: 10px;">
                         <div>
-                            <h4 style="color: #dc2626; font-size: 14px; margin-bottom: 10px; font-weight: 500;">🚨 Critical</h4>
+                            <h4 style="color: #dc2626; font-size: 14px; margin-bottom: 10px; font-weight: 500;"><i data-lucide="alert-circle" style="width:14px;height:14px;"></i> Critical</h4>
                             <div class="checkbox-group">
                                 <label class="checkbox-item" title="Container was killed due to memory limit exceeded">
                                     <input type="checkbox" data-event="oom"> Out of Memory
@@ -1590,7 +1582,7 @@
                             </div>
                         </div>
                         <div>
-                            <h4 style="color: #d97706; font-size: 14px; margin-bottom: 10px; font-weight: 500;">⚠️ Warning</h4>
+                            <h4 style="color: #d97706; font-size: 14px; margin-bottom: 10px; font-weight: 500;"><i data-lucide="alert-triangle" style="width:14px;height:14px;"></i> Warning</h4>
                             <div class="checkbox-group">
                                 <label class="checkbox-item" title="Container was forcefully terminated (SIGKILL)">
                                     <input type="checkbox" data-event="kill"> Killed
@@ -1607,7 +1599,7 @@
                             </div>
                         </div>
                         <div>
-                            <h4 style="color: var(--text-secondary); font-size: 14px; margin-bottom: 10px; font-weight: 500;">ℹ️ Info</h4>
+                            <h4 style="color: var(--text-secondary); font-size: 14px; margin-bottom: 10px; font-weight: 500;"><i data-lucide="info" style="width:14px;height:14px;"></i> Info</h4>
                             <div class="checkbox-group">
                                 <label class="checkbox-item" title="Container was started successfully">
                                     <input type="checkbox" data-event="start"> Started
@@ -1631,7 +1623,7 @@
                     <label class="form-label">Docker States <span style="color: var(--text-tertiary); font-size: 12px; font-weight: normal;">(React to current status)</span></label>
                     <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; margin-top: 10px;">
                         <div>
-                            <h4 style="color: #ef4444; font-size: 14px; margin-bottom: 10px; font-weight: 500;">🔴 Critical</h4>
+                            <h4 style="color: #ef4444; font-size: 14px; margin-bottom: 10px; font-weight: 500;"><i data-lucide="alert-circle" style="width:14px;height:14px;"></i> Critical</h4>
                             <div class="checkbox-group">
                                 <label class="checkbox-item" title="Container has stopped running (exited with any code)">
                                     <input type="checkbox" checked data-state="exited"> Exited
@@ -1642,7 +1634,7 @@
                             </div>
                         </div>
                         <div>
-                            <h4 style="color: #d97706; font-size: 14px; margin-bottom: 10px; font-weight: 500;">⚠️ Warning</h4>
+                            <h4 style="color: #d97706; font-size: 14px; margin-bottom: 10px; font-weight: 500;"><i data-lucide="alert-triangle" style="width:14px;height:14px;"></i> Warning</h4>
                             <div class="checkbox-group">
                                 <label class="checkbox-item" title="Container has been paused and is not running">
                                     <input type="checkbox" data-state="paused"> Paused
@@ -1653,7 +1645,7 @@
                             </div>
                         </div>
                         <div>
-                            <h4 style="color: var(--text-secondary); font-size: 14px; margin-bottom: 10px; font-weight: 500;">ℹ️ Info</h4>
+                            <h4 style="color: var(--text-secondary); font-size: 14px; margin-bottom: 10px; font-weight: 500;"><i data-lucide="info" style="width:14px;height:14px;"></i> Info</h4>
                             <div class="checkbox-group">
                                 <label class="checkbox-item" title="Container has been created but not started">
                                     <input type="checkbox" data-state="created"> Created
@@ -1772,14 +1764,14 @@
             <div style="display: flex; gap: var(--spacing-md); margin-bottom: var(--spacing-lg); border-bottom: 1px solid var(--surface-light);">
                 <button id="channelsTab" class="tab-btn active" onclick="switchNotificationTab('channels')" style="padding: var(--spacing-md); background: none; border: none; color: var(--primary); border-bottom: 2px solid var(--primary); cursor: pointer;">Channels</button>
                 <button id="templateTab" class="tab-btn" onclick="switchNotificationTab('template')" style="padding: var(--spacing-md); background: none; border: none; color: var(--text-secondary); cursor: pointer;">Message Template</button>
-                <button id="blackoutTab" class="tab-btn" onclick="switchNotificationTab('blackout')" style="padding: var(--spacing-md); background: none; border: none; color: var(--text-secondary); cursor: pointer;">🌙 Blackout Windows</button>
+                <button id="blackoutTab" class="tab-btn" onclick="switchNotificationTab('blackout')" style="padding: var(--spacing-md); background: none; border: none; color: var(--text-secondary); cursor: pointer;"><span data-lucide="moon"></span> Blackout Windows</button>
             </div>
 
             <!-- Channels Tab Content -->
             <div id="channelsTabContent">
                 <div style="margin-bottom: var(--spacing-lg);">
                     <button type="button" class="btn btn-secondary" onclick="addNotificationChannel()" style="margin-bottom: var(--spacing-md);">
-                        ➕ Add Channel
+                        <span data-lucide="plus"></span> Add Channel
                     </button>
                 </div>
                 <div id="notificationChannelsList" style="max-height: 400px; overflow-y: auto;">
@@ -1845,7 +1837,7 @@
                 </div>
 
                 <button type="button" class="btn btn-secondary" onclick="addBlackoutWindow()" style="margin-bottom: var(--spacing-lg);">
-                    ➕ Add Blackout Window
+                    <span data-lucide="plus"></span> Add Blackout Window
                 </button>
 
                 <!-- Current Status -->
@@ -2024,6 +2016,17 @@
         const API_BASE = '';  // Use same origin - nginx will proxy /api/* to backend
         const WS_URL = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
 
+        // Lucide icon helper function
+        function icon(name, size = 16, className = '') {
+            return `<i data-lucide="${name}" class="lucide-icon ${className}" style="width:${size}px;height:${size}px;"></i>`;
+        }
+
+        // Initialize Lucide icons after DOM updates
+        function initIcons() {
+            if (typeof lucide !== 'undefined') {
+                lucide.createIcons();
+            }
+        }
 
         // Get authentication headers for API requests
         function getAuthHeaders() {
@@ -2640,12 +2643,13 @@
                             </div>
                         </div>
                         <div style="display: flex; gap: var(--spacing-sm);">
-                            <button class="btn-icon" onclick="editHost('${host.id}')">✏️</button>
-                            <button class="btn-icon" onclick="deleteHost('${host.id}')">🗑️</button>
+                            <button class="btn-icon" onclick="editHost('${host.id}')"><i data-lucide="edit"></i></button>
+                            <button class="btn-icon" onclick="deleteHost('${host.id}')"><i data-lucide="trash-2"></i></button>
                         </div>
                     </div>
                 `;
             }).join('');
+            initIcons();
         }
 
         function renderAlertsPage() {
@@ -2718,10 +2722,10 @@
                     </div>
                     <div class="alert-rule-actions">
                         <button class="btn-icon" onclick="editAlertRule('${rule.id}')" title="Edit Alert Rule">
-                            ✏️
+                            <i data-lucide="edit"></i>
                         </button>
                         <button class="btn-icon" onclick="deleteAlertRule('${rule.id}')" title="Delete Alert Rule">
-                            🗑️
+                            <i data-lucide="trash-2"></i>
                         </button>
                     </div>
                 `;
@@ -2731,6 +2735,7 @@
             } catch (error) {
                 console.error('Error rendering alert rules:', error);
             }
+            initIcons();
         }
 
         // Update functions
@@ -3228,8 +3233,8 @@
                             <button type="button" class="btn btn-small ${channel.enabled ? 'btn-success' : 'btn-secondary'}" onclick="toggleChannelStatus(${index})">
                                 ${channel.enabled ? '✓ Enabled' : 'Disabled'}
                             </button>
-                            <button type="button" class="btn btn-small btn-danger" onclick="removeChannel(${index})">
-                                🗑️
+                            <button type="button" class="btn-icon" onclick="removeChannel(${index})">
+                                <i data-lucide="trash-2"></i>
                             </button>
                         </div>
                     </div>
@@ -3246,14 +3251,15 @@
                     </div>
                     <div style="display: flex; gap: var(--spacing-sm); margin-top: var(--spacing-md);">
                         <button type="button" class="btn btn-primary btn-small" onclick="saveChannel(${index})">
-                            💾 Save Channel
+                            <i data-lucide="save"></i> Save Channel
                         </button>
                         <button type="button" class="btn btn-secondary btn-small" onclick="testChannel(${index})">
-                            🔔 Test Channel
+                            <i data-lucide="bell"></i> Test Channel
                         </button>
                     </div>
                 </div>
             `).join('');
+            initIcons();
         }
 
         function renderChannelConfig(channel, index) {
@@ -3971,6 +3977,8 @@
                     });
 
                     renderHosts();
+                    renderDashboardWidgets();
+                    initIcons();
 
                     // Update modal content if it's open and showing this container
                     if (window.currentContainer && window.currentContainer.id === container.id && window.currentContainer.host_id === hostId) {
@@ -4208,8 +4216,8 @@
                                value="${window.name || ''}"
                                onchange="updateBlackoutWindow(${index}, 'name', this.value)"
                                style="background: transparent; border: none; color: var(--text-primary); font-size: 14px; flex: 1;">
-                        <button type="button" class="btn btn-small btn-danger" onclick="removeBlackoutWindow(${index})">
-                            🗑️
+                        <button type="button" class="btn-icon" onclick="removeBlackoutWindow(${index})">
+                            <i data-lucide="trash-2"></i>
                         </button>
                     </div>
                     <div style="display: grid; grid-template-columns: 1fr 1fr auto; gap: var(--spacing-sm); align-items: center;">
@@ -4246,6 +4254,7 @@
                     </div>
                 </div>
             `).join('');
+            initIcons();
         }
 
         function addBlackoutWindow() {
@@ -4331,23 +4340,25 @@
                     if (status.is_blackout) {
                         statusDiv.innerHTML = `
                             <div style="display: flex; align-items: center; gap: var(--spacing-sm);">
-                                <span style="color: var(--warning); font-size: 20px;">🌙</span>
+                                <i data-lucide="moon" style="width:20px;height:20px;color:var(--warning);"></i>
                                 <div>
                                     <div style="color: var(--warning); font-weight: bold;">Currently in Blackout Window</div>
                                     <div style="color: var(--text-secondary); font-size: 12px;">${status.current_window}</div>
                                 </div>
                             </div>
                         `;
+                        initIcons();
                     } else {
                         statusDiv.innerHTML = `
                             <div style="display: flex; align-items: center; gap: var(--spacing-sm);">
-                                <span style="color: var(--success); font-size: 20px;">☀️</span>
+                                <i data-lucide="sun" style="width:20px;height:20px;color:var(--success);"></i>
                                 <div>
                                     <div style="color: var(--text-primary);">No active blackout window</div>
                                     <div style="color: var(--text-secondary); font-size: 12px;">Alerts are being sent normally</div>
                                 </div>
                             </div>
                         `;
+                        initIcons();
                     }
 
                     // Update dashboard indicator
@@ -4356,9 +4367,10 @@
                         if (status.is_blackout) {
                             dashboardIndicator.style.display = 'flex';
                             dashboardIndicator.innerHTML = `
-                                <span style="font-size: 16px;">🌙</span>
+                                <i data-lucide="moon"></i>
                                 <span>In Blackout Window</span>
                             `;
+                            initIcons();
                         } else {
                             dashboardIndicator.style.display = 'none';
                         }
@@ -4558,28 +4570,31 @@
                     <div class="container-actions" style="display: flex; gap: 10px; flex-wrap: wrap;" id="container-actions-${container.short_id}">
                         ${container.state === 'running' ? `
                             <button class="btn btn-danger" id="container-state-btn-${container.short_id}" onclick="stopContainer('${container.host_id}', '${container.id}')">
-                                ⏹️ Stop Container
+                                <i data-lucide="square"></i> Stop Container
                             </button>
                         ` : `
                             <button class="btn btn-primary" id="container-state-btn-${container.short_id}" onclick="startContainer('${container.host_id}', '${container.id}')">
-                                ▶️ Start Container
+                                <i data-lucide="play"></i> Start Container
                             </button>
                         `}
                         <button class="btn btn-secondary" onclick="restartContainer('${container.host_id}', '${container.id}')">
-                            🔄 Restart Container
+                            <i data-lucide="rotate-cw"></i> Restart Container
                         </button>
                         <button class="btn btn-secondary" onclick="createAlertForContainer('${container.id}')">
-                            ⚡ ${hasAlert ? 'Edit Alert' : 'Create Alert'}
+                            <i data-lucide="zap"></i> ${hasAlert ? 'Edit Alert' : 'Create Alert'}
                         </button>
                         <div class="auto-restart-toggle ${container.auto_restart ? 'enabled' : ''}"
                              onclick="toggleAutoRestart('${container.host_id}', '${container.id}', event)">
-                            <span>🔄 Auto-restart: ${container.auto_restart ? 'ON' : 'OFF'}</span>
+                            <span><i data-lucide="rotate-cw" style="width:14px;height:14px;"></i> Auto-restart: ${container.auto_restart ? 'ON' : 'OFF'}</span>
                         </div>
                     </div>
                 `;
                 
                 document.getElementById('container-info-content').innerHTML = detailsHtml;
-                
+
+                // Initialize Lucide icons after content is added
+                initIcons();
+
                 // Show modal
                 const modal = document.getElementById('containerModal');
                 modal.classList.add('active');
@@ -4927,11 +4942,12 @@
                 // Update button immediately to show transitional state
                 const btn = document.getElementById(`container-state-btn-${container.short_id}`);
                 if (btn) {
-                    btn.innerHTML = '🔄 Starting...';
+                    btn.innerHTML = '<i data-lucide="rotate-cw"></i> Starting...';
                     btn.className = 'btn';
                     btn.style.backgroundColor = '#90ee90';
                     btn.style.color = '#333';
                     btn.disabled = true;
+                    initIcons();
                 }
             }
 
@@ -4948,7 +4964,7 @@
                     if (container) {
                         const btn = document.getElementById(`container-state-btn-${container.short_id}`);
                         if (btn) {
-                            btn.innerHTML = '▶️ Start Container';
+                            btn.innerHTML = '<i data-lucide="play"></i> Start Container';
                             btn.className = 'btn btn-primary';
                             btn.style.backgroundColor = '';
                             btn.style.color = '';
@@ -4963,11 +4979,12 @@
                 if (container) {
                     const btn = document.getElementById(`container-state-btn-${container.short_id}`);
                     if (btn) {
-                        btn.innerHTML = '▶️ Start Container';
+                        btn.innerHTML = '<i data-lucide="play"></i> Start Container';
                         btn.className = 'btn btn-primary';
                         btn.style.backgroundColor = '';
                         btn.style.color = '';
                         btn.disabled = false;
+                        initIcons();
                     }
                 }
             }
@@ -4980,11 +4997,12 @@
                 // Update button immediately to show transitional state
                 const btn = document.getElementById(`container-state-btn-${container.short_id}`);
                 if (btn) {
-                    btn.innerHTML = '🔄 Stopping...';
+                    btn.innerHTML = '<i data-lucide="rotate-cw"></i> Stopping...';
                     btn.className = 'btn';
                     btn.style.backgroundColor = '#ffa500';
                     btn.style.color = '#fff';
                     btn.disabled = true;
+                    initIcons();
                 }
             }
 
@@ -5001,7 +5019,7 @@
                     if (container) {
                         const btn = document.getElementById(`container-state-btn-${container.short_id}`);
                         if (btn) {
-                            btn.innerHTML = '⏹️ Stop Container';
+                            btn.innerHTML = '<i data-lucide="square"></i> Stop Container';
                             btn.className = 'btn btn-danger';
                             btn.style.backgroundColor = '';
                             btn.style.color = '';
@@ -5016,11 +5034,12 @@
                 if (container) {
                     const btn = document.getElementById(`container-state-btn-${container.short_id}`);
                     if (btn) {
-                        btn.innerHTML = '⏹️ Stop Container';
+                        btn.innerHTML = '<i data-lucide="square"></i> Stop Container';
                         btn.className = 'btn btn-danger';
                         btn.style.backgroundColor = '';
                         btn.style.color = '';
                         btn.disabled = false;
+                        initIcons();
                     }
                 }
             }
@@ -5077,7 +5096,10 @@
                     createDefaultDashboard();
                 }
 
-                // Don't auto-save on change anymore - user must click Save Layout button
+                // Auto-save layout on any change
+                grid.on('change', (event, items) => {
+                    saveDashboardLayout();
+                });
 
                 // Render widgets with current data
                 renderDashboardWidgets();
@@ -5089,7 +5111,7 @@
 
         function createDefaultDashboard() {
             // Stats Widget - taller to ensure content fits
-            const statsWidget = createWidget('stats', 'Statistics', '📊', {
+            const statsWidget = createWidget('stats', 'Statistics', '<span data-lucide="bar-chart-3"></span>', {
                 x: 0, y: 0, w: 12, h: 4,
                 minW: 4, minH: 4, maxH: 6
             });
@@ -5137,18 +5159,17 @@
                 // Check if widget already exists
                 const existingWidget = document.querySelector(`[data-widget-id="${widgetId}"]`);
                 if (existingWidget) {
-                    // Widget already exists, just update its height if needed
-                    const hostContainers = containers.filter(c => c.host_id === host.id);
-                    const containerRows = Math.max(1, hostContainers.length);
-                    const headerHeight = 4;
-                    const containerHeight = 2.2;
-                    const dynamicHeight = headerHeight + containerRows * containerHeight + 0.5;
-                    const widgetHeight = Math.max(6, Math.ceil(dynamicHeight));
+                    // Widget already exists - update column trackers so new widgets don't overlap
+                    const existingX = parseInt(existingWidget.getAttribute('gs-x'));
+                    const existingY = parseInt(existingWidget.getAttribute('gs-y'));
+                    const existingH = parseInt(existingWidget.getAttribute('gs-h'));
 
-                    // Update height if container count changed
-                    const currentHeight = parseInt(existingWidget.getAttribute('gs-h'));
-                    if (currentHeight !== widgetHeight) {
-                        grid.update(existingWidget, { h: widgetHeight });
+                    if (existingX === 0) {
+                        // Left column
+                        leftColumnY = Math.max(leftColumnY, existingY + existingH);
+                    } else {
+                        // Right column
+                        rightColumnY = Math.max(rightColumnY, existingY + existingH);
                     }
                     return;
                 }
@@ -5157,9 +5178,9 @@
 
                 // Calculate height based on container count
                 const containerRows = Math.max(1, hostContainers.length);
-                const headerHeight = 4; // Widget header + host header
-                const containerHeight = 2.2; // Each container needs more space for proper display
-                const dynamicHeight = headerHeight + containerRows * containerHeight + 0.5; // Add padding for bottom border
+                const headerHeight = 2; // Widget header (reduced after removing duplicate header)
+                const containerHeight = 1.8; // Each container row height
+                const dynamicHeight = headerHeight + containerRows * containerHeight + 0.6; // Add padding
                 const widgetHeight = Math.max(6, Math.ceil(dynamicHeight)); // Minimum height of 6
 
                 // Check if there's a saved position for this widget
@@ -5175,17 +5196,17 @@
                         // Place in left column
                         x = 0;
                         y = leftColumnY;
-                        leftColumnY = y + widgetHeight + 1; // Add gap
+                        leftColumnY = y + widgetHeight; // Update tracker
                     } else {
                         // Place in right column
                         x = 6;
                         y = rightColumnY;
-                        rightColumnY = y + widgetHeight + 1; // Add gap
+                        rightColumnY = y + widgetHeight; // Update tracker
                     }
                     w = 6;
                 }
 
-                const widget = createWidget(widgetId, host.name, '🖥️', {
+                const widget = createWidget(widgetId, host.name, '<span data-lucide="server"></span>', {
                     x: x,
                     y: y,
                     w: w,
@@ -5207,11 +5228,6 @@
                                 <span>${icon}</span>
                                 <span>${title}</span>
                             </div>
-                            <div class="widget-actions">
-                                <button class="widget-action" onclick="removeWidget('${id}')" title="Remove widget">
-                                    ✕
-                                </button>
-                            </div>
                         </div>
                         <div class="widget-body" id="widget-${id}">
                             <!-- Content will be rendered here -->
@@ -5221,6 +5237,7 @@
             `;
 
             grid.addWidget(widgetHtml);
+            initIcons();
             return document.querySelector(`[data-widget-id="${id}"]`);
         }
 
@@ -5275,9 +5292,8 @@
                                 </div>
                             </div>
                             <div class="container-actions">
-                                <div class="auto-restart-toggle ${container.auto_restart ? 'enabled' : ''}"
-                                     onclick="event.stopPropagation()">
-                                    <span>🔄</span>
+                                <div class="auto-restart-toggle ${container.auto_restart ? 'enabled' : ''}">
+                                    <i data-lucide="rotate-cw" style="width:14px;height:14px;"></i>
                                     <div class="toggle-switch ${container.auto_restart ? 'active' : ''}"
                                          onclick="toggleAutoRestart('${container.host_id}', '${container.short_id}', event)"></div>
                                 </div>
@@ -5290,18 +5306,20 @@
 
                     const moreCount = hostContainers.length > maxContainersToShow ? hostContainers.length - maxContainersToShow : 0;
 
+                    // Update widget title with status badge
+                    const widgetTitle = hostWidget.closest('.grid-stack-item').querySelector('.widget-title');
+                    if (widgetTitle) {
+                        widgetTitle.innerHTML = `
+                            <span><i data-lucide="server" style="width:16px;height:16px;"></i></span>
+                            <span>${host.name}</span>
+                            <span class="host-status status-${host.status}" style="margin-left: 8px;">${host.status}</span>
+                        `;
+                    }
+
                     hostWidget.innerHTML = `
-                        <div class="host-card">
-                            <div class="host-header">
-                                <div class="host-name">
-                                    <span>🖥️</span> ${host.name}
-                                    <span class="host-status status-${host.status}">${host.status}</span>
-                                </div>
-                            </div>
-                            <div class="container-list">
-                                ${containersList || '<div style="padding: 12px; color: var(--text-tertiary); text-align: center;">No containers</div>'}
-                                ${moreCount > 0 ? `<div style="padding: 8px 12px; font-size: 12px; color: var(--text-tertiary); text-align: center; border-top: 1px solid var(--border);">+${moreCount} more containers</div>` : ''}
-                            </div>
+                        <div class="container-list">
+                            ${containersList || '<div style="padding: 12px; color: var(--text-tertiary); text-align: center;">No containers</div>'}
+                            ${moreCount > 0 ? `<div style="padding: 8px 12px; font-size: 12px; color: var(--text-tertiary); text-align: center; border-top: 1px solid var(--border);">+${moreCount} more containers</div>` : ''}
                         </div>
                     `;
                 }
@@ -5353,7 +5371,7 @@
 
         function getWidgetConfig(id) {
             const configs = {
-                'stats': { id: 'stats', title: 'Statistics', icon: '📊', minW: 4, minH: 4, maxH: 6 }
+                'stats': { id: 'stats', title: 'Statistics', icon: '<span data-lucide="bar-chart-3"></span>', minW: 4, minH: 4, maxH: 6 }
             };
 
             // Dynamic configs for host widgets
@@ -5361,7 +5379,7 @@
                 const hostId = id.replace('host-', '');
                 const host = hosts.find(h => h.id === hostId);
                 if (host) {
-                    return { id: id, title: host.name, icon: '🖥️', minW: 3, minH: 3 };
+                    return { id: id, title: host.name, icon: '<i data-lucide="monitor" style="width:16px;height:16px;"></i>', minW: 3, minH: 3 };
                 }
             }
 
@@ -5388,6 +5406,9 @@
         // Initialize on load
         window.addEventListener('DOMContentLoaded', async () => {
             try {
+                // Initialize Lucide icons in static HTML
+                initIcons();
+
                 await init();
                 // Check if password change is required
                 checkPasswordChangeRequired();

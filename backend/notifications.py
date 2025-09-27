@@ -7,7 +7,7 @@ import asyncio
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 import requests
@@ -462,6 +462,13 @@ Rule: {RULE_NAME}"""
         if not template:
             template = self._get_default_template()
 
+        # Get timezone offset from settings
+        settings = self.db.get_settings()
+        timezone_offset = getattr(settings, 'timezone_offset', 0) if settings else 0
+
+        # Convert timestamp to local timezone
+        local_timestamp = event.timestamp + timedelta(minutes=timezone_offset)
+
         # Prepare variables for substitution
         variables = {
             '{CONTAINER_NAME}': event.container_name,
@@ -471,9 +478,9 @@ Rule: {RULE_NAME}"""
             '{OLD_STATE}': event.old_state,
             '{NEW_STATE}': event.new_state,
             '{IMAGE}': event.image,
-            '{TIMESTAMP}': event.timestamp.strftime('%Y-%m-%d %H:%M:%S'),
-            '{TIME}': event.timestamp.strftime('%H:%M:%S'),
-            '{DATE}': event.timestamp.strftime('%Y-%m-%d'),
+            '{TIMESTAMP}': local_timestamp.strftime('%Y-%m-%d %H:%M:%S'),
+            '{TIME}': local_timestamp.strftime('%H:%M:%S'),
+            '{DATE}': local_timestamp.strftime('%Y-%m-%d'),
             '{RULE_NAME}': rule.name,
             '{RULE_ID}': str(rule.id),
             '{TRIGGERED_BY}': event.triggered_by,

@@ -2258,6 +2258,9 @@
                     credentials: 'include'
                 });
                 globalSettings = await response.json();
+
+                // Always update timezone offset from browser
+                globalSettings.timezone_offset = -new Date().getTimezoneOffset();
             } catch (error) {
                 console.error('Error fetching settings:', error);
             }
@@ -2476,6 +2479,18 @@
                     console.log(`Successfully fetched ${names[index]}`);
                 }
             });
+
+            // Save timezone offset to database on initial load (silent, no toast)
+            try {
+                await fetch(`${API_BASE}/api/settings`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify(globalSettings)
+                });
+            } catch (error) {
+                console.error('Failed to save timezone offset:', error);
+            }
 
             console.log('Rendering initial UI...');
             renderAll();

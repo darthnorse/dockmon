@@ -95,11 +95,6 @@ docker compose up -d
 
 **Access:** `https://localhost:8001` (accept the self-signed certificate warning)
 
-**Default Credentials:**
-- Username: `admin`
-- Password: `dockmon123`
-- **You will be required to change the password on first login**
-
 **What's Included:**
 - `dockmon` - All-in-one container with:
   - Nginx frontend with HTTPS
@@ -123,7 +118,12 @@ docker compose up -d
 
 2. **Add Docker Hosts**
    - Click "Add Host" in the dashboard
-   - Configure connection details (local or remote Docker hosts)
+   - **For local Docker host:**
+     - Name: `Local` (or any name you prefer)
+     - Connection Type: `Unix Socket`
+     - Socket Path: `/var/run/docker.sock`
+     - Click "Test Connection" then "Save"
+   - **For remote hosts:** See [Docker Remote Access Configuration](#docker-remote-access-configuration)
    - Test connection before saving
 
 3. **Configure Notification Channels** (Optional)
@@ -136,19 +136,11 @@ docker compose up -d
 
 ### Password Management
 
-#### Default Credentials
-- **Username:** `admin`
-- **Password:** `dockmon123`
-- **Important:** You will be required to change the password on first login
-
 #### Change Password
 **Via Web Interface (Recommended):**
 - Navigate to Settings → Account
 - Enter your current password and new password
 - Click "Change Password"
-
-**Via API:**
-- POST to `/api/auth/change-password` with current and new password
 
 #### Reset Password (If Forgotten)
 If you forget your password, you can reset it using the command-line tool:

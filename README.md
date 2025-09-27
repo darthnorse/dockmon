@@ -14,13 +14,17 @@ A comprehensive Docker container monitoring and management platform with real-ti
 ![DockMon Dashboard](screenshots/dashboard.png)
 *Real-time monitoring of multiple Docker hosts with container status and auto-restart controls*
 
-### Container Management
-![Container Management](screenshots/containers.png)
-*Individual container controls with auto-restart toggles and state monitoring*
+### Docker Hosts Management
+![Docker Hosts Management](screenshots/host_list.png)
+*Manage multiple Docker hosts with connection status monitoring*
 
-### Settings Panel
-![Settings](screenshots/settings.png)
-*Configure global auto-restart policies and monitoring intervals*
+### Alerts
+![Alerts](screenshots/alerts.png)
+*Configure alert rules with regex patterns and notification channels*
+
+### Blackout Window
+![Blackout Window](screenshots/blackout_window.png)
+*Schedule quiet hours to suppress notifications during maintenance windows*
 
 ## Core Features
 
@@ -707,7 +711,59 @@ volumes:
 **Nice to Have:**
 - Consider running behind additional reverse proxy with auth
 - Implement network segmentation (separate Docker network)
-- Use read-only Docker socket if only monitoring (no control) is needed
+- Use Docker socket proxy for additional security layer (see below)
+
+### 🔌 **Docker Socket Proxy (Optional)**
+
+For defense-in-depth, you can use a Docker socket proxy to reduce the attack surface:
+
+**Benefits:**
+- Only a minimal proxy container has direct socket access
+- Restricts Docker API operations
+- Additional security layer if DockMon is compromised
+
+**Example configuration with docker-socket-proxy:**
+
+```yaml
+services:
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy
+    environment:
+      - CONTAINERS=1  # Allow container management
+      - INFO=1        # Allow Docker info
+      - NETWORKS=1    # Allow network inspection
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+
+  dockmon:
+    image: dockmon:latest
+    container_name: dockmon
+    environment:
+      - DOCKER_HOST=tcp://docker-proxy:2375
+      - TZ=UTC
+    depends_on:
+      - docker-proxy
+    # Remove /var/run/docker.sock volume mount
+    ports:
+      - "8001:443"
+    volumes:
+      - dockmon_data:/app/data
+    restart: unless-stopped
+```
+
+**What still works:**
+- Container monitoring and status
+- Container start/stop/restart operations
+- Container logs and statistics
+- All notification and alerting features
+
+**Limitations:**
+- Proxy configuration must allow all required Docker API operations
+- Additional container to manage
+- Slightly increased latency for Docker operations
+
+**Note:** This is optional and primarily useful for high-security environments or public-facing deployments.
 
 ### 🛡️ **What DockMon Does to Protect You**
 

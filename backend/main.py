@@ -547,7 +547,7 @@ async def get_blackout_status(authenticated: bool = Depends(verify_session_auth)
 
 
 @app.get("/api/notifications/template-variables")
-async def get_template_variables():
+async def get_template_variables(authenticated: bool = Depends(verify_session_auth)):
     """Get available template variables for notification messages"""
     return {
         "variables": [
@@ -589,7 +589,7 @@ Triggered by: {RULE_NAME}""",
     }
 
 @app.get("/api/notifications/channels")
-async def get_notification_channels():
+async def get_notification_channels(authenticated: bool = Depends(verify_session_auth)):
     """Get all notification channels"""
     channels = monitor.db.get_notification_channels(enabled_only=False)
     return [{
@@ -749,7 +749,8 @@ async def get_events(category: Optional[str] = None,
                     correlation_id: Optional[str] = None,
                     search: Optional[str] = None,
                     limit: int = 100,
-                    offset: int = 0):
+                    offset: int = 0,
+                    authenticated: bool = Depends(verify_session_auth)):
     """Get events with filtering and pagination"""
     try:
         # Parse dates
@@ -815,7 +816,7 @@ async def get_events(category: Optional[str] = None,
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/events/{event_id}")
-async def get_event(event_id: int):
+async def get_event(event_id: int, authenticated: bool = Depends(verify_session_auth)):
     """Get a specific event by ID"""
     try:
         event = monitor.db.get_event_by_id(event_id)
@@ -848,7 +849,7 @@ async def get_event(event_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/events/correlation/{correlation_id}")
-async def get_events_by_correlation(correlation_id: str):
+async def get_events_by_correlation(correlation_id: str, authenticated: bool = Depends(verify_session_auth)):
     """Get all events with the same correlation ID"""
     try:
         events = monitor.db.get_events_by_correlation(correlation_id)
@@ -881,7 +882,8 @@ async def get_events_by_correlation(correlation_id: str):
 
 @app.get("/api/events/statistics")
 async def get_event_statistics(start_date: Optional[str] = None,
-                             end_date: Optional[str] = None):
+                             end_date: Optional[str] = None,
+                             authenticated: bool = Depends(verify_session_auth)):
     """Get event statistics for dashboard"""
     try:
         # Parse dates
@@ -913,7 +915,7 @@ async def get_event_statistics(start_date: Optional[str] = None,
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/events/container/{container_id}")
-async def get_container_events(container_id: str, limit: int = 50):
+async def get_container_events(container_id: str, limit: int = 50, authenticated: bool = Depends(verify_session_auth)):
     """Get events for a specific container"""
     try:
         events, total_count = monitor.db.get_events(
@@ -950,7 +952,7 @@ async def get_container_events(container_id: str, limit: int = 50):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/events/host/{host_id}")
-async def get_host_events(host_id: str, limit: int = 50):
+async def get_host_events(host_id: str, limit: int = 50, authenticated: bool = Depends(verify_session_auth)):
     """Get events for a specific host"""
     try:
         events, total_count = monitor.db.get_events(

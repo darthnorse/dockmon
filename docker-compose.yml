@@ -5,6 +5,8 @@ services:
       dockerfile: docker/Dockerfile
     container_name: dockmon
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     ports:
       - "8001:443"   # HTTPS only - backend access through nginx proxy
     environment:

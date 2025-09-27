@@ -608,10 +608,135 @@ ws.onmessage = (event) => {
 
 ### API Authentication
 
-Currently uses basic authentication. For production deployments, consider implementing:
-- API keys for programmatic access
-- JWT tokens for web interface
-- Role-based access control
+DockMon uses session-based authentication with secure bcrypt password hashing:
+- Session cookies with `httponly` and `secure` flags
+- 12-round bcrypt for password hashing
+- Password change required on first login (default: `admin`/`changeme`)
+- Rate limiting on all authentication endpoints
+
+All API endpoints (except `/health`) require authentication.
+
+## Security Considerations
+
+### 🔒 **Authentication & Access Control**
+
+DockMon is designed as a **single-user system** with strong authentication:
+- ✅ Session-based authentication with secure cookies
+- ✅ Bcrypt password hashing (12 rounds)
+- ✅ HTTPS-only access (self-signed cert included)
+- ✅ Rate limiting on all endpoints
+- ✅ Security audit logging for privileged actions
+- ✅ Backend bound to localhost (127.0.0.1) - only accessible via Nginx
+
+### ⚠️ **Docker Socket Access**
+
+**IMPORTANT:** DockMon requires full access to the Docker socket to function:
+
+```yaml
+volumes:
+  - /var/run/docker.sock:/var/run/docker.sock  # Required for container management
+```
+
+**This provides root-equivalent access to the host system.** A compromised DockMon instance could:
+- Start/stop any containers
+- Mount host filesystem
+- Escalate to host root access
+
+**Security implications:**
+- ✅ This is **required by design** - DockMon cannot monitor/control Docker without it
+- ⚠️ **Do NOT expose DockMon to the internet** - use VPN/SSH tunnel for remote access
+- ⚠️ Use strong passwords and keep DockMon updated
+- ✅ DockMon's authentication and localhost-only backend minimize attack surface
+
+### 🌐 **Network Security**
+
+**Deployment model:**
+```
+Internet → [VPN/SSH Tunnel] → HTTPS (port 8001) → Nginx → Backend (127.0.0.1:8080)
+```
+
+**What's exposed:**
+- Port 8001 (HTTPS) - Nginx frontend with authentication required
+- Backend is NOT exposed (localhost-only binding)
+
+**Recommendations:**
+- ✅ Use the included self-signed certificate for local/private use
+- ✅ Replace with proper TLS certificate for production (see below)
+- ⚠️ Do NOT expose port 8001 to the internet directly
+- ✅ Use VPN (WireGuard/OpenVPN) or SSH tunnel for remote access
+- ✅ Consider running behind a reverse proxy (Traefik, Caddy) with additional auth
+
+### 🔐 **TLS Certificate**
+
+DockMon includes a self-signed certificate that's auto-generated on first run. Your browser will show a security warning - this is **expected and safe for private use**.
+
+**To replace with your own certificate:**
+
+1. Replace the certificate files in the container:
+```bash
+docker cp your-cert.crt dockmon:/etc/nginx/certs/dockmon.crt
+docker cp your-cert.key dockmon:/etc/nginx/certs/dockmon.key
+docker exec dockmon nginx -s reload
+```
+
+2. Or mount your own certificates:
+```yaml
+volumes:
+  - ./certs/your-cert.crt:/etc/nginx/certs/dockmon.crt:ro
+  - ./certs/your-cert.key:/etc/nginx/certs/dockmon.key:ro
+```
+
+3. For Let's Encrypt, use a reverse proxy like Caddy or Traefik in front of DockMon
+
+### 📝 **Security Best Practices**
+
+**Required:**
+- ✅ Change default password immediately after first login
+- ✅ Use strong passwords (12+ characters, mixed case, numbers, symbols)
+- ✅ Keep DockMon container updated
+- ✅ Do NOT expose directly to the internet
+
+**Recommended:**
+- ✅ Run DockMon on a dedicated management network
+- ✅ Use a VPN for remote access
+- ✅ Regularly review security audit logs (Settings → Security Audit)
+- ✅ Monitor rate limiting statistics
+- ✅ Use TLS for remote Docker host connections
+- ✅ Backup the database regularly (`/app/data/dockmon.db`)
+
+**Nice to Have:**
+- Consider running behind additional reverse proxy with auth
+- Implement network segmentation (separate Docker network)
+- Use read-only Docker socket if only monitoring (no control) is needed
+
+### 🛡️ **What DockMon Does to Protect You**
+
+- ✅ **Backend isolation** - API only accessible via Nginx (localhost binding)
+- ✅ **Authentication required** - All endpoints except health check
+- ✅ **Rate limiting** - Prevents brute force and abuse
+- ✅ **Security auditing** - Logs all privileged actions
+- ✅ **Path traversal protection** - Sanitizes all file paths
+- ✅ **SQL injection protection** - Uses parameterized queries (SQLAlchemy ORM)
+- ✅ **Secure file permissions** - Database (600), certificates (600), data directory (700)
+- ✅ **Session security** - HTTPOnly, Secure, SameSite cookies
+- ✅ **Password security** - Bcrypt hashing with salt
+
+### 📊 **Threat Model**
+
+**DockMon is designed for:**
+- ✅ Single-user, self-hosted deployments
+- ✅ Private networks (home lab, office)
+- ✅ Trusted environments with physical security
+
+**DockMon is NOT designed for:**
+- ❌ Multi-tenant SaaS deployments
+- ❌ Public internet exposure
+- ❌ Untrusted network environments
+- ❌ High-security/compliance-required environments (use enterprise solutions)
+
+**Risk assessment for typical home lab:**
+- **Low risk:** Single user, private network, strong auth, localhost-only backend
+- **Medium risk:** If exposing to the internet, **VPN access is required** (WireGuard, OpenVPN, or Tailscale)
 
 ## Docker Hub
 
@@ -620,37 +745,6 @@ Coming soon:
 ```bash
 docker pull darthnorse/dockmon:latest
 docker run -d -p 8001:8001 -p 8080:8080 darthnorse/dockmon:latest
-```
-
-## Project Structure
-
-```
-dockmon/
-├── backend/                    # FastAPI Backend
-│   ├── main.py                # FastAPI application and routes
-│   ├── database.py            # Database models and operations
-│   ├── notifications.py       # Notification service (Discord, Telegram, Pushover)
-│   ├── event_logger.py        # Comprehensive event logging system
-│   ├── realtime.py           # WebSocket and real-time monitoring
-│   ├── requirements.txt       # Python dependencies
-│   ├── Dockerfile            # Backend container definition
-│   └── data/                 # SQLite database storage
-├── src/                       # Frontend
-│   ├── index.html            # Main web interface
-│   └── realtime.html         # Real-time monitoring interface
-├── docker/                    # Docker configuration
-│   ├── Dockerfile            # Frontend container definition
-│   └── nginx.conf            # Nginx configuration
-├── scripts/                   # Deployment scripts
-│   ├── dockmon-lxc.sh        # Automated Proxmox LXC deployment
-│   └── update.sh             # Update script with backend support
-├── screenshots/               # Application screenshots
-│   ├── dashboard.png
-│   ├── containers.png
-│   └── settings.png
-├── docker-compose.yml         # All-in-one Docker container configuration
-├── LICENSE                   # MIT License
-└── README.md                 # This documentation
 ```
 
 ## Development

@@ -799,9 +799,10 @@ class DatabaseManager:
     def get_or_create_default_user(self) -> None:
         """Create default admin user if no users exist"""
         with self.get_session() as session:
-            user = session.query(User).filter(User.username == "admin").first()
-            if not user:
-                # Create default admin user with default password
+            # Check if ANY user exists (not just 'admin')
+            user_count = session.query(User).count()
+            if user_count == 0:
+                # Only create default admin user if no users exist at all
                 user = User(
                     username="admin",
                     password_hash=self._hash_password("dockmon123"),  # Default password

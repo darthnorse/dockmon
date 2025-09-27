@@ -232,8 +232,8 @@ async def change_username(username_data: dict, request: Request, authenticated: 
             detail="Username must be between 3 and 50 characters"
         )
 
-    # Check if new username already exists
-    if db.username_exists(new_username):
+    # Check if new username already exists (but allow keeping the same username)
+    if new_username != current_username and db.username_exists(new_username):
         raise HTTPException(
             status_code=400,
             detail="Username already exists"

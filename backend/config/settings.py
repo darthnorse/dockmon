@@ -19,6 +19,11 @@ def setup_logging():
 
     # Set up root logger
     root_logger = logging.getLogger()
+
+    # Check if handlers are already configured (prevent duplicate handlers)
+    if root_logger.handlers:
+        return
+
     root_logger.setLevel(logging.INFO)
 
     # Console handler for stdout

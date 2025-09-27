@@ -38,6 +38,7 @@ from models.request_models import (
 from security.audit import security_audit
 from security.rate_limiting import rate_limiter, rate_limit_auth, rate_limit_hosts, rate_limit_containers, rate_limit_notifications, rate_limit_default
 from auth.routes import router as auth_router, verify_frontend_session
+verify_session_auth = verify_frontend_session
 from websocket.connection import ConnectionManager, DateTimeEncoder
 from websocket.rate_limiter import ws_rate_limiter
 from docker_monitor.monitor import DockerMonitor
@@ -74,6 +75,12 @@ async def lifespan(app: FastAPI):
     monitor.event_logger.log_system_event("DockMon Backend Starting", "DockMon backend is initializing", EventSeverity.INFO, EventType.STARTUP)
     monitor.monitoring_task = asyncio.create_task(monitor.monitor_containers())
     monitor.cleanup_task = asyncio.create_task(monitor.cleanup_old_data())
+
+    # Start blackout window monitoring with WebSocket support
+    await monitor.notification_service.blackout_manager.start_monitoring(
+        monitor.notification_service,
+        monitor.manager  # Pass ConnectionManager for WebSocket broadcasts
+    )
     yield
     # Shutdown
     logger.info("Shutting down DockMon backend...")
@@ -82,6 +89,8 @@ async def lifespan(app: FastAPI):
         monitor.monitoring_task.cancel()
     if monitor.cleanup_task:
         monitor.cleanup_task.cancel()
+    # Stop blackout monitoring
+    monitor.notification_service.blackout_manager.stop_monitoring()
     # Close notification service
     await monitor.notification_service.close()
     # Stop event logger
@@ -360,6 +369,17 @@ async def update_settings(settings: GlobalSettings, authenticated: bool = Depend
     """Update global settings"""
     updated = monitor.db.update_settings(settings.dict())
     monitor.settings = updated  # Update in-memory settings
+
+    # Broadcast blackout status change to all clients
+    is_blackout, window_name = monitor.notification_service.blackout_manager.is_in_blackout_window()
+    await monitor.manager.broadcast({
+        'type': 'blackout_status_changed',
+        'data': {
+            'is_blackout': is_blackout,
+            'window_name': window_name
+        }
+    })
+
     return settings
 
 @app.get("/api/alerts")
@@ -629,14 +649,69 @@ async def update_notification_channel(channel_id: int, updates: NotificationChan
         logger.error(f"Failed to update notification channel: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
+@app.get("/api/notifications/channels/{channel_id}/dependent-alerts")
+async def get_dependent_alerts(channel_id: int, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_notifications):
+    """Get alerts that would be orphaned if this channel is deleted"""
+    try:
+        dependent_alerts = monitor.db.get_alerts_dependent_on_channel(channel_id)
+        return {"alerts": dependent_alerts}
+    except Exception as e:
+        logger.error(f"Failed to get dependent alerts: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
 @app.delete("/api/notifications/channels/{channel_id}")
 async def delete_notification_channel(channel_id: int, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_notifications):
-    """Delete a notification channel"""
+    """Delete a notification channel and cascade delete alerts that would become orphaned"""
     try:
+        # Find alerts that would be orphaned (only have this channel)
+        affected_alerts = monitor.db.get_alerts_dependent_on_channel(channel_id)
+
+        # Find all alerts that use this channel (for removal from multi-channel alerts)
+        all_alerts = monitor.db.get_alert_rules()
+
+        # Delete the channel
         success = monitor.db.delete_notification_channel(channel_id)
         if not success:
             raise HTTPException(status_code=404, detail="Channel not found")
-        return {"status": "success", "message": f"Channel {channel_id} deleted"}
+
+        # Delete orphaned alerts
+        deleted_alerts = []
+        for alert in affected_alerts:
+            if monitor.db.delete_alert_rule(alert['id']):
+                deleted_alerts.append(alert['name'])
+
+        # Remove channel from multi-channel alerts
+        updated_alerts = []
+        for alert in all_alerts:
+            # Skip if already deleted
+            if alert.id in [a['id'] for a in affected_alerts]:
+                continue
+
+            # Check if this alert uses the deleted channel
+            channels = alert.notification_channels if isinstance(alert.notification_channels, list) else []
+            if channel_id in channels:
+                # Remove the channel
+                new_channels = [ch for ch in channels if ch != channel_id]
+                monitor.db.update_alert_rule(alert.id, {'notification_channels': new_channels})
+                updated_alerts.append(alert.name)
+
+        result = {
+            "status": "success",
+            "message": f"Channel {channel_id} deleted"
+        }
+
+        if deleted_alerts:
+            result["deleted_alerts"] = deleted_alerts
+            result["message"] += f" and {len(deleted_alerts)} orphaned alert(s) removed"
+
+        if updated_alerts:
+            result["updated_alerts"] = updated_alerts
+            if "deleted_alerts" in result:
+                result["message"] += f", {len(updated_alerts)} alert(s) updated"
+            else:
+                result["message"] += f" and {len(updated_alerts)} alert(s) updated"
+
+        return result
     except HTTPException:
         raise
     except Exception as e:

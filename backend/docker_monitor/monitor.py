@@ -547,13 +547,15 @@ class DockerMonitor:
 
     def toggle_auto_restart(self, host_id: str, container_id: str, container_name: str, enabled: bool):
         """Toggle auto-restart for a container"""
-        self.auto_restart_status[container_id] = enabled
+        # Use host_id:container_id as key to prevent collisions between hosts
+        container_key = f"{host_id}:{container_id}"
+        self.auto_restart_status[container_key] = enabled
         if not enabled:
-            self.restart_attempts[container_id] = 0
-            self.restarting_containers[container_id] = False
+            self.restart_attempts[container_key] = 0
+            self.restarting_containers[container_key] = False
         # Save to database
         self.db.set_auto_restart(host_id, container_id, container_name, enabled)
-        logger.info(f"Auto-restart {'enabled' if enabled else 'disabled'} for {container_id}")
+        logger.info(f"Auto-restart {'enabled' if enabled else 'disabled'} for {container_id} on host {host_id}")
 
     async def monitor_containers(self):
         """Main monitoring loop"""
@@ -589,11 +591,13 @@ class DockerMonitor:
                     if (container.status == "exited" and
                         self._get_auto_restart_status(container.host_id, container.short_id)):
 
-                        attempts = self.restart_attempts.get(container.short_id, 0)
-                        is_restarting = self.restarting_containers.get(container.short_id, False)
+                        # Use host_id:container_id as key to prevent collisions between hosts
+                        container_key = f"{container.host_id}:{container.short_id}"
+                        attempts = self.restart_attempts.get(container_key, 0)
+                        is_restarting = self.restarting_containers.get(container_key, False)
 
                         if attempts < self.settings.max_retries and not is_restarting:
-                            self.restarting_containers[container.short_id] = True
+                            self.restarting_containers[container_key] = True
                             asyncio.create_task(
                                 self.auto_restart_container(container)
                             )
@@ -619,14 +623,17 @@ class DockerMonitor:
     async def auto_restart_container(self, container: Container):
         """Attempt to auto-restart a container"""
         container_id = container.short_id
-        self.restart_attempts[container_id] = self.restart_attempts.get(container_id, 0) + 1
-        attempt = self.restart_attempts[container_id]
+        # Use host_id:container_id as key to prevent collisions between hosts
+        container_key = f"{container.host_id}:{container_id}"
+
+        self.restart_attempts[container_key] = self.restart_attempts.get(container_key, 0) + 1
+        attempt = self.restart_attempts[container_key]
 
         correlation_id = self.event_logger.create_correlation_id()
 
         logger.info(
             f"Auto-restart attempt {attempt}/{self.settings.max_retries} "
-            f"for {container.name}"
+            f"for {container.name} on host {container.host_id}"
         )
 
         # Wait before attempting restart
@@ -635,7 +642,7 @@ class DockerMonitor:
         try:
             success = self.restart_container(container.host_id, container.id)
             if success:
-                self.restart_attempts[container_id] = 0
+                self.restart_attempts[container_key] = 0
 
                 # Log successful auto-restart
                 self.event_logger.log_auto_restart_attempt(
@@ -674,7 +681,7 @@ class DockerMonitor:
             )
 
             if attempt >= self.settings.max_retries:
-                self.auto_restart_status[container_id] = False
+                self.auto_restart_status[container_key] = False
                 await self.manager.broadcast({
                     "type": "auto_restart_failed",
                     "data": {
@@ -686,7 +693,7 @@ class DockerMonitor:
                 })
         finally:
             # Always clear the restarting flag when done (success or failure)
-            self.restarting_containers[container_id] = False
+            self.restarting_containers[container_key] = False
 
     def _load_persistent_config(self):
         """Load saved configuration from database"""
@@ -717,52 +724,40 @@ class DockerMonitor:
                     AutoRestartConfig.enabled == True
                 ).all()
                 for config in configs:
-                    self.auto_restart_status[config.container_id] = True
-                    self.restart_attempts[config.container_id] = config.restart_count
+                    # Use host_id:container_id as key to prevent collisions between hosts
+                    container_key = f"{config.host_id}:{config.container_id}"
+                    self.auto_restart_status[container_key] = True
+                    self.restart_attempts[container_key] = config.restart_count
 
             logger.info(f"Loaded {len(self.hosts)} hosts from database")
         except Exception as e:
             logger.error(f"Error loading persistent config: {e}")
 
     def _load_alert_rules(self) -> List[AlertRule]:
-        """Load alert rules from database"""
-        try:
-            db_rules = self.db.get_alert_rules(enabled_only=False)
-            alert_rules = []
-            for rule in db_rules:
-                alert_rule = AlertRule(
-                    id=rule.id,
-                    name=rule.name,
-                    host_id=rule.host_id,
-                    container_pattern=rule.container_pattern,
-                    trigger_states=rule.trigger_states,
-                    notification_channels=rule.notification_channels,
-                    cooldown_minutes=rule.cooldown_minutes,
-                    enabled=rule.enabled,
-                    created_at=rule.created_at,
-                    last_triggered=rule.last_triggered
-                )
-                alert_rules.append(alert_rule)
-            logger.info(f"Loaded {len(alert_rules)} alert rules from database")
-            return alert_rules
-        except Exception as e:
-            logger.error(f"Error loading alert rules: {e}")
-            return []
+        """Load alert rules from database (legacy - now handled by notification service)"""
+        # Alert rules are now managed by the notification service
+        # This method is kept for backward compatibility but returns empty list
+        return []
 
     def refresh_alert_rules(self):
-        """Refresh alert rules from database"""
-        self.alert_rules = self._load_alert_rules()
+        """Refresh alert rules from database (legacy - now handled by notification service)"""
+        # Alert rules are now managed by the notification service
+        # This is a no-op for backward compatibility
+        pass
 
     def _get_auto_restart_status(self, host_id: str, container_id: str) -> bool:
         """Get auto-restart status for a container"""
+        # Use host_id:container_id as key to prevent collisions between hosts
+        container_key = f"{host_id}:{container_id}"
+
         # Check in-memory cache first
-        if container_id in self.auto_restart_status:
-            return self.auto_restart_status[container_id]
+        if container_key in self.auto_restart_status:
+            return self.auto_restart_status[container_key]
 
         # Check database
         config = self.db.get_auto_restart_config(host_id, container_id)
         if config:
-            self.auto_restart_status[container_id] = config.enabled
+            self.auto_restart_status[container_key] = config.enabled
             return config.enabled
 
         return False

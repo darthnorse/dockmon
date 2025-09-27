@@ -48,6 +48,7 @@ class NotificationService:
         self.http_client = httpx.AsyncClient(timeout=30.0)
         self._last_alerts: Dict[str, datetime] = {}  # For cooldown tracking
         self._last_container_state: Dict[str, str] = {}  # Track last known state per container
+        self._suppressed_alerts: List[AlertEvent] = []  # Track alerts suppressed during blackout windows
 
         # Initialize blackout manager
         from blackout_manager import BlackoutManager
@@ -116,6 +117,8 @@ class NotificationService:
             # Send notifications for matching rules
             success_count = 0
             for rule in matching_rules:
+                logger.info(f"Processing Docker event rule '{rule.name}' for {event.container_name}")
+
                 # Check cooldown
                 container_key = f"{event.host_id}:{event.container_id}"
                 cooldown_key = f"event:{rule.id}:{container_key}:{event.event_type}"
@@ -124,16 +127,18 @@ class NotificationService:
                 if cooldown_key in self._last_alerts:
                     time_since = datetime.now() - self._last_alerts[cooldown_key]
                     if time_since.total_seconds() < rule.cooldown_minutes * 60:
-                        logger.debug(f"Skipping alert for {event.container_name} due to cooldown")
+                        logger.info(f"Skipping Docker event alert for {event.container_name} (rule: {rule.name}) due to cooldown")
                         continue
 
                 # Check if we're in a blackout window
                 is_blackout, window_name = self.blackout_manager.is_in_blackout_window()
+                logger.info(f"Blackout check for Docker event (rule: {rule.name}): is_blackout={is_blackout}, window_name={window_name}")
                 if is_blackout:
-                    logger.info(f"Alert suppressed during blackout window '{window_name}' for {event.container_name}")
+                    logger.info(f"Docker event alert suppressed during blackout window '{window_name}' for {event.container_name} (rule: {rule.name})")
                     continue
 
                 # Send notification
+                logger.info(f"Sending Docker event notification for rule '{rule.name}'")
                 if await self._send_event_notification(rule, event):
                     success_count += 1
                     self._last_alerts[cooldown_key] = datetime.now()
@@ -259,6 +264,8 @@ class NotificationService:
             is_blackout, window_name = self.blackout_manager.is_in_blackout_window()
             if is_blackout:
                 logger.info(f"Suppressed {len(alert_rules)} alerts during blackout window '{window_name}' for {event.container_name}")
+                # Track this alert for later
+                self._suppressed_alerts.append(event)
                 return False
 
             # Process each matching rule
@@ -307,7 +314,7 @@ class NotificationService:
 
             # Check if this container+host matches the rule
             # First check if rule has specific container+host pairs
-            if hasattr(rule, 'containers') and rule.containers:
+            if hasattr(rule, 'containers') and rule.containers and len(rule.containers) > 0:
                 # Use specific container+host pairs
                 matches = False
                 for container in rule.containers:
@@ -320,8 +327,8 @@ class NotificationService:
                     logger.debug(f"Rule {rule.id} skipped: no matching container+host pair")
                     continue
             else:
-                logger.debug(f"Rule {rule.id} skipped: no containers defined")
-                continue
+                # No containers specified = monitor all containers
+                logger.debug(f"Rule {rule.id} matches: monitoring all containers")
 
             # Check if new state triggers alert (only if trigger_states is defined)
             if rule.trigger_states and event.new_state not in rule.trigger_states:
@@ -683,6 +690,61 @@ Rule: {RULE_NAME}"""
         except Exception as e:
             logger.error(f"Error testing channel {channel_id}: {e}")
             return {'success': False, 'error': str(e)}
+
+    async def process_suppressed_alerts(self):
+        """Process alerts that were suppressed during blackout windows"""
+        if not self._suppressed_alerts:
+            logger.info("No suppressed alerts to process")
+            return
+
+        logger.info(f"Processing {len(self._suppressed_alerts)} suppressed alerts from blackout windows")
+
+        # Get current container states
+        from docker_monitor.monitor import DockerMonitor
+        monitor = DockerMonitor()
+
+        alerts_to_send = []
+
+        # For each suppressed alert, check if the container is still in that problematic state
+        for alert in self._suppressed_alerts:
+            container_key = f"{alert.host_id}:{alert.container_id}"
+
+            # Get current state of this container
+            try:
+                client = monitor.clients.get(alert.host_id)
+                if not client:
+                    logger.debug(f"No client found for host {alert.host_id}")
+                    continue
+
+                try:
+                    container = client.containers.get(alert.container_id)
+                    current_state = container.status
+
+                    # If container is still in the problematic state from the alert, send it
+                    if current_state == alert.new_state:
+                        logger.info(f"Container {alert.container_name} still in '{current_state}' state - sending suppressed alert")
+                        alerts_to_send.append(alert)
+                    else:
+                        logger.info(f"Container {alert.container_name} recovered from '{alert.new_state}' to '{current_state}' during blackout window - skipping alert")
+
+                except Exception as e:
+                    # Container might have been removed
+                    logger.debug(f"Could not check container {alert.container_id}: {e}")
+
+            except Exception as e:
+                logger.error(f"Error checking suppressed alert for {alert.container_name}: {e}")
+
+        # Clear the suppressed alerts list
+        self._suppressed_alerts.clear()
+
+        # Send alerts for containers still in problematic states
+        for alert in alerts_to_send:
+            try:
+                await self.send_alert(alert)
+            except Exception as e:
+                logger.error(f"Failed to send suppressed alert for {alert.container_name}: {e}")
+
+        logger.info(f"Sent {len(alerts_to_send)} of {len(self._suppressed_alerts) + len(alerts_to_send)} suppressed alerts")
 
     async def close(self):
         """Clean up resources"""

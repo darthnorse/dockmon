@@ -5,7 +5,7 @@ Handles alert suppression during maintenance windows
 
 import asyncio
 import logging
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 from database import DatabaseManager
 
@@ -19,6 +19,7 @@ class BlackoutManager:
         self.db = db
         self._check_task: Optional[asyncio.Task] = None
         self._last_check: Optional[datetime] = None
+        self._connection_manager = None  # Will be set when monitoring starts
 
     def is_in_blackout_window(self) -> Tuple[bool, Optional[str]]:
         """
@@ -30,9 +31,14 @@ class BlackoutManager:
             if not settings or not settings.blackout_windows:
                 return False, None
 
-            now = datetime.now()
-            current_time = now.time()
-            current_weekday = now.weekday()  # 0=Monday, 6=Sunday
+            # Get timezone offset from settings (in minutes), default to 0 (UTC)
+            timezone_offset = getattr(settings, 'timezone_offset', 0)
+
+            # Get current time in UTC and convert to user's timezone
+            now_utc = datetime.now(timezone.utc)
+            now_local = now_utc + timedelta(minutes=timezone_offset)
+            current_time = now_local.time()
+            current_weekday = now_local.weekday()  # 0=Monday, 6=Sunday
 
             for window in settings.blackout_windows:
                 if not window.get('enabled', True):
@@ -202,8 +208,10 @@ class BlackoutManager:
             logger.error(f"Error matching container to rule: {e}")
             return False
 
-    async def start_monitoring(self, notification_service):
+    async def start_monitoring(self, notification_service, connection_manager=None):
         """Start monitoring for blackout window transitions"""
+        self._connection_manager = connection_manager
+
         async def monitor_loop():
             was_in_blackout = False
 
@@ -211,26 +219,31 @@ class BlackoutManager:
                 try:
                     is_blackout, window_name = self.is_in_blackout_window()
 
-                    # Check if we just exited a blackout window
-                    if was_in_blackout and not is_blackout:
-                        logger.info(f"Blackout window '{window_name or 'unknown'}' ended. Checking container states...")
+                    # Check if blackout status changed
+                    if was_in_blackout != is_blackout:
+                        # Broadcast status change to all WebSocket clients
+                        if self._connection_manager:
+                            await self._connection_manager.broadcast({
+                                'type': 'blackout_status_changed',
+                                'data': {
+                                    'is_blackout': is_blackout,
+                                    'window_name': window_name
+                                }
+                            })
 
-                        # Check all container states and alert if any are problematic
-                        summary = await self.check_container_states_after_blackout(notification_service)
-
-                        if summary['containers_down']:
-                            logger.info(f"Found {len(summary['containers_down'])} containers in problematic state after blackout")
-                        else:
-                            logger.info(f"All {summary['total_checked']} containers are healthy after blackout")
+                        # If we just exited blackout, process suppressed alerts
+                        if was_in_blackout and not is_blackout:
+                            logger.info(f"Blackout window ended. Processing suppressed alerts...")
+                            await notification_service.process_suppressed_alerts()
 
                     was_in_blackout = is_blackout
 
-                    # Check every minute
-                    await asyncio.sleep(60)
+                    # Check every 15 seconds for more responsive updates
+                    await asyncio.sleep(15)
 
                 except Exception as e:
                     logger.error(f"Error in blackout monitoring: {e}")
-                    await asyncio.sleep(60)
+                    await asyncio.sleep(15)
 
         self._check_task = asyncio.create_task(monitor_loop())
 

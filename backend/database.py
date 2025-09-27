@@ -86,6 +86,7 @@ class GlobalSettings(Base):
     auto_cleanup_events = Column(Boolean, default=True)  # Auto cleanup old events
     alert_template = Column(Text, nullable=True)  # Global notification template
     blackout_windows = Column(JSON, nullable=True)  # Array of blackout time windows
+    timezone_offset = Column(Integer, default=0)  # Timezone offset in minutes from UTC
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 class NotificationChannel(Base):
@@ -340,14 +341,41 @@ class DatabaseManager:
             return host
 
     def delete_host(self, host_id: str) -> bool:
-        """Delete a Docker host"""
+        """Delete a Docker host and clean up related alert rules"""
         with self.get_session() as session:
             host = session.query(DockerHostDB).filter(DockerHostDB.id == host_id).first()
-            if host:
-                session.delete(host)
-                session.commit()
-                return True
-            return False
+            if not host:
+                return False
+
+            # Get all alert rules
+            all_rules = session.query(AlertRuleDB).all()
+
+            # Process each alert rule to remove containers from the deleted host
+            for rule in all_rules:
+                if not rule.containers:
+                    continue
+
+                # Filter out containers from the deleted host
+                # rule.containers is a list of AlertRuleContainer objects
+                remaining_containers = [
+                    c for c in rule.containers
+                    if c.host_id != host_id
+                ]
+
+                if len(remaining_containers) == 0:
+                    # No containers left, delete the entire alert
+                    session.delete(rule)
+                    logger.info(f"Deleted alert rule '{rule.name}' (all containers were on deleted host {host_id})")
+                elif len(remaining_containers) < len(rule.containers):
+                    # Some containers remain, update the alert
+                    rule.containers = remaining_containers
+                    rule.updated_at = datetime.now()
+                    logger.info(f"Updated alert rule '{rule.name}' (removed containers from host {host_id})")
+
+            # Delete the host
+            session.delete(host)
+            session.commit()
+            return True
 
     # Auto-Restart Configuration
     def get_auto_restart_config(self, host_id: str, container_id: str) -> Optional[AutoRestartConfig]:
@@ -588,6 +616,24 @@ class DatabaseManager:
                 session.commit()
                 return True
             return False
+
+    def get_alerts_dependent_on_channel(self, channel_id: int) -> List[dict]:
+        """Find alerts that would be orphaned if this channel is deleted (only have this one channel)"""
+        with self.get_session() as session:
+            all_rules = session.query(AlertRuleDB).all()
+            dependent_alerts = []
+
+            for rule in all_rules:
+                # Parse notification_channels JSON
+                channels = rule.notification_channels if isinstance(rule.notification_channels, list) else []
+                # Check if this is the ONLY channel for this alert
+                if len(channels) == 1 and channel_id in channels:
+                    dependent_alerts.append({
+                        'id': rule.id,
+                        'name': rule.name
+                    })
+
+            return dependent_alerts
 
     # Container History
     def add_container_event(self, event_data: dict):

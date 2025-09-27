@@ -759,9 +759,10 @@
             background: var(--dark);
             border-radius: 6px;
             margin-bottom: var(--spacing-sm);
-            display: flex;
+            display: grid;
+            grid-template-columns: 1fr 100px 85px;
             align-items: center;
-            justify-content: space-between;
+            gap: var(--spacing-md);
             transition: var(--transition);
             cursor: pointer;
         }
@@ -779,7 +780,7 @@
             display: flex;
             align-items: center;
             gap: var(--spacing-md);
-            flex: 1;
+            min-width: 0;
         }
 
         .container-icon {
@@ -830,9 +831,7 @@
         }
 
         .container-actions {
-            display: flex;
-            align-items: center;
-            gap: var(--spacing-md);
+            display: contents;
         }
 
         .container-state {
@@ -842,14 +841,16 @@
             font-weight: 600;
             text-transform: uppercase;
             letter-spacing: 0.5px;
+            text-align: center;
+            white-space: nowrap;
         }
 
         /* Auto Restart Toggle */
         .auto-restart-toggle {
             display: flex;
             align-items: center;
-            gap: var(--spacing-sm);
-            padding: 10px 20px;
+            gap: 6px;
+            padding: 8px 16px;
             background: var(--surface-light);
             border: 1px solid var(--border);
             border-radius: 6px;
@@ -857,6 +858,7 @@
             font-weight: 500;
             cursor: pointer;
             transition: var(--transition);
+            justify-content: center;
         }
 
         .auto-restart-toggle.enabled {
@@ -1147,43 +1149,6 @@
             border-color: var(--primary);
         }
 
-        /* Logout Button */
-        .logout-button {
-            position: fixed;
-            bottom: 20px;
-            left: 20px;
-            background: var(--danger);
-            color: white;
-            border: none;
-            padding: 12px 18px;
-            border-radius: 8px;
-            cursor: pointer;
-            font-size: 14px;
-            font-weight: 600;
-            transition: all 0.3s ease;
-            z-index: 1000;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            box-shadow: 0 4px 12px rgba(220, 53, 69, 0.3);
-        }
-
-        .logout-button:hover {
-            background: #c82333;
-            transform: translateY(-2px);
-            box-shadow: 0 6px 16px rgba(220, 53, 69, 0.4);
-        }
-
-        .logout-button:active {
-            transform: translateY(0);
-        }
-
-        /* Hide logout button when sidebar is open on mobile */
-        @media (max-width: 768px) {
-            .sidebar-open .logout-button {
-                display: none;
-            }
-        }
 
         /* Alert Rules */
         .alert-rule-card {
@@ -1417,13 +1382,23 @@
                 <!-- Dashboard Page -->
                 <div id="dashboard-page" class="page-section active">
                     <!-- Dashboard Actions -->
-                    <div style="margin-bottom: var(--spacing-lg); display: flex; gap: var(--spacing-md);">
-                        <button class="btn btn-secondary" onclick="toggleDashboardLock()" id="dashboardLockBtn">
-                            <span id="lockBtnIcon">🔓</span> <span id="lockBtnText">Lock Layout</span>
-                        </button>
-                        <button class="btn btn-secondary" onclick="resetDashboardLayout()">
-                            🔄 Reset Layout
-                        </button>
+                    <div style="margin-bottom: var(--spacing-lg); display: flex; gap: var(--spacing-md); align-items: center; justify-content: space-between;">
+                        <div style="display: flex; gap: var(--spacing-md);">
+                            <button class="btn btn-primary" onclick="saveDashboardLayoutManual()">
+                                💾 Save Layout
+                            </button>
+                            <button class="btn btn-secondary" onclick="resetDashboardLayout()">
+                                🔄 Reset Layout
+                            </button>
+                        </div>
+
+                        <!-- Blackout Window Indicator -->
+                        <div id="quietHoursIndicator" style="display: none; align-items: center; gap: 8px; padding: 8px 16px; background: var(--warning-bg, rgba(255, 193, 7, 0.1)); border: 1px solid var(--warning, #ffc107); border-radius: 6px; color: var(--warning, #ffc107); font-weight: 500; font-size: 14px;">
+                            <span style="font-size: 16px;">🌙</span>
+                            <span>In Blackout Window</span>
+                        </div>
+
+                        <div style="width: 150px;"></div> <!-- Spacer to balance layout -->
                     </div>
 
                     <!-- GridStack Container -->
@@ -1797,7 +1772,7 @@
             <div style="display: flex; gap: var(--spacing-md); margin-bottom: var(--spacing-lg); border-bottom: 1px solid var(--surface-light);">
                 <button id="channelsTab" class="tab-btn active" onclick="switchNotificationTab('channels')" style="padding: var(--spacing-md); background: none; border: none; color: var(--primary); border-bottom: 2px solid var(--primary); cursor: pointer;">Channels</button>
                 <button id="templateTab" class="tab-btn" onclick="switchNotificationTab('template')" style="padding: var(--spacing-md); background: none; border: none; color: var(--text-secondary); cursor: pointer;">Message Template</button>
-                <button id="blackoutTab" class="tab-btn" onclick="switchNotificationTab('blackout')" style="padding: var(--spacing-md); background: none; border: none; color: var(--text-secondary); cursor: pointer;">🌙 Quiet Hours</button>
+                <button id="blackoutTab" class="tab-btn" onclick="switchNotificationTab('blackout')" style="padding: var(--spacing-md); background: none; border: none; color: var(--text-secondary); cursor: pointer;">🌙 Blackout Windows</button>
             </div>
 
             <!-- Channels Tab Content -->
@@ -1862,7 +1837,7 @@
             <!-- Blackout Tab Content -->
             <div id="blackoutTabContent" style="display: none;">
                 <div style="margin-bottom: var(--spacing-md); color: var(--text-secondary); font-size: 14px;">
-                    Configure maintenance windows when alerts should be suppressed. Alerts will be deferred and checked after each window ends.
+                    Configure blackout windows when alerts should be suppressed. Times are defined in your local timezone. Alerts will be deferred and checked after each window ends.
                 </div>
 
                 <div id="blackoutWindowsList" style="margin-bottom: var(--spacing-lg);">
@@ -2195,6 +2170,11 @@
                     // These are real-time events from Docker daemon - no action needed
                     break;
 
+                case 'blackout_status_changed':
+                    // Update blackout status display if modal is open
+                    updateBlackoutStatus();
+                    break;
+
                 default:
                     console.log('Unknown message type:', message.type);
             }
@@ -2483,12 +2463,13 @@
                 fetchHosts(),
                 fetchContainers(),
                 fetchSettings(),
+                loadNotificationChannels(),
                 fetchAlertRules()
             ]);
 
             // Check results but don't fail initialization
             results.forEach((result, index) => {
-                const names = ['hosts', 'containers', 'settings', 'alertRules'];
+                const names = ['hosts', 'containers', 'settings', 'notificationChannels', 'alertRules'];
                 if (result.status === 'rejected') {
                     console.warn(`Failed to fetch ${names[index]}:`, result.reason);
                 } else {
@@ -2498,6 +2479,10 @@
 
             console.log('Rendering initial UI...');
             renderAll();
+
+            // Update quiet hours indicator on dashboard
+            updateBlackoutStatus();
+
             console.log('Initialization completed successfully');
         }
 
@@ -2668,9 +2653,12 @@
                 const ruleCard = document.createElement('div');
                 ruleCard.className = 'alert-rule-card';
 
-                const channelBadges = (rule.notification_channels || []).map(channel =>
-                    `<span class="channel-badge channel-${channel}">${channel}</span>`
-                ).join('');
+                // Map channel IDs to channel names
+                const channelBadges = (rule.notification_channels || []).map(channelId => {
+                    const channel = notificationChannels.find(ch => ch.id === channelId);
+                    const channelName = channel ? channel.name : `Channel ${channelId}`;
+                    return `<span class="channel-badge">${channelName}</span>`;
+                }).join('');
 
                 // Display container information
                 let containerInfo = '';
@@ -2694,7 +2682,7 @@
 
                     containerInfo = containerParts.join(', ');
                 } else {
-                    containerInfo = 'No containers selected';
+                    containerInfo = 'All containers';
                 }
 
                 // Display trigger information
@@ -2832,9 +2820,14 @@
 
         function toggleAllContainers(checkbox) {
             const containerCheckboxes = document.querySelectorAll('#containerSelectionCheckboxes input[type="checkbox"]');
-            containerCheckboxes.forEach(cb => {
-                cb.checked = checkbox.checked;
-            });
+            const containerList = document.getElementById('containerSelectionCheckboxes');
+
+            if (checkbox.checked) {
+                containerList.style.display = 'none';
+                containerCheckboxes.forEach(cb => cb.checked = false);
+            } else {
+                containerList.style.display = 'block';
+            }
         }
 
         function populateContainerCheckboxes() {
@@ -2975,7 +2968,8 @@
                 // First, check if the rule has the new container+host pairs format
                 if (editRule.containers && editRule.containers.length > 0) {
                     // New format: use specific container+host pairs
-                    document.getElementById('selectAllContainers').checked = false; // Not all containers
+                    document.getElementById('selectAllContainers').checked = false;
+                    document.getElementById('containerSelectionCheckboxes').style.display = 'block';
                     document.querySelectorAll('#containerSelectionCheckboxes input[type="checkbox"]').forEach(cb => {
                         cb.checked = false; // Clear all first
                     });
@@ -2988,6 +2982,10 @@
                             }
                         });
                     });
+                } else {
+                    // Empty containers array means "all containers"
+                    document.getElementById('selectAllContainers').checked = true;
+                    document.getElementById('containerSelectionCheckboxes').style.display = 'none';
                 }
             }
 
@@ -3056,7 +3054,7 @@
                         channelsHtml += `
                             <label class="checkbox-item">
                                 <input type="checkbox" name="channels" value="${channel.id}" data-channel-id="${channel.id}">
-                                ${channel.name} (${channel.type})
+                                ${channel.name}
                             </label>
                         `;
                     });
@@ -3096,6 +3094,7 @@
                 await loadNotificationChannels();
                 await loadNotificationTemplate();
                 await loadTemplateVariables();
+                await fetchSettings(); // Load settings including blackout windows
                 document.getElementById('notificationModal').classList.add('active');
             } catch (error) {
                 console.error('Error opening notification settings:', error);
@@ -3139,8 +3138,20 @@
                 blackoutTab.style.borderBottom = '2px solid var(--primary)';
                 blackoutTab.style.color = 'var(--primary)';
                 blackoutContent.style.display = 'block';
-                // Load blackout status when switching to this tab
+                // Load blackout status and show timezone info when switching to this tab
+                renderBlackoutWindows();
                 updateBlackoutStatus();
+                updateTimezoneInfo();
+            }
+        }
+
+        function updateTimezoneInfo() {
+            const offsetElement = document.getElementById('localTimezoneOffset');
+            if (offsetElement) {
+                const offsetMinutes = new Date().getTimezoneOffset();
+                const offsetHours = Math.abs(offsetMinutes / 60);
+                const offsetSign = offsetMinutes > 0 ? '-' : '+';
+                offsetElement.textContent = `UTC${offsetSign}${offsetHours}`;
             }
         }
 
@@ -3209,17 +3220,23 @@
                     </div>
                     <div style="display: grid; gap: var(--spacing-sm);">
                         <label class="form-label">Channel Type</label>
-                        <select class="form-input" onchange="updateChannelType(${index}, this.value)">
-                            <option value="discord" ${channel.type === 'discord' ? 'selected' : ''}>Discord</option>
-                            <option value="slack" ${channel.type === 'slack' ? 'selected' : ''}>Slack</option>
-                            <option value="telegram" ${channel.type === 'telegram' ? 'selected' : ''}>Telegram</option>
-                            <option value="pushover" ${channel.type === 'pushover' ? 'selected' : ''}>Pushover</option>
-                        </select>
+                        ${channel.id ?
+                            `<input type="text" class="form-input" value="${channel.type.charAt(0).toUpperCase() + channel.type.slice(1)}" disabled style="background: var(--surface-light); cursor: not-allowed;">`
+                            :
+                            `<select class="form-input" onchange="updateChannelType(${index}, this.value)">
+                                ${getAvailableChannelTypes(channel.type).map(type => `<option value="${type}" ${channel.type === type ? 'selected' : ''}>${type.charAt(0).toUpperCase() + type.slice(1)}</option>`).join('')}
+                            </select>`
+                        }
                         ${renderChannelConfig(channel, index)}
                     </div>
-                    <button type="button" class="btn btn-secondary btn-small" onclick="testChannel(${index})" style="margin-top: var(--spacing-md);">
-                        🔔 Test Channel
-                    </button>
+                    <div style="display: flex; gap: var(--spacing-sm); margin-top: var(--spacing-md);">
+                        <button type="button" class="btn btn-primary btn-small" onclick="saveChannel(${index})">
+                            💾 Save Channel
+                        </button>
+                        <button type="button" class="btn btn-secondary btn-small" onclick="testChannel(${index})">
+                            🔔 Test Channel
+                        </button>
+                    </div>
                 </div>
             `).join('');
         }
@@ -3268,20 +3285,106 @@
         }
 
         function addNotificationChannel() {
+            // Get available channel types (those not already in use)
+            const usedTypes = notificationChannels.map(ch => ch.type);
+            const availableTypes = ['discord', 'slack', 'telegram', 'pushover'].filter(type => !usedTypes.includes(type));
+
+            if (availableTypes.length === 0) {
+                showToast('❌ All notification channel types are already configured');
+                return;
+            }
+
+            // Use the first available type
+            const channelType = availableTypes[0];
+            const channelName = channelType.charAt(0).toUpperCase() + channelType.slice(1);
+
             const newChannel = {
-                name: `Channel ${notificationChannels.length + 1}`,
-                type: 'discord',
+                name: channelName,
+                type: channelType,
                 config: {},
                 enabled: true,
                 isNew: true
             };
             notificationChannels.push(newChannel);
             renderNotificationChannels();
+
+            // Scroll to the newly added channel
+            setTimeout(() => {
+                const cards = document.querySelectorAll('.notification-channel-card');
+                if (cards.length > 0) {
+                    const lastCard = cards[cards.length - 1];
+                    lastCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                }
+            }, 100);
         }
 
-        function removeChannel(index) {
-            notificationChannels.splice(index, 1);
-            renderNotificationChannels();
+        async function removeChannel(index) {
+            const channel = notificationChannels[index];
+
+            // If channel doesn't exist in backend, just remove from local array
+            if (!channel.id) {
+                notificationChannels.splice(index, 1);
+                renderNotificationChannels();
+                return;
+            }
+
+            // Check for dependent alerts first
+            try {
+                const dependentAlerts = await checkDependentAlerts(channel.id);
+
+                let message = `Are you sure you want to delete the notification channel <strong>"${channel.name}"</strong>?<br><br>`;
+
+                message += `Any alerts that only use this notification channel will also be deleted.<br><br>`;
+
+                if (dependentAlerts.length > 0) {
+                    message += `⚠️ <strong>Warning:</strong> The following alert rules will be deleted:<br>`;
+                    message += '<ul style="margin: var(--spacing-sm) 0; padding-left: var(--spacing-lg);">';
+                    dependentAlerts.forEach(alert => {
+                        message += `<li>${alert.name}</li>`;
+                    });
+                    message += '</ul>';
+                }
+
+                message += `<strong>This action cannot be undone.</strong>`;
+
+                showConfirmation('Delete Notification Channel', message, 'Delete Channel', async () => {
+                    try {
+                        // Delete from backend
+                        const response = await fetch(`${API_BASE}/api/notifications/channels/${channel.id}`, {
+                            method: 'DELETE',
+                            credentials: 'include'
+                        });
+
+                        if (!response.ok) {
+                            throw new Error('Failed to delete channel');
+                        }
+
+                        const result = await response.json();
+                        if (result.deleted_alerts && result.deleted_alerts.length > 0) {
+                            showToast(`✅ Channel deleted (${result.deleted_alerts.length} alert(s) also removed)`);
+                        } else {
+                            showToast('✅ Channel deleted');
+                        }
+
+                        // Remove from local array and re-render
+                        notificationChannels.splice(index, 1);
+                        renderNotificationChannels();
+
+                        // Refresh alert modal if open
+                        await populateNotificationChannels();
+
+                        // Refresh alert rules list if it's currently displayed
+                        await fetchAlertRules();
+                        renderAlertRules();
+                    } catch (error) {
+                        console.error('Error deleting channel:', error);
+                        showToast('❌ Failed to delete channel');
+                    }
+                });
+            } catch (error) {
+                console.error('Error checking dependent alerts:', error);
+                showToast('❌ Failed to check dependent alerts');
+            }
         }
 
         function toggleChannelStatus(index) {
@@ -3289,7 +3392,16 @@
             renderNotificationChannels();
         }
 
+        function getAvailableChannelTypes(currentType) {
+            // Get all types that are either the current type or not already in use
+            const usedTypes = notificationChannels.map(ch => ch.type);
+            const allTypes = ['discord', 'slack', 'telegram', 'pushover'];
+            return allTypes.filter(type => type === currentType || !usedTypes.includes(type));
+        }
+
         function updateChannelType(index, type) {
+            // Update the channel name to match the type
+            notificationChannels[index].name = type.charAt(0).toUpperCase() + type.slice(1);
             notificationChannels[index].type = type;
             notificationChannels[index].config = {};
             renderNotificationChannels();
@@ -3326,9 +3438,67 @@
                 }
                 showToast('✅ Notification channels saved successfully!');
                 await loadNotificationChannels();
+
+                // Refresh the alert modal's channel list if it's open
+                await populateNotificationChannels();
             } catch (error) {
                 console.error('Error saving channels:', error);
                 showToast('❌ Failed to save notification channels');
+            }
+        }
+
+        async function saveChannel(index) {
+            try {
+                const channel = notificationChannels[index];
+
+                if (channel.isNew) {
+                    // Create new channel
+                    const response = await fetch(`${API_BASE}/api/notifications/channels`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'include',
+                        body: JSON.stringify(channel)
+                    });
+
+                    if (response.ok) {
+                        const savedChannel = await response.json();
+                        // Update the channel with the returned ID and remove isNew flag
+                        notificationChannels[index] = { ...savedChannel, isNew: false };
+                        showToast('✅ Channel saved successfully!');
+                    } else {
+                        throw new Error('Failed to save channel');
+                    }
+                } else if (channel.id) {
+                    // Update existing channel
+                    const response = await fetch(`${API_BASE}/api/notifications/channels/${channel.id}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'include',
+                        body: JSON.stringify(channel)
+                    });
+
+                    if (response.ok) {
+                        showToast('✅ Channel updated successfully!');
+                    } else {
+                        throw new Error('Failed to update channel');
+                    }
+                }
+
+                // Preserve unsaved channels (those with isNew flag)
+                const unsavedChannels = notificationChannels.filter(ch => ch.isNew && ch !== channel);
+
+                // Refresh the channels list from backend
+                await loadNotificationChannels();
+
+                // Re-add the unsaved channels
+                notificationChannels.push(...unsavedChannels);
+                renderNotificationChannels();
+
+                // Refresh the alert modal's channel list if it's open
+                await populateNotificationChannels();
+            } catch (error) {
+                console.error('Error saving channel:', error);
+                showToast('❌ Failed to save channel');
             }
         }
 
@@ -3531,6 +3701,7 @@
                     streamBtn.textContent = 'Start Live Stream';
                 }
             }
+
             document.getElementById(modalId).classList.remove('active');
         }
 
@@ -3753,11 +3924,14 @@
                 (c.short_id === containerId || c.id === containerId) && c.host_id === hostId
             );
             if (!container) {
-                console.error('Container not found:', containerId, 'on host:', hostId);
                 return;
             }
 
             const newState = !container.auto_restart;
+
+            // Find the host name
+            const host = hosts.find(h => h.id === hostId);
+            const hostName = host ? host.name : 'Unknown Host';
 
             try {
                 const response = await fetch(`${API_BASE}/api/containers/${container.short_id}/auto-restart`, {
@@ -3773,14 +3947,18 @@
                 });
 
                 if (response.ok) {
-                    // Update local state
-                    container.auto_restart = newState;
-                    container.restart_attempts = 0;
+                    // Update local state for all matching containers (same name + host)
+                    containers.forEach(c => {
+                        if (c.host_id === hostId && c.id === container.id) {
+                            c.auto_restart = newState;
+                            c.restart_attempts = 0;
+                        }
+                    });
 
                     renderHosts();
 
                     // Update modal content if it's open and showing this container
-                    if (window.currentContainer && window.currentContainer.id === container.id) {
+                    if (window.currentContainer && window.currentContainer.id === container.id && window.currentContainer.host_id === hostId) {
                         // Preserve current tab when updating for auto-restart
                         let activeTab = 'info';
                         if (document.getElementById('logs-tab').style.display !== 'none') {
@@ -3790,7 +3968,7 @@
                     }
 
                     const status = newState ? 'enabled' : 'disabled';
-                    showToast(`🔄 Auto-restart ${status} for ${container.name}`);
+                    showToast(`🔄 Auto-restart ${status} for ${container.name} on ${hostName}`);
 
                     if (newState && container.state === 'exited') {
                         // Trigger restart attempt
@@ -3985,141 +4163,16 @@
             }
         }
 
-        async function saveNotificationSettings(event) {
-            event.preventDefault();
-
+        async function checkDependentAlerts(channelId) {
             try {
-                // Get form values
-                const telegramToken = document.querySelector('#notificationModal .form-input[placeholder*="Telegram bot token"]').value;
-                const telegramChatId = document.querySelector('#notificationModal .form-input[placeholder*="chat ID"]').value;
-                const discordWebhook = document.querySelector('#notificationModal .form-input[placeholder*="Discord webhook"]').value;
-                const pushoverToken = document.querySelector('#notificationModal .form-input[placeholder*="Pushover app token"]').value;
-                const pushoverUserKey = document.querySelector('#notificationModal .form-input[placeholder*="user key"]').value;
-
-                // Get existing channels to update or create
-                const response = await fetch(`${API_BASE}/api/notifications/channels`, {
+                const response = await fetch(`${API_BASE}/api/notifications/channels/${channelId}/dependent-alerts`, {
                     credentials: 'include'
                 });
-                const existingChannels = await response.json();
-
-                const promises = [];
-
-                // Handle Telegram
-                if (telegramToken && telegramChatId) {
-                    const telegramChannel = existingChannels.find(ch => ch.type === 'telegram');
-                    const telegramData = {
-                        name: 'Telegram',
-                        type: 'telegram',
-                        config: { bot_token: telegramToken, chat_id: telegramChatId },
-                        enabled: true
-                    };
-
-                    if (telegramChannel) {
-                        promises.push(fetch(`${API_BASE}/api/notifications/channels/${telegramChannel.id}`, {
-                            method: 'PUT',
-                            credentials: 'include',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                name: telegramData.name,
-                                config: telegramData.config,
-                                enabled: telegramData.enabled
-                            })
-                        }));
-                    } else {
-                        promises.push(fetch(`${API_BASE}/api/notifications/channels`, {
-                            method: 'POST',
-                            credentials: 'include',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(telegramData)
-                        }));
-                    }
-                }
-
-                // Handle Discord
-                if (discordWebhook) {
-                    const discordChannel = existingChannels.find(ch => ch.type === 'discord');
-                    const discordData = {
-                        name: 'Discord',
-                        type: 'discord',
-                        config: { webhook_url: discordWebhook },
-                        enabled: true
-                    };
-
-                    if (discordChannel) {
-                        promises.push(fetch(`${API_BASE}/api/notifications/channels/${discordChannel.id}`, {
-                            method: 'PUT',
-                            credentials: 'include',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                name: discordData.name,
-                                config: discordData.config,
-                                enabled: discordData.enabled
-                            })
-                        }));
-                    } else {
-                        promises.push(fetch(`${API_BASE}/api/notifications/channels`, {
-                            method: 'POST',
-                            credentials: 'include',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(discordData)
-                        }));
-                    }
-                }
-
-                // Handle Pushover
-                if (pushoverToken && pushoverUserKey) {
-                    const pushoverChannel = existingChannels.find(ch => ch.type === 'pushover');
-                    const pushoverData = {
-                        name: 'Pushover',
-                        type: 'pushover',
-                        config: { app_token: pushoverToken, user_key: pushoverUserKey },
-                        enabled: true
-                    };
-
-                    if (pushoverChannel) {
-                        promises.push(fetch(`${API_BASE}/api/notifications/channels/${pushoverChannel.id}`, {
-                            method: 'PUT',
-                            credentials: 'include',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                name: pushoverData.name,
-                                config: pushoverData.config,
-                                enabled: pushoverData.enabled
-                            })
-                        }));
-                    } else {
-                        promises.push(fetch(`${API_BASE}/api/notifications/channels`, {
-                            method: 'POST',
-                            credentials: 'include',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(pushoverData)
-                        }));
-                    }
-                }
-
-                // Wait for all requests to complete and check for errors
-                const responses = await Promise.all(promises);
-
-                // Check if any request failed
-                for (const response of responses) {
-                    if (!response.ok) {
-                        const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
-                        const errorMessage = typeof errorData.detail === 'string'
-                            ? errorData.detail
-                            : JSON.stringify(errorData.detail) || response.statusText;
-                        throw new Error(`API Error: ${errorMessage}`);
-                    }
-                }
-
-                showToast('✅ Notification settings saved!');
-                closeModal('notificationModal');
-
-                // Refresh notification channels for alert creation
-                await populateNotificationChannels();
-
+                const data = await response.json();
+                return data.alerts || [];
             } catch (error) {
-                console.error('Error saving notification settings:', error);
-                showToast(`❌ Failed to save notification settings: ${error.message}`);
+                console.error('Error checking dependent alerts:', error);
+                return [];
             }
         }
 
@@ -4184,8 +4237,15 @@
             if (!globalSettings.blackout_windows) {
                 globalSettings.blackout_windows = [];
             }
+            // Find the next available window number
+            const existingNumbers = globalSettings.blackout_windows
+                .map(w => w.name.match(/Window (\d+)/))
+                .filter(m => m)
+                .map(m => parseInt(m[1]));
+            const nextNumber = existingNumbers.length > 0 ? Math.max(...existingNumbers) + 1 : 1;
+
             globalSettings.blackout_windows.push({
-                name: `Window ${globalSettings.blackout_windows.length + 1}`,
+                name: `Window ${nextNumber}`,
                 start: '02:00',
                 end: '04:00',
                 days: [0, 1, 2, 3, 4, 5, 6], // All days by default
@@ -4221,6 +4281,29 @@
             renderBlackoutWindows();
         }
 
+        async function saveBlackoutWindows() {
+            try {
+                // Add timezone offset (in minutes, negative for timezones ahead of UTC)
+                globalSettings.timezone_offset = -new Date().getTimezoneOffset();
+
+                const response = await fetch(`${API_BASE}/api/settings`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(globalSettings)
+                });
+
+                if (response.ok) {
+                    showToast('✅ Blackout windows saved successfully!');
+                    await updateBlackoutStatus();
+                }
+            } catch (error) {
+                console.error('Error saving blackout windows:', error);
+                showToast('❌ Failed to save blackout windows');
+            }
+        }
+
         async function updateBlackoutStatus() {
             try {
                 const response = await fetch(`${API_BASE}/api/blackout/status`, {
@@ -4250,6 +4333,20 @@
                                 </div>
                             </div>
                         `;
+                    }
+
+                    // Update dashboard indicator
+                    const dashboardIndicator = document.getElementById('quietHoursIndicator');
+                    if (dashboardIndicator) {
+                        if (status.is_blackout) {
+                            dashboardIndicator.style.display = 'flex';
+                            dashboardIndicator.innerHTML = `
+                                <span style="font-size: 16px;">🌙</span>
+                                <span>In Blackout Window</span>
+                            `;
+                        } else {
+                            dashboardIndicator.style.display = 'none';
+                        }
                     }
                 }
             } catch (error) {
@@ -4321,7 +4418,8 @@
             const message = `Are you sure you want to delete the host <strong>"${hostName}"</strong>?<br><br>
                 This will:<br>
                 • Remove the host and all its containers<br>
-                • Delete any associated alert rules<br>
+                • Remove this host's containers from alert rules<br>
+                • Delete alerts that only monitor this host's containers<br>
                 • Stop all monitoring for this host<br><br>
                 <strong>This action cannot be undone.</strong>`;
 
@@ -4964,8 +5062,7 @@
                     createDefaultDashboard();
                 }
 
-                // Save layout on change
-                grid.on('change', saveDashboardLayout);
+                // Don't auto-save on change anymore - user must click Save Layout button
 
                 // Render widgets with current data
                 renderDashboardWidgets();
@@ -4990,11 +5087,29 @@
         }
 
         function createHostWidgets() {
-            // Remove existing host widgets first
+            // Load saved layout to check for existing positions
+            const savedLayout = localStorage.getItem('dashboardLayout');
+            const layoutMap = {};
+            if (savedLayout) {
+                const layout = JSON.parse(savedLayout);
+                layout.forEach(item => {
+                    layoutMap[item.id] = item;
+                });
+            }
+
+            // Get current host widget IDs
+            const currentHostWidgetIds = hosts.map(host => `host-${host.id}`);
+
+            // Remove host widgets that no longer exist
             const existingHostWidgets = grid.getGridItems().filter(item =>
                 item.getAttribute('data-widget-id').startsWith('host-')
             );
-            existingHostWidgets.forEach(widget => grid.removeWidget(widget));
+            existingHostWidgets.forEach(widget => {
+                const widgetId = widget.getAttribute('data-widget-id');
+                if (!currentHostWidgetIds.includes(widgetId)) {
+                    grid.removeWidget(widget);
+                }
+            });
 
             // Create a widget for each host with dynamic sizing and smart positioning
             let currentY = 5; // Start below stats widget
@@ -5003,6 +5118,26 @@
 
             hosts.forEach((host, index) => {
                 const widgetId = `host-${host.id}`;
+
+                // Check if widget already exists
+                const existingWidget = document.querySelector(`[data-widget-id="${widgetId}"]`);
+                if (existingWidget) {
+                    // Widget already exists, just update its height if needed
+                    const hostContainers = containers.filter(c => c.host_id === host.id);
+                    const containerRows = Math.max(1, hostContainers.length);
+                    const headerHeight = 4;
+                    const containerHeight = 2.2;
+                    const dynamicHeight = headerHeight + containerRows * containerHeight + 0.5;
+                    const widgetHeight = Math.max(6, Math.ceil(dynamicHeight));
+
+                    // Update height if container count changed
+                    const currentHeight = parseInt(existingWidget.getAttribute('gs-h'));
+                    if (currentHeight !== widgetHeight) {
+                        grid.update(existingWidget, { h: widgetHeight });
+                    }
+                    return;
+                }
+
                 const hostContainers = containers.filter(c => c.host_id === host.id);
 
                 // Calculate height based on container count
@@ -5012,25 +5147,33 @@
                 const dynamicHeight = headerHeight + containerRows * containerHeight + 0.5; // Add padding for bottom border
                 const widgetHeight = Math.max(6, Math.ceil(dynamicHeight)); // Minimum height of 6
 
-
-                // Smart column placement - use the shorter column
-                let x, y;
-                if (leftColumnY <= rightColumnY) {
-                    // Place in left column
-                    x = 0;
-                    y = leftColumnY;
-                    leftColumnY = y + widgetHeight + 1; // Add gap
+                // Check if there's a saved position for this widget
+                let x, y, w;
+                if (layoutMap[widgetId]) {
+                    // Use saved position
+                    x = layoutMap[widgetId].x;
+                    y = layoutMap[widgetId].y;
+                    w = layoutMap[widgetId].w;
                 } else {
-                    // Place in right column
-                    x = 6;
-                    y = rightColumnY;
-                    rightColumnY = y + widgetHeight + 1; // Add gap
+                    // Smart column placement - use the shorter column
+                    if (leftColumnY <= rightColumnY) {
+                        // Place in left column
+                        x = 0;
+                        y = leftColumnY;
+                        leftColumnY = y + widgetHeight + 1; // Add gap
+                    } else {
+                        // Place in right column
+                        x = 6;
+                        y = rightColumnY;
+                        rightColumnY = y + widgetHeight + 1; // Add gap
+                    }
+                    w = 6;
                 }
 
                 const widget = createWidget(widgetId, host.name, '🖥️', {
                     x: x,
                     y: y,
-                    w: 6,
+                    w: w,
                     h: widgetHeight,
                     minW: 3, minH: 3
                 });
@@ -5050,9 +5193,6 @@
                                 <span>${title}</span>
                             </div>
                             <div class="widget-actions">
-                                <button class="widget-action lock-btn" onclick="toggleWidgetLock(this)" title="Lock widget">
-                                    🔓
-                                </button>
                                 <button class="widget-action" onclick="removeWidget('${id}')" title="Remove widget">
                                     ✕
                                 </button>
@@ -5153,55 +5293,15 @@
             });
         }
 
-        function toggleDashboardLock() {
-            dashboardLocked = !dashboardLocked;
-            grid.setStatic(dashboardLocked);
-
-            const btn = document.getElementById('dashboardLockBtn');
-            const icon = document.getElementById('lockBtnIcon');
-            const text = document.getElementById('lockBtnText');
-
-            if (dashboardLocked) {
-                icon.textContent = '🔒';
-                text.textContent = 'Unlock Layout';
-                document.querySelectorAll('.lock-btn').forEach(btn => {
-                    btn.textContent = '🔒';
-                    btn.classList.add('locked');
-                });
-            } else {
-                icon.textContent = '🔓';
-                text.textContent = 'Lock Layout';
-                document.querySelectorAll('.lock-btn').forEach(btn => {
-                    btn.textContent = '🔓';
-                    btn.classList.remove('locked');
-                });
-            }
-        }
-
-        function toggleWidgetLock(btn) {
-            const widget = btn.closest('.grid-stack-item');
-            const isLocked = widget.classList.contains('gs-locked');
-
-            if (isLocked) {
-                grid.movable(widget, true);
-                grid.resizable(widget, true);
-                widget.classList.remove('gs-locked');
-                btn.textContent = '🔓';
-                btn.classList.remove('locked');
-            } else {
-                grid.movable(widget, false);
-                grid.resizable(widget, false);
-                widget.classList.add('gs-locked');
-                btn.textContent = '🔒';
-                btn.classList.add('locked');
-            }
+        function saveDashboardLayoutManual() {
+            saveDashboardLayout();
+            showToast('✅ Dashboard layout saved');
         }
 
         function removeWidget(id) {
             const widget = document.querySelector(`[data-widget-id="${id}"]`);
             if (widget) {
                 grid.removeWidget(widget);
-                saveDashboardLayout();
             }
         }
 
@@ -5254,10 +5354,19 @@
         }
 
         function resetDashboardLayout() {
-            localStorage.removeItem('dashboardLayout');
-            grid.removeAll();
-            createDefaultDashboard();
-            showToast('Dashboard layout reset to default');
+            // Try to load the last saved layout, or use default if none exists
+            const savedLayout = localStorage.getItem('dashboardLayout');
+            if (savedLayout) {
+                // Revert to last saved layout
+                grid.removeAll();
+                loadDashboardLayout(JSON.parse(savedLayout));
+                showToast('🔄 Dashboard layout reset to last saved state');
+            } else {
+                // No saved layout, use default
+                grid.removeAll();
+                createDefaultDashboard();
+                showToast('🔄 Dashboard layout reset to default');
+            }
         }
 
 
@@ -5279,11 +5388,6 @@
     </script>
 
     <!-- Logout Button -->
-    <button class="logout-button" onclick="logout()" title="Logout">
-        <span>🚪</span>
-        <span>Logout</span>
-    </button>
-
     <!-- GridStack.js Scripts -->
     <script src="https://cdn.jsdelivr.net/npm/gridstack@10.0.1/dist/gridstack-all.js"></script>
 </body>

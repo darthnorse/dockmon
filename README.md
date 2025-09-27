@@ -20,7 +20,7 @@ A comprehensive Docker container monitoring and management platform with real-ti
 
 ### Alerts
 ![Alerts](screenshots/alerts.png)
-*Configure alert rules with regex patterns and notification channels*
+*Flexible alert system with multiple notification channels and methods*
 
 ### Blackout Window
 ![Blackout Window](screenshots/blackout_window.png)

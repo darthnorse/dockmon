@@ -28,8 +28,8 @@ COPY src/favicon.ico /usr/share/nginx/html/favicon.ico
 COPY src/images/ /usr/share/nginx/html/images/
 RUN chmod 644 /usr/share/nginx/html/*.html /usr/share/nginx/html/*.ico
 
-# Copy SSL certificates
-COPY docker/certs/ /etc/nginx/certs/
+# Create certs directory (certificates will be generated at runtime if not present)
+RUN mkdir -p /etc/nginx/certs
 
 # Copy nginx configuration
 COPY docker/nginx.conf /etc/nginx/conf.d/default.conf

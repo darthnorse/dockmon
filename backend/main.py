@@ -1092,7 +1092,7 @@ if __name__ == "__main__":
 
     uvicorn.run(
         "main:app",
-        host="0.0.0.0",  # Accept connections from any interface
+        host="127.0.0.1",  # Localhost only - Nginx in same container can access
         port=8080,
         reload=reload_enabled,
         log_level="info"

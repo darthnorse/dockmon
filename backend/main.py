@@ -79,6 +79,7 @@ async def lifespan(app: FastAPI):
     # Start blackout window monitoring with WebSocket support
     await monitor.notification_service.blackout_manager.start_monitoring(
         monitor.notification_service,
+        monitor,  # Pass DockerMonitor instance to avoid re-initialization
         monitor.manager  # Pass ConnectionManager for WebSocket broadcasts
     )
     yield

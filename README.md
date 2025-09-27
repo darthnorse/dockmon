@@ -274,14 +274,19 @@ To set up blackout windows:
 #### Best Practices
 
 ⚠️ **Important:** When using blackout windows, configure your alert rules to monitor both **events AND states**. This ensures:
-- Events trigger immediate alerts during normal operations
-- State monitoring catches issues that occurred during blackout periods
+- **Events**: Trigger immediate alerts when container state changes occur (e.g., die, stop, restart)
+- **States**: Continuously monitor container health and trigger alerts based on current state (e.g., exited, dead, paused)
 
 **Example Alert Rule Configuration:**
 ```
 ✅ Monitor Events: container_stop, container_die
 ✅ Monitor States: exited, dead
 ```
+
+**Why both?**
+- During normal operations, **events** provide instant notification when something goes wrong
+- During blackout windows, alerts are suppressed, but **state monitoring** checks container health when the blackout ends
+- If containers are still in problematic states (exited, dead, etc.) after the blackout, you'll be notified immediately
 
 This dual approach ensures you won't miss critical issues, whether they occur during normal operations or maintenance windows.
 

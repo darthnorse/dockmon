@@ -80,11 +80,15 @@ class BlackoutManager:
         """Set when the last blackout window ended"""
         self._last_window_end = end_time
 
-    async def check_container_states_after_blackout(self, notification_service) -> Dict:
+    async def check_container_states_after_blackout(self, notification_service, monitor) -> Dict:
         """
         Check all container states after blackout window ends.
         Alert if any containers are in problematic states.
         Returns summary of what was found.
+
+        Args:
+            notification_service: The notification service instance
+            monitor: The DockerMonitor instance (reused, not created)
         """
         summary = {
             'containers_down': [],
@@ -93,9 +97,6 @@ class BlackoutManager:
         }
 
         try:
-            # Import here to avoid circular dependency
-            from docker_monitor.monitor import DockerMonitor
-            monitor = DockerMonitor()
 
             problematic_states = ['exited', 'dead', 'paused', 'removing']
 
@@ -208,9 +209,16 @@ class BlackoutManager:
             logger.error(f"Error matching container to rule: {e}")
             return False
 
-    async def start_monitoring(self, notification_service, connection_manager=None):
-        """Start monitoring for blackout window transitions"""
+    async def start_monitoring(self, notification_service, monitor, connection_manager=None):
+        """Start monitoring for blackout window transitions
+
+        Args:
+            notification_service: The notification service instance
+            monitor: The DockerMonitor instance (reused, not created)
+            connection_manager: Optional WebSocket connection manager
+        """
         self._connection_manager = connection_manager
+        self._monitor = monitor  # Store monitor reference
 
         async def monitor_loop():
             was_in_blackout = False
@@ -234,7 +242,7 @@ class BlackoutManager:
                         # If we just exited blackout, process suppressed alerts
                         if was_in_blackout and not is_blackout:
                             logger.info(f"Blackout window ended. Processing suppressed alerts...")
-                            await notification_service.process_suppressed_alerts()
+                            await notification_service.process_suppressed_alerts(self._monitor)
 
                     was_in_blackout = is_blackout
 

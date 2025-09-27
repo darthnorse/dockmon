@@ -691,17 +691,17 @@ Rule: {RULE_NAME}"""
             logger.error(f"Error testing channel {channel_id}: {e}")
             return {'success': False, 'error': str(e)}
 
-    async def process_suppressed_alerts(self):
-        """Process alerts that were suppressed during blackout windows"""
+    async def process_suppressed_alerts(self, monitor):
+        """Process alerts that were suppressed during blackout windows
+
+        Args:
+            monitor: The DockerMonitor instance (reused, not created)
+        """
         if not self._suppressed_alerts:
             logger.info("No suppressed alerts to process")
             return
 
         logger.info(f"Processing {len(self._suppressed_alerts)} suppressed alerts from blackout windows")
-
-        # Get current container states
-        from docker_monitor.monitor import DockerMonitor
-        monitor = DockerMonitor()
 
         alerts_to_send = []
 

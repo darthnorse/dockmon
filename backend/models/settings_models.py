@@ -21,6 +21,7 @@ class GlobalSettings(BaseModel):
     connection_timeout: int = Field(10, ge=1, le=60)  # 1-60 seconds
     alert_template: Optional[str] = Field(None, max_length=2000)  # Global notification template
     blackout_windows: Optional[List[dict]] = None  # Blackout windows configuration
+    timezone_offset: int = Field(0, ge=-720, le=720)  # Timezone offset in minutes from UTC (-12h to +12h)
 
     @validator('max_retries')
     def validate_max_retries(cls, v):

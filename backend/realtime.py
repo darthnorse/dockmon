@@ -59,6 +59,7 @@ class RealtimeMonitor:
         self.notification_service = None  # Will be set after initialization to avoid circular imports
         self.event_queues: Dict[str, asyncio.Queue] = {}  # Event queues for each host
         self.event_threads: Dict[str, threading.Thread] = {}  # Event threads for each host
+        self.event_thread_stop: Dict[str, threading.Event] = {}  # Stop signals for threads
 
     async def subscribe_to_stats(self, websocket: Any, container_id: str):
         """Subscribe a websocket to container stats"""
@@ -227,6 +228,9 @@ class RealtimeMonitor:
         # Create event queue for this host
         self.event_queues[host_id] = asyncio.Queue()
 
+        # Create stop event for this thread
+        self.event_thread_stop[host_id] = threading.Event()
+
         # Start dedicated thread for event stream
         # Pass the current event loop to the thread
         loop = asyncio.get_event_loop()
@@ -244,6 +248,11 @@ class RealtimeMonitor:
 
     def stop_event_monitoring(self, host_id: str):
         """Stop event monitoring for a specific host"""
+        # Signal thread to stop
+        if host_id in self.event_thread_stop:
+            self.event_thread_stop[host_id].set()
+            del self.event_thread_stop[host_id]
+
         if host_id in self.event_tasks:
             task = self.event_tasks[host_id]
             task.cancel()
@@ -251,7 +260,6 @@ class RealtimeMonitor:
         if host_id in self.event_queues:
             del self.event_queues[host_id]
         if host_id in self.event_threads:
-            # Thread will stop when it checks event_tasks
             del self.event_threads[host_id]
 
     def _event_stream_thread(self, client: docker.DockerClient, host_id: str, loop):
@@ -262,21 +270,23 @@ class RealtimeMonitor:
             events = client.events(decode=True, filters={"type": "container"})
 
             for event in events:
-                # Check if we should stop
-                if host_id not in self.event_tasks or host_id not in self.event_queues:
+                # Check if we should stop using the threading.Event
+                stop_event = self.event_thread_stop.get(host_id)
+                if stop_event and stop_event.is_set():
+                    logger.info(f"Event stream thread for host {host_id} stopping (stop signal received)")
                     break
 
-                # Put event in queue (thread-safe)
+                # Put event in queue (thread-safe, fire-and-forget)
                 try:
                     queue = self.event_queues.get(host_id)
                     if queue:
-                        # Use run_coroutine_threadsafe with the loop passed from main thread
+                        # Use run_coroutine_threadsafe without waiting for completion
                         asyncio.run_coroutine_threadsafe(
                             queue.put(event),
                             loop
                         )
                 except Exception as e:
-                    logger.error(f"Error putting event in queue: {e}")
+                    logger.error(f"Error scheduling event for queue for host {host_id}: {e}")
 
         except Exception as e:
             logger.error(f"Error in event stream thread for host {host_id}: {e}")

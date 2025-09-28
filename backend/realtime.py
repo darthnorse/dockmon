@@ -6,6 +6,7 @@ Provides live container updates, stats streaming, and Docker event monitoring
 import asyncio
 import json
 import logging
+import threading
 from datetime import datetime
 from typing import Dict, List, Set, Optional, Any
 from dataclasses import dataclass, asdict
@@ -56,6 +57,8 @@ class RealtimeMonitor:
         self.monitoring_tasks: Dict[str, asyncio.Task] = {}
         self.event_tasks: Dict[str, asyncio.Task] = {}
         self.notification_service = None  # Will be set after initialization to avoid circular imports
+        self.event_queues: Dict[str, asyncio.Queue] = {}  # Event queues for each host
+        self.event_threads: Dict[str, threading.Thread] = {}  # Event threads for each host
 
     async def subscribe_to_stats(self, websocket: Any, container_id: str):
         """Subscribe a websocket to container stats"""
@@ -217,7 +220,26 @@ class RealtimeMonitor:
             existing_task.cancel()
             del self.event_tasks[host_id]
 
-        task = asyncio.create_task(self._monitor_docker_events(client, host_id))
+        if host_id in self.event_threads:
+            # Signal thread to stop (it will check if host_id is in event_tasks)
+            pass
+
+        # Create event queue for this host
+        self.event_queues[host_id] = asyncio.Queue()
+
+        # Start dedicated thread for event stream
+        # Pass the current event loop to the thread
+        loop = asyncio.get_event_loop()
+        thread = threading.Thread(
+            target=self._event_stream_thread,
+            args=(client, host_id, loop),
+            daemon=True
+        )
+        thread.start()
+        self.event_threads[host_id] = thread
+
+        # Start async task to process events from queue
+        task = asyncio.create_task(self._process_docker_events(host_id))
         self.event_tasks[host_id] = task
 
     def stop_event_monitoring(self, host_id: str):
@@ -226,28 +248,52 @@ class RealtimeMonitor:
             task = self.event_tasks[host_id]
             task.cancel()
             del self.event_tasks[host_id]
+        if host_id in self.event_queues:
+            del self.event_queues[host_id]
+        if host_id in self.event_threads:
+            # Thread will stop when it checks event_tasks
+            del self.event_threads[host_id]
 
-    async def _monitor_docker_events(self, client: docker.DockerClient, host_id: str):
-        """Monitor and broadcast Docker events"""
-        logger.info(f"Starting Docker event monitoring for host {host_id}")
+    def _event_stream_thread(self, client: docker.DockerClient, host_id: str, loop):
+        """Dedicated thread to read Docker events and put them in a queue"""
+        logger.info(f"Event stream thread started for host {host_id}")
 
         try:
-            # Get event generator with timeout to prevent blocking
             events = client.events(decode=True, filters={"type": "container"})
 
-            # Use asyncio to make the blocking iterator non-blocking
-            loop = asyncio.get_event_loop()
+            for event in events:
+                # Check if we should stop
+                if host_id not in self.event_tasks or host_id not in self.event_queues:
+                    break
+
+                # Put event in queue (thread-safe)
+                try:
+                    queue = self.event_queues.get(host_id)
+                    if queue:
+                        # Use run_coroutine_threadsafe with the loop passed from main thread
+                        asyncio.run_coroutine_threadsafe(
+                            queue.put(event),
+                            loop
+                        )
+                except Exception as e:
+                    logger.error(f"Error putting event in queue: {e}")
+
+        except Exception as e:
+            logger.error(f"Error in event stream thread for host {host_id}: {e}")
+        finally:
+            logger.info(f"Event stream thread stopped for host {host_id}")
+
+    async def _process_docker_events(self, host_id: str):
+        """Process Docker events from the queue"""
+        logger.info(f"Starting Docker event processing for host {host_id}")
+
+        try:
+            queue = self.event_queues[host_id]
 
             while host_id in self.event_tasks:
                 try:
-                    # Use run_in_executor to make the blocking next() call non-blocking
-                    event = await asyncio.wait_for(
-                        loop.run_in_executor(None, lambda: next(events, None)),
-                        timeout=5.0
-                    )
-
-                    if event is None:
-                        break
+                    # Wait for event with timeout
+                    event = await asyncio.wait_for(queue.get(), timeout=5.0)
 
                     # Parse event
                     docker_event = DockerEvent(

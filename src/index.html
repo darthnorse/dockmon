@@ -1264,7 +1264,71 @@
             }
 
             .stats-grid {
-                grid-template-columns: 1fr;
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            /* Mobile Dashboard Optimizations */
+            .grid-stack {
+                position: static !important;
+                display: flex !important;
+                flex-direction: column !important;
+                gap: 8px !important;
+                padding: 8px !important;
+            }
+
+            .grid-stack-item {
+                position: static !important;
+                width: 100% !important;
+                height: auto !important;
+                transform: none !important;
+                margin: 0 !important;
+            }
+
+            .grid-stack-item-content {
+                position: static !important;
+                width: 100% !important;
+                height: auto !important;
+                min-height: auto !important;
+            }
+
+            /* Hide resize handles on mobile */
+            .ui-resizable-handle {
+                display: none !important;
+            }
+
+            /* Make dragging less sensitive on mobile */
+            .grid-stack-item.ui-draggable-dragging {
+                opacity: 0.5;
+            }
+
+            /* Bigger touch targets */
+            .container-item {
+                padding: 12px 8px;
+                min-height: 48px;
+            }
+
+            .toggle-switch {
+                width: 44px;
+                height: 24px;
+            }
+
+            .toggle-switch::after {
+                width: 20px;
+                height: 20px;
+            }
+
+            /* Stats widget on mobile */
+            .grid-stack-item[data-widget-id="stats"] {
+                order: -1;
+            }
+
+            /* Better spacing for widget headers */
+            .widget-header {
+                padding: 12px;
+            }
+
+            .widget-title {
+                font-size: 16px;
             }
         }
 

@@ -5068,9 +5068,9 @@
             // Initialize GridStack with better flexibility
             try {
                 grid = GridStack.init({
-                    column: 12,      // Keep standard 12 columns
-                    cellHeight: 40,  // Smaller cells for better control
-                    margin: 4,       // Tighter margins
+                    column: 48,      // 48 columns for maximum flexibility
+                    cellHeight: 20,  // Smaller cells for finer vertical control
+                    margin: 4,       // Keep margins at 4px
                     animate: true,
                     float: true,
                     draggable: {
@@ -5086,8 +5086,9 @@
                 // Load saved layout or use default
                 const savedLayout = localStorage.getItem('dashboardLayout');
                 if (savedLayout) {
-                    console.log('Loading saved dashboard layout');
-                    loadDashboardLayout(JSON.parse(savedLayout));
+                    const parsedLayout = JSON.parse(savedLayout);
+                    console.log('Loading saved dashboard layout - widgets:', parsedLayout.map(w => w.id));
+                    loadDashboardLayout(parsedLayout);
                 } else {
                     console.log('Creating default dashboard layout');
                     createDefaultDashboard();
@@ -5098,8 +5099,6 @@
                     saveDashboardLayout();
                 });
 
-                // Render widgets with current data
-                renderDashboardWidgets();
                 console.log('Dashboard initialization completed');
             } catch (error) {
                 console.error('Failed to initialize dashboard:', error);
@@ -5109,8 +5108,8 @@
         function createDefaultDashboard() {
             // Stats Widget - taller to ensure content fits
             const statsWidget = createWidget('stats', 'Statistics', '<span data-lucide="bar-chart-3"></span>', {
-                x: 0, y: 0, w: 12, h: 4,
-                minW: 4, minH: 4, maxH: 6
+                x: 0, y: 0, w: 48, h: 9,
+                minW: 16, minH: 8, maxH: 12
             });
 
             // Create individual widgets for each host
@@ -5146,9 +5145,9 @@
             });
 
             // Create a widget for each host with dynamic sizing and smart positioning
-            let currentY = 5; // Start below stats widget
-            let leftColumnY = 5;
-            let rightColumnY = 5;
+            let currentY = 10; // Start below stats widget (stats h=9, +1 for spacing)
+            let leftColumnY = 10;
+            let rightColumnY = 10;
 
             hosts.forEach((host, index) => {
                 const widgetId = `host-${host.id}`;
@@ -5156,6 +5155,7 @@
                 // Check if widget already exists
                 const existingWidget = document.querySelector(`[data-widget-id="${widgetId}"]`);
                 if (existingWidget) {
+                    console.log(`Widget ${widgetId} already exists - skipping creation`);
                     // Widget already exists - update column trackers so new widgets don't overlap
                     const existingX = parseInt(existingWidget.getAttribute('gs-x'));
                     const existingY = parseInt(existingWidget.getAttribute('gs-y'));
@@ -5170,23 +5170,26 @@
                     }
                     return;
                 }
+                console.log(`Creating new widget ${widgetId}`);
 
                 const hostContainers = containers.filter(c => c.host_id === host.id);
 
-                // Calculate height based on container count
+                // Calculate height based on container count (adjusted for cellHeight=20)
                 const containerRows = Math.max(1, hostContainers.length);
-                const headerHeight = 2; // Widget header (reduced after removing duplicate header)
-                const containerHeight = 1.8; // Each container row height
-                const dynamicHeight = headerHeight + containerRows * containerHeight + 0.6; // Add padding
-                const widgetHeight = Math.max(6, Math.ceil(dynamicHeight)); // Minimum height of 6
+                const headerHeight = 4; // Widget header (doubled for smaller cells)
+                const containerHeight = 3.6; // Each container row height (doubled)
+                const dynamicHeight = headerHeight + containerRows * containerHeight + 1.2; // Add padding
+                const widgetHeight = Math.max(12, Math.ceil(dynamicHeight)); // Minimum height of 12
 
                 // Check if there's a saved position for this widget
-                let x, y, w;
+                let x, y, w, h;
                 if (layoutMap[widgetId]) {
-                    // Use saved position
+                    // Use saved position and size
                     x = layoutMap[widgetId].x;
                     y = layoutMap[widgetId].y;
                     w = layoutMap[widgetId].w;
+                    h = layoutMap[widgetId].h;
+                    console.log(`Restoring widget ${widgetId} from saved layout: x=${x}, y=${y}, w=${w}, h=${h}`);
                 } else {
                     // Smart column placement - use the shorter column
                     if (leftColumnY <= rightColumnY) {
@@ -5196,44 +5199,55 @@
                         leftColumnY = y + widgetHeight; // Update tracker
                     } else {
                         // Place in right column
-                        x = 6;
+                        x = 24;
                         y = rightColumnY;
                         rightColumnY = y + widgetHeight; // Update tracker
                     }
-                    w = 6;
+                    w = 24;
+                    h = widgetHeight;
                 }
 
                 const widget = createWidget(widgetId, host.name, '<span data-lucide="server"></span>', {
                     x: x,
                     y: y,
                     w: w,
-                    h: widgetHeight,
+                    h: h,
                     minW: 3, minH: 3
                 });
             });
         }
 
         function createWidget(id, title, icon, gridOptions) {
-            const widgetHtml = `
-                <div class="grid-stack-item" data-widget-id="${id}" gs-x="${gridOptions.x}" gs-y="${gridOptions.y}"
-                     gs-w="${gridOptions.w}" gs-h="${gridOptions.h}"
-                     gs-min-w="${gridOptions.minW || 2}" gs-min-h="${gridOptions.minH || 2}"
-                     ${gridOptions.maxH ? `gs-max-h="${gridOptions.maxH}"` : ''}>
-                    <div class="grid-stack-item-content">
-                        <div class="widget-header">
-                            <div class="widget-title">
-                                <span>${icon}</span>
-                                <span>${title}</span>
-                            </div>
+            // Create DOM element instead of HTML string (GridStack v12+ requirement)
+            const widgetEl = document.createElement('div');
+            widgetEl.className = 'grid-stack-item';
+            widgetEl.setAttribute('data-widget-id', id);
+
+            widgetEl.innerHTML = `
+                <div class="grid-stack-item-content">
+                    <div class="widget-header">
+                        <div class="widget-title">
+                            <span>${icon}</span>
+                            <span>${title}</span>
                         </div>
-                        <div class="widget-body" id="widget-${id}">
-                            <!-- Content will be rendered here -->
-                        </div>
+                    </div>
+                    <div class="widget-body" id="widget-${id}">
+                        <!-- Content will be rendered here -->
                     </div>
                 </div>
             `;
 
-            grid.addWidget(widgetHtml);
+            // GridStack v12+ API - use makeWidget with options
+            grid.makeWidget(widgetEl, {
+                x: gridOptions.x,
+                y: gridOptions.y,
+                w: gridOptions.w,
+                h: gridOptions.h,
+                minW: gridOptions.minW || 2,
+                minH: gridOptions.minH || 2,
+                maxH: gridOptions.maxH || undefined
+            });
+
             initIcons();
             return document.querySelector(`[data-widget-id="${id}"]`);
         }
@@ -5336,15 +5350,16 @@
         }
 
         function saveDashboardLayout() {
-            const items = grid.getGridItems();
-            const layout = items.map(item => ({
-                id: item.getAttribute('data-widget-id'),
-                x: parseInt(item.getAttribute('gs-x')),
-                y: parseInt(item.getAttribute('gs-y')),
-                w: parseInt(item.getAttribute('gs-w')),
-                h: parseInt(item.getAttribute('gs-h'))
-            }));
-            localStorage.setItem('dashboardLayout', JSON.stringify(layout));
+            const layout = grid.save(false);
+            const layoutWithIds = layout.map((item, index) => {
+                const element = grid.getGridItems()[index];
+                return {
+                    ...item,
+                    id: element.getAttribute('data-widget-id')
+                };
+            });
+            localStorage.setItem('dashboardLayout', JSON.stringify(layoutWithIds));
+            console.log('Saved layout:', layoutWithIds.map(w => `${w.id} (${w.x},${w.y})`));
         }
 
         function loadDashboardLayout(layout) {
@@ -5360,10 +5375,10 @@
                         minH: widgetConfig.minH,
                         maxH: widgetConfig.maxH
                     });
+                } else {
+                    console.log(`Skipping widget ${item.id} - config not available yet (hosts data may not be loaded)`);
                 }
             });
-            // Use setTimeout to ensure widgets are fully created before rendering
-            setTimeout(() => renderDashboardWidgets(), 50);
         }
 
         function getWidgetConfig(id) {

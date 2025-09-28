@@ -1248,15 +1248,45 @@
 
         /* Responsive */
         @media (max-width: 768px) {
+            /* Hide sidebar completely on mobile */
             .sidebar {
-                width: 60px;
+                display: none !important;
             }
 
-            .sidebar-header .logo-text,
-            .nav-item span:not(.nav-icon),
-            .nav-badge,
-            .nav-section-title {
-                display: none;
+            /* Remove main content margin since sidebar is gone */
+            .main-content {
+                margin-left: 0 !important;
+                padding-bottom: 80px !important; /* Space for bottom nav */
+            }
+
+            /* Hide top-right controls on mobile */
+            .header-controls .refresh-btn,
+            .header-controls .add-host-btn,
+            .user-menu,
+            .hamburger-menu {
+                display: none !important;
+            }
+
+            /* Hide hamburger menu on mobile */
+            .menu-toggle {
+                display: none !important;
+            }
+
+            /* Hide topbar actions (refresh, add host buttons) on mobile */
+            .topbar-actions {
+                display: none !important;
+            }
+
+            /* Change Dashboard to DockMon on mobile */
+            .topbar-title {
+                font-size: 0 !important;
+            }
+
+            .topbar-title::before {
+                content: "DockMon";
+                font-size: 1.5rem;
+                font-weight: 600;
+                color: inherit;
             }
 
             .hosts-grid {
@@ -1329,6 +1359,202 @@
 
             .widget-title {
                 font-size: 16px;
+            }
+
+            /* Simplified mobile container display - name + status only */
+            .container-item {
+                flex-direction: row !important;
+                align-items: center !important;
+                justify-content: flex-start !important;
+                padding: 16px 12px !important;
+                margin-bottom: 4px !important;
+                border-radius: 8px;
+                background: rgba(255, 255, 255, 0.05);
+                gap: 12px !important;
+            }
+
+            .container-info {
+                flex: 1 !important;
+                margin: 0 !important;
+                order: 2;
+            }
+
+            .container-name {
+                font-size: 16px !important;
+                font-weight: 500 !important;
+                white-space: nowrap !important;
+                overflow: hidden !important;
+                text-overflow: ellipsis !important;
+                margin: 0 !important;
+                line-height: 1.2 !important;
+            }
+
+            /* Make status indicator larger and more visible like desktop */
+            .container-item::before {
+                content: '';
+                width: 12px !important;
+                height: 12px !important;
+                border-radius: 50% !important;
+                background: #10b981 !important; /* Green for running */
+                flex-shrink: 0 !important;
+                order: 1;
+                display: block !important;
+            }
+
+            /* Different colors for different states */
+            .container-item[data-status="running"]::before {
+                background: #10b981 !important; /* Green */
+            }
+
+            .container-item[data-status="stopped"]::before,
+            .container-item[data-status="exited"]::before {
+                background: #ef4444 !important; /* Red */
+            }
+
+            .container-item[data-status="restarting"]::before {
+                background: #f59e0b !important; /* Yellow */
+            }
+
+            .container-item[data-status="error"]::before,
+            .container-item[data-status="dead"]::before {
+                background: #ef4444 !important; /* Red */
+            }
+
+            /* Hide clutter on mobile */
+            .container-id,
+            .container-icon,
+            .container-controls,
+            .container-actions,
+            .container-state,
+            .auto-restart-toggle,
+            .toggle-switch,
+            .container-item button,
+            .container-item .btn {
+                display: none !important;
+            }
+
+            /* Show only status badge */
+            .status-badge {
+                font-size: 11px !important;
+                padding: 4px 8px !important;
+                border-radius: 12px !important;
+                font-weight: 600 !important;
+                text-transform: uppercase !important;
+                letter-spacing: 0.5px !important;
+                margin-left: 8px !important;
+            }
+
+            /* Make host widgets full width on mobile */
+            .host-widget {
+                width: 100% !important;
+                margin-bottom: 12px !important;
+            }
+
+            .host-widget .container-list {
+                max-height: none !important;
+            }
+
+            /* Better host widget styling */
+            .host-widget .widget-content {
+                padding: 8px !important;
+            }
+
+            /* Mobile bottom navigation */
+            .mobile-bottom-nav {
+                display: flex !important;
+                position: fixed;
+                bottom: 0;
+                left: 0;
+                right: 0;
+                background: rgba(30, 41, 59, 0.95);
+                backdrop-filter: blur(10px);
+                border-top: 1px solid rgba(255, 255, 255, 0.1);
+                padding: 8px 0;
+                z-index: 1000;
+                height: 70px;
+                align-items: center;
+                justify-content: space-around;
+            }
+
+            .mobile-nav-item {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                padding: 8px 12px;
+                cursor: pointer;
+                transition: all 0.2s ease;
+                border-radius: 8px;
+                min-width: 60px;
+                position: relative;
+            }
+
+            .mobile-nav-item:hover,
+            .mobile-nav-item.active {
+                background: rgba(59, 130, 246, 0.1);
+                color: #3b82f6;
+            }
+
+            .mobile-nav-icon {
+                font-size: 20px;
+                margin-bottom: 4px;
+            }
+
+            .mobile-nav-label {
+                font-size: 11px;
+                font-weight: 500;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }
+
+            /* More menu dropdown */
+            .more-menu {
+                position: absolute;
+                bottom: 100%;
+                right: 0;
+                background: rgba(30, 41, 59, 0.95);
+                backdrop-filter: blur(10px);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 8px;
+                padding: 8px 0;
+                margin-bottom: 8px;
+                min-width: 140px;
+                display: none;
+                box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
+            }
+
+            .more-menu.show {
+                display: block;
+            }
+
+            .more-menu-item {
+                padding: 12px 16px;
+                cursor: pointer;
+                transition: background 0.2s ease;
+                font-size: 14px;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+
+            .more-menu-item:hover {
+                background: rgba(255, 255, 255, 0.1);
+            }
+
+            .more-menu-item i {
+                font-size: 16px;
+                width: 16px;
+            }
+
+            /* Hide desktop bottom nav on mobile */
+            .mobile-bottom-nav {
+                display: none;
+            }
+        }
+
+        /* Show mobile nav only on mobile */
+        @media (max-width: 768px) {
+            .mobile-bottom-nav {
+                display: flex !important;
             }
         }
 
@@ -2648,7 +2874,7 @@
                 
                 const hostContainers = (containersByHost[host.id] || []).sort((a, b) => a.name.localeCompare(b.name));
                 const containersList = hostContainers.map(container => `
-                    <div class="container-item">
+                    <div class="container-item" data-status="${container.state}">
                         <div class="container-info" onclick="showContainerDetails('${container.short_id}')">
                             <div class="container-icon container-${container.state}">
                                 ${getContainerIcon(container.state)}
@@ -5358,7 +5584,7 @@
                     const hostContainers = containers.filter(c => c.host_id === host.id).sort((a, b) => a.name.localeCompare(b.name));
                     const maxContainersToShow = hostContainers.length; // Show all containers now that widgets are dynamically sized
                     const containersList = hostContainers.slice(0, maxContainersToShow).map(container => `
-                        <div class="container-item">
+                        <div class="container-item" data-status="${container.state}">
                             <div class="container-info" onclick="showContainerDetails('${container.short_id}')">
                                 <div class="container-icon container-${container.state}">
                                     ${getContainerIcon(container.state)}
@@ -5417,33 +5643,83 @@
 
         function saveDashboardLayout() {
             const layout = grid.save(false);
-            const layoutWithIds = layout.map((item, index) => {
-                const element = grid.getGridItems()[index];
-                return {
-                    id: element.getAttribute('data-widget-id'),
-                    x: item.x,
-                    y: item.y,
-                    w: item.w,
-                    h: item.h
-                };
-            });
+            const gridItems = grid.getGridItems();
+
+            // Create a map of grid items by their grid position to ensure correct mapping
+            const layoutWithIds = layout.map((item) => {
+                // Find the grid item that matches this layout position
+                const element = gridItems.find(gridItem => {
+                    const gridData = gridItem.gridstackNode;
+                    return gridData && gridData.x === item.x && gridData.y === item.y && gridData.w === item.w && gridData.h === item.h;
+                });
+
+                if (element) {
+                    return {
+                        id: element.getAttribute('data-widget-id'),
+                        x: item.x,
+                        y: item.y,
+                        w: item.w,
+                        h: item.h
+                    };
+                }
+
+                // Fallback: if we can't find by position, log error and skip
+                console.error('Could not find grid element for layout item:', item);
+                return null;
+            }).filter(Boolean); // Remove null entries
+
+            // Ensure stats widget is always in the saved layout
+            const hasStatsWidget = layoutWithIds.some(item => item.id === 'stats');
+            if (!hasStatsWidget) {
+                console.log('Adding missing stats widget to saved layout');
+                layoutWithIds.unshift({
+                    id: 'stats',
+                    x: 0,
+                    y: 0,
+                    w: 48,
+                    h: 9
+                });
+            }
+
             localStorage.setItem('dashboardLayout', JSON.stringify(layoutWithIds));
             console.log('Saved layout:', layoutWithIds.map(w => `${w.id} (${w.x},${w.y}) h=${w.h}`));
         }
 
         function loadDashboardLayout(layout) {
+            // Ensure stats widget is always present first
+            const hasStatsWidget = layout.some(item => item.id === 'stats');
+            if (!hasStatsWidget) {
+                console.log('Stats widget missing from layout - adding it back');
+                createWidget('stats', 'Statistics', '<span data-lucide="bar-chart-3"></span>', {
+                    x: 0, y: 0, w: 48, h: 9,
+                    minW: 48, minH: 9, maxH: 9, maxW: 48,
+                    noResize: true,
+                    noMove: true
+                });
+            }
+
             layout.forEach(item => {
                 const widgetConfig = getWidgetConfig(item.id);
                 if (widgetConfig) {
-                    createWidget(widgetConfig.id, widgetConfig.title, widgetConfig.icon, {
-                        x: item.x,
-                        y: item.y,
-                        w: item.w,
-                        h: item.h,
-                        minW: widgetConfig.minW,
-                        minH: widgetConfig.minH,
-                        maxH: widgetConfig.maxH
-                    });
+                    // Special handling for stats widget to ensure proper positioning
+                    if (item.id === 'stats') {
+                        createWidget(widgetConfig.id, widgetConfig.title, widgetConfig.icon, {
+                            x: 0, y: 0, w: 48, h: 9,
+                            minW: 48, minH: 9, maxH: 9, maxW: 48,
+                            noResize: true,
+                            noMove: true
+                        });
+                    } else {
+                        createWidget(widgetConfig.id, widgetConfig.title, widgetConfig.icon, {
+                            x: item.x,
+                            y: item.y,
+                            w: item.w,
+                            h: item.h,
+                            minW: widgetConfig.minW,
+                            minH: widgetConfig.minH,
+                            maxH: widgetConfig.maxH
+                        });
+                    }
                 } else {
                     console.log(`Skipping widget ${item.id} - config not available yet (hosts data may not be loaded)`);
                 }
@@ -5502,9 +5778,132 @@
                 // Don't show error toast - WebSocket will handle data delivery
             }
         });
+
+        // Mobile Bottom Navigation
+        document.addEventListener('DOMContentLoaded', function() {
+            const mobileNavItems = document.querySelectorAll('.mobile-nav-item');
+            const moreMenu = document.querySelector('.more-menu');
+            const moreNavItem = document.querySelector('.mobile-nav-item[data-page="more"]');
+
+            // Handle navigation clicks
+            mobileNavItems.forEach(item => {
+                item.addEventListener('click', function(e) {
+                    const page = this.dataset.page;
+
+                    if (page === 'more') {
+                        // Toggle more menu
+                        e.stopPropagation();
+                        moreMenu.classList.toggle('show');
+                        return;
+                    }
+
+                    // Handle regular navigation
+                    if (page) {
+                        switchPage(page);
+                    }
+
+                    // Update active state
+                    mobileNavItems.forEach(nav => nav.classList.remove('active'));
+                    this.classList.add('active');
+
+                    // Hide more menu if open
+                    moreMenu.classList.remove('show');
+                });
+            });
+
+            // Handle more menu clicks
+            document.querySelectorAll('.more-menu-item').forEach(item => {
+                item.addEventListener('click', function(e) {
+                    const page = this.dataset.page;
+                    if (page) {
+                        setActivePage(page);
+                        moreMenu.classList.remove('show');
+
+                        // Update active state for the more button
+                        mobileNavItems.forEach(nav => nav.classList.remove('active'));
+                        moreNavItem.classList.add('active');
+                    }
+                });
+            });
+
+            // Close more menu when clicking outside
+            document.addEventListener('click', function(e) {
+                if (!moreNavItem.contains(e.target)) {
+                    moreMenu.classList.remove('show');
+                }
+            });
+
+            // Map mobile nav pages to existing navigation
+            function setActivePage(page) {
+                // Use the existing navigation system
+                const navItem = document.querySelector(`.nav-item[data-page="${page}"]`);
+                if (navItem) {
+                    navItem.click();
+                } else {
+                    // Fallback for pages that might not have nav items
+                    switch(page) {
+                        case 'dashboard':
+                            showSection('dashboard');
+                            break;
+                        case 'hosts':
+                            showSection('hosts');
+                            break;
+                        case 'alerts':
+                            showSection('alerts');
+                            break;
+                        case 'settings':
+                            showSection('settings');
+                            break;
+                        case 'notifications':
+                            showSection('notifications');
+                            break;
+                        case 'account':
+                            showSection('account');
+                            break;
+                    }
+                }
+            }
+        });
     </script>
 
-    <!-- Logout Button -->
+    <!-- Mobile Bottom Navigation -->
+    <div class="mobile-bottom-nav">
+        <div class="mobile-nav-item active" data-page="dashboard">
+            <i class="mobile-nav-icon" data-lucide="layout-grid"></i>
+            <span class="mobile-nav-label">Dashboard</span>
+        </div>
+        <div class="mobile-nav-item" data-page="hosts">
+            <i class="mobile-nav-icon" data-lucide="server"></i>
+            <span class="mobile-nav-label">Hosts</span>
+        </div>
+        <div class="mobile-nav-item" data-page="alerts">
+            <i class="mobile-nav-icon" data-lucide="alert-triangle"></i>
+            <span class="mobile-nav-label">Alerts</span>
+        </div>
+        <div class="mobile-nav-item" data-page="more">
+            <i class="mobile-nav-icon" data-lucide="more-horizontal"></i>
+            <span class="mobile-nav-label">More</span>
+            <div class="more-menu">
+                <div class="more-menu-item" onclick="openAccountSettings(); document.querySelector('.more-menu').classList.remove('show');">
+                    <i data-lucide="user"></i>
+                    <span>Account</span>
+                </div>
+                <div class="more-menu-item" onclick="switchPage('logs'); document.querySelector('.more-menu').classList.remove('show');">
+                    <i data-lucide="file-text"></i>
+                    <span>Logs</span>
+                </div>
+                <div class="more-menu-item" onclick="switchPage('about'); document.querySelector('.more-menu').classList.remove('show');">
+                    <i data-lucide="info"></i>
+                    <span>About</span>
+                </div>
+                <div class="more-menu-item" onclick="logout(); document.querySelector('.more-menu').classList.remove('show');">
+                    <i data-lucide="log-out"></i>
+                    <span>Logout</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- GridStack.js Scripts -->
     <script src="https://cdn.jsdelivr.net/npm/gridstack@12.3.3/dist/gridstack-all.js"></script>
 </body>

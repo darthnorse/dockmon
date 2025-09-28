@@ -78,7 +78,8 @@ A comprehensive Docker container monitoring and management platform with real-ti
 - **WebSocket real-time updates** for instant UI refresh
 - **SQLite database** for persistent configuration and event storage
 - **Modern dark UI** with professional design
-- **Responsive design** works on all devices
+- **Mobile-friendly responsive design** with native mobile navigation and optimized layouts
+- **Cross-platform compatibility** - works seamlessly on desktop, tablet, and mobile devices
 
 ## Quick Start
 

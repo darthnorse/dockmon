@@ -361,7 +361,7 @@
             grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
             gap: var(--spacing-sm);
             height: 100%;
-            padding: var(--spacing-sm);
+            padding: 2px;
         }
 
         /* Responsive adjustments */
@@ -5109,7 +5109,9 @@
             // Stats Widget - taller to ensure content fits
             const statsWidget = createWidget('stats', 'Statistics', '<span data-lucide="bar-chart-3"></span>', {
                 x: 0, y: 0, w: 48, h: 9,
-                minW: 16, minH: 8, maxH: 12
+                minW: 48, minH: 9, maxH: 9, maxW: 48,
+                noResize: true,
+                noMove: true
             });
 
             // Create individual widgets for each host
@@ -5354,12 +5356,15 @@
             const layoutWithIds = layout.map((item, index) => {
                 const element = grid.getGridItems()[index];
                 return {
-                    ...item,
-                    id: element.getAttribute('data-widget-id')
+                    id: element.getAttribute('data-widget-id'),
+                    x: item.x,
+                    y: item.y,
+                    w: item.w,
+                    h: item.h
                 };
             });
             localStorage.setItem('dashboardLayout', JSON.stringify(layoutWithIds));
-            console.log('Saved layout:', layoutWithIds.map(w => `${w.id} (${w.x},${w.y})`));
+            console.log('Saved layout:', layoutWithIds.map(w => `${w.id} (${w.x},${w.y}) h=${w.h}`));
         }
 
         function loadDashboardLayout(layout) {
@@ -5383,7 +5388,7 @@
 
         function getWidgetConfig(id) {
             const configs = {
-                'stats': { id: 'stats', title: 'Statistics', icon: '<span data-lucide="bar-chart-3"></span>', minW: 4, minH: 4, maxH: 6 }
+                'stats': { id: 'stats', title: 'Statistics', icon: '<span data-lucide="bar-chart-3"></span>', minW: 48, minH: 9, maxH: 9, maxW: 48, noResize: true, noMove: true }
             };
 
             // Dynamic configs for host widgets

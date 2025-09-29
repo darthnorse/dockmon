@@ -1,4 +1,24 @@
 
+# Claude Development Context and Internal Files
+CLAUDE_CONTEXT.md
+BASELINE_STATUS.md
+
+# Test Infrastructure (Development Only)
+tests/
+test-results/
+test-results.json
+playwright-report/
+screenshots/
+*-results.log
+baseline*.log
+pre-refactor*.log
+post-refactor*.log
+
+# Node.js Dependencies (from test setup)
+node_modules/
+package-lock.json
+npm-debug.log*
+
 # SSL Certificates
 docker/certs/
 *.crt

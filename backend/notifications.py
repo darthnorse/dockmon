@@ -54,6 +54,20 @@ class NotificationService:
         from blackout_manager import BlackoutManager
         self.blackout_manager = BlackoutManager(db)
 
+    def _get_host_name(self, event) -> str:
+        """Get host name from event, handling both AlertEvent and DockerEventAlert types"""
+        if hasattr(event, 'host_name'):
+            return event.host_name
+        elif hasattr(event, 'host_id'):
+            # Look up host name from host_id in database
+            try:
+                host = self.db.get_host(event.host_id)
+                return host.name if host else 'Unknown Host'
+            except Exception:
+                return 'Unknown Host'
+        else:
+            return 'Unknown Host'
+
     async def process_docker_event(self, event: DockerEventAlert) -> bool:
         """Process a Docker event and send alerts if rules match"""
         try:
@@ -61,7 +75,8 @@ class NotificationService:
             rules = self.db.get_alert_rules(enabled_only=True)
             matching_rules = []
 
-            logger.info(f"Processing Docker event: {event.event_type} for container {event.container_name} on host {event.host_id}")
+            host_name = self._get_host_name(event)
+            logger.info(f"Processing Docker event: {event.event_type} for container '{event.container_name}' on host '{host_name}'")
 
             for rule in rules:
                 # Check if rule has event triggers
@@ -111,13 +126,13 @@ class NotificationService:
                 matching_rules.append(rule)
 
             if not matching_rules:
-                logger.debug(f"No rules match Docker event {event.event_type} for {event.container_name}")
+                logger.debug(f"No rules match Docker event {event.event_type} for container '{event.container_name}' on host '{host_name}'")
                 return False
 
             # Send notifications for matching rules
             success_count = 0
             for rule in matching_rules:
-                logger.info(f"Processing Docker event rule '{rule.name}' for {event.container_name}")
+                logger.info(f"Processing Docker event rule '{rule.name}' for container '{event.container_name}' on host '{host_name}'")
 
                 # Check cooldown
                 container_key = f"{event.host_id}:{event.container_id}"
@@ -127,14 +142,14 @@ class NotificationService:
                 if cooldown_key in self._last_alerts:
                     time_since = datetime.now() - self._last_alerts[cooldown_key]
                     if time_since.total_seconds() < rule.cooldown_minutes * 60:
-                        logger.info(f"Skipping Docker event alert for {event.container_name} (rule: {rule.name}) due to cooldown")
+                        logger.info(f"Skipping Docker event alert for container '{event.container_name}' on host '{host_name}' (rule: {rule.name}) due to cooldown")
                         continue
 
                 # Check if we're in a blackout window
                 is_blackout, window_name = self.blackout_manager.is_in_blackout_window()
                 logger.info(f"Blackout check for Docker event (rule: {rule.name}): is_blackout={is_blackout}, window_name={window_name}")
                 if is_blackout:
-                    logger.info(f"Docker event alert suppressed during blackout window '{window_name}' for {event.container_name} (rule: {rule.name})")
+                    logger.info(f"Docker event alert suppressed during blackout window '{window_name}' for container '{event.container_name}' on host '{host_name}' (rule: {rule.name})")
                     continue
 
                 # Send notification
@@ -151,7 +166,8 @@ class NotificationService:
             return success_count > 0
 
         except Exception as e:
-            logger.error(f"Error processing Docker event for {event.container_name}: {e}")
+            host_name = self._get_host_name(event)
+            logger.error(f"Error processing Docker event for container '{event.container_name}' on host '{host_name}': {e}")
             return False
 
     async def _send_event_notification(self, rule: AlertRuleDB, event: DockerEventAlert) -> bool:
@@ -234,11 +250,13 @@ class NotificationService:
                         elif channel.type == 'slack':
                             await self._send_slack(channel.config, message, event)
                             success_count += 1
-                        logger.info(f"Event notification sent via {channel.type} for {event.container_name}")
+                        host_name = self._get_host_name(event)
+                        logger.info(f"Event notification sent via {channel.type} for container '{event.container_name}' on host '{host_name}'")
                     except Exception as e:
                         logger.error(f"Failed to send {channel.type} notification: {e}")
 
-            logger.info(f"Event alert sent to {success_count}/{total_channels} channels for {event.container_name}")
+            host_name = self._get_host_name(event)
+            logger.info(f"Event alert sent to {success_count}/{total_channels} channels for container '{event.container_name}' on host '{host_name}'")
             return success_count > 0
 
         except Exception as e:
@@ -251,10 +269,11 @@ class NotificationService:
             # Get matching alert rules
             alert_rules = await self._get_matching_rules(event)
 
-            logger.info(f"Found {len(alert_rules) if alert_rules else 0} matching alert rules for {event.container_name}")
+            host_name = self._get_host_name(event)
+            logger.info(f"Found {len(alert_rules) if alert_rules else 0} matching alert rules for container '{event.container_name}' on host '{host_name}'")
 
             if not alert_rules:
-                logger.warning(f"No alert rules match container {event.container_name} (state: {event.old_state} → {event.new_state})")
+                logger.warning(f"No alert rules match container '{event.container_name}' on host '{host_name}' (state: {event.old_state} → {event.new_state})")
                 return False
 
             success_count = 0
@@ -263,7 +282,7 @@ class NotificationService:
             # Check if we're in a blackout window
             is_blackout, window_name = self.blackout_manager.is_in_blackout_window()
             if is_blackout:
-                logger.info(f"Suppressed {len(alert_rules)} alerts during blackout window '{window_name}' for {event.container_name}")
+                logger.info(f"Suppressed {len(alert_rules)} alerts during blackout window '{window_name}' for container '{event.container_name}' on host '{host_name}'")
                 # Track this alert for later
                 self._suppressed_alerts.append(event)
                 return False
@@ -298,7 +317,8 @@ class NotificationService:
             return success_count > 0
 
         except Exception as e:
-            logger.error(f"Error processing alert for {event.container_name}: {e}")
+            host_name = self._get_host_name(event)
+            logger.error(f"Error processing alert for container '{event.container_name}' on host '{host_name}': {e}")
             return False
 
     async def _get_matching_rules(self, event: AlertEvent) -> List[AlertRuleDB]:
@@ -306,7 +326,8 @@ class NotificationService:
         rules = self.db.get_alert_rules(enabled_only=True)
         matching_rules = []
 
-        logger.info(f"Checking {len(rules)} alert rules for container {event.container_name} on host {event.host_id} (state: {event.old_state} → {event.new_state})")
+        host_name = self._get_host_name(event)
+        logger.info(f"Checking {len(rules)} alert rules for container '{event.container_name}' on host '{host_name}' (state: {event.old_state} → {event.new_state})")
 
         for rule in rules:
             container_info = f"{len(rule.containers)} container+host pairs" if hasattr(rule, 'containers') and rule.containers else "no containers"
@@ -351,13 +372,14 @@ class NotificationService:
 
         # Check if container recovered (went to a non-alert state) since last alert
         # Use old_state from the event, not our tracked state!
-        logger.debug(f"Alert check for {event.container_name}: {event.old_state} → {event.new_state}")
+        host_name = self._get_host_name(event)
+        logger.debug(f"Alert check for container '{event.container_name}' on host '{host_name}': {event.old_state} → {event.new_state}")
 
         # If container was in a "good" state (running) and now in "bad" state (exited),
         # this is a new incident - reset cooldown
         good_states = ['running', 'created']
         if rule.trigger_states and event.old_state in good_states and event.new_state in rule.trigger_states:
-            logger.info(f"Alert allowed for {event.container_name}: Container recovered ({event.old_state}) then failed ({event.new_state}) - new incident detected")
+            logger.info(f"Alert allowed for container '{event.container_name}' on host '{host_name}': Container recovered ({event.old_state}) then failed ({event.new_state}) - new incident detected")
             # Remove the cooldown for this container
             if cooldown_key in self._last_alerts:
                 del self._last_alerts[cooldown_key]
@@ -376,7 +398,8 @@ class NotificationService:
             logger.debug(f"Alert allowed: Cooldown period exceeded ({time_since_last.total_seconds():.1f}s > {cooldown_seconds}s)")
             return True
         else:
-            logger.info(f"Alert blocked for {event.container_name}: Still in cooldown ({cooldown_seconds - time_since_last.total_seconds():.1f}s remaining)")
+            host_name = self._get_host_name(event)
+            logger.info(f"Alert blocked for container '{event.container_name}' on host '{host_name}': Still in cooldown ({cooldown_seconds - time_since_last.total_seconds():.1f}s remaining)")
             return False
 
     async def _send_rule_notifications(self, rule: AlertRuleDB, event: AlertEvent) -> bool:
@@ -400,7 +423,8 @@ class NotificationService:
                 except Exception as e:
                     logger.error(f"Failed to send to channel {channel.name}: {e}")
 
-        logger.info(f"Alert sent to {success_count}/{total_channels} channels for {event.container_name}")
+        host_name = self._get_host_name(event)
+        logger.info(f"Alert sent to {success_count}/{total_channels} channels for container '{event.container_name}' on host '{host_name}'")
         return success_count > 0
 
     async def _send_to_channel(self, channel: NotificationChannel,
@@ -470,10 +494,11 @@ Rule: {RULE_NAME}"""
         local_timestamp = event.timestamp + timedelta(minutes=timezone_offset)
 
         # Prepare variables for substitution
+        host_name = self._get_host_name(event)
         variables = {
             '{CONTAINER_NAME}': event.container_name,
             '{CONTAINER_ID}': event.container_id[:12],  # Short ID
-            '{HOST_NAME}': event.host_name,
+            '{HOST_NAME}': host_name,
             '{HOST_ID}': event.host_id,
             '{OLD_STATE}': event.old_state,
             '{NEW_STATE}': event.new_state,

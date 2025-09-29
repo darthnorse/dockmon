@@ -206,7 +206,7 @@ class EventLogger:
             event_type=EventType.STATE_CHANGE,
             title=f"Container {container_name} state changed",
             severity=severity,
-            message=f"Container state changed from {old_state} to {new_state}",
+            message=f"Container '{container_name}' on host '{host_name}' state changed from {old_state} to {new_state}",
             context=context,
             old_state=old_state,
             new_state=new_state,
@@ -227,7 +227,7 @@ class EventLogger:
         """Log container action (start, stop, restart, etc.)"""
         severity = EventSeverity.ERROR if not success else EventSeverity.INFO
         title = f"Container {action} {'succeeded' if success else 'failed'}"
-        message = f"Container {container_name} {action} {'completed successfully' if success else 'failed'}"
+        message = f"Container '{container_name}' on host '{host_name}' {action} {'completed successfully' if success else 'failed'}"
 
         if error_message:
             message += f": {error_message}"
@@ -265,7 +265,7 @@ class EventLogger:
         """Log auto-restart attempt"""
         severity = EventSeverity.ERROR if not success else EventSeverity.INFO
         title = f"Auto-restart attempt {attempt}/{max_attempts}"
-        message = f"Auto-restart attempt {attempt} of {max_attempts} for {container_name} {'succeeded' if success else 'failed'}"
+        message = f"Auto-restart attempt {attempt} of {max_attempts} for container '{container_name}' on host '{host_name}' {'succeeded' if success else 'failed'}"
 
         if error_message:
             message += f": {error_message}"

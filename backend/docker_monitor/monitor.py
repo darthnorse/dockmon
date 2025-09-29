@@ -415,7 +415,7 @@ class DockerMonitor:
             container.restart(timeout=10)
             duration_ms = int((time.time() - start_time) * 1000)
 
-            logger.info(f"Restarted container {container_id} on host {host_id}")
+            logger.info(f"Restarted container '{container_name}' on host '{host_name}'")
 
             # Log the successful restart
             self.event_logger.log_container_action(
@@ -431,7 +431,7 @@ class DockerMonitor:
             return True
         except Exception as e:
             duration_ms = int((time.time() - start_time) * 1000)
-            logger.error(f"Failed to restart container {container_id}: {e}")
+            logger.error(f"Failed to restart container '{container_name}' on host '{host_name}': {e}")
 
             # Log the failed restart
             self.event_logger.log_container_action(
@@ -464,7 +464,7 @@ class DockerMonitor:
             container.stop(timeout=10)
             duration_ms = int((time.time() - start_time) * 1000)
 
-            logger.info(f"Stopped container {container_id} on host {host_id}")
+            logger.info(f"Stopped container '{container_name}' on host '{host_name}'")
 
             # Log the successful stop
             self.event_logger.log_container_action(
@@ -480,7 +480,7 @@ class DockerMonitor:
             return True
         except Exception as e:
             duration_ms = int((time.time() - start_time) * 1000)
-            logger.error(f"Failed to stop container {container_id}: {e}")
+            logger.error(f"Failed to stop container '{container_name}' on host '{host_name}': {e}")
 
             # Log the failed stop
             self.event_logger.log_container_action(
@@ -513,7 +513,7 @@ class DockerMonitor:
             container.start()
             duration_ms = int((time.time() - start_time) * 1000)
 
-            logger.info(f"Started container {container_id} on host {host_id}")
+            logger.info(f"Started container '{container_name}' on host '{host_name}'")
 
             # Log the successful start
             self.event_logger.log_container_action(
@@ -529,7 +529,7 @@ class DockerMonitor:
             return True
         except Exception as e:
             duration_ms = int((time.time() - start_time) * 1000)
-            logger.error(f"Failed to start container {container_id}: {e}")
+            logger.error(f"Failed to start container '{container_name}' on host '{host_name}': {e}")
 
             # Log the failed start
             self.event_logger.log_container_action(
@@ -547,6 +547,10 @@ class DockerMonitor:
 
     def toggle_auto_restart(self, host_id: str, container_id: str, container_name: str, enabled: bool):
         """Toggle auto-restart for a container"""
+        # Get host name for logging
+        host = self.hosts.get(host_id)
+        host_name = host.name if host else 'Unknown Host'
+
         # Use host_id:container_id as key to prevent collisions between hosts
         container_key = f"{host_id}:{container_id}"
         self.auto_restart_status[container_key] = enabled
@@ -555,7 +559,7 @@ class DockerMonitor:
             self.restarting_containers[container_key] = False
         # Save to database
         self.db.set_auto_restart(host_id, container_id, container_name, enabled)
-        logger.info(f"Auto-restart {'enabled' if enabled else 'disabled'} for {container_id} on host {host_id}")
+        logger.info(f"Auto-restart {'enabled' if enabled else 'disabled'} for container '{container_name}' on host '{host_name}'")
 
     async def monitor_containers(self):
         """Main monitoring loop"""
@@ -633,7 +637,7 @@ class DockerMonitor:
 
         logger.info(
             f"Auto-restart attempt {attempt}/{self.settings.max_retries} "
-            f"for {container.name} on host {container.host_id}"
+            f"for container '{container.name}' on host '{container.host_name}'"
         )
 
         # Wait before attempting restart

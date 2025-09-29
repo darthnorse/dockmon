@@ -3,6 +3,10 @@
 # CLAUDE_CONTEXT.md  # Commented out to allow committing context file
 BASELINE_STATUS.md
 
+# Wiki Content (lives in wiki repo, not main repo)
+wiki-content/
+wiki-repo/
+
 # Test Infrastructure (Development Only)
 # tests/  # Commented out to allow committing test files
 test-results/

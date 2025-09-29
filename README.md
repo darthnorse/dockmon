@@ -83,26 +83,6 @@ A comprehensive Docker container monitoring and management platform with real-ti
 
 ## Quick Start
 
-### unRAID Installation
-
-1. **Install via Community Applications** (Coming Soon) or Docker Run:
-```bash
-docker run -d \
-  --name=dockmon \
-  -p 8001:443 \
-  -v dockmon_data:/app/data \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  --restart unless-stopped \
-  darthnorse/dockmon:latest
-```
-
-2. **Access DockMon** at `https://your-unraid-ip:8001`
-
-3. **Automatic Setup:**
-   - DockMon automatically configures local Docker monitoring on first run
-   - No manual host configuration needed for local containers
-   - For remote Docker hosts, see [mTLS Configuration](#security-mtls-configuration-strongly-recommended)
-
 ### Docker Deployment
 
 Deploy DockMon as a single all-in-one container:
@@ -114,6 +94,37 @@ docker compose up -d
 ```
 
 **Access:** `https://localhost:8001` (accept the self-signed certificate warning)
+
+**Automatic Setup:**
+- DockMon automatically configures local Docker monitoring on first run
+- No manual host configuration needed for local containers
+- For remote Docker hosts, see [Docker Remote Host Monitoring](#docker-remote-host-monitoring)
+
+### unRAID Installation
+
+1. **Install via Community Applications** (Coming Soon) or build locally:
+```bash
+# Clone and build DockMon
+git clone https://github.com/darthnorse/dockmon.git
+cd dockmon
+docker build -f docker/Dockerfile -t dockmon:latest .
+
+# Run the container
+docker run -d \
+  --name=dockmon \
+  -p 8001:443 \
+  -v dockmon_data:/app/data \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  --restart unless-stopped \
+  dockmon:latest
+```
+
+2. **Access DockMon** at `https://your-unraid-ip:8001`
+
+3. **Automatic Setup:**
+   - DockMon automatically configures local Docker monitoring on first run
+   - No manual host configuration needed for local containers
+   - For remote Docker hosts, see [Docker Remote Host Monitoring](#docker-remote-host-monitoring)
 
 **What's Included:**
 - `dockmon` - All-in-one container with:
@@ -147,7 +158,7 @@ docker compose up -d
        - Remote TLS: `tcp://192.168.1.100:2376` (with certificates)
      - **Certificates** (for TLS only): Paste contents of CA, client cert, and client key files
      - Click "Test Connection" then "Save"
-   - **For remote hosts setup:** See [Docker Remote Access Configuration](#docker-remote-access-configuration)
+   - **For remote hosts setup:** See [Docker Remote Host Monitoring](#docker-remote-host-monitoring)
 
 3. **Configure Notification Channels** (Optional)
    - Go to Settings → Notifications
@@ -359,9 +370,52 @@ curl -sSL https://raw.githubusercontent.com/darthnorse/dockmon/main/scripts/setu
    - **Client Certificate**: Paste contents of `client-cert.pem`
    - **Client Key**: Paste contents of `client-key.pem`
 
+#### What the Script Does vs Manual Steps
+
+**The script:**
+- ✅ Generates all certificates (CA, server, client)
+- ✅ Creates configuration files for your system
+- ✅ Shows you exact commands to run
+- ❌ Does NOT modify your Docker daemon (you do this manually for security)
+
+**You need to:**
+- Follow the instructions the script provides
+- Apply the Docker daemon configuration it generated
+- Restart Docker service
+
+#### Example: Linux with systemd
+
+After running the script, it will show you commands like:
+
+```bash
+# 1. Copy certificates to system directory
+sudo mkdir -p /etc/docker/certs
+sudo cp ~/.docker/certs/{ca.pem,server-cert.pem,server-key.pem} /etc/docker/certs/
+sudo chmod 400 /etc/docker/certs/*-key.pem
+
+# 2. Apply the systemd override the script generated
+sudo mkdir -p /etc/systemd/system/docker.service.d/
+sudo cp ~/.docker/certs/docker-override.conf /etc/systemd/system/docker.service.d/override.conf
+
+# 3. Restart Docker
+sudo systemctl daemon-reload
+sudo systemctl restart docker
+```
+
+#### Example: unRAID
+
+After running the script, it will show you:
+
+```bash
+# 1. Stop Docker via Web UI
+# 2. Edit /boot/config/docker.cfg and add:
+DOCKER_OPTS="-H tcp://0.0.0.0:2376 --tlsverify --tlscacert=/boot/config/docker-tls/ca.pem --tlscert=/boot/config/docker-tls/server-cert.pem --tlskey=/boot/config/docker-tls/server-key.pem"
+# 3. Start Docker via Web UI
+```
+
 #### Supported Systems
 
-The script auto-detects and provides instructions for:
+The script auto-detects and provides specific instructions for:
 - **Linux with systemd** (Ubuntu, Debian, RHEL, Fedora) - TESTED
 - **unRAID** - TESTED
 - **Synology DSM** - UNTESTED, proceed with caution
@@ -799,11 +853,11 @@ services:
 
 ## Docker Hub
 
-Coming soon:
+Coming soon (after v1.0 release):
 
 ```bash
 docker pull darthnorse/dockmon:latest
-docker run -d -p 8001:8001 -p 8080:8080 darthnorse/dockmon:latest
+docker run -d -p 8001:443 -v /var/run/docker.sock:/var/run/docker.sock darthnorse/dockmon:latest
 ```
 
 ## Development

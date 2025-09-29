@@ -4,7 +4,7 @@ CLAUDE_CONTEXT.md
 BASELINE_STATUS.md
 
 # Test Infrastructure (Development Only)
-tests/
+# tests/  # Commented out to allow committing test files
 test-results/
 test-results.json
 playwright-report/

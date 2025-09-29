@@ -405,23 +405,46 @@ mTLS (mutual TLS) provides:
 
 ### Quick mTLS Setup
 
-We provide a script to generate all necessary certificates:
+We provide a unified script that automatically detects your system and generates all necessary certificates:
 
 ```bash
 # On your Docker host, generate certificates
 curl -sSL https://raw.githubusercontent.com/darthnorse/dockmon/main/scripts/setup-docker-mtls.sh | bash
 
-# This creates in ~/.docker/certs/:
-# - ca.pem (Certificate Authority)
-# - server-cert.pem, server-key.pem (Server certificates)
-# - client-cert.pem, client-key.pem (Client certificates)
+# Or download and run with options:
+./scripts/setup-docker-mtls.sh --host myserver.local --ip 192.168.1.100
 ```
 
-Then configure Docker to use mTLS:
+#### Supported Systems (Auto-Detected)
 
+The script automatically detects and configures for:
+- **unRAID** - Certificates stored in `/boot/config/docker-tls/`
+- **Synology DSM** - Uses Package Center Docker configuration
+- **QNAP** - Works with Container Station
+- **TrueNAS/FreeNAS** - Service-based configuration
+- **Standard Linux** (Ubuntu, Debian, RHEL, etc.) - SystemD configuration
+- **Alpine Linux** - OpenRC configuration
+
+#### Platform-Specific Instructions
+
+##### unRAID
+The script detects unRAID and provides three configuration methods:
+1. **Web UI** (Recommended): Settings → Docker → Advanced View → Extra Parameters
+2. **Command Line**: Edit `/boot/config/docker.cfg`
+3. **Persistent**: Add to `/boot/config/go` script
+
+Certificates are stored in `/boot/config/docker-tls/` which persists across reboots.
+
+##### Synology DSM
+1. Script generates certificates in `/volume1/docker/certs/`
+2. Stop Docker package in Package Center
+3. Configure `/var/packages/Docker/etc/dockerd.json` via SSH
+4. Restart Docker package
+
+##### Standard Linux (SystemD)
 ```bash
-# Copy the generated systemd override file
-sudo cp ~/.docker/systemd-override.conf /etc/systemd/system/docker.service.d/override.conf
+# The script generates a systemd override file
+sudo cp ~/.docker/certs/docker-override.conf /etc/systemd/system/docker.service.d/override.conf
 sudo systemctl daemon-reload
 sudo systemctl restart docker
 ```

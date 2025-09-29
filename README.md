@@ -314,24 +314,20 @@ By default, Docker only listens on a Unix socket and doesn't accept remote conne
 - Do NOT use both systemd override AND daemon.json together
 - If you see errors about "directives specified both as a flag and in the configuration file", you're using both methods
 
-**Method 1: Using daemon.json (Recommended)**
+**Method 1: Using systemd override (Recommended for Linux)**
 
-1. Create or edit `/etc/docker/daemon.json`:
+1. **Remove any `hosts` configuration from `/etc/docker/daemon.json`** if it exists
+
+2. Create a systemd override file:
 ```bash
-sudo nano /etc/docker/daemon.json
+sudo systemctl edit docker
 ```
 
-2. Add the following content (for development/testing without TLS):
-```json
-{
-  "hosts": ["unix:///var/run/docker.sock", "tcp://0.0.0.0:2375"]
-}
-```
-
-3. **If using systemd**, disable docker.socket to avoid conflicts:
-```bash
-sudo systemctl stop docker.socket
-sudo systemctl disable docker.socket
+3. Add the following content:
+```ini
+[Service]
+ExecStart=
+ExecStart=/usr/bin/dockerd -H unix:///var/run/docker.sock -H tcp://0.0.0.0:2375
 ```
 
 4. Restart Docker:
@@ -345,11 +341,44 @@ sudo systemctl restart docker
 ss -tlnp | grep docker
 ```
 
-**Method 2: Using systemd override (Alternative)**
+**Why systemd override is recommended:**
+- No conflicts with docker.socket (it handles this automatically)
+- Complete control over Docker startup parameters
+- Works consistently across all systemd-based distributions
+- Easier to troubleshoot
 
-1. **Remove any `hosts` configuration from `/etc/docker/daemon.json`** if it exists
+**Method 2: Using daemon.json (Alternative)**
 
-2. Create a systemd override file:
+⚠️ **Note:** This method can cause conflicts with docker.socket on some systems.
+
+1. Create or edit `/etc/docker/daemon.json`:
+```bash
+sudo nano /etc/docker/daemon.json
+```
+
+2. Add the following content (for development/testing without TLS):
+```json
+{
+  "hosts": ["unix:///var/run/docker.sock", "tcp://0.0.0.0:2375"]
+}
+```
+
+3. **Important:** If you get errors about docker.socket conflicts, disable it:
+```bash
+sudo systemctl stop docker.socket
+sudo systemctl disable docker.socket
+```
+
+4. Restart Docker:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart docker
+```
+
+**When to disable docker.socket:**
+- If you see: "failed to start daemon: pid file found, ensure docker is not running"
+- If you see: "address already in use"
+- If Docker fails to start after adding the daemon.json configuration
 ```bash
 sudo systemctl edit docker
 ```

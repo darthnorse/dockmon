@@ -1,6 +1,6 @@
 
 # Claude Development Context and Internal Files
-CLAUDE_CONTEXT.md
+# CLAUDE_CONTEXT.md  # Commented out to allow committing context file
 BASELINE_STATUS.md
 
 # Test Infrastructure (Development Only)

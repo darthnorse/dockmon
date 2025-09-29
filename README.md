@@ -145,7 +145,7 @@ docker compose up -d
        - Local socket: `unix:///var/run/docker.sock`
        - Remote TCP: `tcp://192.168.1.100:2375` (insecure)
        - Remote TLS: `tcp://192.168.1.100:2376` (with certificates)
-     - **Certificates** (for TLS only): Upload CA, client cert, and client key files
+     - **Certificates** (for TLS only): Paste contents of CA, client cert, and client key files
      - Click "Test Connection" then "Save"
    - **For remote hosts setup:** See [Docker Remote Access Configuration](#docker-remote-access-configuration)
 
@@ -316,33 +316,76 @@ This dual approach ensures you won't miss critical issues, whether they occur du
 - **Night hours**: Avoid non-critical alerts during off-hours
 - **Testing periods**: Disable alerts while testing new configurations
 
-### Docker Remote Access Configuration
+## Docker Remote Host Monitoring
 
-To monitor remote Docker hosts, you need to configure the Docker daemon to accept remote connections.
+To monitor Docker hosts remotely, you need to configure the Docker daemon to accept secure remote connections.
 
-#### Understanding Docker Ports
+⚠️ **SECURITY WARNING:** Exposing Docker's API without TLS gives anyone who can reach the port COMPLETE control over your host system. They can:
+- Run any container with host privileges
+- Access all files on your system
+- Install cryptocurrency miners
+- Compromise your entire network
 
-Docker uses these port conventions (but you can use any port):
+**Always use mTLS (mutual TLS) for production systems.**
 
-- **Port 2375**: Conventionally used for unencrypted TCP connections
-- **Port 2376**: Conventionally used for TLS/mTLS encrypted connections
+### Method 1: Secure Setup with mTLS (Recommended)
 
-⚠️ **IMPORTANT:** The port number is just a convention - it doesn't enforce security. You must configure TLS certificates to make the connection secure, regardless of which port you use. This section covers basic unencrypted TCP setup. For production use, **always configure mTLS** (see [Security: mTLS Configuration](#security-mtls-configuration-strongly-recommended) section).
+mTLS provides mutual authentication, encrypted communication, and certificate-based access control.
 
-#### Enable Remote Access on Target Host
+#### Quick Setup with Our Script
 
-By default, Docker only listens on a Unix socket and doesn't accept remote connections. The configuration method depends on your system type:
+Run our automated script on your Docker host to generate certificates and see configuration instructions:
 
-**🐧 For Linux with systemd (Ubuntu, Debian, RHEL, Fedora, etc.)**
+```bash
+# Download and run the script
+curl -sSL https://raw.githubusercontent.com/darthnorse/dockmon/main/scripts/setup-docker-mtls.sh | bash
 
-Use systemd override (the ONLY method for systemd-based systems):
+# Or run with custom options:
+./scripts/setup-docker-mtls.sh --host myserver.local --ip 192.168.1.100
+```
 
-1. Create a systemd override file:
+**What the script does:**
+1. Generates CA, server, and client certificates
+2. Detects your system type (systemd Linux, unRAID, Synology, etc.)
+3. Shows you EXACTLY what to add to your system's Docker configuration
+4. Provides the certificates to use in DockMon
+
+**After running the script:**
+1. Follow the configuration instructions it provides for your specific system
+2. Copy the certificate contents (the script shows where they're stored)
+3. In DockMon, add the remote host:
+   - **URL**: `tcp://your-host:2376`
+   - **CA Certificate**: Paste contents of `ca.pem`
+   - **Client Certificate**: Paste contents of `client-cert.pem`
+   - **Client Key**: Paste contents of `client-key.pem`
+
+#### Supported Systems
+
+The script auto-detects and provides instructions for:
+- **Linux with systemd** (Ubuntu, Debian, RHEL, Fedora) - TESTED
+- **unRAID** - TESTED
+- **Synology DSM** - UNTESTED, proceed with caution
+- **QNAP** - UNTESTED, proceed with caution
+- **TrueNAS** - UNTESTED, proceed with caution
+- **Alpine Linux** - OpenRC configuration
+
+### Method 2: Insecure Setup (Development Only)
+
+⚠️ **NEVER USE IN PRODUCTION** - This exposes your entire system to anyone who can reach the port!
+
+Only use this method for:
+- Isolated test environments
+- Local development on trusted networks
+- Temporary debugging
+
+#### For Linux with systemd
+
+1. Create systemd override:
 ```bash
 sudo systemctl edit docker
 ```
 
-2. Add the following content:
+2. Add insecure TCP listener:
 ```ini
 [Service]
 ExecStart=
@@ -355,153 +398,24 @@ sudo systemctl daemon-reload
 sudo systemctl restart docker
 ```
 
-4. Verify Docker is listening:
+#### For unRAID
+
+1. Stop Docker: Settings → Docker → Set 'Enable Docker' to No → Apply
+2. SSH and edit `/boot/config/docker.cfg`:
 ```bash
-ss -tlnp | grep docker
+DOCKER_OPTS="-H tcp://0.0.0.0:2375"
 ```
+3. Start Docker: Settings → Docker → Set 'Enable Docker' to Yes → Apply
 
-**Why only systemd override works:**
-- The `daemon.json` "hosts" directive conflicts with systemd's socket activation
-- docker.socket and daemon.json "hosts" cannot coexist
-- systemd override handles socket management automatically
+#### Connect from DockMon
 
-**💾 For NAS Systems (unRAID, Synology, QNAP, TrueNAS)**
+Add host with URL: `tcp://192.168.1.100:2375` (no certificates needed)
 
-These systems DO NOT use systemd and have their own Docker management:
-
-⚠️ **Note:** Only unRAID instructions have been tested. Synology, QNAP, and TrueNAS instructions are provided based on documentation but are UNTESTED - proceed at your own risk.
-
-**unRAID:**
-- Stop Docker via Web UI: Settings → Docker → Set 'Enable Docker' to No → Apply
-- SSH into unRAID and edit `/boot/config/docker.cfg`:
-  ```bash
-  DOCKER_OPTS="-H tcp://0.0.0.0:2375"
-  ```
-- Start Docker via Web UI: Settings → Docker → Set 'Enable Docker' to Yes → Apply
-
-**Synology DSM (UNTESTED - Proceed at your own risk):**
-- Configure through Package Center → Docker → Settings
-- Or edit `/var/packages/Docker/etc/dockerd.json`
-
-**QNAP (UNTESTED - Proceed at your own risk):**
-- Configure through Container Station → Settings → Docker
-
-**TrueNAS (UNTESTED - Proceed at your own risk):**
-- Configure through Services → Docker in the Web UI
-
-⚠️ **NEVER use daemon.json with "hosts" directive** - it will conflict with ALL system's native Docker management
-
-#### Docker Host Connection Formats
-
-When adding hosts in DockMon, use these formats:
+### Connection Formats
 
 - **Local Docker**: `unix:///var/run/docker.sock`
-- **Remote Docker (insecure)**: `tcp://192.168.1.100:2375`
-- **Remote Docker (with mTLS)**: `tcp://192.168.1.100:2376` (requires certificates - see mTLS section below)
-
-#### Troubleshooting Configuration Conflicts
-
-If you see this error:
-```
-the following directives are specified both as a flag and in the configuration file: hosts
-```
-
-**This means you're trying to use daemon.json on a systemd system:**
-1. Remove the `hosts` line from `/etc/docker/daemon.json`
-2. Use systemd override instead (see instructions above)
-3. The daemon.json file can still contain other settings, just not `hosts`
-
-## Security: mTLS Configuration (Strongly Recommended)
-
-### Why Use mTLS?
-
-**CRITICAL:** Running Docker API over plain TCP without TLS exposes your entire system to attack. Anyone who can reach port 2375/2376 can take complete control of your host.
-
-mTLS (mutual TLS) provides:
-- **Mutual authentication** - Both DockMon and Docker verify each other's identity
-- **Encrypted communication** - All data is encrypted in transit
-- **Certificate-based access** - Only clients with valid certificates can connect
-
-### Quick mTLS Setup
-
-We provide a unified script that automatically detects your system and generates all necessary certificates:
-
-```bash
-# On your Docker host, generate certificates
-curl -sSL https://raw.githubusercontent.com/darthnorse/dockmon/main/scripts/setup-docker-mtls.sh | bash
-
-# Or download and run with options:
-./scripts/setup-docker-mtls.sh --host myserver.local --ip 192.168.1.100
-```
-
-#### Supported Systems (Auto-Detected)
-
-The script automatically detects your system type and applies the correct configuration:
-
-**🐧 Linux with systemd:**
-- Ubuntu, Debian, RHEL, Fedora, CentOS, etc.
-- Creates systemd override (NEVER uses daemon.json "hosts")
-- Certificates in `~/.docker/certs/`
-
-**💾 NAS Systems (no systemd):**
-- **unRAID** - Uses DOCKER_OPTS in `/boot/config/docker.cfg` (TESTED)
-- **Synology DSM** - Configures Package Center Docker (UNTESTED - Proceed at your own risk)
-- **QNAP** - Configures Container Station (UNTESTED - Proceed at your own risk)
-- **TrueNAS** - Service-based configuration (UNTESTED - Proceed at your own risk)
-
-**🔧 Other Systems:**
-- **Alpine Linux** - OpenRC configuration
-
-#### Platform-Specific Instructions
-
-##### Linux with systemd (Ubuntu, Debian, RHEL, etc.)
-The script creates a systemd override:
-```bash
-# Script automatically generates override file
-sudo systemctl edit docker
-# Adds TLS flags WITHOUT using daemon.json "hosts"
-sudo systemctl daemon-reload
-sudo systemctl restart docker
-```
-
-##### unRAID
-The script detects unRAID and configures via:
-1. Stop Docker: Settings → Docker → Set 'Enable Docker' to No → Apply
-2. Edit `/boot/config/docker.cfg` via SSH to add DOCKER_OPTS with TLS settings
-3. Start Docker: Settings → Docker → Set 'Enable Docker' to Yes → Apply
-4. Certificates stored in `/boot/config/docker-tls/` (persists across reboots)
-
-##### Synology DSM (UNTESTED - Proceed at your own risk)
-1. Script generates certificates in `/volume1/docker/certs/`
-2. Configures through Package Center (NOT daemon.json "hosts")
-3. Restart Docker package
-
-##### QNAP (UNTESTED - Proceed at your own risk)
-1. Script generates certificates
-2. Configure through Container Station
-3. Restart Docker service
-
-##### TrueNAS (UNTESTED - Proceed at your own risk)
-1. Script generates certificates
-2. Configure through Web UI Services → Docker
-3. Restart Docker service
-
-In DockMon, add the host with:
-- **URL**: `tcp://your-host:2376`
-- **CA Certificate**: Upload `ca.pem`
-- **Client Certificate**: Upload `client-cert.pem`
-- **Client Key**: Upload `client-key.pem`
-
-### Insecure Mode (Development Only)
-
-**NEVER USE IN PRODUCTION - SIGNIFICANT SECURITY RISK**
-
-For isolated test environments only:
-```ini
-ExecStart=/usr/bin/dockerd -H unix:///var/run/docker.sock -H tcp://0.0.0.0:2375
-```
-
-Then connect with `tcp://192.168.1.100:2375` (no certificates needed)
+- **Remote Insecure**: `tcp://192.168.1.100:2375`
+- **Remote Secure (mTLS)**: `tcp://192.168.1.100:2376`
 
 ### Security Best Practices
 

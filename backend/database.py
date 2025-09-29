@@ -86,6 +86,7 @@ class GlobalSettings(Base):
     auto_cleanup_events = Column(Boolean, default=True)  # Auto cleanup old events
     alert_template = Column(Text, nullable=True)  # Global notification template
     blackout_windows = Column(JSON, nullable=True)  # Array of blackout time windows
+    first_run_complete = Column(Boolean, default=False)  # Track if first run setup is complete
     timezone_offset = Column(Integer, default=0)  # Timezone offset in minutes from UTC
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 

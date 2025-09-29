@@ -15,7 +15,7 @@ services:
       - PYTHONUNBUFFERED=1
     volumes:
       - dockmon_data:/app/data
-      - /var/run/docker.sock:/var/run/docker.sock  # For Docker monitoring
+      - /var/run/docker.sock:/var/run/docker.sock  # For local Docker monitoring (auto-configured on first run)
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost/health"]
       interval: 30s

@@ -304,37 +304,35 @@ EOF
         print_info "unRAID Configuration Instructions:"
         print_info "==================================="
         echo ""
-        echo "Option 1: Configure via unRAID Web UI (Recommended):"
-        echo "1. Go to Settings → Docker in your unRAID Web UI"
-        echo "2. Click 'Advanced View'"
-        echo "3. Stop the Docker service"
-        echo "4. In 'Extra Parameters', add:"
-        echo "   -H tcp://0.0.0.0:2376 --tlsverify --tlscacert=$CERT_DIR/ca.pem --tlscert=$CERT_DIR/server-cert.pem --tlskey=$CERT_DIR/server-key.pem"
-        echo "5. Apply and start the Docker service"
+        echo "To enable Docker remote access with TLS on unRAID:"
         echo ""
-        echo "Option 2: Configure via Command Line:"
-        echo "1. Stop Docker:"
-        echo "   /etc/rc.d/rc.docker stop"
+        echo "1. Stop Docker service:"
+        echo "   - Via Web UI: Settings → Docker → Set 'Enable Docker' to No → Apply"
+        echo "   - Via SSH: /etc/rc.d/rc.docker stop"
         echo ""
-        echo "2. Edit /boot/config/docker.cfg and add:"
+        echo "2. Edit /boot/config/docker.cfg via SSH:"
+        echo "   nano /boot/config/docker.cfg"
+        echo ""
+        echo "3. Add or update the DOCKER_OPTS line:"
         echo "   DOCKER_OPTS=\"-H tcp://0.0.0.0:2376 --tlsverify --tlscacert=$CERT_DIR/ca.pem --tlscert=$CERT_DIR/server-cert.pem --tlskey=$CERT_DIR/server-key.pem\""
         echo ""
-        echo "3. Start Docker:"
-        echo "   /etc/rc.d/rc.docker start"
+        echo "4. Start Docker service:"
+        echo "   - Via Web UI: Settings → Docker → Set 'Enable Docker' to Yes → Apply"
+        echo "   - Via SSH: /etc/rc.d/rc.docker start"
         echo ""
-        echo "Option 3: Make changes persistent across reboots:"
-        echo "1. Edit /boot/config/go and add before the last line:"
-        echo "   # Docker mTLS"
-        echo "   echo 'DOCKER_OPTS=\"-H tcp://0.0.0.0:2376 --tlsverify --tlscacert=$CERT_DIR/ca.pem --tlscert=$CERT_DIR/server-cert.pem --tlskey=$CERT_DIR/server-key.pem\"' >> /boot/config/docker.cfg"
+        echo "5. Verify Docker is listening on port 2376:"
+        echo "   netstat -tlnp | grep 2376"
         echo ""
         print_warn "NOTE: Certificates are stored in $CERT_DIR which persists across reboots"
+        print_warn "NOTE: The configuration in /boot/config/docker.cfg persists across reboots"
         ;;
 
     synology)
         print_system "Configuring for Synology NAS..."
+        print_warn "NOTE: These instructions are UNTESTED - proceed at your own risk"
 
         print_info "==================================="
-        print_info "Synology Configuration Instructions:"
+        print_info "Synology Configuration Instructions (UNTESTED):"
         print_info "==================================="
         echo ""
         echo "1. Open Synology DSM Web UI"
@@ -352,6 +350,38 @@ EOF
         echo "     \"tlskey\": \"$CERT_DIR/server-key.pem\""
         echo '   }'
         echo "6. Start Docker package from Package Center"
+        ;;
+
+    qnap)
+        print_system "Configuring for QNAP NAS..."
+        print_warn "NOTE: These instructions are UNTESTED - proceed at your own risk"
+
+        print_info "==================================="
+        print_info "QNAP Configuration Instructions (UNTESTED):"
+        print_info "==================================="
+        echo ""
+        echo "QNAP configuration varies by Container Station version."
+        echo "Please consult QNAP documentation for Docker daemon configuration."
+        echo ""
+        echo "Certificates have been generated in: $CERT_DIR"
+        echo ""
+        print_warn "Manual configuration required through Container Station"
+        ;;
+
+    truenas)
+        print_system "Configuring for TrueNAS..."
+        print_warn "NOTE: These instructions are UNTESTED - proceed at your own risk"
+
+        print_info "==================================="
+        print_info "TrueNAS Configuration Instructions (UNTESTED):"
+        print_info "==================================="
+        echo ""
+        echo "TrueNAS configuration varies by version."
+        echo "Please consult TrueNAS documentation for Docker daemon configuration."
+        echo ""
+        echo "Certificates have been generated in: $CERT_DIR"
+        echo ""
+        print_warn "Manual configuration required through TrueNAS Web UI"
         ;;
 
     systemd)

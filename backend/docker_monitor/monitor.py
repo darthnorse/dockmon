@@ -704,6 +704,37 @@ class DockerMonitor:
         try:
             # Load saved hosts
             db_hosts = self.db.get_hosts(active_only=True)
+
+            # Check if this is first run
+            with self.db.get_session() as session:
+                from backend.database import GlobalSettings
+                settings = session.query(GlobalSettings).first()
+                if not settings:
+                    # Create default settings
+                    settings = GlobalSettings()
+                    session.add(settings)
+                    session.commit()
+
+                # Auto-add local Docker only on first run
+                if not settings.first_run_complete and not db_hosts and os.path.exists('/var/run/docker.sock'):
+                    logger.info("First run detected - adding local Docker automatically")
+                    try:
+                        config = DockerHostConfig(
+                            name="Local Docker",
+                            url="unix:///var/run/docker.sock",
+                            tls_cert=None,
+                            tls_key=None,
+                            tls_ca=None
+                        )
+                        self.add_host(config)
+                        logger.info("Successfully added local Docker host")
+
+                        # Mark first run as complete
+                        settings.first_run_complete = True
+                        session.commit()
+                    except Exception as e:
+                        logger.error(f"Failed to add local Docker: {e}")
+
             for db_host in db_hosts:
                 try:
                     config = DockerHostConfig(

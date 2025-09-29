@@ -83,6 +83,26 @@ A comprehensive Docker container monitoring and management platform with real-ti
 
 ## Quick Start
 
+### unRAID Installation
+
+1. **Install via Community Applications** (Coming Soon) or Docker Run:
+```bash
+docker run -d \
+  --name=dockmon \
+  -p 8001:443 \
+  -v dockmon_data:/app/data \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  --restart unless-stopped \
+  darthnorse/dockmon:latest
+```
+
+2. **Access DockMon** at `https://your-unraid-ip:8001`
+
+3. **Automatic Setup:**
+   - DockMon automatically configures local Docker monitoring on first run
+   - No manual host configuration needed for local containers
+   - For remote Docker hosts, see [mTLS Configuration](#security-mtls-configuration-strongly-recommended)
+
 ### Docker Deployment
 
 Deploy DockMon as a single all-in-one container:
@@ -117,14 +137,17 @@ docker compose up -d
    - **Important:** You will be required to change the password immediately on first login
 
 2. **Add Docker Hosts**
-   - Click "Add Host" in the dashboard
-   - **For local Docker host:**
-     - Name: `Local` (or any name you prefer)
-     - Connection Type: `Unix Socket`
-     - Socket Path: `/var/run/docker.sock`
+   - **Auto-Configuration:** DockMon automatically configures local Docker monitoring on first startup (no manual setup needed)
+   - To add additional hosts, click "Add Host" in the dashboard
+   - **Host Configuration:**
+     - **Name:** Any descriptive name (e.g., "Production Server", "NAS Docker")
+     - **URL:**
+       - Local socket: `unix:///var/run/docker.sock`
+       - Remote TCP: `tcp://192.168.1.100:2375` (insecure)
+       - Remote TLS: `tcp://192.168.1.100:2376` (with certificates)
+     - **Certificates** (for TLS only): Upload CA, client cert, and client key files
      - Click "Test Connection" then "Save"
-   - **For remote hosts:** See [Docker Remote Access Configuration](#docker-remote-access-configuration)
-   - Test connection before saving
+   - **For remote hosts setup:** See [Docker Remote Access Configuration](#docker-remote-access-configuration)
 
 3. **Configure Notification Channels** (Optional)
    - Go to Settings → Notifications
@@ -346,21 +369,24 @@ ss -tlnp | grep docker
 
 These systems DO NOT use systemd and have their own Docker management:
 
+⚠️ **Note:** Only unRAID instructions have been tested. Synology, QNAP, and TrueNAS instructions are provided based on documentation but are UNTESTED - proceed at your own risk.
+
 **unRAID:**
-- Option 1: Use unRAID Web UI → Settings → Docker → Advanced View → Extra Parameters
-- Option 2: Edit `/boot/config/docker.cfg` and add:
+- Stop Docker via Web UI: Settings → Docker → Set 'Enable Docker' to No → Apply
+- SSH into unRAID and edit `/boot/config/docker.cfg`:
   ```bash
   DOCKER_OPTS="-H tcp://0.0.0.0:2375"
   ```
+- Start Docker via Web UI: Settings → Docker → Set 'Enable Docker' to Yes → Apply
 
-**Synology DSM:**
+**Synology DSM (UNTESTED - Proceed at your own risk):**
 - Configure through Package Center → Docker → Settings
 - Or edit `/var/packages/Docker/etc/dockerd.json`
 
-**QNAP:**
+**QNAP (UNTESTED - Proceed at your own risk):**
 - Configure through Container Station → Settings → Docker
 
-**TrueNAS:**
+**TrueNAS (UNTESTED - Proceed at your own risk):**
 - Configure through Services → Docker in the Web UI
 
 ⚠️ **NEVER use daemon.json with "hosts" directive** - it will conflict with ALL system's native Docker management
@@ -418,10 +444,10 @@ The script automatically detects your system type and applies the correct config
 - Certificates in `~/.docker/certs/`
 
 **💾 NAS Systems (no systemd):**
-- **unRAID** - Uses DOCKER_OPTS in `/boot/config/docker.cfg`
-- **Synology DSM** - Configures Package Center Docker
-- **QNAP** - Configures Container Station
-- **TrueNAS** - Service-based configuration
+- **unRAID** - Uses DOCKER_OPTS in `/boot/config/docker.cfg` (TESTED)
+- **Synology DSM** - Configures Package Center Docker (UNTESTED - Proceed at your own risk)
+- **QNAP** - Configures Container Station (UNTESTED - Proceed at your own risk)
+- **TrueNAS** - Service-based configuration (UNTESTED - Proceed at your own risk)
 
 **🔧 Other Systems:**
 - **Alpine Linux** - OpenRC configuration
@@ -440,14 +466,25 @@ sudo systemctl restart docker
 
 ##### unRAID
 The script detects unRAID and configures via:
-1. **DOCKER_OPTS** in `/boot/config/docker.cfg` (NOT daemon.json)
-2. Or via Web UI: Settings → Docker → Advanced View → Extra Parameters
-3. Certificates stored in `/boot/config/docker-tls/` (persists across reboots)
+1. Stop Docker: Settings → Docker → Set 'Enable Docker' to No → Apply
+2. Edit `/boot/config/docker.cfg` via SSH to add DOCKER_OPTS with TLS settings
+3. Start Docker: Settings → Docker → Set 'Enable Docker' to Yes → Apply
+4. Certificates stored in `/boot/config/docker-tls/` (persists across reboots)
 
-##### Synology DSM
+##### Synology DSM (UNTESTED - Proceed at your own risk)
 1. Script generates certificates in `/volume1/docker/certs/`
 2. Configures through Package Center (NOT daemon.json "hosts")
 3. Restart Docker package
+
+##### QNAP (UNTESTED - Proceed at your own risk)
+1. Script generates certificates
+2. Configure through Container Station
+3. Restart Docker service
+
+##### TrueNAS (UNTESTED - Proceed at your own risk)
+1. Script generates certificates
+2. Configure through Web UI Services → Docker
+3. Restart Docker service
 
 In DockMon, add the host with:
 - **URL**: `tcp://your-host:2376`

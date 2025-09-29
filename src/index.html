@@ -1420,14 +1420,14 @@
                 background: #ef4444 !important; /* Red */
             }
 
-            /* Hide clutter on mobile */
-            .container-id,
-            .container-icon,
-            .container-controls,
-            .container-actions,
-            .container-state,
-            .auto-restart-toggle,
-            .toggle-switch,
+            /* Hide clutter on mobile - but only in container list, not in modal */
+            .container-item .container-id,
+            .container-item .container-icon,
+            .container-item .container-controls,
+            .container-item .container-actions,
+            .container-item .container-state,
+            .container-item .auto-restart-toggle,
+            .container-item .toggle-switch,
             .container-item button,
             .container-item .btn {
                 display: none !important;
@@ -1442,6 +1442,34 @@
                 text-transform: uppercase !important;
                 letter-spacing: 0.5px !important;
                 margin-left: 8px !important;
+            }
+
+            /* Ensure container actions are visible in modal on mobile */
+            .modal .container-actions {
+                display: flex !important;
+                gap: 10px !important;
+                flex-wrap: wrap !important;
+                margin-top: 15px !important;
+            }
+
+            /* Make action buttons mobile-friendly */
+            .modal .container-actions .btn {
+                display: flex !important;
+                align-items: center !important;
+                gap: 5px !important;
+                padding: 10px 15px !important;
+                font-size: 14px !important;
+                min-height: 44px !important; /* iOS touch target size */
+            }
+
+            /* Make auto-restart toggle visible and touch-friendly in modal */
+            .modal .auto-restart-toggle {
+                display: flex !important;
+                align-items: center !important;
+                padding: 10px 15px !important;
+                min-height: 44px !important;
+                font-size: 14px !important;
+                cursor: pointer !important;
             }
 
             /* Make host widgets full width on mobile */

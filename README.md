@@ -308,98 +308,62 @@ Docker uses these port conventions (but you can use any port):
 
 #### Enable Remote Access on Target Host
 
-By default, Docker only listens on a Unix socket and doesn't accept remote connections. Follow these steps on each remote Docker host you want to monitor:
+By default, Docker only listens on a Unix socket and doesn't accept remote connections. The configuration method depends on your system type:
 
-**⚠️ Important: Choose ONE method only**
-- Do NOT use both systemd override AND daemon.json together
-- If you see errors about "directives specified both as a flag and in the configuration file", you're using both methods
+**🐧 For Linux with systemd (Ubuntu, Debian, RHEL, Fedora, etc.)**
 
-**Method 1: Using systemd override (Recommended for Linux)**
+Use systemd override (the ONLY method for systemd-based systems):
 
-1. **Remove any `hosts` configuration from `/etc/docker/daemon.json`** if it exists
-
-2. Create a systemd override file:
+1. Create a systemd override file:
 ```bash
 sudo systemctl edit docker
 ```
 
-3. Add the following content:
+2. Add the following content:
 ```ini
 [Service]
 ExecStart=
 ExecStart=/usr/bin/dockerd -H unix:///var/run/docker.sock -H tcp://0.0.0.0:2375
 ```
 
-4. Restart Docker:
+3. Restart Docker:
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl restart docker
 ```
 
-5. Verify Docker is listening:
+4. Verify Docker is listening:
 ```bash
 ss -tlnp | grep docker
 ```
 
-**Why systemd override is recommended:**
-- No conflicts with docker.socket (it handles this automatically)
-- Complete control over Docker startup parameters
-- Works consistently across all systemd-based distributions
-- Easier to troubleshoot
+**Why only systemd override works:**
+- The `daemon.json` "hosts" directive conflicts with systemd's socket activation
+- docker.socket and daemon.json "hosts" cannot coexist
+- systemd override handles socket management automatically
 
-**Method 2: Using daemon.json (Alternative)**
+**💾 For NAS Systems (unRAID, Synology, QNAP, TrueNAS)**
 
-⚠️ **Note:** This method can cause conflicts with docker.socket on some systems.
+These systems DO NOT use systemd and have their own Docker management:
 
-1. Create or edit `/etc/docker/daemon.json`:
-```bash
-sudo nano /etc/docker/daemon.json
-```
+**unRAID:**
+- Option 1: Use unRAID Web UI → Settings → Docker → Advanced View → Extra Parameters
+- Option 2: Edit `/boot/config/docker.cfg` and add:
+  ```bash
+  DOCKER_OPTS="-H tcp://0.0.0.0:2375"
+  ```
 
-2. Add the following content (for development/testing without TLS):
-```json
-{
-  "hosts": ["unix:///var/run/docker.sock", "tcp://0.0.0.0:2375"]
-}
-```
+**Synology DSM:**
+- Configure through Package Center → Docker → Settings
+- Or edit `/var/packages/Docker/etc/dockerd.json`
 
-3. **Important:** If you get errors about docker.socket conflicts, disable it:
-```bash
-sudo systemctl stop docker.socket
-sudo systemctl disable docker.socket
-```
+**QNAP:**
+- Configure through Container Station → Settings → Docker
 
-4. Restart Docker:
-```bash
-sudo systemctl daemon-reload
-sudo systemctl restart docker
-```
+**TrueNAS:**
+- Configure through Services → Docker in the Web UI
 
-**When to disable docker.socket:**
-- If you see: "failed to start daemon: pid file found, ensure docker is not running"
-- If you see: "address already in use"
-- If Docker fails to start after adding the daemon.json configuration
-```bash
-sudo systemctl edit docker
-```
-
-3. Add the following content:
-```ini
-[Service]
-ExecStart=
-ExecStart=/usr/bin/dockerd -H unix:///var/run/docker.sock -H tcp://0.0.0.0:2375
-```
-
-4. Restart Docker:
-```bash
-sudo systemctl daemon-reload
-sudo systemctl restart docker
-```
-
-5. Verify Docker is listening:
-```bash
-ss -tlnp | grep docker
-```
+⚠️ **NEVER use daemon.json with "hosts" directive** - it will conflict with ALL system's native Docker management
 
 #### Docker Host Connection Formats
 
@@ -416,10 +380,10 @@ If you see this error:
 the following directives are specified both as a flag and in the configuration file: hosts
 ```
 
-**Solution:**
-1. Check if you have `hosts` in `/etc/docker/daemon.json`
-2. Check if you have `-H` flags in systemd override (`/etc/systemd/system/docker.service.d/override.conf`)
-3. Choose ONE method and remove the configuration from the other
+**This means you're trying to use daemon.json on a systemd system:**
+1. Remove the `hosts` line from `/etc/docker/daemon.json`
+2. Use systemd override instead (see instructions above)
+3. The daemon.json file can still contain other settings, just not `hosts`
 
 ## Security: mTLS Configuration (Strongly Recommended)
 
@@ -446,37 +410,44 @@ curl -sSL https://raw.githubusercontent.com/darthnorse/dockmon/main/scripts/setu
 
 #### Supported Systems (Auto-Detected)
 
-The script automatically detects and configures for:
-- **unRAID** - Certificates stored in `/boot/config/docker-tls/`
-- **Synology DSM** - Uses Package Center Docker configuration
-- **QNAP** - Works with Container Station
-- **TrueNAS/FreeNAS** - Service-based configuration
-- **Standard Linux** (Ubuntu, Debian, RHEL, etc.) - SystemD configuration
+The script automatically detects your system type and applies the correct configuration:
+
+**🐧 Linux with systemd:**
+- Ubuntu, Debian, RHEL, Fedora, CentOS, etc.
+- Creates systemd override (NEVER uses daemon.json "hosts")
+- Certificates in `~/.docker/certs/`
+
+**💾 NAS Systems (no systemd):**
+- **unRAID** - Uses DOCKER_OPTS in `/boot/config/docker.cfg`
+- **Synology DSM** - Configures Package Center Docker
+- **QNAP** - Configures Container Station
+- **TrueNAS** - Service-based configuration
+
+**🔧 Other Systems:**
 - **Alpine Linux** - OpenRC configuration
 
 #### Platform-Specific Instructions
 
-##### unRAID
-The script detects unRAID and provides three configuration methods:
-1. **Web UI** (Recommended): Settings → Docker → Advanced View → Extra Parameters
-2. **Command Line**: Edit `/boot/config/docker.cfg`
-3. **Persistent**: Add to `/boot/config/go` script
-
-Certificates are stored in `/boot/config/docker-tls/` which persists across reboots.
-
-##### Synology DSM
-1. Script generates certificates in `/volume1/docker/certs/`
-2. Stop Docker package in Package Center
-3. Configure `/var/packages/Docker/etc/dockerd.json` via SSH
-4. Restart Docker package
-
-##### Standard Linux (SystemD)
+##### Linux with systemd (Ubuntu, Debian, RHEL, etc.)
+The script creates a systemd override:
 ```bash
-# The script generates a systemd override file
-sudo cp ~/.docker/certs/docker-override.conf /etc/systemd/system/docker.service.d/override.conf
+# Script automatically generates override file
+sudo systemctl edit docker
+# Adds TLS flags WITHOUT using daemon.json "hosts"
 sudo systemctl daemon-reload
 sudo systemctl restart docker
 ```
+
+##### unRAID
+The script detects unRAID and configures via:
+1. **DOCKER_OPTS** in `/boot/config/docker.cfg` (NOT daemon.json)
+2. Or via Web UI: Settings → Docker → Advanced View → Extra Parameters
+3. Certificates stored in `/boot/config/docker-tls/` (persists across reboots)
+
+##### Synology DSM
+1. Script generates certificates in `/volume1/docker/certs/`
+2. Configures through Package Center (NOT daemon.json "hosts")
+3. Restart Docker package
 
 In DockMon, add the host with:
 - **URL**: `tcp://your-host:2376`
@@ -515,7 +486,7 @@ Failed to establish a new connection: [Errno 111] Connection refused
 - Test connectivity: `telnet <host-ip> 2376`
 
 **Systemd Conflicts:**
-If you get systemd socket activation conflicts, always use Method 1 (systemd override) instead of daemon.json.
+If you get systemd socket activation conflicts, you're using daemon.json "hosts" on a systemd system. Remove the "hosts" line from daemon.json and use systemd override instead.
 
 ### Notification Channels Setup
 

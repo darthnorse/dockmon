@@ -2678,7 +2678,7 @@ async function init() {
                     cellHeight: 20,  // Smaller cells for finer vertical control
                     margin: 4,       // Keep margins at 4px
                     animate: true,
-                    float: true,
+                    float: true,     // Allow floating for desktop editing
                     draggable: {
                         handle: '.widget-header'
                     },
@@ -3079,7 +3079,21 @@ async function init() {
                 });
             }
 
-            layout.forEach(item => {
+            // Sort layout for proper reading order (left-to-right, top-to-bottom)
+            // This ensures mobile displays hosts in the same priority order as desktop
+            const sortedLayout = [...layout].sort((a, b) => {
+                // Stats widget always first
+                if (a.id === 'stats') return -1;
+                if (b.id === 'stats') return 1;
+
+                // Sort by Y position first (row), then X position (column)
+                if (Math.abs(a.y - b.y) < 5) {  // Same row (within 5 units)
+                    return a.x - b.x;  // Left to right
+                }
+                return a.y - b.y;  // Top to bottom
+            });
+
+            sortedLayout.forEach(item => {
                 const widgetConfig = getWidgetConfig(item.id);
                 if (widgetConfig) {
                     // Special handling for stats widget to ensure proper positioning

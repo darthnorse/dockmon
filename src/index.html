@@ -268,39 +268,44 @@
                         </div>
 
                         <!-- Filters and Controls -->
-                        <div class="filters-section" style="padding: 20px; border-bottom: 1px solid var(--border);">
-                            <div class="filter-group" style="flex: 2;">
-                                <label>Select Containers</label>
-                                <div class="multiselect" id="logsContainerMultiselect">
-                                    <div class="multiselect-trigger" onclick="toggleMultiselect('logsContainer')">
-                                        <span class="multiselect-label">Select containers to view logs...</span>
-                                        <span data-lucide="chevron-down"></span>
-                                    </div>
-                                    <div class="multiselect-dropdown" id="logsContainerDropdown">
-                                        <!-- Containers will be populated here -->
+                        <div class="event-filters">
+                            <div class="filter-row">
+                                <div class="filter-group" style="flex: 2;">
+                                    <label>Containers</label>
+                                    <div class="multiselect" id="logsContainerMultiselect">
+                                        <div class="multiselect-trigger" onclick="toggleMultiselect('logsContainer')">
+                                            <span class="multiselect-label">Select containers to view logs...</span>
+                                            <span data-lucide="chevron-down"></span>
+                                        </div>
+                                        <div class="multiselect-dropdown" id="logsContainerDropdown">
+                                            <!-- Containers will be populated here -->
+                                        </div>
                                     </div>
                                 </div>
-                            </div>
-                            <div class="filter-group">
-                                <label>Lines</label>
-                                <select id="logsTailCount" onchange="reloadLogs()">
-                                    <option value="50">Last 50 lines</option>
-                                    <option value="100" selected>Last 100 lines</option>
-                                    <option value="200">Last 200 lines</option>
-                                    <option value="500">Last 500 lines</option>
-                                    <option value="1000">Last 1000 lines</option>
-                                    <option value="all">All lines</option>
-                                </select>
-                            </div>
-                            <div class="filter-group">
-                                <label>Search</label>
-                                <input type="text" id="logsSearchInput" placeholder="Filter logs..." oninput="filterLogs()">
-                            </div>
-                            <div class="filter-group" style="display: flex; align-items: flex-end;">
-                                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; margin: 0;">
-                                    <input type="checkbox" id="logsTimestamps" onchange="toggleTimestamps()" checked>
-                                    <span>Show timestamps</span>
-                                </label>
+
+                                <div class="filter-group">
+                                    <label>Lines</label>
+                                    <select id="logsTailCount" onchange="reloadLogs()">
+                                        <option value="50">50</option>
+                                        <option value="100" selected>100</option>
+                                        <option value="200">200</option>
+                                        <option value="500">500</option>
+                                        <option value="1000">1000</option>
+                                        <option value="all">All</option>
+                                    </select>
+                                </div>
+
+                                <div class="filter-group filter-search">
+                                    <label>Search</label>
+                                    <input type="text" id="logsSearchInput" placeholder="Filter logs..." oninput="filterLogs()">
+                                </div>
+
+                                <div class="filter-group" style="display: flex; align-items: flex-end;">
+                                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; margin: 0;">
+                                        <input type="checkbox" id="logsTimestamps" onchange="toggleTimestamps()" checked>
+                                        <span>Timestamps</span>
+                                    </label>
+                                </div>
                             </div>
                         </div>
 

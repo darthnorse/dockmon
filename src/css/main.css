@@ -1789,6 +1789,7 @@
         .events-list {
             padding: var(--spacing-md) 0;
             max-height: calc(100vh - 400px);
+            min-height: 500px;
             overflow-y: auto;
             background: var(--dark);
             font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
@@ -2014,8 +2015,8 @@
             font-size: 13px;
             line-height: 1.5;
             padding: 16px;
+            max-height: calc(100vh - 400px);
             min-height: 500px;
-            max-height: 700px;
             overflow-y: auto;
             overflow-x: auto;
             white-space: pre-wrap;
@@ -2027,7 +2028,8 @@
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            height: 500px;
+            height: calc(100vh - 400px);
+            min-height: 500px;
             color: var(--text-tertiary);
             gap: 16px;
         }

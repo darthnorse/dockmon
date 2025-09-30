@@ -2332,46 +2332,50 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
 
             // Verify logs page elements exist
             await expect(page.locator('#logsContainer')).toBeVisible();
-            await expect(page.locator('#logsSelectContainer')).toBeVisible();
+            await expect(page.locator('#logsContainerMultiselect')).toBeVisible();
+            await expect(page.locator('#logsSortBtn')).toBeVisible();
+            await expect(page.locator('#logsAutoRefresh')).toBeVisible();
         });
 
-        test('Should display container selection dropdown', async ({ page }) => {
+        test('Should display container selection multiselect dropdown', async ({ page }) => {
             await login(page);
             await navigateToPage(page, 'logs');
 
-            // Click select dropdown
-            const selectBtn = page.locator('#logsSelectContainer');
-            await selectBtn.waitFor({ state: 'visible', timeout: 10000 });
-            await selectBtn.click();
+            // Click multiselect dropdown
+            const multiselectTrigger = page.locator('#logsContainerMultiselect .multiselect-trigger');
+            await multiselectTrigger.waitFor({ state: 'visible', timeout: 10000 });
+            await multiselectTrigger.click();
             await page.waitForTimeout(500);
 
-            // Dropdown should show hosts and containers
-            const dropdown = page.locator('.logs-select-dropdown.active');
+            // Dropdown should show containers with checkboxes
+            const dropdown = page.locator('#logsContainerDropdown');
             await expect(dropdown).toBeVisible();
 
-            // Check for host sections
-            const hostSections = await page.locator('.logs-host-section').count();
-            expect(hostSections).toBeGreaterThanOrEqual(0);
+            // Check for checkboxes (grouped by host)
+            const checkboxes = await page.locator('#logsContainerDropdown input[type="checkbox"]').count();
+            expect(checkboxes).toBeGreaterThanOrEqual(0);
         });
 
-        test('Should select single container for viewing logs', async ({ page }) => {
+        test('Should select single container and fetch logs immediately', async ({ page }) => {
             await login(page);
             await navigateToPage(page, 'logs');
 
             // Wait for containers to load
             await page.waitForTimeout(2000);
 
-            // Open dropdown
-            await page.click('#logsSelectContainer');
+            // Open multiselect dropdown
+            await page.click('#logsContainerMultiselect .multiselect-trigger');
             await page.waitForTimeout(500);
 
             // Check if there are any containers
-            const containerItems = await page.locator('.logs-container-item').count();
+            const checkboxes = await page.locator('#logsContainerDropdown input[type="checkbox"]').count();
 
-            if (containerItems > 0) {
-                // Select first container
-                await page.click('.logs-container-item:first-child');
-                await page.waitForTimeout(1000);
+            if (checkboxes > 0) {
+                // Select first container checkbox - logs should fetch immediately
+                await page.click('#logsContainerDropdown input[type="checkbox"]:first-child');
+
+                // Logs should start loading immediately (no need to close dropdown)
+                await page.waitForTimeout(1500);
 
                 // Verify logs display
                 const logsOutput = page.locator('.logs-output');
@@ -2381,40 +2385,37 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
                 const logLines = await page.locator('.log-line').count();
                 expect(logLines).toBeGreaterThanOrEqual(0);
 
-                console.log(`✅ Logs viewer showing ${logLines} log lines`);
+                console.log(`✅ Logs viewer showing ${logLines} log lines (immediate fetch)`);
             }
         });
 
-        test('Should select multiple containers', async ({ page }) => {
+        test('Should select multiple containers with immediate fetching', async ({ page }) => {
             await login(page);
             await navigateToPage(page, 'logs');
 
             await page.waitForTimeout(2000);
 
-            // Open dropdown
-            await page.click('#logsSelectContainer');
+            // Open multiselect dropdown
+            await page.click('#logsContainerMultiselect .multiselect-trigger');
             await page.waitForTimeout(500);
 
-            const containerItems = await page.locator('.logs-container-item').count();
+            const checkboxes = await page.locator('#logsContainerDropdown input[type="checkbox"]').count();
 
-            if (containerItems >= 2) {
-                // Select first container
-                await page.click('.logs-container-item:nth-child(1)');
-                await page.waitForTimeout(500);
+            if (checkboxes >= 2) {
+                // Select first container - logs fetch immediately
+                await page.click('#logsContainerDropdown input[type="checkbox"]:nth-of-type(1)');
+                await page.waitForTimeout(800);
 
-                // Open dropdown again
-                await page.click('#logsSelectContainer');
-                await page.waitForTimeout(500);
+                // Select second container - logs fetch immediately
+                await page.click('#logsContainerDropdown input[type="checkbox"]:nth-of-type(2)');
+                await page.waitForTimeout(800);
 
-                // Select second container
-                await page.click('.logs-container-item:nth-child(2)');
-                await page.waitForTimeout(1000);
+                // Verify multiselect label shows count
+                const label = page.locator('#logsContainerMultiselect .multiselect-label');
+                const labelText = await label.textContent();
+                expect(labelText).toContain('2');
 
-                // Verify both containers are selected (check pills)
-                const selectedPills = await page.locator('.selected-container-pill').count();
-                expect(selectedPills).toBeGreaterThanOrEqual(2);
-
-                console.log(`✅ Selected ${selectedPills} containers`);
+                console.log(`✅ Selected 2 containers with immediate fetching: ${labelText}`);
             }
         });
 
@@ -2424,13 +2425,13 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
 
             await page.waitForTimeout(2000);
 
-            // Open dropdown and select a container
-            await page.click('#logsSelectContainer');
+            // Open multiselect and select a container
+            await page.click('#logsContainerMultiselect .multiselect-trigger');
             await page.waitForTimeout(500);
 
-            const containerItems = await page.locator('.logs-container-item').count();
-            if (containerItems > 0) {
-                await page.click('.logs-container-item:first-child');
+            const checkboxes = await page.locator('#logsContainerDropdown input[type="checkbox"]').count();
+            if (checkboxes > 0) {
+                await page.click('#logsContainerDropdown input[type="checkbox"]:first-child');
                 await page.waitForTimeout(1000);
 
                 // Check initial sort button text
@@ -2460,12 +2461,12 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
             await page.waitForTimeout(2000);
 
             // Select a container
-            await page.click('#logsSelectContainer');
+            await page.click('#logsContainerMultiselect .multiselect-trigger');
             await page.waitForTimeout(500);
 
-            const containerItems = await page.locator('.logs-container-item').count();
-            if (containerItems > 0) {
-                await page.click('.logs-container-item:first-child');
+            const checkboxes = await page.locator('#logsContainerDropdown input[type="checkbox"]').count();
+            if (checkboxes > 0) {
+                await page.click('#logsContainerDropdown input[type="checkbox"]:first-child');
                 await page.waitForTimeout(1000);
 
                 // Count initial log lines
@@ -2491,12 +2492,12 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
             await page.waitForTimeout(2000);
 
             // Select a container
-            await page.click('#logsSelectContainer');
+            await page.click('#logsContainerMultiselect .multiselect-trigger');
             await page.waitForTimeout(500);
 
-            const containerItems = await page.locator('.logs-container-item').count();
-            if (containerItems > 0) {
-                await page.click('.logs-container-item:first-child');
+            const checkboxes = await page.locator('#logsContainerDropdown input[type="checkbox"]').count();
+            if (checkboxes > 0) {
+                await page.click('#logsContainerDropdown input[type="checkbox"]:first-child');
                 await page.waitForTimeout(1000);
 
                 // Find auto-refresh checkbox
@@ -2518,74 +2519,77 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
             }
         });
 
-        test('Should remove selected container', async ({ page }) => {
+        test('Should deselect container by unchecking checkbox', async ({ page }) => {
             await login(page);
             await navigateToPage(page, 'logs');
 
             await page.waitForTimeout(2000);
 
             // Select a container
-            await page.click('#logsSelectContainer');
+            await page.click('#logsContainerMultiselect .multiselect-trigger');
             await page.waitForTimeout(500);
 
-            const containerItems = await page.locator('.logs-container-item').count();
-            if (containerItems > 0) {
-                await page.click('.logs-container-item:first-child');
+            const checkboxes = await page.locator('#logsContainerDropdown input[type="checkbox"]').count();
+            if (checkboxes > 0) {
+                // Select first container
+                const firstCheckbox = page.locator('#logsContainerDropdown input[type="checkbox"]:first-child');
+                await firstCheckbox.click();
                 await page.waitForTimeout(1000);
 
-                // Verify pill exists
-                const pill = page.locator('.selected-container-pill').first();
-                await expect(pill).toBeVisible();
+                // Verify it's checked
+                expect(await firstCheckbox.isChecked()).toBe(true);
 
-                // Click remove button on pill
-                const removeBtn = pill.locator('.remove-container');
-                await removeBtn.click();
+                // Uncheck it
+                await firstCheckbox.click();
                 await page.waitForTimeout(500);
 
-                // Verify pill removed
-                const pillCount = await page.locator('.selected-container-pill').count();
-                expect(pillCount).toBe(0);
+                // Verify it's unchecked
+                expect(await firstCheckbox.isChecked()).toBe(false);
 
-                console.log('✅ Container removed from selection');
+                // Multiselect label should show default text
+                const label = page.locator('#logsContainerMultiselect .multiselect-label');
+                const labelText = await label.textContent();
+                expect(labelText).toContain('Select containers');
+
+                console.log('✅ Container deselected via checkbox');
             }
         });
 
-        test('Should handle rate limiting gracefully', async ({ page }) => {
+        test('Should enforce 15-container selection limit', async ({ page }) => {
             await login(page);
             await navigateToPage(page, 'logs');
 
             await page.waitForTimeout(2000);
 
-            // Try to select many containers rapidly
-            await page.click('#logsSelectContainer');
+            // Open multiselect dropdown
+            await page.click('#logsContainerMultiselect .multiselect-trigger');
             await page.waitForTimeout(500);
 
-            const containerItems = await page.locator('.logs-container-item').count();
-            const selectCount = Math.min(containerItems, 10);
+            const checkboxes = await page.locator('#logsContainerDropdown input[type="checkbox"]').count();
 
-            if (selectCount > 3) {
-                for (let i = 0; i < selectCount; i++) {
-                    await page.click('#logsSelectContainer');
-                    await page.waitForTimeout(200);
-                    await page.click(`.logs-container-item:nth-child(${i + 1})`);
-                    await page.waitForTimeout(200);
+            // Try to select more than 15 containers if available
+            if (checkboxes > 15) {
+                // Select 15 containers first
+                for (let i = 1; i <= 15; i++) {
+                    await page.click(`#logsContainerDropdown input[type="checkbox"]:nth-of-type(${i})`);
+                    await page.waitForTimeout(100);
                 }
 
-                // Wait for responses
-                await page.waitForTimeout(3000);
+                // Try to select the 16th container
+                await page.click(`#logsContainerDropdown input[type="checkbox"]:nth-of-type(16)`);
+                await page.waitForTimeout(500);
 
-                // Check for rate limit toast
-                const toast = page.locator('.toast:has-text("Rate limit")');
-                if (await toast.count() > 0) {
-                    console.log('✅ Rate limit toast displayed');
-                    await expect(toast).toBeVisible();
+                // Should show warning toast
+                const toast = page.locator('.toast:has-text("Maximum 15 containers")');
+                await expect(toast).toBeVisible({ timeout: 2000 });
 
-                    // Verify auto-refresh was paused
-                    const autoRefreshCheckbox = page.locator('#logsAutoRefresh');
-                    const isChecked = await autoRefreshCheckbox.isChecked();
-                    expect(isChecked).toBe(false);
-                    console.log('✅ Auto-refresh paused on rate limit');
-                }
+                // 16th checkbox should be unchecked (limit enforced)
+                const checkedBoxes = await page.locator('#logsContainerDropdown input[type="checkbox"]:checked').count();
+                expect(checkedBoxes).toBeLessThanOrEqual(15);
+
+                console.log('✅ 15-container limit enforced with warning toast');
+            } else {
+                console.log(`⚠️ Only ${checkboxes} containers available, cannot test 15-container limit`);
             }
         });
 
@@ -2596,12 +2600,12 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
             await page.waitForTimeout(2000);
 
             // Select a container
-            await page.click('#logsSelectContainer');
+            await page.click('#logsContainerMultiselect .multiselect-trigger');
             await page.waitForTimeout(500);
 
-            const containerItems = await page.locator('.logs-container-item').count();
-            if (containerItems > 0) {
-                await page.click('.logs-container-item:first-child');
+            const checkboxes = await page.locator('#logsContainerDropdown input[type="checkbox"]').count();
+            if (checkboxes > 0) {
+                await page.click('#logsContainerDropdown input[type="checkbox"]:first-child');
                 await page.waitForTimeout(1000);
 
                 // Check for timestamps

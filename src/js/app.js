@@ -2406,7 +2406,10 @@ async function init() {
                     if (data.logs && Array.isArray(data.logs)) {
                         // Always replace logs for simplicity and to avoid duplicates
                         // Auto-refresh will just keep fetching the latest N logs
-                        accumulatedLogs = data.logs.filter(line => line.trim());
+                        // API returns array of {timestamp, log} objects
+                        accumulatedLogs = data.logs
+                            .filter(entry => entry && entry.log && entry.log.trim())
+                            .map(entry => entry.log);
 
                         updateLogDisplay();
                         // Auto-scroll to bottom only if no filter is active

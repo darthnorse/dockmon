@@ -209,11 +209,17 @@
             height: 60px;
             background: var(--dark);
             border-bottom: 1px solid var(--border);
-            display: grid;
-            grid-template-columns: auto 1fr auto 1fr;
+            display: flex;
             align-items: center;
             gap: var(--spacing-lg);
             padding: 0 var(--spacing-xl);
+        }
+
+        .topbar-left {
+            display: flex;
+            align-items: center;
+            gap: var(--spacing-md);
+            flex: 0 0 auto;
         }
 
         .topbar-title {
@@ -225,11 +231,15 @@
             gap: var(--spacing-md);
         }
 
+        #quietHoursIndicator {
+            margin: 0 auto;
+        }
+
         .topbar-actions {
             display: flex;
             align-items: center;
             gap: var(--spacing-md);
-            justify-self: end;
+            margin-left: auto;
         }
 
         /* Content Area */

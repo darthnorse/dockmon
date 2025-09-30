@@ -72,8 +72,10 @@
         <main class="main-content">
             <!-- Top Bar -->
             <header class="topbar">
-                <button class="menu-toggle" onclick="toggleSidebar()">☰</button>
-                <h1 class="topbar-title" id="pageTitle">Dashboard</h1>
+                <div class="topbar-left">
+                    <button class="menu-toggle" onclick="toggleSidebar()">☰</button>
+                    <h1 class="topbar-title" id="pageTitle">Dashboard</h1>
+                </div>
 
                 <!-- Blackout Window Indicator (centered) -->
                 <div id="quietHoursIndicator" style="display: none; align-items: center; gap: 8px; padding: 8px 16px; background: var(--warning-bg, rgba(255, 193, 7, 0.1)); border: 1px solid var(--warning, #ffc107); border-radius: 6px; color: var(--warning, #ffc107); font-weight: 500; font-size: 14px;">
@@ -83,7 +85,7 @@
 
                 <div class="topbar-actions">
                     <button class="btn btn-secondary" onclick="openAccountSettings()" title="Account Settings">
-                        <span>👤</span> <span id="topbarUsername">Account</span>
+                        <span data-lucide="user"></span> <span id="topbarUsername">Account</span>
                     </button>
                     <button class="btn btn-secondary" onclick="refreshAll()">
                         <span data-lucide="refresh-cw"></span> Refresh

@@ -17,7 +17,7 @@ from docker import DockerClient
 from fastapi import HTTPException
 
 from config.paths import DATABASE_PATH, CERTS_DIR
-from database import DatabaseManager, AutoRestartConfig
+from database import DatabaseManager, AutoRestartConfig, GlobalSettings
 from models.docker_models import DockerHost, DockerHostConfig, Container
 from models.settings_models import AlertRule, NotificationSettings
 from websocket.connection import ConnectionManager
@@ -81,9 +81,13 @@ class DockerMonitor:
         self.cleanup_task: Optional[asyncio.Task] = None  # Background cleanup task
         self._load_persistent_config()  # Load saved hosts and configs
 
-    def add_host(self, config: DockerHostConfig, existing_id: str = None, skip_db_save: bool = False) -> DockerHost:
+    def add_host(self, config: DockerHostConfig, existing_id: str = None, skip_db_save: bool = False, suppress_event_loop_errors: bool = False) -> DockerHost:
         """Add a new Docker host to monitor"""
         try:
+            # Validate certificates if provided (before trying to use them)
+            if config.tls_cert or config.tls_key or config.tls_ca:
+                self._validate_certificates(config)
+
             # Create Docker client
             if config.url.startswith("unix://"):
                 client = docker.DockerClient(base_url=config.url)
@@ -182,8 +186,133 @@ class DockerMonitor:
             return host
 
         except Exception as e:
-            logger.error(f"Failed to add host {config.name}: {e}")
-            raise HTTPException(status_code=400, detail=str(e))
+            # Suppress event loop errors during first run startup
+            if suppress_event_loop_errors and "no running event loop" in str(e):
+                logger.debug(f"Event loop warning for {config.name} (expected during startup): {e}")
+                # Re-raise so the caller knows host was added but with event loop issue
+                raise
+            else:
+                logger.error(f"Failed to add host {config.name}: {e}")
+                error_msg = self._get_user_friendly_error(str(e))
+                raise HTTPException(status_code=400, detail=error_msg)
+
+    def _get_user_friendly_error(self, error: str) -> str:
+        """Convert technical Docker errors to user-friendly messages"""
+        error_lower = error.lower()
+
+        # SSL/TLS certificate errors
+        if 'ssl' in error_lower or 'tls' in error_lower:
+            if 'pem lib' in error_lower or 'pem' in error_lower:
+                return (
+                    "SSL certificate error: The certificates provided appear to be invalid or don't match. "
+                    "Please verify:\n"
+                    "• The certificates are for the correct server (check hostname/IP)\n"
+                    "• The client certificate and private key are a matching pair\n"
+                    "• The CA certificate matches the server's certificate\n"
+                    "• The certificates haven't expired"
+                )
+            elif 'certificate verify failed' in error_lower:
+                return (
+                    "SSL certificate verification failed: The server's certificate is not trusted by the CA certificate you provided. "
+                    "Make sure you're using the correct CA certificate that signed the server's certificate."
+                )
+            elif 'ssleof' in error_lower or 'connection reset' in error_lower:
+                return (
+                    "SSL connection failed: The server closed the connection during SSL handshake. "
+                    "This usually means the server doesn't recognize the certificates. "
+                    "Verify you're using the correct certificates for this server."
+                )
+            else:
+                return f"SSL/TLS error: Unable to establish secure connection. {error}"
+
+        # Connection errors
+        elif 'connection refused' in error_lower:
+            return (
+                "Connection refused: The Docker daemon is not accepting connections on this address. "
+                "Make sure:\n"
+                "• Docker is running on the remote host\n"
+                "• The Docker daemon is configured to listen on the specified port\n"
+                "• Firewall allows connections to the port"
+            )
+        elif 'timeout' in error_lower or 'timed out' in error_lower:
+            return (
+                "Connection timeout: Unable to reach the Docker daemon. "
+                "Check that the host address is correct and the host is reachable on your network."
+            )
+        elif 'no route to host' in error_lower or 'network unreachable' in error_lower:
+            return (
+                "Network unreachable: Cannot reach the specified host. "
+                "Verify the IP address/hostname is correct and the host is on your network."
+            )
+        elif 'http request to an https server' in error_lower:
+            return (
+                "Protocol mismatch: You're trying to connect without TLS to a server that requires TLS. "
+                "The server expects HTTPS connections. Please provide TLS certificates or change the server configuration."
+            )
+
+        # Return original error if we don't have a friendly version
+        return error
+
+    def _validate_certificates(self, config: DockerHostConfig):
+        """Validate certificate format before attempting to use them"""
+
+        def check_cert_format(cert_data: str, cert_type: str):
+            """Check if certificate has proper PEM format markers"""
+            if not cert_data or not cert_data.strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{cert_type} is empty. Please paste the certificate content."
+                )
+
+            cert_data = cert_data.strip()
+
+            # Check for BEGIN marker
+            if "-----BEGIN" not in cert_data:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{cert_type} is missing the '-----BEGIN' header. Make sure you copied the complete certificate including the BEGIN line."
+                )
+
+            # Check for END marker
+            if "-----END" not in cert_data:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{cert_type} is missing the '-----END' footer. Make sure you copied the complete certificate including the END line."
+                )
+
+            # Check BEGIN comes before END
+            begin_pos = cert_data.find("-----BEGIN")
+            end_pos = cert_data.find("-----END")
+            if begin_pos >= end_pos:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{cert_type} format is invalid. The '-----BEGIN' line should come before the '-----END' line."
+                )
+
+            # Check for certificate data between markers
+            cert_content = cert_data[begin_pos:end_pos + 50]  # Include END marker
+            lines = cert_content.split('\n')
+            if len(lines) < 3:  # Should have BEGIN, at least one data line, and END
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{cert_type} appears to be incomplete. Make sure you copied all lines between BEGIN and END."
+                )
+
+        # Validate each certificate type
+        if config.tls_ca:
+            check_cert_format(config.tls_ca, "CA Certificate")
+
+        if config.tls_cert:
+            check_cert_format(config.tls_cert, "Client Certificate")
+
+        if config.tls_key:
+            # Private keys can be PRIVATE KEY or RSA PRIVATE KEY
+            key_data = config.tls_key.strip()
+            if "-----BEGIN" not in key_data or "-----END" not in key_data:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Client Private Key is incomplete. Make sure you copied the complete key including both '-----BEGIN' and '-----END' lines."
+                )
 
     def _validate_host_security(self, config: DockerHostConfig) -> str:
         """Validate the security configuration of a Docker host"""
@@ -243,6 +372,10 @@ class DockerMonitor:
             raise HTTPException(status_code=400, detail=str(e))
 
         try:
+            # Validate certificates if provided (before trying to use them)
+            if config.tls_cert or config.tls_key or config.tls_ca:
+                self._validate_certificates(config)
+
             # Remove the existing host from memory first
             if host_id in self.hosts:
                 # Close existing client first (this should stop the monitoring task)
@@ -351,7 +484,8 @@ class DockerMonitor:
 
         except Exception as e:
             logger.error(f"Failed to update host {host_id}: {e}")
-            raise
+            error_msg = self._get_user_friendly_error(str(e))
+            raise HTTPException(status_code=400, detail=error_msg)
 
     def get_containers(self, host_id: Optional[str] = None) -> List[Container]:
         """Get containers from one or all hosts"""
@@ -360,10 +494,34 @@ class DockerMonitor:
         hosts_to_check = [host_id] if host_id else list(self.hosts.keys())
 
         for hid in hosts_to_check:
-            if hid not in self.clients:
+            host = self.hosts.get(hid)
+            if not host:
                 continue
 
-            host = self.hosts[hid]
+            # Try to reconnect if host exists but has no client (offline)
+            if hid not in self.clients:
+                # Attempt to reconnect offline hosts
+                try:
+                    if host.url.startswith("unix://"):
+                        client = docker.DockerClient(base_url=host.url)
+                    else:
+                        # For TCP, try without TLS first (client won't have certs stored)
+                        client = docker.DockerClient(
+                            base_url=host.url,
+                            timeout=self.settings.connection_timeout
+                        )
+                    # Test the connection
+                    client.ping()
+                    # Connection successful - add to clients
+                    self.clients[hid] = client
+                    logger.info(f"Reconnected to offline host: {host.name}")
+                except Exception as e:
+                    # Still offline - update status and continue
+                    host.status = "offline"
+                    host.error = f"Connection failed: {str(e)}"
+                    host.last_checked = datetime.now()
+                    continue
+
             client = self.clients[hid]
 
             try:
@@ -561,6 +719,51 @@ class DockerMonitor:
         self.db.set_auto_restart(host_id, container_id, container_name, enabled)
         logger.info(f"Auto-restart {'enabled' if enabled else 'disabled'} for container '{container_name}' on host '{host_name}'")
 
+    def check_orphaned_alerts(self):
+        """Check for alert rules that reference non-existent containers
+        Returns dict mapping alert_rule_id to list of orphaned container entries"""
+        orphaned = {}
+
+        try:
+            # Get all alert rules
+            with self.db.get_session() as session:
+                from database import AlertRuleDB, AlertRuleContainer
+                alert_rules = session.query(AlertRuleDB).all()
+
+                # Get all current containers (name + host_id pairs)
+                current_containers = {}
+                for container in self.get_containers():
+                    key = f"{container.host_id}:{container.name}"
+                    current_containers[key] = True
+
+                # Check each alert rule's containers
+                for rule in alert_rules:
+                    orphaned_containers = []
+                    for alert_container in rule.containers:
+                        key = f"{alert_container.host_id}:{alert_container.container_name}"
+                        if key not in current_containers:
+                            # Container doesn't exist anymore
+                            orphaned_containers.append({
+                                'host_id': alert_container.host_id,
+                                'host_name': alert_container.host.name if alert_container.host else 'Unknown',
+                                'container_name': alert_container.container_name
+                            })
+
+                    if orphaned_containers:
+                        orphaned[rule.id] = {
+                            'rule_name': rule.name,
+                            'orphaned_containers': orphaned_containers
+                        }
+
+                if orphaned:
+                    logger.info(f"Found {len(orphaned)} alert rules with orphaned containers")
+
+                return orphaned
+
+        except Exception as e:
+            logger.error(f"Error checking orphaned alerts: {e}")
+            return {}
+
     async def monitor_containers(self):
         """Main monitoring loop"""
         logger.info("Starting container monitoring...")
@@ -705,9 +908,20 @@ class DockerMonitor:
             # Load saved hosts
             db_hosts = self.db.get_hosts(active_only=True)
 
+            # Detect and warn about duplicate hosts (same URL)
+            seen_urls = {}
+            for host in db_hosts:
+                if host.url in seen_urls:
+                    logger.warning(
+                        f"Duplicate host detected: '{host.name}' ({host.id}) and "
+                        f"'{seen_urls[host.url]['name']}' ({seen_urls[host.url]['id']}) "
+                        f"both use URL '{host.url}'. Consider removing duplicates."
+                    )
+                else:
+                    seen_urls[host.url] = {'name': host.name, 'id': host.id}
+
             # Check if this is first run
             with self.db.get_session() as session:
-                from backend.database import GlobalSettings
                 settings = session.query(GlobalSettings).first()
                 if not settings:
                     # Create default settings
@@ -715,9 +929,12 @@ class DockerMonitor:
                     session.add(settings)
                     session.commit()
 
-                # Auto-add local Docker only on first run
-                if not settings.first_run_complete and not db_hosts and os.path.exists('/var/run/docker.sock'):
+            # Auto-add local Docker only on first run (outside session context)
+            with self.db.get_session() as session:
+                settings = session.query(GlobalSettings).first()
+                if settings and not settings.first_run_complete and not db_hosts and os.path.exists('/var/run/docker.sock'):
                     logger.info("First run detected - adding local Docker automatically")
+                    host_added = False
                     try:
                         config = DockerHostConfig(
                             name="Local Docker",
@@ -726,14 +943,25 @@ class DockerMonitor:
                             tls_key=None,
                             tls_ca=None
                         )
-                        self.add_host(config)
+                        self.add_host(config, suppress_event_loop_errors=True)
+                        host_added = True
                         logger.info("Successfully added local Docker host")
+                    except Exception as e:
+                        # Check if this is the benign "no running event loop" error during startup
+                        # The host is actually added successfully despite this error
+                        error_str = str(e)
+                        if "no running event loop" in error_str:
+                            host_added = True
+                            logger.debug(f"Event loop warning during first run (host added successfully): {e}")
+                        else:
+                            logger.error(f"Failed to add local Docker: {e}")
+                            session.rollback()
 
-                        # Mark first run as complete
+                    # Mark first run as complete if host was added
+                    if host_added:
                         settings.first_run_complete = True
                         session.commit()
-                    except Exception as e:
-                        logger.error(f"Failed to add local Docker: {e}")
+                        logger.info("First run setup complete")
 
             for db_host in db_hosts:
                 try:
@@ -745,12 +973,27 @@ class DockerMonitor:
                         tls_ca=db_host.tls_ca
                     )
                     # Try to connect to the host with existing ID and preserve security status
-                    host = self.add_host(config, existing_id=db_host.id, skip_db_save=True)
+                    host = self.add_host(config, existing_id=db_host.id, skip_db_save=True, suppress_event_loop_errors=True)
                     # Override with stored security status
                     if hasattr(host, 'security_status') and db_host.security_status:
                         host.security_status = db_host.security_status
                 except Exception as e:
-                    logger.error(f"Failed to reconnect to saved host {db_host.name}: {e}")
+                    # Suppress event loop errors during startup
+                    error_str = str(e)
+                    if "no running event loop" not in error_str:
+                        logger.error(f"Failed to reconnect to saved host {db_host.name}: {e}")
+                    # Add host to UI even if connection failed, mark as offline
+                    # This prevents "disappearing hosts" bug after restart
+                    host = DockerHost(
+                        id=db_host.id,
+                        name=db_host.name,
+                        url=db_host.url,
+                        status="offline",
+                        client=None
+                    )
+                    host.security_status = db_host.security_status or "unknown"
+                    self.hosts[db_host.id] = host
+                    logger.info(f"Added host {db_host.name} in offline mode - connection will retry")
 
             # Load auto-restart configurations
             for host_id in self.hosts.keys():

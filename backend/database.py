@@ -317,11 +317,13 @@ class DatabaseManager:
             return host
 
     def get_hosts(self, active_only: bool = True) -> List[DockerHostDB]:
-        """Get all Docker hosts"""
+        """Get all Docker hosts ordered by creation time"""
         with self.get_session() as session:
             query = session.query(DockerHostDB)
             if active_only:
                 query = query.filter(DockerHostDB.is_active == True)
+            # Order by created_at to ensure consistent ordering (oldest first)
+            query = query.order_by(DockerHostDB.created_at)
             return query.all()
 
     def get_host(self, host_id: str) -> Optional[DockerHostDB]:

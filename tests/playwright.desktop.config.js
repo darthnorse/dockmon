@@ -1,5 +1,5 @@
 /**
- * Playwright Configuration for DockMon Testing
+ * Playwright Configuration for DockMon Testing - DESKTOP ONLY
  */
 
 module.exports = {
@@ -14,8 +14,8 @@ module.exports = {
   retries: process.env.CI ? 2 : 0,
   workers: process.env.CI ? 1 : 1,
   reporter: [
-    ['html'],
-    ['json', { outputFile: 'test-results.json' }]
+    ['html', { outputFolder: 'playwright-report-desktop' }],
+    ['json', { outputFile: 'test-results-desktop.json' }]
   ],
   use: {
     baseURL: 'https://localhost:8001',
@@ -30,12 +30,6 @@ module.exports = {
       use: {
         ...require('@playwright/test').devices['Desktop Chrome'],
         viewport: { width: 1280, height: 720 }
-      },
-    },
-    {
-      name: 'mobile-chrome',
-      use: {
-        ...require('@playwright/test').devices['Pixel 5']
       },
     }
   ],

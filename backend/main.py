@@ -388,6 +388,10 @@ async def get_alert_rules(authenticated: bool = Depends(verify_session_auth)):
     """Get all alert rules"""
     rules = monitor.db.get_alert_rules(enabled_only=False)
     logger.info(f"Retrieved {len(rules)} alert rules from database")
+
+    # Check for orphaned alerts
+    orphaned = monitor.check_orphaned_alerts()
+
     return [{
         "id": rule.id,
         "name": rule.name,
@@ -400,7 +404,9 @@ async def get_alert_rules(authenticated: bool = Depends(verify_session_auth)):
         "enabled": rule.enabled,
         "last_triggered": rule.last_triggered.isoformat() if rule.last_triggered else None,
         "created_at": rule.created_at.isoformat(),
-        "updated_at": rule.updated_at.isoformat()
+        "updated_at": rule.updated_at.isoformat(),
+        "is_orphaned": rule.id in orphaned,
+        "orphaned_containers": orphaned.get(rule.id, {}).get('orphaned_containers', []) if rule.id in orphaned else []
     } for rule in rules]
 
 
@@ -528,6 +534,19 @@ async def delete_alert_rule(rule_id: str, authenticated: bool = Depends(verify_s
         logger.error(f"Failed to delete alert rule: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
+@app.get("/api/alerts/orphaned")
+async def get_orphaned_alerts(authenticated: bool = Depends(verify_session_auth)):
+    """Get alert rules that reference non-existent containers"""
+    try:
+        orphaned = monitor.check_orphaned_alerts()
+        return {
+            "count": len(orphaned),
+            "orphaned_rules": orphaned
+        }
+    except Exception as e:
+        logger.error(f"Failed to check orphaned alerts: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # ==================== Blackout Window Routes ====================
 
 @app.get("/api/blackout/status")
@@ -574,7 +593,8 @@ async def get_template_variables(authenticated: bool = Depends(verify_session_au
 **State Change:** `{OLD_STATE}` → `{NEW_STATE}`
 **Image:** {IMAGE}
 **Time:** {TIMESTAMP}
-**Rule:** {RULE_NAME}""",
+**Rule:** {RULE_NAME}
+───────────────────────""",
         "examples": {
             "simple": "Alert: {CONTAINER_NAME} on {HOST_NAME} changed from {OLD_STATE} to {NEW_STATE}",
             "detailed": """🔴 Container Alert

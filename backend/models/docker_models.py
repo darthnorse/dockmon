@@ -9,7 +9,7 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, validator, model_validator
 
 
 logger = logging.getLogger(__name__)
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 class DockerHostConfig(BaseModel):
     """Configuration for a Docker host"""
-    name: str = Field(..., min_length=1, max_length=100, pattern=r'^[a-zA-Z0-9][a-zA-Z0-9._-]*$')
+    name: str = Field(..., min_length=1, max_length=100, pattern=r'^[a-zA-Z0-9][a-zA-Z0-9 ._-]*$')
     url: str = Field(..., min_length=1, max_length=500)
     tls_cert: Optional[str] = Field(None, max_length=10000)
     tls_key: Optional[str] = Field(None, max_length=10000)
@@ -95,9 +95,13 @@ class DockerHostConfig(BaseModel):
         if not v:
             return None
 
-        # Basic PEM format validation
-        if '-----BEGIN' not in v or '-----END' not in v:
-            raise ValueError('Certificate must be in PEM format')
+        # Basic PEM format validation with helpful error messages
+        if '-----BEGIN' not in v and '-----END' not in v:
+            raise ValueError('Certificate is incomplete. PEM certificates must start with "-----BEGIN" and end with "-----END". Please copy the entire certificate including both lines.')
+        elif '-----BEGIN' not in v:
+            raise ValueError('Certificate is missing the "-----BEGIN" header line. Make sure you copied the complete certificate starting from the "-----BEGIN" line.')
+        elif '-----END' not in v:
+            raise ValueError('Certificate is missing the "-----END" footer line. Make sure you copied the complete certificate including the "-----END" line.')
 
         # Block potential code injection
         dangerous_patterns = ['<script', 'javascript:', 'data:', 'vbscript:', '<?php', '<%', '{{', '{%']
@@ -106,6 +110,33 @@ class DockerHostConfig(BaseModel):
             raise ValueError('Certificate contains potentially dangerous content')
 
         return v
+
+    @model_validator(mode='after')
+    def validate_tls_complete(self):
+        """Ensure TLS configuration is complete when using TCP with certificates"""
+        # Only validate for TCP connections
+        if not self.url or not self.url.startswith('tcp://'):
+            return self
+
+        # If any TLS field is provided, all three must be provided
+        tls_fields_provided = [
+            ('Client Certificate', self.tls_cert),
+            ('Client Private Key', self.tls_key),
+            ('CA Certificate', self.tls_ca)
+        ]
+
+        provided_fields = [(name, val) for name, val in tls_fields_provided if val and val.strip()]
+
+        if provided_fields and len(provided_fields) < 3:
+            # Some but not all fields provided
+            missing = [name for name, val in tls_fields_provided if not val or not val.strip()]
+            missing_str = ', '.join(missing)
+            raise ValueError(
+                f'Incomplete TLS configuration. For secure TCP connections, you must provide all three certificates. '
+                f'Missing: {missing_str}. Either provide all three certificates or remove all of them.'
+            )
+
+        return self
 
 
 class DockerHost(BaseModel):

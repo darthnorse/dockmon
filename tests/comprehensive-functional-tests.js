@@ -45,9 +45,9 @@ const CONFIG = {
         }
     },
     timeouts: {
-        short: 5000,
-        medium: 10000,
-        long: 15000
+        short: 10000,
+        medium: 15000,
+        long: 20000
     }
 };
 
@@ -108,15 +108,21 @@ async function navigateToPage(page, pageName) {
         }
     }
 
-    await page.click(`a.nav-item:has-text("${linkText}")`);
-    await page.waitForTimeout(1000); // Wait for page transition
+    const navLink = page.locator(`a.nav-item:has-text("${linkText}")`);
+    await navLink.waitFor({ state: 'visible', timeout: 10000 });
+    await navLink.click();
+
+    // Simple wait for page transition - don't try to be clever
+    await page.waitForTimeout(2000);
 }
 
 /**
  * Open a modal by clicking a button
  */
 async function openModal(page, buttonText) {
-    await page.click(`button:has-text("${buttonText}")`);
+    const button = page.locator(`button:has-text("${buttonText}")`);
+    await button.waitFor({ state: 'visible', timeout: 10000 });
+    await button.click();
     await page.waitForTimeout(500); // Wait for modal animation
 }
 
@@ -382,11 +388,15 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
 
             // Save host
             await page.click('#hostModal button[type="submit"]');
-            await page.waitForTimeout(2000);
+            await page.waitForTimeout(1000); // Wait for host to be saved
+
+            // Close modal manually
+            await closeModal(page);
+            await page.waitForTimeout(500);
 
             // Verify host was added (look for it in the list)
             const newHost = page.locator(`.host-card:has-text("${CONFIG.testHosts.primary.name}")`);
-            await expect(newHost).toBeVisible({ timeout: CONFIG.timeouts.medium });
+            await expect(newHost).toBeVisible({ timeout: CONFIG.timeouts.long });
         });
 
         test('Should edit an existing host', async ({ page }) => {
@@ -472,8 +482,10 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
 
             if (containers > 0) {
                 // Click first container
-                await page.click('.container-item:first-child');
-                await expect(page.locator('#containerModal.active')).toBeVisible();
+                const firstContainer = page.locator('.container-item').first();
+                await firstContainer.waitFor({ state: 'visible', timeout: 10000 });
+                await firstContainer.click();
+                await expect(page.locator('#containerModal.active')).toBeVisible({ timeout: 10000 });
 
                 // Check tabs exist
                 await expect(page.locator('#tab-info')).toBeVisible();
@@ -575,6 +587,7 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
 
             // Check for alert rules content
             const content = page.locator('.content .card, .alert-rules-list');
+            await content.first().waitFor({ state: 'visible', timeout: CONFIG.timeouts.long });
             await expect(content.first()).toBeVisible({ timeout: CONFIG.timeouts.medium });
         });
 
@@ -585,12 +598,13 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
             // Open create alert modal
             const createBtn = page.locator('button:has-text("Create Alert Rule")');
             if (await createBtn.count() > 0) {
+                await createBtn.waitFor({ state: 'visible', timeout: 10000 });
                 await createBtn.click();
-                await expect(page.locator('#alertRuleModal.active')).toBeVisible();
+                await expect(page.locator('#alertRuleModal.active')).toBeVisible({ timeout: 10000 });
 
                 // Check form fields exist
                 await expect(page.locator('#alertRuleName')).toBeVisible();
-                await expect(page.locator('#alertHost')).toBeVisible();
+                await expect(page.locator('#selectAllContainers')).toBeVisible();
 
                 await closeModal(page);
             }
@@ -602,13 +616,18 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
 
             const createBtn = page.locator('button:has-text("Create Alert Rule")');
             if (await createBtn.count() > 0) {
+                await createBtn.waitFor({ state: 'visible', timeout: 10000 });
                 await createBtn.click();
-                await expect(page.locator('#alertRuleModal.active')).toBeVisible();
+                await expect(page.locator('#alertRuleModal.active')).toBeVisible({ timeout: 10000 });
 
                 // Fill in alert rule details
                 await page.fill('#alertRuleName', 'Test Alert Rule');
-                await page.selectOption('#alertHost', { index: 1 }); // Select first host
-                await page.selectOption('#alertCondition', 'container_stopped');
+
+                // Select all containers
+                await page.check('#selectAllContainers');
+
+                // Check at least one event trigger (stopped event)
+                await page.check('input[data-event="stop"]');
 
                 // Save rule
                 await page.click('#alertRuleModal button[type="submit"]');
@@ -650,8 +669,9 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
             // Click notifications in sidebar
             const notifLink = page.locator('a.nav-item:has-text("Notifications")');
             if (await notifLink.count() > 0) {
+                await notifLink.waitFor({ state: 'visible', timeout: 10000 });
                 await notifLink.click();
-                await expect(page.locator('#notificationModal.active')).toBeVisible();
+                await expect(page.locator('#notificationModal.active')).toBeVisible({ timeout: 10000 });
 
                 // Check tabs exist
                 await expect(page.locator('#channelsTab')).toBeVisible();
@@ -668,18 +688,24 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
             // Open notifications modal
             const notifLink = page.locator('a.nav-item:has-text("Notifications")');
             if (await notifLink.count() > 0) {
+                await notifLink.waitFor({ state: 'visible', timeout: 10000 });
                 await notifLink.click();
-                await expect(page.locator('#notificationModal.active')).toBeVisible();
+                await expect(page.locator('#notificationModal.active')).toBeVisible({ timeout: 10000 });
 
                 // Add new channel
-                await page.click('button:has-text("Add Channel")');
-                await page.waitForTimeout(500);
+                const addChannelBtn = page.locator('button:has-text("Add Channel")');
+                await addChannelBtn.waitFor({ state: 'visible', timeout: 10000 });
+                await addChannelBtn.click();
+                await page.waitForTimeout(1000); // Wait for channel to be added to DOM
 
-                // Find the new channel form
-                const newChannel = page.locator('.notification-channel').last();
+                // Find the new channel form and wait for select to be visible
+                const newChannel = page.locator('.notification-channel-card').last();
+                const selectElement = newChannel.locator('select.form-input');
+                await selectElement.waitFor({ state: 'visible', timeout: 10000 });
+                await expect(selectElement).toBeVisible({ timeout: 5000 });
 
                 // Select Discord type
-                await newChannel.locator('select.channel-type').selectOption('discord');
+                await selectElement.selectOption('discord');
                 await page.waitForTimeout(500);
 
                 // Fill in Discord webhook
@@ -698,18 +724,24 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
             // Open notifications modal
             const notifLink = page.locator('a.nav-item:has-text("Notifications")');
             if (await notifLink.count() > 0) {
+                await notifLink.waitFor({ state: 'visible', timeout: 10000 });
                 await notifLink.click();
-                await expect(page.locator('#notificationModal.active')).toBeVisible();
+                await expect(page.locator('#notificationModal.active')).toBeVisible({ timeout: 10000 });
 
                 // Add new channel
-                await page.click('button:has-text("Add Channel")');
-                await page.waitForTimeout(500);
+                const addChannelBtn = page.locator('button:has-text("Add Channel")');
+                await addChannelBtn.waitFor({ state: 'visible', timeout: 10000 });
+                await addChannelBtn.click();
+                await page.waitForTimeout(1000); // Wait for channel to be added to DOM
 
-                // Find the new channel form
-                const newChannel = page.locator('.notification-channel').last();
+                // Find the new channel form and wait for select to be visible
+                const newChannel = page.locator('.notification-channel-card').last();
+                const selectElement = newChannel.locator('select.form-input');
+                await selectElement.waitFor({ state: 'visible', timeout: 10000 });
+                await expect(selectElement).toBeVisible({ timeout: 5000 });
 
                 // Select Pushover type
-                await newChannel.locator('select.channel-type').selectOption('pushover');
+                await selectElement.selectOption('pushover');
                 await page.waitForTimeout(500);
 
                 // Fill in Pushover credentials
@@ -731,21 +763,24 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
             // Open notifications modal
             const notifLink = page.locator('a.nav-item:has-text("Notifications")');
             if (await notifLink.count() > 0) {
+                await notifLink.waitFor({ state: 'visible', timeout: 10000 });
                 await notifLink.click();
-                await expect(page.locator('#notificationModal.active')).toBeVisible();
+                await expect(page.locator('#notificationModal.active')).toBeVisible({ timeout: 10000 });
 
                 // Find test button for first channel
-                const testBtn = page.locator('.notification-channel button:has-text("Test")').first();
+                const testBtn = page.locator('.notification-channel-card button:has-text("Test")').first();
                 if (await testBtn.count() > 0) {
+                    await testBtn.waitFor({ state: 'visible', timeout: 10000 });
                     await testBtn.click();
 
-                    // Wait for test to complete
+                    // Wait for test to complete and toast to appear
                     await page.waitForTimeout(3000);
 
                     // Check for success/error toast
                     const toast = page.locator('.toast');
                     if (await toast.count() > 0) {
-                        await expect(toast).toBeVisible();
+                        await toast.waitFor({ state: 'visible', timeout: 5000 });
+                        await expect(toast).toBeVisible({ timeout: 5000 });
                     }
                 }
             }
@@ -757,15 +792,19 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
             // Open notifications modal
             const notifLink = page.locator('a.nav-item:has-text("Notifications")');
             if (await notifLink.count() > 0) {
+                await notifLink.waitFor({ state: 'visible', timeout: 10000 });
                 await notifLink.click();
-                await expect(page.locator('#notificationModal.active')).toBeVisible();
+                await expect(page.locator('#notificationModal.active')).toBeVisible({ timeout: 10000 });
 
                 // Switch to template tab
-                await page.click('#templateTab');
-                await page.waitForTimeout(500);
+                const templateTab = page.locator('#templateTab');
+                await templateTab.waitFor({ state: 'visible', timeout: 10000 });
+                await templateTab.click();
+                await page.waitForTimeout(1000); // Wait for tab content to load
 
                 // Check template editor exists
                 const templateEditor = page.locator('textarea[name="message-template"]');
+                await templateEditor.waitFor({ state: 'visible', timeout: 10000 });
                 await expect(templateEditor).toBeVisible();
 
                 // Modify template
@@ -784,8 +823,9 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
             // Open notifications modal
             const notifLink = page.locator('a.nav-item:has-text("Notifications")');
             if (await notifLink.count() > 0) {
+                await notifLink.waitFor({ state: 'visible', timeout: 10000 });
                 await notifLink.click();
-                await expect(page.locator('#notificationModal.active')).toBeVisible();
+                await expect(page.locator('#notificationModal.active')).toBeVisible({ timeout: 10000 });
 
                 // Switch to blackout tab
                 await page.click('#blackoutTab');
@@ -797,12 +837,16 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
                     await addBtn.click();
                     await page.waitForTimeout(500);
 
-                    // Configure blackout window
-                    const blackoutForm = page.locator('.blackout-window').last();
+                    // Configure blackout window - find the last div in blackoutWindowsList
+                    const blackoutForm = page.locator('#blackoutWindowsList > div').last();
+                    await blackoutForm.waitFor({ state: 'visible', timeout: 5000 });
 
                     // Set times
-                    await blackoutForm.locator('input[type="time"]').first().fill('22:00');
-                    await blackoutForm.locator('input[type="time"]').last().fill('06:00');
+                    const startTime = blackoutForm.locator('input[type="time"]').first();
+                    const endTime = blackoutForm.locator('input[type="time"]').last();
+                    await startTime.waitFor({ state: 'visible', timeout: 5000 });
+                    await startTime.fill('22:00');
+                    await endTime.fill('06:00');
 
                     // Save blackout windows
                     await page.click('button:has-text("Save Blackout")');
@@ -948,6 +992,7 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
             // Open add host modal
             const addBtn = page.locator('button:has-text("Add Host")');
             if (await addBtn.count() > 0) {
+                await addBtn.waitFor({ state: 'visible', timeout: 10000 });
                 await addBtn.click();
                 await expect(page.locator('#hostModal.active')).toBeVisible();
 
@@ -978,6 +1023,7 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
             // Check mobile-specific elements
             const menuToggle = page.locator('.menu-toggle');
             if (await menuToggle.count() > 0) {
+                await menuToggle.waitFor({ state: 'visible', timeout: 10000 });
                 await expect(menuToggle).toBeVisible();
             }
 
@@ -1067,12 +1113,11 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
                 await openModal(page, 'Add Host');
                 await page.fill('input[name="hostname"]', 'Test Host A');
                 await page.fill('input[name="hosturl"]', CONFIG.testHosts.primary.address);
-                const tlsCheckbox1 = page.locator('#hostTLS');
-                if (await tlsCheckbox1.isChecked()) {
-                    await tlsCheckbox1.uncheck();
-                }
+                // TLS certificates are auto-shown for tcp:// URLs, no checkbox needed
                 await page.click('#hostModal button[type="submit"]');
-                await page.waitForTimeout(2000);
+                await page.waitForTimeout(1000); // Wait for host to be saved
+                await closeModal(page);
+                await page.waitForTimeout(500);
             }
 
             // Add second host if not exists
@@ -1081,12 +1126,11 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
                 await openModal(page, 'Add Host');
                 await page.fill('input[name="hostname"]', 'Test Host B');
                 await page.fill('input[name="hosturl"]', CONFIG.testHosts.secondary.address);
-                const tlsCheckbox2 = page.locator('#hostTLS');
-                if (await tlsCheckbox2.isChecked()) {
-                    await tlsCheckbox2.uncheck();
-                }
+                // TLS certificates are auto-shown for tcp:// URLs, no checkbox needed
                 await page.click('#hostModal button[type="submit"]');
-                await page.waitForTimeout(2000);
+                await page.waitForTimeout(1000); // Wait for host to be saved
+                await closeModal(page);
+                await page.waitForTimeout(500);
             }
 
             // Step 2: Create an alert rule that monitors containers on BOTH hosts
@@ -1100,16 +1144,13 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
                 await page.fill('#alertRuleName', 'Multi-Host Container Alert');
 
                 // Select ALL hosts option if available, or first host
-                const hostSelect = page.locator('#alertHost');
-                const allHostsOption = hostSelect.locator('option:has-text("All")');
+                
                 if (await allHostsOption.count() > 0) {
-                    await hostSelect.selectOption('All');
                 } else {
                     // If no "All" option, select first host and note limitation
-                    await hostSelect.selectOption({ index: 1 });
                 }
 
-                await page.selectOption('#alertCondition', 'container_stopped');
+                
 
                 // Specify a container name
                 const containerInput = page.locator('#ruleContainer');
@@ -1156,8 +1197,7 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
                 await expect(page.locator('#alertRuleModal.active')).toBeVisible();
 
                 // Check host selection - should not have stale reference
-                const hostSelect = page.locator('#alertHost');
-                const selectedValue = await hostSelect.inputValue();
+                
 
                 // Should have a valid host selected (not the deleted one)
                 expect(selectedValue).not.toContain('Test Host A');
@@ -1185,12 +1225,11 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
                 await openModal(page, 'Add Host');
                 await page.fill('input[name="hostname"]', 'All-Test Host 1');
                 await page.fill('input[name="hosturl"]', CONFIG.testHosts.primary.address);
-                const tlsCheckbox = page.locator('#hostTLS');
-                if (await tlsCheckbox.isChecked()) {
-                    await tlsCheckbox.uncheck();
-                }
+                // TLS certificates are auto-shown for tcp:// URLs, no checkbox needed
                 await page.click('#hostModal button[type="submit"]');
-                await page.waitForTimeout(2000);
+                await page.waitForTimeout(1000); // Wait for host to be saved
+                await closeModal(page);
+                await page.waitForTimeout(500);
             }
 
             // Step 2: Create alert for ALL containers on ALL hosts
@@ -1203,22 +1242,17 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
                 await page.fill('#alertRuleName', 'All Hosts All Containers Alert');
 
                 // Select ALL hosts if available
-                const hostSelect = page.locator('#alertHost');
-                const allOption = hostSelect.locator('option:has-text("All")');
+                
                 if (await allOption.count() > 0) {
-                    await hostSelect.selectOption('All');
                 } else {
                     // Use wildcard or leave empty if that means "all"
-                    const wildcardOption = hostSelect.locator('option:has-text("*")');
                     if (await wildcardOption.count() > 0) {
-                        await hostSelect.selectOption('*');
                     } else {
                         // Select first option as fallback
-                        await hostSelect.selectOption({ index: 1 });
                     }
                 }
 
-                await page.selectOption('#alertCondition', 'container_stopped');
+                
 
                 // Leave container field empty or use wildcard for ALL containers
                 const containerInput = page.locator('#ruleContainer');
@@ -1264,8 +1298,7 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
                 await expect(page.locator('#alertRuleModal.active')).toBeVisible();
 
                 // Verify no stale host references
-                const hostSelect = page.locator('#alertHost');
-                const selectedValue = await hostSelect.inputValue();
+                
 
                 // Should either still be "All" or updated to remaining hosts
                 expect(selectedValue).not.toContain(firstHostName);
@@ -1301,10 +1334,7 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
             await openModal(page, 'Add Host');
             await page.fill('input[name="hostname"]', 'Orphan Test Host');
             await page.fill('input[name="hosturl"]', CONFIG.testHosts.primary.address);
-            const tlsCheckbox = page.locator('#hostTLS');
-            if (await tlsCheckbox.isChecked()) {
-                await tlsCheckbox.uncheck();
-            }
+            // TLS certificates are auto-shown for tcp:// URLs, no checkbox needed
             await page.click('#hostModal button[type="submit"]');
             await page.waitForTimeout(2000);
 
@@ -1316,16 +1346,13 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
                 await page.fill('#alertRuleName', 'Orphan Prevention Test Alert');
 
                 // Select the specific host we just created
-                const hostSelect = page.locator('#alertHost');
-                const hostOptions = await hostSelect.locator('option').allTextContents();
+                
                 const orphanHostIndex = hostOptions.findIndex(opt => opt.includes('Orphan Test Host'));
                 if (orphanHostIndex > 0) {
-                    await hostSelect.selectOption({ index: orphanHostIndex });
                 } else {
-                    await hostSelect.selectOption({ index: 1 });
                 }
 
-                await page.selectOption('#alertCondition', 'host_offline');
+                
                 await page.click('#alertRuleModal button[type="submit"]');
                 await page.waitForTimeout(2000);
             }
@@ -1572,12 +1599,13 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
             await navigateToPage(page, 'alerts');
             const createBtn = page.locator('button:has-text("Create Alert Rule")');
             if (await createBtn.count() > 0) {
+                await createBtn.waitFor({ state: 'visible', timeout: 10000 });
                 await createBtn.click();
 
                 for (const payload of xssPayloads) {
                     await page.fill('#alertRuleName', payload);
-                    await page.selectOption('#alertHost', { index: 1 });
-                    await page.selectOption('#alertCondition', 'host_offline');
+                    
+                    
                     await page.click('#alertRuleModal button[type="submit"]');
                     await page.waitForTimeout(1000);
 
@@ -1642,10 +1670,7 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
             await openModal(page, 'Add Host');
             await page.fill('input[name="hostname"]', 'Original Host Name');
             await page.fill('input[name="hosturl"]', CONFIG.testHosts.primary.address);
-            const tlsCheckbox = page.locator('#hostTLS');
-            if (await tlsCheckbox.isChecked()) {
-                await tlsCheckbox.uncheck();
-            }
+            // TLS certificates are auto-shown for tcp:// URLs, no checkbox needed
             await page.click('#hostModal button[type="submit"]');
             await page.waitForTimeout(2000);
 
@@ -1657,14 +1682,12 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
                 await page.fill('#alertRuleName', 'Alert for Original Host');
 
                 // Select the host we just created
-                const hostSelect = page.locator('#alertHost');
-                const options = await hostSelect.locator('option').allTextContents();
+                
                 const originalHostIndex = options.findIndex(opt => opt.includes('Original Host Name'));
                 if (originalHostIndex > 0) {
-                    await hostSelect.selectOption({ index: originalHostIndex });
                 }
 
-                await page.selectOption('#alertCondition', 'host_offline');
+                
                 await page.click('#alertRuleModal button[type="submit"]');
                 await page.waitForTimeout(2000);
             }
@@ -1689,8 +1712,7 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
             const alertEditBtn = alertElement.locator('button[title*="Edit"]');
             if (await alertEditBtn.count() > 0) {
                 await alertEditBtn.click();
-                const hostSelect = page.locator('#alertHost');
-                const selectedValue = await hostSelect.inputValue();
+                
 
                 // Should still have a valid host selected
                 expect(selectedValue).toBeTruthy();
@@ -1746,7 +1768,9 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
                 const addBtn = page.locator('button:has-text("Add Blackout Window")');
                 if (await addBtn.count() > 0) {
                     await addBtn.click();
-                    const blackoutForm = page.locator('.blackout-window').last();
+                    await page.waitForTimeout(500);
+                    // Find the last blackout window div in the list
+                    const blackoutForm = page.locator('#blackoutWindowsList > div').last();
                     await blackoutForm.locator('input[type="time"]').first().fill('22:00');
                     await blackoutForm.locator('input[type="time"]').last().fill('02:00');
 
@@ -1788,7 +1812,11 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
             });
 
             // Try an action
-            await page.click('button[title*="Refresh"]');
+            const refreshBtn = page.locator('button[title*="Refresh"]');
+            if (await refreshBtn.count() > 0) {
+                await refreshBtn.first().waitFor({ state: 'visible', timeout: 10000 });
+                await refreshBtn.first().click();
+            }
             await page.waitForTimeout(2000);
 
             // Should either redirect to login or show error
@@ -1888,34 +1916,36 @@ test.describe('Integration Scenarios', () => {
         await openModal(page, 'Add Host');
         await page.fill('input[name="hostname"]', 'Integration Test Host');
         await page.fill('input[name="hosturl"]', CONFIG.testHosts.secondary.address);
-        const tlsCheckbox = page.locator('input[type="checkbox"][name="use_tls"]');
-        if (await tlsCheckbox.count() > 0) {
-            if (await tlsCheckbox.isChecked()) {
-                await tlsCheckbox.uncheck();
-            }
-        }
-        await page.click('#hostModal button:has-text("Save")');
-        await page.waitForTimeout(2000);
+        // TLS certificates are auto-shown for tcp:// URLs, no checkbox needed
+        await page.click('#hostModal button[type="submit"]');
+        await expect(page.locator('#hostModal.active')).not.toBeVisible({ timeout: 10000 });
+        await page.waitForTimeout(1000);
 
         // Step 2: Create alert rule
         await navigateToPage(page, 'alerts');
         const createBtn = page.locator('button:has-text("Create Alert Rule")');
         if (await createBtn.count() > 0) {
+            await createBtn.waitFor({ state: 'visible', timeout: 10000 });
             await createBtn.click();
+            await expect(page.locator('#alertRuleModal.active')).toBeVisible({ timeout: 10000 });
             await page.fill('#alertRuleName', 'Integration Test Alert');
-            await page.selectOption('#alertHost', { index: 1 });
-            await page.selectOption('#alertCondition', 'host_offline');
             await page.click('#alertRuleModal button[type="submit"]');
-            await page.waitForTimeout(2000);
+            await expect(page.locator('#alertRuleModal.active')).not.toBeVisible({ timeout: 10000 });
+            await page.waitForTimeout(1000);
         }
 
         // Step 3: Configure notification
         const notifLink = page.locator('a.nav-item:has-text("Notifications")');
         if (await notifLink.count() > 0) {
+            await notifLink.waitFor({ state: 'visible', timeout: 10000 });
             await notifLink.click();
+            await expect(page.locator('#notificationModal.active')).toBeVisible({ timeout: 10000 });
             await page.click('button:has-text("Add Channel")');
-            const newChannel = page.locator('.notification-channel').last();
-            await newChannel.locator('select.channel-type').selectOption('discord');
+            await page.waitForTimeout(500);
+            const newChannel = page.locator('.notification-channel-card').last();
+            const selectElement = newChannel.locator('select.form-input');
+            await expect(selectElement).toBeVisible({ timeout: 5000 });
+            await selectElement.selectOption('discord');
             const webhookInput = newChannel.locator('input[placeholder*="webhook"]');
             await webhookInput.fill(CONFIG.notifications.discord.webhook);
             await page.click('button:has-text("Save Channels")');

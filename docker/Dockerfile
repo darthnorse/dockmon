@@ -27,7 +27,11 @@ COPY src/login.html /usr/share/nginx/html/login.html
 COPY src/favicon.ico /usr/share/nginx/html/favicon.ico
 COPY src/lucide.min.js /usr/share/nginx/html/lucide.min.js
 COPY src/images/ /usr/share/nginx/html/images/
+COPY src/css/ /usr/share/nginx/html/css/
+COPY src/js/ /usr/share/nginx/html/js/
 RUN chmod 644 /usr/share/nginx/html/*.html /usr/share/nginx/html/*.ico /usr/share/nginx/html/*.js
+RUN chmod -R 644 /usr/share/nginx/html/css/ /usr/share/nginx/html/js/
+RUN find /usr/share/nginx/html/css /usr/share/nginx/html/js -type d -exec chmod 755 {} \;
 
 # Create certs directory (certificates will be generated at runtime if not present)
 RUN mkdir -p /etc/nginx/certs

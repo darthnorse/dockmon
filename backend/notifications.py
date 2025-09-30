@@ -454,7 +454,7 @@ class NotificationService:
 
     def _get_default_template(self, channel_type: str = None) -> str:
         """Get default template for channel type"""
-        # Default template with variables
+        # Default template with variables - ends with separator for visual distinction
         default = """🚨 **DockMon Alert**
 
 **Container:** `{CONTAINER_NAME}`
@@ -462,7 +462,8 @@ class NotificationService:
 **State Change:** `{OLD_STATE}` → `{NEW_STATE}`
 **Image:** {IMAGE}
 **Time:** {TIMESTAMP}
-**Rule:** {RULE_NAME}"""
+**Rule:** {RULE_NAME}
+───────────────────────"""
 
         # Channel-specific defaults (can be customized per platform)
         templates = {
@@ -475,7 +476,8 @@ Host: {HOST_NAME}
 State: {OLD_STATE} → {NEW_STATE}
 Image: {IMAGE}
 Time: {TIMESTAMP}
-Rule: {RULE_NAME}"""
+Rule: {RULE_NAME}
+---"""
         }
 
         return templates.get(channel_type, default)

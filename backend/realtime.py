@@ -232,8 +232,13 @@ class RealtimeMonitor:
         self.event_thread_stop[host_id] = threading.Event()
 
         # Start dedicated thread for event stream
-        # Pass the current event loop to the thread
-        loop = asyncio.get_event_loop()
+        # Pass the current event loop to the thread (if it exists)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No event loop running yet (during startup) - use get_event_loop()
+            loop = asyncio.get_event_loop()
+
         thread = threading.Thread(
             target=self._event_stream_thread,
             args=(client, host_id, loop),
@@ -242,9 +247,16 @@ class RealtimeMonitor:
         thread.start()
         self.event_threads[host_id] = thread
 
-        # Start async task to process events from queue
-        task = asyncio.create_task(self._process_docker_events(host_id))
-        self.event_tasks[host_id] = task
+        # Start async task to process events from queue (only if loop is running)
+        try:
+            # Check if there's a running event loop
+            asyncio.get_running_loop()
+            # If we get here, there's a running loop, so create the task
+            task = asyncio.create_task(self._process_docker_events(host_id))
+            self.event_tasks[host_id] = task
+        except RuntimeError:
+            # No running event loop yet - task will be started when loop starts
+            logger.debug(f"Event processing task for host {host_id} will start when event loop starts")
 
     def stop_event_monitoring(self, host_id: str):
         """Stop event monitoring for a specific host"""

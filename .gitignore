@@ -8,7 +8,7 @@ wiki-content/
 wiki-repo/
 
 # Test Infrastructure (Development Only)
-# tests/  # Commented out to allow committing test files
+tests/
 test-results/
 test-results.json
 playwright-report/
@@ -44,6 +44,7 @@ backend/data/
 
 # Python
 __pycache__/
+backend/__pycache__/
 *.py[cod]
 *$py.class
 *.so

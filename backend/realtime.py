@@ -345,6 +345,52 @@ class RealtimeMonitor:
                         self.docker_monitor._recent_user_actions[container_key] = time.time()
                         logger.info(f"Tracked user {docker_event.action} action for {container_key} via Docker event")
 
+                    # Log container creation events
+                    if docker_event.action == 'create' and self.docker_monitor and self.notification_service:
+                        # Get host name using the same approach as notifications
+                        host_name = self.notification_service._get_host_name(docker_event)
+
+                        logger.info(f"Container created: '{docker_event.container_name}' on host '{host_name}'")
+                        from event_logger import EventCategory, EventType, EventSeverity, EventContext
+                        context = EventContext(
+                            host_id=docker_event.host_id,
+                            host_name=host_name,
+                            container_id=docker_event.container_id,
+                            container_name=docker_event.container_name
+                        )
+                        self.docker_monitor.event_logger.log_event(
+                            category=EventCategory.CONTAINER,
+                            event_type=EventType.ACTION_TAKEN,
+                            title="Container Created",
+                            message=f"Container '{docker_event.container_name}' created on host '{host_name}'",
+                            severity=EventSeverity.INFO,
+                            context=context,
+                            details={"action": "create", "image": docker_event.image}
+                        )
+
+                    # Log container destroy/removal events
+                    if docker_event.action == 'destroy' and self.docker_monitor and self.notification_service:
+                        # Get host name using the same approach as notifications
+                        host_name = self.notification_service._get_host_name(docker_event)
+
+                        logger.info(f"Container destroyed: '{docker_event.container_name}' on host '{host_name}'")
+                        from event_logger import EventCategory, EventType, EventSeverity, EventContext
+                        context = EventContext(
+                            host_id=docker_event.host_id,
+                            host_name=host_name,
+                            container_id=docker_event.container_id,
+                            container_name=docker_event.container_name
+                        )
+                        self.docker_monitor.event_logger.log_event(
+                            category=EventCategory.CONTAINER,
+                            event_type=EventType.ACTION_TAKEN,
+                            title="Container Removed",
+                            message=f"Container '{docker_event.container_name}' removed from host '{host_name}'",
+                            severity=EventSeverity.INFO,
+                            context=context,
+                            details={"action": "destroy", "image": docker_event.image}
+                        )
+
                     # Process event for alerts if notification service is available
                     if self.notification_service and docker_event.action in [
                         'die', 'oom', 'kill', 'health_status', 'restart'

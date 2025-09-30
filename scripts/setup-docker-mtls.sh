@@ -314,7 +314,7 @@ EOF
         echo "   nano /boot/config/docker.cfg"
         echo ""
         echo "3. Add or update the DOCKER_OPTS line:"
-        echo "   DOCKER_OPTS=\"-H tcp://0.0.0.0:2376 --tlsverify --tlscacert=$CERT_DIR/ca.pem --tlscert=$CERT_DIR/server-cert.pem --tlskey=$CERT_DIR/server-key.pem\""
+        echo "   DOCKER_OPTS=\"-H unix:///var/run/docker.sock -H tcp://0.0.0.0:2376 --tlsverify --tlscacert=$CERT_DIR/ca.pem --tlscert=$CERT_DIR/server-cert.pem --tlskey=$CERT_DIR/server-key.pem\""
         echo ""
         echo "4. Start Docker service:"
         echo "   - Via Web UI: Settings → Docker → Set 'Enable Docker' to Yes → Apply"

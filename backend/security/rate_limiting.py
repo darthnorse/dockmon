@@ -23,8 +23,9 @@ class RateLimiter:
     Provides protection against abuse and DoS attacks
     """
     def __init__(self):
-        # Start with some initial tokens to avoid immediate rate limiting
-        self.clients = defaultdict(lambda: {"tokens": 10, "last_update": time.time(), "violations": 0})
+        # Start with generous initial tokens to allow immediate bursts
+        # This prevents legitimate users from getting rate limited on first use
+        self.clients = defaultdict(lambda: {"tokens": 100, "last_update": time.time(), "violations": 0})
 
         # Get rate limits from environment or use production-friendly defaults
         self.limits = {
@@ -45,9 +46,9 @@ class RateLimiter:
                 int(os.getenv('DOCKMON_RATE_VIOLATIONS_HOSTS', 8))
             ),
             "containers": (
-                int(os.getenv('DOCKMON_RATE_LIMIT_CONTAINERS', 200)),
-                int(os.getenv('DOCKMON_RATE_BURST_CONTAINERS', 40)),
-                int(os.getenv('DOCKMON_RATE_VIOLATIONS_CONTAINERS', 15))
+                int(os.getenv('DOCKMON_RATE_LIMIT_CONTAINERS', 900)),  # Increased for logs polling with multiple containers
+                int(os.getenv('DOCKMON_RATE_BURST_CONTAINERS', 180)),
+                int(os.getenv('DOCKMON_RATE_VIOLATIONS_CONTAINERS', 25))
             ),
             "notifications": (
                 int(os.getenv('DOCKMON_RATE_LIMIT_NOTIFICATIONS', 30)),
@@ -120,9 +121,9 @@ class RateLimiter:
 
             # Check if violations exceed threshold - ban the client
             if client_data["violations"] >= violation_threshold:
-                ban_duration = 900  # 15 minutes ban
+                ban_duration = 60  # 60 seconds ban (reduced from 15 minutes for better UX)
                 self.banned_clients[client_ip] = current_time + ban_duration
-                logger.warning(f"IP {client_ip} banned for 15 minutes due to {violation_threshold} rate limit violations")
+                logger.warning(f"IP {client_ip} banned for 60 seconds due to {violation_threshold} rate limit violations")
 
                 # Security audit log
                 security_audit.log_rate_limit_violation(

@@ -5,7 +5,7 @@ Uses SQLite for persistent storage of configuration and settings
 
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
-from sqlalchemy import create_engine, Column, String, Integer, Boolean, DateTime, JSON, ForeignKey, Text, UniqueConstraint
+from sqlalchemy import create_engine, Column, String, Integer, Boolean, DateTime, JSON, ForeignKey, Text, UniqueConstraint, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from sqlalchemy.pool import StaticPool
@@ -29,6 +29,7 @@ class User(Base):
     is_first_login = Column(Boolean, default=True)
     must_change_password = Column(Boolean, default=False)
     dashboard_layout = Column(Text, nullable=True)  # JSON string of GridStack layout
+    event_sort_order = Column(String, default='desc')  # 'desc' (newest first) or 'asc' (oldest first)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
     last_login = Column(DateTime, nullable=True)
@@ -260,6 +261,16 @@ class DatabaseManager:
                 if hosts_without_security_status:
                     session.commit()
                     print(f"Migrated {len(hosts_without_security_status)} hosts with security status")
+
+                # Migration: Add event_sort_order column to users table if it doesn't exist
+                inspector = session.connection().engine.dialect.get_columns(session.connection(), 'users')
+                column_names = [col['name'] for col in inspector]
+
+                if 'event_sort_order' not in column_names:
+                    # Add the column using raw SQL
+                    session.execute(text("ALTER TABLE users ADD COLUMN event_sort_order VARCHAR DEFAULT 'desc'"))
+                    session.commit()
+                    print("Added event_sort_order column to users table")
 
         except Exception as e:
             print(f"Migration warning: {e}")
@@ -680,10 +691,10 @@ class DatabaseManager:
             return event
 
     def get_events(self,
-                   category: Optional[str] = None,
+                   category: Optional[List[str]] = None,
                    event_type: Optional[str] = None,
-                   severity: Optional[str] = None,
-                   host_id: Optional[str] = None,
+                   severity: Optional[List[str]] = None,
+                   host_id: Optional[List[str]] = None,
                    container_id: Optional[str] = None,
                    container_name: Optional[str] = None,
                    start_date: Optional[datetime] = None,
@@ -692,19 +703,31 @@ class DatabaseManager:
                    search: Optional[str] = None,
                    limit: int = 100,
                    offset: int = 0) -> tuple[List[EventLog], int]:
-        """Get events with filtering and pagination - returns (events, total_count)"""
+        """Get events with filtering and pagination - returns (events, total_count)
+
+        Multi-select filters (category, severity, host_id) accept lists for OR filtering.
+        """
         with self.get_session() as session:
             query = session.query(EventLog)
 
-            # Apply filters
+            # Apply filters - use IN clause for lists
             if category:
-                query = query.filter(EventLog.category == category)
+                if isinstance(category, list) and len(category) > 0:
+                    query = query.filter(EventLog.category.in_(category))
+                elif isinstance(category, str):
+                    query = query.filter(EventLog.category == category)
             if event_type:
                 query = query.filter(EventLog.event_type == event_type)
             if severity:
-                query = query.filter(EventLog.severity == severity)
+                if isinstance(severity, list) and len(severity) > 0:
+                    query = query.filter(EventLog.severity.in_(severity))
+                elif isinstance(severity, str):
+                    query = query.filter(EventLog.severity == severity)
             if host_id:
-                query = query.filter(EventLog.host_id == host_id)
+                if isinstance(host_id, list) and len(host_id) > 0:
+                    query = query.filter(EventLog.host_id.in_(host_id))
+                elif isinstance(host_id, str):
+                    query = query.filter(EventLog.host_id == host_id)
             if container_id:
                 query = query.filter(EventLog.container_id == container_id)
             if container_name:
@@ -902,6 +925,28 @@ class DatabaseManager:
             user = session.query(User).filter(User.username == username).first()
             if user:
                 user.dashboard_layout = layout
+                user.updated_at = datetime.now()
+                session.commit()
+                return True
+            return False
+
+    def get_event_sort_order(self, username: str) -> str:
+        """Get event sort order preference for a user"""
+        with self.get_session() as session:
+            user = session.query(User).filter(User.username == username).first()
+            if user and user.event_sort_order:
+                return user.event_sort_order
+            return 'desc'  # Default to newest first
+
+    def save_event_sort_order(self, username: str, sort_order: str) -> bool:
+        """Save event sort order preference for a user"""
+        with self.get_session() as session:
+            user = session.query(User).filter(User.username == username).first()
+            if user:
+                # Validate sort order
+                if sort_order not in ['asc', 'desc']:
+                    return False
+                user.event_sort_order = sort_order
                 user.updated_at = datetime.now()
                 session.commit()
                 return True

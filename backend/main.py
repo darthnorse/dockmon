@@ -18,7 +18,7 @@ import docker
 import uvicorn
 from docker import DockerClient
 from docker.errors import DockerException, APIError
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Depends, status, Cookie, Response
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Depends, status, Cookie, Response, Query
 from fastapi.middleware.cors import CORSMiddleware
 # Session-based auth - no longer need HTTPBearer
 from fastapi.responses import FileResponse
@@ -247,8 +247,8 @@ async def get_container_logs(
     container_id: str,
     tail: int = 100,
     since: Optional[str] = None,  # ISO timestamp for getting logs since a specific time
-    authenticated: bool = Depends(verify_session_auth),
-    rate_limit_check: bool = rate_limit_containers
+    authenticated: bool = Depends(verify_session_auth)
+    # No rate limiting - authenticated users can poll logs freely
 ):
     """Get container logs - Portainer-style polling approach"""
     if host_id not in monitor.clients:
@@ -302,12 +302,55 @@ async def get_container_logs(
         except asyncio.TimeoutError:
             raise HTTPException(status_code=504, detail="Timeout fetching logs")
 
-        # Return logs as array of lines
-        log_lines = [line for line in logs.split('\n') if line.strip()]
+        # Parse logs and extract timestamps
+        # Docker log format with timestamps: "2025-09-30T19:30:45.123456789Z actual log message"
+        parsed_logs = []
+        for line in logs.split('\n'):
+            if not line.strip():
+                continue
+
+            # Try to extract timestamp (Docker format: ISO8601 with nanoseconds)
+            try:
+                # Find the space after timestamp
+                space_idx = line.find(' ')
+                if space_idx > 0:
+                    timestamp_str = line[:space_idx]
+                    log_text = line[space_idx + 1:]
+
+                    # Parse timestamp (remove nanoseconds for Python datetime)
+                    # Format: 2025-09-30T19:30:45.123456789Z -> 2025-09-30T19:30:45.123456Z
+                    if 'T' in timestamp_str and timestamp_str.endswith('Z'):
+                        # Truncate to microseconds (6 digits) if nanoseconds present
+                        parts = timestamp_str[:-1].split('.')
+                        if len(parts) == 2 and len(parts[1]) > 6:
+                            timestamp_str = f"{parts[0]}.{parts[1][:6]}Z"
+
+                        parsed_logs.append({
+                            "timestamp": timestamp_str,
+                            "log": log_text
+                        })
+                    else:
+                        # No valid timestamp, use current time
+                        parsed_logs.append({
+                            "timestamp": datetime.utcnow().isoformat() + 'Z',
+                            "log": line
+                        })
+                else:
+                    # No space found, treat whole line as log
+                    parsed_logs.append({
+                        "timestamp": datetime.utcnow().isoformat() + 'Z',
+                        "log": line
+                    })
+            except Exception:
+                # If parsing fails, use current time
+                parsed_logs.append({
+                    "timestamp": datetime.utcnow().isoformat() + 'Z',
+                    "log": line
+                })
 
         return {
             "container_id": container_id,
-            "logs": log_lines,
+            "logs": parsed_logs,
             "last_timestamp": datetime.utcnow().isoformat() + 'Z'  # For next 'since' parameter
         }
 
@@ -439,6 +482,15 @@ async def create_alert_rule(rule: AlertRuleCreate, authenticated: bool = Depends
         # Refresh in-memory alert rules
         monitor.refresh_alert_rules()
 
+        # Log alert rule creation
+        monitor.event_logger.log_alert_rule_created(
+            rule_name=db_rule.name,
+            rule_id=db_rule.id,
+            container_count=len(db_rule.containers) if db_rule.containers else 0,
+            channels=db_rule.notification_channels or [],
+            triggered_by="user"
+        )
+
         return {
             "id": db_rule.id,
             "name": db_rule.name,
@@ -520,12 +572,25 @@ async def update_alert_rule(rule_id: str, updates: AlertRuleUpdate, authenticate
 async def delete_alert_rule(rule_id: str, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_default):
     """Delete an alert rule"""
     try:
+        # Get rule info before deleting for logging
+        rule = monitor.db.get_alert_rule(rule_id)
+        if not rule:
+            raise HTTPException(status_code=404, detail="Alert rule not found")
+
+        rule_name = rule.name
         success = monitor.db.delete_alert_rule(rule_id)
         if not success:
             raise HTTPException(status_code=404, detail="Alert rule not found")
 
         # Refresh in-memory alert rules
         monitor.refresh_alert_rules()
+
+        # Log alert rule deletion
+        monitor.event_logger.log_alert_rule_deleted(
+            rule_name=rule_name,
+            rule_id=rule_id,
+            triggered_by="user"
+        )
 
         return {"status": "success", "message": f"Alert rule {rule_id} deleted"}
     except HTTPException:
@@ -632,6 +697,14 @@ async def create_notification_channel(channel: NotificationChannelCreate, authen
             "config": channel.config,
             "enabled": channel.enabled
         })
+
+        # Log notification channel creation
+        monitor.event_logger.log_notification_channel_created(
+            channel_name=db_channel.name,
+            channel_type=db_channel.type,
+            triggered_by="user"
+        )
+
         return {
             "id": db_channel.id,
             "name": db_channel.name,
@@ -754,6 +827,194 @@ async def test_notification_channel(channel_id: int, authenticated: bool = Depen
         logger.error(f"Failed to test notification channel: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# ==================== Event Log Routes ====================
+
+@app.get("/api/events")
+async def get_events(
+    category: Optional[List[str]] = Query(None),
+    event_type: Optional[str] = None,
+    severity: Optional[List[str]] = Query(None),
+    host_id: Optional[List[str]] = Query(None),
+    container_id: Optional[str] = None,
+    container_name: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    correlation_id: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+    hours: Optional[int] = None,
+    authenticated: bool = Depends(verify_session_auth),
+    rate_limit_check: bool = rate_limit_default
+):
+    """
+    Get events with filtering and pagination
+
+    Query parameters:
+    - category: Filter by category (container, host, system, alert, notification)
+    - event_type: Filter by event type (state_change, action_taken, etc.)
+    - severity: Filter by severity (debug, info, warning, error, critical)
+    - host_id: Filter by specific host
+    - container_id: Filter by specific container
+    - container_name: Filter by container name (partial match)
+    - start_date: Filter events after this date (ISO 8601 format)
+    - end_date: Filter events before this date (ISO 8601 format)
+    - hours: Shortcut to get events from last X hours (overrides start_date)
+    - correlation_id: Get related events
+    - search: Search in title, message, and container name
+    - limit: Number of results per page (default 100, max 500)
+    - offset: Pagination offset
+    """
+    try:
+        # Validate and parse dates
+        start_datetime = None
+        end_datetime = None
+
+        # If hours parameter is provided, calculate start_date
+        if hours is not None:
+            start_datetime = datetime.now() - timedelta(hours=hours)
+        elif start_date:
+            try:
+                start_datetime = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid start_date format. Use ISO 8601 format.")
+
+        if end_date:
+            try:
+                end_datetime = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid end_date format. Use ISO 8601 format.")
+
+        # Limit maximum results per page
+        if limit > 500:
+            limit = 500
+
+        # Query events from database
+        events, total_count = monitor.db.get_events(
+            category=category,
+            event_type=event_type,
+            severity=severity,
+            host_id=host_id,
+            container_id=container_id,
+            container_name=container_name,
+            start_date=start_datetime,
+            end_date=end_datetime,
+            correlation_id=correlation_id,
+            search=search,
+            limit=limit,
+            offset=offset
+        )
+
+        # Convert to JSON-serializable format
+        events_json = []
+        for event in events:
+            events_json.append({
+                "id": event.id,
+                "correlation_id": event.correlation_id,
+                "category": event.category,
+                "event_type": event.event_type,
+                "severity": event.severity,
+                "host_id": event.host_id,
+                "host_name": event.host_name,
+                "container_id": event.container_id,
+                "container_name": event.container_name,
+                "title": event.title,
+                "message": event.message,
+                "old_state": event.old_state,
+                "new_state": event.new_state,
+                "triggered_by": event.triggered_by,
+                "details": event.details,
+                "duration_ms": event.duration_ms,
+                "timestamp": event.timestamp.isoformat()
+            })
+
+        return {
+            "events": events_json,
+            "total_count": total_count,
+            "limit": limit,
+            "offset": offset,
+            "has_more": (offset + limit) < total_count
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get events: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/events/{event_id}")
+async def get_event_by_id(
+    event_id: int,
+    authenticated: bool = Depends(verify_session_auth),
+    rate_limit_check: bool = rate_limit_default
+):
+    """Get a specific event by ID"""
+    try:
+        event = monitor.db.get_event_by_id(event_id)
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+
+        return {
+            "id": event.id,
+            "correlation_id": event.correlation_id,
+            "category": event.category,
+            "event_type": event.event_type,
+            "severity": event.severity,
+            "host_id": event.host_id,
+            "host_name": event.host_name,
+            "container_id": event.container_id,
+            "container_name": event.container_name,
+            "title": event.title,
+            "message": event.message,
+            "old_state": event.old_state,
+            "new_state": event.new_state,
+            "triggered_by": event.triggered_by,
+            "details": event.details,
+            "duration_ms": event.duration_ms,
+            "timestamp": event.timestamp.isoformat()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get event: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/events/correlation/{correlation_id}")
+async def get_events_by_correlation(
+    correlation_id: str,
+    authenticated: bool = Depends(verify_session_auth),
+    rate_limit_check: bool = rate_limit_default
+):
+    """Get all events with the same correlation ID (related events)"""
+    try:
+        events = monitor.db.get_events_by_correlation(correlation_id)
+
+        events_json = []
+        for event in events:
+            events_json.append({
+                "id": event.id,
+                "correlation_id": event.correlation_id,
+                "category": event.category,
+                "event_type": event.event_type,
+                "severity": event.severity,
+                "host_id": event.host_id,
+                "host_name": event.host_name,
+                "container_id": event.container_id,
+                "container_name": event.container_name,
+                "title": event.title,
+                "message": event.message,
+                "old_state": event.old_state,
+                "new_state": event.new_state,
+                "triggered_by": event.triggered_by,
+                "details": event.details,
+                "duration_ms": event.duration_ms,
+                "timestamp": event.timestamp.isoformat()
+            })
+
+        return {"events": events_json, "count": len(events_json)}
+    except Exception as e:
+        logger.error(f"Failed to get events by correlation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # ==================== User Dashboard Routes ====================
 
 @app.get("/api/user/dashboard-layout")
@@ -818,6 +1079,45 @@ async def save_dashboard_layout(request: Request, authenticated: bool = Depends(
         raise
     except Exception as e:
         logger.error(f"Failed to save dashboard layout: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/user/event-sort-order")
+async def get_event_sort_order(request: Request, authenticated: bool = Depends(verify_session_auth)):
+    """Get event sort order preference for current user"""
+    from auth.routes import _get_session_from_cookie
+    from auth.session_manager import session_manager
+
+    session_id = _get_session_from_cookie(request)
+    username = session_manager.get_session_username(session_id)
+
+    sort_order = monitor.db.get_event_sort_order(username)
+    return {"sort_order": sort_order}
+
+@app.post("/api/user/event-sort-order")
+async def save_event_sort_order(request: Request, authenticated: bool = Depends(verify_session_auth)):
+    """Save event sort order preference for current user"""
+    from auth.routes import _get_session_from_cookie
+    from auth.session_manager import session_manager
+
+    session_id = _get_session_from_cookie(request)
+    username = session_manager.get_session_username(session_id)
+
+    try:
+        body = await request.json()
+        sort_order = body.get('sort_order')
+
+        if sort_order not in ['asc', 'desc']:
+            raise HTTPException(status_code=400, detail="sort_order must be 'asc' or 'desc'")
+
+        success = monitor.db.save_event_sort_order(username, sort_order)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to save sort order")
+
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to save event sort order: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # ==================== Event Log Routes ====================

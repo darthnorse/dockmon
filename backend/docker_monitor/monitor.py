@@ -73,11 +73,14 @@ class DockerMonitor:
         self.live_updates = LiveUpdateManager()  # Live update batching
         self.notification_service = NotificationService(self.db)  # Notification service
         self.alert_processor = AlertProcessor(self.notification_service)  # Alert processor
-        self.event_logger = EventLogger(self.db)  # Event logging service
+        self.event_logger = EventLogger(self.db, self.manager)  # Event logging service with WebSocket support
 
         # Connect the notification service to the realtime monitor for Docker event alerts
         self.realtime.notification_service = self.notification_service
+        # Connect the docker monitor to the realtime monitor for user action tracking
+        self.realtime.docker_monitor = self
         self._container_states: Dict[str, str] = {}  # Track container states for change detection
+        self._recent_user_actions: Dict[str, float] = {}  # Track recent user actions: {container_key: timestamp}
         self.cleanup_task: Optional[asyncio.Task] = None  # Background cleanup task
         self._load_persistent_config()  # Load saved hosts and configs
 
@@ -181,6 +184,15 @@ class DockerMonitor:
                 host_url=config.url,
                 connected=True
             )
+
+            # Log host added (only for new hosts, not reconnects)
+            if not skip_db_save:
+                self.event_logger.log_host_added(
+                    host_name=host.name,
+                    host_id=host.id,
+                    host_url=config.url,
+                    triggered_by="user"
+                )
 
             logger.info(f"Added Docker host: {host.name} ({host.url})")
             return host
@@ -348,6 +360,10 @@ class DockerMonitor:
             raise HTTPException(status_code=400, detail=str(e))
 
         if host_id in self.hosts:
+            # Get host info before removing
+            host = self.hosts[host_id]
+            host_name = host.name
+
             del self.hosts[host_id]
             if host_id in self.clients:
                 self.clients[host_id].close()
@@ -360,6 +376,14 @@ class DockerMonitor:
             self.db.delete_host(host_id)
             # Refresh alert rules cache since host-specific rules may have been deleted
             self.refresh_alert_rules()
+
+            # Log host removed
+            self.event_logger.log_host_removed(
+                host_name=host_name,
+                host_id=host_id,
+                triggered_by="user"
+            )
+
             logger.info(f"Removed host {host_id}")
 
     def update_host(self, host_id: str, config: DockerHostConfig):
@@ -548,21 +572,44 @@ class DockerMonitor:
                 host.error = None
 
                 for dc in docker_containers:
-                    container_id = dc.id[:12]
-                    container = Container(
-                        id=dc.id,
-                        short_id=container_id,
-                        name=dc.name,
-                        state=dc.status,
-                        status=dc.attrs['State']['Status'],
-                        host_id=hid,
-                        host_name=host.name,
-                        image=dc.image.tags[0] if dc.image.tags else dc.image.short_id,
-                        created=dc.attrs['Created'],
-                        auto_restart=self._get_auto_restart_status(hid, container_id),
-                        restart_attempts=self.restart_attempts.get(container_id, 0)
-                    )
-                    containers.append(container)
+                    try:
+                        container_id = dc.id[:12]
+
+                        # Try to get image info, but handle missing images gracefully
+                        # Access dc.image first to trigger any errors before accessing its properties
+                        try:
+                            container_image = dc.image
+                            image_name = container_image.tags[0] if container_image.tags else container_image.short_id
+                        except Exception as img_error:
+                            # Image may have been deleted - use image ID from container attrs
+                            # This is common when containers reference deleted images
+                            image_name = dc.attrs.get('Config', {}).get('Image', 'unknown')
+                            if image_name == 'unknown':
+                                # Try to get from ImageID in attrs
+                                image_id = dc.attrs.get('Image', '')
+                                if image_id.startswith('sha256:'):
+                                    image_name = image_id[:19]  # sha256: + first 12 chars
+                                else:
+                                    image_name = image_id[:12] if image_id else 'unknown'
+
+                        container = Container(
+                            id=dc.id,
+                            short_id=container_id,
+                            name=dc.name,
+                            state=dc.status,
+                            status=dc.attrs['State']['Status'],
+                            host_id=hid,
+                            host_name=host.name,
+                            image=image_name,
+                            created=dc.attrs['Created'],
+                            auto_restart=self._get_auto_restart_status(hid, container_id),
+                            restart_attempts=self.restart_attempts.get(container_id, 0)
+                        )
+                        containers.append(container)
+                    except Exception as container_error:
+                        # Log but don't fail the whole host for one bad container
+                        logger.warning(f"Skipping container {dc.name if hasattr(dc, 'name') else 'unknown'} on {host.name} due to error: {container_error}")
+                        continue
 
             except Exception as e:
                 logger.error(f"Error getting containers from {host.name}: {e}")
@@ -641,6 +688,11 @@ class DockerMonitor:
 
             logger.info(f"Stopped container '{container_name}' on host '{host_name}'")
 
+            # Track this user action to suppress critical severity on expected state change
+            container_key = f"{host_id}:{container_id}"
+            self._recent_user_actions[container_key] = time.time()
+            logger.info(f"Tracked user stop action for {container_key}")
+
             # Log the successful stop
             self.event_logger.log_container_action(
                 action="stop",
@@ -689,6 +741,11 @@ class DockerMonitor:
             duration_ms = int((time.time() - start_time) * 1000)
 
             logger.info(f"Started container '{container_name}' on host '{host_name}'")
+
+            # Track this user action to suppress critical severity on expected state change
+            container_key = f"{host_id}:{container_id}"
+            self._recent_user_actions[container_key] = time.time()
+            logger.info(f"Tracked user start action for {container_key}")
 
             # Log the successful start
             self.event_logger.log_container_action(
@@ -797,6 +854,18 @@ class DockerMonitor:
 
                     # Log state changes
                     if previous_state is not None and previous_state != current_state:
+                        # Check if this state change was expected (recent user action)
+                        last_user_action = self._recent_user_actions.get(container_key, 0)
+                        time_since_action = time.time() - last_user_action
+                        is_user_initiated = time_since_action < 30  # Within 30 seconds
+
+                        logger.info(f"State change for {container_key}: {previous_state} → {current_state}, "
+                                  f"time_since_action={time_since_action:.1f}s, user_initiated={is_user_initiated}")
+
+                        # Clean up old tracking entries (older than 5 minutes)
+                        if time_since_action > 300:
+                            self._recent_user_actions.pop(container_key, None)
+
                         self.event_logger.log_container_state_change(
                             container_name=container.name,
                             container_id=container.short_id,
@@ -804,7 +873,7 @@ class DockerMonitor:
                             host_id=container.host_id,
                             old_state=previous_state,
                             new_state=current_state,
-                            triggered_by="system"
+                            triggered_by="user" if is_user_initiated else "system"
                         )
 
                     # Update tracked state

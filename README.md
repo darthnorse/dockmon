@@ -15,10 +15,11 @@ A comprehensive Docker container monitoring and management platform with real-ti
 ## Key Features
 
 - **Multi-Host Monitoring** - Monitor containers across unlimited Docker hosts (local and remote)
+- **Real-Time Container Logs** - View logs from multiple containers simultaneously with live updates
+- **Event Viewer** - Comprehensive audit trail with filtering, search, and real-time updates
 - **Intelligent Auto-Restart** - Per-container auto-restart with configurable retry logic
 - **Advanced Alerting** - Discord, Slack, Telegram, Pushover with customizable templates
 - **Real-Time Dashboard** - Drag-and-drop customizable widgets with WebSocket updates
-- **Event Logging** - Comprehensive audit trail of all container and system events
 - **Secure by Design** - Session-based auth, rate limiting, mTLS for remote hosts
 - **Mobile-Friendly** - Responsive design that works seamlessly on all devices
 
@@ -68,13 +69,13 @@ A comprehensive Docker container monitoring and management platform with real-ti
 - [x] WebSocket real-time updates
 - [x] Multi-channel notifications
 - [x] Comprehensive event logging
+- [x] Event log viewer with filtering and search
+- [x] Real-time container logs viewer (multi-container support)
 - [x] Drag-and-drop dashboard
 - [x] Auto-restart with retry logic
 
 ### Planned (v1.1+)
 - [ ] Performance metrics dashboard (CPU, memory, network graphs)
-- [ ] Container health checks
-- [ ] Log analysis and search
 - [ ] Configuration export/import
 - [ ] Automatic Proxmox LXC installation script
 

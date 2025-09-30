@@ -57,6 +57,18 @@ async function init() {
             // Update quiet hours indicator on dashboard
             updateBlackoutStatus();
 
+            // Initialize dashboard if we're on the dashboard page
+            // This handles the case when fetch completes before WebSocket
+            if (currentPage === 'dashboard' && grid === null && hosts.length > 0) {
+                console.log('Initializing dashboard after fetch data load...');
+                // Small delay to ensure DOM is ready, but data is already loaded
+                setTimeout(() => {
+                    if (grid === null) {
+                        initDashboard();
+                    }
+                }, 100);
+            }
+
             console.log('Initialization completed successfully');
         }
 
@@ -81,13 +93,38 @@ async function init() {
             });
 
             // Show selected page
-            document.getElementById(`${page}-page`).classList.add('active');
+            const pageElement = document.getElementById(`${page}-page`);
+            if (!pageElement) {
+                console.error(`Page element not found: ${page}-page`);
+                showToast(`Page "${page}" not yet available`);
+                return;
+            }
+            pageElement.classList.add('active');
             currentPage = page;
 
             // Initialize dashboard when switching to it
             if (page === 'dashboard') {
                 if (grid === null) {
-                    setTimeout(() => initDashboard(), 100); // Delay to ensure DOM is ready
+                    // Wait for hosts data before initializing dashboard
+                    if (hosts.length === 0) {
+                        console.log('Waiting for hosts data before initializing dashboard...');
+                        const checkData = setInterval(() => {
+                            if (hosts.length > 0) {
+                                clearInterval(checkData);
+                                setTimeout(() => initDashboard(), 100);
+                            }
+                        }, 100);
+                        // Timeout after 5 seconds and initialize anyway
+                        setTimeout(() => {
+                            clearInterval(checkData);
+                            if (grid === null) {
+                                console.log('Initializing dashboard after timeout');
+                                initDashboard();
+                            }
+                        }, 5000);
+                    } else {
+                        setTimeout(() => initDashboard(), 100); // Delay to ensure DOM is ready
+                    }
                 } else {
                     renderDashboardWidgets(); // Refresh existing widgets
                 }
@@ -98,7 +135,7 @@ async function init() {
                 'dashboard': 'Dashboard',
                 'hosts': 'Host Management',
                 'alerts': 'Alert Rules',
-                'logs': 'System Logs',
+                'logs': 'Events',
                 'about': 'About'
             };
             document.getElementById('pageTitle').textContent = titles[page] || 'Dashboard';
@@ -2114,6 +2151,11 @@ async function init() {
                 fetchAlertRules()
             ]);
             renderHosts();
+
+            // Refresh logs dropdown if on logs page
+            if (currentPage === 'logs' && typeof populateContainerList === 'function') {
+                populateContainerList();
+            }
         }
 
         function showContainerDetails(hostId, containerId, preserveTab = null) {
@@ -2191,9 +2233,15 @@ async function init() {
                             <span><i data-lucide="rotate-cw" style="width:14px;height:14px;"></i> Auto-restart: ${container.auto_restart ? 'ON' : 'OFF'}</span>
                         </div>
                     </div>
+                    <div id="container-recent-events" style="margin-top: 20px;">
+                        <div style="color: var(--text-tertiary); font-size: 14px;">Loading recent events...</div>
+                    </div>
                 `;
-                
+
                 document.getElementById('container-info-content').innerHTML = detailsHtml;
+
+                // Load recent events for this container
+                loadContainerRecentEvents(container.name, container.host_id);
 
                 // Initialize Lucide icons after content is added
                 initIcons();
@@ -2358,7 +2406,10 @@ async function init() {
                     if (data.logs && Array.isArray(data.logs)) {
                         // Always replace logs for simplicity and to avoid duplicates
                         // Auto-refresh will just keep fetching the latest N logs
-                        accumulatedLogs = data.logs.filter(line => line.trim());
+                        // API returns array of {timestamp, log} objects
+                        accumulatedLogs = data.logs
+                            .filter(entry => entry && entry.log && entry.log.trim())
+                            .map(entry => entry.log);
 
                         updateLogDisplay();
                         // Auto-scroll to bottom only if no filter is active
@@ -2593,6 +2644,109 @@ async function init() {
             }
         }
 
+        async function loadContainerRecentEvents(containerName, hostId) {
+            try {
+                // Fetch last 7 events for this container
+                const response = await fetch(`${API_BASE}/api/events?limit=7&container_name=${encodeURIComponent(containerName)}&host_id=${hostId}&hours=168`);
+                const data = await response.json();
+
+                const eventsDiv = document.getElementById('container-recent-events');
+                if (!eventsDiv) return;
+
+                if (!data.events || data.events.length === 0) {
+                    eventsDiv.innerHTML = `
+                        <div style="border-top: 1px solid var(--border); padding-top: 15px; margin-top: 15px;">
+                            <strong style="color: var(--text-primary); font-size: 14px;">Recent Events</strong>
+                            <div style="color: var(--text-tertiary); font-size: 13px; margin-top: 8px;">No recent events</div>
+                        </div>
+                    `;
+                    return;
+                }
+
+                // Build events list
+                let eventsHtml = `
+                    <div style="border-top: 1px solid var(--border); padding-top: 15px; margin-top: 15px;">
+                        <strong style="color: var(--text-primary); font-size: 14px; margin-bottom: 10px; display: block;">Recent Events</strong>
+                        <div style="display: flex; flex-direction: column; gap: 4px;">
+                `;
+
+                data.events.forEach(event => {
+                    // Ensure timestamp is treated as UTC if no timezone info
+                    let timestampStr = event.timestamp;
+                    if (!timestampStr.includes('+') && !timestampStr.endsWith('Z')) {
+                        timestampStr += 'Z';  // Treat as UTC
+                    }
+                    const timestamp = new Date(timestampStr).toLocaleString('en-US', {
+                        month: '2-digit',
+                        day: '2-digit',
+                        year: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        second: '2-digit',
+                        hour12: true
+                    });
+
+                    // Get severity color
+                    let severityColor = 'var(--primary)';
+                    if (event.severity === 'critical') severityColor = '#DC2626';
+                    else if (event.severity === 'error') severityColor = 'var(--danger)';
+                    else if (event.severity === 'warning') severityColor = 'var(--warning)';
+
+                    // Build event message
+                    let eventText = event.title || event.message;
+                    if (event.message && event.message !== event.title) {
+                        const stateChangeMatch = event.message.match(/state changed from (\w+) to (\w+)/i);
+                        if (stateChangeMatch) {
+                            const fromState = stateChangeMatch[1];
+                            const toState = stateChangeMatch[2];
+                            const userAction = event.message.includes('(user action)') ? ' <span style="color: var(--text-secondary);">(user action)</span>' : '';
+
+                            // Get state colors
+                            const getStateColor = (state) => {
+                                switch(state.toLowerCase()) {
+                                    case 'running': return '#10B981';
+                                    case 'exited': return '#EF4444';
+                                    case 'stopped': return '#F59E0B';
+                                    case 'paused': return '#F59E0B';
+                                    case 'restarting': return '#3B82F6';
+                                    case 'dead': return '#DC2626';
+                                    default: return 'var(--text-tertiary)';
+                                }
+                            };
+
+                            eventText = `State changed from <span style="color: ${getStateColor(fromState)}; font-weight: 500;">${fromState}</span> to <span style="color: ${getStateColor(toState)}; font-weight: 500;">${toState}</span>${userAction}`;
+                        }
+                    }
+
+                    eventsHtml += `
+                        <div style="display: flex; align-items: flex-start; gap: 10px; font-size: 13px;">
+                            <span style="color: var(--text-tertiary); flex-shrink: 0; font-size: 12px;">${timestamp}</span>
+                            <span style="color: ${severityColor}; flex-shrink: 0; min-width: 80px; font-size: 12px;">level=${event.severity}</span>
+                            <span style="color: var(--text-primary); flex: 1;">${eventText}</span>
+                        </div>
+                    `;
+                });
+
+                eventsHtml += `
+                        </div>
+                    </div>
+                `;
+
+                eventsDiv.innerHTML = eventsHtml;
+            } catch (error) {
+                console.error('Error loading container events:', error);
+                const eventsDiv = document.getElementById('container-recent-events');
+                if (eventsDiv) {
+                    eventsDiv.innerHTML = `
+                        <div style="border-top: 1px solid var(--border); padding-top: 15px; margin-top: 15px;">
+                            <strong style="color: var(--text-primary); font-size: 14px;">Recent Events</strong>
+                            <div style="color: var(--danger); font-size: 13px; margin-top: 8px;">Failed to load events</div>
+                        </div>
+                    `;
+                }
+            }
+        }
+
         async function stopContainer(hostId, containerId) {
             // Find container to update UI immediately
             const container = containers.find(c => c.id === containerId);
@@ -2729,6 +2883,10 @@ async function init() {
                 });
 
                 console.log('Dashboard initialization completed');
+
+                // Now that grid exists, populate the widgets with data
+                console.log('Rendering dashboard widgets after grid initialization...');
+                renderDashboardWidgets();
             } catch (error) {
                 console.error('Failed to initialize dashboard:', error);
             }
@@ -2757,14 +2915,30 @@ async function init() {
             // Get current host widget IDs
             const currentHostWidgetIds = hosts.map(host => `host-${host.id}`);
 
-            // Remove host widgets that no longer exist
-            const existingHostWidgets = grid.getGridItems().filter(item =>
-                item.getAttribute('data-widget-id').startsWith('host-')
-            );
+            // Remove host widgets that no longer exist OR duplicates
+            const existingHostWidgets = grid.getGridItems().filter(item => {
+                const widgetId = item.getAttribute('data-widget-id');
+                return widgetId && widgetId.startsWith('host-');
+            });
+            console.log(`Checking for widgets to remove. Current: ${existingHostWidgets.length}, Expected: ${currentHostWidgetIds.length}`);
+
+            // Track which widget IDs we've seen to detect duplicates
+            const seenWidgetIds = new Set();
+
             existingHostWidgets.forEach(widget => {
                 const widgetId = widget.getAttribute('data-widget-id');
+
+                // Remove if widget ID is not in current host list
                 if (!currentHostWidgetIds.includes(widgetId)) {
+                    console.log(`Removing widget ${widgetId} - not in current host list`);
                     grid.removeWidget(widget);
+                }
+                // Remove if this is a duplicate (we've seen this ID before)
+                else if (seenWidgetIds.has(widgetId)) {
+                    console.log(`Removing duplicate widget ${widgetId}`);
+                    grid.removeWidget(widget);
+                } else {
+                    seenWidgetIds.add(widgetId);
                 }
             });
 
@@ -2893,14 +3067,19 @@ async function init() {
         }
 
         function renderDashboardWidgets() {
+            console.log('renderDashboardWidgets called - hosts:', hosts.length, 'grid:', !!grid);
+
             // Check if we need to create/remove host widgets (hosts added or removed)
             if (grid) {
                 const existingHostWidgets = grid.getGridItems().filter(item =>
                     item.getAttribute('data-widget-id')?.startsWith('host-')
                 );
 
-                // Only call createHostWidgets if host count changed
-                if (existingHostWidgets.length !== hosts.length) {
+                console.log('Existing host widgets:', existingHostWidgets.length, 'Expected:', hosts.length);
+
+                // Call createHostWidgets if host count changed OR if we have hosts but no widgets
+                if (existingHostWidgets.length !== hosts.length || (hosts.length > 0 && existingHostWidgets.length === 0)) {
+                    console.log('Creating host widgets...');
                     createHostWidgets();
                 }
             }

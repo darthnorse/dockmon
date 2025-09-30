@@ -13,6 +13,10 @@
         let hosts = [];
         let containers = [];
         let alertRules = [];
+
+        // Make hosts and containers globally accessible for other modules (like logs.js)
+        window.hosts = hosts;
+        window.containers = containers;
         let ws = null;
         let reconnectInterval = null;
 
@@ -67,7 +71,7 @@
             isConnecting = true;
 
             ws = new WebSocket(WS_URL);
-            
+
             ws.onopen = function() {
                 console.log('WebSocket connected');
                 showToast('✅ Connected to backend');
@@ -78,10 +82,14 @@
                     reconnectInterval = null;
                 }
             };
-            
+
             ws.onmessage = function(event) {
-                const message = JSON.parse(event.data);
-                handleWebSocketMessage(message);
+                try {
+                    const message = JSON.parse(event.data);
+                    handleWebSocketMessage(message);
+                } catch (error) {
+                    console.error('Error handling WebSocket message:', error);
+                }
             };
             
             ws.onerror = function(error) {
@@ -120,38 +128,42 @@
 
         // Handle incoming WebSocket messages
         function handleWebSocketMessage(message) {
-            console.log('WebSocket message:', message.type);
-
             switch(message.type) {
                 case 'initial_state':
                     hosts = message.data.hosts || [];
+                    window.hosts = hosts; // Keep window.hosts in sync
                     containers = message.data.containers || [];
+                    window.containers = containers; // Keep window.containers in sync
                     globalSettings = message.data.settings || globalSettings;
                     alertRules = message.data.alerts || [];
-                    console.log('Received initial state - hosts:', hosts.length, 'containers:', containers.length);
-                    console.log('Current page:', currentPage, 'Grid exists:', grid !== null);
 
                     renderAll();
 
-                    // Initialize dashboard if we're on that page
-                    if (currentPage === 'dashboard') {
-                        if (grid === null) {
-                            console.log('Initializing dashboard with WebSocket data...');
-                            setTimeout(() => initDashboard(), 100);
-                        } else {
-                            console.log('Refreshing existing dashboard widgets...');
-                            renderDashboardWidgets();
-                        }
+                    // Initialize dashboard if we're on that page and grid doesn't exist yet
+                    if (currentPage === 'dashboard' && grid === null) {
+                        // Small delay to ensure renderAll() completes
+                        setTimeout(() => {
+                            if (grid === null) {  // Double check grid wasn't already initialized
+                                initDashboard();
+                            }
+                        }, 100);
                     }
                     break;
 
                 case 'containers_update':
                     containers = message.data.containers || [];
+                    window.containers = containers; // Keep window.containers in sync
                     hosts = message.data.hosts || [];
+                    window.hosts = hosts; // Keep window.hosts in sync
                     renderAll();
 
                     // Refresh container modal if open
                     refreshContainerModalIfOpen();
+
+                    // Refresh logs dropdown if on logs page
+                    if (currentPage === 'logs' && typeof populateContainerList === 'function') {
+                        populateContainerList();
+                    }
                     break;
                     
                 case 'host_added':
@@ -193,7 +205,20 @@
                 default:
                     console.log('Unknown message type:', message.type);
             }
+
+            // Call any registered custom message handlers
+            if (window.wsMessageHandlers && Array.isArray(window.wsMessageHandlers)) {
+                window.wsMessageHandlers.forEach(handler => {
+                    try {
+                        handler(message);
+                    } catch (error) {
+                        console.error('Error in custom WebSocket handler:', error);
+                    }
+                });
+            }
         }
+
+        // Core handler stays internal - extensions should use window.wsMessageHandlers array
 
         // Attempt to reconnect to WebSocket
         function attemptReconnect() {
@@ -229,6 +254,7 @@
                 });
                 if (response.ok) {
                     hosts = await response.json();
+                    window.hosts = hosts; // Keep window.hosts in sync
                     console.log('Fetched hosts:', hosts.length);
                 } else {
                     throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -252,6 +278,7 @@
                 });
                 if (response.ok) {
                     containers = await response.json();
+                    window.containers = containers; // Keep window.containers in sync
                     console.log('Fetched containers:', containers.length);
                 } else {
                     throw new Error(`HTTP ${response.status}: ${response.statusText}`);

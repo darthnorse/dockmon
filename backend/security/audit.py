@@ -15,8 +15,9 @@ class SecurityAuditLogger:
     Comprehensive security audit logging system
     Tracks all security-relevant events for incident response
     """
-    def __init__(self):
+    def __init__(self, event_logger=None):
         self.security_logger = logging.getLogger('security_audit')
+        self.event_logger = event_logger
 
         # Create separate log file for security events in persistent volume
         from config.paths import DATA_DIR
@@ -42,6 +43,10 @@ class SecurityAuditLogger:
         self.security_logger.addHandler(security_handler)
         self.security_logger.setLevel(logging.INFO)
         self.security_logger.propagate = False  # Don't propagate to root logger
+
+    def set_event_logger(self, event_logger):
+        """Set the event logger instance for logging to Event Viewer"""
+        self.event_logger = event_logger
 
     def _log_security_event(self, level: str, event_type: str, client_ip: str,
                            endpoint: str = None, user_agent: str = None,
@@ -263,6 +268,18 @@ class SecurityAuditLogger:
             risk_level="LOW"
         )
 
+        # Also log to event logger for Event Viewer
+        if self.event_logger:
+            from event_logger import EventCategory, EventType, EventSeverity
+            self.event_logger.log_event(
+                category=EventCategory.USER,
+                event_type=EventType.CONFIG_CHANGED,
+                title="Password Changed",
+                message=f"User '{username}' changed their password from IP: {client_ip}",
+                severity=EventSeverity.INFO,
+                details={"username": username, "client_ip": client_ip, "user_agent": user_agent}
+            )
+
     def log_username_change(self, client_ip: str, user_agent: str, old_username: str, new_username: str):
         """Log username change event"""
         self._log_security_event(
@@ -277,6 +294,18 @@ class SecurityAuditLogger:
             },
             risk_level="LOW"
         )
+
+        # Also log to event logger for Event Viewer
+        if self.event_logger:
+            from event_logger import EventCategory, EventType, EventSeverity
+            self.event_logger.log_event(
+                category=EventCategory.USER,
+                event_type=EventType.CONFIG_CHANGED,
+                title="Username Changed",
+                message=f"Username changed from '{old_username}' to '{new_username}' from IP: {client_ip}",
+                severity=EventSeverity.INFO,
+                details={"old_username": old_username, "new_username": new_username, "client_ip": client_ip, "user_agent": user_agent}
+            )
 
 
 # Global security audit logger instance

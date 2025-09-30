@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import requests
 import httpx
 from database import DatabaseManager, NotificationChannel, AlertRuleDB, ContainerHistory
+from event_logger import EventSeverity, EventCategory, EventType
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +44,9 @@ class DockerEventAlert:
 class NotificationService:
     """Handles all notification channels and alert processing"""
 
-    def __init__(self, db: DatabaseManager):
+    def __init__(self, db: DatabaseManager, event_logger=None):
         self.db = db
+        self.event_logger = event_logger
         self.http_client = httpx.AsyncClient(timeout=30.0)
         self._last_alerts: Dict[str, datetime] = {}  # For cooldown tracking
         self._last_container_state: Dict[str, str] = {}  # Track last known state per container
@@ -285,13 +287,42 @@ class NotificationService:
                 logger.info(f"Suppressed {len(alert_rules)} alerts during blackout window '{window_name}' for container '{event.container_name}' on host '{host_name}'")
                 # Track this alert for later
                 self._suppressed_alerts.append(event)
+
+                # Log suppression event
+                if self.event_logger:
+                    rule_names = ", ".join([rule.name for rule in alert_rules[:3]])  # First 3 rules
+                    if len(alert_rules) > 3:
+                        rule_names += f" (+{len(alert_rules) - 3} more)"
+
+                    from event_logger import EventContext
+                    context = EventContext(
+                        host_id=event.host_id,
+                        host_name=host_name,
+                        container_id=event.container_id,
+                        container_name=event.container_name
+                    )
+
+                    self.event_logger.log_event(
+                        title=f"Alert Suppressed: {event.container_name}",
+                        message=f"Alert suppressed during blackout window '{window_name}'. State change: {event.old_state} → {event.new_state}. Matching rules: {rule_names}",
+                        category=EventCategory.ALERT,
+                        event_type=EventType.RULE_TRIGGERED,
+                        severity=EventSeverity.WARNING,
+                        context=context,
+                        old_state=event.old_state,
+                        new_state=event.new_state,
+                        details={"blackout_window": window_name, "rules_count": len(alert_rules), "suppressed": True}
+                    )
+
                 return False
 
             # Process each matching rule
+            triggered_rules = []
             for rule in alert_rules:
                 if await self._should_send_alert(rule, event):
                     if await self._send_rule_notifications(rule, event):
                         success_count += 1
+                        triggered_rules.append(rule.name)
                         # Update last triggered time for this container + rule combination
                         container_key = f"{event.host_id}:{event.container_id}"
                         cooldown_key = f"{rule.id}:{container_key}"
@@ -302,7 +333,36 @@ class NotificationService:
                             'last_triggered': datetime.now()
                         })
 
-            # Log the event
+            # Log the event to new event system
+            if success_count > 0 and self.event_logger:
+                rule_names = ", ".join(triggered_rules[:3])  # First 3 rules
+                if len(triggered_rules) > 3:
+                    rule_names += f" (+{len(triggered_rules) - 3} more)"
+
+                # Determine severity based on state
+                severity = EventSeverity.CRITICAL if event.new_state in ['exited', 'dead'] else EventSeverity.ERROR
+
+                from event_logger import EventContext
+                context = EventContext(
+                    host_id=event.host_id,
+                    host_name=host_name,
+                    container_id=event.container_id,
+                    container_name=event.container_name
+                )
+
+                self.event_logger.log_event(
+                    category=EventCategory.ALERT,
+                    event_type=EventType.RULE_TRIGGERED,
+                    title=f"Alert Triggered: {event.container_name}",
+                    message=f"{success_count} alert rule(s) triggered for container state change: {event.old_state} → {event.new_state}. Rules: {rule_names}",
+                    severity=severity,
+                    context=context,
+                    old_state=event.old_state,
+                    new_state=event.new_state,
+                    details={"rules_triggered": triggered_rules, "rules_count": success_count, "total_rules": total_rules}
+                )
+
+            # Legacy logging (for backward compatibility)
             self.db.add_container_event({
                 'host_id': event.host_id,
                 'container_id': event.container_id,

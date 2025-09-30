@@ -71,9 +71,9 @@ class DockerMonitor:
         self.manager = ConnectionManager()
         self.realtime = RealtimeMonitor()  # Real-time monitoring
         self.live_updates = LiveUpdateManager()  # Live update batching
-        self.notification_service = NotificationService(self.db)  # Notification service
-        self.alert_processor = AlertProcessor(self.notification_service)  # Alert processor
         self.event_logger = EventLogger(self.db, self.manager)  # Event logging service with WebSocket support
+        self.notification_service = NotificationService(self.db, self.event_logger)  # Notification service
+        self.alert_processor = AlertProcessor(self.notification_service)  # Alert processor
 
         # Connect the notification service to the realtime monitor for Docker event alerts
         self.realtime.notification_service = self.notification_service

@@ -73,6 +73,9 @@ async def lifespan(app: FastAPI):
 
     await monitor.event_logger.start()
     monitor.event_logger.log_system_event("DockMon Backend Starting", "DockMon backend is initializing", EventSeverity.INFO, EventType.STARTUP)
+
+    # Connect security audit logger to event logger
+    security_audit.set_event_logger(monitor.event_logger)
     monitor.monitoring_task = asyncio.create_task(monitor.monitor_containers())
     monitor.cleanup_task = asyncio.create_task(monitor.cleanup_old_data())
 

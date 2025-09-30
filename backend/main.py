@@ -247,8 +247,8 @@ async def get_container_logs(
     container_id: str,
     tail: int = 100,
     since: Optional[str] = None,  # ISO timestamp for getting logs since a specific time
-    authenticated: bool = Depends(verify_session_auth),
-    rate_limit_check: bool = rate_limit_containers
+    authenticated: bool = Depends(verify_session_auth)
+    # No rate limiting - authenticated users can poll logs freely
 ):
     """Get container logs - Portainer-style polling approach"""
     if host_id not in monitor.clients:

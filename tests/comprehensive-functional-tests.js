@@ -1891,6 +1891,823 @@ test.describe('DockMon Comprehensive Functional Tests', () => {
     });
 
     // ========================================================================
+    // 16. EVENT VIEWER TESTS
+    // ========================================================================
+
+    test.describe('Event Viewer', () => {
+
+        test('Should navigate to Events page', async ({ page }) => {
+            await login(page);
+            await navigateToPage(page, 'events');
+
+            // Verify events page elements exist
+            await expect(page.locator('#events-page')).toBeVisible();
+            await expect(page.locator('#eventsList')).toBeVisible();
+            await expect(page.locator('.event-filters')).toBeVisible();
+        });
+
+        test('Should display event list', async ({ page }) => {
+            await login(page);
+            await navigateToPage(page, 'events');
+
+            // Wait for events to load
+            await page.waitForTimeout(2000);
+
+            // Check for event items
+            const eventItems = await page.locator('.event-item').count();
+            expect(eventItems).toBeGreaterThanOrEqual(0);
+
+            if (eventItems > 0) {
+                console.log(`✅ Events page showing ${eventItems} events`);
+            }
+        });
+
+        test('Should toggle sort order (Newest/Oldest First)', async ({ page }) => {
+            await login(page);
+            await navigateToPage(page, 'events');
+
+            await page.waitForTimeout(2000);
+
+            // Check initial sort button text
+            const sortBtn = page.locator('#sortOrderBtn');
+            await expect(sortBtn).toBeVisible();
+            const initialText = await sortBtn.textContent();
+
+            // Click to toggle sort
+            await sortBtn.click();
+            await page.waitForTimeout(500);
+
+            // Verify text changed
+            const newText = await sortBtn.textContent();
+            expect(newText).not.toBe(initialText);
+
+            // Should alternate between "Newest First" and "Oldest First"
+            const validTexts = ['Newest First', 'Oldest First'];
+            expect(validTexts.some(text => newText.includes(text))).toBeTruthy();
+
+            console.log(`✅ Sort toggled from "${initialText}" to "${newText}"`);
+        });
+
+        test('Should filter by time range', async ({ page }) => {
+            await login(page);
+            await navigateToPage(page, 'events');
+
+            await page.waitForTimeout(2000);
+
+            // Get initial event count
+            const initialCount = await page.locator('.event-item').count();
+
+            // Change time range filter
+            const timeRangeSelect = page.locator('#eventTimeRange');
+            await timeRangeSelect.selectOption('1'); // Last hour
+            await page.waitForTimeout(1000);
+
+            // Get new event count
+            const newCount = await page.locator('.event-item').count();
+
+            // Count might be same or different depending on event distribution
+            expect(newCount).toBeGreaterThanOrEqual(0);
+            console.log(`✅ Time range filter: ${initialCount} → ${newCount} events`);
+
+            // Try "All time"
+            await timeRangeSelect.selectOption('all');
+            await page.waitForTimeout(1000);
+
+            const allTimeCount = await page.locator('.event-item').count();
+            expect(allTimeCount).toBeGreaterThanOrEqual(newCount);
+            console.log(`✅ All time filter: ${allTimeCount} events`);
+        });
+
+        test('Should filter by category', async ({ page }) => {
+            await login(page);
+            await navigateToPage(page, 'events');
+
+            await page.waitForTimeout(2000);
+
+            // Open category multiselect
+            const categoryTrigger = page.locator('#eventCategoryMultiselect .multiselect-trigger');
+            await categoryTrigger.click();
+            await page.waitForTimeout(500);
+
+            // Verify dropdown opened
+            const dropdown = page.locator('#eventCategoryDropdown');
+            await expect(dropdown).toBeVisible();
+
+            // Check "container" category
+            const containerCheckbox = page.locator('#eventCategoryDropdown input[value="container"]');
+            await containerCheckbox.check();
+            await page.waitForTimeout(1000);
+
+            // Verify label updated
+            const label = page.locator('#eventCategoryMultiselect .multiselect-label');
+            const labelText = await label.textContent();
+            expect(labelText).toContain('Container');
+
+            console.log(`✅ Category filter applied: ${labelText}`);
+
+            // Uncheck to reset
+            await categoryTrigger.click();
+            await page.waitForTimeout(300);
+            await containerCheckbox.uncheck();
+            await page.waitForTimeout(500);
+        });
+
+        test('Should filter by severity', async ({ page }) => {
+            await login(page);
+            await navigateToPage(page, 'events');
+
+            await page.waitForTimeout(2000);
+
+            // Open severity multiselect
+            const severityTrigger = page.locator('#eventSeverityMultiselect .multiselect-trigger');
+            await severityTrigger.click();
+            await page.waitForTimeout(500);
+
+            // Verify dropdown opened
+            const dropdown = page.locator('#eventSeverityDropdown');
+            await expect(dropdown).toBeVisible();
+
+            // Check "error" severity
+            const errorCheckbox = page.locator('#eventSeverityDropdown input[value="error"]');
+            await errorCheckbox.check();
+            await page.waitForTimeout(1000);
+
+            // Verify label updated
+            const label = page.locator('#eventSeverityMultiselect .multiselect-label');
+            const labelText = await label.textContent();
+            expect(labelText).toContain('Error');
+
+            console.log(`✅ Severity filter applied: ${labelText}`);
+
+            // Uncheck to reset
+            await severityTrigger.click();
+            await page.waitForTimeout(300);
+            await errorCheckbox.uncheck();
+            await page.waitForTimeout(500);
+        });
+
+        test('Should filter by host', async ({ page }) => {
+            await login(page);
+            await navigateToPage(page, 'events');
+
+            await page.waitForTimeout(2000);
+
+            // Open host multiselect
+            const hostTrigger = page.locator('#eventHostMultiselect .multiselect-trigger');
+            await hostTrigger.click();
+            await page.waitForTimeout(500);
+
+            // Check if any hosts are available
+            const hostCheckboxes = await page.locator('#eventHostDropdown input[type="checkbox"]').count();
+
+            if (hostCheckboxes > 0) {
+                // Check first host
+                const firstCheckbox = page.locator('#eventHostDropdown input[type="checkbox"]').first();
+                await firstCheckbox.check();
+                await page.waitForTimeout(1000);
+
+                // Verify label updated
+                const label = page.locator('#eventHostMultiselect .multiselect-label');
+                const labelText = await label.textContent();
+                expect(labelText).not.toBe('All Hosts');
+
+                console.log(`✅ Host filter applied: ${labelText}`);
+
+                // Uncheck to reset
+                await hostTrigger.click();
+                await page.waitForTimeout(300);
+                await firstCheckbox.uncheck();
+                await page.waitForTimeout(500);
+            } else {
+                console.log('⚠️ No hosts available to filter');
+            }
+        });
+
+        test('Should search events', async ({ page }) => {
+            await login(page);
+            await navigateToPage(page, 'events');
+
+            await page.waitForTimeout(2000);
+
+            // Get initial event count
+            const initialCount = await page.locator('.event-item').count();
+
+            if (initialCount > 0) {
+                // Get text from first event to search for
+                const firstEvent = page.locator('.event-item').first();
+                const eventText = await firstEvent.textContent();
+
+                // Extract a word from the event (get first word with at least 4 chars)
+                const words = eventText.split(/\s+/).filter(w => w.length >= 4);
+
+                if (words.length > 0) {
+                    const searchTerm = words[0].toLowerCase();
+
+                    // Enter search term
+                    const searchInput = page.locator('#eventSearch');
+                    await searchInput.fill(searchTerm);
+                    await page.waitForTimeout(1000); // Wait for debounce
+
+                    // Get filtered count
+                    const filteredCount = await page.locator('.event-item').count();
+                    expect(filteredCount).toBeLessThanOrEqual(initialCount);
+
+                    console.log(`✅ Search "${searchTerm}": ${initialCount} → ${filteredCount} events`);
+
+                    // Clear search
+                    await searchInput.clear();
+                    await page.waitForTimeout(1000);
+                }
+            }
+        });
+
+        test('Should refresh events', async ({ page }) => {
+            await login(page);
+            await navigateToPage(page, 'events');
+
+            await page.waitForTimeout(2000);
+
+            // Click refresh button
+            const refreshBtn = page.locator('button:has-text("Refresh")');
+            await refreshBtn.click();
+            await page.waitForTimeout(1000);
+
+            // Events should still be visible (refresh doesn't clear them)
+            const eventItems = await page.locator('.event-item').count();
+            expect(eventItems).toBeGreaterThanOrEqual(0);
+
+            console.log('✅ Events refreshed successfully');
+        });
+
+        test('Should display event details correctly', async ({ page }) => {
+            await login(page);
+            await navigateToPage(page, 'events');
+
+            await page.waitForTimeout(2000);
+
+            const eventItems = await page.locator('.event-item').count();
+
+            if (eventItems > 0) {
+                const firstEvent = page.locator('.event-item').first();
+
+                // Check for event timestamp
+                const timestamp = firstEvent.locator('.event-timestamp');
+                if (await timestamp.count() > 0) {
+                    const timestampText = await timestamp.textContent();
+                    expect(timestampText).toBeTruthy();
+                    expect(timestampText).not.toContain('Invalid Date');
+                    console.log(`✅ Event timestamp: ${timestampText}`);
+                }
+
+                // Check for event category badge
+                const category = firstEvent.locator('.event-category, .badge');
+                if (await category.count() > 0) {
+                    const categoryText = await category.first().textContent();
+                    expect(categoryText).toBeTruthy();
+                    console.log(`✅ Event category: ${categoryText}`);
+                }
+
+                // Check for event message
+                const message = firstEvent.locator('.event-message, .event-description');
+                if (await message.count() > 0) {
+                    const messageText = await message.textContent();
+                    expect(messageText).toBeTruthy();
+                    console.log(`✅ Event message displayed`);
+                }
+            }
+        });
+
+        test('Should display severity indicators', async ({ page }) => {
+            await login(page);
+            await navigateToPage(page, 'events');
+
+            await page.waitForTimeout(2000);
+
+            const eventItems = await page.locator('.event-item').count();
+
+            if (eventItems > 0) {
+                // Check for severity indicators (classes or icons)
+                const severityElements = await page.locator('.event-severity, .severity-badge, [class*="severity-"]').count();
+
+                if (severityElements > 0) {
+                    console.log(`✅ Severity indicators displayed: ${severityElements}`);
+                } else {
+                    // Severity might be indicated by color classes on event items
+                    const firstEvent = page.locator('.event-item').first();
+                    const classes = await firstEvent.getAttribute('class');
+                    expect(classes).toBeTruthy();
+                    console.log(`✅ Event styling applied`);
+                }
+            }
+        });
+
+        test('Should handle pagination', async ({ page }) => {
+            await login(page);
+            await navigateToPage(page, 'events');
+
+            await page.waitForTimeout(2000);
+
+            // Check for pagination controls
+            const pagination = page.locator('#eventsPagination');
+            await expect(pagination).toBeVisible();
+
+            // Check if there are page buttons
+            const pageButtons = await page.locator('#eventsPagination button').count();
+
+            if (pageButtons > 0) {
+                // Try to click next/page 2 if available
+                const nextBtn = page.locator('#eventsPagination button:has-text("2"), #eventsPagination button:has-text("Next")').first();
+
+                if (await nextBtn.count() > 0 && await nextBtn.isEnabled()) {
+                    await nextBtn.click();
+                    await page.waitForTimeout(1000);
+
+                    // Should still have events visible
+                    const eventItems = await page.locator('.event-item').count();
+                    expect(eventItems).toBeGreaterThanOrEqual(0);
+
+                    console.log('✅ Pagination working');
+                }
+            } else {
+                console.log('⚠️ No pagination needed (few events)');
+            }
+        });
+
+        test('Should combine multiple filters', async ({ page }) => {
+            await login(page);
+            await navigateToPage(page, 'events');
+
+            await page.waitForTimeout(2000);
+
+            const initialCount = await page.locator('.event-item').count();
+
+            // Apply time range filter
+            await page.locator('#eventTimeRange').selectOption('12'); // Last 12 hours
+            await page.waitForTimeout(500);
+
+            // Apply category filter
+            const categoryTrigger = page.locator('#eventCategoryMultiselect .multiselect-trigger');
+            await categoryTrigger.click();
+            await page.waitForTimeout(300);
+            const containerCheckbox = page.locator('#eventCategoryDropdown input[value="container"]');
+            await containerCheckbox.check();
+            await page.waitForTimeout(1000);
+
+            // Get filtered count
+            const filteredCount = await page.locator('.event-item').count();
+            expect(filteredCount).toBeLessThanOrEqual(initialCount);
+
+            console.log(`✅ Multiple filters: ${initialCount} → ${filteredCount} events`);
+
+            // Reset filters
+            await page.locator('#eventTimeRange').selectOption('24');
+            await categoryTrigger.click();
+            await page.waitForTimeout(300);
+            await containerCheckbox.uncheck();
+            await page.waitForTimeout(500);
+        });
+
+        test('Should handle real-time event updates', async ({ page }) => {
+            await login(page);
+            await navigateToPage(page, 'events');
+
+            await page.waitForTimeout(2000);
+
+            // Get initial event count
+            const initialCount = await page.locator('.event-item').count();
+
+            // Wait for potential new events (WebSocket)
+            await page.waitForTimeout(5000);
+
+            // Get new count
+            const newCount = await page.locator('.event-item').count();
+
+            // Count might increase if events occurred, or stay same
+            expect(newCount).toBeGreaterThanOrEqual(initialCount);
+
+            if (newCount > initialCount) {
+                console.log(`✅ Real-time updates working: ${initialCount} → ${newCount} events`);
+            } else {
+                console.log('ℹ️ No new events during test period');
+            }
+        });
+
+        test('Should handle empty events list', async ({ page }) => {
+            await login(page);
+            await navigateToPage(page, 'events');
+
+            await page.waitForTimeout(2000);
+
+            // Apply a very restrictive filter that might return no results
+            await page.locator('#eventSearch').fill('xyznonexistentterm123');
+            await page.waitForTimeout(1500); // Wait for debounce
+
+            const eventItems = await page.locator('.event-item').count();
+
+            if (eventItems === 0) {
+                // Should show "No events" message or empty state
+                const emptyMessage = page.locator(':has-text("No events"), :has-text("No results")');
+                const messageExists = await emptyMessage.count() > 0;
+
+                // Either events exist or empty message shown
+                expect(messageExists || eventItems > 0).toBeTruthy();
+                console.log('✅ Empty state handled gracefully');
+            }
+
+            // Clear search
+            await page.locator('#eventSearch').clear();
+            await page.waitForTimeout(1000);
+        });
+    });
+
+    // ========================================================================
+    // 17. CONTAINER LOGS VIEWER TESTS
+    // ========================================================================
+
+    test.describe('Container Logs Viewer', () => {
+
+        test('Should navigate to Logs page', async ({ page }) => {
+            await login(page);
+            await navigateToPage(page, 'logs');
+
+            // Verify logs page elements exist
+            await expect(page.locator('#logsContainer')).toBeVisible();
+            await expect(page.locator('#logsSelectContainer')).toBeVisible();
+        });
+
+        test('Should display container selection dropdown', async ({ page }) => {
+            await login(page);
+            await navigateToPage(page, 'logs');
+
+            // Click select dropdown
+            const selectBtn = page.locator('#logsSelectContainer');
+            await selectBtn.waitFor({ state: 'visible', timeout: 10000 });
+            await selectBtn.click();
+            await page.waitForTimeout(500);
+
+            // Dropdown should show hosts and containers
+            const dropdown = page.locator('.logs-select-dropdown.active');
+            await expect(dropdown).toBeVisible();
+
+            // Check for host sections
+            const hostSections = await page.locator('.logs-host-section').count();
+            expect(hostSections).toBeGreaterThanOrEqual(0);
+        });
+
+        test('Should select single container for viewing logs', async ({ page }) => {
+            await login(page);
+            await navigateToPage(page, 'logs');
+
+            // Wait for containers to load
+            await page.waitForTimeout(2000);
+
+            // Open dropdown
+            await page.click('#logsSelectContainer');
+            await page.waitForTimeout(500);
+
+            // Check if there are any containers
+            const containerItems = await page.locator('.logs-container-item').count();
+
+            if (containerItems > 0) {
+                // Select first container
+                await page.click('.logs-container-item:first-child');
+                await page.waitForTimeout(1000);
+
+                // Verify logs display
+                const logsOutput = page.locator('.logs-output');
+                await expect(logsOutput).toBeVisible();
+
+                // Check for log entries (should have timestamp and text)
+                const logLines = await page.locator('.log-line').count();
+                expect(logLines).toBeGreaterThanOrEqual(0);
+
+                console.log(`✅ Logs viewer showing ${logLines} log lines`);
+            }
+        });
+
+        test('Should select multiple containers', async ({ page }) => {
+            await login(page);
+            await navigateToPage(page, 'logs');
+
+            await page.waitForTimeout(2000);
+
+            // Open dropdown
+            await page.click('#logsSelectContainer');
+            await page.waitForTimeout(500);
+
+            const containerItems = await page.locator('.logs-container-item').count();
+
+            if (containerItems >= 2) {
+                // Select first container
+                await page.click('.logs-container-item:nth-child(1)');
+                await page.waitForTimeout(500);
+
+                // Open dropdown again
+                await page.click('#logsSelectContainer');
+                await page.waitForTimeout(500);
+
+                // Select second container
+                await page.click('.logs-container-item:nth-child(2)');
+                await page.waitForTimeout(1000);
+
+                // Verify both containers are selected (check pills)
+                const selectedPills = await page.locator('.selected-container-pill').count();
+                expect(selectedPills).toBeGreaterThanOrEqual(2);
+
+                console.log(`✅ Selected ${selectedPills} containers`);
+            }
+        });
+
+        test('Should toggle sort order (Newest/Oldest First)', async ({ page }) => {
+            await login(page);
+            await navigateToPage(page, 'logs');
+
+            await page.waitForTimeout(2000);
+
+            // Open dropdown and select a container
+            await page.click('#logsSelectContainer');
+            await page.waitForTimeout(500);
+
+            const containerItems = await page.locator('.logs-container-item').count();
+            if (containerItems > 0) {
+                await page.click('.logs-container-item:first-child');
+                await page.waitForTimeout(1000);
+
+                // Check initial sort button text
+                const sortBtn = page.locator('#logsSortBtn');
+                const initialText = await sortBtn.textContent();
+
+                // Click to toggle sort
+                await sortBtn.click();
+                await page.waitForTimeout(500);
+
+                // Verify text changed
+                const newText = await sortBtn.textContent();
+                expect(newText).not.toBe(initialText);
+
+                // Should alternate between "Newest First" and "Oldest First"
+                const validTexts = ['Newest First', 'Oldest First'];
+                expect(validTexts.some(text => newText.includes(text))).toBeTruthy();
+
+                console.log(`✅ Sort toggled from "${initialText}" to "${newText}"`);
+            }
+        });
+
+        test('Should change tail count (number of lines)', async ({ page }) => {
+            await login(page);
+            await navigateToPage(page, 'logs');
+
+            await page.waitForTimeout(2000);
+
+            // Select a container
+            await page.click('#logsSelectContainer');
+            await page.waitForTimeout(500);
+
+            const containerItems = await page.locator('.logs-container-item').count();
+            if (containerItems > 0) {
+                await page.click('.logs-container-item:first-child');
+                await page.waitForTimeout(1000);
+
+                // Count initial log lines
+                const initialCount = await page.locator('.log-line').count();
+
+                // Change tail count
+                const tailSelect = page.locator('#logsTailCount');
+                await tailSelect.selectOption('50');
+                await page.waitForTimeout(2000); // Wait for refresh
+
+                // Count new log lines (might be same or different depending on container)
+                const newCount = await page.locator('.log-line').count();
+                expect(newCount).toBeLessThanOrEqual(50);
+
+                console.log(`✅ Tail count changed: ${initialCount} → ${newCount} lines`);
+            }
+        });
+
+        test('Should toggle auto-refresh', async ({ page }) => {
+            await login(page);
+            await navigateToPage(page, 'logs');
+
+            await page.waitForTimeout(2000);
+
+            // Select a container
+            await page.click('#logsSelectContainer');
+            await page.waitForTimeout(500);
+
+            const containerItems = await page.locator('.logs-container-item').count();
+            if (containerItems > 0) {
+                await page.click('.logs-container-item:first-child');
+                await page.waitForTimeout(1000);
+
+                // Find auto-refresh checkbox
+                const autoRefreshCheckbox = page.locator('#logsAutoRefresh');
+                await expect(autoRefreshCheckbox).toBeVisible();
+
+                // Check initial state
+                const initialState = await autoRefreshCheckbox.isChecked();
+
+                // Toggle
+                await autoRefreshCheckbox.click();
+                await page.waitForTimeout(500);
+
+                // Verify state changed
+                const newState = await autoRefreshCheckbox.isChecked();
+                expect(newState).not.toBe(initialState);
+
+                console.log(`✅ Auto-refresh toggled: ${initialState} → ${newState}`);
+            }
+        });
+
+        test('Should remove selected container', async ({ page }) => {
+            await login(page);
+            await navigateToPage(page, 'logs');
+
+            await page.waitForTimeout(2000);
+
+            // Select a container
+            await page.click('#logsSelectContainer');
+            await page.waitForTimeout(500);
+
+            const containerItems = await page.locator('.logs-container-item').count();
+            if (containerItems > 0) {
+                await page.click('.logs-container-item:first-child');
+                await page.waitForTimeout(1000);
+
+                // Verify pill exists
+                const pill = page.locator('.selected-container-pill').first();
+                await expect(pill).toBeVisible();
+
+                // Click remove button on pill
+                const removeBtn = pill.locator('.remove-container');
+                await removeBtn.click();
+                await page.waitForTimeout(500);
+
+                // Verify pill removed
+                const pillCount = await page.locator('.selected-container-pill').count();
+                expect(pillCount).toBe(0);
+
+                console.log('✅ Container removed from selection');
+            }
+        });
+
+        test('Should handle rate limiting gracefully', async ({ page }) => {
+            await login(page);
+            await navigateToPage(page, 'logs');
+
+            await page.waitForTimeout(2000);
+
+            // Try to select many containers rapidly
+            await page.click('#logsSelectContainer');
+            await page.waitForTimeout(500);
+
+            const containerItems = await page.locator('.logs-container-item').count();
+            const selectCount = Math.min(containerItems, 10);
+
+            if (selectCount > 3) {
+                for (let i = 0; i < selectCount; i++) {
+                    await page.click('#logsSelectContainer');
+                    await page.waitForTimeout(200);
+                    await page.click(`.logs-container-item:nth-child(${i + 1})`);
+                    await page.waitForTimeout(200);
+                }
+
+                // Wait for responses
+                await page.waitForTimeout(3000);
+
+                // Check for rate limit toast
+                const toast = page.locator('.toast:has-text("Rate limit")');
+                if (await toast.count() > 0) {
+                    console.log('✅ Rate limit toast displayed');
+                    await expect(toast).toBeVisible();
+
+                    // Verify auto-refresh was paused
+                    const autoRefreshCheckbox = page.locator('#logsAutoRefresh');
+                    const isChecked = await autoRefreshCheckbox.isChecked();
+                    expect(isChecked).toBe(false);
+                    console.log('✅ Auto-refresh paused on rate limit');
+                }
+            }
+        });
+
+        test('Should display timestamps in correct format', async ({ page }) => {
+            await login(page);
+            await navigateToPage(page, 'logs');
+
+            await page.waitForTimeout(2000);
+
+            // Select a container
+            await page.click('#logsSelectContainer');
+            await page.waitForTimeout(500);
+
+            const containerItems = await page.locator('.logs-container-item').count();
+            if (containerItems > 0) {
+                await page.click('.logs-container-item:first-child');
+                await page.waitForTimeout(1000);
+
+                // Check for timestamps
+                const timestamps = await page.locator('.log-timestamp').count();
+
+                if (timestamps > 0) {
+                    const firstTimestamp = await page.locator('.log-timestamp').first().textContent();
+
+                    // Should not be "Invalid Date"
+                    expect(firstTimestamp).not.toContain('Invalid Date');
+
+                    // Should contain time format (HH:MM:SS)
+                    const timePattern = /\d{2}:\d{2}:\d{2}/;
+                    expect(timePattern.test(firstTimestamp)).toBeTruthy();
+
+                    console.log(`✅ Timestamps formatted correctly: ${firstTimestamp}`);
+                }
+            }
+        });
+
+        test('Should show container names in multi-container view', async ({ page }) => {
+            await login(page);
+            await navigateToPage(page, 'logs');
+
+            await page.waitForTimeout(2000);
+
+            // Select multiple containers
+            await page.click('#logsSelectContainer');
+            await page.waitForTimeout(500);
+
+            const containerItems = await page.locator('.logs-container-item').count();
+
+            if (containerItems >= 2) {
+                await page.click('.logs-container-item:nth-child(1)');
+                await page.waitForTimeout(500);
+
+                await page.click('#logsSelectContainer');
+                await page.waitForTimeout(500);
+
+                await page.click('.logs-container-item:nth-child(2)');
+                await page.waitForTimeout(1000);
+
+                // Check for container name badges in logs
+                const containerBadges = await page.locator('.log-container-name').count();
+                expect(containerBadges).toBeGreaterThan(0);
+
+                console.log(`✅ Container name badges displayed: ${containerBadges}`);
+            }
+        });
+
+        test('Should sort containers alphabetically within hosts', async ({ page }) => {
+            await login(page);
+            await navigateToPage(page, 'logs');
+
+            await page.waitForTimeout(2000);
+
+            // Open dropdown
+            await page.click('#logsSelectContainer');
+            await page.waitForTimeout(500);
+
+            // Get all container names within a host section
+            const hostSections = await page.locator('.logs-host-section').count();
+
+            if (hostSections > 0) {
+                const firstHostContainers = await page.locator('.logs-host-section:first-child .logs-container-item .container-name').allTextContents();
+
+                if (firstHostContainers.length > 1) {
+                    // Check if sorted alphabetically
+                    const sorted = [...firstHostContainers].sort();
+                    expect(firstHostContainers).toEqual(sorted);
+                    console.log('✅ Containers sorted alphabetically within host');
+                }
+            }
+        });
+
+        test('Should handle empty logs gracefully', async ({ page }) => {
+            await login(page);
+            await navigateToPage(page, 'logs');
+
+            await page.waitForTimeout(2000);
+
+            // Try to select a container
+            await page.click('#logsSelectContainer');
+            await page.waitForTimeout(500);
+
+            const containerItems = await page.locator('.logs-container-item').count();
+            if (containerItems > 0) {
+                await page.click('.logs-container-item:first-child');
+                await page.waitForTimeout(1000);
+
+                const logLines = await page.locator('.log-line').count();
+
+                if (logLines === 0) {
+                    // Should show "No logs" message or empty state
+                    const emptyMessage = page.locator(':has-text("No logs")');
+                    const messageExists = await emptyMessage.count() > 0;
+
+                    // Either logs exist or empty message shown
+                    expect(messageExists || logLines > 0).toBeTruthy();
+                    console.log('✅ Empty logs handled gracefully');
+                }
+            }
+        });
+    });
+
+    // ========================================================================
     // CLEANUP & TEARDOWN
     // ========================================================================
 

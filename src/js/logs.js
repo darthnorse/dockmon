@@ -7,6 +7,9 @@ let allLogs = []; // Consolidated logs from all containers
 let containerColorMap = {}; // Map container IDs to color indices
 let nextColorIndex = 0;
 let logsSortOrder = 'desc'; // 'asc' or 'desc'
+let isFetchingLogs = false; // Prevent concurrent fetch calls
+let isRestoringSelection = false; // Prevent onchange during dropdown rebuild
+let pendingSelectionChange = false; // Track if selection changed while dropdown was open
 
 // Initialize logs page when switched to
 function initLogsPage() {
@@ -43,6 +46,12 @@ function populateContainerList() {
         console.error('Dropdown element not found');
         return;
     }
+
+    // Save current selection state before rebuilding
+    const selectedKeys = selectedContainers.map(c => `${c.hostId}:${c.containerId}`);
+
+    // Prevent onchange events during restoration
+    isRestoringSelection = true;
 
     dropdown.innerHTML = '';
 
@@ -142,9 +151,13 @@ function populateContainerList() {
                 statusSymbol = '○';
             }
 
+            const containerKey = `${host.id}:${container.id}`;
+            const isSelected = selectedKeys.includes(containerKey);
+
             label.innerHTML = `
                 <input type="checkbox"
-                       value="${host.id}:${container.id}"
+                       value="${containerKey}"
+                       ${isSelected ? 'checked' : ''}
                        onchange="updateContainerSelection()">
                 <span style="margin-left: 8px;">${container.name}</span>
                 <span style="margin-left: 8px; color: ${statusColor}; font-size: 11px;">
@@ -158,12 +171,31 @@ function populateContainerList() {
     if (totalContainers === 0) {
         dropdown.innerHTML = '<div style="padding: 12px; color: var(--text-tertiary);">No containers available. Make sure your hosts have running containers.</div>';
     }
+
+    // Re-enable onchange events after restoration is complete
+    setTimeout(() => {
+        isRestoringSelection = false;
+    }, 0);
 }
 
-// Update selected containers
+// Update selected containers and fetch logs immediately
 function updateContainerSelection() {
+    // Skip if we're just restoring selection during dropdown rebuild
+    if (isRestoringSelection) {
+        return;
+    }
+
+    // Update UI immediately (label and selection state)
     const dropdown = document.getElementById('logsContainerDropdown');
     const checkboxes = dropdown.querySelectorAll('input[type="checkbox"]:checked');
+
+    // Enforce 15 container limit to protect API
+    if (checkboxes.length > 15) {
+        showToast('⚠️ Maximum 15 containers can be selected at once', 'warning');
+        // Uncheck the last selected checkbox
+        checkboxes[checkboxes.length - 1].checked = false;
+        return;
+    }
 
     selectedContainers = Array.from(checkboxes).map(cb => {
         const [hostId, containerId] = cb.value.split(':');
@@ -195,12 +227,12 @@ function updateContainerSelection() {
         }
     });
 
-    // Reload logs
-    reloadLogs();
-
     if (typeof lucide !== 'undefined') {
         lucide.createIcons();
     }
+
+    // Reload logs immediately (no rate limiting on backend for authenticated users)
+    reloadLogs();
 }
 
 // Reload logs from scratch
@@ -220,6 +252,15 @@ async function reloadLogs() {
 // Fetch logs from all selected containers
 async function fetchLogs() {
     if (selectedContainers.length === 0 || logsPaused) return;
+
+    // Prevent concurrent fetches
+    if (isFetchingLogs) {
+        console.log('[LOGS] Fetch already in progress, skipping...');
+        return;
+    }
+
+    isFetchingLogs = true;
+    console.log('[LOGS] Starting fetch for', selectedContainers.length, 'containers');
 
     const tailCount = document.getElementById('logsTailCount').value;
     const tail = tailCount === 'all' ? 10000 : parseInt(tailCount);
@@ -283,7 +324,10 @@ async function fetchLogs() {
         allLogs = newLogs;
         renderLogs();
     } catch (error) {
-        console.error('Error fetching logs:', error);
+        console.error('[LOGS] Error fetching logs:', error);
+    } finally {
+        isFetchingLogs = false;
+        console.log('[LOGS] Fetch completed');
     }
 }
 
@@ -373,12 +417,14 @@ function startLogsPolling() {
     stopLogsPolling();
     const autoRefresh = document.getElementById('logsAutoRefresh')?.checked;
     if (selectedContainers.length > 0 && autoRefresh && !logsPaused) {
-        logsPollingInterval = setInterval(fetchLogs, 2000); // Poll every 2 seconds (same as modal)
+        console.log('[LOGS] Starting polling interval (2s)');
+        logsPollingInterval = setInterval(fetchLogs, 2000); // Poll every 2 seconds (same as container modal)
     }
 }
 
 function stopLogsPolling() {
     if (logsPollingInterval) {
+        console.log('[LOGS] Stopping polling interval');
         clearInterval(logsPollingInterval);
         logsPollingInterval = null;
     }

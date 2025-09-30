@@ -572,21 +572,44 @@ class DockerMonitor:
                 host.error = None
 
                 for dc in docker_containers:
-                    container_id = dc.id[:12]
-                    container = Container(
-                        id=dc.id,
-                        short_id=container_id,
-                        name=dc.name,
-                        state=dc.status,
-                        status=dc.attrs['State']['Status'],
-                        host_id=hid,
-                        host_name=host.name,
-                        image=dc.image.tags[0] if dc.image.tags else dc.image.short_id,
-                        created=dc.attrs['Created'],
-                        auto_restart=self._get_auto_restart_status(hid, container_id),
-                        restart_attempts=self.restart_attempts.get(container_id, 0)
-                    )
-                    containers.append(container)
+                    try:
+                        container_id = dc.id[:12]
+
+                        # Try to get image info, but handle missing images gracefully
+                        # Access dc.image first to trigger any errors before accessing its properties
+                        try:
+                            container_image = dc.image
+                            image_name = container_image.tags[0] if container_image.tags else container_image.short_id
+                        except Exception as img_error:
+                            # Image may have been deleted - use image ID from container attrs
+                            # This is common when containers reference deleted images
+                            image_name = dc.attrs.get('Config', {}).get('Image', 'unknown')
+                            if image_name == 'unknown':
+                                # Try to get from ImageID in attrs
+                                image_id = dc.attrs.get('Image', '')
+                                if image_id.startswith('sha256:'):
+                                    image_name = image_id[:19]  # sha256: + first 12 chars
+                                else:
+                                    image_name = image_id[:12] if image_id else 'unknown'
+
+                        container = Container(
+                            id=dc.id,
+                            short_id=container_id,
+                            name=dc.name,
+                            state=dc.status,
+                            status=dc.attrs['State']['Status'],
+                            host_id=hid,
+                            host_name=host.name,
+                            image=image_name,
+                            created=dc.attrs['Created'],
+                            auto_restart=self._get_auto_restart_status(hid, container_id),
+                            restart_attempts=self.restart_attempts.get(container_id, 0)
+                        )
+                        containers.append(container)
+                    except Exception as container_error:
+                        # Log but don't fail the whole host for one bad container
+                        logger.warning(f"Skipping container {dc.name if hasattr(dc, 'name') else 'unknown'} on {host.name} due to error: {container_error}")
+                        continue
 
             except Exception as e:
                 logger.error(f"Error getting containers from {host.name}: {e}")

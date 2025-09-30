@@ -2912,14 +2912,30 @@ async function init() {
             // Get current host widget IDs
             const currentHostWidgetIds = hosts.map(host => `host-${host.id}`);
 
-            // Remove host widgets that no longer exist
-            const existingHostWidgets = grid.getGridItems().filter(item =>
-                item.getAttribute('data-widget-id').startsWith('host-')
-            );
+            // Remove host widgets that no longer exist OR duplicates
+            const existingHostWidgets = grid.getGridItems().filter(item => {
+                const widgetId = item.getAttribute('data-widget-id');
+                return widgetId && widgetId.startsWith('host-');
+            });
+            console.log(`Checking for widgets to remove. Current: ${existingHostWidgets.length}, Expected: ${currentHostWidgetIds.length}`);
+
+            // Track which widget IDs we've seen to detect duplicates
+            const seenWidgetIds = new Set();
+
             existingHostWidgets.forEach(widget => {
                 const widgetId = widget.getAttribute('data-widget-id');
+
+                // Remove if widget ID is not in current host list
                 if (!currentHostWidgetIds.includes(widgetId)) {
+                    console.log(`Removing widget ${widgetId} - not in current host list`);
                     grid.removeWidget(widget);
+                }
+                // Remove if this is a duplicate (we've seen this ID before)
+                else if (seenWidgetIds.has(widgetId)) {
+                    console.log(`Removing duplicate widget ${widgetId}`);
+                    grid.removeWidget(widget);
+                } else {
+                    seenWidgetIds.add(widgetId);
                 }
             });
 

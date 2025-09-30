@@ -57,6 +57,7 @@ class RealtimeMonitor:
         self.monitoring_tasks: Dict[str, asyncio.Task] = {}
         self.event_tasks: Dict[str, asyncio.Task] = {}
         self.notification_service = None  # Will be set after initialization to avoid circular imports
+        self.docker_monitor = None  # Will be set after initialization to access user action tracking
         self.event_queues: Dict[str, asyncio.Queue] = {}  # Event queues for each host
         self.event_threads: Dict[str, threading.Thread] = {}  # Event threads for each host
         self.event_thread_stop: Dict[str, threading.Event] = {}  # Stop signals for threads
@@ -334,6 +335,15 @@ class RealtimeMonitor:
                     if docker_event.action.startswith('exec_') and 'healthcheck' in event_str:
                         # Skip health check events - they're too noisy
                         continue
+
+                    # Track user-initiated stop/kill actions
+                    if docker_event.action in ['kill', 'stop'] and self.docker_monitor:
+                        # Get full container ID (Docker events have short IDs, need to look up full ID)
+                        container_id_full = event.get("id", "")  # This is the full ID
+                        container_key = f"{host_id}:{container_id_full}"
+                        import time
+                        self.docker_monitor._recent_user_actions[container_key] = time.time()
+                        logger.info(f"Tracked user {docker_event.action} action for {container_key} via Docker event")
 
                     # Process event for alerts if notification service is available
                     if self.notification_service and docker_event.action in [

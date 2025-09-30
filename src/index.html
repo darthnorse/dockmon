@@ -34,23 +34,27 @@
                         <span class="nav-icon" data-lucide="zap"></span>
                         <span>Alert Rules</span>
                     </a>
-                </div>
-                <div class="nav-section">
-                    <div class="nav-section-title">Configuration</div>
-                    <a class="nav-item" onclick="openGlobalSettings()">
-                        <span class="nav-icon" data-lucide="settings"></span>
-                        <span>Settings</span>
-                    </a>
                     <a class="nav-item" onclick="openNotificationSettings()">
                         <span class="nav-icon" data-lucide="bell"></span>
-                        <span>Notifications</span>
+                        <span>Notification Settings</span>
+                    </a>
+                </div>
+                <div class="nav-section">
+                    <div class="nav-section-title">Audit</div>
+                    <a class="nav-item" onclick="switchPage('events')">
+                        <span class="nav-icon" data-lucide="activity"></span>
+                        <span>Events</span>
+                    </a>
+                    <a class="nav-item" onclick="switchPage('logs')">
+                        <span class="nav-icon" data-lucide="file-text"></span>
+                        <span>Container Logs</span>
                     </a>
                 </div>
                 <div class="nav-section">
                     <div class="nav-section-title">System</div>
-                    <a class="nav-item" onclick="switchPage('logs')">
-                        <span class="nav-icon" data-lucide="file-text"></span>
-                        <span>Logs</span>
+                    <a class="nav-item" onclick="openGlobalSettings()">
+                        <span class="nav-icon" data-lucide="settings"></span>
+                        <span>Settings</span>
                     </a>
                     <a class="nav-item" onclick="switchPage('about')">
                         <span class="nav-icon" data-lucide="info"></span>
@@ -141,16 +145,171 @@
                     </div>
                 </div>
 
-                <!-- Logs Page -->
+                <!-- Events Page -->
+                <div id="events-page" class="page-section">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title">
+                                <span data-lucide="activity"></span> Event Log
+                            </h2>
+                            <div style="display: flex; gap: var(--spacing-sm);">
+                                <button class="btn btn-secondary" onclick="toggleEventSortOrder()" id="sortOrderBtn" title="Toggle sort order">
+                                    <span data-lucide="arrow-down-wide-narrow"></span> Newest First
+                                </button>
+                                <button class="btn btn-secondary" onclick="refreshEvents()">
+                                    <span data-lucide="refresh-cw"></span> Refresh
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Filters -->
+                        <div class="event-filters">
+                            <div class="filter-row">
+                                <div class="filter-group">
+                                    <label>Time Range</label>
+                                    <select id="eventTimeRange" onchange="filterEvents()">
+                                        <option value="24">Last 24 hours</option>
+                                        <option value="12">Last 12 hours</option>
+                                        <option value="6">Last 6 hours</option>
+                                        <option value="1">Last hour</option>
+                                        <option value="all">All time</option>
+                                    </select>
+                                </div>
+
+                                <div class="filter-group">
+                                    <label>Category</label>
+                                    <div class="multiselect" id="eventCategoryMultiselect">
+                                        <div class="multiselect-trigger" onclick="toggleMultiselect('eventCategory')">
+                                            <span class="multiselect-label">All Categories</span>
+                                            <span data-lucide="chevron-down"></span>
+                                        </div>
+                                        <div class="multiselect-dropdown" id="eventCategoryDropdown">
+                                            <label><input type="checkbox" value="container" onchange="updateMultiselect('eventCategory')"> Container</label>
+                                            <label><input type="checkbox" value="host" onchange="updateMultiselect('eventCategory')"> Host</label>
+                                            <label><input type="checkbox" value="alert" onchange="updateMultiselect('eventCategory')"> Alert</label>
+                                            <label><input type="checkbox" value="notification" onchange="updateMultiselect('eventCategory')"> Notification</label>
+                                            <label><input type="checkbox" value="system" onchange="updateMultiselect('eventCategory')"> System</label>
+                                            <label><input type="checkbox" value="user" onchange="updateMultiselect('eventCategory')"> User</label>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="filter-group">
+                                    <label>Severity</label>
+                                    <div class="multiselect" id="eventSeverityMultiselect">
+                                        <div class="multiselect-trigger" onclick="toggleMultiselect('eventSeverity')">
+                                            <span class="multiselect-label">All Severities</span>
+                                            <span data-lucide="chevron-down"></span>
+                                        </div>
+                                        <div class="multiselect-dropdown" id="eventSeverityDropdown">
+                                            <label><input type="checkbox" value="critical" onchange="updateMultiselect('eventSeverity')"> Critical</label>
+                                            <label><input type="checkbox" value="error" onchange="updateMultiselect('eventSeverity')"> Error</label>
+                                            <label><input type="checkbox" value="warning" onchange="updateMultiselect('eventSeverity')"> Warning</label>
+                                            <label><input type="checkbox" value="info" onchange="updateMultiselect('eventSeverity')"> Info</label>
+                                            <label><input type="checkbox" value="debug" onchange="updateMultiselect('eventSeverity')"> Debug</label>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="filter-group">
+                                    <label>Host</label>
+                                    <div class="multiselect" id="eventHostMultiselect">
+                                        <div class="multiselect-trigger" onclick="toggleMultiselect('eventHost')">
+                                            <span class="multiselect-label">All Hosts</span>
+                                            <span data-lucide="chevron-down"></span>
+                                        </div>
+                                        <div class="multiselect-dropdown" id="eventHostDropdown">
+                                            <!-- Dynamically populated -->
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="filter-group filter-search">
+                                    <label>Search</label>
+                                    <input type="text" id="eventSearch" placeholder="Search events..." onkeyup="debounceEventSearch()">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Events List -->
+                        <div id="eventsList" class="events-list">
+                            <!-- Events will be rendered here -->
+                        </div>
+
+                        <!-- Pagination -->
+                        <div id="eventsPagination" class="pagination">
+                            <!-- Pagination controls will be rendered here -->
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Container Logs Page -->
                 <div id="logs-page" class="page-section">
                     <div class="card">
                         <div class="card-header">
                             <h2 class="card-title">
-                                <span data-lucide="file-text"></span> System Logs
+                                <span data-lucide="file-text"></span> Container Logs
                             </h2>
+                            <div style="display: flex; gap: var(--spacing-sm); align-items: center;">
+                                <button class="btn btn-secondary" id="logsSortBtn" onclick="toggleLogsSort()" title="Toggle sort order">
+                                    <span data-lucide="arrow-down-wide-narrow"></span> Newest First
+                                </button>
+                                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; margin: 0;">
+                                    <input type="checkbox" id="logsAutoRefresh" onchange="toggleLogsAutoRefresh()" checked>
+                                    <span>Auto-refresh</span>
+                                </label>
+                                <button class="btn btn-secondary" onclick="clearLogs()">
+                                    <span data-lucide="trash-2"></span> Clear
+                                </button>
+                                <button class="btn btn-secondary" onclick="downloadLogs()">
+                                    <span data-lucide="download"></span> Download
+                                </button>
+                            </div>
                         </div>
-                        <div style="padding: var(--spacing-lg); text-align: center; color: var(--text-tertiary);">
-                            <p>Log viewer coming soon...</p>
+
+                        <!-- Filters and Controls -->
+                        <div class="filters-section" style="padding: 20px; border-bottom: 1px solid var(--border);">
+                            <div class="filter-group" style="flex: 2;">
+                                <label>Select Containers</label>
+                                <div class="multiselect" id="logsContainerMultiselect">
+                                    <div class="multiselect-trigger" onclick="toggleMultiselect('logsContainer')">
+                                        <span class="multiselect-label">Select containers to view logs...</span>
+                                        <span data-lucide="chevron-down"></span>
+                                    </div>
+                                    <div class="multiselect-dropdown" id="logsContainerDropdown">
+                                        <!-- Containers will be populated here -->
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="filter-group">
+                                <label>Lines</label>
+                                <select id="logsTailCount" onchange="reloadLogs()">
+                                    <option value="50">Last 50 lines</option>
+                                    <option value="100" selected>Last 100 lines</option>
+                                    <option value="200">Last 200 lines</option>
+                                    <option value="500">Last 500 lines</option>
+                                    <option value="1000">Last 1000 lines</option>
+                                    <option value="all">All lines</option>
+                                </select>
+                            </div>
+                            <div class="filter-group">
+                                <label>Search</label>
+                                <input type="text" id="logsSearchInput" placeholder="Filter logs..." oninput="filterLogs()">
+                            </div>
+                            <div class="filter-group" style="display: flex; align-items: flex-end;">
+                                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; margin: 0;">
+                                    <input type="checkbox" id="logsTimestamps" onchange="toggleTimestamps()" checked>
+                                    <span>Show timestamps</span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <!-- Logs Display -->
+                        <div id="logsContainer" class="logs-container">
+                            <div class="logs-placeholder">
+                                <span data-lucide="file-text" style="width: 48px; height: 48px; opacity: 0.3;"></span>
+                                <p>Select one or more containers to view logs</p>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -707,6 +866,10 @@
             <i class="mobile-nav-icon" data-lucide="alert-triangle"></i>
             <span class="mobile-nav-label">Alerts</span>
         </div>
+        <div class="mobile-nav-item" data-page="events">
+            <i class="mobile-nav-icon" data-lucide="activity"></i>
+            <span class="mobile-nav-label">Events</span>
+        </div>
         <div class="mobile-nav-item" data-page="more">
             <i class="mobile-nav-icon" data-lucide="more-horizontal"></i>
             <span class="mobile-nav-label">More</span>
@@ -715,10 +878,11 @@
                     <i data-lucide="user"></i>
                     <span>Account</span>
                 </div>
-                <div class="more-menu-item" onclick="switchPage('logs'); document.querySelector('.more-menu').classList.remove('show');">
+                <!-- Logs viewer will be added later, for now this goes to Events -->
+                <!-- <div class="more-menu-item" onclick="switchPage('logs'); document.querySelector('.more-menu').classList.remove('show');">
                     <i data-lucide="file-text"></i>
                     <span>Logs</span>
-                </div>
+                </div> -->
                 <div class="more-menu-item" onclick="switchPage('about'); document.querySelector('.more-menu').classList.remove('show');">
                     <i data-lucide="info"></i>
                     <span>About</span>
@@ -737,5 +901,8 @@
     <script src="/js/core.js"></script>
     <!-- DockMon Application JavaScript -->
     <script src="/js/app.js"></script>
+    <!-- Event Log JavaScript -->
+    <script src="/js/events.js"></script>
+    <script src="/js/logs.js"></script>
 </body>
 </html>

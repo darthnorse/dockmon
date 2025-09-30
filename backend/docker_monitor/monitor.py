@@ -73,11 +73,14 @@ class DockerMonitor:
         self.live_updates = LiveUpdateManager()  # Live update batching
         self.notification_service = NotificationService(self.db)  # Notification service
         self.alert_processor = AlertProcessor(self.notification_service)  # Alert processor
-        self.event_logger = EventLogger(self.db)  # Event logging service
+        self.event_logger = EventLogger(self.db, self.manager)  # Event logging service with WebSocket support
 
         # Connect the notification service to the realtime monitor for Docker event alerts
         self.realtime.notification_service = self.notification_service
+        # Connect the docker monitor to the realtime monitor for user action tracking
+        self.realtime.docker_monitor = self
         self._container_states: Dict[str, str] = {}  # Track container states for change detection
+        self._recent_user_actions: Dict[str, float] = {}  # Track recent user actions: {container_key: timestamp}
         self.cleanup_task: Optional[asyncio.Task] = None  # Background cleanup task
         self._load_persistent_config()  # Load saved hosts and configs
 
@@ -181,6 +184,15 @@ class DockerMonitor:
                 host_url=config.url,
                 connected=True
             )
+
+            # Log host added (only for new hosts, not reconnects)
+            if not skip_db_save:
+                self.event_logger.log_host_added(
+                    host_name=host.name,
+                    host_id=host.id,
+                    host_url=config.url,
+                    triggered_by="user"
+                )
 
             logger.info(f"Added Docker host: {host.name} ({host.url})")
             return host
@@ -348,6 +360,10 @@ class DockerMonitor:
             raise HTTPException(status_code=400, detail=str(e))
 
         if host_id in self.hosts:
+            # Get host info before removing
+            host = self.hosts[host_id]
+            host_name = host.name
+
             del self.hosts[host_id]
             if host_id in self.clients:
                 self.clients[host_id].close()
@@ -360,6 +376,14 @@ class DockerMonitor:
             self.db.delete_host(host_id)
             # Refresh alert rules cache since host-specific rules may have been deleted
             self.refresh_alert_rules()
+
+            # Log host removed
+            self.event_logger.log_host_removed(
+                host_name=host_name,
+                host_id=host_id,
+                triggered_by="user"
+            )
+
             logger.info(f"Removed host {host_id}")
 
     def update_host(self, host_id: str, config: DockerHostConfig):
@@ -641,6 +665,11 @@ class DockerMonitor:
 
             logger.info(f"Stopped container '{container_name}' on host '{host_name}'")
 
+            # Track this user action to suppress critical severity on expected state change
+            container_key = f"{host_id}:{container_id}"
+            self._recent_user_actions[container_key] = time.time()
+            logger.info(f"Tracked user stop action for {container_key}")
+
             # Log the successful stop
             self.event_logger.log_container_action(
                 action="stop",
@@ -689,6 +718,11 @@ class DockerMonitor:
             duration_ms = int((time.time() - start_time) * 1000)
 
             logger.info(f"Started container '{container_name}' on host '{host_name}'")
+
+            # Track this user action to suppress critical severity on expected state change
+            container_key = f"{host_id}:{container_id}"
+            self._recent_user_actions[container_key] = time.time()
+            logger.info(f"Tracked user start action for {container_key}")
 
             # Log the successful start
             self.event_logger.log_container_action(
@@ -797,6 +831,18 @@ class DockerMonitor:
 
                     # Log state changes
                     if previous_state is not None and previous_state != current_state:
+                        # Check if this state change was expected (recent user action)
+                        last_user_action = self._recent_user_actions.get(container_key, 0)
+                        time_since_action = time.time() - last_user_action
+                        is_user_initiated = time_since_action < 30  # Within 30 seconds
+
+                        logger.info(f"State change for {container_key}: {previous_state} → {current_state}, "
+                                  f"time_since_action={time_since_action:.1f}s, user_initiated={is_user_initiated}")
+
+                        # Clean up old tracking entries (older than 5 minutes)
+                        if time_since_action > 300:
+                            self._recent_user_actions.pop(container_key, None)
+
                         self.event_logger.log_container_state_change(
                             container_name=container.name,
                             container_id=container.short_id,
@@ -804,7 +850,7 @@ class DockerMonitor:
                             host_id=container.host_id,
                             old_state=previous_state,
                             new_state=current_state,
-                            triggered_by="system"
+                            triggered_by="user" if is_user_initiated else "system"
                         )
 
                     # Update tracked state

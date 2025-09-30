@@ -7,7 +7,7 @@ import asyncio
 import logging
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any, Union
 from enum import Enum
 from dataclasses import dataclass
@@ -81,8 +81,9 @@ class EventContext:
 class EventLogger:
     """Comprehensive event logging service"""
 
-    def __init__(self, db: DatabaseManager):
+    def __init__(self, db: DatabaseManager, websocket_manager=None):
         self.db = db
+        self.websocket_manager = websocket_manager
         self._event_queue = asyncio.Queue()
         self._processing_task: Optional[asyncio.Task] = None
         self._active_correlations: Dict[str, List[str]] = {}
@@ -136,7 +137,7 @@ class EventLogger:
             'triggered_by': triggered_by,
             'details': details or {},
             'duration_ms': duration_ms,
-            'timestamp': datetime.now()
+            'timestamp': datetime.now(timezone.utc)
         }
 
         # Add to queue for async processing
@@ -172,7 +173,37 @@ class EventLogger:
         while True:
             try:
                 event_data = await self._event_queue.get()
-                self.db.add_event(event_data)
+                # Save to database
+                event_obj = self.db.add_event(event_data)
+
+                # Broadcast to WebSocket clients
+                if self.websocket_manager and event_obj:
+                    try:
+                        await self.websocket_manager.broadcast({
+                            'type': 'new_event',
+                            'event': {
+                                'id': event_obj.id,
+                                'correlation_id': event_obj.correlation_id,
+                                'category': event_obj.category,
+                                'event_type': event_obj.event_type,
+                                'severity': event_obj.severity,
+                                'host_id': event_obj.host_id,
+                                'host_name': event_obj.host_name,
+                                'container_id': event_obj.container_id,
+                                'container_name': event_obj.container_name,
+                                'title': event_obj.title,
+                                'message': event_obj.message,
+                                'old_state': event_obj.old_state,
+                                'new_state': event_obj.new_state,
+                                'triggered_by': event_obj.triggered_by,
+                                'details': event_obj.details,
+                                'duration_ms': event_obj.duration_ms,
+                                'timestamp': event_obj.timestamp.isoformat()
+                            }
+                        })
+                    except Exception as ws_error:
+                        logger.debug(f"WebSocket broadcast failed (non-critical): {ws_error}")
+
                 self._event_queue.task_done()
             except asyncio.CancelledError:
                 break
@@ -191,7 +222,20 @@ class EventLogger:
                                  triggered_by: str = "system",
                                  correlation_id: Optional[str] = None):
         """Log container state change"""
-        severity = EventSeverity.WARNING if new_state in ['exited', 'dead'] else EventSeverity.INFO
+        # Match severity with alert rule definitions
+        if triggered_by == "user":
+            # User-initiated changes are WARNING (intentional but noteworthy)
+            # except for starting containers which is INFO
+            if new_state in ['running', 'restarting']:
+                severity = EventSeverity.INFO
+            else:
+                severity = EventSeverity.WARNING
+        elif new_state in ['exited', 'dead']:
+            severity = EventSeverity.CRITICAL  # Unexpected crash
+        elif new_state in ['stopped', 'paused']:
+            severity = EventSeverity.WARNING  # Stopped but not crashed
+        else:
+            severity = EventSeverity.INFO
 
         context = EventContext(
             correlation_id=correlation_id,
@@ -201,12 +245,20 @@ class EventLogger:
             container_name=container_name
         )
 
+        # Add context to message if user-initiated
+        if triggered_by == "user":
+            title = f"Container {container_name} state changed (user action)"
+            message = f"Container '{container_name}' on host '{host_name}' state changed from {old_state} to {new_state} (user action)"
+        else:
+            title = f"Container {container_name} state changed"
+            message = f"Container '{container_name}' on host '{host_name}' state changed from {old_state} to {new_state}"
+
         self.log_event(
             category=EventCategory.CONTAINER,
             event_type=EventType.STATE_CHANGE,
-            title=f"Container {container_name} state changed",
+            title=title,
             severity=severity,
-            message=f"Container '{container_name}' on host '{host_name}' state changed from {old_state} to {new_state}",
+            message=message,
             context=context,
             old_state=old_state,
             new_state=new_state,
@@ -384,6 +436,95 @@ class EventLogger:
             message=message,
             context=context,
             details={'channel_name': channel_name, 'channel_type': channel_type, 'success': success, 'error': error_message}
+        )
+
+    def log_host_added(self,
+                      host_name: str,
+                      host_id: str,
+                      host_url: str,
+                      triggered_by: str = "user"):
+        """Log host addition"""
+        context = EventContext(
+            host_id=host_id,
+            host_name=host_name
+        )
+
+        self.log_event(
+            category=EventCategory.HOST,
+            event_type=EventType.HOST_ADDED,
+            title=f"Host {host_name} added",
+            severity=EventSeverity.INFO,
+            message=f"Docker host '{host_name}' ({host_url}) was added to monitoring",
+            context=context,
+            triggered_by=triggered_by,
+            details={'url': host_url}
+        )
+
+    def log_host_removed(self,
+                        host_name: str,
+                        host_id: str,
+                        triggered_by: str = "user"):
+        """Log host removal"""
+        context = EventContext(
+            host_id=host_id,
+            host_name=host_name
+        )
+
+        self.log_event(
+            category=EventCategory.HOST,
+            event_type=EventType.HOST_REMOVED,
+            title=f"Host {host_name} removed",
+            severity=EventSeverity.INFO,
+            message=f"Docker host '{host_name}' was removed from monitoring",
+            context=context,
+            triggered_by=triggered_by
+        )
+
+    def log_alert_rule_created(self,
+                              rule_name: str,
+                              rule_id: str,
+                              container_count: int,
+                              channels: List[str],
+                              triggered_by: str = "user"):
+        """Log alert rule creation"""
+        self.log_event(
+            category=EventCategory.ALERT,
+            event_type=EventType.RULE_CREATED,
+            title=f"Alert rule '{rule_name}' created",
+            severity=EventSeverity.INFO,
+            message=f"New alert rule '{rule_name}' created with {container_count} container(s) and {len(channels)} notification channel(s)",
+            triggered_by=triggered_by,
+            details={'rule_id': rule_id, 'container_count': container_count, 'channels': channels}
+        )
+
+    def log_alert_rule_deleted(self,
+                              rule_name: str,
+                              rule_id: str,
+                              triggered_by: str = "user"):
+        """Log alert rule deletion"""
+        self.log_event(
+            category=EventCategory.ALERT,
+            event_type=EventType.RULE_DELETED,
+            title=f"Alert rule '{rule_name}' deleted",
+            severity=EventSeverity.INFO,
+            message=f"Alert rule '{rule_name}' was deleted",
+            triggered_by=triggered_by,
+            details={'rule_id': rule_id}
+        )
+
+    def log_notification_channel_created(self,
+                                        channel_name: str,
+                                        channel_type: str,
+                                        triggered_by: str = "user"):
+        """Log notification channel creation"""
+        self.log_event(
+            category=EventCategory.NOTIFICATION,
+            event_type=EventType.CHANNEL_CREATED,
+            title=f"Notification channel '{channel_name}' created",
+            severity=EventSeverity.INFO,
+            message=f"New notification channel '{channel_name}' ({channel_type}) was created",
+            triggered_by=triggered_by,
+            details={'channel_name': channel_name, 'channel_type': channel_type}
         )
 
     def log_system_event(self,

@@ -45,9 +45,9 @@ class RateLimiter:
                 int(os.getenv('DOCKMON_RATE_VIOLATIONS_HOSTS', 8))
             ),
             "containers": (
-                int(os.getenv('DOCKMON_RATE_LIMIT_CONTAINERS', 200)),
-                int(os.getenv('DOCKMON_RATE_BURST_CONTAINERS', 40)),
-                int(os.getenv('DOCKMON_RATE_VIOLATIONS_CONTAINERS', 15))
+                int(os.getenv('DOCKMON_RATE_LIMIT_CONTAINERS', 600)),  # Increased for logs polling
+                int(os.getenv('DOCKMON_RATE_BURST_CONTAINERS', 120)),
+                int(os.getenv('DOCKMON_RATE_VIOLATIONS_CONTAINERS', 20))
             ),
             "notifications": (
                 int(os.getenv('DOCKMON_RATE_LIMIT_NOTIFICATIONS', 30)),

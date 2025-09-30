@@ -2661,7 +2661,7 @@ async function init() {
         let grid = null;
         let dashboardLocked = false;
 
-        function initDashboard() {
+        async function initDashboard() {
             console.log('initDashboard called');
 
             // Check if dashboard grid container exists
@@ -2689,14 +2689,37 @@ async function init() {
 
                 console.log('GridStack initialized successfully');
 
-                // Load saved layout or use default
-                const savedLayout = localStorage.getItem('dashboardLayout');
-                if (savedLayout) {
-                    const parsedLayout = JSON.parse(savedLayout);
-                    console.log('Loading saved dashboard layout - widgets:', parsedLayout.map(w => w.id));
-                    loadDashboardLayout(parsedLayout);
-                } else {
-                    console.log('Creating default dashboard layout');
+                // Load saved layout from API or use default
+                try {
+                    const response = await fetch('/api/user/dashboard-layout', {
+                        method: 'GET',
+                        credentials: 'include'
+                    });
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (data.layout) {
+                            try {
+                                const parsedLayout = JSON.parse(data.layout);
+                                console.log('Loading saved dashboard layout from API - widgets:', parsedLayout.map(w => w.id));
+                                loadDashboardLayout(parsedLayout);
+                            } catch (parseError) {
+                                console.error('Failed to parse dashboard layout JSON:', parseError);
+                                showToast('⚠️ Dashboard layout corrupted - using default', 'error');
+                                createDefaultDashboard();
+                            }
+                        } else {
+                            console.log('No saved layout in API - creating default dashboard layout');
+                            createDefaultDashboard();
+                        }
+                    } else {
+                        console.error('Failed to load dashboard layout from API:', response.status);
+                        showToast('⚠️ Failed to load dashboard layout - using default', 'error');
+                        createDefaultDashboard();
+                    }
+                } catch (error) {
+                    console.error('Error loading dashboard layout:', error);
+                    showToast('⚠️ Failed to load dashboard layout - using default', 'error');
                     createDefaultDashboard();
                 }
 
@@ -2728,15 +2751,8 @@ async function init() {
         }
 
         function createHostWidgets() {
-            // Load saved layout to check for existing positions
-            const savedLayout = localStorage.getItem('dashboardLayout');
+            // Layout is loaded from API on startup, no need to check localStorage
             const layoutMap = {};
-            if (savedLayout) {
-                const layout = JSON.parse(savedLayout);
-                layout.forEach(item => {
-                    layoutMap[item.id] = item;
-                });
-            }
 
             // Get current host widget IDs
             const currentHostWidgetIds = hosts.map(host => `host-${host.id}`);
@@ -2786,16 +2802,13 @@ async function init() {
                 }
             });
 
-            console.log(`Column positions after scanning existing widgets: left=${leftColumnY}, right=${rightColumnY}`);
-
             hosts.forEach((host, index) => {
                 const widgetId = `host-${host.id}`;
 
                 // Check if widget already exists
                 const existingWidget = document.querySelector(`[data-widget-id="${widgetId}"]`);
                 if (existingWidget) {
-                    console.log(`Widget ${widgetId} already exists - skipping creation`);
-                    return;
+                    return; // Skip silently - widget already exists
                 }
                 console.log(`Creating new widget ${widgetId}`);
 
@@ -2880,36 +2893,57 @@ async function init() {
         }
 
         function renderDashboardWidgets() {
-            console.log('Rendering dashboard widgets - hosts:', hosts.length, 'containers:', containers.length);
-
-            // Update host widgets if hosts have changed
+            // Check if we need to create/remove host widgets (hosts added or removed)
             if (grid) {
-                createHostWidgets();
+                const existingHostWidgets = grid.getGridItems().filter(item =>
+                    item.getAttribute('data-widget-id')?.startsWith('host-')
+                );
+
+                // Only call createHostWidgets if host count changed
+                if (existingHostWidgets.length !== hosts.length) {
+                    createHostWidgets();
+                }
             }
 
-            // Render stats widget - simplified layout without icons
+            // Render stats widget - only update values, not rebuild HTML
             const statsWidget = document.getElementById('widget-stats');
             if (statsWidget) {
-                statsWidget.innerHTML = `
-                    <div class="stats-grid">
-                        <div class="stat-card">
-                            <div class="stat-label">Total Hosts</div>
-                            <div class="stat-value">${hosts.length}</div>
+                // Check if stats grid exists, create if not
+                let statsGrid = statsWidget.querySelector('.stats-grid');
+                if (!statsGrid) {
+                    statsWidget.innerHTML = `
+                        <div class="stats-grid">
+                            <div class="stat-card">
+                                <div class="stat-label">Total Hosts</div>
+                                <div class="stat-value" data-stat="hosts">0</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-label">Total Containers</div>
+                                <div class="stat-value" data-stat="containers">0</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-label">Running</div>
+                                <div class="stat-value" data-stat="running">0</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-label">Alert Rules</div>
+                                <div class="stat-value" data-stat="alerts">0</div>
+                            </div>
                         </div>
-                        <div class="stat-card">
-                            <div class="stat-label">Total Containers</div>
-                            <div class="stat-value">${containers.length}</div>
-                        </div>
-                        <div class="stat-card">
-                            <div class="stat-label">Running</div>
-                            <div class="stat-value">${containers.filter(c => c.state === 'running').length}</div>
-                        </div>
-                        <div class="stat-card">
-                            <div class="stat-label">Alert Rules</div>
-                            <div class="stat-value">${alertRules.length}</div>
-                        </div>
-                    </div>
-                `;
+                    `;
+                    statsGrid = statsWidget.querySelector('.stats-grid');
+                }
+
+                // Update only the values
+                const hostsValue = statsWidget.querySelector('[data-stat="hosts"]');
+                const containersValue = statsWidget.querySelector('[data-stat="containers"]');
+                const runningValue = statsWidget.querySelector('[data-stat="running"]');
+                const alertsValue = statsWidget.querySelector('[data-stat="alerts"]');
+
+                if (hostsValue) hostsValue.textContent = hosts.length;
+                if (containersValue) containersValue.textContent = containers.length;
+                if (runningValue) runningValue.textContent = containers.filter(c => c.state === 'running').length;
+                if (alertsValue) alertsValue.textContent = alertRules.length;
             }
 
             // Render individual host widgets
@@ -2976,32 +3010,27 @@ async function init() {
             }
         }
 
-        function saveDashboardLayout() {
+        async function saveDashboardLayout() {
             const layout = grid.save(false);
             const gridItems = grid.getGridItems();
 
             // Create a map of grid items by their grid position to ensure correct mapping
-            const layoutWithIds = layout.map((item) => {
-                // Find the grid item that matches this layout position
-                const element = gridItems.find(gridItem => {
-                    const gridData = gridItem.gridstackNode;
-                    return gridData && gridData.x === item.x && gridData.y === item.y && gridData.w === item.w && gridData.h === item.h;
-                });
+            const layoutWithIds = [];
 
-                if (element) {
-                    return {
-                        id: element.getAttribute('data-widget-id'),
-                        x: item.x,
-                        y: item.y,
-                        w: item.w,
-                        h: item.h
-                    };
+            for (const gridItem of gridItems) {
+                const widgetId = gridItem.getAttribute('data-widget-id');
+                const gridData = gridItem.gridstackNode;
+
+                if (widgetId && gridData) {
+                    layoutWithIds.push({
+                        id: widgetId,
+                        x: gridData.x,
+                        y: gridData.y,
+                        w: gridData.w,
+                        h: gridData.h
+                    });
                 }
-
-                // Fallback: if we can't find by position, log error and skip
-                console.error('Could not find grid element for layout item:', item);
-                return null;
-            }).filter(Boolean); // Remove null entries
+            }
 
             // Ensure stats widget is always in the saved layout
             const hasStatsWidget = layoutWithIds.some(item => item.id === 'stats');
@@ -3016,8 +3045,25 @@ async function init() {
                 });
             }
 
-            localStorage.setItem('dashboardLayout', JSON.stringify(layoutWithIds));
-            console.log('Saved layout:', layoutWithIds.map(w => `${w.id} (${w.x},${w.y}) h=${w.h}`));
+            console.log('Saving layout:', layoutWithIds.map(w => `${w.id} (${w.x},${w.y}) h=${w.h}`));
+
+            // Save to API
+            try {
+                const response = await fetch('/api/user/dashboard-layout', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ layout: JSON.stringify(layoutWithIds) })
+                });
+
+                if (!response.ok) {
+                    console.error('Failed to save dashboard layout to API:', response.status);
+                    showToast('⚠️ Failed to save dashboard layout', 'error');
+                }
+            } catch (error) {
+                console.error('Error saving dashboard layout:', error);
+                showToast('⚠️ Failed to save dashboard layout', 'error');
+            }
         }
 
         function loadDashboardLayout(layout) {
@@ -3078,19 +3124,34 @@ async function init() {
             return configs[id];
         }
 
-        function resetDashboardLayout() {
-            // Try to load the last saved layout, or use default if none exists
-            const savedLayout = localStorage.getItem('dashboardLayout');
-            if (savedLayout) {
-                // Revert to last saved layout
-                grid.removeAll();
-                loadDashboardLayout(JSON.parse(savedLayout));
-                showToast('🔄 Dashboard layout reset to last saved state');
-            } else {
-                // No saved layout, use default
-                grid.removeAll();
-                createDefaultDashboard();
-                showToast('🔄 Dashboard layout reset to default');
+        async function resetDashboardLayout() {
+            // Reload the saved layout from API, or use default if none exists
+            try {
+                const response = await fetch('/api/user/dashboard-layout', {
+                    method: 'GET',
+                    credentials: 'include'
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.layout) {
+                        // Revert to last saved layout
+                        grid.removeAll();
+                        loadDashboardLayout(JSON.parse(data.layout));
+                        showToast('🔄 Dashboard layout reset to last saved state');
+                    } else {
+                        // No saved layout, use default
+                        grid.removeAll();
+                        createDefaultDashboard();
+                        showToast('🔄 Dashboard layout reset to default');
+                    }
+                } else {
+                    console.error('Failed to load dashboard layout from API:', response.status);
+                    showToast('⚠️ Failed to load dashboard layout', 'error');
+                }
+            } catch (error) {
+                console.error('Error loading dashboard layout:', error);
+                showToast('⚠️ Failed to load dashboard layout', 'error');
             }
         }
 

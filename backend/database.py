@@ -28,6 +28,7 @@ class User(Base):
     password_hash = Column(String, nullable=False)
     is_first_login = Column(Boolean, default=True)
     must_change_password = Column(Boolean, default=False)
+    dashboard_layout = Column(Text, nullable=True)  # JSON string of GridStack layout
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
     last_login = Column(DateTime, nullable=True)
@@ -886,3 +887,22 @@ class DatabaseManager:
         with self.get_session() as session:
             users = session.query(User.username).all()
             return [u[0] for u in users]
+
+    def get_dashboard_layout(self, username: str) -> Optional[str]:
+        """Get dashboard layout for a user"""
+        with self.get_session() as session:
+            user = session.query(User).filter(User.username == username).first()
+            if user:
+                return user.dashboard_layout
+            return None
+
+    def save_dashboard_layout(self, username: str, layout: str) -> bool:
+        """Save dashboard layout for a user"""
+        with self.get_session() as session:
+            user = session.query(User).filter(User.username == username).first()
+            if user:
+                user.dashboard_layout = layout
+                user.updated_at = datetime.now()
+                session.commit()
+                return True
+            return False

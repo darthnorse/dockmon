@@ -1,6 +1,6 @@
 
 # Claude Development Context and Internal Files
-# CLAUDE_CONTEXT.md  # Commented out to allow committing context file
+CLAUDE_CONTEXT.md
 BASELINE_STATUS.md
 
 # Wiki Content (lives in wiki repo, not main repo)

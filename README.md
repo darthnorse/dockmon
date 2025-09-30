@@ -22,21 +22,6 @@ A comprehensive Docker container monitoring and management platform with real-ti
 - **Secure by Design** - Session-based auth, rate limiting, mTLS for remote hosts
 - **Mobile-Friendly** - Responsive design that works seamlessly on all devices
 
-## Quick Start
-
-```bash
-git clone https://github.com/darthnorse/dockmon.git
-cd dockmon
-docker compose up -d
-```
-
-**Access:** `https://localhost:8001`
-**Login:** `admin` / `dockmon123` (⚠️ **Change immediately on first login**)
-
-> **Note:** You'll see a certificate warning (self-signed cert) - this is normal and safe. Click "Advanced" → "Proceed to localhost"
-
-DockMon automatically configures local Docker monitoring on first run. No manual setup needed!
-
 ## Documentation
 
 - **[Complete User Guide](https://github.com/darthnorse/dockmon/wiki)** - Full documentation
@@ -48,33 +33,6 @@ DockMon automatically configures local Docker monitoring on first run. No manual
 - **[API Reference](https://github.com/darthnorse/dockmon/wiki/API-Reference)** - REST and WebSocket APIs
 - **[FAQ](https://github.com/darthnorse/dockmon/wiki/FAQ)** - Frequently asked questions
 - **[Troubleshooting](https://github.com/darthnorse/dockmon/wiki/Troubleshooting)** - Common issues
-
-## Screenshots
-
-<details>
-<summary>Click to expand screenshots</summary>
-
-### Dashboard Overview
-Real-time monitoring of multiple Docker hosts with container status and auto-restart controls.
-
-![Dashboard](screenshots/dashboard.png)
-
-### Host Management
-Manage multiple Docker hosts with connection status monitoring.
-
-![Host Management](screenshots/host_list.png)
-
-### Alert Rules & Notifications
-Flexible alert system with multiple notification channels.
-
-![Alerts](screenshots/alerts.png)
-
-### Blackout Windows
-Schedule quiet hours to suppress notifications during maintenance.
-
-![Blackout Windows](screenshots/blackout_window.png)
-
-</details>
 
 ## Use Cases
 

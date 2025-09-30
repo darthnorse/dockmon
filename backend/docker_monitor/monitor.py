@@ -372,8 +372,25 @@ class DockerMonitor:
             raise HTTPException(status_code=400, detail=str(e))
 
         try:
-            # Validate certificates if provided (before trying to use them)
-            if config.tls_cert or config.tls_key or config.tls_ca:
+            # Get existing host from database to check if we need to preserve certificates
+            existing_host = self.db.get_host(host_id)
+            if not existing_host:
+                raise HTTPException(status_code=404, detail=f"Host {host_id} not found")
+
+            # If certificates are not provided in the update, use existing ones
+            # This allows updating just the name without providing certificates again
+            if not config.tls_cert and existing_host.tls_cert:
+                config.tls_cert = existing_host.tls_cert
+            if not config.tls_key and existing_host.tls_key:
+                config.tls_key = existing_host.tls_key
+            if not config.tls_ca and existing_host.tls_ca:
+                config.tls_ca = existing_host.tls_ca
+
+            # Only validate certificates if NEW ones are provided (not using existing)
+            # Check if any NEW certificate data was actually sent in the request
+            if (config.tls_cert and config.tls_cert != existing_host.tls_cert) or \
+               (config.tls_key and config.tls_key != existing_host.tls_key) or \
+               (config.tls_ca and config.tls_ca != existing_host.tls_ca):
                 self._validate_certificates(config)
 
             # Remove the existing host from memory first

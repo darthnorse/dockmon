@@ -170,7 +170,17 @@ fi
 if [ -z "$CUSTOM_CERT_DIR" ]; then
     case $SYSTEM_TYPE in
         unraid)
-            CERT_DIR="/boot/config/docker-tls"
+            # Check for existing certificates in both new and legacy locations
+            if [ -f "/boot/config/docker-tls/ca.pem" ] && [ -f "/boot/config/docker-tls/client-cert.pem" ]; then
+                CERT_DIR="/boot/config/docker-tls"
+                UNRAID_EXISTING_CERTS=true
+            elif [ -f "/boot/config/docker/certs/ca.pem" ] && [ -f "/boot/config/docker/certs/client-cert.pem" ]; then
+                CERT_DIR="/boot/config/docker/certs"
+                UNRAID_EXISTING_CERTS=true
+            else
+                CERT_DIR="/boot/config/docker-tls"
+                UNRAID_EXISTING_CERTS=false
+            fi
             ;;
         synology)
             CERT_DIR="/volume1/docker/certs"
@@ -288,6 +298,18 @@ case $SYSTEM_TYPE in
     unraid)
         print_system "Configuring for unRAID..."
 
+        if [ "$UNRAID_EXISTING_CERTS" = true ]; then
+            print_info "==================================="
+            print_info "Existing Certificates Found!"
+            print_info "==================================="
+            echo ""
+            print_info "Found existing Docker TLS certificates in: $CERT_DIR"
+            echo ""
+            print_warn "unRAID 7.x automatically generates Docker TLS certificates on fresh installs."
+            print_warn "You can use these existing certificates instead of generating new ones."
+            echo ""
+        fi
+
         # Create Docker daemon configuration for unRAID
         cat > "$CERT_DIR/docker-daemon.json" <<EOF
 {
@@ -325,6 +347,18 @@ EOF
         echo ""
         print_warn "NOTE: Certificates are stored in $CERT_DIR which persists across reboots"
         print_warn "NOTE: The configuration in /boot/config/docker.cfg persists across reboots"
+
+        if [ "$UNRAID_EXISTING_CERTS" = true ]; then
+            echo ""
+            print_info "==================================="
+            print_info "Certificate Locations:"
+            print_info "==================================="
+            echo ""
+            echo "unRAID 7.x (fresh install):    /boot/config/docker-tls/"
+            echo "unRAID 6.x (upgraded system):  /boot/config/docker/certs/"
+            echo ""
+            echo "Your certificates are located in: $CERT_DIR"
+        fi
         ;;
 
     synology)

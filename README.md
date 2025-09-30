@@ -12,17 +12,17 @@ A comprehensive Docker container monitoring and management platform with real-ti
   <img src="screenshots/dashboard.png" alt="DockMon Dashboard" width="800">
 </p>
 
-## ✨ Key Features
+## Key Features
 
-- 🐳 **Multi-Host Monitoring** - Monitor containers across unlimited Docker hosts (local and remote)
-- 🔄 **Intelligent Auto-Restart** - Per-container auto-restart with configurable retry logic
-- 🚨 **Advanced Alerting** - Discord, Slack, Telegram, Pushover with customizable templates
-- 📊 **Real-Time Dashboard** - Drag-and-drop customizable widgets with WebSocket updates
-- 📝 **Event Logging** - Comprehensive audit trail of all container and system events
-- 🔒 **Secure by Design** - Session-based auth, rate limiting, mTLS for remote hosts
-- 📱 **Mobile-Friendly** - Responsive design that works seamlessly on all devices
+- **Multi-Host Monitoring** - Monitor containers across unlimited Docker hosts (local and remote)
+- **Intelligent Auto-Restart** - Per-container auto-restart with configurable retry logic
+- **Advanced Alerting** - Discord, Slack, Telegram, Pushover with customizable templates
+- **Real-Time Dashboard** - Drag-and-drop customizable widgets with WebSocket updates
+- **Event Logging** - Comprehensive audit trail of all container and system events
+- **Secure by Design** - Session-based auth, rate limiting, mTLS for remote hosts
+- **Mobile-Friendly** - Responsive design that works seamlessly on all devices
 
-## 🚀 Quick Start
+## Quick Start
 
 ```bash
 git clone https://github.com/darthnorse/dockmon.git
@@ -37,19 +37,19 @@ docker compose up -d
 
 DockMon automatically configures local Docker monitoring on first run. No manual setup needed!
 
-## 📖 Documentation
+## Documentation
 
-- **[📘 Complete User Guide](https://github.com/darthnorse/dockmon/wiki)** - Full documentation
-- **[🚀 Quick Start](https://github.com/darthnorse/dockmon/wiki/Quick-Start)** - Get started in 5 minutes
-- **[⚙️ Installation](https://github.com/darthnorse/dockmon/wiki/Installation)** - Docker, unRAID, Synology, QNAP
-- **[🔧 Configuration](https://github.com/darthnorse/dockmon/wiki/Notifications)** - Alerts, notifications, settings
-- **[🔐 Security](https://github.com/darthnorse/dockmon/wiki/Security-Guide)** - Best practices and mTLS setup
-- **[🌐 Remote Monitoring](https://github.com/darthnorse/dockmon/wiki/Remote-Docker-Setup)** - Monitor remote Docker hosts
-- **[🚀 API Reference](https://github.com/darthnorse/dockmon/wiki/API-Reference)** - REST and WebSocket APIs
-- **[❓ FAQ](https://github.com/darthnorse/dockmon/wiki/FAQ)** - Frequently asked questions
-- **[🐛 Troubleshooting](https://github.com/darthnorse/dockmon/wiki/Troubleshooting)** - Common issues
+- **[Complete User Guide](https://github.com/darthnorse/dockmon/wiki)** - Full documentation
+- **[Quick Start](https://github.com/darthnorse/dockmon/wiki/Quick-Start)** - Get started in 5 minutes
+- **[Installation](https://github.com/darthnorse/dockmon/wiki/Installation)** - Docker, unRAID, Synology, QNAP
+- **[Configuration](https://github.com/darthnorse/dockmon/wiki/Notifications)** - Alerts, notifications, settings
+- **[Security](https://github.com/darthnorse/dockmon/wiki/Security-Guide)** - Best practices and mTLS setup
+- **[Remote Monitoring](https://github.com/darthnorse/dockmon/wiki/Remote-Docker-Setup)** - Monitor remote Docker hosts
+- **[API Reference](https://github.com/darthnorse/dockmon/wiki/API-Reference)** - REST and WebSocket APIs
+- **[FAQ](https://github.com/darthnorse/dockmon/wiki/FAQ)** - Frequently asked questions
+- **[Troubleshooting](https://github.com/darthnorse/dockmon/wiki/Troubleshooting)** - Common issues
 
-## 📸 Screenshots
+## Screenshots
 
 <details>
 <summary>Click to expand screenshots</summary>
@@ -76,7 +76,7 @@ Schedule quiet hours to suppress notifications during maintenance.
 
 </details>
 
-## 🎯 Use Cases
+## Use Cases
 
 ### Home Lab
 - Monitor all your Docker containers in one place
@@ -96,16 +96,16 @@ Schedule quiet hours to suppress notifications during maintenance.
 - Test notifications before deploying to production
 - Share monitoring dashboard with team
 
-## 🆘 Support & Community
+## Support & Community
 
-- 🐛 **[Report Issues](https://github.com/darthnorse/dockmon/issues)** - Found a bug?
-- 💬 **[Discussions](https://github.com/darthnorse/dockmon/discussions)** - Ask questions, share ideas
-- 📖 **[Wiki](https://github.com/darthnorse/dockmon/wiki)** - Complete documentation
-- ⭐ **[Star on GitHub](https://github.com/darthnorse/dockmon)** - Show your support!
+- **[Report Issues](https://github.com/darthnorse/dockmon/issues)** - Found a bug?
+- **[Discussions](https://github.com/darthnorse/dockmon/discussions)** - Ask questions, share ideas
+- **[Wiki](https://github.com/darthnorse/dockmon/wiki)** - Complete documentation
+- **[Star on GitHub](https://github.com/darthnorse/dockmon)** - Show your support!
 
-## 🗺️ Roadmap
+## Roadmap
 
-### ✅ Completed (v1.0)
+### Completed (v1.0)
 - [x] Full backend API with FastAPI
 - [x] WebSocket real-time updates
 - [x] Multi-channel notifications
@@ -113,7 +113,7 @@ Schedule quiet hours to suppress notifications during maintenance.
 - [x] Drag-and-drop dashboard
 - [x] Auto-restart with retry logic
 
-### 🔮 Planned (v1.1+)
+### Planned (v1.1+)
 - [ ] Performance metrics dashboard (CPU, memory, network graphs)
 - [ ] Container health checks
 - [ ] Log analysis and search
@@ -122,16 +122,16 @@ Schedule quiet hours to suppress notifications during maintenance.
 
 See the [full roadmap](https://github.com/darthnorse/dockmon/wiki/Roadmap) for details.
 
-## 🤝 Contributing
+## Contributing
 
 Contributions are welcome! Here's how you can help:
 
-- 🐛 Report bugs via [GitHub Issues](https://github.com/darthnorse/dockmon/issues)
-- 💡 Suggest features in [Discussions](https://github.com/darthnorse/dockmon/discussions)
-- 📝 Improve documentation (edit the [Wiki](https://github.com/darthnorse/dockmon/wiki))
-- 🔧 Submit pull requests (see [Contributing Guide](https://github.com/darthnorse/dockmon/wiki/Contributing))
+- Report bugs via [GitHub Issues](https://github.com/darthnorse/dockmon/issues)
+- Suggest features in [Discussions](https://github.com/darthnorse/dockmon/discussions)
+- Improve documentation (edit the [Wiki](https://github.com/darthnorse/dockmon/wiki))
+- Submit pull requests (see [Contributing Guide](https://github.com/darthnorse/dockmon/wiki/Contributing))
 
-## 💻 Development
+## Development
 
 Want to contribute code or run DockMon in development mode?
 
@@ -141,22 +141,22 @@ See [Development Setup](https://github.com/darthnorse/dockmon/wiki/Development-S
 - Running tests
 - Building from source
 
-## 📄 License
+## License
 
 MIT License - see [LICENSE](LICENSE) file for details.
 
-## 👨‍💻 Author
+## Author
 
 Created by [darthnorse](https://github.com/darthnorse)
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 This project has been developed with **vibe coding** and **AI assistance** using Claude Code. The codebase includes clean, well-documented code with proper error handling, comprehensive testing considerations, modern async/await patterns, robust database design, and production-ready deployment configurations.
 
 ---
 
 <p align="center">
-  ⭐ <strong>If DockMon helps you, please consider giving it a star!</strong> ⭐
+  <strong>If DockMon helps you, please consider giving it a star!</strong>
 </p>
 
 <p align="center">

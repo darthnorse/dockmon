@@ -1726,6 +1726,7 @@ async function init() {
                 containerPattern = '.*';
                 hostId = null;
                 // Don't use container+host pairs for "all containers"
+                containerHostPairs = []; // Clear any previously selected containers
             } else {
                 // Get selected containers with their host IDs
                 document.querySelectorAll('#containerSelectionCheckboxes input[type="checkbox"]:checked').forEach(cb => {

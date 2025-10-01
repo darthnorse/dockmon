@@ -525,11 +525,15 @@ async def update_alert_rule(rule_id: str, updates: AlertRuleUpdate, authenticate
                 if k in ['trigger_events', 'trigger_states'] and isinstance(v, list) and len(v) == 0:
                     update_data[k] = None
                 # Handle containers field separately
-                elif k == 'containers' and v is not None:
+                elif k == 'containers':
                     # v is already a list of dicts after .dict() call
+                    # Include it even if None to clear the containers (set to "all containers")
                     update_data[k] = v
                 else:
                     update_data[k] = v
+            elif k == 'containers':
+                # Explicitly handle containers=None to clear specific container selection
+                update_data[k] = None
 
         # Validate that at least one trigger type remains after update
         if 'trigger_events' in update_data or 'trigger_states' in update_data:

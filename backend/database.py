@@ -591,7 +591,8 @@ class DatabaseManager:
             from sqlalchemy.orm import joinedload
             rule = session.query(AlertRuleDB).options(joinedload(AlertRuleDB.containers)).filter(AlertRuleDB.id == rule_id).first()
             if rule:
-                # Extract containers list if present
+                # Check if containers field is present before extracting it
+                has_containers_update = 'containers' in updates
                 containers_data = updates.pop('containers', None)
 
                 # Update rule fields
@@ -599,21 +600,23 @@ class DatabaseManager:
                     setattr(rule, key, value)
                 rule.updated_at = datetime.now()
 
-                # Update container+host pairs if provided
-                if containers_data is not None:
+                # Update container+host pairs if containers field was explicitly provided
+                # (could be None for "all containers", empty list, or list with specific containers)
+                if has_containers_update:
                     # Delete existing container pairs
                     session.query(AlertRuleContainer).filter(
                         AlertRuleContainer.alert_rule_id == rule_id
                     ).delete()
 
-                    # Add new container pairs
-                    for container in containers_data:
-                        container_pair = AlertRuleContainer(
-                            alert_rule_id=rule_id,
-                            host_id=container['host_id'],
-                            container_name=container['container_name']
-                        )
-                        session.add(container_pair)
+                    # Add new container pairs (if containers_data is None or empty, no new pairs are added)
+                    if containers_data:
+                        for container in containers_data:
+                            container_pair = AlertRuleContainer(
+                                alert_rule_id=rule_id,
+                                host_id=container['host_id'],
+                                container_name=container['container_name']
+                            )
+                            session.add(container_pair)
 
                 session.commit()
                 session.refresh(rule)

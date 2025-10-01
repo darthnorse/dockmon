@@ -13,7 +13,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Default values
-DAYS_VALID=365
+DAYS_VALID=3650
 HOST_NAME=""
 HOST_IP=""
 SYSTEM_TYPE="unknown"
@@ -293,135 +293,38 @@ chmod 444 *.pem
 print_info "Certificates generated successfully!"
 echo ""
 
-# System-specific configuration
+# System-specific setup
 case $SYSTEM_TYPE in
     unraid)
         print_system "Configuring for unRAID..."
 
         if [ "$UNRAID_EXISTING_CERTS" = true ]; then
-            print_info "==================================="
-            print_info "Existing Certificates Found!"
-            print_info "==================================="
-            echo ""
             print_info "Found existing Docker TLS certificates in: $CERT_DIR"
+            print_warn "unRAID 7.x automatically generates Docker TLS certificates on fresh installs"
+            print_warn "You can use these existing certificates instead of generating new ones"
             echo ""
-            print_warn "unRAID 7.x automatically generates Docker TLS certificates on fresh installs."
-            print_warn "You can use these existing certificates instead of generating new ones."
-            echo ""
-        fi
-
-        # Create Docker daemon configuration for unRAID
-        cat > "$CERT_DIR/docker-daemon.json" <<EOF
-{
-    "hosts": ["unix:///var/run/docker.sock", "tcp://0.0.0.0:2376"],
-    "tls": true,
-    "tlsverify": true,
-    "tlscacert": "$CERT_DIR/ca.pem",
-    "tlscert": "$CERT_DIR/server-cert.pem",
-    "tlskey": "$CERT_DIR/server-key.pem"
-}
-EOF
-
-        print_info "==================================="
-        print_info "unRAID Configuration Instructions:"
-        print_info "==================================="
-        echo ""
-        echo "To enable Docker remote access with TLS on unRAID:"
-        echo ""
-        echo "1. Stop Docker service:"
-        echo "   - Via Web UI: Settings → Docker → Set 'Enable Docker' to No → Apply"
-        echo "   - Via SSH: /etc/rc.d/rc.docker stop"
-        echo ""
-        echo "2. Edit /boot/config/docker.cfg via SSH:"
-        echo "   nano /boot/config/docker.cfg"
-        echo ""
-        echo "3. Add or update the DOCKER_OPTS line:"
-        echo "   DOCKER_OPTS=\"-H unix:///var/run/docker.sock -H tcp://0.0.0.0:2376 --tlsverify --tlscacert=$CERT_DIR/ca.pem --tlscert=$CERT_DIR/server-cert.pem --tlskey=$CERT_DIR/server-key.pem\""
-        echo ""
-        echo "4. Start Docker service:"
-        echo "   - Via Web UI: Settings → Docker → Set 'Enable Docker' to Yes → Apply"
-        echo "   - Via SSH: /etc/rc.d/rc.docker start"
-        echo ""
-        echo "5. Verify Docker is listening on port 2376:"
-        echo "   netstat -tlnp | grep 2376"
-        echo ""
-        print_warn "NOTE: Certificates are stored in $CERT_DIR which persists across reboots"
-        print_warn "NOTE: The configuration in /boot/config/docker.cfg persists across reboots"
-
-        if [ "$UNRAID_EXISTING_CERTS" = true ]; then
-            echo ""
-            print_info "==================================="
-            print_info "Certificate Locations:"
-            print_info "==================================="
-            echo ""
-            echo "unRAID 7.x (fresh install):    /boot/config/docker-tls/"
-            echo "unRAID 6.x (upgraded system):  /boot/config/docker/certs/"
-            echo ""
-            echo "Your certificates are located in: $CERT_DIR"
         fi
         ;;
 
     synology)
         print_system "Configuring for Synology NAS..."
-        print_warn "NOTE: These instructions are UNTESTED - proceed at your own risk"
-
-        print_info "==================================="
-        print_info "Synology Configuration Instructions (UNTESTED):"
-        print_info "==================================="
-        echo ""
-        echo "1. Open Synology DSM Web UI"
-        echo "2. Go to Package Center → Docker"
-        echo "3. Stop Docker package"
-        echo "4. SSH into your Synology and run:"
-        echo "   sudo vi /var/packages/Docker/etc/dockerd.json"
-        echo "5. Add the following configuration:"
-        echo '   {'
-        echo '     "hosts": ["unix:///var/run/docker.sock", "tcp://0.0.0.0:2376"],'
-        echo '     "tls": true,'
-        echo '     "tlsverify": true,'
-        echo "     \"tlscacert\": \"$CERT_DIR/ca.pem\","
-        echo "     \"tlscert\": \"$CERT_DIR/server-cert.pem\","
-        echo "     \"tlskey\": \"$CERT_DIR/server-key.pem\""
-        echo '   }'
-        echo "6. Start Docker package from Package Center"
+        print_warn "NOTE: Synology support is UNTESTED - proceed at your own risk"
         ;;
 
     qnap)
         print_system "Configuring for QNAP NAS..."
-        print_warn "NOTE: These instructions are UNTESTED - proceed at your own risk"
-
-        print_info "==================================="
-        print_info "QNAP Configuration Instructions (UNTESTED):"
-        print_info "==================================="
-        echo ""
-        echo "QNAP configuration varies by Container Station version."
-        echo "Please consult QNAP documentation for Docker daemon configuration."
-        echo ""
-        echo "Certificates have been generated in: $CERT_DIR"
-        echo ""
-        print_warn "Manual configuration required through Container Station"
+        print_warn "NOTE: QNAP support is UNTESTED - proceed at your own risk"
         ;;
 
     truenas)
         print_system "Configuring for TrueNAS..."
-        print_warn "NOTE: These instructions are UNTESTED - proceed at your own risk"
-
-        print_info "==================================="
-        print_info "TrueNAS Configuration Instructions (UNTESTED):"
-        print_info "==================================="
-        echo ""
-        echo "TrueNAS configuration varies by version."
-        echo "Please consult TrueNAS documentation for Docker daemon configuration."
-        echo ""
-        echo "Certificates have been generated in: $CERT_DIR"
-        echo ""
-        print_warn "Manual configuration required through TrueNAS Web UI"
+        print_warn "NOTE: TrueNAS support is UNTESTED - proceed at your own risk"
         ;;
 
     systemd)
         print_system "Configuring for systemd-based Linux..."
 
-        # Generate systemd override
+        # Generate systemd override with correct paths for /etc/docker/certs
         OVERRIDE_FILE="$CERT_DIR/docker-override.conf"
         cat > "$OVERRIDE_FILE" <<EOF
 [Service]
@@ -430,46 +333,18 @@ ExecStart=/usr/bin/dockerd \\
     -H unix:///var/run/docker.sock \\
     -H tcp://0.0.0.0:2376 \\
     --tlsverify \\
-    --tlscacert=$CERT_DIR/ca.pem \\
-    --tlscert=$CERT_DIR/server-cert.pem \\
-    --tlskey=$CERT_DIR/server-key.pem
+    --tlscacert=/etc/docker/certs/ca.pem \\
+    --tlscert=/etc/docker/certs/server-cert.pem \\
+    --tlskey=/etc/docker/certs/server-key.pem
 EOF
-
-        print_info "==================================="
-        print_info "SystemD Configuration Instructions:"
-        print_info "==================================="
-        echo ""
-        echo "1. Copy certificates to system directory:"
-        echo "   sudo mkdir -p /etc/docker/certs"
-        echo "   sudo cp $CERT_DIR/{ca.pem,server-cert.pem,server-key.pem} /etc/docker/certs/"
-        echo "   sudo chmod 400 /etc/docker/certs/*-key.pem"
-        echo ""
-        echo "2. Configure Docker daemon:"
-        echo "   sudo mkdir -p /etc/systemd/system/docker.service.d/"
-        echo "   sudo cp $CERT_DIR/docker-override.conf /etc/systemd/system/docker.service.d/override.conf"
-        echo ""
-        echo "3. Restart Docker:"
-        echo "   sudo systemctl daemon-reload"
-        echo "   sudo systemctl restart docker"
         ;;
 
     *)
         print_warn "Manual configuration required for $SYSTEM_TYPE"
-        print_info "Generic configuration files have been created."
+        print_info "Generic configuration files have been created"
         ;;
 esac
 
-echo ""
-print_info "==================================="
-print_info "Testing & Connection Instructions:"
-print_info "==================================="
-echo ""
-echo "Test the mTLS connection:"
-echo "  docker --tlsverify \\"
-echo "    --tlscacert=$CERT_DIR/ca.pem \\"
-echo "    --tlscert=$CERT_DIR/client-cert.pem \\"
-echo "    --tlskey=$CERT_DIR/client-key.pem \\"
-echo "    -H=tcp://$HOST_IP:2376 version"
 echo ""
 echo "========================================"
 echo "ADD HOST TO DOCKMON"
@@ -501,7 +376,7 @@ echo ""
 print_warn "IMPORTANT: Keep the private keys (*-key.pem) secure!"
 print_warn "Never commit certificates to version control!"
 
-# Offer to test the connection if Docker is available
+# Offer to configure Docker automatically if available
 if [ "$SYSTEM_TYPE" != "manual" ] && command -v docker &> /dev/null; then
     echo ""
     read -p "Do you want to configure Docker for mTLS now? (y/N): " -n 1 -r
@@ -514,6 +389,27 @@ if [ "$SYSTEM_TYPE" != "manual" ] && command -v docker &> /dev/null; then
                 ;;
             systemd)
                 print_info "Configuring Docker daemon..."
+
+                # Check if override.conf already exists and warn user
+                if [ -f /etc/systemd/system/docker.service.d/override.conf ]; then
+                    echo ""
+                    print_warn "Existing Docker daemon override configuration found!"
+                    echo ""
+                    echo "Current configuration:"
+                    sudo cat /etc/systemd/system/docker.service.d/override.conf | head -15
+                    echo ""
+                    read -p "This will be REPLACED with mTLS configuration. Continue? (y/N): " -n 1 -r
+                    echo ""
+                    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                        print_info "Configuration cancelled. Manual setup instructions available by re-running and selecting 'N'"
+                        exit 0
+                    fi
+
+                    BACKUP_FILE="/etc/systemd/system/docker.service.d/override.conf.backup-$(date +%Y%m%d-%H%M%S)"
+                    sudo cp /etc/systemd/system/docker.service.d/override.conf "$BACKUP_FILE"
+                    print_info "Backed up existing override.conf to: $BACKUP_FILE"
+                fi
+
                 sudo mkdir -p /etc/docker/certs
                 sudo cp "$CERT_DIR"/{ca.pem,server-cert.pem,server-key.pem} /etc/docker/certs/
                 sudo chmod 400 /etc/docker/certs/*-key.pem
@@ -545,12 +441,111 @@ EOF
                     --tlskey="$CERT_DIR/client-key.pem" \
                     -H=tcp://localhost:2376 version > /dev/null 2>&1; then
                     print_info "✅ mTLS configuration successful!"
+                    echo ""
+                    print_info "Test the connection from your local machine:"
+                    echo "  docker --tlsverify \\"
+                    echo "    --tlscacert=$CERT_DIR/ca.pem \\"
+                    echo "    --tlscert=$CERT_DIR/client-cert.pem \\"
+                    echo "    --tlskey=$CERT_DIR/client-key.pem \\"
+                    echo "    -H=tcp://$HOST_IP:2376 version"
                 else
                     print_error "Failed to connect. Check logs: sudo journalctl -u docker -n 50"
                 fi
                 ;;
             *)
                 print_warn "Automatic configuration not available for $SYSTEM_TYPE"
+                ;;
+        esac
+    else
+        # User selected No - show manual instructions based on system type
+        echo ""
+        case $SYSTEM_TYPE in
+            systemd)
+                print_info "==================================="
+                print_info "Manual Configuration Instructions:"
+                print_info "==================================="
+                echo ""
+                echo "1. Backup existing Docker override (if it exists):"
+                echo "   [ -f /etc/systemd/system/docker.service.d/override.conf ] && \\"
+                echo "     sudo cp /etc/systemd/system/docker.service.d/override.conf \\"
+                echo "     /etc/systemd/system/docker.service.d/override.conf.backup-\$(date +%Y%m%d-%H%M%S)"
+                echo ""
+                echo "2. Copy certificates to system directory:"
+                echo "   sudo mkdir -p /etc/docker/certs"
+                echo "   sudo cp $CERT_DIR/{ca.pem,server-cert.pem,server-key.pem} /etc/docker/certs/"
+                echo "   sudo chmod 400 /etc/docker/certs/*-key.pem"
+                echo "   sudo chmod 444 /etc/docker/certs/*.pem"
+                echo ""
+                echo "3. Configure Docker daemon:"
+                echo "   sudo mkdir -p /etc/systemd/system/docker.service.d/"
+                echo "   sudo cp $CERT_DIR/docker-override.conf /etc/systemd/system/docker.service.d/override.conf"
+                echo ""
+                echo "4. Restart Docker:"
+                echo "   sudo systemctl daemon-reload"
+                echo "   sudo systemctl restart docker"
+                echo ""
+                echo "5. Test the mTLS connection:"
+                echo "   docker --tlsverify \\"
+                echo "     --tlscacert=$CERT_DIR/ca.pem \\"
+                echo "     --tlscert=$CERT_DIR/client-cert.pem \\"
+                echo "     --tlskey=$CERT_DIR/client-key.pem \\"
+                echo "     -H=tcp://$HOST_IP:2376 version"
+                ;;
+            unraid)
+                print_info "==================================="
+                print_info "unRAID Configuration Instructions:"
+                print_info "==================================="
+                echo ""
+                echo "To enable Docker remote access with TLS on unRAID:"
+                echo ""
+                echo "1. Stop Docker service:"
+                echo "   - Via Web UI: Settings → Docker → Set 'Enable Docker' to No → Apply"
+                echo "   - Via SSH: /etc/rc.d/rc.docker stop"
+                echo ""
+                echo "2. Backup existing Docker configuration:"
+                echo "   cp /boot/config/docker.cfg /boot/config/docker.cfg.backup-\$(date +%Y%m%d-%H%M%S)"
+                echo ""
+                echo "3. Edit /boot/config/docker.cfg via SSH:"
+                echo "   nano /boot/config/docker.cfg"
+                echo ""
+                echo "4. Add or update the DOCKER_OPTS line:"
+                echo "   DOCKER_OPTS=\"-H unix:///var/run/docker.sock -H tcp://0.0.0.0:2376 \\"
+                echo "     --tlsverify \\"
+                echo "     --tlscacert=$CERT_DIR/ca.pem \\"
+                echo "     --tlscert=$CERT_DIR/server-cert.pem \\"
+                echo "     --tlskey=$CERT_DIR/server-key.pem\""
+                echo ""
+                echo "5. Start Docker service:"
+                echo "   - Via Web UI: Settings → Docker → Set 'Enable Docker' to Yes → Apply"
+                echo "   - Via SSH: /etc/rc.d/rc.docker start"
+                echo ""
+                echo "6. Test the connection:"
+                echo "   docker --tlsverify \\"
+                echo "     --tlscacert=$CERT_DIR/ca.pem \\"
+                echo "     --tlscert=$CERT_DIR/client-cert.pem \\"
+                echo "     --tlskey=$CERT_DIR/client-key.pem \\"
+                echo "     -H=tcp://$HOST_IP:2376 version"
+                ;;
+            synology)
+                print_info "==================================="
+                print_info "Synology Configuration Instructions (UNTESTED):"
+                print_info "==================================="
+                echo ""
+                echo "1. Open Synology DSM Web UI"
+                echo "2. Go to Package Center → Docker"
+                echo "3. Stop Docker package"
+                echo "4. SSH into your Synology and run:"
+                echo "   sudo vi /var/packages/Docker/etc/dockerd.json"
+                echo "5. Add the following configuration:"
+                echo '   {'
+                echo '     "hosts": ["unix:///var/run/docker.sock", "tcp://0.0.0.0:2376"],'
+                echo '     "tls": true,'
+                echo '     "tlsverify": true,'
+                echo "     \"tlscacert\": \"$CERT_DIR/ca.pem\","
+                echo "     \"tlscert\": \"$CERT_DIR/server-cert.pem\","
+                echo "     \"tlskey\": \"$CERT_DIR/server-key.pem\""
+                echo '   }'
+                echo "6. Start Docker package from Package Center"
                 ;;
         esac
     fi

@@ -433,8 +433,19 @@ async function saveDashboardLayout() {
 }
 
 function loadDashboardLayout(layout) {
+    // Remove duplicate stats widgets from saved layout (keep only the first one)
+    const seenIds = new Set();
+    const dedupedLayout = layout.filter(item => {
+        if (item.id === 'stats' && seenIds.has('stats')) {
+            console.log('Removing duplicate stats widget from saved layout');
+            return false;
+        }
+        seenIds.add(item.id);
+        return true;
+    });
+
     // Ensure stats widget is always present first
-    const hasStatsWidget = layout.some(item => item.id === 'stats');
+    const hasStatsWidget = dedupedLayout.some(item => item.id === 'stats');
     if (!hasStatsWidget) {
         console.log('Stats widget missing from layout - adding it back');
         createWidget('stats', 'Statistics', '<span data-lucide="bar-chart-3"></span>', {
@@ -447,7 +458,7 @@ function loadDashboardLayout(layout) {
 
     // Sort layout for proper reading order (left-to-right, top-to-bottom)
     // This ensures mobile displays hosts in the same priority order as desktop
-    const sortedLayout = [...layout].sort((a, b) => {
+    const sortedLayout = [...dedupedLayout].sort((a, b) => {
         // Stats widget always first
         if (a.id === 'stats') return -1;
         if (b.id === 'stats') return 1;

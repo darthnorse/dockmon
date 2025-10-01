@@ -328,7 +328,7 @@
                             </h2>
                         </div>
                         <div style="padding: var(--spacing-lg); color: var(--text-secondary);">
-                            <p><strong>Docker Monitor v1.0.0</strong></p>
+                            <p><strong>Docker Monitor v1.1.0</strong></p>
                             <p style="margin-top: var(--spacing-md);">A modern web-based Docker container monitoring solution with real-time alerts and auto-restart capabilities.</p>
                             <p style="margin-top: var(--spacing-md);">Features:</p>
                             <ul style="margin-left: var(--spacing-lg); margin-top: var(--spacing-sm);">
@@ -904,6 +904,12 @@
     <script src="https://cdn.jsdelivr.net/npm/gridstack@12.3.3/dist/gridstack-all.js"></script>
     <!-- DockMon Core JavaScript -->
     <script src="/js/core.js"></script>
+    <!-- Notifications JavaScript (loaded before app.js since app.js depends on it) -->
+    <script src="/js/notifications.js"></script>
+    <!-- Dashboard JavaScript (loaded before app.js since app.js depends on it) -->
+    <script src="/js/dashboard.js"></script>
+    <!-- Alerts JavaScript (loaded before app.js since app.js depends on it) -->
+    <script src="/js/alerts.js"></script>
     <!-- DockMon Application JavaScript -->
     <script src="/js/app.js"></script>
     <!-- Event Log JavaScript -->

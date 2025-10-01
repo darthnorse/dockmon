@@ -1282,6 +1282,11 @@
             }
         }
 
+        /* Mobile Navigation - Hidden by default on desktop */
+        .mobile-bottom-nav {
+            display: none;
+        }
+
         /* Responsive */
         @media (max-width: 768px) {
             /* Hide sidebar completely on mobile */

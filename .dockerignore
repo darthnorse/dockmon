@@ -1,0 +1,54 @@
+# Git
+.git
+.gitignore
+.github
+
+# Documentation
+README.md
+*.md
+wiki-content
+
+# Tests
+tests
+test-results
+playwright-report
+node_modules
+package.json
+package-lock.json
+
+# Screenshots (keep in git for README, but not in Docker image)
+screenshots
+
+# Development
+.claude
+.vscode
+.idea
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info
+dist
+build
+venv
+env
+
+# Docker
+docker-compose.yml
+.dockerignore
+
+# Scripts (if not needed in image)
+scripts
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*.swo
+*~
+.DS_Store

@@ -12,7 +12,6 @@ tests/
 test-results/
 test-results.json
 playwright-report/
-screenshots/
 *-results.log
 baseline*.log
 pre-refactor*.log

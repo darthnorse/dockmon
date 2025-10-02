@@ -344,14 +344,49 @@ function renderDashboardWidgets() {
 
             const moreCount = hostContainers.length > maxContainersToShow ? hostContainers.length - maxContainersToShow : 0;
 
-            // Update widget title with status badge
-            const widgetTitle = hostWidget.closest('.grid-stack-item').querySelector('.widget-title');
-            if (widgetTitle) {
-                widgetTitle.innerHTML = `
-                    <span><i data-lucide="server" style="width:16px;height:16px;"></i></span>
-                    <span>${host.name}</span>
-                    <span class="host-status status-${host.status}" style="margin-left: 8px;">${host.status}</span>
-                `;
+            // Update widget title with status badge and metrics
+            const widgetHeader = hostWidget.closest('.grid-stack-item').querySelector('.widget-header');
+            if (widgetHeader) {
+                // Check if metrics already exist to avoid recreating charts
+                const metricsExist = widgetHeader.querySelector('.host-metrics');
+
+                if (!metricsExist) {
+                    // First time rendering - create full header with metrics
+                    widgetHeader.innerHTML = `
+                        <div class="widget-title">
+                            <span><i data-lucide="server" style="width:16px;height:16px;"></i></span>
+                            <span>${host.name}</span>
+                            <span class="host-status status-${host.status}" style="margin-left: 8px;">${host.status}</span>
+                        </div>
+                        <div class="host-metrics">
+                            <div class="metric-sparkline">
+                                <canvas id="cpu-chart-${host.id}" width="60" height="20"></canvas>
+                                <div class="metric-label">CPU: <span id="cpu-value-${host.id}">0%</span></div>
+                            </div>
+                            <div class="metric-sparkline">
+                                <canvas id="ram-chart-${host.id}" width="60" height="20"></canvas>
+                                <div class="metric-label">RAM: <span id="ram-value-${host.id}">0%</span></div>
+                            </div>
+                            <div class="metric-sparkline">
+                                <canvas id="net-chart-${host.id}" width="60" height="20"></canvas>
+                                <div class="metric-label">NET: <span id="net-value-${host.id}">0 B/s</span></div>
+                            </div>
+                        </div>
+                    `;
+
+                    // Create charts after DOM is updated
+                    createHostMetricsCharts(host.id);
+                } else {
+                    // Metrics already exist - just update the title/status
+                    const titleElement = widgetHeader.querySelector('.widget-title');
+                    if (titleElement) {
+                        titleElement.innerHTML = `
+                            <span><i data-lucide="server" style="width:16px;height:16px;"></i></span>
+                            <span>${host.name}</span>
+                            <span class="host-status status-${host.status}" style="margin-left: 8px;">${host.status}</span>
+                        `;
+                    }
+                }
             }
 
             hostWidget.innerHTML = `

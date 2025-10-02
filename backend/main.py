@@ -221,6 +221,82 @@ async def remove_host(host_id: str, authenticated: bool = Depends(verify_session
     monitor.remove_host(host_id)
     return {"status": "success", "message": f"Host {host_id} removed"}
 
+@app.get("/api/hosts/{host_id}/metrics")
+async def get_host_metrics(host_id: str, authenticated: bool = Depends(verify_session_auth)):
+    """Get aggregated metrics for a Docker host (CPU, RAM, Network)"""
+    try:
+        host = monitor.hosts.get(host_id)
+        if not host:
+            raise HTTPException(status_code=404, detail="Host not found")
+
+        client = monitor.clients.get(host_id)
+        if not client:
+            raise HTTPException(status_code=503, detail="Host client not available")
+
+        # Get all running containers on this host
+        containers = client.containers.list(filters={'status': 'running'})
+
+        total_cpu = 0.0
+        total_memory_used = 0
+        total_memory_limit = 0
+        total_net_rx = 0
+        total_net_tx = 0
+        container_count = 0
+
+        for container in containers:
+            try:
+                stats = container.stats(stream=False)
+
+                # Calculate CPU percentage
+                cpu_delta = stats['cpu_stats']['cpu_usage']['total_usage'] - \
+                           stats['precpu_stats']['cpu_usage']['total_usage']
+                system_delta = stats['cpu_stats']['system_cpu_usage'] - \
+                              stats['precpu_stats']['system_cpu_usage']
+
+                if system_delta > 0:
+                    num_cpus = len(stats['cpu_stats']['cpu_usage'].get('percpu_usage', [1]))
+                    cpu_percent = (cpu_delta / system_delta) * num_cpus * 100.0
+                    total_cpu += cpu_percent
+
+                # Memory
+                mem_usage = stats['memory_stats'].get('usage', 0)
+                mem_limit = stats['memory_stats'].get('limit', 1)
+                total_memory_used += mem_usage
+                total_memory_limit += mem_limit
+
+                # Network I/O
+                networks = stats.get('networks', {})
+                for net_stats in networks.values():
+                    total_net_rx += net_stats.get('rx_bytes', 0)
+                    total_net_tx += net_stats.get('tx_bytes', 0)
+
+                container_count += 1
+
+            except Exception as e:
+                logger.warning(f"Failed to get stats for container {container.id}: {e}")
+                continue
+
+        # Calculate percentages
+        avg_cpu = round(total_cpu / container_count, 1) if container_count > 0 else 0.0
+        memory_percent = round((total_memory_used / total_memory_limit) * 100, 1) if total_memory_limit > 0 else 0.0
+
+        return {
+            "cpu_percent": avg_cpu,
+            "memory_percent": memory_percent,
+            "memory_used_bytes": total_memory_used,
+            "memory_limit_bytes": total_memory_limit,
+            "network_rx_bytes": total_net_rx,
+            "network_tx_bytes": total_net_tx,
+            "container_count": container_count,
+            "timestamp": int(time.time())
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching metrics for host {host_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/containers")
 async def get_containers(host_id: Optional[str] = None, authenticated: bool = Depends(verify_session_auth)):
     """Get all containers"""

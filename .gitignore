@@ -7,6 +7,9 @@ BASELINE_STATUS.md
 wiki-content/
 wiki-repo/
 
+# Documentation (internal development docs)
+docs/
+
 # Test Infrastructure (Development Only)
 tests/
 test-results/

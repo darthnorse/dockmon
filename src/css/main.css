@@ -315,6 +315,8 @@
             justify-content: space-between;
             background: var(--dark-secondary);
             cursor: move;
+            min-height: 50px;
+            flex-shrink: 0;
         }
 
         .widget-title {
@@ -324,6 +326,37 @@
             display: flex;
             align-items: center;
             gap: var(--spacing-sm);
+        }
+
+        /* Host Metrics Sparklines */
+        .host-metrics {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .metric-sparkline {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .metric-sparkline canvas {
+            background: var(--surface);
+            border-radius: 4px;
+            display: block;
+            width: 60px !important;
+            height: 20px !important;
+            max-width: 60px;
+            max-height: 20px;
+        }
+
+        .metric-label {
+            font-size: 10px;
+            color: var(--text-secondary);
+            font-weight: 500;
+            white-space: nowrap;
         }
 
         .widget-actions {

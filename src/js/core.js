@@ -157,6 +157,17 @@
                     window.hosts = hosts; // Keep window.hosts in sync
                     renderAll();
 
+                    // Update host metrics charts
+                    if (message.data.host_metrics && typeof updateHostMetrics === 'function') {
+                        console.log('Received host_metrics:', message.data.host_metrics);
+                        for (const [hostId, metrics] of Object.entries(message.data.host_metrics)) {
+                            console.log(`Updating metrics for host ${hostId}:`, metrics);
+                            updateHostMetrics(hostId, metrics);
+                        }
+                    } else {
+                        console.warn('No host_metrics in WebSocket message or updateHostMetrics not defined');
+                    }
+
                     // Refresh container modal if open
                     refreshContainerModalIfOpen();
 
@@ -478,6 +489,86 @@
                 // Save position after dragging
                 saveModalPreferences();
             }
+        }
+
+        // ========================================
+        // Chart.js Helper Functions
+        // ========================================
+
+        /**
+         * Create a sparkline chart (small, minimal chart for trends)
+         * @param {HTMLCanvasElement} canvas - Canvas element to render chart
+         * @param {string} color - Line color
+         * @param {number} maxDataPoints - Maximum number of data points to show
+         * @returns {Chart} Chart.js instance
+         */
+        function createSparkline(canvas, color, maxDataPoints = 60) {
+            const ctx = canvas.getContext('2d');
+
+            return new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: new Array(maxDataPoints).fill(''),
+                    datasets: [{
+                        data: new Array(maxDataPoints).fill(0),
+                        borderColor: color,
+                        backgroundColor: 'transparent',
+                        borderWidth: 1.5,
+                        pointRadius: 0,
+                        pointHoverRadius: 0,
+                        tension: 0.4,
+                        fill: false
+                    }]
+                },
+                options: {
+                    responsive: false,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: { enabled: false }
+                    },
+                    scales: {
+                        x: { display: false },
+                        y: {
+                            display: false,
+                            min: 0,
+                            max: 100
+                        }
+                    },
+                    animation: {
+                        duration: 0
+                    },
+                    interaction: {
+                        mode: 'index',
+                        intersect: false
+                    }
+                }
+            });
+        }
+
+        /**
+         * Update sparkline chart with new data point
+         * @param {Chart} chart - Chart.js instance
+         * @param {number} newValue - New data value
+         */
+        function updateSparkline(chart, newValue) {
+            const data = chart.data.datasets[0].data;
+            data.shift();
+            data.push(newValue);
+            chart.update('none'); // Update without animation
+        }
+
+        /**
+         * Format bytes to human-readable format
+         * @param {number} bytes - Number of bytes
+         * @returns {string} Formatted string (e.g., "1.2 MB/s")
+         */
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
         }
 
         // Initialize

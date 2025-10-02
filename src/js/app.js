@@ -236,8 +236,8 @@ async function init() {
                             </div>
                         </div>
                         <div style="display: flex; gap: var(--spacing-sm);">
-                            <button class="btn-icon" onclick="editHost('${host.id}')"><i data-lucide="edit"></i></button>
-                            <button class="btn-icon" onclick="deleteHost('${host.id}')"><i data-lucide="trash-2"></i></button>
+                            <button class="btn-icon" onclick="editHost('${host.id}')" title="Edit Host"><i data-lucide="edit"></i></button>
+                            <button class="btn-icon" onclick="deleteHost('${host.id}')" title="Delete Host"><i data-lucide="trash-2"></i></button>
                         </div>
                     </div>
                 `;

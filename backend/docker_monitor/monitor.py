@@ -24,6 +24,7 @@ from websocket.connection import ConnectionManager
 from realtime import RealtimeMonitor, LiveUpdateManager
 from notifications import NotificationService, AlertProcessor
 from event_logger import EventLogger, EventSeverity, EventType
+from stats_client import get_stats_client
 
 
 logger = logging.getLogger(__name__)
@@ -176,6 +177,8 @@ class DockerMonitor:
 
             # Start Docker event monitoring for this host
             self.realtime.start_event_monitor(client, host.id)
+
+            # Note: Host will be registered with stats service when monitoring loop starts
 
             # Log host connection
             self.event_logger.log_host_connection(
@@ -620,192 +623,6 @@ class DockerMonitor:
 
         return containers
 
-    def _collect_container_stats_sync(self, client: DockerClient, container: Container) -> Optional[Dict]:
-        """Collect stats for a single container using streaming (sync version) - runs in thread pool"""
-        import json
-        try:
-            docker_container = client.containers.get(container.id)
-
-            # Use stream=True and read just the first stat - much faster than stream=False
-            # stream=False waits to collect a full sample, stream=True returns immediately
-            stats_stream = docker_container.stats(stream=True, decode=True)
-
-            # Get first stat from stream
-            stats = next(stats_stream)
-
-            # Close the stream immediately after getting one stat
-            try:
-                stats_stream.close()
-            except:
-                pass
-
-            # CPU calculation
-            cpu_stats = stats.get('cpu_stats', {})
-            precpu_stats = stats.get('precpu_stats', {})
-            cpu_usage = cpu_stats.get('cpu_usage', {})
-            precpu_usage = precpu_stats.get('cpu_usage', {})
-
-            cpu_percent = 0.0
-            if cpu_usage and precpu_usage:
-                cpu_delta = cpu_usage.get('total_usage', 0) - precpu_usage.get('total_usage', 0)
-                system_delta = cpu_stats.get('system_cpu_usage', 0) - precpu_stats.get('system_cpu_usage', 0)
-
-                if system_delta > 0:
-                    num_cpus = len(cpu_usage.get('percpu_usage', [1]))
-                    cpu_percent = (cpu_delta / system_delta) * num_cpus * 100.0
-
-            # Memory
-            mem_stats = stats.get('memory_stats', {})
-            mem_usage = mem_stats.get('usage', 0)
-            mem_limit = mem_stats.get('limit', 1)
-
-            # Network I/O
-            networks = stats.get('networks', {})
-            net_rx = sum(net.get('rx_bytes', 0) for net in networks.values())
-            net_tx = sum(net.get('tx_bytes', 0) for net in networks.values())
-
-            return {
-                'cpu': cpu_percent,
-                'mem_usage': mem_usage,
-                'mem_limit': mem_limit,
-                'net_rx': net_rx,
-                'net_tx': net_tx
-            }
-        except Exception as e:
-            logger.warning(f"Failed to get stats for container {container.short_id}: {e}")
-            return None
-
-    def _collect_single_host_metrics_sync(self, host_id: str, host_containers: List[Container]) -> Optional[Dict]:
-        """Collect metrics for a single host (sync version) - runs in thread pool"""
-        import concurrent.futures
-
-        client = self.clients.get(host_id)
-        if not client:
-            return None
-
-        # Filter to running containers only
-        running_containers = [c for c in host_containers if c.state == 'running']
-        if not running_containers:
-            return {
-                "cpu_percent": 0.0,
-                "memory_percent": 0.0,
-                "memory_used_bytes": 0,
-                "memory_limit_bytes": 0,
-                "network_rx_bytes": 0,
-                "network_tx_bytes": 0,
-                "container_count": 0
-            }
-
-        # Collect stats for all containers in parallel (within this host)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(running_containers), 5)) as executor:
-            futures = {
-                executor.submit(self._collect_container_stats_sync, client, container): container
-                for container in running_containers
-            }
-
-            total_cpu = 0.0
-            total_memory_used = 0
-            total_memory_limit = 0
-            total_net_rx = 0
-            total_net_tx = 0
-            success_count = 0
-
-            for future in concurrent.futures.as_completed(futures, timeout=10):
-                try:
-                    result = future.result(timeout=5)
-                    if result:
-                        total_cpu += result['cpu']
-                        total_memory_used += result['mem_usage']
-                        total_memory_limit += result['mem_limit']
-                        total_net_rx += result['net_rx']
-                        total_net_tx += result['net_tx']
-                        success_count += 1
-                except concurrent.futures.TimeoutError:
-                    container = futures[future]
-                    logger.warning(f"Timeout collecting stats for container {container.short_id}")
-                except Exception as e:
-                    container = futures[future]
-                    logger.warning(f"Error collecting stats for container {container.short_id}: {e}")
-
-        # Calculate averages/totals
-        avg_cpu = round(total_cpu / success_count, 1) if success_count > 0 else 0.0
-        memory_percent = round((total_memory_used / total_memory_limit) * 100, 1) if total_memory_limit > 0 else 0.0
-
-        metrics = {
-            "cpu_percent": avg_cpu,
-            "memory_percent": memory_percent,
-            "memory_used_bytes": total_memory_used,
-            "memory_limit_bytes": total_memory_limit,
-            "network_rx_bytes": total_net_rx,
-            "network_tx_bytes": total_net_tx,
-            "container_count": success_count
-        }
-
-        if success_count > 0:
-            logger.info(f"Host {host_id}: CPU={avg_cpu}%, RAM={memory_percent}%, containers={success_count}")
-
-        return metrics
-
-    async def _collect_host_metrics(self, containers: List[Container]) -> Dict[str, Dict]:
-        """Collect metrics for all hosts concurrently - each host runs in its own thread"""
-        import asyncio
-        import time as time_module
-        from concurrent.futures import ThreadPoolExecutor
-
-        start_time = time_module.time()
-
-        # Group containers by host
-        containers_by_host = {}
-        for container in containers:
-            if container.host_id not in containers_by_host:
-                containers_by_host[container.host_id] = []
-            containers_by_host[container.host_id].append(container)
-
-        if not containers_by_host:
-            return {}
-
-        # Create thread pool with one worker per host (up to 10 hosts max)
-        num_hosts = len(containers_by_host)
-        max_workers = min(num_hosts, 10)
-        executor = ThreadPoolExecutor(max_workers=max_workers)
-        loop = asyncio.get_event_loop()
-
-        try:
-            # Collect metrics for all hosts concurrently
-            tasks = []
-            host_ids = []
-            for host_id, host_containers in containers_by_host.items():
-                task = loop.run_in_executor(
-                    executor,
-                    self._collect_single_host_metrics_sync,
-                    host_id,
-                    host_containers
-                )
-                tasks.append(task)
-                host_ids.append(host_id)
-
-            # Wait for all hosts to complete
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            # Build result dictionary
-            host_metrics = {}
-            for host_id, result in zip(host_ids, results):
-                if isinstance(result, Exception):
-                    logger.error(f"Error collecting metrics for host {host_id}: {result}")
-                elif result is not None:
-                    host_metrics[host_id] = result
-
-            elapsed = time_module.time() - start_time
-            logger.info(f"Collected metrics for {len(host_metrics)} hosts in {elapsed:.2f}s")
-
-            return host_metrics
-
-        except Exception as e:
-            logger.error(f"Error collecting host metrics: {e}")
-            return {}
-        finally:
-            executor.shutdown(wait=False)
-
     def restart_container(self, host_id: str, container_id: str) -> bool:
         """Restart a specific container"""
         if host_id not in self.clients:
@@ -1028,9 +845,56 @@ class DockerMonitor:
         """Main monitoring loop"""
         logger.info("Starting container monitoring...")
 
+        # Track which containers are being streamed
+        streaming_containers = set()  # container_ids
+        stats_client = get_stats_client()
+
+        # Register all hosts with the stats service on startup
+        for host_id, host in self.hosts.items():
+            try:
+                await stats_client.add_docker_host(host_id, host.url)
+                logger.info(f"Registered host {host.name} ({host_id[:8]}) with stats service")
+            except Exception as e:
+                logger.error(f"Failed to register host {host_id} with stats service: {e}")
+
         while True:
             try:
                 containers = self.get_containers()
+
+                # Only manage stats streams if there are active WebSocket connections
+                has_viewers = self.manager.has_active_connections()
+
+                if has_viewers:
+                    # Manage stats streams for containers
+                    current_running = set()
+                    for container in containers:
+                        if container.state == 'running':
+                            current_running.add(container.id)
+
+                            # Start stream if not already streaming
+                            if container.id not in streaming_containers:
+                                asyncio.create_task(
+                                    stats_client.start_container_stream(
+                                        container.id,
+                                        container.name,
+                                        container.host_id
+                                    )
+                                )
+                                streaming_containers.add(container.id)
+                                logger.debug(f"Started stats stream for {container.name}")
+
+                    # Stop streams for containers that are no longer running
+                    stopped_containers = streaming_containers - current_running
+                    for container_id in stopped_containers:
+                        asyncio.create_task(stats_client.stop_container_stream(container_id))
+                        streaming_containers.discard(container_id)
+                else:
+                    # No active viewers - stop all stats streams to save resources
+                    if streaming_containers:
+                        logger.info(f"No active viewers - stopping {len(streaming_containers)} stats streams")
+                        for container_id in list(streaming_containers):
+                            asyncio.create_task(stats_client.stop_container_stream(container_id))
+                        streaming_containers.clear()
 
                 # Track container state changes and log them
                 for container in containers:
@@ -1084,20 +948,22 @@ class DockerMonitor:
                 # Process alerts for container state changes
                 await self.alert_processor.process_container_update(containers, self.hosts)
 
-                # Collect host metrics
-                host_metrics = await self._collect_host_metrics(containers)
-                logger.debug(f"Collected metrics for {len(host_metrics)} hosts")
+                # Only fetch and broadcast stats if there are active viewers
+                if has_viewers:
+                    # Get host metrics from stats service (fast HTTP call)
+                    host_metrics = await stats_client.get_host_stats()
+                    logger.debug(f"Retrieved metrics for {len(host_metrics)} hosts from stats service")
 
-                # Broadcast update to all connected clients
-                await self.manager.broadcast({
-                    "type": "containers_update",
-                    "data": {
-                        "containers": [c.dict() for c in containers],
-                        "hosts": [h.dict() for h in self.hosts.values()],
-                        "host_metrics": host_metrics,
-                        "timestamp": datetime.now().isoformat()
-                    }
-                })
+                    # Broadcast update to all connected clients
+                    await self.manager.broadcast({
+                        "type": "containers_update",
+                        "data": {
+                            "containers": [c.dict() for c in containers],
+                            "hosts": [h.dict() for h in self.hosts.values()],
+                            "host_metrics": host_metrics,
+                            "timestamp": datetime.now().isoformat()
+                        }
+                    })
 
             except Exception as e:
                 logger.error(f"Error in monitoring loop: {e}")

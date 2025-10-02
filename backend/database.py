@@ -80,7 +80,7 @@ class GlobalSettings(Base):
     max_retries = Column(Integer, default=3)
     retry_delay = Column(Integer, default=30)
     default_auto_restart = Column(Boolean, default=False)
-    polling_interval = Column(Integer, default=10)
+    polling_interval = Column(Integer, default=2)
     connection_timeout = Column(Integer, default=10)
     log_retention_days = Column(Integer, default=7)
     event_retention_days = Column(Integer, default=30)  # Keep events for 30 days

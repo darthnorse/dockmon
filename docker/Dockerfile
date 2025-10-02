@@ -1,6 +1,24 @@
 # DockMon All-in-One Container
-# Combines both frontend and backend in a single container using supervisor
+# Multi-stage build: Go stats service + Python backend + Nginx frontend
 
+# Stage 1: Build Go stats service
+FROM golang:1.23-alpine AS go-builder
+
+WORKDIR /build
+
+# Copy go mod files
+COPY stats-service/go.mod stats-service/go.sum* ./
+
+# Download dependencies
+RUN go mod download
+
+# Copy source code
+COPY stats-service/*.go ./
+
+# Build binary (static linking for alpine)
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o stats-service .
+
+# Stage 2: Final image with Python + Go binary
 FROM python:3.11.10-slim
 
 # Install system dependencies
@@ -9,10 +27,15 @@ RUN apt-get update && apt-get install -y \
     supervisor \
     curl \
     gcc \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Create app directory
 WORKDIR /app
+
+# Copy Go stats service binary from builder
+COPY --from=go-builder /build/stats-service /usr/local/bin/stats-service
+RUN chmod +x /usr/local/bin/stats-service
 
 # Copy and install Python dependencies
 COPY backend/requirements.txt /app/backend/
@@ -74,12 +97,12 @@ RUN echo '#!/bin/bash' > /startup.sh && \
     echo 'exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf' >> /startup.sh && \
     chmod +x /startup.sh
 
-# Expose ports
+# Expose ports (8081 is internal for stats service)
 EXPOSE 443 8080
 
-# Health check - checks backend directly since nginx HTTPS requires cert
+# Health check - checks both backend and stats service
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
+    CMD curl -f http://localhost:8080/health && curl -f http://localhost:8081/health || exit 1
 
 # Volume for persistent data
 VOLUME ["/app/data"]

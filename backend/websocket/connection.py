@@ -37,6 +37,10 @@ class ConnectionManager:
         self.active_connections.remove(websocket)
         logger.info(f"WebSocket disconnected. Total connections: {len(self.active_connections)}")
 
+    def has_active_connections(self) -> bool:
+        """Check if there are any active WebSocket connections"""
+        return len(self.active_connections) > 0
+
     async def broadcast(self, message: dict):
         """Send message to all connected clients"""
         dead_connections = []

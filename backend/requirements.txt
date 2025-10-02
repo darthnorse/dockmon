@@ -5,6 +5,7 @@ pydantic==2.5.0
 python-multipart==0.0.6
 websockets==12.0
 aiofiles==23.2.1
+aiohttp==3.9.1
 httpx==0.25.1
 python-dotenv==1.0.0
 sqlalchemy==2.0.23

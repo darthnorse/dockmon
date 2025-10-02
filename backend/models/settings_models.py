@@ -17,7 +17,7 @@ class GlobalSettings(BaseModel):
     max_retries: int = Field(3, ge=0, le=10)  # 0-10 retries
     retry_delay: int = Field(30, ge=5, le=300)  # 5 seconds to 5 minutes
     default_auto_restart: bool = False
-    polling_interval: int = Field(10, ge=5, le=300)  # 5 seconds to 5 minutes
+    polling_interval: int = Field(2, ge=1, le=300)  # 1 second to 5 minutes
     connection_timeout: int = Field(10, ge=1, le=60)  # 1-60 seconds
     alert_template: Optional[str] = Field(None, max_length=2000)  # Global notification template
     blackout_windows: Optional[List[dict]] = None  # Blackout windows configuration
@@ -44,8 +44,8 @@ class GlobalSettings(BaseModel):
     @validator('polling_interval')
     def validate_polling_interval(cls, v):
         """Validate polling interval to prevent system overload"""
-        if v < 5:
-            raise ValueError('Polling interval must be at least 5 seconds to prevent system overload')
+        if v < 1:
+            raise ValueError('Polling interval must be at least 1 second')
         if v > 300:
             raise ValueError('Polling interval cannot exceed 300 seconds')
         return v

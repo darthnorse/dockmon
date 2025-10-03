@@ -23,7 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 # Session-based auth - no longer need HTTPBearer
 from fastapi.responses import FileResponse
 from database import DatabaseManager
-from realtime import RealtimeMonitor, LiveUpdateManager
+from realtime import RealtimeMonitor
 from notifications import NotificationService, AlertProcessor
 from event_logger import EventLogger, EventContext, EventCategory, EventType, EventSeverity, PerformanceTimer
 

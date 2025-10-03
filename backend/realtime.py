@@ -44,8 +44,6 @@ class RealtimeMonitor:
         self.stats_subscribers: Dict[str, Set[Any]] = {}  # container_id -> set of websockets
         self.event_subscribers: Set[Any] = set()  # websockets listening to all events
         self.monitoring_tasks: Dict[str, asyncio.Task] = {}
-        self.notification_service = None  # Will be set after initialization to avoid circular imports
-        self.docker_monitor = None  # Will be set after initialization to access user action tracking
 
     async def subscribe_to_stats(self, websocket: Any, container_id: str):
         """Subscribe a websocket to container stats"""
@@ -198,31 +196,6 @@ class RealtimeMonitor:
                 timestamp=datetime.now().isoformat()
             )
 
-    # Event monitoring methods removed - now handled by Go service
-    # The following methods are kept as stubs for backward compatibility
-
-    async def broadcast_container_update(self, containers: List[Any], hosts: List[Any]):
-        """Broadcast container updates to all subscribers"""
-        message = {
-            "type": "containers_update",
-            "data": {
-                "containers": containers,
-                "hosts": hosts,
-                "timestamp": datetime.now().isoformat()
-            }
-        }
-
-        dead_sockets = []
-        for websocket in self.event_subscribers:
-            try:
-                await websocket.send_text(json.dumps(message, cls=DateTimeEncoder))
-            except Exception as e:
-                logger.error(f"Error broadcasting update: {e}")
-                dead_sockets.append(websocket)
-
-        for ws in dead_sockets:
-            await self.unsubscribe_from_events(ws)
-
     def stop_all_monitoring(self):
         """Stop all monitoring tasks"""
         logger.info("Stopping all monitoring tasks")
@@ -231,54 +204,3 @@ class RealtimeMonitor:
         for task in self.monitoring_tasks.values():
             task.cancel()
         self.monitoring_tasks.clear()
-
-class LiveUpdateManager:
-    """Manages live updates with throttling and batching"""
-
-    def __init__(self, batch_interval: float = 0.5):
-        self.pending_updates: Dict[str, Any] = {}
-        self.batch_interval = batch_interval
-        self.batch_task: Optional[asyncio.Task] = None
-        self.subscribers: Set[Any] = set()
-
-    async def add_update(self, update_type: str, data: Any):
-        """Add an update to the pending batch"""
-        key = f"{update_type}:{data.get('container_id', 'global')}"
-        self.pending_updates[key] = {
-            "type": update_type,
-            "data": data,
-            "timestamp": datetime.now().isoformat()
-        }
-
-        # Start batch task if not running
-        if not self.batch_task or self.batch_task.done():
-            self.batch_task = asyncio.create_task(self._process_batch())
-
-    async def _process_batch(self):
-        """Process and send batched updates"""
-        await asyncio.sleep(self.batch_interval)
-
-        if not self.pending_updates:
-            return
-
-        # Send all pending updates
-        updates = list(self.pending_updates.values())
-        self.pending_updates.clear()
-
-        message = {
-            "type": "batch_update",
-            "updates": updates,
-            "timestamp": datetime.now().isoformat()
-        }
-
-        dead_sockets = []
-        for websocket in self.subscribers:
-            try:
-                await websocket.send_text(json.dumps(message, cls=DateTimeEncoder))
-            except Exception as e:
-                logger.error(f"Error sending batch update: {e}")
-                dead_sockets.append(websocket)
-
-        # Clean up dead sockets
-        for ws in dead_sockets:
-            self.subscribers.discard(ws)

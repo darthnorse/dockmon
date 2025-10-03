@@ -21,7 +21,7 @@ from database import DatabaseManager, AutoRestartConfig, GlobalSettings
 from models.docker_models import DockerHost, DockerHostConfig, Container
 from models.settings_models import AlertRule, NotificationSettings
 from websocket.connection import ConnectionManager
-from realtime import RealtimeMonitor, LiveUpdateManager
+from realtime import RealtimeMonitor
 from notifications import NotificationService, AlertProcessor
 from event_logger import EventLogger, EventSeverity, EventType
 from stats_client import get_stats_client
@@ -71,15 +71,9 @@ class DockerMonitor:
         self.monitoring_task: Optional[asyncio.Task] = None
         self.manager = ConnectionManager()
         self.realtime = RealtimeMonitor()  # Real-time monitoring
-        self.live_updates = LiveUpdateManager()  # Live update batching
         self.event_logger = EventLogger(self.db, self.manager)  # Event logging service with WebSocket support
         self.notification_service = NotificationService(self.db, self.event_logger)  # Notification service
         self.alert_processor = AlertProcessor(self.notification_service)  # Alert processor
-
-        # Connect the notification service to the realtime monitor for Docker event alerts
-        self.realtime.notification_service = self.notification_service
-        # Connect the docker monitor to the realtime monitor for user action tracking
-        self.realtime.docker_monitor = self
         self._container_states: Dict[str, str] = {}  # Track container states for change detection
         self._recent_user_actions: Dict[str, float] = {}  # Track recent user actions: {container_key: timestamp}
         self.cleanup_task: Optional[asyncio.Task] = None  # Background cleanup task

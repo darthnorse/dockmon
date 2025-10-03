@@ -217,6 +217,28 @@ func main() {
 		json.NewEncoder(w).Encode(map[string]string{"status": "added"})
 	}))
 
+	// Remove Docker host - PROTECTED
+	mux.HandleFunc("/api/hosts/remove", authMiddleware(token, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			HostID string `json:"host_id"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		streamManager.RemoveDockerHost(req.HostID)
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "removed"})
+	}))
+
 	// Debug endpoint - PROTECTED
 	mux.HandleFunc("/debug/stats", authMiddleware(token, func(w http.ResponseWriter, r *http.Request) {
 		containerCount, hostCount := cache.GetStats()

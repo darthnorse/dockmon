@@ -99,6 +99,24 @@ class StatsServiceClient:
             logger.error(f"Error registering host {host_id} with stats service: {e}")
             return False
 
+    async def remove_docker_host(self, host_id: str) -> bool:
+        """Remove a Docker host from the stats service"""
+        try:
+            session = await self._get_session()
+            async with session.post(
+                f"{self.base_url}/api/hosts/remove",
+                json={"host_id": host_id}
+            ) as resp:
+                if resp.status == 200:
+                    logger.info(f"Removed host {host_id[:8]} from stats service")
+                    return True
+                else:
+                    logger.warning(f"Failed to remove host {host_id[:8]} from stats service: {resp.status}")
+                    return False
+        except Exception as e:
+            logger.warning(f"Error removing host {host_id[:8]} from stats service: {e}")
+            return False
+
     async def start_container_stream(self, container_id: str, container_name: str, host_id: str) -> bool:
         """Start stats streaming for a container"""
         try:

@@ -169,8 +169,30 @@ class DockerMonitor:
                     'security_status': security_status
                 })
 
-            # Note: Host will be registered with stats and event services when monitoring loop starts
-            # Event monitoring is now handled by the Go service via WebSocket
+            # Register host with stats and event services
+            # Create task to register (async operation from sync context)
+            try:
+                import asyncio
+                stats_client = get_stats_client()
+
+                async def register_host():
+                    try:
+                        await stats_client.add_docker_host(host.id, host.url)
+                        logger.info(f"Registered {host.name} ({host.id[:8]}) with stats service")
+
+                        await stats_client.add_event_host(host.id, host.url)
+                        logger.info(f"Registered {host.name} ({host.id[:8]}) with event service")
+                    except Exception as e:
+                        logger.error(f"Failed to register {host.name} with Go services: {e}")
+
+                # Try to create task if event loop is running
+                try:
+                    asyncio.create_task(register_host())
+                except RuntimeError:
+                    # No event loop running (startup) - will be registered by monitor_containers()
+                    logger.debug(f"No event loop - {host.name} will be registered when monitoring starts")
+            except Exception as e:
+                logger.warning(f"Could not register {host.name} with Go services: {e}")
 
             # Log host connection
             self.event_logger.log_host_connection(
@@ -364,14 +386,27 @@ class DockerMonitor:
                 self.clients[host_id].close()
                 del self.clients[host_id]
 
-            # Remove from Go event service
+            # Remove from Go stats and event services
             try:
                 import asyncio
                 stats_client = get_stats_client()
-                # Create task to remove host from event service (fire and forget)
-                asyncio.create_task(stats_client.remove_event_host(host_id))
+
+                async def unregister_host():
+                    try:
+                        # Remove from stats service (closes Docker client and stops all container streams)
+                        await stats_client.remove_docker_host(host_id)
+                        logger.info(f"Removed {host_name} ({host_id[:8]}) from stats service")
+
+                        # Remove from event service
+                        await stats_client.remove_event_host(host_id)
+                        logger.info(f"Removed {host_name} ({host_id[:8]}) from event service")
+                    except Exception as e:
+                        logger.error(f"Failed to remove {host_name} from Go services: {e}")
+
+                # Create task to remove host from services (fire and forget)
+                asyncio.create_task(unregister_host())
             except Exception as e:
-                logger.warning(f"Failed to remove host {host_id} from event service: {e}")
+                logger.warning(f"Failed to remove host {host_id} from Go services: {e}")
 
             # Clean up certificate files
             self._cleanup_host_certificates(host_id)
@@ -507,7 +542,29 @@ class DockerMonitor:
             self.clients[host.id] = client
             self.hosts[host.id] = host
 
-            # Note: Event monitoring handled by Go service via WebSocket
+            # Re-register host with stats and event services (in case URL changed)
+            # Note: add_docker_host() automatically closes old client if it exists
+            try:
+                import asyncio
+                stats_client = get_stats_client()
+
+                async def reregister_host():
+                    try:
+                        # Re-register with stats service (automatically closes old client)
+                        await stats_client.add_docker_host(host.id, host.url)
+                        logger.info(f"Re-registered {host.name} ({host.id[:8]}) with stats service")
+
+                        # Remove and re-add event monitoring
+                        await stats_client.remove_event_host(host.id)
+                        await stats_client.add_event_host(host.id, host.url)
+                        logger.info(f"Re-registered {host.name} ({host.id[:8]}) with event service")
+                    except Exception as e:
+                        logger.error(f"Failed to re-register {host.name} with Go services: {e}")
+
+                # Create task to re-register (fire and forget)
+                asyncio.create_task(reregister_host())
+            except Exception as e:
+                logger.warning(f"Could not re-register {host.name} with Go services: {e}")
 
             # Log host update
             self.event_logger.log_host_connection(

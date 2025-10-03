@@ -175,10 +175,8 @@ class DockerMonitor:
                     'security_status': security_status
                 })
 
-            # Start Docker event monitoring for this host
-            self.realtime.start_event_monitor(client, host.id)
-
-            # Note: Host will be registered with stats service when monitoring loop starts
+            # Note: Host will be registered with stats and event services when monitoring loop starts
+            # Event monitoring is now handled by the Go service via WebSocket
 
             # Log host connection
             self.event_logger.log_host_connection(
@@ -371,8 +369,16 @@ class DockerMonitor:
             if host_id in self.clients:
                 self.clients[host_id].close()
                 del self.clients[host_id]
-            # Stop event monitoring
-            self.realtime.stop_event_monitoring(host_id)
+
+            # Remove from Go event service
+            try:
+                import asyncio
+                stats_client = get_stats_client()
+                # Create task to remove host from event service (fire and forget)
+                asyncio.create_task(stats_client.remove_event_host(host_id))
+            except Exception as e:
+                logger.warning(f"Failed to remove host {host_id} from event service: {e}")
+
             # Clean up certificate files
             self._cleanup_host_certificates(host_id)
             # Remove from database
@@ -427,10 +433,6 @@ class DockerMonitor:
                     logger.info(f"Closing Docker client for host {host_id}")
                     self.clients[host_id].close()
                     del self.clients[host_id]
-
-                # Then explicitly stop event monitoring
-                logger.info(f"Stopping event monitoring for host {host_id}")
-                self.realtime.stop_event_monitoring(host_id)
 
                 # Remove from memory
                 del self.hosts[host_id]
@@ -511,9 +513,7 @@ class DockerMonitor:
             self.clients[host.id] = client
             self.hosts[host.id] = host
 
-            # Start Docker event monitoring for this host
-            logger.info(f"Starting event monitoring for updated host {host.id}")
-            self.realtime.start_event_monitor(client, host.id)
+            # Note: Event monitoring handled by Go service via WebSocket
 
             # Log host update
             self.event_logger.log_host_connection(
@@ -841,6 +841,61 @@ class DockerMonitor:
             logger.error(f"Error checking orphaned alerts: {e}")
             return {}
 
+    async def _handle_docker_event(self, event: dict):
+        """Handle Docker events from Go service"""
+        try:
+            action = event.get('action', '')
+            container_id = event.get('container_id', '')
+            container_name = event.get('container_name', '')
+            host_id = event.get('host_id', '')
+            attributes = event.get('attributes', {})
+            timestamp_str = event.get('timestamp', '')
+
+            # Filter out noisy exec_* events (health checks, etc.)
+            if action.startswith('exec_'):
+                return
+
+            # Only log important events
+            important_events = ['create', 'start', 'stop', 'die', 'kill', 'destroy', 'pause', 'unpause', 'restart', 'oom', 'health_status']
+            if action in important_events:
+                logger.info(f"Docker event: {action} - {container_name} ({container_id[:12]}) on host {host_id[:8]}")
+
+            # Process event for notifications/alerts
+            if self.notification_service and action in ['die', 'oom', 'kill', 'health_status', 'restart']:
+                # Parse timestamp
+                from datetime import datetime
+                try:
+                    timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                except:
+                    timestamp = datetime.now()
+
+                # Get exit code for die events
+                exit_code = None
+                if action == 'die':
+                    exit_code_str = attributes.get('exitCode', '0')
+                    try:
+                        exit_code = int(exit_code_str)
+                    except (ValueError, TypeError):
+                        exit_code = None
+
+                # Create alert event
+                from notifications import DockerEventAlert
+                alert_event = DockerEventAlert(
+                    container_id=container_id,
+                    container_name=container_name,
+                    host_id=host_id,
+                    event_type=action,
+                    timestamp=timestamp,
+                    attributes=attributes,
+                    exit_code=exit_code
+                )
+
+                # Process in background to not block event monitoring
+                asyncio.create_task(self.notification_service.process_docker_event(alert_event))
+
+        except Exception as e:
+            logger.error(f"Error handling Docker event from Go service: {e}")
+
     async def monitor_containers(self):
         """Main monitoring loop"""
         logger.info("Starting container monitoring...")
@@ -849,13 +904,25 @@ class DockerMonitor:
         streaming_containers = set()  # container_ids
         stats_client = get_stats_client()
 
-        # Register all hosts with the stats service on startup
+        # Register all hosts with the stats and event services on startup
         for host_id, host in self.hosts.items():
             try:
+                # Register with stats service
                 await stats_client.add_docker_host(host_id, host.url)
                 logger.info(f"Registered host {host.name} ({host_id[:8]}) with stats service")
+
+                # Register with event service
+                await stats_client.add_event_host(host_id, host.url)
+                logger.info(f"Registered host {host.name} ({host_id[:8]}) with event service")
             except Exception as e:
-                logger.error(f"Failed to register host {host_id} with stats service: {e}")
+                logger.error(f"Failed to register host {host_id} with services: {e}")
+
+        # Connect to event stream WebSocket
+        try:
+            await stats_client.connect_event_stream(self._handle_docker_event)
+            logger.info("Connected to Go event stream")
+        except Exception as e:
+            logger.error(f"Failed to connect to event stream: {e}")
 
         while True:
             try:

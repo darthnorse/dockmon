@@ -1,12 +1,12 @@
 """
 Real-time monitoring and WebSocket management for DockMon
-Provides live container updates, stats streaming, and Docker event monitoring
+Provides live container updates and stats streaming
+Note: Docker event monitoring is now handled by the Go service
 """
 
 import asyncio
 import json
 import logging
-import threading
 from datetime import datetime
 from typing import Dict, List, Set, Optional, Any
 from dataclasses import dataclass, asdict
@@ -24,7 +24,7 @@ class DateTimeEncoder(json.JSONEncoder):
 
 @dataclass
 class ContainerStats:
-    """Real-time container statistics"""
+    """Real-time container statistics (used for WebSocket stats streaming)"""
     container_id: str
     cpu_percent: float
     memory_mb: float
@@ -37,17 +37,6 @@ class ContainerStats:
     pids: int
     timestamp: str
 
-@dataclass
-class DockerEvent:
-    """Docker system event"""
-    action: str  # start, stop, die, kill, pause, unpause, restart, create, destroy
-    container_id: str
-    container_name: str
-    image: str
-    host_id: str
-    timestamp: str
-    attributes: dict
-
 class RealtimeMonitor:
     """Manages real-time container monitoring and events"""
 
@@ -55,12 +44,8 @@ class RealtimeMonitor:
         self.stats_subscribers: Dict[str, Set[Any]] = {}  # container_id -> set of websockets
         self.event_subscribers: Set[Any] = set()  # websockets listening to all events
         self.monitoring_tasks: Dict[str, asyncio.Task] = {}
-        self.event_tasks: Dict[str, asyncio.Task] = {}
         self.notification_service = None  # Will be set after initialization to avoid circular imports
         self.docker_monitor = None  # Will be set after initialization to access user action tracking
-        self.event_queues: Dict[str, asyncio.Queue] = {}  # Event queues for each host
-        self.event_threads: Dict[str, threading.Thread] = {}  # Event threads for each host
-        self.event_thread_stop: Dict[str, threading.Event] = {}  # Stop signals for threads
 
     async def subscribe_to_stats(self, websocket: Any, container_id: str):
         """Subscribe a websocket to container stats"""
@@ -213,244 +198,8 @@ class RealtimeMonitor:
                 timestamp=datetime.now().isoformat()
             )
 
-    def start_event_monitor(self, client: docker.DockerClient, host_id: str):
-        """Start monitoring Docker events for a host"""
-
-        # Always stop any existing monitor first to prevent duplicates
-        if host_id in self.event_tasks:
-            existing_task = self.event_tasks[host_id]
-            existing_task.cancel()
-            del self.event_tasks[host_id]
-
-        if host_id in self.event_threads:
-            # Signal thread to stop (it will check if host_id is in event_tasks)
-            pass
-
-        # Create event queue for this host
-        self.event_queues[host_id] = asyncio.Queue()
-
-        # Create stop event for this thread
-        self.event_thread_stop[host_id] = threading.Event()
-
-        # Start dedicated thread for event stream
-        # Pass the current event loop to the thread (if it exists)
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            # No event loop running yet (during startup) - use get_event_loop()
-            loop = asyncio.get_event_loop()
-
-        thread = threading.Thread(
-            target=self._event_stream_thread,
-            args=(client, host_id, loop),
-            daemon=True
-        )
-        thread.start()
-        self.event_threads[host_id] = thread
-
-        # Start async task to process events from queue (only if loop is running)
-        try:
-            # Check if there's a running event loop
-            asyncio.get_running_loop()
-            # If we get here, there's a running loop, so create the task
-            task = asyncio.create_task(self._process_docker_events(host_id))
-            self.event_tasks[host_id] = task
-        except RuntimeError:
-            # No running event loop yet - task will be started when loop starts
-            logger.debug(f"Event processing task for host {host_id} will start when event loop starts")
-
-    def stop_event_monitoring(self, host_id: str):
-        """Stop event monitoring for a specific host"""
-        # Signal thread to stop
-        if host_id in self.event_thread_stop:
-            self.event_thread_stop[host_id].set()
-            del self.event_thread_stop[host_id]
-
-        if host_id in self.event_tasks:
-            task = self.event_tasks[host_id]
-            task.cancel()
-            del self.event_tasks[host_id]
-        if host_id in self.event_queues:
-            del self.event_queues[host_id]
-        if host_id in self.event_threads:
-            del self.event_threads[host_id]
-
-    def _event_stream_thread(self, client: docker.DockerClient, host_id: str, loop):
-        """Dedicated thread to read Docker events and put them in a queue"""
-        logger.info(f"Event stream thread started for host {host_id}")
-
-        try:
-            events = client.events(decode=True, filters={"type": "container"})
-
-            for event in events:
-                # Check if we should stop using the threading.Event
-                stop_event = self.event_thread_stop.get(host_id)
-                if stop_event and stop_event.is_set():
-                    logger.info(f"Event stream thread for host {host_id} stopping (stop signal received)")
-                    break
-
-                # Put event in queue (thread-safe, fire-and-forget)
-                try:
-                    queue = self.event_queues.get(host_id)
-                    if queue:
-                        # Use run_coroutine_threadsafe without waiting for completion
-                        asyncio.run_coroutine_threadsafe(
-                            queue.put(event),
-                            loop
-                        )
-                except Exception as e:
-                    logger.error(f"Error scheduling event for queue for host {host_id}: {e}")
-
-        except Exception as e:
-            logger.error(f"Error in event stream thread for host {host_id}: {e}")
-        finally:
-            logger.info(f"Event stream thread stopped for host {host_id}")
-
-    async def _process_docker_events(self, host_id: str):
-        """Process Docker events from the queue"""
-        logger.info(f"Starting Docker event processing for host {host_id}")
-
-        try:
-            queue = self.event_queues[host_id]
-
-            while host_id in self.event_tasks:
-                try:
-                    # Wait for event with timeout
-                    event = await asyncio.wait_for(queue.get(), timeout=5.0)
-
-                    # Parse event
-                    docker_event = DockerEvent(
-                        action=event.get("Action", ""),
-                        container_id=event.get("id", "")[:12],
-                        container_name=event.get("Actor", {}).get("Attributes", {}).get("name", ""),
-                        image=event.get("Actor", {}).get("Attributes", {}).get("image", ""),
-                        host_id=host_id,
-                        timestamp=datetime.fromtimestamp(event.get("time", 0)).isoformat(),
-                        attributes=event.get("Actor", {}).get("Attributes", {})
-                    )
-
-                    # Filter out noisy health check events
-                    # Check if this is a health check by looking at the original event
-                    event_str = str(event)
-                    if docker_event.action.startswith('exec_') and 'healthcheck' in event_str:
-                        # Skip health check events - they're too noisy
-                        continue
-
-                    # Track user-initiated stop/kill actions
-                    if docker_event.action in ['kill', 'stop'] and self.docker_monitor:
-                        # Get full container ID (Docker events have short IDs, need to look up full ID)
-                        container_id_full = event.get("id", "")  # This is the full ID
-                        container_key = f"{host_id}:{container_id_full}"
-                        import time
-                        self.docker_monitor._recent_user_actions[container_key] = time.time()
-                        logger.info(f"Tracked user {docker_event.action} action for {container_key} via Docker event")
-
-                    # Log container creation events
-                    if docker_event.action == 'create' and self.docker_monitor and self.notification_service:
-                        # Get host name using the same approach as notifications
-                        host_name = self.notification_service._get_host_name(docker_event)
-
-                        logger.info(f"Container created: '{docker_event.container_name}' on host '{host_name}'")
-                        from event_logger import EventCategory, EventType, EventSeverity, EventContext
-                        context = EventContext(
-                            host_id=docker_event.host_id,
-                            host_name=host_name,
-                            container_id=docker_event.container_id,
-                            container_name=docker_event.container_name
-                        )
-                        self.docker_monitor.event_logger.log_event(
-                            category=EventCategory.CONTAINER,
-                            event_type=EventType.ACTION_TAKEN,
-                            title="Container Created",
-                            message=f"Container '{docker_event.container_name}' created on host '{host_name}'",
-                            severity=EventSeverity.INFO,
-                            context=context,
-                            details={"action": "create", "image": docker_event.image}
-                        )
-
-                    # Log container destroy/removal events
-                    if docker_event.action == 'destroy' and self.docker_monitor and self.notification_service:
-                        # Get host name using the same approach as notifications
-                        host_name = self.notification_service._get_host_name(docker_event)
-
-                        logger.info(f"Container destroyed: '{docker_event.container_name}' on host '{host_name}'")
-                        from event_logger import EventCategory, EventType, EventSeverity, EventContext
-                        context = EventContext(
-                            host_id=docker_event.host_id,
-                            host_name=host_name,
-                            container_id=docker_event.container_id,
-                            container_name=docker_event.container_name
-                        )
-                        self.docker_monitor.event_logger.log_event(
-                            category=EventCategory.CONTAINER,
-                            event_type=EventType.ACTION_TAKEN,
-                            title="Container Removed",
-                            message=f"Container '{docker_event.container_name}' removed from host '{host_name}'",
-                            severity=EventSeverity.INFO,
-                            context=context,
-                            details={"action": "destroy", "image": docker_event.image}
-                        )
-
-                    # Process event for alerts if notification service is available
-                    if self.notification_service and docker_event.action in [
-                        'die', 'oom', 'kill', 'health_status', 'restart'
-                    ]:
-                        # Get exit code for die events
-                        exit_code = None
-                        if docker_event.action == 'die':
-                            exit_code_str = docker_event.attributes.get('exitCode', '0')
-                            try:
-                                exit_code = int(exit_code_str)
-                            except (ValueError, TypeError):
-                                exit_code = None
-
-                        # Create alert event
-                        from notifications import DockerEventAlert
-                        alert_event = DockerEventAlert(
-                            container_id=docker_event.container_id,
-                            container_name=docker_event.container_name,
-                            host_id=docker_event.host_id,
-                            event_type=docker_event.action,
-                            timestamp=datetime.now(),
-                            attributes=docker_event.attributes,
-                            exit_code=exit_code
-                        )
-
-                        # Process in background to not block event monitoring
-                        asyncio.create_task(self.notification_service.process_docker_event(alert_event))
-
-                    # Broadcast to all subscribers
-                    dead_sockets = []
-                    for websocket in self.event_subscribers:
-                        try:
-                            await websocket.send_text(json.dumps({
-                                "type": "docker_event",
-                                "data": asdict(docker_event)
-                            }, cls=DateTimeEncoder))
-                        except Exception as e:
-                            logger.error(f"Error sending event to websocket: {e}")
-                            dead_sockets.append(websocket)
-
-                    # Clean up dead sockets
-                    for ws in dead_sockets:
-                        await self.unsubscribe_from_events(ws)
-
-                except asyncio.TimeoutError:
-                    # Timeout is normal - just continue the loop
-                    continue
-                except Exception as e:
-                    logger.error(f"Error in event monitoring loop: {e}")
-                    await asyncio.sleep(1)  # Brief pause before retrying
-
-                # Small delay to prevent overwhelming
-                await asyncio.sleep(0.1)
-
-        except Exception as e:
-            logger.error(f"Error monitoring Docker events: {e}")
-        finally:
-            logger.info(f"Stopped Docker event monitoring for host {host_id}")
-            if host_id in self.event_tasks:
-                del self.event_tasks[host_id]
+    # Event monitoring methods removed - now handled by Go service
+    # The following methods are kept as stubs for backward compatibility
 
     async def broadcast_container_update(self, containers: List[Any], hosts: List[Any]):
         """Broadcast container updates to all subscribers"""
@@ -482,11 +231,6 @@ class RealtimeMonitor:
         for task in self.monitoring_tasks.values():
             task.cancel()
         self.monitoring_tasks.clear()
-
-        # Cancel event monitoring
-        for task in self.event_tasks.values():
-            task.cancel()
-        self.event_tasks.clear()
 
 class LiveUpdateManager:
     """Manages live updates with throttling and batching"""

@@ -159,13 +159,9 @@
 
                     // Update host metrics charts
                     if (message.data.host_metrics && typeof updateHostMetrics === 'function') {
-                        console.log('Received host_metrics:', message.data.host_metrics);
                         for (const [hostId, metrics] of Object.entries(message.data.host_metrics)) {
-                            console.log(`Updating metrics for host ${hostId}:`, metrics);
                             updateHostMetrics(hostId, metrics);
                         }
-                    } else {
-                        console.warn('No host_metrics in WebSocket message or updateHostMetrics not defined');
                     }
 
                     // Refresh container modal if open

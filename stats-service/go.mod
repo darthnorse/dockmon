@@ -4,7 +4,10 @@ go 1.23.0
 
 toolchain go1.23.12
 
-require github.com/docker/docker v27.5.1+incompatible
+require (
+	github.com/docker/docker v27.5.1+incompatible
+	github.com/gorilla/websocket v1.5.3
+)
 
 require github.com/docker/go-connections v0.5.0 // indirect
 

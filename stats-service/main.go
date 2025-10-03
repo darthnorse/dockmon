@@ -11,6 +11,8 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 const tokenFilePath = "/tmp/stats-service-token"
@@ -65,6 +67,11 @@ func main() {
 	// Create aggregator (runs every 1 second)
 	aggregator := NewAggregator(cache, 1*time.Second)
 
+	// Create event management components
+	eventCache := NewEventCache(100) // Keep last 100 events per host
+	eventBroadcaster := NewEventBroadcaster()
+	eventManager := NewEventManager(eventBroadcaster, eventCache)
+
 	// Create context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -92,12 +99,14 @@ func main() {
 	// Health check endpoint
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		_, totalEvents := eventCache.GetStats()
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":      "ok",
-			"service":     "dockmon-stats",
-			"streams":     streamManager.GetStreamCount(),
-			"containers":  0,
-			"hosts":       0,
+			"status":            "ok",
+			"service":           "dockmon-stats",
+			"stats_streams":     streamManager.GetStreamCount(),
+			"event_hosts":       eventManager.GetActiveHosts(),
+			"event_connections": eventBroadcaster.GetConnectionCount(),
+			"cached_events":     totalEvents,
 		})
 	})
 
@@ -219,6 +228,126 @@ func main() {
 		})
 	}))
 
+	// === Event Monitoring Endpoints ===
+
+	// Start monitoring events for a host - PROTECTED
+	mux.HandleFunc("/api/events/hosts/add", authMiddleware(token, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			HostID      string `json:"host_id"`
+			HostAddress string `json:"host_address"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		if err := eventManager.AddHost(req.HostID, req.HostAddress); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "started"})
+	}))
+
+	// Stop monitoring events for a host - PROTECTED
+	mux.HandleFunc("/api/events/hosts/remove", authMiddleware(token, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			HostID string `json:"host_id"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		eventManager.RemoveHost(req.HostID)
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "stopped"})
+	}))
+
+	// Get recent events - PROTECTED
+	mux.HandleFunc("/api/events/recent", authMiddleware(token, func(w http.ResponseWriter, r *http.Request) {
+		hostID := r.URL.Query().Get("host_id")
+
+		var events interface{}
+		if hostID != "" {
+			// Get events for specific host
+			events = eventCache.GetRecentEvents(hostID, 50)
+		} else {
+			// Get events for all hosts
+			events = eventCache.GetAllRecentEvents(50)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(events)
+	}))
+
+	// WebSocket endpoint for event streaming - PROTECTED
+	mux.HandleFunc("/ws/events", func(w http.ResponseWriter, r *http.Request) {
+		// Validate token from query parameter or header
+		tokenParam := r.URL.Query().Get("token")
+		authHeader := r.Header.Get("Authorization")
+
+		validToken := false
+		if tokenParam == token {
+			validToken = true
+		} else if authHeader == "Bearer "+token {
+			validToken = true
+		}
+
+		if !validToken {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			log.Printf("Unauthorized WebSocket connection attempt from %s", r.RemoteAddr)
+			return
+		}
+
+		// Upgrade to WebSocket
+		upgrader := websocket.Upgrader{
+			CheckOrigin: func(r *http.Request) bool {
+				// Allow connections from localhost only
+				return true
+			},
+		}
+
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			log.Printf("WebSocket upgrade failed: %v", err)
+			return
+		}
+
+		// Register connection
+		eventBroadcaster.AddConnection(conn)
+
+		// Handle connection (read loop to detect disconnect)
+		go func() {
+			defer func() {
+				eventBroadcaster.RemoveConnection(conn)
+				conn.Close()
+			}()
+
+			for {
+				// Read messages (just to detect disconnect, we don't expect any)
+				_, _, err := conn.ReadMessage()
+				if err != nil {
+					break
+				}
+			}
+		}()
+	})
+
 	// Create server
 	srv := &http.Server{
 		Addr:         ":8081",
@@ -247,8 +376,14 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 
-	// Stop all streams
+	// Stop all stats streams
 	streamManager.StopAllStreams()
+
+	// Stop all event monitoring
+	eventManager.StopAll()
+
+	// Close all event WebSocket connections
+	eventBroadcaster.CloseAll()
 
 	// Stop HTTP server
 	if err := srv.Shutdown(shutdownCtx); err != nil {

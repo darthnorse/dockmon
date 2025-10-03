@@ -262,11 +262,8 @@ function renderDashboardWidgets() {
             item.getAttribute('data-widget-id')?.startsWith('host-')
         );
 
-        console.log('Existing host widgets:', existingHostWidgets.length, 'Expected:', hosts.length);
-
         // Call createHostWidgets if host count changed OR if we have hosts but no widgets
         if (existingHostWidgets.length !== hosts.length || (hosts.length > 0 && existingHostWidgets.length === 0)) {
-            console.log('Creating host widgets...');
             createHostWidgets();
         }
     }

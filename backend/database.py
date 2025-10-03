@@ -322,11 +322,16 @@ class DatabaseManager:
     def add_host(self, host_data: dict) -> DockerHostDB:
         """Add a new Docker host"""
         with self.get_session() as session:
-            host = DockerHostDB(**host_data)
-            session.add(host)
-            session.commit()
-            session.refresh(host)
-            return host
+            try:
+                host = DockerHostDB(**host_data)
+                session.add(host)
+                session.commit()
+                session.refresh(host)
+                logger.info(f"Added host {host.name} ({host.id[:8]}) to database")
+                return host
+            except Exception as e:
+                logger.error(f"Failed to add host to database: {e}")
+                raise
 
     def get_hosts(self, active_only: bool = True) -> List[DockerHostDB]:
         """Get all Docker hosts ordered by creation time"""
@@ -346,51 +351,64 @@ class DatabaseManager:
     def update_host(self, host_id: str, updates: dict) -> Optional[DockerHostDB]:
         """Update a Docker host"""
         with self.get_session() as session:
-            host = session.query(DockerHostDB).filter(DockerHostDB.id == host_id).first()
-            if host:
-                for key, value in updates.items():
-                    setattr(host, key, value)
-                host.updated_at = datetime.now()
-                session.commit()
-                session.refresh(host)
-            return host
+            try:
+                host = session.query(DockerHostDB).filter(DockerHostDB.id == host_id).first()
+                if host:
+                    for key, value in updates.items():
+                        setattr(host, key, value)
+                    host.updated_at = datetime.now()
+                    session.commit()
+                    session.refresh(host)
+                    logger.info(f"Updated host {host.name} ({host_id[:8]}) in database")
+                return host
+            except Exception as e:
+                logger.error(f"Failed to update host {host_id[:8]} in database: {e}")
+                raise
 
     def delete_host(self, host_id: str) -> bool:
         """Delete a Docker host and clean up related alert rules"""
         with self.get_session() as session:
-            host = session.query(DockerHostDB).filter(DockerHostDB.id == host_id).first()
-            if not host:
-                return False
+            try:
+                host = session.query(DockerHostDB).filter(DockerHostDB.id == host_id).first()
+                if not host:
+                    logger.warning(f"Attempted to delete non-existent host {host_id[:8]}")
+                    return False
 
-            # Get all alert rules
-            all_rules = session.query(AlertRuleDB).all()
+                host_name = host.name
 
-            # Process each alert rule to remove containers from the deleted host
-            for rule in all_rules:
-                if not rule.containers:
-                    continue
+                # Get all alert rules
+                all_rules = session.query(AlertRuleDB).all()
 
-                # Filter out containers from the deleted host
-                # rule.containers is a list of AlertRuleContainer objects
-                remaining_containers = [
-                    c for c in rule.containers
-                    if c.host_id != host_id
-                ]
+                # Process each alert rule to remove containers from the deleted host
+                for rule in all_rules:
+                    if not rule.containers:
+                        continue
 
-                if len(remaining_containers) == 0:
-                    # No containers left, delete the entire alert
-                    session.delete(rule)
-                    logger.info(f"Deleted alert rule '{rule.name}' (all containers were on deleted host {host_id})")
-                elif len(remaining_containers) < len(rule.containers):
-                    # Some containers remain, update the alert
-                    rule.containers = remaining_containers
-                    rule.updated_at = datetime.now()
-                    logger.info(f"Updated alert rule '{rule.name}' (removed containers from host {host_id})")
+                    # Filter out containers from the deleted host
+                    # rule.containers is a list of AlertRuleContainer objects
+                    remaining_containers = [
+                        c for c in rule.containers
+                        if c.host_id != host_id
+                    ]
 
-            # Delete the host
-            session.delete(host)
-            session.commit()
-            return True
+                    if len(remaining_containers) == 0:
+                        # No containers left, delete the entire alert
+                        session.delete(rule)
+                        logger.info(f"Deleted alert rule '{rule.name}' (all containers were on deleted host {host_id})")
+                    elif len(remaining_containers) < len(rule.containers):
+                        # Some containers remain, update the alert
+                        rule.containers = remaining_containers
+                        rule.updated_at = datetime.now()
+                        logger.info(f"Updated alert rule '{rule.name}' (removed containers from host {host_id})")
+
+                # Delete the host
+                session.delete(host)
+                session.commit()
+                logger.info(f"Deleted host {host_name} ({host_id[:8]}) from database")
+                return True
+            except Exception as e:
+                logger.error(f"Failed to delete host {host_id[:8]} from database: {e}")
+                raise
 
     # Auto-Restart Configuration
     def get_auto_restart_config(self, host_id: str, container_id: str) -> Optional[AutoRestartConfig]:
@@ -404,51 +422,67 @@ class DatabaseManager:
     def set_auto_restart(self, host_id: str, container_id: str, container_name: str, enabled: bool):
         """Set auto-restart configuration for a container"""
         with self.get_session() as session:
-            config = session.query(AutoRestartConfig).filter(
-                AutoRestartConfig.host_id == host_id,
-                AutoRestartConfig.container_id == container_id
-            ).first()
+            try:
+                config = session.query(AutoRestartConfig).filter(
+                    AutoRestartConfig.host_id == host_id,
+                    AutoRestartConfig.container_id == container_id
+                ).first()
 
-            if config:
-                config.enabled = enabled
-                config.updated_at = datetime.now()
-                if not enabled:
-                    config.restart_count = 0
-            else:
-                config = AutoRestartConfig(
-                    host_id=host_id,
-                    container_id=container_id,
-                    container_name=container_name,
-                    enabled=enabled
-                )
-                session.add(config)
+                if config:
+                    config.enabled = enabled
+                    config.updated_at = datetime.now()
+                    if not enabled:
+                        config.restart_count = 0
+                    logger.info(f"Updated auto-restart for {container_name} ({container_id[:12]}): enabled={enabled}")
+                else:
+                    config = AutoRestartConfig(
+                        host_id=host_id,
+                        container_id=container_id,
+                        container_name=container_name,
+                        enabled=enabled
+                    )
+                    session.add(config)
+                    logger.info(f"Created auto-restart config for {container_name} ({container_id[:12]}): enabled={enabled}")
 
-            session.commit()
+                session.commit()
+            except Exception as e:
+                logger.error(f"Failed to set auto-restart for {container_id[:12]}: {e}")
+                raise
 
     def increment_restart_count(self, host_id: str, container_id: str):
         """Increment restart count for a container"""
         with self.get_session() as session:
-            config = session.query(AutoRestartConfig).filter(
-                AutoRestartConfig.host_id == host_id,
-                AutoRestartConfig.container_id == container_id
-            ).first()
+            try:
+                config = session.query(AutoRestartConfig).filter(
+                    AutoRestartConfig.host_id == host_id,
+                    AutoRestartConfig.container_id == container_id
+                ).first()
 
-            if config:
-                config.restart_count += 1
-                config.last_restart = datetime.now()
-                session.commit()
+                if config:
+                    config.restart_count += 1
+                    config.last_restart = datetime.now()
+                    session.commit()
+                    logger.debug(f"Incremented restart count for {container_id[:12]} to {config.restart_count}")
+            except Exception as e:
+                logger.error(f"Failed to increment restart count for {container_id[:12]}: {e}")
+                raise
 
     def reset_restart_count(self, host_id: str, container_id: str):
         """Reset restart count for a container"""
         with self.get_session() as session:
-            config = session.query(AutoRestartConfig).filter(
-                AutoRestartConfig.host_id == host_id,
-                AutoRestartConfig.container_id == container_id
-            ).first()
+            try:
+                config = session.query(AutoRestartConfig).filter(
+                    AutoRestartConfig.host_id == host_id,
+                    AutoRestartConfig.container_id == container_id
+                ).first()
 
-            if config:
-                config.restart_count = 0
-                session.commit()
+                if config:
+                    config.restart_count = 0
+                    session.commit()
+                    logger.debug(f"Reset restart count for {container_id[:12]}")
+            except Exception as e:
+                logger.error(f"Failed to reset restart count for {container_id[:12]}: {e}")
+                raise
 
     # Global Settings
     def get_settings(self) -> GlobalSettings:
@@ -459,24 +493,34 @@ class DatabaseManager:
     def update_settings(self, updates: dict) -> GlobalSettings:
         """Update global settings"""
         with self.get_session() as session:
-            settings = session.query(GlobalSettings).first()
-            for key, value in updates.items():
-                if hasattr(settings, key):
-                    setattr(settings, key, value)
-            settings.updated_at = datetime.now()
-            session.commit()
-            session.refresh(settings)
-            return settings
+            try:
+                settings = session.query(GlobalSettings).first()
+                for key, value in updates.items():
+                    if hasattr(settings, key):
+                        setattr(settings, key, value)
+                settings.updated_at = datetime.now()
+                session.commit()
+                session.refresh(settings)
+                logger.info(f"Updated global settings: {list(updates.keys())}")
+                return settings
+            except Exception as e:
+                logger.error(f"Failed to update global settings: {e}")
+                raise
 
     # Notification Channels
     def add_notification_channel(self, channel_data: dict) -> NotificationChannel:
         """Add a notification channel"""
         with self.get_session() as session:
-            channel = NotificationChannel(**channel_data)
-            session.add(channel)
-            session.commit()
-            session.refresh(channel)
-            return channel
+            try:
+                channel = NotificationChannel(**channel_data)
+                session.add(channel)
+                session.commit()
+                session.refresh(channel)
+                logger.info(f"Added notification channel: {channel.name} (type: {channel.type})")
+                return channel
+            except Exception as e:
+                logger.error(f"Failed to add notification channel: {e}")
+                raise
 
     def get_notification_channels(self, enabled_only: bool = True) -> List[NotificationChannel]:
         """Get all notification channels"""
@@ -501,47 +545,64 @@ class DatabaseManager:
     def update_notification_channel(self, channel_id: int, updates: dict) -> Optional[NotificationChannel]:
         """Update a notification channel"""
         with self.get_session() as session:
-            channel = session.query(NotificationChannel).filter(NotificationChannel.id == channel_id).first()
-            if channel:
-                for key, value in updates.items():
-                    setattr(channel, key, value)
-                channel.updated_at = datetime.now()
-                session.commit()
-                session.refresh(channel)
-            return channel
+            try:
+                channel = session.query(NotificationChannel).filter(NotificationChannel.id == channel_id).first()
+                if channel:
+                    for key, value in updates.items():
+                        setattr(channel, key, value)
+                    channel.updated_at = datetime.now()
+                    session.commit()
+                    session.refresh(channel)
+                    logger.info(f"Updated notification channel: {channel.name} (ID: {channel_id})")
+                return channel
+            except Exception as e:
+                logger.error(f"Failed to update notification channel {channel_id}: {e}")
+                raise
 
     def delete_notification_channel(self, channel_id: int) -> bool:
         """Delete a notification channel"""
         with self.get_session() as session:
-            channel = session.query(NotificationChannel).filter(NotificationChannel.id == channel_id).first()
-            if channel:
-                session.delete(channel)
-                session.commit()
-                return True
-            return False
+            try:
+                channel = session.query(NotificationChannel).filter(NotificationChannel.id == channel_id).first()
+                if channel:
+                    channel_name = channel.name
+                    session.delete(channel)
+                    session.commit()
+                    logger.info(f"Deleted notification channel: {channel_name} (ID: {channel_id})")
+                    return True
+                logger.warning(f"Attempted to delete non-existent notification channel {channel_id}")
+                return False
+            except Exception as e:
+                logger.error(f"Failed to delete notification channel {channel_id}: {e}")
+                raise
 
     # Alert Rules
     def add_alert_rule(self, rule_data: dict) -> AlertRuleDB:
         """Add an alert rule with container+host pairs"""
         with self.get_session() as session:
-            # Extract containers list if present
-            containers_data = rule_data.pop('containers', None)
+            try:
+                # Extract containers list if present
+                containers_data = rule_data.pop('containers', None)
 
-            rule = AlertRuleDB(**rule_data)
-            session.add(rule)
-            session.flush()  # Flush to get the ID without committing
+                rule = AlertRuleDB(**rule_data)
+                session.add(rule)
+                session.flush()  # Flush to get the ID without committing
 
-            # Add container+host pairs if provided
-            if containers_data:
-                for container in containers_data:
-                    container_pair = AlertRuleContainer(
-                        alert_rule_id=rule.id,
-                        host_id=container['host_id'],
-                        container_name=container['container_name']
-                    )
-                    session.add(container_pair)
+                # Add container+host pairs if provided
+                if containers_data:
+                    for container in containers_data:
+                        container_pair = AlertRuleContainer(
+                            alert_rule_id=rule.id,
+                            host_id=container['host_id'],
+                            container_name=container['container_name']
+                        )
+                        session.add(container_pair)
 
-            session.commit()
+                session.commit()
+                logger.info(f"Added alert rule: {rule.name} (ID: {rule.id})")
+            except Exception as e:
+                logger.error(f"Failed to add alert rule: {e}")
+                raise
 
             # Create a detached copy with all needed attributes
             rule_dict = {
@@ -588,52 +649,64 @@ class DatabaseManager:
     def update_alert_rule(self, rule_id: str, updates: dict) -> Optional[AlertRuleDB]:
         """Update an alert rule and its container+host pairs"""
         with self.get_session() as session:
-            from sqlalchemy.orm import joinedload
-            rule = session.query(AlertRuleDB).options(joinedload(AlertRuleDB.containers)).filter(AlertRuleDB.id == rule_id).first()
-            if rule:
-                # Check if containers field is present before extracting it
-                has_containers_update = 'containers' in updates
-                containers_data = updates.pop('containers', None)
+            try:
+                from sqlalchemy.orm import joinedload
+                rule = session.query(AlertRuleDB).options(joinedload(AlertRuleDB.containers)).filter(AlertRuleDB.id == rule_id).first()
+                if rule:
+                    # Check if containers field is present before extracting it
+                    has_containers_update = 'containers' in updates
+                    containers_data = updates.pop('containers', None)
 
-                # Update rule fields
-                for key, value in updates.items():
-                    setattr(rule, key, value)
-                rule.updated_at = datetime.now()
+                    # Update rule fields
+                    for key, value in updates.items():
+                        setattr(rule, key, value)
+                    rule.updated_at = datetime.now()
 
-                # Update container+host pairs if containers field was explicitly provided
-                # (could be None for "all containers", empty list, or list with specific containers)
-                if has_containers_update:
-                    # Delete existing container pairs
-                    session.query(AlertRuleContainer).filter(
-                        AlertRuleContainer.alert_rule_id == rule_id
-                    ).delete()
+                    # Update container+host pairs if containers field was explicitly provided
+                    # (could be None for "all containers", empty list, or list with specific containers)
+                    if has_containers_update:
+                        # Delete existing container pairs
+                        session.query(AlertRuleContainer).filter(
+                            AlertRuleContainer.alert_rule_id == rule_id
+                        ).delete()
 
-                    # Add new container pairs (if containers_data is None or empty, no new pairs are added)
-                    if containers_data:
-                        for container in containers_data:
-                            container_pair = AlertRuleContainer(
-                                alert_rule_id=rule_id,
-                                host_id=container['host_id'],
-                                container_name=container['container_name']
-                            )
-                            session.add(container_pair)
+                        # Add new container pairs (if containers_data is None or empty, no new pairs are added)
+                        if containers_data:
+                            for container in containers_data:
+                                container_pair = AlertRuleContainer(
+                                    alert_rule_id=rule_id,
+                                    host_id=container['host_id'],
+                                    container_name=container['container_name']
+                                )
+                                session.add(container_pair)
 
-                session.commit()
-                session.refresh(rule)
-                # Load containers relationship
-                _ = rule.containers
-                session.expunge(rule)
-            return rule
+                    session.commit()
+                    session.refresh(rule)
+                    # Load containers relationship
+                    _ = rule.containers
+                    session.expunge(rule)
+                    logger.info(f"Updated alert rule: {rule.name} (ID: {rule_id})")
+                return rule
+            except Exception as e:
+                logger.error(f"Failed to update alert rule {rule_id}: {e}")
+                raise
 
     def delete_alert_rule(self, rule_id: str) -> bool:
         """Delete an alert rule"""
         with self.get_session() as session:
-            rule = session.query(AlertRuleDB).filter(AlertRuleDB.id == rule_id).first()
-            if rule:
-                session.delete(rule)
-                session.commit()
-                return True
-            return False
+            try:
+                rule = session.query(AlertRuleDB).filter(AlertRuleDB.id == rule_id).first()
+                if rule:
+                    rule_name = rule.name
+                    session.delete(rule)
+                    session.commit()
+                    logger.info(f"Deleted alert rule: {rule_name} (ID: {rule_id})")
+                    return True
+                logger.warning(f"Attempted to delete non-existent alert rule {rule_id}")
+                return False
+            except Exception as e:
+                logger.error(f"Failed to delete alert rule {rule_id}: {e}")
+                raise
 
     def get_alerts_dependent_on_channel(self, channel_id: int) -> List[dict]:
         """Find alerts that would be orphaned if this channel is deleted (only have this one channel)"""

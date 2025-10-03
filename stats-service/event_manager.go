@@ -51,16 +51,7 @@ func NewEventManager(broadcaster *EventBroadcaster, cache *EventCache) *EventMan
 
 // AddHost starts monitoring Docker events for a host
 func (em *EventManager) AddHost(hostID, hostAddress string) error {
-	em.mu.Lock()
-	defer em.mu.Unlock()
-
-	// Check if already monitoring
-	if stream, exists := em.hosts[hostID]; exists && stream.active {
-		log.Printf("Already monitoring events for host %s", hostID[:8])
-		return nil
-	}
-
-	// Create Docker client
+	// Create Docker client FIRST (before acquiring lock or stopping old stream)
 	var dockerClient *client.Client
 	var err error
 
@@ -80,6 +71,20 @@ func (em *EventManager) AddHost(hostID, hostAddress string) error {
 
 	if err != nil {
 		return err
+	}
+
+	// Now that new client is successfully created, acquire lock and swap
+	em.mu.Lock()
+	defer em.mu.Unlock()
+
+	// If already monitoring, stop the old stream (only after new client succeeds)
+	if stream, exists := em.hosts[hostID]; exists && stream.active {
+		log.Printf("Stopping existing event monitoring for host %s to update", hostID[:8])
+		stream.cancel()
+		stream.active = false
+		if stream.client != nil {
+			stream.client.Close()
+		}
 	}
 
 	// Create context for this stream

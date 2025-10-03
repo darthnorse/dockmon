@@ -95,6 +95,9 @@ async def lifespan(app: FastAPI):
         monitor.cleanup_task.cancel()
     # Stop blackout monitoring
     monitor.notification_service.blackout_manager.stop_monitoring()
+    # Close stats client (HTTP session and WebSocket)
+    from stats_client import get_stats_client
+    await get_stats_client().close()
     # Close notification service
     await monitor.notification_service.close()
     # Stop event logger

@@ -39,9 +39,6 @@ func (eb *EventBroadcaster) RemoveConnection(conn *websocket.Conn) {
 
 // Broadcast sends an event to all connected WebSocket clients
 func (eb *EventBroadcaster) Broadcast(event DockerEvent) {
-	eb.mu.RLock()
-	defer eb.mu.RUnlock()
-
 	// Marshal event to JSON
 	data, err := json.Marshal(event)
 	if err != nil {
@@ -50,9 +47,10 @@ func (eb *EventBroadcaster) Broadcast(event DockerEvent) {
 	}
 
 	// Track dead connections
-	deadConnections := []*websocket.Conn{}
+	var deadConnections []*websocket.Conn
 
 	// Send to all connections
+	eb.mu.RLock()
 	for conn := range eb.connections {
 		err := conn.WriteMessage(websocket.TextMessage, data)
 		if err != nil {
@@ -60,17 +58,16 @@ func (eb *EventBroadcaster) Broadcast(event DockerEvent) {
 			deadConnections = append(deadConnections, conn)
 		}
 	}
+	eb.mu.RUnlock()
 
-	// Clean up dead connections (do this outside the RLock)
+	// Clean up dead connections (after releasing read lock)
 	if len(deadConnections) > 0 {
-		eb.mu.RUnlock()
 		eb.mu.Lock()
 		for _, conn := range deadConnections {
 			delete(eb.connections, conn)
 			conn.Close()
 		}
 		eb.mu.Unlock()
-		eb.mu.RLock()
 	}
 }
 

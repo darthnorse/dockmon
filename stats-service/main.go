@@ -9,13 +9,78 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
 
-const tokenFilePath = "/tmp/stats-service-token"
+// Configuration with environment variable support
+var config = struct {
+	TokenFilePath      string
+	Port               string
+	AggregationInterval time.Duration
+	EventCacheSize     int
+	CleanupInterval    time.Duration
+	MaxRequestBodySize int64
+}{
+	TokenFilePath:       getEnv("TOKEN_FILE_PATH", "/tmp/stats-service-token"),
+	Port:                getEnv("STATS_SERVICE_PORT", "8081"),
+	AggregationInterval: getEnvDuration("AGGREGATION_INTERVAL", "1s"),
+	EventCacheSize:      getEnvInt("EVENT_CACHE_SIZE", 100),
+	CleanupInterval:     getEnvDuration("CLEANUP_INTERVAL", "60s"),
+	MaxRequestBodySize:  getEnvInt64("MAX_REQUEST_BODY_SIZE", 1048576), // 1MB default
+}
+
+// getEnv gets environment variable with fallback
+func getEnv(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
+}
+
+// getEnvInt gets integer environment variable with fallback
+func getEnvInt(key string, fallback int) int {
+	if value := os.Getenv(key); value != "" {
+		if intVal, err := strconv.Atoi(value); err == nil {
+			return intVal
+		}
+	}
+	return fallback
+}
+
+// getEnvInt64 gets int64 environment variable with fallback
+func getEnvInt64(key string, fallback int64) int64 {
+	if value := os.Getenv(key); value != "" {
+		if intVal, err := strconv.ParseInt(value, 10, 64); err == nil {
+			return intVal
+		}
+	}
+	return fallback
+}
+
+// getEnvDuration gets duration environment variable with fallback
+func getEnvDuration(key string, fallback string) time.Duration {
+	value := getEnv(key, fallback)
+	if duration, err := time.ParseDuration(value); err == nil {
+		return duration
+	}
+	// Fallback parsing
+	if duration, err := time.ParseDuration(fallback); err == nil {
+		return duration
+	}
+	return 1 * time.Second // Ultimate fallback
+}
+
+// truncateID safely truncates an ID string to the specified length
+func truncateID(id string, length int) string {
+	if len(id) <= length {
+		return id
+	}
+	return id[:length]
+}
 
 // generateToken creates a cryptographically secure random token
 func generateToken() (string, error) {
@@ -24,6 +89,23 @@ func generateToken() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(bytes), nil
+}
+
+// limitRequestBody limits the size of request bodies
+func limitRequestBody(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, config.MaxRequestBodySize)
+		next(w, r)
+	}
+}
+
+// jsonResponse writes a JSON response and handles encoding errors
+func jsonResponse(w http.ResponseWriter, data interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(data); err != nil {
+		log.Printf("Error encoding JSON response: %v", err)
+		// Can't send error status if response already partially sent
+	}
 }
 
 // authMiddleware validates the Bearer token
@@ -53,10 +135,12 @@ func main() {
 	}
 
 	// Write token to file for Python backend
-	if err := os.WriteFile(tokenFilePath, []byte(token), 0600); err != nil {
+	if err := os.WriteFile(config.TokenFilePath, []byte(token), 0600); err != nil {
 		log.Fatalf("Failed to write token file: %v", err)
 	}
-	log.Println("Generated temporary auth token")
+	log.Printf("Generated temporary auth token (stored at: %s)", config.TokenFilePath)
+	log.Printf("Configuration: port=%s, aggregation=%v, cache_size=%d, cleanup=%v",
+		config.Port, config.AggregationInterval, config.EventCacheSize, config.CleanupInterval)
 
 	// Create stats cache
 	cache := NewStatsCache()
@@ -64,11 +148,11 @@ func main() {
 	// Create stream manager
 	streamManager := NewStreamManager(cache)
 
-	// Create aggregator (runs every 1 second)
-	aggregator := NewAggregator(cache, 1*time.Second)
+	// Create aggregator with configured interval
+	aggregator := NewAggregator(cache, config.AggregationInterval)
 
-	// Create event management components
-	eventCache := NewEventCache(100) // Keep last 100 events per host
+	// Create event management components with configured cache size
+	eventCache := NewEventCache(config.EventCacheSize)
 	eventBroadcaster := NewEventBroadcaster()
 	eventManager := NewEventManager(eventBroadcaster, eventCache)
 
@@ -98,9 +182,8 @@ func main() {
 
 	// Health check endpoint
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
 		_, totalEvents := eventCache.GetStats()
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		jsonResponse(w, map[string]interface{}{
 			"status":            "ok",
 			"service":           "dockmon-stats",
 			"stats_streams":     streamManager.GetStreamCount(),
@@ -131,8 +214,7 @@ func main() {
 			return
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(stats)
+		jsonResponse(w,stats)
 	}))
 
 	// Get all container stats (for debugging) - PROTECTED
@@ -143,7 +225,7 @@ func main() {
 	}))
 
 	// Start stream for a container (called by Python backend) - PROTECTED
-	mux.HandleFunc("/api/streams/start", authMiddleware(token, func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/streams/start", authMiddleware(token, limitRequestBody(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -167,10 +249,10 @@ func main() {
 
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{"status": "started"})
-	}))
+	})))
 
 	// Stop stream for a container - PROTECTED
-	mux.HandleFunc("/api/streams/stop", authMiddleware(token, func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/streams/stop", authMiddleware(token, limitRequestBody(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -242,8 +324,7 @@ func main() {
 	// Debug endpoint - PROTECTED
 	mux.HandleFunc("/debug/stats", authMiddleware(token, func(w http.ResponseWriter, r *http.Request) {
 		containerCount, hostCount := cache.GetStats()
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		jsonResponse(w,map[string]interface{}{
 			"streams":    streamManager.GetStreamCount(),
 			"containers": containerCount,
 			"hosts":      hostCount,
@@ -313,8 +394,7 @@ func main() {
 			events = eventCache.GetAllRecentEvents(50)
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(events)
+		jsonResponse(w,events)
 	}))
 
 	// WebSocket endpoint for event streaming - PROTECTED
@@ -340,7 +420,15 @@ func main() {
 		upgrader := websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
 				// Allow connections from localhost only
-				return true
+				origin := r.Header.Get("Origin")
+				if origin == "" {
+					return true // Allow same-origin requests
+				}
+				// Allow localhost and 127.0.0.1 on any port
+				return origin == "http://localhost:8080" ||
+					origin == "http://127.0.0.1:8080" ||
+					origin == "http://localhost" ||
+					origin == "http://127.0.0.1"
 			},
 		}
 
@@ -370,9 +458,9 @@ func main() {
 		}()
 	})
 
-	// Create server
+	// Create server with configured port
 	srv := &http.Server{
-		Addr:         ":8081",
+		Addr:         ":" + config.Port,
 		Handler:      mux,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
@@ -414,6 +502,13 @@ func main() {
 
 	// Cancel context to stop aggregator
 	cancel()
+
+	// Clean up token file
+	if err := os.Remove(config.TokenFilePath); err != nil {
+		log.Printf("Warning: Failed to remove token file: %v", err)
+	} else {
+		log.Println("Removed token file")
+	}
 
 	log.Println("Stats service stopped")
 }

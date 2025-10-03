@@ -80,12 +80,14 @@ async function init() {
         }
 
         // Page switching
-        function switchPage(page) {
+        function switchPage(page, event) {
             // Update active nav item
             document.querySelectorAll('.nav-item').forEach(item => {
                 item.classList.remove('active');
             });
-            event.currentTarget.classList.add('active');
+            if (event && event.currentTarget) {
+                event.currentTarget.classList.add('active');
+            }
 
             // Hide all pages
             document.querySelectorAll('.page-section').forEach(section => {
@@ -108,15 +110,20 @@ async function init() {
                     // Wait for hosts data before initializing dashboard
                     if (hosts.length === 0) {
                         console.log('Waiting for hosts data before initializing dashboard...');
-                        const checkData = setInterval(() => {
+                        let checkData = null;
+                        let timeoutId = null;
+
+                        checkData = setInterval(() => {
                             if (hosts.length > 0) {
                                 clearInterval(checkData);
+                                if (timeoutId) clearTimeout(timeoutId);
                                 setTimeout(() => initDashboard(), 100);
                             }
                         }, 100);
+
                         // Timeout after 5 seconds and initialize anyway
-                        setTimeout(() => {
-                            clearInterval(checkData);
+                        timeoutId = setTimeout(() => {
+                            if (checkData) clearInterval(checkData);
                             if (grid === null) {
                                 console.log('Initializing dashboard after timeout');
                                 initDashboard();
@@ -139,8 +146,6 @@ async function init() {
                 'about': 'About'
             };
             document.getElementById('pageTitle').textContent = titles[page] || 'Dashboard';
-            
-            currentPage = page;
             
             // Render page-specific content
             if (page === 'hosts') {
@@ -180,25 +185,25 @@ async function init() {
                 
                 const hostContainers = (containersByHost[host.id] || []).sort((a, b) => a.name.localeCompare(b.name));
                 const containersList = hostContainers.map(container => `
-                    <div class="container-item" data-status="${container.state}">
-                        <div class="container-info" onclick="showContainerDetails('${container.host_id}', '${container.short_id}')">
-                            <div class="container-icon container-${container.state}">
+                    <div class="container-item" data-status="${escapeHtml(container.state)}">
+                        <div class="container-info" onclick="showContainerDetails('${escapeHtml(container.host_id)}', '${escapeHtml(container.short_id)}')">
+                            <div class="container-icon container-${escapeHtml(container.state)}">
                                 ${getContainerIcon(container.state)}
                             </div>
                             <div class="container-details">
-                                <div class="container-name">${container.name}</div>
-                                <div class="container-id">${container.short_id}</div>
+                                <div class="container-name">${escapeHtml(container.name)}</div>
+                                <div class="container-id">${escapeHtml(container.short_id)}</div>
                             </div>
                         </div>
                         <div class="container-actions">
-                            <div class="auto-restart-toggle ${container.auto_restart ? 'enabled' : ''}" 
+                            <div class="auto-restart-toggle ${container.auto_restart ? 'enabled' : ''}"
                                  onclick="event.stopPropagation()">
                                 <span>🔄 Auto</span>
-                                <div class="toggle-switch ${container.auto_restart ? 'active' : ''}" 
-                                     onclick="toggleAutoRestart('${container.host_id}', '${container.short_id}', event)"></div>
+                                <div class="toggle-switch ${container.auto_restart ? 'active' : ''}"
+                                     onclick="toggleAutoRestart('${escapeHtml(container.host_id)}', '${escapeHtml(container.short_id)}', event)"></div>
                             </div>
                             <span class="container-state ${getStateClass(container.state)}">
-                                ${container.state}
+                                ${escapeHtml(container.state)}
                             </span>
                         </div>
                     </div>
@@ -870,6 +875,15 @@ async function init() {
                     }
                 });
                 resizeObserver.observe(modalContent);
+
+                // Store observer for cleanup
+                if (!window.modalResizeObserver) {
+                    window.modalResizeObserver = resizeObserver;
+                } else {
+                    // Disconnect previous observer if it exists
+                    window.modalResizeObserver.disconnect();
+                    window.modalResizeObserver = resizeObserver;
+                }
 
                 // Show the appropriate tab
                 if (preserveTab) {

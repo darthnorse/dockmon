@@ -64,8 +64,11 @@ func (eb *EventBroadcaster) Broadcast(event DockerEvent) {
 	if len(deadConnections) > 0 {
 		eb.mu.Lock()
 		for _, conn := range deadConnections {
-			delete(eb.connections, conn)
-			conn.Close()
+			// Only delete and close if connection still exists in map
+			if _, exists := eb.connections[conn]; exists {
+				delete(eb.connections, conn)
+				conn.Close()
+			}
 		}
 		eb.mu.Unlock()
 	}

@@ -77,6 +77,12 @@ function closeModal(modalId) {
         // Save preferences before closing
         saveModalPreferences();
 
+        // Clean up resize observer
+        if (window.modalResizeObserver) {
+            window.modalResizeObserver.disconnect();
+            window.modalResizeObserver = null;
+        }
+
         // Use the cleanup function
         if (window.cleanupLogStream) {
             window.cleanupLogStream();

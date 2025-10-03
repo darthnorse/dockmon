@@ -72,11 +72,11 @@ func (sm *StreamManager) AddDockerHost(hostID, hostAddress string) error {
 	// Close existing client if it exists (only after new one succeeds)
 	if existingClient, exists := sm.clients[hostID]; exists {
 		existingClient.Close()
-		log.Printf("Closed existing Docker client for host %s", hostID[:8])
+		log.Printf("Closed existing Docker client for host %s", truncateID(hostID, 8))
 	}
 
 	sm.clients[hostID] = cli
-	log.Printf("Added Docker host: %s (%s)", hostID[:8], hostAddress)
+	log.Printf("Added Docker host: %s (%s)", truncateID(hostID, 8), hostAddress)
 	return nil
 }
 
@@ -103,28 +103,29 @@ func (sm *StreamManager) RemoveDockerHost(hostID string) {
 	if cli, exists := sm.clients[hostID]; exists {
 		cli.Close()
 		delete(sm.clients, hostID)
-		log.Printf("Removed Docker host: %s", hostID[:8])
+		log.Printf("Removed Docker host: %s", truncateID(hostID, 8))
 	}
 	sm.clientsMu.Unlock()
 }
 
 // StartStream starts a persistent stats stream for a container
 func (sm *StreamManager) StartStream(ctx context.Context, containerID, containerName, hostID string) error {
-	// Get Docker client for this host (check early to avoid creating context if no client)
-	sm.clientsMu.RLock()
-	_, ok := sm.clients[hostID]
-	sm.clientsMu.RUnlock()
-
-	if !ok {
-		log.Printf("Warning: No Docker client for host %s", hostID)
-		return nil
-	}
-
 	// Check if stream already exists AND create if not - MUST BE ATOMIC
 	sm.streamsMu.Lock()
 	if _, exists := sm.streams[containerID]; exists {
 		sm.streamsMu.Unlock()
 		return nil // Already streaming
+	}
+
+	// Verify Docker client exists while holding lock to prevent race condition
+	sm.clientsMu.RLock()
+	_, ok := sm.clients[hostID]
+	sm.clientsMu.RUnlock()
+
+	if !ok {
+		sm.streamsMu.Unlock()
+		log.Printf("Warning: No Docker client for host %s", truncateID(hostID, 8))
+		return nil
 	}
 
 	// Create cancellable context for this stream
@@ -145,7 +146,7 @@ func (sm *StreamManager) StartStream(ctx context.Context, containerID, container
 	// Start streaming in a goroutine
 	go sm.streamStats(streamCtx, containerID, containerName, hostID)
 
-	log.Printf("Started stats stream for container %s (%s) on host %s", containerName, containerID[:12], hostID[:12])
+	log.Printf("Started stats stream for container %s (%s) on host %s", containerName, truncateID(containerID, 12), truncateID(hostID, 12))
 	return nil
 }
 
@@ -168,14 +169,14 @@ func (sm *StreamManager) StopStream(containerID string) {
 	// Remove from cache
 	sm.cache.RemoveContainerStats(containerID)
 
-	log.Printf("Stopped stats stream for container %s", containerID[:12])
+	log.Printf("Stopped stats stream for container %s", truncateID(containerID, 12))
 }
 
 // streamStats maintains a persistent stats stream for a single container
 func (sm *StreamManager) streamStats(ctx context.Context, containerID, containerName, hostID string) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("Recovered from panic in stats stream for %s: %v", containerID[:12], r)
+			log.Printf("Recovered from panic in stats stream for %s: %v", truncateID(containerID, 12), r)
 		}
 	}()
 
@@ -196,7 +197,7 @@ func (sm *StreamManager) streamStats(ctx context.Context, containerID, container
 		sm.clientsMu.RUnlock()
 
 		if !ok {
-			log.Printf("No Docker client for host %s (container %s), retrying in %v", hostID[:8], containerID[:12], backoff)
+			log.Printf("No Docker client for host %s (container %s), retrying in %v", truncateID(hostID, 8), truncateID(containerID, 12), backoff)
 			time.Sleep(backoff)
 			backoff = min(backoff*2, maxBackoff)
 			continue
@@ -205,7 +206,7 @@ func (sm *StreamManager) streamStats(ctx context.Context, containerID, container
 		// Open stats stream
 		stats, err := cli.ContainerStats(ctx, containerID, true) // stream=true
 		if err != nil {
-			log.Printf("Error opening stats stream for %s: %v (retrying in %v)", containerID[:12], err, backoff)
+			log.Printf("Error opening stats stream for %s: %v (retrying in %v)", truncateID(containerID, 12), err, backoff)
 			time.Sleep(backoff)
 			backoff = min(backoff*2, maxBackoff)
 			continue
@@ -229,9 +230,9 @@ func (sm *StreamManager) streamStats(ctx context.Context, containerID, container
 			if err := decoder.Decode(&stat); err != nil {
 				stats.Body.Close()
 				if err == io.EOF || err == context.Canceled {
-					log.Printf("Stats stream ended for %s", containerID[:12])
+					log.Printf("Stats stream ended for %s", truncateID(containerID, 12))
 				} else {
-					log.Printf("Error decoding stats for %s: %v", containerID[:12], err)
+					log.Printf("Error decoding stats for %s: %v", truncateID(containerID, 12), err)
 				}
 				break // Break inner loop, will retry in outer loop
 			}
@@ -308,7 +309,7 @@ func (sm *StreamManager) StopAllStreams() {
 	sm.streamsMu.Lock()
 	for containerID, cancel := range sm.streams {
 		cancel()
-		log.Printf("Stopped stream for %s", containerID[:12])
+		log.Printf("Stopped stream for %s", truncateID(containerID, 12))
 	}
 	sm.streams = make(map[string]context.CancelFunc)
 	sm.streamsMu.Unlock()
@@ -317,7 +318,7 @@ func (sm *StreamManager) StopAllStreams() {
 	sm.clientsMu.Lock()
 	for hostID, cli := range sm.clients {
 		cli.Close()
-		log.Printf("Closed Docker client for host %s", hostID[:8])
+		log.Printf("Closed Docker client for host %s", truncateID(hostID, 8))
 	}
 	sm.clients = make(map[string]*client.Client)
 	sm.clientsMu.Unlock()

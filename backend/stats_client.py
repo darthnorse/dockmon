@@ -141,10 +141,11 @@ class StatsServiceClient:
                     logger.debug(f"Started stats stream for container {container_id[:12]}")
                     return True
                 else:
-                    logger.warning(f"Failed to start stream for {container_id[:12]}: {resp.status}")
+                    error_text = await resp.text()
+                    logger.warning(f"Failed to start stream for {container_id[:12]}: HTTP {resp.status} - {error_text}")
                     return False
         except Exception as e:
-            logger.warning(f"Error starting stream for {container_id[:12]}: {e}")
+            logger.warning(f"Error starting stream for {container_id[:12]}: {type(e).__name__}: {str(e)}", exc_info=True)
             return False
 
     async def stop_container_stream(self, container_id: str) -> bool:

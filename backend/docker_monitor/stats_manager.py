@@ -60,6 +60,7 @@ class StatsManager:
 
         # Rule 1: Container stats OR host stats enabled = ALL running containers
         # (host stats need container data for aggregation)
+        logger.debug(f"Stats decision: show_container_stats={settings.show_container_stats}, show_host_stats={settings.show_host_stats}")
         if settings.show_container_stats or settings.show_host_stats:
             for container in containers:
                 if container.state == 'running':

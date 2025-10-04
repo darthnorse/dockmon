@@ -357,37 +357,37 @@ function renderDashboardWidgets() {
 
             const showContainerStats = globalSettings.show_container_stats !== false; // Default to true
             const containersList = hostContainers.slice(0, maxContainersToShow).map(container => `
-                <div class="container-item" data-status="${container.state}" style="display: flex; align-items: center;">
-                    <div class="container-info" onclick="showContainerDetails('${container.host_id}', '${container.short_id}')" style="flex: 1; min-width: 0; cursor: pointer;">
-                        <div class="container-icon container-${container.state}" style="pointer-events: none;">
+                <div class="container-item" data-status="${container.state}">
+                    <div class="container-info" onclick="showContainerDetails('${container.host_id}', '${container.short_id}')">
+                        <div class="container-icon container-${container.state}">
                             ${getContainerIcon(container.state)}
                         </div>
-                        <div class="container-details" style="pointer-events: none;">
-                            <div class="container-name">${escapeHtml(container.name)}</div>
+                        <div class="container-details">
+                            <div class="container-name"><span class="container-status-dot status-${container.state}"></span> ${escapeHtml(container.name)}</div>
                             <div class="container-id">${escapeHtml(container.short_id)}</div>
                         </div>
                     </div>
-                    <div class="container-stats" style="width: 160px; display: flex; gap: 8px; align-items: center; justify-content: flex-end; flex-shrink: 0;">
+                    <div class="container-stats">
                         ${showContainerStats && container.state === 'running' ? `
-                        <div style="display: flex; flex-direction: column; gap: 2px; flex-shrink: 0;">
+                        <div class="container-stats-charts">
                             <canvas id="container-cpu-${container.host_id}-${container.short_id}" width="35" height="12"></canvas>
                             <canvas id="container-ram-${container.host_id}-${container.short_id}" width="35" height="12"></canvas>
                             <canvas id="container-net-${container.host_id}-${container.short_id}" width="35" height="12"></canvas>
                         </div>
-                        <div style="display: flex; flex-direction: column; gap: 2px; font-size: 8px; color: var(--text-secondary); min-width: 75px;">
-                            <div style="white-space: nowrap; line-height: 12px;">CPU ${container.cpu_percent ? container.cpu_percent.toFixed(1) : '0'}%</div>
-                            <div style="white-space: nowrap; line-height: 12px;">RAM ${container.memory_usage ? formatBytes(container.memory_usage) : '0 B'}</div>
-                            <div style="white-space: nowrap; line-height: 12px;" id="container-net-value-${container.host_id}-${container.short_id}">NET 0 B/s</div>
+                        <div class="container-stats-values">
+                            <div>CPU ${container.cpu_percent ? container.cpu_percent.toFixed(1) : '0'}%</div>
+                            <div>RAM ${container.memory_usage ? formatBytes(container.memory_usage) : '0 B'}</div>
+                            <div id="container-net-value-${container.host_id}-${container.short_id}">NET 0 B/s</div>
                         </div>
                         ` : ''}
                     </div>
-                    <div class="container-actions" style="pointer-events: auto;">
-                        <div class="auto-restart-toggle ${container.auto_restart ? 'enabled' : ''}" style="margin-left: 12px;">
+                    <div class="container-actions">
+                        <div class="auto-restart-toggle ${container.auto_restart ? 'enabled' : ''}">
                             <i data-lucide="rotate-cw" style="width:14px;height:14px;"></i>
                             <div class="toggle-switch ${container.auto_restart ? 'active' : ''}"
                                  onclick="toggleAutoRestart('${container.host_id}', '${container.short_id}', event)"></div>
                         </div>
-                        <span class="container-state ${getStateClass(container.state)}" style="margin-left: 12px;">
+                        <span class="container-state ${getStateClass(container.state)}">
                             ${container.state}
                         </span>
                     </div>
@@ -414,8 +414,7 @@ function renderDashboardWidgets() {
                     widgetHeader.innerHTML = `
                         <div class="widget-title">
                             <span><i data-lucide="server" style="width:16px;height:16px;"></i></span>
-                            <span>${host.name}</span>
-                            <span class="host-status-dot status-${host.status}" title="${host.status}"></span>
+                            <span><span class="host-status-dot status-${host.status}" title="${host.status}"></span> ${host.name}</span>
                         </div>
                         ${showMetrics ? `
                         <div class="host-metrics">
@@ -445,8 +444,7 @@ function renderDashboardWidgets() {
                     if (titleElement) {
                         titleElement.innerHTML = `
                             <span><i data-lucide="server" style="width:16px;height:16px;"></i></span>
-                            <span>${host.name}</span>
-                            <span class="host-status-dot status-${host.status}" title="${host.status}"></span>
+                            <span><span class="host-status-dot status-${host.status}" title="${host.status}"></span> ${host.name}</span>
                         `;
                     }
                 }

@@ -719,11 +719,11 @@
         }
 
         .host-status-dot {
-            width: 10px;
-            height: 10px;
+            width: 8px;
+            height: 8px;
             border-radius: 50%;
             display: inline-block;
-            margin-left: 8px;
+            margin-left: 4px;
             flex-shrink: 0;
         }
 
@@ -895,8 +895,61 @@
             font-family: 'Monaco', 'Courier New', monospace;
         }
 
+        .container-stats {
+            width: 160px;
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            justify-content: flex-end;
+            flex-shrink: 0;
+        }
+
+        .container-stats-charts {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            flex-shrink: 0;
+        }
+
+        .container-stats-values {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            font-size: 8px;
+            color: var(--text-secondary);
+            min-width: 75px;
+        }
+
+        .container-stats-values > div {
+            white-space: nowrap;
+            line-height: 12px;
+        }
+
+        .container-info {
+            flex: 1;
+            min-width: 0;
+            cursor: pointer;
+        }
+
+        .container-icon {
+            pointer-events: none;
+        }
+
+        .container-details {
+            pointer-events: none;
+        }
+
         .container-actions {
             display: contents;
+            pointer-events: auto;
+        }
+
+        .container-actions .auto-restart-toggle {
+            margin-left: 12px;
+        }
+
+        .container-actions .container-state {
+            margin-left: 12px;
         }
 
         .container-state {
@@ -1449,15 +1502,22 @@
             }
 
             .widget-title {
-                font-size: 14px;
+                font-size: 13px;
+                gap: 4px !important;
             }
 
             .host-metrics {
-                gap: 8px !important;
+                gap: 4px !important;
+            }
+
+            .host-metrics canvas {
+                width: 40px !important;
+                height: 16px !important;
             }
 
             .metric-label {
-                font-size: 10px !important;
+                font-size: 8px !important;
+                white-space: nowrap !important;
             }
 
             /* Simplified mobile container display - name + status only */
@@ -1465,38 +1525,51 @@
                 flex-direction: row !important;
                 align-items: center !important;
                 justify-content: flex-start !important;
-                padding: 16px 12px !important;
+                padding: 12px 8px !important;
                 margin-bottom: 4px !important;
                 border-radius: 8px;
                 background: rgba(255, 255, 255, 0.05);
-                gap: 12px !important;
+                grid-template-columns: 1fr 70px 0px !important;
             }
 
             .container-info {
-                flex: 1 !important;
+                flex: 0 1 auto !important;
                 margin: 0 !important;
-                order: 2;
+                min-width: 0 !important;
             }
 
-            .container-stats {
+            .container-item .container-icon {
+                display: none !important;
+            }
+
+            .container-item .container-stats {
                 order: 3 !important;
-                width: auto !important;
-                min-width: 110px !important;
-                gap: 4px !important;
+                width: 90px !important;
+                gap: 2px !important;
+                margin-left: auto !important;
             }
 
-            .container-stats canvas {
-                width: 30px !important;
-                height: 10px !important;
+            .container-item .container-stats-charts {
+                gap: 1px !important;
             }
 
-            .container-stats > div:last-child {
-                font-size: 7px !important;
-                min-width: 65px !important;
+            .container-item .container-stats-charts canvas {
+                width: 26px !important;
+                height: 8px !important;
+            }
+
+            .container-item .container-stats-values {
+                font-size: 6px !important;
+                min-width: 55px !important;
+                gap: 1px !important;
+            }
+
+            .container-item .container-stats-values > div {
+                line-height: 8px !important;
             }
 
             .container-name {
-                font-size: 14px !important;
+                font-size: 12px !important;
                 font-weight: 500 !important;
                 white-space: nowrap !important;
                 overflow: hidden !important;
@@ -1505,35 +1578,31 @@
                 line-height: 1.2 !important;
             }
 
-            /* Make status indicator larger and more visible like desktop */
-            .container-item::before {
-                content: '';
-                width: 12px !important;
-                height: 12px !important;
-                border-radius: 50% !important;
-                background: #10b981 !important; /* Green for running */
-                flex-shrink: 0 !important;
-                order: 1;
-                display: block !important;
+            /* Container status dot - inline with container name */
+            .container-status-dot {
+                display: inline-block;
+                width: 8px;
+                height: 8px;
+                border-radius: 50%;
+                flex-shrink: 0;
             }
 
-            /* Different colors for different states */
-            .container-item[data-status="running"]::before {
-                background: #10b981 !important; /* Green */
+            .container-status-dot.status-running {
+                background: #10b981; /* Green */
             }
 
-            .container-item[data-status="stopped"]::before,
-            .container-item[data-status="exited"]::before {
-                background: #ef4444 !important; /* Red */
+            .container-status-dot.status-stopped,
+            .container-status-dot.status-exited {
+                background: #ef4444; /* Red */
             }
 
-            .container-item[data-status="restarting"]::before {
-                background: #f59e0b !important; /* Yellow */
+            .container-status-dot.status-restarting {
+                background: #f59e0b; /* Yellow */
             }
 
-            .container-item[data-status="error"]::before,
-            .container-item[data-status="dead"]::before {
-                background: #ef4444 !important; /* Red */
+            .container-status-dot.status-error,
+            .container-status-dot.status-dead {
+                background: #ef4444; /* Red */
             }
 
             /* Hide clutter on mobile - but only in container list, not in modal */
@@ -1692,6 +1761,111 @@
             /* Hide desktop bottom nav on mobile */
             .mobile-bottom-nav {
                 display: none;
+            }
+
+            /* Reduce font sizes globally on mobile */
+            .modal-content {
+                font-size: 12px !important;
+            }
+
+            .modal h2,
+            .modal h3 {
+                font-size: 16px !important;
+            }
+
+            .modal .tab-button {
+                font-size: 12px !important;
+                padding: 8px 12px !important;
+            }
+
+            .modal .stat-card h3 {
+                font-size: 11px !important;
+            }
+
+            .modal .stat-card {
+                padding: 12px !important;
+            }
+
+            /* Host management list */
+            .host-list-item .host-name {
+                font-size: 12px !important;
+            }
+
+            .host-list-item .host-url {
+                font-size: 10px !important;
+            }
+
+            .host-list-item {
+                padding: 10px !important;
+            }
+
+            /* Alert list */
+            .alert-item {
+                font-size: 11px !important;
+                padding: 10px !important;
+            }
+
+            .alert-item .alert-message {
+                font-size: 11px !important;
+            }
+
+            .alert-item .alert-time {
+                font-size: 9px !important;
+            }
+
+            /* Event viewer */
+            .event-item {
+                font-size: 11px !important;
+                padding: 10px !important;
+            }
+
+            .event-item .event-type {
+                font-size: 10px !important;
+            }
+
+            .event-item .event-time {
+                font-size: 9px !important;
+            }
+
+            .event-message {
+                font-size: 11px !important;
+            }
+
+            /* General list items */
+            .list-item {
+                font-size: 12px !important;
+                padding: 10px !important;
+            }
+
+            /* Form labels and inputs */
+            label {
+                font-size: 12px !important;
+            }
+
+            input,
+            select,
+            textarea {
+                font-size: 12px !important;
+            }
+
+            /* Buttons */
+            .btn,
+            button {
+                font-size: 12px !important;
+                padding: 8px 12px !important;
+            }
+
+            /* Table text */
+            table {
+                font-size: 11px !important;
+            }
+
+            th {
+                font-size: 11px !important;
+            }
+
+            td {
+                font-size: 11px !important;
             }
         }
 

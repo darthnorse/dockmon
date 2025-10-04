@@ -188,6 +188,13 @@
                         }
                     }
 
+                    // Update container metrics sparklines
+                    if (typeof updateContainerSparklines === 'function') {
+                        for (const container of containers) {
+                            updateContainerSparklines(container.host_id, container.short_id, container);
+                        }
+                    }
+
                     // Refresh container modal if open
                     refreshContainerModalIfOpen();
 
@@ -199,9 +206,16 @@
                     
                 case 'host_added':
                     fetchHosts();
+                    fetchContainers(); // Fetch containers to show new host's containers
                     showToast('✅ Host added successfully');
                     break;
-                    
+
+                case 'host_removed':
+                    fetchHosts();
+                    fetchContainers(); // Refresh to remove containers from deleted host
+                    showToast('🗑️ Host removed successfully');
+                    break;
+
                 case 'auto_restart_success':
                     // Add to batch instead of showing immediate toast
                     restartNotificationBatch.push(message.data.container_name);

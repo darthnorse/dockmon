@@ -132,6 +132,13 @@ func (sm *StreamManager) AddDockerHost(hostID, hostAddress, tlsCACert, tlsCert, 
 
 	sm.clients[hostID] = cli
 	log.Printf("Added Docker host: %s (%s)", truncateID(hostID, 8), hostAddress)
+
+	// Initialize host stats with zero values so the host appears immediately in the UI
+	sm.cache.UpdateHostStats(&HostStats{
+		HostID:         hostID,
+		ContainerCount: 0,
+	})
+
 	return nil
 }
 

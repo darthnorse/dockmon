@@ -62,14 +62,14 @@ class StatsManager:
         # (host stats need container data for aggregation)
         if settings.show_container_stats or settings.show_host_stats:
             for container in containers:
-                if container.state == 'running':
+                if container.status == 'running':
                     containers_needing_stats.add(container.id)
 
         # Rule 2: Always add modal containers (even if settings are off)
         for modal_container_id in self.modal_containers:
             # Verify container is still running before adding
             for container in containers:
-                if container.id == modal_container_id and container.state == 'running':
+                if container.id == modal_container_id and container.status == 'running':
                     containers_needing_stats.add(container.id)
                     break
 

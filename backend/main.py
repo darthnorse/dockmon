@@ -200,6 +200,12 @@ async def add_host(config: DockerHostConfig, authenticated: bool = Depends(verif
                 user_agent=request.headers.get('user-agent', 'unknown')
             )
 
+        # Broadcast host addition to WebSocket clients so they refresh
+        await monitor.manager.broadcast({
+            "type": "host_added",
+            "data": {"host_id": host.id, "host_name": host.name}
+        })
+
         return host
     except Exception as e:
         # Security audit log - failed privileged action
@@ -223,6 +229,13 @@ async def update_host(host_id: str, config: DockerHostConfig, authenticated: boo
 async def remove_host(host_id: str, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_hosts):
     """Remove a Docker host"""
     monitor.remove_host(host_id)
+
+    # Broadcast host removal to WebSocket clients so they refresh
+    await monitor.manager.broadcast({
+        "type": "host_removed",
+        "data": {"host_id": host_id}
+    })
+
     return {"status": "success", "message": f"Host {host_id} removed"}
 
 @app.get("/api/hosts/{host_id}/metrics")

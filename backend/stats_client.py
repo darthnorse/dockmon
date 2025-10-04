@@ -121,6 +121,10 @@ class StatsServiceClient:
                 else:
                     logger.warning(f"Failed to remove host {host_id[:8]} from stats service: {resp.status}")
                     return False
+        except asyncio.TimeoutError:
+            # Timeout during host removal is expected - Go service closes connections immediately
+            logger.debug(f"Timeout removing host {host_id[:8]} from stats service (expected during cleanup)")
+            return False
         except Exception as e:
             logger.warning(f"Error removing host {host_id[:8]} from stats service: {e}")
             return False

@@ -155,6 +155,8 @@ function removeHostMetrics(hostId) {
 // Container Sparklines Management
 const containerSparklineCharts = new Map(); // "hostId-containerId" -> { cpu: Chart, ram: Chart, net: Chart }
 const containerNetworkHistory = new Map(); // Track previous network values for rate calculation
+const containerChartsReady = new Map(); // Track Promise resolvers for when charts are ready
+const pendingUpdates = new Map(); // Queue updates that arrive before charts are ready
 
 /**
  * Remove container metrics and cleanup resources
@@ -174,6 +176,12 @@ function removeContainerMetrics(hostId, containerId) {
 
     // Remove network history
     containerNetworkHistory.delete(key);
+
+    // Remove ready promise
+    containerChartsReady.delete(key);
+
+    // Remove pending updates
+    pendingUpdates.delete(key);
 }
 
 // Export for use in other modules
@@ -181,69 +189,105 @@ window.removeContainerMetrics = removeContainerMetrics;
 
 /**
  * Create sparkline charts for a container
+ * Returns a Promise that resolves when charts are created
  */
 function createContainerSparklines(hostId, containerId) {
-    // Wait for Chart.js to be loaded
-    const waitForChart = setInterval(() => {
-        if (typeof Chart === 'undefined') {
-            return; // Chart.js not loaded yet
-        }
+    const key = `${hostId}-${containerId}`;
 
-        clearInterval(waitForChart);
+    // Create a Promise that will resolve when charts are ready
+    const readyPromise = new Promise((resolve) => {
+        // Wait for Chart.js to be loaded
+        const waitForChart = setInterval(() => {
+            if (typeof Chart === 'undefined') {
+                return; // Chart.js not loaded yet
+            }
 
-        const key = `${hostId}-${containerId}`;
-        const cpuCanvas = document.getElementById(`container-cpu-${key}`);
-        const ramCanvas = document.getElementById(`container-ram-${key}`);
-        const netCanvas = document.getElementById(`container-net-${key}`);
+            clearInterval(waitForChart);
 
-        if (!cpuCanvas || !ramCanvas || !netCanvas) {
-            return; // Elements not found
-        }
+            const cpuCanvas = document.getElementById(`container-cpu-${key}`);
+            const ramCanvas = document.getElementById(`container-ram-${key}`);
+            const netCanvas = document.getElementById(`container-net-${key}`);
 
-        // Destroy existing charts if they exist
-        const existing = containerSparklineCharts.get(key);
-        if (existing) {
-            existing.cpu?.destroy();
-            existing.ram?.destroy();
-            existing.net?.destroy();
-        }
+            if (!cpuCanvas || !ramCanvas || !netCanvas) {
+                resolve(false); // Elements not found
+                return;
+            }
 
-        // Create mini sparklines
-        const cpuChart = createSparkline(cpuCanvas, '#3b82f6', CONTAINER_CHART_DATA_POINTS); // blue
-        const ramChart = createSparkline(ramCanvas, '#10b981', CONTAINER_CHART_DATA_POINTS); // green
-        const netChart = createSparkline(netCanvas, '#a855f7', CONTAINER_CHART_DATA_POINTS); // purple
+            // Destroy existing charts if they exist
+            const existing = containerSparklineCharts.get(key);
+            if (existing) {
+                existing.cpu?.destroy();
+                existing.ram?.destroy();
+                existing.net?.destroy();
+            }
 
-        containerSparklineCharts.set(key, {
-            cpu: cpuChart,
-            ram: ramChart,
-            net: netChart
-        });
-    }, CHART_POLL_INTERVAL);
+            // Create mini sparklines
+            const cpuChart = createSparkline(cpuCanvas, '#3b82f6', CONTAINER_CHART_DATA_POINTS); // blue
+            const ramChart = createSparkline(ramCanvas, '#10b981', CONTAINER_CHART_DATA_POINTS); // green
+            const netChart = createSparkline(netCanvas, '#a855f7', CONTAINER_CHART_DATA_POINTS); // purple
 
-    // Timeout after configured duration
-    setTimeout(() => clearInterval(waitForChart), CHART_LOAD_TIMEOUT);
+            containerSparklineCharts.set(key, {
+                cpu: cpuChart,
+                ram: ramChart,
+                net: netChart
+            });
+
+            resolve(true); // Charts created successfully
+
+            // Process any pending updates
+            const pending = pendingUpdates.get(key);
+            if (pending) {
+                updateContainerSparklines(hostId, containerId, pending);
+                pendingUpdates.delete(key);
+            }
+        }, CHART_POLL_INTERVAL);
+
+        // Timeout after configured duration
+        setTimeout(() => {
+            clearInterval(waitForChart);
+            resolve(false);
+        }, CHART_LOAD_TIMEOUT);
+    });
+
+    containerChartsReady.set(key, readyPromise);
+    return readyPromise;
 }
 
 /**
  * Update container sparklines from container data
+ * If charts aren't ready yet, queue the update
  */
 function updateContainerSparklines(hostId, containerId, containerData) {
     const key = `${hostId}-${containerId}`;
     const charts = containerSparklineCharts.get(key);
 
     if (!charts) {
-        return; // Charts not created yet
+        // Charts not created yet - store this update to apply when ready
+        pendingUpdates.set(key, containerData);
+        return;
     }
 
     // Update CPU sparkline
-    if (charts.cpu && containerData.cpu_percent !== undefined) {
+    if (charts.cpu && containerData.cpu_percent !== undefined && containerData.cpu_percent !== null) {
         updateSparkline(charts.cpu, containerData.cpu_percent);
+
+        // Update CPU text value
+        const cpuValueEl = document.querySelector(`#container-cpu-${key}`).closest('.container-stats').querySelector('.container-stats-values > div:nth-child(1)');
+        if (cpuValueEl) {
+            cpuValueEl.textContent = `CPU ${containerData.cpu_percent.toFixed(1)}%`;
+        }
     }
 
     // Update RAM sparkline (convert bytes to percentage for visualization)
-    if (charts.ram && containerData.memory_usage !== undefined && containerData.memory_limit !== undefined && containerData.memory_limit > 0) {
+    if (charts.ram && containerData.memory_usage !== undefined && containerData.memory_usage !== null && containerData.memory_limit !== undefined && containerData.memory_limit > 0) {
         const ramPercent = (containerData.memory_usage / containerData.memory_limit) * 100;
         updateSparkline(charts.ram, ramPercent);
+
+        // Update RAM text value
+        const ramValueEl = document.querySelector(`#container-ram-${key}`).closest('.container-stats').querySelector('.container-stats-values > div:nth-child(2)');
+        if (ramValueEl) {
+            ramValueEl.textContent = `RAM ${formatBytes(containerData.memory_usage)}`;
+        }
     }
 
     // Update Network sparkline (calculate rate from cumulative values)

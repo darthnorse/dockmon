@@ -11,14 +11,14 @@ import (
 // EventBroadcaster manages WebSocket connections and broadcasts events
 type EventBroadcaster struct {
 	mu             sync.RWMutex
-	connections    map[*websocket.Conn]bool
+	connections    map[*websocket.Conn]*sync.Mutex // Each connection has its own write mutex
 	maxConnections int
 }
 
 // NewEventBroadcaster creates a new event broadcaster
 func NewEventBroadcaster() *EventBroadcaster {
 	return &EventBroadcaster{
-		connections:    make(map[*websocket.Conn]bool),
+		connections:    make(map[*websocket.Conn]*sync.Mutex),
 		maxConnections: 100, // Limit to 100 concurrent WebSocket connections
 	}
 }
@@ -34,7 +34,7 @@ func (eb *EventBroadcaster) AddConnection(conn *websocket.Conn) error {
 		return &websocket.CloseError{Code: websocket.ClosePolicyViolation, Text: "Connection limit reached"}
 	}
 
-	eb.connections[conn] = true
+	eb.connections[conn] = &sync.Mutex{} // Create a dedicated mutex for this connection
 	log.Printf("WebSocket connected to events. Total connections: %d", len(eb.connections))
 	return nil
 }
@@ -59,18 +59,27 @@ func (eb *EventBroadcaster) Broadcast(event DockerEvent) {
 	// Track dead connections
 	var deadConnections []*websocket.Conn
 
-	// Send to all connections
+	// Get snapshot of connections with their mutexes
 	eb.mu.RLock()
-	defer eb.mu.RUnlock()
-	for conn := range eb.connections {
+	connMutexes := make(map[*websocket.Conn]*sync.Mutex, len(eb.connections))
+	for conn, mu := range eb.connections {
+		connMutexes[conn] = mu
+	}
+	eb.mu.RUnlock()
+
+	// Send to all connections (with per-connection write lock)
+	for conn, mu := range connMutexes {
+		mu.Lock()
 		err := conn.WriteMessage(websocket.TextMessage, data)
+		mu.Unlock()
+
 		if err != nil {
 			log.Printf("Error sending event to WebSocket: %v", err)
 			deadConnections = append(deadConnections, conn)
 		}
 	}
 
-	// Clean up dead connections (after releasing read lock)
+	// Clean up dead connections
 	if len(deadConnections) > 0 {
 		eb.mu.Lock()
 		defer eb.mu.Unlock()
@@ -100,6 +109,6 @@ func (eb *EventBroadcaster) CloseAll() {
 		conn.Close()
 	}
 
-	eb.connections = make(map[*websocket.Conn]bool)
+	eb.connections = make(map[*websocket.Conn]*sync.Mutex)
 	log.Println("Closed all event WebSocket connections")
 }

@@ -183,8 +183,6 @@
 
                     // Update host metrics charts
                     if (message.data.host_metrics && typeof updateHostMetrics === 'function') {
-                        const hostIds = Object.keys(message.data.host_metrics);
-                        console.log(`📊 Received host metrics for ${hostIds.length} host(s):`, hostIds.map(id => id.substring(0, 12)));
                         for (const [hostId, metrics] of Object.entries(message.data.host_metrics)) {
                             updateHostMetrics(hostId, metrics);
                         }

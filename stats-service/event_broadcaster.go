@@ -81,14 +81,21 @@ func (eb *EventBroadcaster) Broadcast(event DockerEvent) {
 
 	// Clean up dead connections
 	if len(deadConnections) > 0 {
+		// Remove from map first (fast, under lock)
 		eb.mu.Lock()
-		defer eb.mu.Unlock()
+		var connectionsToClose []*websocket.Conn
 		for _, conn := range deadConnections {
-			// Only delete and close if connection still exists in map
+			// Only delete if connection still exists in map
 			if _, exists := eb.connections[conn]; exists {
 				delete(eb.connections, conn)
-				conn.Close()
+				connectionsToClose = append(connectionsToClose, conn)
 			}
+		}
+		eb.mu.Unlock()
+
+		// Close connections outside lock (slow, can block)
+		for _, conn := range connectionsToClose {
+			conn.Close()
 		}
 	}
 }
@@ -103,12 +110,17 @@ func (eb *EventBroadcaster) GetConnectionCount() int {
 // CloseAll closes all WebSocket connections
 func (eb *EventBroadcaster) CloseAll() {
 	eb.mu.Lock()
-	defer eb.mu.Unlock()
-
+	var connectionsToClose []*websocket.Conn
 	for conn := range eb.connections {
+		connectionsToClose = append(connectionsToClose, conn)
+	}
+	eb.connections = make(map[*websocket.Conn]*sync.Mutex)
+	eb.mu.Unlock()
+
+	// Close connections outside lock (can block on network I/O)
+	for _, conn := range connectionsToClose {
 		conn.Close()
 	}
 
-	eb.connections = make(map[*websocket.Conn]*sync.Mutex)
 	log.Println("Closed all event WebSocket connections")
 }

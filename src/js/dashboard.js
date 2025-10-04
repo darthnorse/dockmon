@@ -415,7 +415,7 @@ function renderDashboardWidgets() {
                         <div class="widget-title">
                             <span><i data-lucide="server" style="width:16px;height:16px;"></i></span>
                             <span>${host.name}</span>
-                            <span class="host-status status-${host.status}" style="margin-left: 8px;">${host.status}</span>
+                            <span class="host-status-dot status-${host.status}" title="${host.status}"></span>
                         </div>
                         ${showMetrics ? `
                         <div class="host-metrics">
@@ -446,7 +446,7 @@ function renderDashboardWidgets() {
                         titleElement.innerHTML = `
                             <span><i data-lucide="server" style="width:16px;height:16px;"></i></span>
                             <span>${host.name}</span>
-                            <span class="host-status status-${host.status}" style="margin-left: 8px;">${host.status}</span>
+                            <span class="host-status-dot status-${host.status}" title="${host.status}"></span>
                         `;
                     }
                 }

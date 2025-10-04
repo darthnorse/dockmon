@@ -718,6 +718,23 @@
             text-transform: uppercase;
         }
 
+        .host-status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-left: 8px;
+            flex-shrink: 0;
+        }
+
+        .host-status-dot.status-online {
+            background: var(--success);
+        }
+
+        .host-status-dot.status-offline {
+            background: var(--danger);
+        }
+
         .status-online {
             background: rgba(0, 196, 140, 0.1);
             color: var(--success);
@@ -1432,7 +1449,15 @@
             }
 
             .widget-title {
-                font-size: 16px;
+                font-size: 14px;
+            }
+
+            .host-metrics {
+                gap: 8px !important;
+            }
+
+            .metric-label {
+                font-size: 10px !important;
             }
 
             /* Simplified mobile container display - name + status only */
@@ -1453,8 +1478,25 @@
                 order: 2;
             }
 
+            .container-stats {
+                order: 3 !important;
+                width: auto !important;
+                min-width: 110px !important;
+                gap: 4px !important;
+            }
+
+            .container-stats canvas {
+                width: 30px !important;
+                height: 10px !important;
+            }
+
+            .container-stats > div:last-child {
+                font-size: 7px !important;
+                min-width: 65px !important;
+            }
+
             .container-name {
-                font-size: 16px !important;
+                font-size: 14px !important;
                 font-weight: 500 !important;
                 white-space: nowrap !important;
                 overflow: hidden !important;

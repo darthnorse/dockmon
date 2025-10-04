@@ -82,7 +82,7 @@ class GlobalSettings(Base):
     max_retries = Column(Integer, default=3)
     retry_delay = Column(Integer, default=30)
     default_auto_restart = Column(Boolean, default=False)
-    polling_interval = Column(Integer, default=5)
+    polling_interval = Column(Integer, default=2)
     connection_timeout = Column(Integer, default=10)
     log_retention_days = Column(Integer, default=7)
     event_retention_days = Column(Integer, default=30)  # Keep events for 30 days
@@ -91,6 +91,7 @@ class GlobalSettings(Base):
     alert_template = Column(Text, nullable=True)  # Global notification template
     blackout_windows = Column(JSON, nullable=True)  # Array of blackout time windows
     first_run_complete = Column(Boolean, default=False)  # Track if first run setup is complete
+    polling_interval_migrated = Column(Boolean, default=False)  # Track if polling interval has been migrated to 2s
     timezone_offset = Column(Integer, default=0)  # Timezone offset in minutes from UTC
     show_host_stats = Column(Boolean, default=True)  # Show host statistics graphs on dashboard
     show_container_stats = Column(Boolean, default=True)  # Show container statistics on dashboard
@@ -290,6 +291,26 @@ class DatabaseManager:
                     session.execute(text("DROP TABLE container_history"))
                     session.commit()
                     print("Dropped deprecated container_history table (replaced by EventLog)")
+
+                # Migration: Add polling_interval_migrated column if it doesn't exist
+                if 'polling_interval_migrated' not in settings_column_names:
+                    session.execute(text("ALTER TABLE global_settings ADD COLUMN polling_interval_migrated BOOLEAN DEFAULT 0"))
+                    session.commit()
+                    print("Added polling_interval_migrated column to global_settings table")
+
+                # Migration: Update polling_interval to 2 seconds (only once, on first startup after this update)
+                settings = session.query(GlobalSettings).first()
+                if settings and not settings.polling_interval_migrated:
+                    # Only update if the user hasn't customized it (still at old default of 5 or 10)
+                    if settings.polling_interval >= 5:
+                        settings.polling_interval = 2
+                        settings.polling_interval_migrated = True
+                        session.commit()
+                        print("Migrated polling_interval to 2 seconds (from previous default)")
+                    else:
+                        # User has already customized to something < 5, just mark as migrated
+                        settings.polling_interval_migrated = True
+                        session.commit()
 
         except Exception as e:
             print(f"Migration warning: {e}")

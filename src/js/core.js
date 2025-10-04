@@ -20,7 +20,7 @@
             maxRetries: 3,
             retryDelay: 30,
             defaultAutoRestart: false,
-            pollingInterval: 5,
+            pollingInterval: 2,
             connectionTimeout: 10,
             blackout_windows: []
         };

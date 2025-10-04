@@ -144,6 +144,10 @@ class StatsServiceClient:
                     error_text = await resp.text()
                     logger.warning(f"Failed to start stream for {container_id[:12]}: HTTP {resp.status} - {error_text}")
                     return False
+        except asyncio.TimeoutError:
+            # Timeout errors are expected during host cleanup - log at debug level
+            logger.debug(f"Timeout starting stream for {container_id[:12]} (expected during host cleanup)")
+            return False
         except Exception as e:
             logger.warning(f"Error starting stream for {container_id[:12]}: {type(e).__name__}: {str(e)}", exc_info=True)
             return False

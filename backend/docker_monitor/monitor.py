@@ -426,6 +426,9 @@ class DockerMonitor:
                         # Remove from event service
                         await stats_client.remove_event_host(host_id)
                         logger.info(f"Removed {host_name} ({host_id[:8]}) from event service")
+                    except asyncio.TimeoutError:
+                        # Timeout during cleanup is expected - Go service closes connections immediately
+                        logger.debug(f"Timeout removing {host_name} from Go services (expected during cleanup)")
                     except Exception as e:
                         logger.error(f"Failed to remove {host_name} from Go services: {e}")
 

@@ -17,7 +17,7 @@ class GlobalSettings(BaseModel):
     max_retries: int = Field(3, ge=0, le=10)  # 0-10 retries
     retry_delay: int = Field(30, ge=5, le=300)  # 5 seconds to 5 minutes
     default_auto_restart: bool = False
-    polling_interval: int = Field(5, ge=1, le=300)  # 1 second to 5 minutes
+    polling_interval: int = Field(2, ge=1, le=300)  # 1 second to 5 minutes
     connection_timeout: int = Field(10, ge=1, le=60)  # 1-60 seconds
     alert_template: Optional[str] = Field(None, max_length=2000)  # Global notification template
     blackout_windows: Optional[List[dict]] = None  # Blackout windows configuration

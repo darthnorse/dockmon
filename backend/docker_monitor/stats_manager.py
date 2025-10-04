@@ -45,20 +45,22 @@ class StatsManager:
         Centralized decision: determine which containers need stats collection
 
         Rules:
-        1. If show_container_stats is ON → collect ALL running containers
+        1. If show_container_stats OR show_host_stats is ON → collect ALL running containers
+           (host stats are aggregated from container stats)
         2. Always collect stats for containers with open modals
 
         Args:
             containers: List of all containers
-            settings: Global settings with show_container_stats flag
+            settings: Global settings with show_container_stats and show_host_stats flags
 
         Returns:
             Set of container IDs that need stats collection
         """
         containers_needing_stats = set()
 
-        # Rule 1: Container stats enabled = ALL running containers
-        if settings.show_container_stats:
+        # Rule 1: Container stats OR host stats enabled = ALL running containers
+        # (host stats need container data for aggregation)
+        if settings.show_container_stats or settings.show_host_stats:
             for container in containers:
                 if container.state == 'running':
                     containers_needing_stats.add(container.id)

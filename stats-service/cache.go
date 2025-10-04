@@ -16,6 +16,8 @@ type ContainerStats struct {
 	MemoryPercent float64   `json:"memory_percent"`
 	NetworkRx     uint64    `json:"network_rx"`
 	NetworkTx     uint64    `json:"network_tx"`
+	DiskRead      uint64    `json:"disk_read"`
+	DiskWrite     uint64    `json:"disk_write"`
 	LastUpdate    time.Time `json:"last_update"`
 }
 
@@ -117,6 +119,22 @@ func (c *StatsCache) GetAllHostStats() map[string]*HostStats {
 		result[k] = &statsCopy
 	}
 	return result
+}
+
+// RemoveHostStats removes all stats for a specific host
+func (c *StatsCache) RemoveHostStats(hostID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Remove host stats
+	delete(c.hostStats, hostID)
+
+	// Remove all container stats for this host
+	for id, stats := range c.containerStats {
+		if stats.HostID == hostID {
+			delete(c.containerStats, id)
+		}
+	}
 }
 
 // CleanStaleStats removes stats older than maxAge

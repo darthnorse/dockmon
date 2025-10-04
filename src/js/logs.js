@@ -43,7 +43,7 @@ function saveLogsSortOrder() {
 function populateContainerList() {
     const dropdown = document.getElementById('logsContainerDropdown');
     if (!dropdown) {
-        console.error('Dropdown element not found');
+        logger.error('Dropdown element not found');
         return;
     }
 
@@ -255,12 +255,12 @@ async function fetchLogs() {
 
     // Prevent concurrent fetches
     if (isFetchingLogs) {
-        console.log('[LOGS] Fetch already in progress, skipping...');
+        logger.debug('[LOGS] Fetch already in progress, skipping...');
         return;
     }
 
     isFetchingLogs = true;
-    console.log('[LOGS] Starting fetch for', selectedContainers.length, 'containers');
+    logger.debug('[LOGS] Starting fetch for', selectedContainers.length, 'containers');
 
     const tailCount = document.getElementById('logsTailCount').value;
     const tail = tailCount === 'all' ? 10000 : parseInt(tailCount);
@@ -294,7 +294,7 @@ async function fetchLogs() {
                     containerKey: `${container.hostId}:${container.containerId}`
                 }));
             } catch (error) {
-                console.error(`Error fetching logs for ${container.name}:`, error);
+                logger.error(`Error fetching logs for ${container.name}:`, error);
                 return [];
             }
         });
@@ -324,10 +324,10 @@ async function fetchLogs() {
         allLogs = newLogs;
         renderLogs();
     } catch (error) {
-        console.error('[LOGS] Error fetching logs:', error);
+        logger.error('[LOGS] Error fetching logs:', error);
     } finally {
         isFetchingLogs = false;
-        console.log('[LOGS] Fetch completed');
+        logger.debug('[LOGS] Fetch completed');
     }
 }
 
@@ -342,12 +342,23 @@ function renderLogs() {
     }
 
     const showTimestamps = document.getElementById('logsTimestamps').checked;
-    const searchTerm = document.getElementById('logsSearchInput').value.toLowerCase();
+    const searchInput = document.getElementById('logsSearchInput').value;
 
-    // Filter logs by search term
-    const filteredLogs = searchTerm
-        ? allLogs.filter(log => log.log.toLowerCase().includes(searchTerm))
-        : allLogs;
+    // Filter logs by search term (supports regex)
+    let filteredLogs = allLogs;
+    if (searchInput && searchInput.trim() !== '') {
+        const searchTerm = searchInput.trim();
+
+        // Try to use as regex first, fall back to plain string search
+        try {
+            const regex = new RegExp(searchTerm, 'i');
+            filteredLogs = allLogs.filter(log => regex.test(log.log));
+        } catch (e) {
+            // Invalid regex, use plain string search
+            const searchLower = searchTerm.toLowerCase();
+            filteredLogs = allLogs.filter(log => log.log.toLowerCase().includes(searchLower));
+        }
+    }
 
     // Build HTML
     let html = '';
@@ -417,14 +428,14 @@ function startLogsPolling() {
     stopLogsPolling();
     const autoRefresh = document.getElementById('logsAutoRefresh')?.checked;
     if (selectedContainers.length > 0 && autoRefresh && !logsPaused) {
-        console.log('[LOGS] Starting polling interval (2s)');
+        logger.debug('[LOGS] Starting polling interval (2s)');
         logsPollingInterval = setInterval(fetchLogs, 2000); // Poll every 2 seconds (same as container modal)
     }
 }
 
 function stopLogsPolling() {
     if (logsPollingInterval) {
-        console.log('[LOGS] Stopping polling interval');
+        logger.debug('[LOGS] Stopping polling interval');
         clearInterval(logsPollingInterval);
         logsPollingInterval = null;
     }

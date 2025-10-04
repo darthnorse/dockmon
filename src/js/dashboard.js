@@ -3,13 +3,29 @@ let grid = null;
 let dashboardLocked = false;
 
 async function initDashboard() {
-    console.log('initDashboard called');
+    logger.debug('initDashboard called');
+
+    // Initialize search and sort filters
+    initializeContainerFilters();
+
+    // Show search/sort controls on dashboard
+    const searchContainer = document.getElementById('dashboardSearchContainer');
+    const sortSelect = document.getElementById('containerSort');
+    if (searchContainer) searchContainer.style.display = '';
+    if (sortSelect) sortSelect.style.display = '';
 
     // Check if dashboard grid container exists
     const dashboardGridElement = document.getElementById('dashboard-grid');
     if (!dashboardGridElement) {
-        console.error('Dashboard grid element not found!');
+        logger.error('Dashboard grid element not found!');
         return;
+    }
+
+    // Destroy existing GridStack instance if it exists
+    if (grid) {
+        grid.destroy(false); // false = don't remove DOM elements
+        grid = null;
+        logger.debug('Destroyed existing GridStack instance');
     }
 
     // Initialize GridStack with better flexibility
@@ -28,7 +44,7 @@ async function initDashboard() {
             }
         }, '#dashboard-grid');
 
-        console.log('GridStack initialized successfully');
+        logger.debug('GridStack initialized successfully');
 
         // Load saved layout from API or use default
         try {
@@ -42,24 +58,24 @@ async function initDashboard() {
                 if (data.layout) {
                     try {
                         const parsedLayout = JSON.parse(data.layout);
-                        console.log('Loading saved dashboard layout from API - widgets:', parsedLayout.map(w => w.id));
+                        logger.debug('Loading saved dashboard layout from API - widgets:', parsedLayout.map(w => w.id));
                         loadDashboardLayout(parsedLayout);
                     } catch (parseError) {
-                        console.error('Failed to parse dashboard layout JSON:', parseError);
+                        logger.error('Failed to parse dashboard layout JSON:', parseError);
                         showToast('⚠️ Dashboard layout corrupted - using default', 'error');
                         createDefaultDashboard();
                     }
                 } else {
-                    console.log('No saved layout in API - creating default dashboard layout');
+                    logger.debug('No saved layout in API - creating default dashboard layout');
                     createDefaultDashboard();
                 }
             } else {
-                console.error('Failed to load dashboard layout from API:', response.status);
+                logger.error('Failed to load dashboard layout from API:', response.status);
                 showToast('⚠️ Failed to load dashboard layout - using default', 'error');
                 createDefaultDashboard();
             }
         } catch (error) {
-            console.error('Error loading dashboard layout:', error);
+            logger.error('Error loading dashboard layout:', error);
             showToast('⚠️ Failed to load dashboard layout - using default', 'error');
             createDefaultDashboard();
         }
@@ -69,13 +85,13 @@ async function initDashboard() {
             saveDashboardLayout();
         });
 
-        console.log('Dashboard initialization completed');
+        logger.debug('Dashboard initialization completed');
 
         // Now that grid exists, populate the widgets with data
-        console.log('Rendering dashboard widgets after grid initialization...');
+        logger.debug('Rendering dashboard widgets after grid initialization...');
         renderDashboardWidgets();
     } catch (error) {
-        console.error('Failed to initialize dashboard:', error);
+        logger.error('Failed to initialize dashboard:', error);
     }
 }
 
@@ -107,7 +123,7 @@ function createHostWidgets() {
         const widgetId = item.getAttribute('data-widget-id');
         return widgetId && widgetId.startsWith('host-');
     });
-    console.log(`Checking for widgets to remove. Current: ${existingHostWidgets.length}, Expected: ${currentHostWidgetIds.length}`);
+    logger.debug(`Checking for widgets to remove. Current: ${existingHostWidgets.length}, Expected: ${currentHostWidgetIds.length}`);
 
     // Track which widget IDs we've seen to detect duplicates
     const seenWidgetIds = new Set();
@@ -117,12 +133,24 @@ function createHostWidgets() {
 
         // Remove if widget ID is not in current host list
         if (!currentHostWidgetIds.includes(widgetId)) {
-            console.log(`Removing widget ${widgetId} - not in current host list`);
+            logger.debug(`Removing widget ${widgetId} - not in current host list`);
+            // Extract host ID from widget ID (format: "host-{hostId}")
+            const hostId = widgetId.replace('host-', '');
+            // Clean up metrics before removing widget
+            if (typeof removeHostMetrics === 'function') {
+                removeHostMetrics(hostId);
+            }
             grid.removeWidget(widget);
         }
         // Remove if this is a duplicate (we've seen this ID before)
         else if (seenWidgetIds.has(widgetId)) {
-            console.log(`Removing duplicate widget ${widgetId}`);
+            logger.debug(`Removing duplicate widget ${widgetId}`);
+            // Extract host ID from widget ID (format: "host-{hostId}")
+            const hostId = widgetId.replace('host-', '');
+            // Clean up metrics before removing widget
+            if (typeof removeHostMetrics === 'function') {
+                removeHostMetrics(hostId);
+            }
             grid.removeWidget(widget);
         } else {
             seenWidgetIds.add(widgetId);
@@ -171,7 +199,7 @@ function createHostWidgets() {
         if (existingWidget) {
             return; // Skip silently - widget already exists
         }
-        console.log(`Creating new widget ${widgetId}`);
+        logger.debug(`Creating new widget ${widgetId}`);
 
         const hostContainers = containers.filter(c => c.host_id === host.id);
 
@@ -190,7 +218,7 @@ function createHostWidgets() {
             y = layoutMap[widgetId].y;
             w = layoutMap[widgetId].w;
             h = layoutMap[widgetId].h;
-            console.log(`Restoring widget ${widgetId} from saved layout: x=${x}, y=${y}, w=${w}, h=${h}`);
+            logger.debug(`Restoring widget ${widgetId} from saved layout: x=${x}, y=${y}, w=${w}, h=${h}`);
         } else {
             // Smart column placement - use the shorter column
             if (leftColumnY <= rightColumnY) {
@@ -254,7 +282,7 @@ function createWidget(id, title, icon, gridOptions) {
 }
 
 function renderDashboardWidgets() {
-    console.log('renderDashboardWidgets called - hosts:', hosts.length, 'grid:', !!grid);
+    logger.debug('renderDashboardWidgets called - hosts:', hosts.length, 'grid:', !!grid);
 
     // Check if we need to create/remove host widgets (hosts added or removed)
     if (grid) {
@@ -313,26 +341,53 @@ function renderDashboardWidgets() {
     hosts.forEach(host => {
         const hostWidget = document.getElementById(`widget-host-${host.id}`);
         if (hostWidget) {
-            const hostContainers = containers.filter(c => c.host_id === host.id).sort((a, b) => a.name.localeCompare(b.name));
+            // Get containers for this host
+            let hostContainers = containers.filter(c => c.host_id === host.id);
+
+            // Apply global search filter
+            hostContainers = filterContainers(hostContainers);
+
+            // Apply global sort
+            hostContainers = sortContainers(hostContainers);
             const maxContainersToShow = hostContainers.length; // Show all containers now that widgets are dynamically sized
+
+            // Check if container order or state has changed to avoid unnecessary re-renders
+            const containerStateKey = hostContainers.map(c => `${c.short_id}:${c.auto_restart}:${c.state}`).join(',');
+            const previousStateKey = hostWidget.dataset.containerState;
+
+            const showContainerStats = globalSettings.show_container_stats !== false; // Default to true
             const containersList = hostContainers.slice(0, maxContainersToShow).map(container => `
-                <div class="container-item" data-status="${container.state}">
-                    <div class="container-info" onclick="showContainerDetails('${container.host_id}', '${container.short_id}')">
-                        <div class="container-icon container-${container.state}">
+                <div class="container-item" data-status="${container.state}" style="display: flex; align-items: center;">
+                    <div class="container-info" onclick="showContainerDetails('${container.host_id}', '${container.short_id}')" style="flex: 1; min-width: 0; cursor: pointer;">
+                        <div class="container-icon container-${container.state}" style="pointer-events: none;">
                             ${getContainerIcon(container.state)}
                         </div>
-                        <div class="container-details">
-                            <div class="container-name">${container.name}</div>
-                            <div class="container-id">${container.short_id}</div>
+                        <div class="container-details" style="pointer-events: none;">
+                            <div class="container-name">${escapeHtml(container.name)}</div>
+                            <div class="container-id">${escapeHtml(container.short_id)}</div>
                         </div>
                     </div>
-                    <div class="container-actions">
-                        <div class="auto-restart-toggle ${container.auto_restart ? 'enabled' : ''}">
+                    <div class="container-stats" style="width: 160px; display: flex; gap: 8px; align-items: center; justify-content: flex-end; flex-shrink: 0;">
+                        ${showContainerStats && container.state === 'running' ? `
+                        <div style="display: flex; flex-direction: column; gap: 2px; flex-shrink: 0;">
+                            <canvas id="container-cpu-${container.host_id}-${container.short_id}" width="35" height="12"></canvas>
+                            <canvas id="container-ram-${container.host_id}-${container.short_id}" width="35" height="12"></canvas>
+                            <canvas id="container-net-${container.host_id}-${container.short_id}" width="35" height="12"></canvas>
+                        </div>
+                        <div style="display: flex; flex-direction: column; gap: 2px; font-size: 8px; color: var(--text-secondary); min-width: 75px;">
+                            <div style="white-space: nowrap; line-height: 12px;">CPU ${container.cpu_percent ? container.cpu_percent.toFixed(1) : '0'}%</div>
+                            <div style="white-space: nowrap; line-height: 12px;">RAM ${container.memory_usage ? formatBytes(container.memory_usage) : '0 B'}</div>
+                            <div style="white-space: nowrap; line-height: 12px;" id="container-net-value-${container.host_id}-${container.short_id}">NET 0 B/s</div>
+                        </div>
+                        ` : ''}
+                    </div>
+                    <div class="container-actions" style="pointer-events: auto;">
+                        <div class="auto-restart-toggle ${container.auto_restart ? 'enabled' : ''}" style="margin-left: 12px;">
                             <i data-lucide="rotate-cw" style="width:14px;height:14px;"></i>
                             <div class="toggle-switch ${container.auto_restart ? 'active' : ''}"
                                  onclick="toggleAutoRestart('${container.host_id}', '${container.short_id}', event)"></div>
                         </div>
-                        <span class="container-state ${getStateClass(container.state)}">
+                        <span class="container-state ${getStateClass(container.state)}" style="margin-left: 12px;">
                             ${container.state}
                         </span>
                     </div>
@@ -344,17 +399,25 @@ function renderDashboardWidgets() {
             // Update widget title with status badge and metrics
             const widgetHeader = hostWidget.closest('.grid-stack-item').querySelector('.widget-header');
             if (widgetHeader) {
-                // Check if metrics already exist to avoid recreating charts
+                const showMetrics = globalSettings.show_host_stats !== false; // Default to true
                 const metricsExist = widgetHeader.querySelector('.host-metrics');
 
-                if (!metricsExist) {
-                    // First time rendering - create full header with metrics
+                // If metrics visibility changed, rebuild the entire header
+                if ((showMetrics && !metricsExist) || (!showMetrics && metricsExist)) {
+                    // If hiding metrics, clean up Chart.js instances first
+                    if (!showMetrics && metricsExist) {
+                        if (typeof removeHostMetrics === 'function') {
+                            removeHostMetrics(host.id);
+                        }
+                    }
+
                     widgetHeader.innerHTML = `
                         <div class="widget-title">
                             <span><i data-lucide="server" style="width:16px;height:16px;"></i></span>
                             <span>${host.name}</span>
                             <span class="host-status status-${host.status}" style="margin-left: 8px;">${host.status}</span>
                         </div>
+                        ${showMetrics ? `
                         <div class="host-metrics">
                             <div class="metric-sparkline">
                                 <canvas id="cpu-chart-${host.id}" width="60" height="20"></canvas>
@@ -369,12 +432,15 @@ function renderDashboardWidgets() {
                                 <div class="metric-label">NET: <span id="net-value-${host.id}">0 B/s</span></div>
                             </div>
                         </div>
+                        ` : ''}
                     `;
 
-                    // Create charts after DOM is updated
-                    createHostMetricsCharts(host.id);
-                } else {
-                    // Metrics already exist - just update the title/status
+                    // Create charts after DOM is updated (only if showing metrics)
+                    if (showMetrics) {
+                        createHostMetricsCharts(host.id);
+                    }
+                } else if (metricsExist) {
+                    // Metrics already exist and should stay - just update the title/status
                     const titleElement = widgetHeader.querySelector('.widget-title');
                     if (titleElement) {
                         titleElement.innerHTML = `
@@ -386,12 +452,49 @@ function renderDashboardWidgets() {
                 }
             }
 
-            hostWidget.innerHTML = `
-                <div class="container-list">
-                    ${containersList || '<div style="padding: 12px; color: var(--text-tertiary); text-align: center;">No containers</div>'}
-                    ${moreCount > 0 ? `<div style="padding: 8px 12px; font-size: 12px; color: var(--text-tertiary); text-align: center; border-top: 1px solid var(--border);">+${moreCount} more containers</div>` : ''}
-                </div>
-            `;
+            // Only update if the container state has changed or it's the first render
+            if (containerStateKey !== previousStateKey) {
+                hostWidget.dataset.containerState = containerStateKey;
+
+                // Check if we're hiding container stats - cleanup charts for all containers on this host
+                const previousShowStats = hostWidget.dataset.showContainerStats !== 'false';
+                if (previousShowStats && !showContainerStats) {
+                    // Clean up all container charts for this host
+                    hostContainers.forEach(container => {
+                        if (typeof removeContainerMetrics === 'function') {
+                            removeContainerMetrics(container.host_id, container.short_id);
+                        }
+                    });
+                }
+                hostWidget.dataset.showContainerStats = showContainerStats;
+
+                hostWidget.innerHTML = `
+                    <div class="container-list">
+                        ${containersList || '<div style="padding: 12px; color: var(--text-tertiary); text-align: center;">No containers</div>'}
+                        ${moreCount > 0 ? `<div style="padding: 8px 12px; font-size: 12px; color: var(--text-tertiary); text-align: center; border-top: 1px solid var(--border);">+${moreCount} more containers</div>` : ''}
+                    </div>
+                `;
+
+                // Create sparklines for running containers
+                if (showContainerStats) {
+                    hostContainers.slice(0, maxContainersToShow).forEach(container => {
+                        if (container.state === 'running') {
+                            createContainerSparklines(container.host_id, container.short_id);
+                            // Update sparklines with current data
+                            updateContainerSparklines(container.host_id, container.short_id, container);
+                        }
+                    });
+                }
+            } else {
+                // Just update the sparkline data without re-rendering
+                if (showContainerStats) {
+                    hostContainers.slice(0, maxContainersToShow).forEach(container => {
+                        if (container.state === 'running') {
+                            updateContainerSparklines(container.host_id, container.short_id, container);
+                        }
+                    });
+                }
+            }
         }
     });
 }
@@ -433,7 +536,7 @@ async function saveDashboardLayout() {
     // Ensure stats widget is always in the saved layout
     const hasStatsWidget = layoutWithIds.some(item => item.id === 'stats');
     if (!hasStatsWidget) {
-        console.log('Adding missing stats widget to saved layout');
+        logger.debug('Adding missing stats widget to saved layout');
         layoutWithIds.unshift({
             id: 'stats',
             x: 0,
@@ -443,7 +546,7 @@ async function saveDashboardLayout() {
         });
     }
 
-    console.log('Saving layout:', layoutWithIds.map(w => `${w.id} (${w.x},${w.y}) h=${w.h}`));
+    logger.debug('Saving layout:', layoutWithIds.map(w => `${w.id} (${w.x},${w.y}) h=${w.h}`));
 
     // Save to API
     try {
@@ -455,11 +558,11 @@ async function saveDashboardLayout() {
         });
 
         if (!response.ok) {
-            console.error('Failed to save dashboard layout to API:', response.status);
+            logger.error('Failed to save dashboard layout to API:', response.status);
             showToast('⚠️ Failed to save dashboard layout', 'error');
         }
     } catch (error) {
-        console.error('Error saving dashboard layout:', error);
+        logger.error('Error saving dashboard layout:', error);
         showToast('⚠️ Failed to save dashboard layout', 'error');
     }
 }
@@ -469,7 +572,7 @@ function loadDashboardLayout(layout) {
     const seenIds = new Set();
     const dedupedLayout = layout.filter(item => {
         if (item.id === 'stats' && seenIds.has('stats')) {
-            console.log('Removing duplicate stats widget from saved layout');
+            logger.debug('Removing duplicate stats widget from saved layout');
             return false;
         }
         seenIds.add(item.id);
@@ -479,7 +582,7 @@ function loadDashboardLayout(layout) {
     // Ensure stats widget is always present first
     const hasStatsWidget = dedupedLayout.some(item => item.id === 'stats');
     if (!hasStatsWidget) {
-        console.log('Stats widget missing from layout - adding it back');
+        logger.debug('Stats widget missing from layout - adding it back');
         createWidget('stats', 'Statistics', '<span data-lucide="bar-chart-3"></span>', {
             x: 0, y: 0, w: 48, h: 9,
             minW: 48, minH: 9, maxH: 9, maxW: 48,
@@ -525,7 +628,7 @@ function loadDashboardLayout(layout) {
                 });
             }
         } else {
-            console.log(`Skipping widget ${item.id} - config not available yet (hosts data may not be loaded)`);
+            logger.debug(`Skipping widget ${item.id} - config not available yet (hosts data may not be loaded)`);
         }
     });
 }
@@ -569,11 +672,165 @@ async function resetDashboardLayout() {
                 showToast('🔄 Dashboard layout reset to default');
             }
         } else {
-            console.error('Failed to load dashboard layout from API:', response.status);
+            logger.error('Failed to load dashboard layout from API:', response.status);
             showToast('⚠️ Failed to load dashboard layout', 'error');
         }
     } catch (error) {
-        console.error('Error loading dashboard layout:', error);
+        logger.error('Error loading dashboard layout:', error);
         showToast('⚠️ Failed to load dashboard layout', 'error');
+    }
+}
+
+// ============================================================================
+// Container Search and Sorting
+// ============================================================================
+
+// Global filter state
+let containerSearchTerm = '';
+let containerSortOption = 'name-asc';
+
+// Initialize search/sort from localStorage (search) and database (sort)
+async function initializeContainerFilters() {
+    // Search: from localStorage (session-specific)
+    const savedSearch = localStorage.getItem('dockmon_container_search') || '';
+    containerSearchTerm = savedSearch;
+
+    const searchInput = document.getElementById('containerSearch');
+    if (searchInput) searchInput.value = savedSearch;
+
+    // Sort: from database (cross-browser preference)
+    try {
+        const response = await fetch(`${API_BASE}/api/user/container-sort-order`, {
+            credentials: 'include'
+        });
+        if (response.ok) {
+            const data = await response.json();
+            containerSortOption = data.sort_order || 'name-asc';
+        } else {
+            containerSortOption = 'name-asc'; // Fallback
+        }
+    } catch (error) {
+        logger.error('Error loading container sort preference:', error);
+        containerSortOption = 'name-asc'; // Fallback
+    }
+
+    const sortSelect = document.getElementById('containerSort');
+    if (sortSelect) sortSelect.value = containerSortOption;
+}
+
+// Apply search and sort filters to containers
+async function applyContainerFilters() {
+    const searchInput = document.getElementById('containerSearch');
+    const sortSelect = document.getElementById('containerSort');
+
+    // Update search term (localStorage)
+    if (searchInput) {
+        containerSearchTerm = searchInput.value;
+        localStorage.setItem('dockmon_container_search', containerSearchTerm);
+    }
+
+    // Update sort option (database)
+    if (sortSelect && sortSelect.value !== containerSortOption) {
+        const newSortOption = sortSelect.value;
+
+        try {
+            const response = await fetch(`${API_BASE}/api/user/container-sort-order`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ sort_order: newSortOption })
+            });
+
+            if (response.ok) {
+                containerSortOption = newSortOption;
+            } else {
+                logger.error('Failed to save container sort preference');
+                // Revert dropdown to previous value
+                sortSelect.value = containerSortOption;
+                showToast('⚠️ Failed to save sort preference', 'error');
+                return;
+            }
+        } catch (error) {
+            logger.error('Error saving container sort preference:', error);
+            // Revert dropdown to previous value
+            sortSelect.value = containerSortOption;
+            showToast('⚠️ Failed to save sort preference', 'error');
+            return;
+        }
+    }
+
+    // Re-render dashboard with filters applied
+    renderDashboardWidgets();
+}
+
+// Filter containers by search term (supports regex)
+function filterContainers(containersList) {
+    if (!containerSearchTerm || containerSearchTerm.trim() === '') {
+        return containersList;
+    }
+
+    const searchTerm = containerSearchTerm.trim();
+
+    // Try to use as regex first, fall back to plain string search
+    try {
+        const regex = new RegExp(searchTerm, 'i');
+        return containersList.filter(c =>
+            regex.test(c.name) || regex.test(c.image)
+        );
+    } catch (e) {
+        // Invalid regex, use plain string search
+        const lowerSearch = searchTerm.toLowerCase();
+        return containersList.filter(c =>
+            c.name.toLowerCase().includes(lowerSearch) ||
+            c.image.toLowerCase().includes(lowerSearch)
+        );
+    }
+}
+
+// Sort containers based on selected option
+function sortContainers(containersList) {
+    const sorted = [...containersList]; // Create copy to avoid mutating original
+
+    switch (containerSortOption) {
+        case 'name-asc':
+            return sorted.sort((a, b) => a.name.localeCompare(b.name));
+
+        case 'name-desc':
+            return sorted.sort((a, b) => b.name.localeCompare(a.name));
+
+        case 'status':
+            // Running > paused > created > restarting > exited > dead
+            const statusPriority = {
+                'running': 1,
+                'paused': 2,
+                'created': 3,
+                'restarting': 4,
+                'exited': 5,
+                'dead': 6
+            };
+            return sorted.sort((a, b) => {
+                const priorityA = statusPriority[a.state] || 99;
+                const priorityB = statusPriority[b.state] || 99;
+                if (priorityA !== priorityB) {
+                    return priorityA - priorityB;
+                }
+                // Same status, sort by name
+                return a.name.localeCompare(b.name);
+            });
+
+        case 'memory-desc':
+            return sorted.sort((a, b) => (b.memory_usage || 0) - (a.memory_usage || 0));
+
+        case 'memory-asc':
+            return sorted.sort((a, b) => (a.memory_usage || 0) - (b.memory_usage || 0));
+
+        case 'cpu-desc':
+            return sorted.sort((a, b) => (b.cpu_percent || 0) - (a.cpu_percent || 0));
+
+        case 'cpu-asc':
+            return sorted.sort((a, b) => (a.cpu_percent || 0) - (b.cpu_percent || 0));
+
+        default:
+            return sorted;
     }
 }

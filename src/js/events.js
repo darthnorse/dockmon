@@ -5,14 +5,6 @@ const eventsPerPage = 50;
 let eventSearchTimeout = null;
 let currentSortOrder = 'desc'; // 'desc' = newest first, 'asc' = oldest first
 
-// Helper function to escape HTML to prevent XSS
-function escapeHtml(text) {
-    if (!text) return '';
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-
 // Multi-select dropdown functions
 function toggleMultiselect(filterId) {
     const multiselect = document.getElementById(`${filterId}Multiselect`);
@@ -107,7 +99,7 @@ async function loadEvents() {
         const data = await response.json();
         renderEvents(data);
     } catch (error) {
-        console.error('Error loading events:', error);
+        logger.error('Error loading events:', error);
         eventsList.innerHTML = '<div class="events-empty">Failed to load events. Please try again.</div>';
         showToast('Failed to load events', 'error');
     }
@@ -222,17 +214,7 @@ function renderEventItem(event) {
     `;
 }
 
-function getCategoryIcon(category) {
-    const icons = {
-        'container': 'box',
-        'host': 'server',
-        'alert': 'alert-triangle',
-        'notification': 'bell',
-        'system': 'settings',
-        'user': 'user'
-    };
-    return icons[category] || 'circle';
-}
+// getCategoryIcon() removed - unused function
 
 function formatEventTime(timestamp) {
     const date = new Date(timestamp);
@@ -251,10 +233,7 @@ function formatEventTime(timestamp) {
     return date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
 }
 
-function showEventDetails(eventId) {
-    // TODO: Show modal with event details
-    console.log('Show event details:', eventId);
-}
+// showEventDetails() removed - unused function (TODO was never implemented)
 
 function refreshEvents() {
     currentEventsPage = 0;
@@ -317,7 +296,7 @@ async function loadEventSortOrder() {
             updateSortOrderButton();
         }
     } catch (error) {
-        console.error('Failed to load sort order preference:', error);
+        logger.error('Failed to load sort order preference:', error);
     }
 }
 
@@ -334,7 +313,7 @@ async function toggleEventSortOrder() {
             body: JSON.stringify({ sort_order: currentSortOrder })
         });
     } catch (error) {
-        console.error('Failed to save sort order:', error);
+        logger.error('Failed to save sort order:', error);
         showToast('Failed to save sort order', 'error');
     }
 
@@ -394,13 +373,25 @@ function shouldShowEvent(event) {
     // Host filter - if any hosts selected, event must match one
     if (hostIds.length > 0 && !hostIds.includes(event.host_id)) return false;
 
-    // Search filter
+    // Search filter (supports regex)
     if (search) {
-        const searchLower = search.toLowerCase();
-        const titleMatch = event.title?.toLowerCase().includes(searchLower);
-        const messageMatch = event.message?.toLowerCase().includes(searchLower);
-        const containerMatch = event.container_name?.toLowerCase().includes(searchLower);
-        if (!titleMatch && !messageMatch && !containerMatch) return false;
+        const searchTerm = search.trim();
+
+        // Try to use as regex first, fall back to plain string search
+        try {
+            const regex = new RegExp(searchTerm, 'i');
+            const titleMatch = event.title && regex.test(event.title);
+            const messageMatch = event.message && regex.test(event.message);
+            const containerMatch = event.container_name && regex.test(event.container_name);
+            if (!titleMatch && !messageMatch && !containerMatch) return false;
+        } catch (e) {
+            // Invalid regex, use plain string search
+            const searchLower = searchTerm.toLowerCase();
+            const titleMatch = event.title?.toLowerCase().includes(searchLower);
+            const messageMatch = event.message?.toLowerCase().includes(searchLower);
+            const containerMatch = event.container_name?.toLowerCase().includes(searchLower);
+            if (!titleMatch && !messageMatch && !containerMatch) return false;
+        }
     }
 
     return true;

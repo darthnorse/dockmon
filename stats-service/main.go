@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,12 +19,13 @@ import (
 
 // Configuration with environment variable support
 var config = struct {
-	TokenFilePath      string
-	Port               string
+	TokenFilePath       string
+	Port                string
 	AggregationInterval time.Duration
-	EventCacheSize     int
-	CleanupInterval    time.Duration
-	MaxRequestBodySize int64
+	EventCacheSize      int
+	CleanupInterval     time.Duration
+	MaxRequestBodySize  int64
+	AllowedOrigins      string
 }{
 	TokenFilePath:       getEnv("TOKEN_FILE_PATH", "/tmp/stats-service-token"),
 	Port:                getEnv("STATS_SERVICE_PORT", "8081"),
@@ -31,6 +33,7 @@ var config = struct {
 	EventCacheSize:      getEnvInt("EVENT_CACHE_SIZE", 100),
 	CleanupInterval:     getEnvDuration("CLEANUP_INTERVAL", "60s"),
 	MaxRequestBodySize:  getEnvInt64("MAX_REQUEST_BODY_SIZE", 1048576), // 1MB default
+	AllowedOrigins:      getEnv("ALLOWED_ORIGINS", "http://localhost:8080,http://127.0.0.1:8080,http://localhost,http://127.0.0.1"),
 }
 
 // getEnv gets environment variable with fallback
@@ -72,14 +75,6 @@ func getEnvDuration(key string, fallback string) time.Duration {
 		return duration
 	}
 	return 1 * time.Second // Ultimate fallback
-}
-
-// truncateID safely truncates an ID string to the specified length
-func truncateID(id string, length int) string {
-	if len(id) <= length {
-		return id
-	}
-	return id[:length]
 }
 
 // generateToken creates a cryptographically secure random token
@@ -138,7 +133,7 @@ func main() {
 	if err := os.WriteFile(config.TokenFilePath, []byte(token), 0600); err != nil {
 		log.Fatalf("Failed to write token file: %v", err)
 	}
-	log.Printf("Generated temporary auth token (stored at: %s)", config.TokenFilePath)
+	log.Printf("Generated temporary auth token for stats service")
 	log.Printf("Configuration: port=%s, aggregation=%v, cache_size=%d, cleanup=%v",
 		config.Port, config.AggregationInterval, config.EventCacheSize, config.CleanupInterval)
 
@@ -242,6 +237,12 @@ func main() {
 			return
 		}
 
+		// Validate required fields
+		if req.ContainerID == "" || req.HostID == "" {
+			http.Error(w, "container_id and host_id are required", http.StatusBadRequest)
+			return
+		}
+
 		if err := streamManager.StartStream(ctx, req.ContainerID, req.ContainerName, req.HostID); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -267,11 +268,17 @@ func main() {
 			return
 		}
 
+		// Validate required fields
+		if req.ContainerID == "" {
+			http.Error(w, "container_id is required", http.StatusBadRequest)
+			return
+		}
+
 		streamManager.StopStream(req.ContainerID)
 
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{"status": "stopped"})
-	}))
+	})))
 
 	// Add Docker host - PROTECTED
 	mux.HandleFunc("/api/hosts/add", authMiddleware(token, func(w http.ResponseWriter, r *http.Request) {
@@ -287,6 +294,12 @@ func main() {
 
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Validate required fields
+		if req.HostID == "" || req.HostAddress == "" {
+			http.Error(w, "host_id and host_address are required", http.StatusBadRequest)
 			return
 		}
 
@@ -315,6 +328,12 @@ func main() {
 			return
 		}
 
+		// Validate required fields
+		if req.HostID == "" {
+			http.Error(w, "host_id is required", http.StatusBadRequest)
+			return
+		}
+
 		streamManager.RemoveDockerHost(req.HostID)
 
 		w.WriteHeader(http.StatusOK)
@@ -324,7 +343,7 @@ func main() {
 	// Debug endpoint - PROTECTED
 	mux.HandleFunc("/debug/stats", authMiddleware(token, func(w http.ResponseWriter, r *http.Request) {
 		containerCount, hostCount := cache.GetStats()
-		jsonResponse(w,map[string]interface{}{
+		jsonResponse(w, map[string]interface{}{
 			"streams":    streamManager.GetStreamCount(),
 			"containers": containerCount,
 			"hosts":      hostCount,
@@ -350,6 +369,12 @@ func main() {
 			return
 		}
 
+		// Validate required fields
+		if req.HostID == "" || req.HostAddress == "" {
+			http.Error(w, "host_id and host_address are required", http.StatusBadRequest)
+			return
+		}
+
 		if err := eventManager.AddHost(req.HostID, req.HostAddress); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -372,6 +397,12 @@ func main() {
 
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Validate required fields
+		if req.HostID == "" {
+			http.Error(w, "host_id is required", http.StatusBadRequest)
 			return
 		}
 
@@ -419,16 +450,18 @@ func main() {
 		// Upgrade to WebSocket
 		upgrader := websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
-				// Allow connections from localhost only
 				origin := r.Header.Get("Origin")
 				if origin == "" {
 					return true // Allow same-origin requests
 				}
-				// Allow localhost and 127.0.0.1 on any port
-				return origin == "http://localhost:8080" ||
-					origin == "http://127.0.0.1:8080" ||
-					origin == "http://localhost" ||
-					origin == "http://127.0.0.1"
+				// Check against configured allowed origins
+				allowedOrigins := strings.Split(config.AllowedOrigins, ",")
+				for _, allowed := range allowedOrigins {
+					if strings.TrimSpace(allowed) == origin {
+						return true
+					}
+				}
+				return false
 			},
 		}
 
@@ -439,7 +472,12 @@ func main() {
 		}
 
 		// Register connection
-		eventBroadcaster.AddConnection(conn)
+		if err := eventBroadcaster.AddConnection(conn); err != nil {
+			log.Printf("Failed to register connection: %v", err)
+			conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "Connection limit reached"))
+			conn.Close()
+			return
+		}
 
 		// Handle connection (read loop to detect disconnect)
 		go func() {

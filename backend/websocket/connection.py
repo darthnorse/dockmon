@@ -39,7 +39,7 @@ class ConnectionManager:
 
     def has_active_connections(self) -> bool:
         """Check if there are any active WebSocket connections"""
-        return len(self.active_connections) > 0
+        return bool(self.active_connections)
 
     async def broadcast(self, message: dict):
         """Send message to all connected clients"""

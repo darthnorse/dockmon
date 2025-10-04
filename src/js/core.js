@@ -1,11 +1,26 @@
-        console.log('DockMon JavaScript loaded');
+        logger.debug('DockMon JavaScript loaded');
+
+        // Security: HTML escaping function to prevent XSS
+        function escapeHtml(unsafe) {
+            if (unsafe === null || unsafe === undefined) return '';
+            return String(unsafe)
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+
+        // Make escapeHtml globally available
+        window.escapeHtml = escapeHtml;
+
         // Global state
         let currentPage = 'dashboard';
         let globalSettings = {
             maxRetries: 3,
             retryDelay: 30,
             defaultAutoRestart: false,
-            pollingInterval: 10,
+            pollingInterval: 5,
             connectionTimeout: 10,
             blackout_windows: []
         };
@@ -18,7 +33,6 @@
         window.hosts = hosts;
         window.containers = containers;
         let ws = null;
-        let reconnectInterval = null;
 
         // Auto-restart notification batching
         let restartNotificationBatch = [];
@@ -72,7 +86,7 @@
         function connectWebSocket() {
             // Prevent multiple simultaneous connection attempts
             if (isConnecting) {
-                console.log('Connection attempt already in progress, skipping...');
+                logger.debug('Connection attempt already in progress, skipping...');
                 return;
             }
 
@@ -81,20 +95,16 @@
                 ws.close();
             }
 
-            console.log('Connecting to WebSocket:', WS_URL);
+            logger.debug('Connecting to WebSocket:', WS_URL);
             isConnecting = true;
 
             ws = new WebSocket(WS_URL);
 
             ws.onopen = function() {
-                console.log('WebSocket connected');
+                logger.debug('WebSocket connected');
                 showToast('✅ Connected to backend');
                 reconnectAttempts = 0;
                 isConnecting = false;
-                if (reconnectInterval) {
-                    clearInterval(reconnectInterval);
-                    reconnectInterval = null;
-                }
             };
 
             ws.onmessage = function(event) {
@@ -102,18 +112,18 @@
                     const message = JSON.parse(event.data);
                     handleWebSocketMessage(message);
                 } catch (error) {
-                    console.error('Error handling WebSocket message:', error);
+                    logger.error('Error handling WebSocket message:', error);
                 }
             };
             
             ws.onerror = function(error) {
-                console.error('WebSocket error:', error);
+                logger.error('WebSocket error:', error);
                 showToast('⚠️ Connection error');
                 isConnecting = false; // Reset flag on error
             };
 
             ws.onclose = function() {
-                console.log('WebSocket disconnected');
+                logger.debug('WebSocket disconnected');
                 showToast('🔌 Disconnected - attempting to reconnect...');
                 isConnecting = false; // Reset flag on close
                 attemptReconnect();
@@ -224,7 +234,7 @@
                     break;
 
                 default:
-                    console.log('Unknown message type:', message.type);
+                    logger.debug('Unknown message type:', message.type);
             }
 
             // Call any registered custom message handlers
@@ -233,7 +243,7 @@
                     try {
                         handler(message);
                     } catch (error) {
-                        console.error('Error in custom WebSocket handler:', error);
+                        logger.error('Error in custom WebSocket handler:', error);
                     }
                 });
             }
@@ -248,20 +258,14 @@
                 return;
             }
 
-            // Clear any existing reconnect interval
-            if (reconnectInterval) {
-                clearInterval(reconnectInterval);
-                reconnectInterval = null;
-            }
-
             // Use exponential backoff: 2s, 4s, 8s, 16s, then 30s
             const delay = Math.min(2000 * Math.pow(2, reconnectAttempts), 30000);
 
-            console.log(`Will attempt reconnect in ${delay}ms (attempt ${reconnectAttempts + 1}/${MAX_RECONNECT_ATTEMPTS})`);
+            logger.debug(`Will attempt reconnect in ${delay}ms (attempt ${reconnectAttempts + 1}/${MAX_RECONNECT_ATTEMPTS})`);
 
             setTimeout(() => {
                 reconnectAttempts++;
-                console.log(`Reconnect attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}`);
+                logger.debug(`Reconnect attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}`);
                 connectWebSocket();
             }, delay);
         }
@@ -276,15 +280,15 @@
                 if (response.ok) {
                     hosts = await response.json();
                     window.hosts = hosts; // Keep window.hosts in sync
-                    console.log('Fetched hosts:', hosts.length);
+                    logger.debug('Fetched hosts:', hosts.length);
                 } else {
                     throw new Error(`HTTP ${response.status}: ${response.statusText}`);
                 }
             } catch (error) {
-                console.error('Error fetching hosts:', error);
+                logger.error('Error fetching hosts:', error);
                 // Don't show toast during initial load, WebSocket will handle it
                 if (hosts.length === 0) {
-                    console.log('Will wait for WebSocket data...');
+                    logger.debug('Will wait for WebSocket data...');
                 } else {
                     showToast('❌ Failed to fetch hosts');
                 }
@@ -300,15 +304,15 @@
                 if (response.ok) {
                     containers = await response.json();
                     window.containers = containers; // Keep window.containers in sync
-                    console.log('Fetched containers:', containers.length);
+                    logger.debug('Fetched containers:', containers.length);
                 } else {
                     throw new Error(`HTTP ${response.status}: ${response.statusText}`);
                 }
             } catch (error) {
-                console.error('Error fetching containers:', error);
+                logger.error('Error fetching containers:', error);
                 // Don't show toast during initial load, WebSocket will handle it
                 if (containers.length === 0) {
-                    console.log('Will wait for WebSocket data...');
+                    logger.debug('Will wait for WebSocket data...');
                 } else {
                     showToast('❌ Failed to fetch containers');
                 }
@@ -325,7 +329,7 @@
                 // Always update timezone offset from browser
                 globalSettings.timezone_offset = -new Date().getTimezoneOffset();
             } catch (error) {
-                console.error('Error fetching settings:', error);
+                logger.error('Error fetching settings:', error);
             }
         }
 
@@ -339,31 +343,31 @@
                     renderAlertRules();
                     updateNavBadges();
                 } else {
-                    console.warn('Failed to fetch alert rules:', response.status);
+                    logger.warn('Failed to fetch alert rules:', response.status);
                     alertRules = [];
                 }
             } catch (error) {
-                console.error('Error fetching alert rules:', error);
+                logger.error('Error fetching alert rules:', error);
                 alertRules = [];
             }
         }
 
         // Check authentication status
         async function checkAuthentication() {
-            console.log('Checking authentication status...');
+            logger.debug('Checking authentication status...');
             try {
                 const response = await fetch(`${API_BASE}/api/auth/status`, {
                     credentials: 'include'
                 });
 
-                console.log('Auth response status:', response.status);
+                logger.debug('Auth response status:', response.status);
 
                 if (response.ok) {
                     const data = await response.json();
-                    console.log('Auth data:', data);
+                    logger.debug('Auth data:', data);
 
                     if (!data.authenticated) {
-                        console.log('Not authenticated, redirecting to login');
+                        logger.debug('Not authenticated, redirecting to login');
                         // Redirect to login page
                         window.location.href = '/login.html';
                         return false;
@@ -379,16 +383,16 @@
                         sessionStorage.setItem('must_change_password', 'true');
                     }
 
-                    console.log('Authentication successful');
+                    logger.debug('Authentication successful');
                     return true;
                 } else {
-                    console.log('Auth check returned non-OK status:', response.status);
+                    logger.debug('Auth check returned non-OK status:', response.status);
                 }
             } catch (error) {
-                console.error('Auth check error:', error);
+                logger.error('Auth check error:', error);
             }
 
-            console.log('Auth check failed, redirecting to login');
+            logger.debug('Auth check failed, redirecting to login');
             // If auth check fails, redirect to login
             window.location.href = '/login.html';
             return false;
@@ -405,47 +409,75 @@
                 if (response.ok) {
                     window.location.href = '/login.html';
                 } else {
-                    console.error('Logout failed');
+                    logger.error('Logout failed');
                 }
             } catch (error) {
-                console.error('Logout error:', error);
+                logger.error('Logout error:', error);
                 // Force redirect even if logout request fails
                 window.location.href = '/login.html';
             }
         }
 
         // Save modal preferences to localStorage
-        function saveModalPreferences() {
+        async function saveModalPreferences() {
             const modal = document.querySelector('#containerModal .modal-content');
             if (modal) {
+                // Check if mobile view
+                const isMobile = window.innerWidth < 768;
+                if (isMobile) {
+                    return; // Don't save preferences on mobile
+                }
+
                 const preferences = {
                     width: modal.style.width,
                     height: modal.style.height,
                     transform: modal.style.transform,
                     logsHeight: document.getElementById('container-logs')?.style.height
                 };
-                localStorage.setItem('containerModalPrefs', JSON.stringify(preferences));
+
+                try {
+                    const response = await fetch(`${API_BASE}/api/user/modal-preferences`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ preferences: JSON.stringify(preferences) })
+                    });
+                    if (!response.ok) {
+                        console.error('Failed to save modal preferences');
+                    }
+                } catch (e) {
+                    console.error('Failed to save modal preferences:', e);
+                }
             }
         }
 
-        // Load modal preferences from localStorage
-        function loadModalPreferences() {
-            const saved = localStorage.getItem('containerModalPrefs');
-            if (saved) {
-                try {
-                    const prefs = JSON.parse(saved);
-                    const modal = document.querySelector('#containerModal .modal-content');
-                    if (modal) {
-                        if (prefs.width) modal.style.width = prefs.width;
-                        if (prefs.height) modal.style.height = prefs.height;
-                        // Reset transform on load (center the modal)
-                        modal.style.transform = 'translate(0, 0)';
+        // Load modal preferences from database
+        async function loadModalPreferences() {
+            try {
+                const response = await fetch(`${API_BASE}/api/user/modal-preferences`);
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.preferences) {
+                        const prefs = JSON.parse(data.preferences);
+
+                        // Check if mobile view - don't apply saved preferences on mobile
+                        const isMobile = window.innerWidth < 768;
+                        if (isMobile) {
+                            return null;
+                        }
+
+                        const modal = document.querySelector('#containerModal .modal-content');
+                        if (modal) {
+                            if (prefs.width) modal.style.width = prefs.width;
+                            if (prefs.height) modal.style.height = prefs.height;
+                            // Reset transform on load (center the modal)
+                            modal.style.transform = 'translate(0, 0)';
+                        }
+                        // Restore logs height will be done when logs tab is shown
+                        return prefs;
                     }
-                    // Restore logs height will be done when logs tab is shown
-                    return prefs;
-                } catch (e) {
-                    console.error('Failed to load modal preferences:', e);
                 }
+            } catch (e) {
+                console.error('Failed to load modal preferences:', e);
             }
             return null;
         }
@@ -463,10 +495,6 @@
             let initialY;
             let xOffset = 0;
             let yOffset = 0;
-
-            header.addEventListener('mousedown', dragStart);
-            document.addEventListener('mousemove', drag);
-            document.addEventListener('mouseup', dragEnd);
 
             function dragStart(e) {
                 if (e.target.classList.contains('modal-close')) return;
@@ -499,6 +527,18 @@
                 // Save position after dragging
                 saveModalPreferences();
             }
+
+            // Add event listeners
+            header.addEventListener('mousedown', dragStart);
+            document.addEventListener('mousemove', drag);
+            document.addEventListener('mouseup', dragEnd);
+
+            // Store cleanup function for later removal
+            window.cleanupModalDragListeners = function() {
+                header.removeEventListener('mousedown', dragStart);
+                document.removeEventListener('mousemove', drag);
+                document.removeEventListener('mouseup', dragEnd);
+            };
         }
 
         // ========================================
@@ -574,11 +614,12 @@
          * @returns {string} Formatted string (e.g., "1.2 MB/s")
          */
         function formatBytes(bytes) {
-            if (bytes === 0) return '0 B';
+            if (!bytes || bytes === 0) return '0 B';
+            if (typeof bytes !== 'number' || !isFinite(bytes) || bytes < 0) return '0 B';
             const k = 1024;
             const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-            const i = Math.floor(Math.log(bytes) / Math.log(k));
-            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+            const i = Math.max(0, Math.floor(Math.log(bytes) / Math.log(k)));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[Math.min(i, sizes.length - 1)];
         }
 
         // Initialize

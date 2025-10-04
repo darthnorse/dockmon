@@ -30,6 +30,8 @@ class User(Base):
     must_change_password = Column(Boolean, default=False)
     dashboard_layout = Column(Text, nullable=True)  # JSON string of GridStack layout
     event_sort_order = Column(String, default='desc')  # 'desc' (newest first) or 'asc' (oldest first)
+    container_sort_order = Column(String, default='name-asc')  # Container sort preference on dashboard
+    modal_preferences = Column(Text, nullable=True)  # JSON string of modal size/position preferences
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
     last_login = Column(DateTime, nullable=True)
@@ -80,7 +82,7 @@ class GlobalSettings(Base):
     max_retries = Column(Integer, default=3)
     retry_delay = Column(Integer, default=30)
     default_auto_restart = Column(Boolean, default=False)
-    polling_interval = Column(Integer, default=2)
+    polling_interval = Column(Integer, default=5)
     connection_timeout = Column(Integer, default=10)
     log_retention_days = Column(Integer, default=7)
     event_retention_days = Column(Integer, default=30)  # Keep events for 30 days
@@ -90,6 +92,8 @@ class GlobalSettings(Base):
     blackout_windows = Column(JSON, nullable=True)  # Array of blackout time windows
     first_run_complete = Column(Boolean, default=False)  # Track if first run setup is complete
     timezone_offset = Column(Integer, default=0)  # Timezone offset in minutes from UTC
+    show_host_stats = Column(Boolean, default=True)  # Show host statistics graphs on dashboard
+    show_container_stats = Column(Boolean, default=True)  # Show container statistics on dashboard
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 class NotificationChannel(Base):
@@ -178,27 +182,6 @@ class EventLog(Base):
         {"sqlite_autoincrement": True},
     )
 
-# Keep the old table for backward compatibility but mark as deprecated
-class ContainerHistory(Base):
-    """Historical data for container state changes - DEPRECATED: Use EventLog instead"""
-    __tablename__ = "container_history"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    host_id = Column(String, nullable=False)
-    container_id = Column(String, nullable=False)
-    container_name = Column(String, nullable=False)
-    event_type = Column(String, nullable=False)  # started, stopped, restarted, removed, crashed
-    old_state = Column(String, nullable=True)
-    new_state = Column(String, nullable=True)
-    triggered_by = Column(String, nullable=True)  # manual, auto_restart, alert_action
-    details = Column(JSON, nullable=True)
-    timestamp = Column(DateTime, default=datetime.now)
-
-    # Index for efficient queries
-    __table_args__ = (
-        {"sqlite_autoincrement": True},
-    )
-
 class DatabaseManager:
     """Database management and operations"""
 
@@ -271,6 +254,42 @@ class DatabaseManager:
                     session.execute(text("ALTER TABLE users ADD COLUMN event_sort_order VARCHAR DEFAULT 'desc'"))
                     session.commit()
                     print("Added event_sort_order column to users table")
+
+                # Migration: Add container_sort_order column to users table if it doesn't exist
+                if 'container_sort_order' not in column_names:
+                    # Add the column using raw SQL
+                    session.execute(text("ALTER TABLE users ADD COLUMN container_sort_order VARCHAR DEFAULT 'name-asc'"))
+                    session.commit()
+                    print("Added container_sort_order column to users table")
+
+                # Migration: Add modal_preferences column to users table if it doesn't exist
+                if 'modal_preferences' not in column_names:
+                    # Add the column using raw SQL
+                    session.execute(text("ALTER TABLE users ADD COLUMN modal_preferences TEXT"))
+                    session.commit()
+                    print("Added modal_preferences column to users table")
+
+                # Migration: Add show_host_stats and show_container_stats columns to global_settings table
+                settings_inspector = session.connection().engine.dialect.get_columns(session.connection(), 'global_settings')
+                settings_column_names = [col['name'] for col in settings_inspector]
+
+                if 'show_host_stats' not in settings_column_names:
+                    session.execute(text("ALTER TABLE global_settings ADD COLUMN show_host_stats BOOLEAN DEFAULT 1"))
+                    session.commit()
+                    print("Added show_host_stats column to global_settings table")
+
+                if 'show_container_stats' not in settings_column_names:
+                    session.execute(text("ALTER TABLE global_settings ADD COLUMN show_container_stats BOOLEAN DEFAULT 1"))
+                    session.commit()
+                    print("Added show_container_stats column to global_settings table")
+
+                # Migration: Drop deprecated container_history table
+                # This table has been replaced by the EventLog table
+                inspector_result = session.connection().engine.dialect.get_table_names(session.connection())
+                if 'container_history' in inspector_result:
+                    session.execute(text("DROP TABLE container_history"))
+                    session.commit()
+                    print("Dropped deprecated container_history table (replaced by EventLog)")
 
         except Exception as e:
             print(f"Migration warning: {e}")
@@ -391,7 +410,7 @@ class DatabaseManager:
                         if c.host_id != host_id
                     ]
 
-                    if len(remaining_containers) == 0:
+                    if not remaining_containers:
                         # No containers left, delete the entire alert
                         session.delete(rule)
                         logger.info(f"Deleted alert rule '{rule.name}' (all containers were on deleted host {host_id})")
@@ -501,7 +520,7 @@ class DatabaseManager:
                 settings.updated_at = datetime.now()
                 session.commit()
                 session.refresh(settings)
-                logger.info(f"Updated global settings: {list(updates.keys())}")
+                logger.info("Changed global settings")
                 return settings
             except Exception as e:
                 logger.error(f"Failed to update global settings: {e}")
@@ -726,36 +745,6 @@ class DatabaseManager:
 
             return dependent_alerts
 
-    # Container History
-    def add_container_event(self, event_data: dict):
-        """Add a container history event"""
-        with self.get_session() as session:
-            event = ContainerHistory(**event_data)
-            session.add(event)
-            session.commit()
-
-    def get_container_history(self, host_id: str = None, container_id: str = None,
-                            limit: int = 100) -> List[ContainerHistory]:
-        """Get container history events"""
-        with self.get_session() as session:
-            query = session.query(ContainerHistory)
-
-            if host_id:
-                query = query.filter(ContainerHistory.host_id == host_id)
-            if container_id:
-                query = query.filter(ContainerHistory.container_id == container_id)
-
-            return query.order_by(ContainerHistory.timestamp.desc()).limit(limit).all()
-
-    def cleanup_old_history(self, days: int = 7):
-        """Clean up old history records"""
-        with self.get_session() as session:
-            cutoff_date = datetime.now() - timedelta(days=days)
-            session.query(ContainerHistory).filter(
-                ContainerHistory.timestamp < cutoff_date
-            ).delete()
-            session.commit()
-
     # Event Logging Operations
     def add_event(self, event_data: dict) -> EventLog:
         """Add an event to the event log"""
@@ -788,19 +777,19 @@ class DatabaseManager:
 
             # Apply filters - use IN clause for lists
             if category:
-                if isinstance(category, list) and len(category) > 0:
+                if isinstance(category, list) and category:
                     query = query.filter(EventLog.category.in_(category))
                 elif isinstance(category, str):
                     query = query.filter(EventLog.category == category)
             if event_type:
                 query = query.filter(EventLog.event_type == event_type)
             if severity:
-                if isinstance(severity, list) and len(severity) > 0:
+                if isinstance(severity, list) and severity:
                     query = query.filter(EventLog.severity.in_(severity))
                 elif isinstance(severity, str):
                     query = query.filter(EventLog.severity == severity)
             if host_id:
-                if isinstance(host_id, list) and len(host_id) > 0:
+                if isinstance(host_id, list) and host_id:
                     query = query.filter(EventLog.host_id.in_(host_id))
                 elif isinstance(host_id, str):
                     query = query.filter(EventLog.host_id == host_id)
@@ -1006,6 +995,25 @@ class DatabaseManager:
                 return True
             return False
 
+    def get_modal_preferences(self, username: str) -> Optional[str]:
+        """Get modal preferences for a user"""
+        with self.get_session() as session:
+            user = session.query(User).filter(User.username == username).first()
+            if user:
+                return user.modal_preferences
+            return None
+
+    def save_modal_preferences(self, username: str, preferences: str) -> bool:
+        """Save modal preferences for a user"""
+        with self.get_session() as session:
+            user = session.query(User).filter(User.username == username).first()
+            if user:
+                user.modal_preferences = preferences
+                user.updated_at = datetime.now()
+                session.commit()
+                return True
+            return False
+
     def get_event_sort_order(self, username: str) -> str:
         """Get event sort order preference for a user"""
         with self.get_session() as session:
@@ -1023,6 +1031,29 @@ class DatabaseManager:
                 if sort_order not in ['asc', 'desc']:
                     return False
                 user.event_sort_order = sort_order
+                user.updated_at = datetime.now()
+                session.commit()
+                return True
+            return False
+
+    def get_container_sort_order(self, username: str) -> str:
+        """Get container sort order preference for a user"""
+        with self.get_session() as session:
+            user = session.query(User).filter(User.username == username).first()
+            if user and user.container_sort_order:
+                return user.container_sort_order
+            return 'name-asc'  # Default to name A-Z
+
+    def save_container_sort_order(self, username: str, sort_order: str) -> bool:
+        """Save container sort order preference for a user"""
+        with self.get_session() as session:
+            user = session.query(User).filter(User.username == username).first()
+            if user:
+                # Validate sort order
+                valid_sorts = ['name-asc', 'name-desc', 'status', 'memory-desc', 'memory-asc', 'cpu-desc', 'cpu-asc']
+                if sort_order not in valid_sorts:
+                    return False
+                user.container_sort_order = sort_order
                 user.updated_at = datetime.now()
                 session.commit()
                 return True

@@ -92,24 +92,23 @@ func (a *Aggregator) aggregateHostStats(hostID string, containers []*ContainerSt
 		validContainers++
 	}
 
-	// Calculate averages
-	var avgCPU, memPercent float64
+	// Calculate totals and percentages
+	var cpuPercent, memPercent float64
 
-	if validContainers > 0 {
-		avgCPU = totalCPU / float64(validContainers)
-	}
+	// CPU is sum of all container CPU percentages (represents total host CPU usage)
+	cpuPercent = totalCPU
 
 	if totalMemLimit > 0 {
 		memPercent = (float64(totalMemUsage) / float64(totalMemLimit)) * 100.0
 	}
 
 	// Round to 1 decimal place
-	avgCPU = roundToDecimal(avgCPU, 1)
+	cpuPercent = roundToDecimal(cpuPercent, 1)
 	memPercent = roundToDecimal(memPercent, 1)
 
 	return &HostStats{
 		HostID:           hostID,
-		CPUPercent:       avgCPU,
+		CPUPercent:       cpuPercent,
 		MemoryPercent:    memPercent,
 		MemoryUsedBytes:  totalMemUsage,
 		MemoryLimitBytes: totalMemLimit,

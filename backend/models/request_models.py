@@ -137,7 +137,7 @@ class NotificationChannelCreate(BaseModel):
         if not v or not v.strip():
             raise ValueError('Channel type cannot be empty')
 
-        valid_types = {'telegram', 'discord', 'pushover', 'slack'}
+        valid_types = {'telegram', 'discord', 'pushover', 'slack', 'gotify', 'smtp'}
         v = v.strip().lower()
 
         if v not in valid_types:
@@ -197,6 +197,44 @@ class NotificationChannelCreate(BaseModel):
                 raise ValueError('Invalid Pushover app token format')
             if not re.match(r'^[a-z0-9]{30}$', user_key, re.IGNORECASE):
                 raise ValueError('Invalid Pushover user key format')
+
+        elif channel_type == 'gotify':
+            required_keys = {'server_url', 'app_token'}
+            if not all(key in v for key in required_keys):
+                raise ValueError(f'Gotify config must contain: {required_keys}')
+
+            # Validate server URL
+            server_url = v.get('server_url', '')
+            if not (server_url.startswith('http://') or server_url.startswith('https://')):
+                raise ValueError('Gotify server URL must start with http:// or https://')
+
+        elif channel_type == 'smtp':
+            required_keys = {'smtp_host', 'from_email', 'to_email'}
+            if not all(key in v for key in required_keys):
+                raise ValueError(f'SMTP config must contain: {required_keys}')
+
+            # Default port to 587 if not provided or empty
+            if 'smtp_port' not in v or v['smtp_port'] == '' or v['smtp_port'] is None:
+                v['smtp_port'] = 587
+
+            # Validate email format
+            import re
+            email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+            from_email = v.get('from_email', '')
+            to_email = v.get('to_email', '')
+            if not re.match(email_pattern, from_email):
+                raise ValueError('Invalid from_email format')
+            if not re.match(email_pattern, to_email):
+                raise ValueError('Invalid to_email format')
+
+            # Validate port
+            try:
+                port = int(v.get('smtp_port', 587))
+                if port < 1 or port > 65535:
+                    raise ValueError('SMTP port must be between 1 and 65535')
+                v['smtp_port'] = port  # Ensure it's stored as int
+            except (ValueError, TypeError):
+                raise ValueError('SMTP port must be a valid number')
 
         # Validate all string values in config for security
         for key, value in v.items():

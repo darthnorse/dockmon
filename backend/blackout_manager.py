@@ -116,8 +116,8 @@ class BlackoutManager:
                             if container.status == 'exited':
                                 try:
                                     exit_code = container.attrs.get('State', {}).get('ExitCode')
-                                except:
-                                    pass
+                                except (AttributeError, KeyError, TypeError) as e:
+                                    logger.debug(f"Could not get exit code for container {container.id[:12]}: {e}")
 
                             summary['containers_down'].append({
                                 'id': container.id[:12],

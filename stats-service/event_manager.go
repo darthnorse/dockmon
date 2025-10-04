@@ -11,14 +11,6 @@ import (
 	"github.com/docker/docker/client"
 )
 
-// truncateID safely truncates an ID string to the specified length
-func truncateIDEvent(id string, length int) string {
-	if len(id) <= length {
-		return id
-	}
-	return id[:length]
-}
-
 // DockerEvent represents a Docker container event
 type DockerEvent struct {
 	Action        string            `json:"action"`
@@ -87,7 +79,7 @@ func (em *EventManager) AddHost(hostID, hostAddress string) error {
 
 	// If already monitoring, stop the old stream (only after new client succeeds)
 	if stream, exists := em.hosts[hostID]; exists && stream.active {
-		log.Printf("Stopping existing event monitoring for host %s to update", truncateIDEvent(hostID, 8))
+		log.Printf("Stopping existing event monitoring for host %s to update", truncateID(hostID, 8))
 		stream.cancel()
 		stream.active = false
 		if stream.client != nil {
@@ -112,7 +104,7 @@ func (em *EventManager) AddHost(hostID, hostAddress string) error {
 	// Start event stream in goroutine
 	go em.streamEvents(stream)
 
-	log.Printf("Started event monitoring for host %s (%s)", truncateIDEvent(hostID, 8), hostAddress)
+	log.Printf("Started event monitoring for host %s (%s)", truncateID(hostID, 8), hostAddress)
 	return nil
 }
 
@@ -127,8 +119,11 @@ func (em *EventManager) RemoveHost(hostID string) {
 		if stream.client != nil {
 			stream.client.Close()
 		}
+
+		// Clear cached events for this host
+		em.eventCache.ClearHost(hostID)
 		delete(em.hosts, hostID)
-		log.Printf("Stopped event monitoring for host %s", truncateIDEvent(hostID, 8))
+		log.Printf("Stopped event monitoring for host %s", truncateID(hostID, 8))
 	}
 }
 
@@ -143,7 +138,7 @@ func (em *EventManager) StopAll() {
 		if stream.client != nil {
 			stream.client.Close()
 		}
-		log.Printf("Stopped event monitoring for host %s", truncateIDEvent(hostID, 8))
+		log.Printf("Stopped event monitoring for host %s", truncateID(hostID, 8))
 	}
 
 	em.hosts = make(map[string]*eventStream)
@@ -160,7 +155,7 @@ func (em *EventManager) GetActiveHosts() int {
 func (em *EventManager) streamEvents(stream *eventStream) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("Recovered from panic in event stream for %s: %v", truncateIDEvent(stream.hostID, 8), r)
+			log.Printf("Recovered from panic in event stream for %s: %v", truncateID(stream.hostID, 8), r)
 		}
 	}()
 
@@ -171,7 +166,7 @@ func (em *EventManager) streamEvents(stream *eventStream) {
 	for {
 		select {
 		case <-stream.ctx.Done():
-			log.Printf("Event stream for host %s stopped", truncateIDEvent(stream.hostID, 8))
+			log.Printf("Event stream for host %s stopped", truncateID(stream.hostID, 8))
 			return
 		default:
 		}
@@ -196,15 +191,22 @@ func (em *EventManager) streamEvents(stream *eventStream) {
 
 			case err := <-errChan:
 				if err != nil {
-					log.Printf("Event stream error for host %s: %v (retrying in %v)", truncateIDEvent(stream.hostID, 8), err, backoff)
+					log.Printf("Event stream error for host %s: %v (retrying in %v)", truncateID(stream.hostID, 8), err, backoff)
 					time.Sleep(backoff)
 					backoff = min(backoff*2, maxBackoff)
 					goto reconnect
 				}
 
 			case event := <-eventsChan:
-				// Process the event
-				em.processEvent(stream.hostID, event)
+				// Process the event with panic recovery
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							log.Printf("Recovered from panic in processEvent for host %s: %v", truncateID(stream.hostID, 8), r)
+						}
+					}()
+					em.processEvent(stream.hostID, event)
+				}()
 			}
 		}
 
@@ -238,8 +240,8 @@ func (em *EventManager) processEvent(hostID string, event events.Message) {
 		log.Printf("Event: %s - container %s (%s) on host %s",
 			dockerEvent.Action,
 			dockerEvent.ContainerName,
-			truncateIDEvent(dockerEvent.ContainerID, 12),
-			truncateIDEvent(hostID, 8))
+			truncateID(dockerEvent.ContainerID, 12),
+			truncateID(hostID, 8))
 	}
 
 	// Add to cache

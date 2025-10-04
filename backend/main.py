@@ -7,7 +7,6 @@ Supports multiple Docker hosts with auto-restart and alerts
 import asyncio
 import json
 import logging
-import os
 import time
 import uuid
 from datetime import datetime, timedelta
@@ -15,7 +14,6 @@ from typing import Dict, List, Optional, Any
 from contextlib import asynccontextmanager
 
 import docker
-import uvicorn
 from docker import DockerClient
 from docker.errors import DockerException, APIError
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Depends, status, Cookie, Response, Query
@@ -102,6 +100,9 @@ async def lifespan(app: FastAPI):
     await monitor.notification_service.close()
     # Stop event logger
     await monitor.event_logger.stop()
+    # Dispose SQLAlchemy engine
+    monitor.db.engine.dispose()
+    logger.info("SQLAlchemy engine disposed")
 
 app = FastAPI(
     title="DockMon API",
@@ -303,7 +304,7 @@ async def get_host_metrics(host_id: str, authenticated: bool = Depends(verify_se
 @app.get("/api/containers")
 async def get_containers(host_id: Optional[str] = None, authenticated: bool = Depends(verify_session_auth)):
     """Get all containers"""
-    return monitor.get_containers(host_id)
+    return await monitor.get_containers(host_id)
 
 @app.post("/api/hosts/{host_id}/containers/{container_id}/restart")
 async def restart_container(host_id: str, container_id: str, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_containers):
@@ -487,14 +488,27 @@ async def get_settings(authenticated: bool = Depends(verify_session_auth)):
         "log_retention_days": settings.log_retention_days,
         "enable_notifications": settings.enable_notifications,
         "alert_template": getattr(settings, 'alert_template', None),
-        "blackout_windows": getattr(settings, 'blackout_windows', None)
+        "blackout_windows": getattr(settings, 'blackout_windows', None),
+        "timezone_offset": getattr(settings, 'timezone_offset', 0),
+        "show_host_stats": getattr(settings, 'show_host_stats', True),
+        "show_container_stats": getattr(settings, 'show_container_stats', True)
     }
 
 @app.post("/api/settings")
 async def update_settings(settings: GlobalSettings, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_default):
     """Update global settings"""
+    # Check if stats settings changed
+    old_show_host_stats = monitor.settings.show_host_stats
+    old_show_container_stats = monitor.settings.show_container_stats
+
     updated = monitor.db.update_settings(settings.dict())
     monitor.settings = updated  # Update in-memory settings
+
+    # Log stats collection changes
+    if old_show_host_stats != updated.show_host_stats:
+        logger.info(f"Host stats collection {'enabled' if updated.show_host_stats else 'disabled'}")
+    if old_show_container_stats != updated.show_container_stats:
+        logger.info(f"Container stats collection {'enabled' if updated.show_container_stats else 'disabled'}")
 
     # Broadcast blackout status change to all clients
     is_blackout, window_name = monitor.notification_service.blackout_manager.is_in_blackout_window()
@@ -515,7 +529,7 @@ async def get_alert_rules(authenticated: bool = Depends(verify_session_auth)):
     logger.info(f"Retrieved {len(rules)} alert rules from database")
 
     # Check for orphaned alerts
-    orphaned = monitor.check_orphaned_alerts()
+    orphaned = await monitor.check_orphaned_alerts()
 
     return [{
         "id": rule.id,
@@ -561,9 +575,6 @@ async def create_alert_rule(rule: AlertRuleCreate, authenticated: bool = Depends
         })
         logger.info(f"Successfully created alert rule with ID: {db_rule.id}")
 
-        # Refresh in-memory alert rules
-        monitor.refresh_alert_rules()
-
         # Log alert rule creation
         monitor.event_logger.log_alert_rule_created(
             rule_name=db_rule.name,
@@ -601,7 +612,7 @@ async def update_alert_rule(rule_id: str, updates: AlertRuleUpdate, authenticate
         for k, v in updates.dict().items():
             if v is not None:
                 # Convert empty lists to None for trigger fields
-                if k in ['trigger_events', 'trigger_states'] and isinstance(v, list) and len(v) == 0:
+                if k in ['trigger_events', 'trigger_states'] and isinstance(v, list) and not v:
                     update_data[k] = None
                 # Handle containers field separately
                 elif k == 'containers':
@@ -632,8 +643,6 @@ async def update_alert_rule(rule_id: str, updates: AlertRuleUpdate, authenticate
             raise HTTPException(status_code=404, detail="Alert rule not found")
 
         # Refresh in-memory alert rules
-        monitor.refresh_alert_rules()
-
         return {
             "id": db_rule.id,
             "name": db_rule.name,
@@ -669,8 +678,6 @@ async def delete_alert_rule(rule_id: str, authenticated: bool = Depends(verify_s
             raise HTTPException(status_code=404, detail="Alert rule not found")
 
         # Refresh in-memory alert rules
-        monitor.refresh_alert_rules()
-
         # Log alert rule deletion
         monitor.event_logger.log_alert_rule_deleted(
             rule_name=rule_name,
@@ -689,7 +696,7 @@ async def delete_alert_rule(rule_id: str, authenticated: bool = Depends(verify_s
 async def get_orphaned_alerts(authenticated: bool = Depends(verify_session_auth)):
     """Get alert rules that reference non-existent containers"""
     try:
-        orphaned = monitor.check_orphaned_alerts()
+        orphaned = await monitor.check_orphaned_alerts()
         return {
             "count": len(orphaned),
             "orphaned_rules": orphaned
@@ -1206,86 +1213,87 @@ async def save_event_sort_order(request: Request, authenticated: bool = Depends(
         logger.error(f"Failed to save event sort order: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ==================== Event Log Routes ====================
+@app.get("/api/user/container-sort-order")
+async def get_container_sort_order(request: Request, authenticated: bool = Depends(verify_session_auth)):
+    """Get container sort order preference for current user"""
+    from auth.routes import _get_session_from_cookie
+    from auth.session_manager import session_manager
 
+    session_id = _get_session_from_cookie(request)
+    username = session_manager.get_session_username(session_id)
 
-@app.get("/api/events")
-async def get_events(category: Optional[str] = None,
-                    event_type: Optional[str] = None,
-                    severity: Optional[str] = None,
-                    host_id: Optional[str] = None,
-                    container_id: Optional[str] = None,
-                    container_name: Optional[str] = None,
-                    start_date: Optional[str] = None,
-                    end_date: Optional[str] = None,
-                    correlation_id: Optional[str] = None,
-                    search: Optional[str] = None,
-                    limit: int = 100,
-                    offset: int = 0,
-                    authenticated: bool = Depends(verify_session_auth)):
-    """Get events with filtering and pagination"""
+    sort_order = monitor.db.get_container_sort_order(username)
+    return {"sort_order": sort_order}
+
+@app.post("/api/user/container-sort-order")
+async def save_container_sort_order(request: Request, authenticated: bool = Depends(verify_session_auth)):
+    """Save container sort order preference for current user"""
+    from auth.routes import _get_session_from_cookie
+    from auth.session_manager import session_manager
+
+    session_id = _get_session_from_cookie(request)
+    username = session_manager.get_session_username(session_id)
+
     try:
-        # Parse dates
-        parsed_start_date = None
-        parsed_end_date = None
+        body = await request.json()
+        sort_order = body.get('sort_order')
 
-        if start_date:
-            try:
-                parsed_start_date = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
-            except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid start_date format")
+        valid_sorts = ['name-asc', 'name-desc', 'status', 'memory-desc', 'memory-asc', 'cpu-desc', 'cpu-asc']
+        if sort_order not in valid_sorts:
+            raise HTTPException(status_code=400, detail=f"sort_order must be one of: {', '.join(valid_sorts)}")
 
-        if end_date:
-            try:
-                parsed_end_date = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
-            except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid end_date format")
+        success = monitor.db.save_container_sort_order(username, sort_order)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to save sort order")
 
-        events, total_count = monitor.db.get_events(
-            category=category,
-            event_type=event_type,
-            severity=severity,
-            host_id=host_id,
-            container_id=container_id,
-            container_name=container_name,
-            start_date=parsed_start_date,
-            end_date=parsed_end_date,
-            correlation_id=correlation_id,
-            search=search,
-            limit=limit,
-            offset=offset
-        )
-
-        return {
-            "events": [{
-                "id": event.id,
-                "correlation_id": event.correlation_id,
-                "category": event.category,
-                "event_type": event.event_type,
-                "severity": event.severity,
-                "host_id": event.host_id,
-                "host_name": event.host_name,
-                "container_id": event.container_id,
-                "container_name": event.container_name,
-                "title": event.title,
-                "message": event.message,
-                "old_state": event.old_state,
-                "new_state": event.new_state,
-                "triggered_by": event.triggered_by,
-                "details": event.details,
-                "duration_ms": event.duration_ms,
-                "timestamp": event.timestamp.isoformat()
-            } for event in events],
-            "pagination": {
-                "total": total_count,
-                "limit": limit,
-                "offset": offset,
-                "has_more": (offset + limit) < total_count
-            }
-        }
+        return {"success": True}
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Failed to get events: {e}")
+        logger.error(f"Failed to save container sort order: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/user/modal-preferences")
+async def get_modal_preferences(request: Request, authenticated: bool = Depends(verify_session_auth)):
+    """Get modal preferences for current user"""
+    from auth.routes import _get_session_from_cookie
+    from auth.session_manager import session_manager
+
+    session_id = _get_session_from_cookie(request)
+    username = session_manager.get_session_username(session_id)
+
+    preferences = monitor.db.get_modal_preferences(username)
+    return {"preferences": preferences}
+
+@app.post("/api/user/modal-preferences")
+async def save_modal_preferences(request: Request, authenticated: bool = Depends(verify_session_auth)):
+    """Save modal preferences for current user"""
+    from auth.routes import _get_session_from_cookie
+    from auth.session_manager import session_manager
+
+    session_id = _get_session_from_cookie(request)
+    username = session_manager.get_session_username(session_id)
+
+    try:
+        body = await request.json()
+        preferences = body.get('preferences')
+
+        if preferences is None:
+            raise HTTPException(status_code=400, detail="Preferences are required")
+
+        success = monitor.db.save_modal_preferences(username, preferences)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to save preferences")
+
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to save modal preferences: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==================== Event Log Routes ====================
+# Note: Main /api/events endpoint is defined earlier with full feature set
 
 @app.get("/api/events/{event_id}")
 async def get_event(event_id: int, authenticated: bool = Depends(verify_session_auth)):
@@ -1497,16 +1505,29 @@ async def websocket_endpoint(websocket: WebSocket):
     await monitor.realtime.subscribe_to_events(websocket)
 
     # Send initial state
+    settings_dict = {
+        "max_retries": monitor.settings.max_retries,
+        "retry_delay": monitor.settings.retry_delay,
+        "default_auto_restart": monitor.settings.default_auto_restart,
+        "polling_interval": monitor.settings.polling_interval,
+        "connection_timeout": monitor.settings.connection_timeout,
+        "log_retention_days": monitor.settings.log_retention_days,
+        "enable_notifications": monitor.settings.enable_notifications,
+        "alert_template": getattr(monitor.settings, 'alert_template', None),
+        "blackout_windows": getattr(monitor.settings, 'blackout_windows', None),
+        "timezone_offset": getattr(monitor.settings, 'timezone_offset', 0),
+        "show_host_stats": getattr(monitor.settings, 'show_host_stats', True),
+        "show_container_stats": getattr(monitor.settings, 'show_container_stats', True)
+    }
+
     initial_state = {
         "type": "initial_state",
         "data": {
             "hosts": [h.dict() for h in monitor.hosts.values()],
-            "containers": [c.dict() for c in monitor.get_containers()],
-            "settings": monitor.settings.dict() if hasattr(monitor.settings, 'dict') else {},
-            "alerts": [r.dict() for r in monitor.alert_rules]
+            "containers": [c.dict() for c in await monitor.get_containers()],
+            "settings": settings_dict
         }
     }
-    logger.info(f"Sending initial_state with {len(monitor.alert_rules)} alert rules via WebSocket")
     await websocket.send_text(json.dumps(initial_state, cls=DateTimeEncoder))
 
     try:
@@ -1539,13 +1560,26 @@ async def websocket_endpoint(websocket: WebSocket):
                                 client, container_id, interval=2
                             )
                             break
-                        except:
+                        except Exception as e:
+                            logger.debug(f"Container {container_id} not found on host {host_id[:8]}: {e}")
                             continue
 
             elif message.get("type") == "unsubscribe_stats":
                 container_id = message.get("container_id")
                 if container_id:
                     await monitor.realtime.unsubscribe_from_stats(websocket, container_id)
+
+            elif message.get("type") == "modal_opened":
+                # Track that a container modal is open - keep stats running for this container
+                container_id = message.get("container_id")
+                if container_id:
+                    monitor.stats_manager.add_modal_container(container_id)
+
+            elif message.get("type") == "modal_closed":
+                # Remove container from modal tracking
+                container_id = message.get("container_id")
+                if container_id:
+                    monitor.stats_manager.remove_modal_container(container_id)
 
             elif message.get("type") == "ping":
                 await websocket.send_text(json.dumps({"type": "pong"}, cls=DateTimeEncoder))
@@ -1554,20 +1588,9 @@ async def websocket_endpoint(websocket: WebSocket):
         monitor.manager.disconnect(websocket)
         await monitor.realtime.unsubscribe_from_events(websocket)
         # Unsubscribe from all stats
-        for container_id in list(monitor.realtime.stats_subscribers.keys()):
+        for container_id in list(monitor.realtime.stats_subscribers):
             await monitor.realtime.unsubscribe_from_stats(websocket, container_id)
+        # Clear modal containers (user disconnected, modals are closed)
+        monitor.stats_manager.clear_modal_containers()
         # Clean up rate limiter tracking
         ws_rate_limiter.cleanup_connection(connection_id)
-
-if __name__ == "__main__":
-    import os
-    # Disable reload in production/container environment
-    reload_enabled = os.getenv("DEV_MODE", "false").lower() == "true"
-
-    uvicorn.run(
-        "main:app",
-        host="127.0.0.1",  # Localhost only - Nginx in same container can access
-        port=8080,
-        reload=reload_enabled,
-        log_level="info"
-    )

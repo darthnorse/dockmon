@@ -25,9 +25,21 @@ from realtime import RealtimeMonitor
 from notifications import NotificationService, AlertProcessor
 from event_logger import EventLogger, EventSeverity, EventType
 from stats_client import get_stats_client
+from docker_monitor.stats_manager import StatsManager
+from auth.session_manager import session_manager
 
 
 logger = logging.getLogger(__name__)
+
+
+def _handle_task_exception(task: asyncio.Task) -> None:
+    """Handle exceptions from fire-and-forget async tasks"""
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        pass  # Task was cancelled, this is normal
+    except Exception as e:
+        logger.error(f"Unhandled exception in background task: {e}", exc_info=True)
 
 
 def sanitize_host_id(host_id: str) -> str:
@@ -63,7 +75,6 @@ class DockerMonitor:
         self.clients: Dict[str, DockerClient] = {}
         self.db = DatabaseManager(DATABASE_PATH)  # Initialize database with centralized path
         self.settings = self.db.get_settings()  # Load settings from DB
-        self.alert_rules: List[AlertRule] = self._load_alert_rules()  # Load alert rules from DB
         self.notification_settings = NotificationSettings()
         self.auto_restart_status: Dict[str, bool] = {}
         self.restart_attempts: Dict[str, int] = {}
@@ -77,10 +88,14 @@ class DockerMonitor:
         self._container_states: Dict[str, str] = {}  # Track container states for change detection
         self._recent_user_actions: Dict[str, float] = {}  # Track recent user actions: {container_key: timestamp}
         self.cleanup_task: Optional[asyncio.Task] = None  # Background cleanup task
+
+        # Stats collection manager
+        self.stats_manager = StatsManager()
         self._load_persistent_config()  # Load saved hosts and configs
 
     def add_host(self, config: DockerHostConfig, existing_id: str = None, skip_db_save: bool = False, suppress_event_loop_errors: bool = False) -> DockerHost:
         """Add a new Docker host to monitor"""
+        client = None  # Track client for cleanup on error
         try:
             # Validate certificates if provided (before trying to use them)
             if config.tls_cert or config.tls_key or config.tls_ca:
@@ -170,29 +185,32 @@ class DockerMonitor:
                 })
 
             # Register host with stats and event services
-            # Create task to register (async operation from sync context)
-            try:
-                import asyncio
-                stats_client = get_stats_client()
-
-                async def register_host():
-                    try:
-                        await stats_client.add_docker_host(host.id, host.url)
-                        logger.info(f"Registered {host.name} ({host.id[:8]}) with stats service")
-
-                        await stats_client.add_event_host(host.id, host.url)
-                        logger.info(f"Registered {host.name} ({host.id[:8]}) with event service")
-                    except Exception as e:
-                        logger.error(f"Failed to register {host.name} with Go services: {e}")
-
-                # Try to create task if event loop is running
+            # Only register if we're adding a NEW host (not during startup/reconnect)
+            # During startup, monitor_containers() handles all registrations
+            if not skip_db_save:  # New host being added by user
                 try:
-                    asyncio.create_task(register_host())
-                except RuntimeError:
-                    # No event loop running (startup) - will be registered by monitor_containers()
-                    logger.debug(f"No event loop - {host.name} will be registered when monitoring starts")
-            except Exception as e:
-                logger.warning(f"Could not register {host.name} with Go services: {e}")
+                    import asyncio
+                    stats_client = get_stats_client()
+
+                    async def register_host():
+                        try:
+                            await stats_client.add_docker_host(host.id, host.url)
+                            logger.info(f"Registered {host.name} ({host.id[:8]}) with stats service")
+
+                            await stats_client.add_event_host(host.id, host.url)
+                            logger.info(f"Registered {host.name} ({host.id[:8]}) with event service")
+                        except Exception as e:
+                            logger.error(f"Failed to register {host.name} with Go services: {e}")
+
+                    # Try to create task if event loop is running
+                    try:
+                        task = asyncio.create_task(register_host())
+                        task.add_done_callback(_handle_task_exception)
+                    except RuntimeError:
+                        # No event loop running - will be registered by monitor_containers()
+                        logger.debug(f"No event loop yet - {host.name} will be registered when monitoring starts")
+                except Exception as e:
+                    logger.warning(f"Could not register {host.name} with Go services: {e}")
 
             # Log host connection
             self.event_logger.log_host_connection(
@@ -215,6 +233,14 @@ class DockerMonitor:
             return host
 
         except Exception as e:
+            # Clean up client if it was created but not stored
+            if client and not (hasattr(self, 'clients') and config.name in [h.name for h in self.hosts.values()]):
+                try:
+                    client.close()
+                    logger.debug(f"Closed orphaned Docker client for {config.name}")
+                except Exception as close_error:
+                    logger.debug(f"Error closing Docker client: {close_error}")
+
             # Suppress event loop errors during first run startup
             if suppress_event_loop_errors and "no running event loop" in str(e):
                 logger.debug(f"Event loop warning for {config.name} (expected during startup): {e}")
@@ -404,7 +430,8 @@ class DockerMonitor:
                         logger.error(f"Failed to remove {host_name} from Go services: {e}")
 
                 # Create task to remove host from services (fire and forget)
-                asyncio.create_task(unregister_host())
+                task = asyncio.create_task(unregister_host())
+                task.add_done_callback(_handle_task_exception)
             except Exception as e:
                 logger.warning(f"Failed to remove host {host_id} from Go services: {e}")
 
@@ -412,8 +439,59 @@ class DockerMonitor:
             self._cleanup_host_certificates(host_id)
             # Remove from database
             self.db.delete_host(host_id)
-            # Refresh alert rules cache since host-specific rules may have been deleted
-            self.refresh_alert_rules()
+
+            # Clean up container state tracking for this host
+            containers_to_remove = [key for key in self._container_states.keys() if key.startswith(f"{host_id}:")]
+            for container_key in containers_to_remove:
+                del self._container_states[container_key]
+
+            # Clean up recent user actions for this host
+            actions_to_remove = [key for key in self._recent_user_actions.keys() if key.startswith(f"{host_id}:")]
+            for container_key in actions_to_remove:
+                del self._recent_user_actions[container_key]
+
+            # Clean up notification service's container state tracking for this host
+            notification_states_to_remove = [key for key in self.notification_service._last_container_state.keys() if key.startswith(f"{host_id}:")]
+            for container_key in notification_states_to_remove:
+                del self.notification_service._last_container_state[container_key]
+
+            # Clean up alert processor's container state tracking for this host
+            alert_processor_states_to_remove = [key for key in self.alert_processor._container_states.keys() if key.startswith(f"{host_id}:")]
+            for container_key in alert_processor_states_to_remove:
+                del self.alert_processor._container_states[container_key]
+
+            # Clean up notification service's alert cooldown tracking for this host
+            alert_cooldowns_to_remove = [key for key in self.notification_service._last_alerts.keys() if key.startswith(f"{host_id}:")]
+            for container_key in alert_cooldowns_to_remove:
+                del self.notification_service._last_alerts[container_key]
+
+            # Clean up auto-restart tracking for this host
+            auto_restart_to_remove = [key for key in self.auto_restart_status.keys() if key.startswith(f"{host_id}:")]
+            for container_key in auto_restart_to_remove:
+                del self.auto_restart_status[container_key]
+                if container_key in self.restart_attempts:
+                    del self.restart_attempts[container_key]
+                if container_key in self.restarting_containers:
+                    del self.restarting_containers[container_key]
+
+            # Clean up stats manager's streaming containers for this host
+            # Extract container IDs from the container_keys (format: "host_id:container_id")
+            streaming_to_remove = [key.split(':')[1] for key in containers_to_remove]
+            for container_id in streaming_to_remove:
+                self.stats_manager.streaming_containers.discard(container_id)
+
+            if containers_to_remove:
+                logger.debug(f"Cleaned up {len(containers_to_remove)} container state entries for removed host {host_id[:8]}")
+            if notification_states_to_remove:
+                logger.debug(f"Cleaned up {len(notification_states_to_remove)} notification state entries for removed host {host_id[:8]}")
+            if alert_processor_states_to_remove:
+                logger.debug(f"Cleaned up {len(alert_processor_states_to_remove)} alert processor state entries for removed host {host_id[:8]}")
+            if alert_cooldowns_to_remove:
+                logger.debug(f"Cleaned up {len(alert_cooldowns_to_remove)} alert cooldown entries for removed host {host_id[:8]}")
+            if auto_restart_to_remove:
+                logger.debug(f"Cleaned up {len(auto_restart_to_remove)} auto-restart entries for removed host {host_id[:8]}")
+            if streaming_to_remove:
+                logger.debug(f"Cleaned up {len(streaming_to_remove)} streaming container entries for removed host {host_id[:8]}")
 
             # Log host removed
             self.event_logger.log_host_removed(
@@ -433,6 +511,7 @@ class DockerMonitor:
             logger.error(f"Invalid host ID: {e}")
             raise HTTPException(status_code=400, detail=str(e))
 
+        client = None  # Track client for cleanup on error
         try:
             # Get existing host from database to check if we need to preserve certificates
             existing_host = self.db.get_host(host_id)
@@ -562,7 +641,8 @@ class DockerMonitor:
                         logger.error(f"Failed to re-register {host.name} with Go services: {e}")
 
                 # Create task to re-register (fire and forget)
-                asyncio.create_task(reregister_host())
+                task = asyncio.create_task(reregister_host())
+                task.add_done_callback(_handle_task_exception)
             except Exception as e:
                 logger.warning(f"Could not re-register {host.name} with Go services: {e}")
 
@@ -578,11 +658,19 @@ class DockerMonitor:
             return host
 
         except Exception as e:
+            # Clean up client if it was created but not stored
+            if client and host_id not in self.clients:
+                try:
+                    client.close()
+                    logger.debug(f"Closed orphaned Docker client for host {host_id[:8]}")
+                except Exception as close_error:
+                    logger.debug(f"Error closing Docker client: {close_error}")
+
             logger.error(f"Failed to update host {host_id}: {e}")
             error_msg = self._get_user_friendly_error(str(e))
             raise HTTPException(status_code=400, detail=error_msg)
 
-    def get_containers(self, host_id: Optional[str] = None) -> List[Container]:
+    async def get_containers(self, host_id: Optional[str] = None) -> List[Container]:
         """Get containers from one or all hosts"""
         containers = []
 
@@ -671,6 +759,27 @@ class DockerMonitor:
                 host.error = str(e)
 
             host.last_checked = datetime.now()
+
+        # Fetch stats from Go stats service and populate container stats
+        try:
+            from stats_client import get_stats_client
+            stats_client = get_stats_client()
+            container_stats = await stats_client.get_container_stats()
+
+            # Populate stats for each container
+            for container in containers:
+                stats = container_stats.get(container.id, {})
+                if stats:
+                    container.cpu_percent = stats.get('cpu_percent')
+                    container.memory_usage = stats.get('memory_usage')
+                    container.memory_limit = stats.get('memory_limit')
+                    container.memory_percent = stats.get('memory_percent')
+                    container.network_rx = stats.get('network_rx')
+                    container.network_tx = stats.get('network_tx')
+                    container.disk_read = stats.get('disk_read')
+                    container.disk_write = stats.get('disk_write')
+        except Exception as e:
+            logger.warning(f"Failed to fetch container stats from stats service: {e}")
 
         return containers
 
@@ -847,7 +956,7 @@ class DockerMonitor:
         self.db.set_auto_restart(host_id, container_id, container_name, enabled)
         logger.info(f"Auto-restart {'enabled' if enabled else 'disabled'} for container '{container_name}' on host '{host_name}'")
 
-    def check_orphaned_alerts(self):
+    async def check_orphaned_alerts(self):
         """Check for alert rules that reference non-existent containers
         Returns dict mapping alert_rule_id to list of orphaned container entries"""
         orphaned = {}
@@ -860,7 +969,7 @@ class DockerMonitor:
 
                 # Get all current containers (name + host_id pairs)
                 current_containers = {}
-                for container in self.get_containers():
+                for container in await self.get_containers():
                     key = f"{container.host_id}:{container.name}"
                     current_containers[key] = True
 
@@ -917,7 +1026,8 @@ class DockerMonitor:
                 from datetime import datetime
                 try:
                     timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-                except:
+                except (ValueError, AttributeError, TypeError) as e:
+                    logger.warning(f"Failed to parse timestamp '{timestamp_str}': {e}, using current time")
                     timestamp = datetime.now()
 
                 # Get exit code for die events
@@ -942,7 +1052,8 @@ class DockerMonitor:
                 )
 
                 # Process in background to not block event monitoring
-                asyncio.create_task(self.notification_service.process_docker_event(alert_event))
+                task = asyncio.create_task(self.notification_service.process_docker_event(alert_event))
+                task.add_done_callback(_handle_task_exception)
 
         except Exception as e:
             logger.error(f"Error handling Docker event from Go service: {e}")
@@ -951,8 +1062,8 @@ class DockerMonitor:
         """Main monitoring loop"""
         logger.info("Starting container monitoring...")
 
-        # Track which containers are being streamed
-        streaming_containers = set()  # container_ids
+        # Get stats client instance
+        # Note: streaming_containers is now managed by self.stats_manager
         stats_client = get_stats_client()
 
         # Register all hosts with the stats and event services on startup
@@ -977,42 +1088,28 @@ class DockerMonitor:
 
         while True:
             try:
-                containers = self.get_containers()
+                containers = await self.get_containers()
 
-                # Only manage stats streams if there are active WebSocket connections
+                # Centralized stats collection decision using StatsManager
                 has_viewers = self.manager.has_active_connections()
 
                 if has_viewers:
-                    # Manage stats streams for containers
-                    current_running = set()
-                    for container in containers:
-                        if container.state == 'running':
-                            current_running.add(container.id)
+                    # Determine which containers need stats (centralized logic)
+                    containers_needing_stats = self.stats_manager.determine_containers_needing_stats(
+                        containers,
+                        self.settings
+                    )
 
-                            # Start stream if not already streaming
-                            if container.id not in streaming_containers:
-                                asyncio.create_task(
-                                    stats_client.start_container_stream(
-                                        container.id,
-                                        container.name,
-                                        container.host_id
-                                    )
-                                )
-                                streaming_containers.add(container.id)
-                                logger.debug(f"Started stats stream for {container.name}")
-
-                    # Stop streams for containers that are no longer running
-                    stopped_containers = streaming_containers - current_running
-                    for container_id in stopped_containers:
-                        asyncio.create_task(stats_client.stop_container_stream(container_id))
-                        streaming_containers.discard(container_id)
+                    # Sync streams with what's needed (start new, stop old)
+                    await self.stats_manager.sync_container_streams(
+                        containers,
+                        containers_needing_stats,
+                        stats_client,
+                        _handle_task_exception
+                    )
                 else:
-                    # No active viewers - stop all stats streams to save resources
-                    if streaming_containers:
-                        logger.info(f"No active viewers - stopping {len(streaming_containers)} stats streams")
-                        for container_id in list(streaming_containers):
-                            asyncio.create_task(stats_client.stop_container_stream(container_id))
-                        streaming_containers.clear()
+                    # No active viewers - stop all streams
+                    await self.stats_manager.stop_all_streams(stats_client, _handle_task_exception)
 
                 # Track container state changes and log them
                 for container in containers:
@@ -1059,28 +1156,34 @@ class DockerMonitor:
 
                         if attempts < self.settings.max_retries and not is_restarting:
                             self.restarting_containers[container_key] = True
-                            asyncio.create_task(
+                            task = asyncio.create_task(
                                 self.auto_restart_container(container)
                             )
+                            task.add_done_callback(_handle_task_exception)
 
                 # Process alerts for container state changes
                 await self.alert_processor.process_container_update(containers, self.hosts)
 
                 # Only fetch and broadcast stats if there are active viewers
                 if has_viewers:
-                    # Get host metrics from stats service (fast HTTP call)
-                    host_metrics = await stats_client.get_host_stats()
-                    logger.debug(f"Retrieved metrics for {len(host_metrics)} hosts from stats service")
+                    # Prepare broadcast data
+                    broadcast_data = {
+                        "containers": [c.dict() for c in containers],
+                        "hosts": [h.dict() for h in self.hosts.values()],
+                        "timestamp": datetime.now().isoformat()
+                    }
+
+                    # Only include host metrics if host stats are enabled
+                    if self.stats_manager.should_broadcast_host_metrics(self.settings):
+                        # Get host metrics from stats service (fast HTTP call)
+                        host_metrics = await stats_client.get_host_stats()
+                        logger.debug(f"Retrieved metrics for {len(host_metrics)} hosts from stats service")
+                        broadcast_data["host_metrics"] = host_metrics
 
                     # Broadcast update to all connected clients
                     await self.manager.broadcast({
                         "type": "containers_update",
-                        "data": {
-                            "containers": [c.dict() for c in containers],
-                            "hosts": [h.dict() for h in self.hosts.values()],
-                            "host_metrics": host_metrics,
-                            "timestamp": datetime.now().isoformat()
-                        }
+                        "data": broadcast_data
                     })
 
             except Exception as e:
@@ -1257,7 +1360,7 @@ class DockerMonitor:
                     logger.info(f"Added host {db_host.name} in offline mode - connection will retry")
 
             # Load auto-restart configurations
-            for host_id in self.hosts.keys():
+            for host_id in self.hosts:
                 configs = self.db.get_session().query(AutoRestartConfig).filter(
                     AutoRestartConfig.host_id == host_id,
                     AutoRestartConfig.enabled == True
@@ -1271,18 +1374,6 @@ class DockerMonitor:
             logger.info(f"Loaded {len(self.hosts)} hosts from database")
         except Exception as e:
             logger.error(f"Error loading persistent config: {e}")
-
-    def _load_alert_rules(self) -> List[AlertRule]:
-        """Load alert rules from database (legacy - now handled by notification service)"""
-        # Alert rules are now managed by the notification service
-        # This method is kept for backward compatibility but returns empty list
-        return []
-
-    def refresh_alert_rules(self):
-        """Refresh alert rules from database (legacy - now handled by notification service)"""
-        # Alert rules are now managed by the notification service
-        # This is a no-op for backward compatibility
-        pass
 
     def _get_auto_restart_status(self, host_id: str, container_id: str) -> bool:
         """Get auto-restart status for a container"""
@@ -1320,8 +1411,10 @@ class DockerMonitor:
                             EventType.STARTUP
                         )
 
-                    # Clean up old container history (legacy table)
-                    self.db.cleanup_old_history(settings.log_retention_days)
+                # Clean up expired sessions (runs daily regardless of event cleanup setting)
+                expired_count = session_manager.cleanup_expired_sessions()
+                if expired_count > 0:
+                    logger.info(f"Cleaned up {expired_count} expired sessions")
 
                 # Sleep for 24 hours before next cleanup
                 await asyncio.sleep(24 * 60 * 60)  # 24 hours

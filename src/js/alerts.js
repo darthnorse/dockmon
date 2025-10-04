@@ -38,7 +38,7 @@ async function editAlertRule(ruleId) {
         editingAlertRule = rule;
         openAlertRuleModal(null, rule);
     } catch (error) {
-        console.error('Error opening alert rule for editing:', error);
+        logger.error('Error opening alert rule for editing:', error);
         showToast('❌ Failed to open alert rule for editing');
     }
 }
@@ -54,6 +54,21 @@ function openGlobalSettings() {
         defaultToggle.classList.add('active');
     } else {
         defaultToggle.classList.remove('active');
+    }
+
+    // Dashboard display settings
+    const showHostStatsToggle = document.getElementById('showHostStats');
+    if (globalSettings.show_host_stats !== false) { // Default to true
+        showHostStatsToggle.classList.add('active');
+    } else {
+        showHostStatsToggle.classList.remove('active');
+    }
+
+    const showContainerStatsToggle = document.getElementById('showContainerStats');
+    if (globalSettings.show_container_stats !== false) { // Default to true
+        showContainerStatsToggle.classList.add('active');
+    } else {
+        showContainerStatsToggle.classList.remove('active');
     }
 
     document.getElementById('globalSettingsModal').classList.add('active');
@@ -91,6 +106,32 @@ function closeModal(modalId) {
         if (streamBtn) {
             streamBtn.textContent = 'Start Live Stream';
         }
+
+        // Remove keydown event listener if exists
+        if (window.logFilterKeyHandler) {
+            document.removeEventListener('keydown', window.logFilterKeyHandler);
+        }
+
+        // Remove drag event listeners
+        if (window.cleanupModalDragListeners) {
+            window.cleanupModalDragListeners();
+        }
+
+        // Clean up modal charts
+        if (typeof cleanupModalCharts === 'function') {
+            cleanupModalCharts();
+        }
+
+        // Notify backend to stop stats collection for this container
+        if (window.currentContainer && ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+                type: 'modal_closed',
+                container_id: window.currentContainer.id
+            }));
+        }
+
+        // Clear current container
+        window.currentContainer = null;
     }
 
     document.getElementById(modalId).classList.remove('active');
@@ -115,7 +156,7 @@ async function getCurrentUser() {
             if (currentUsernameInput) currentUsernameInput.value = data.username;
         }
     } catch (error) {
-        console.error('Error fetching user info:', error);
+        logger.error('Error fetching user info:', error);
     }
 }
 
@@ -225,21 +266,7 @@ async function saveAccountSettings(event) {
     }
 }
 
-async function logout() {
-    try {
-        const response = await fetch(`${API_BASE}/api/auth/logout`, {
-            method: 'POST',
-            credentials: 'include'
-        });
-
-        if (response.ok) {
-            window.location.href = '/login.html';
-        }
-    } catch (error) {
-        console.error('Logout error:', error);
-        showToast('❌ Failed to logout');
-    }
-}
+// logout() function removed - using the one from core.js instead
 
 function checkPasswordChangeRequired() {
     const mustChange = sessionStorage.getItem('must_change_password');
@@ -294,10 +321,33 @@ function refreshContainerModalIfOpen() {
             let activeTab = 'info';
             if (document.getElementById('logs-tab').style.display !== 'none') {
                 activeTab = 'logs';
+            } else if (document.getElementById('stats-tab').style.display !== 'none') {
+                activeTab = 'stats';
             }
 
-            // Re-populate the modal with updated data (but preserve the tab)
-            showContainerDetails(updatedContainer.host_id, updatedContainer.short_id, activeTab);
+            // Only refresh info tab if container state changed (not just stats update)
+            if (activeTab === 'info') {
+                // Check if this is just a stats update (state hasn't changed)
+                const stateChanged = updatedContainer.state !== window.currentContainer.state;
+                if (stateChanged) {
+                    // Re-populate the modal with updated data (but preserve the tab)
+                    showContainerDetails(updatedContainer.host_id, updatedContainer.short_id, activeTab);
+                } else {
+                    // Just update the reference - sparklines will update automatically
+                    window.currentContainer = updatedContainer;
+
+                    // Refresh recent events every 30 seconds without full re-render
+                    if (!window.lastEventsRefresh || (Date.now() - window.lastEventsRefresh) > 30000) {
+                        if (typeof loadContainerRecentEvents === 'function') {
+                            loadContainerRecentEvents(updatedContainer.name, updatedContainer.host_id);
+                            window.lastEventsRefresh = Date.now();
+                        }
+                    }
+                }
+            } else {
+                // Just update the current container reference for stats/logs tabs
+                window.currentContainer = updatedContainer;
+            }
         }
     }
 }
@@ -371,7 +421,7 @@ async function toggleAutoRestart(hostId, containerId, event) {
             showToast('❌ Failed to toggle auto-restart');
         }
     } catch (error) {
-        console.error('Error toggling auto-restart:', error);
+        logger.error('Error toggling auto-restart:', error);
         showToast('❌ Failed to toggle auto-restart');
     }
 }
@@ -465,7 +515,7 @@ async function addHost(event) {
         }
     } catch (error) {
         const action = isEditing ? 'update' : 'add';
-        console.error(`Error ${action}ing host:`, error);
+        logger.error(`Error ${action}ing host:`, error);
         showToast(`❌ Failed to ${action} host`);
     }
 }
@@ -574,14 +624,14 @@ async function createAlertRule(event) {
             closeModal('alertRuleModal');
         } else {
             const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
-            console.error(`Alert ${isEditing ? 'update' : 'creation'} failed:`, errorData);
+            logger.error(`Alert ${isEditing ? 'update' : 'creation'} failed:`, errorData);
             const errorMessage = typeof errorData.detail === 'string'
                 ? errorData.detail
                 : JSON.stringify(errorData.detail) || response.statusText;
             showToast(`❌ Failed to ${isEditing ? 'update' : 'create'} alert: ${errorMessage}`);
         }
     } catch (error) {
-        console.error(`Error ${editingAlertRule ? 'updating' : 'creating'} alert rule:`, error);
+        logger.error(`Error ${editingAlertRule ? 'updating' : 'creating'} alert rule:`, error);
         showToast(`❌ Failed to ${editingAlertRule ? 'update' : 'create'} alert rule`);
     }
 }
@@ -594,7 +644,7 @@ async function checkDependentAlerts(channelId) {
         const data = await response.json();
         return data.alerts || [];
     } catch (error) {
-        console.error('Error checking dependent alerts:', error);
+        logger.error('Error checking dependent alerts:', error);
         return [];
     }
 }
@@ -613,7 +663,7 @@ function renderBlackoutWindows() {
         <div style="padding: var(--spacing-md); margin-bottom: var(--spacing-md); background: var(--surface); border: 1px solid var(--surface-light); border-radius: var(--radius-md);">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--spacing-sm);">
                 <input type="text" placeholder="Window name (e.g., Nightly Maintenance)"
-                       value="${window.name || ''}"
+                       value="${escapeHtml(window.name || '')}"
                        onchange="updateBlackoutWindow(${index}, 'name', this.value)"
                        style="background: transparent; border: none; color: var(--text-primary); font-size: 14px; flex: 1;">
                 <button type="button" class="btn-icon" onclick="removeBlackoutWindow(${index})">
@@ -723,7 +773,7 @@ async function saveBlackoutWindows() {
             await updateBlackoutStatus();
         }
     } catch (error) {
-        console.error('Error saving blackout windows:', error);
+        logger.error('Error saving blackout windows:', error);
         showToast('❌ Failed to save blackout windows');
     }
 }
@@ -777,7 +827,7 @@ async function updateBlackoutStatus() {
             }
         }
     } catch (error) {
-        console.error('Error fetching blackout status:', error);
+        logger.error('Error fetching blackout status:', error);
     }
 }
 
@@ -787,6 +837,8 @@ async function saveGlobalSettings() {
     globalSettings.polling_interval = parseInt(document.getElementById('pollingInterval').value);
     globalSettings.connection_timeout = parseInt(document.getElementById('connectionTimeout').value);
     globalSettings.default_auto_restart = document.getElementById('defaultAutoRestart').classList.contains('active');
+    globalSettings.show_host_stats = document.getElementById('showHostStats').classList.contains('active');
+    globalSettings.show_container_stats = document.getElementById('showContainerStats').classList.contains('active');
 
     // Include blackout windows in the save
 
@@ -802,9 +854,13 @@ async function saveGlobalSettings() {
         if (response.ok) {
             showToast('✅ Settings saved successfully!');
             closeModal('globalSettingsModal');
+            // Re-render dashboard to apply show_host_stats and show_container_stats changes
+            if (typeof renderHosts === 'function') {
+                renderHosts();
+            }
         }
     } catch (error) {
-        console.error('Error saving settings:', error);
+        logger.error('Error saving settings:', error);
         showToast('❌ Failed to save settings');
     }
 }
@@ -813,7 +869,7 @@ async function deleteAlertRule(ruleId) {
     const rule = alertRules.find(r => r.id === ruleId);
     const ruleName = rule ? rule.name : 'Unknown Rule';
 
-    const message = `Are you sure you want to delete the alert rule <strong>"${ruleName}"</strong>?<br><br>
+    const message = `Are you sure you want to delete the alert rule <strong>"${escapeHtml(ruleName)}"</strong>?<br><br>
         This will permanently remove the alert rule and you will no longer receive notifications for this container.<br><br>
         <strong>This action cannot be undone.</strong>`;
 
@@ -832,7 +888,7 @@ async function deleteAlertRule(ruleId) {
                 updateNavBadges();
             }
         } catch (error) {
-            console.error('Error deleting alert rule:', error);
+            logger.error('Error deleting alert rule:', error);
             showToast('❌ Failed to delete alert rule');
         }
     });

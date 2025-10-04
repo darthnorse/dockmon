@@ -56,6 +56,10 @@
                         <span class="nav-icon" data-lucide="settings"></span>
                         <span>Settings</span>
                     </a>
+                    <a class="nav-item" onclick="openAccountSettings()">
+                        <span class="nav-icon" data-lucide="user"></span>
+                        <span>Account</span>
+                    </a>
                     <a class="nav-item" onclick="switchPage('about')">
                         <span class="nav-icon" data-lucide="info"></span>
                         <span>About</span>
@@ -88,14 +92,37 @@
                 </div>
 
                 <div class="topbar-actions">
-                    <button class="btn btn-secondary" onclick="openAccountSettings()" title="Account Settings">
-                        <span data-lucide="user"></span> <span id="topbarUsername">Account</span>
-                    </button>
+                    <!-- Search Input -->
+                    <div class="search-container" style="position: relative; display: none;" id="dashboardSearchContainer">
+                        <span data-lucide="search" style="position: absolute; left: 12px; top: 50%; transform: translateY(-50%); width: 16px; height: 16px; color: var(--text-tertiary);"></span>
+                        <input
+                            type="text"
+                            id="containerSearch"
+                            class="form-input"
+                            placeholder="Search containers (name, image, or regex)"
+                            style="padding-left: 38px; min-width: 300px;"
+                            oninput="applyContainerFilters()"
+                        />
+                    </div>
+
+                    <!-- Sort Dropdown -->
+                    <select
+                        id="containerSort"
+                        class="form-input"
+                        style="min-width: 180px; display: none;"
+                        onchange="applyContainerFilters()"
+                    >
+                        <option value="name-asc">Name (A-Z)</option>
+                        <option value="name-desc">Name (Z-A)</option>
+                        <option value="status">Status (Running first)</option>
+                        <option value="memory-desc">Memory (High to Low)</option>
+                        <option value="memory-asc">Memory (Low to High)</option>
+                        <option value="cpu-desc">CPU (High to Low)</option>
+                        <option value="cpu-asc">CPU (Low to High)</option>
+                    </select>
+
                     <button class="btn btn-secondary" onclick="refreshAll()">
                         <span data-lucide="refresh-cw"></span> Refresh
-                    </button>
-                    <button class="btn btn-primary" onclick="openHostModal()">
-                        <span data-lucide="plus"></span> Add Host
                     </button>
                 </div>
             </header>
@@ -226,7 +253,7 @@
 
                                 <div class="filter-group filter-search">
                                     <label>Search</label>
-                                    <input type="text" id="eventSearch" placeholder="Search events..." onkeyup="debounceEventSearch()">
+                                    <input type="text" id="eventSearch" placeholder="Search events (text or regex)..." onkeyup="debounceEventSearch()">
                                 </div>
                             </div>
                         </div>
@@ -297,7 +324,7 @@
 
                                 <div class="filter-group filter-search">
                                     <label>Search</label>
-                                    <input type="text" id="logsSearchInput" placeholder="Filter logs..." oninput="filterLogs()">
+                                    <input type="text" id="logsSearchInput" placeholder="Filter logs (text or regex)..." oninput="filterLogs()">
                                 </div>
 
                                 <div class="filter-group" style="display: flex; align-items: flex-end;">
@@ -600,10 +627,10 @@
                 <div class="settings-row">
                     <div class="settings-label">
                         <div class="settings-title">Polling Interval</div>
-                        <div class="settings-description">How often to check container states</div>
+                        <div class="settings-description">How often to check container states (lower = more responsive, higher = less CPU)</div>
                     </div>
                     <div class="settings-value">
-                        <input type="number" class="number-input" id="pollingInterval" min="5" max="60">
+                        <input type="number" class="number-input" id="pollingInterval" min="1" max="300" step="1">
                         <span style="font-size: 14px; color: var(--text-tertiary);">seconds</span>
                     </div>
                 </div>
@@ -615,6 +642,27 @@
                     <div class="settings-value">
                         <input type="number" class="number-input" id="connectionTimeout" min="5" max="30">
                         <span style="font-size: 14px; color: var(--text-tertiary);">seconds</span>
+                    </div>
+                </div>
+            </div>
+            <div class="settings-section">
+                <h3 style="margin-bottom: var(--spacing-lg); color: var(--text-primary);">Dashboard Display</h3>
+                <div class="settings-row">
+                    <div class="settings-label">
+                        <div class="settings-title">Show Host Statistics</div>
+                        <div class="settings-description">Display CPU and memory graphs on host widgets</div>
+                    </div>
+                    <div class="settings-value">
+                        <div class="toggle-switch" id="showHostStats" onclick="toggleSwitch(this)"></div>
+                    </div>
+                </div>
+                <div class="settings-row">
+                    <div class="settings-label">
+                        <div class="settings-title">Show Container Statistics</div>
+                        <div class="settings-description">Display statistics for individual containers (CPU, memory, network, disk)</div>
+                    </div>
+                    <div class="settings-value">
+                        <div class="toggle-switch" id="showContainerStats" onclick="toggleSwitch(this)"></div>
                     </div>
                 </div>
             </div>
@@ -786,7 +834,7 @@
 
     <!-- Container Details Modal -->
     <div class="modal" id="containerModal">
-        <div class="modal-content resizable" style="width: 900px; height: 600px;">
+        <div class="modal-content resizable" style="width: 900px; height: 820px;">
             <div class="modal-header" style="cursor: move;">
                 <h2 class="modal-title">Container Details</h2>
                 <button class="modal-close" onclick="closeModal('containerModal')">✕</button>
@@ -798,6 +846,7 @@
             <div style="margin-top: 20px;">
                 <ul style="display: flex; gap: 10px; list-style: none; border-bottom: 1px solid var(--border); margin-bottom: 20px;">
                     <li><button class="btn btn-secondary" onclick="showTab('info')" id="tab-info">Info</button></li>
+                    <li><button class="btn btn-secondary" onclick="showTab('stats')" id="tab-stats">Statistics</button></li>
                     <li><button class="btn btn-secondary" onclick="showTab('logs')" id="tab-logs">Logs</button></li>
                 </ul>
                 
@@ -805,7 +854,48 @@
                 <div id="info-tab" class="tab-content">
                     <div id="container-info-content"></div>
                 </div>
-                
+
+                <!-- Statistics Tab -->
+                <div id="stats-tab" class="tab-content" style="display: none;">
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                        <!-- CPU Usage Chart -->
+                        <div style="background: var(--surface); padding: 20px; border-radius: 8px; border: 1px solid var(--border);">
+                            <h4 style="margin: 0 0 15px 0; color: var(--text-primary); font-size: 16px; font-weight: 600;">
+                                <span data-lucide="cpu" style="width: 16px; height: 16px; display: inline-block; vertical-align: middle;"></span>
+                                CPU Usage
+                            </h4>
+                            <canvas id="container-cpu-chart" style="height: 180px;"></canvas>
+                        </div>
+
+                        <!-- Memory Usage Chart -->
+                        <div style="background: var(--surface); padding: 20px; border-radius: 8px; border: 1px solid var(--border);">
+                            <h4 style="margin: 0 0 15px 0; color: var(--text-primary); font-size: 16px; font-weight: 600;">
+                                <span data-lucide="database" style="width: 16px; height: 16px; display: inline-block; vertical-align: middle;"></span>
+                                Memory Usage
+                            </h4>
+                            <canvas id="container-memory-chart" style="height: 180px;"></canvas>
+                        </div>
+
+                        <!-- Network Activity Chart -->
+                        <div style="background: var(--surface); padding: 20px; border-radius: 8px; border: 1px solid var(--border);">
+                            <h4 style="margin: 0 0 15px 0; color: var(--text-primary); font-size: 16px; font-weight: 600;">
+                                <span data-lucide="network" style="width: 16px; height: 16px; display: inline-block; vertical-align: middle;"></span>
+                                Network Activity
+                            </h4>
+                            <canvas id="container-network-chart" style="height: 180px;"></canvas>
+                        </div>
+
+                        <!-- Disk I/O Chart -->
+                        <div style="background: var(--surface); padding: 20px; border-radius: 8px; border: 1px solid var(--border);">
+                            <h4 style="margin: 0 0 15px 0; color: var(--text-primary); font-size: 16px; font-weight: 600;">
+                                <span data-lucide="hard-drive" style="width: 16px; height: 16px; display: inline-block; vertical-align: middle;"></span>
+                                Disk I/O
+                            </h4>
+                            <canvas id="container-disk-chart" style="height: 180px;"></canvas>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Logs Tab -->
                 <div id="logs-tab" class="tab-content" style="display: none;">
                     <div style="display: flex; gap: 10px; margin-bottom: 10px; align-items: center; flex-wrap: wrap;">
@@ -904,6 +994,8 @@
     <script src="https://cdn.jsdelivr.net/npm/gridstack@12.3.3/dist/gridstack-all.js"></script>
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.min.js"></script>
+    <!-- DockMon Logger (must load first) -->
+    <script src="/js/logger.js"></script>
     <!-- DockMon Core JavaScript -->
     <script src="/js/core.js"></script>
     <!-- Metrics JavaScript -->

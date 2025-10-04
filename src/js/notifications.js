@@ -25,7 +25,7 @@ async function populateNotificationChannels() {
             // No channels configured yet
             channelsSection.innerHTML = `
                 <p style="color: var(--text-tertiary); font-size: 14px; margin-bottom: 15px;">
-                    No notification channels configured yet. Set up Discord, Telegram, or Pushover to receive alerts.
+                    No notification channels configured yet. Set up Discord, Telegram, Pushover, Gotify, SMTP, or Slack to receive alerts.
                 </p>
                 <button type="button" class="btn btn-secondary" onclick="openNotificationSettings()">
                     Configure Channels
@@ -33,7 +33,7 @@ async function populateNotificationChannels() {
             `;
         }
     } catch (error) {
-        console.error('Error fetching notification channels:', error);
+        logger.error('Error fetching notification channels:', error);
         const channelsSection = document.getElementById('notificationChannelsSection');
         channelsSection.innerHTML = `
             <p style="color: var(--text-tertiary); font-size: 14px; margin-bottom: 15px;">
@@ -57,7 +57,7 @@ async function openNotificationSettings() {
         await fetchSettings(); // Load settings including blackout windows
         document.getElementById('notificationModal').classList.add('active');
     } catch (error) {
-        console.error('Error opening notification settings:', error);
+        logger.error('Error opening notification settings:', error);
         showToast('Failed to open notification settings', 'error');
     }
 }
@@ -123,7 +123,7 @@ async function loadNotificationChannels() {
         notificationChannels = await response.json();
         renderNotificationChannels();
     } catch (error) {
-        console.error('Error loading notification channels:', error);
+        logger.error('Error loading notification channels:', error);
         notificationChannels = [];
     }
 }
@@ -137,7 +137,7 @@ async function loadNotificationTemplate() {
         const template = settings.alert_template || '';
         document.getElementById('alertTemplate').value = template;
     } catch (error) {
-        console.error('Error loading template:', error);
+        logger.error('Error loading template:', error);
     }
 }
 
@@ -148,7 +148,7 @@ async function loadTemplateVariables() {
         });
         templateVariables = await response.json();
     } catch (error) {
-        console.error('Error loading template variables:', error);
+        logger.error('Error loading template variables:', error);
     }
 }
 
@@ -240,6 +240,59 @@ function renderChannelConfig(channel, index) {
                        value="${channel.config?.user_key || ''}"
                        onchange="updateChannelConfig(${index}, 'user_key', this.value)">
             `;
+        case 'gotify':
+            return `
+                <label class="form-label">Server URL</label>
+                <input type="url" class="form-input" placeholder="http://gotify.example.com"
+                       value="${channel.config?.server_url || ''}"
+                       onchange="updateChannelConfig(${index}, 'server_url', this.value)">
+                <small style="color: var(--text-tertiary); display: block; margin-top: 4px; margin-bottom: 12px;">
+                    Your Gotify server URL (e.g., http://192.168.1.100:8080)
+                </small>
+                <label class="form-label">App Token</label>
+                <input type="text" class="form-input" placeholder="AaBbCcDd123456"
+                       value="${channel.config?.app_token || ''}"
+                       onchange="updateChannelConfig(${index}, 'app_token', this.value)">
+                <small style="color: var(--text-tertiary); display: block; margin-top: 4px;">
+                    Create an app in Gotify and copy its token
+                </small>
+            `;
+        case 'smtp':
+            return `
+                <label class="form-label">SMTP Server</label>
+                <input type="text" class="form-input" placeholder="smtp.gmail.com"
+                       value="${channel.config?.smtp_host || ''}"
+                       onchange="updateChannelConfig(${index}, 'smtp_host', this.value)">
+                <label class="form-label">SMTP Port</label>
+                <input type="number" class="form-input" placeholder="587"
+                       value="${channel.config?.smtp_port || ''}"
+                       onchange="updateChannelConfig(${index}, 'smtp_port', this.value)">
+                <label class="form-label">Username</label>
+                <input type="text" class="form-input" placeholder="user@example.com"
+                       value="${channel.config?.smtp_user || ''}"
+                       onchange="updateChannelConfig(${index}, 'smtp_user', this.value)">
+                <label class="form-label">Password</label>
+                <input type="password" class="form-input" placeholder="••••••••"
+                       value="${channel.config?.smtp_password || ''}"
+                       onchange="updateChannelConfig(${index}, 'smtp_password', this.value)">
+                <label class="form-label">From Email</label>
+                <input type="email" class="form-input" placeholder="dockmon@example.com"
+                       value="${channel.config?.from_email || ''}"
+                       onchange="updateChannelConfig(${index}, 'from_email', this.value)">
+                <label class="form-label">To Email</label>
+                <input type="email" class="form-input" placeholder="alerts@example.com"
+                       value="${channel.config?.to_email || ''}"
+                       onchange="updateChannelConfig(${index}, 'to_email', this.value)">
+                <label class="form-label" style="display: flex; align-items: center; margin-top: 12px;">
+                    <input type="checkbox" style="margin-right: 8px;"
+                           ${channel.config?.use_tls !== false ? 'checked' : ''}
+                           onchange="updateChannelConfig(${index}, 'use_tls', this.checked)">
+                    Use TLS/STARTTLS
+                </label>
+                <small style="color: var(--text-tertiary); display: block; margin-top: 4px;">
+                    Enable for ports 587 (STARTTLS) or 465 (SSL/TLS). Disable for port 25.
+                </small>
+            `;
         default:
             return '';
     }
@@ -248,7 +301,7 @@ function renderChannelConfig(channel, index) {
 function addNotificationChannel() {
     // Get available channel types (those not already in use)
     const usedTypes = notificationChannels.map(ch => ch.type);
-    const availableTypes = ['discord', 'slack', 'telegram', 'pushover'].filter(type => !usedTypes.includes(type));
+    const availableTypes = ['discord', 'slack', 'telegram', 'pushover', 'gotify', 'smtp'].filter(type => !usedTypes.includes(type));
 
     if (availableTypes.length === 0) {
         showToast('❌ All notification channel types are already configured');
@@ -338,12 +391,12 @@ async function removeChannel(index) {
                 await fetchAlertRules();
                 renderAlertRules();
             } catch (error) {
-                console.error('Error deleting channel:', error);
+                logger.error('Error deleting channel:', error);
                 showToast('❌ Failed to delete channel');
             }
         });
     } catch (error) {
-        console.error('Error checking dependent alerts:', error);
+        logger.error('Error checking dependent alerts:', error);
         showToast('❌ Failed to check dependent alerts');
     }
 }
@@ -356,7 +409,7 @@ function toggleChannelStatus(index) {
 function getAvailableChannelTypes(currentType) {
     // Get all types that are either the current type or not already in use
     const usedTypes = notificationChannels.map(ch => ch.type);
-    const allTypes = ['discord', 'slack', 'telegram', 'pushover'];
+    const allTypes = ['discord', 'slack', 'telegram', 'pushover', 'gotify', 'smtp'];
     return allTypes.filter(type => type === currentType || !usedTypes.includes(type));
 }
 
@@ -403,14 +456,100 @@ async function saveAllChannels() {
         // Refresh the alert modal's channel list if it's open
         await populateNotificationChannels();
     } catch (error) {
-        console.error('Error saving channels:', error);
+        logger.error('Error saving channels:', error);
         showToast('❌ Failed to save notification channels');
     }
+}
+
+function validateChannelConfig(channel) {
+    // Validate based on channel type
+    const config = channel.config || {};
+
+    switch (channel.type) {
+        case 'discord':
+        case 'slack':
+            if (!config.webhook_url || !config.webhook_url.trim()) {
+                return { valid: false, error: 'Webhook URL is required' };
+            }
+            if (!config.webhook_url.startsWith('https://')) {
+                return { valid: false, error: 'Webhook URL must start with https://' };
+            }
+            break;
+
+        case 'telegram':
+            if (!config.bot_token || !config.bot_token.trim()) {
+                return { valid: false, error: 'Bot token is required' };
+            }
+            if (!config.chat_id || !config.chat_id.trim()) {
+                return { valid: false, error: 'Chat ID is required' };
+            }
+            break;
+
+        case 'pushover':
+            if (!config.app_token || !config.app_token.trim()) {
+                return { valid: false, error: 'App token is required' };
+            }
+            if (!config.user_key || !config.user_key.trim()) {
+                return { valid: false, error: 'User key is required' };
+            }
+            break;
+
+        case 'gotify':
+            if (!config.server_url || !config.server_url.trim()) {
+                return { valid: false, error: 'Gotify server URL is required' };
+            }
+            if (!config.server_url.startsWith('http://') && !config.server_url.startsWith('https://')) {
+                return { valid: false, error: 'Gotify server URL must start with http:// or https://' };
+            }
+            if (!config.app_token || !config.app_token.trim()) {
+                return { valid: false, error: 'Gotify app token is required' };
+            }
+            break;
+
+        case 'smtp':
+            if (!config.smtp_host || !config.smtp_host.trim()) {
+                return { valid: false, error: 'SMTP server is required' };
+            }
+            const port = parseInt(config.smtp_port);
+            if (isNaN(port) || port < 1 || port > 65535) {
+                return { valid: false, error: 'SMTP port must be between 1-65535' };
+            }
+            if (!config.smtp_user || !config.smtp_user.trim()) {
+                return { valid: false, error: 'SMTP username is required' };
+            }
+            if (!config.smtp_password || !config.smtp_password.trim()) {
+                return { valid: false, error: 'SMTP password is required' };
+            }
+            if (!config.from_email || !config.from_email.trim()) {
+                return { valid: false, error: 'From email is required' };
+            }
+            if (!config.to_email || !config.to_email.trim()) {
+                return { valid: false, error: 'To email is required' };
+            }
+            // Basic email validation
+            const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+            if (!emailRegex.test(config.from_email)) {
+                return { valid: false, error: 'Invalid from email format' };
+            }
+            if (!emailRegex.test(config.to_email)) {
+                return { valid: false, error: 'Invalid to email format' };
+            }
+            break;
+    }
+
+    return { valid: true };
 }
 
 async function saveChannel(index) {
     try {
         const channel = notificationChannels[index];
+
+        // Validate channel configuration before saving
+        const validation = validateChannelConfig(channel);
+        if (!validation.valid) {
+            showToast(`❌ ${validation.error}`);
+            return;
+        }
 
         if (channel.isNew) {
             // Create new channel
@@ -427,7 +566,21 @@ async function saveChannel(index) {
                 notificationChannels[index] = { ...savedChannel, isNew: false };
                 showToast('✅ Channel saved successfully!');
             } else {
-                throw new Error('Failed to save channel');
+                const errorData = await response.json().catch(() => ({}));
+                let errorMsg = 'Failed to save channel';
+
+                if (errorData.detail) {
+                    if (Array.isArray(errorData.detail)) {
+                        // Pydantic validation errors are arrays
+                        errorMsg = errorData.detail.map(err => err.msg || JSON.stringify(err)).join(', ');
+                    } else if (typeof errorData.detail === 'string') {
+                        errorMsg = errorData.detail;
+                    } else {
+                        errorMsg = JSON.stringify(errorData.detail);
+                    }
+                }
+
+                throw new Error(errorMsg);
             }
         } else if (channel.id) {
             // Update existing channel
@@ -458,8 +611,8 @@ async function saveChannel(index) {
         // Refresh the alert modal's channel list if it's open
         await populateNotificationChannels();
     } catch (error) {
-        console.error('Error saving channel:', error);
-        showToast('❌ Failed to save channel');
+        logger.error('Error saving channel:', error);
+        showToast(`❌ ${error.message || 'Failed to save channel'}`);
     }
 }
 
@@ -482,7 +635,7 @@ async function testChannel(index) {
             showToast('❌ Failed to send test notification');
         }
     } catch (error) {
-        console.error('Error testing channel:', error);
+        logger.error('Error testing channel:', error);
         showToast('❌ Failed to test channel');
     }
 }
@@ -529,7 +682,7 @@ async function saveNotificationTemplate() {
             showToast('❌ Failed to save template');
         }
     } catch (error) {
-        console.error('Error saving template:', error);
+        logger.error('Error saving template:', error);
         showToast('❌ Failed to save notification template');
     }
 }
@@ -570,6 +723,6 @@ async function loadNotificationSettings() {
             }
         });
     } catch (error) {
-        console.error('Error loading notification settings:', error);
+        logger.error('Error loading notification settings:', error);
     }
 }

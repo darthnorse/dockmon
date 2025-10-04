@@ -1,6 +1,13 @@
 // Host Metrics Management
 // Handles visualization of host metrics received via WebSocket
 
+// Configuration constants
+const HOST_CHART_DATA_POINTS = 60;  // ~5 minutes of data at 5s intervals
+const CONTAINER_CHART_DATA_POINTS = 20;  // ~1.5 minutes of data at 5s intervals
+const CHART_LOAD_TIMEOUT = 5000;  // Timeout for Chart.js to load (ms)
+const CHART_POLL_INTERVAL = 50;  // Polling interval for Chart.js availability (ms)
+const METRICS_CLEANUP_INTERVAL = 60000;  // Cleanup stale metrics every 60 seconds
+
 // Store chart instances for each host
 const hostMetricsCharts = new Map(); // host_id -> { cpu: Chart, ram: Chart, net: Chart }
 
@@ -25,7 +32,7 @@ function createHostMetricsCharts(hostId) {
         const netCanvas = document.getElementById(`net-chart-${hostId}`);
 
         if (!cpuCanvas || !ramCanvas || !netCanvas) {
-            console.warn(`Charts not found for host ${hostId}`);
+            logger.warn(`Charts not found for host ${hostId}`);
             return;
         }
 
@@ -38,9 +45,9 @@ function createHostMetricsCharts(hostId) {
         }
 
         // Create charts with different colors
-        const cpuChart = createSparkline(cpuCanvas, '#3b82f6', 60); // blue
-        const ramChart = createSparkline(ramCanvas, '#10b981', 60); // green
-        const netChart = createSparkline(netCanvas, '#8b5cf6', 60); // purple
+        const cpuChart = createSparkline(cpuCanvas, '#3b82f6', HOST_CHART_DATA_POINTS); // blue
+        const ramChart = createSparkline(ramCanvas, '#10b981', HOST_CHART_DATA_POINTS); // green
+        const netChart = createSparkline(netCanvas, '#8b5cf6', HOST_CHART_DATA_POINTS); // purple
 
         hostMetricsCharts.set(hostId, {
             cpu: cpuChart,
@@ -55,11 +62,11 @@ function createHostMetricsCharts(hostId) {
             lastTimestamp: 0
         });
 
-        console.log(`Created metrics charts for host ${hostId}`);
-    }, 50);
+        logger.debug(`Created metrics charts for host ${hostId}`);
+    }, CHART_POLL_INTERVAL);
 
-    // Timeout after 5 seconds
-    setTimeout(() => clearInterval(waitForChart), 5000);
+    // Timeout after configured duration
+    setTimeout(() => clearInterval(waitForChart), CHART_LOAD_TIMEOUT);
 }
 
 /**
@@ -144,3 +151,175 @@ function removeHostMetrics(hostId) {
 
     networkHistory.delete(hostId);
 }
+
+// Container Sparklines Management
+const containerSparklineCharts = new Map(); // "hostId-containerId" -> { cpu: Chart, ram: Chart, net: Chart }
+const containerNetworkHistory = new Map(); // Track previous network values for rate calculation
+
+/**
+ * Remove container metrics and cleanup resources
+ */
+function removeContainerMetrics(hostId, containerId) {
+    const key = `${hostId}-${containerId}`;
+    const charts = containerSparklineCharts.get(key);
+
+    if (charts) {
+        // Destroy charts
+        if (charts.cpu) charts.cpu.destroy();
+        if (charts.ram) charts.ram.destroy();
+        if (charts.net) charts.net.destroy();
+
+        containerSparklineCharts.delete(key);
+    }
+
+    // Remove network history
+    containerNetworkHistory.delete(key);
+}
+
+// Export for use in other modules
+window.removeContainerMetrics = removeContainerMetrics;
+
+/**
+ * Create sparkline charts for a container
+ */
+function createContainerSparklines(hostId, containerId) {
+    // Wait for Chart.js to be loaded
+    const waitForChart = setInterval(() => {
+        if (typeof Chart === 'undefined') {
+            return; // Chart.js not loaded yet
+        }
+
+        clearInterval(waitForChart);
+
+        const key = `${hostId}-${containerId}`;
+        const cpuCanvas = document.getElementById(`container-cpu-${key}`);
+        const ramCanvas = document.getElementById(`container-ram-${key}`);
+        const netCanvas = document.getElementById(`container-net-${key}`);
+
+        if (!cpuCanvas || !ramCanvas || !netCanvas) {
+            return; // Elements not found
+        }
+
+        // Destroy existing charts if they exist
+        const existing = containerSparklineCharts.get(key);
+        if (existing) {
+            existing.cpu?.destroy();
+            existing.ram?.destroy();
+            existing.net?.destroy();
+        }
+
+        // Create mini sparklines
+        const cpuChart = createSparkline(cpuCanvas, '#3b82f6', CONTAINER_CHART_DATA_POINTS); // blue
+        const ramChart = createSparkline(ramCanvas, '#10b981', CONTAINER_CHART_DATA_POINTS); // green
+        const netChart = createSparkline(netCanvas, '#a855f7', CONTAINER_CHART_DATA_POINTS); // purple
+
+        containerSparklineCharts.set(key, {
+            cpu: cpuChart,
+            ram: ramChart,
+            net: netChart
+        });
+    }, CHART_POLL_INTERVAL);
+
+    // Timeout after configured duration
+    setTimeout(() => clearInterval(waitForChart), CHART_LOAD_TIMEOUT);
+}
+
+/**
+ * Update container sparklines from container data
+ */
+function updateContainerSparklines(hostId, containerId, containerData) {
+    const key = `${hostId}-${containerId}`;
+    const charts = containerSparklineCharts.get(key);
+
+    if (!charts) {
+        return; // Charts not created yet
+    }
+
+    // Update CPU sparkline
+    if (charts.cpu && containerData.cpu_percent !== undefined) {
+        updateSparkline(charts.cpu, containerData.cpu_percent);
+    }
+
+    // Update RAM sparkline (convert bytes to percentage for visualization)
+    if (charts.ram && containerData.memory_usage !== undefined && containerData.memory_limit !== undefined && containerData.memory_limit > 0) {
+        const ramPercent = (containerData.memory_usage / containerData.memory_limit) * 100;
+        updateSparkline(charts.ram, ramPercent);
+    }
+
+    // Update Network sparkline (calculate rate from cumulative values)
+    if (charts.net && containerData.network_tx !== undefined && containerData.network_rx !== undefined) {
+        const now = Date.now();
+        const history = containerNetworkHistory.get(key);
+
+        if (history) {
+            const timeDelta = (now - history.timestamp) / 1000; // seconds
+            if (timeDelta >= 1) {
+                const txRate = (containerData.network_tx - history.tx) / timeDelta;
+                const rxRate = (containerData.network_rx - history.rx) / timeDelta;
+                const totalRate = Math.max(0, txRate + rxRate);
+
+                updateSparkline(charts.net, totalRate / 1024); // Convert to KB for better visualization
+
+                // Update text value
+                const valueEl = document.getElementById(`container-net-value-${key}`);
+                if (valueEl) {
+                    valueEl.textContent = `NET ${formatBytes(totalRate)}/s`;
+                }
+
+                // Update history
+                containerNetworkHistory.set(key, {
+                    tx: containerData.network_tx,
+                    rx: containerData.network_rx,
+                    timestamp: now
+                });
+            }
+        } else {
+            // Initialize history
+            containerNetworkHistory.set(key, {
+                tx: containerData.network_tx,
+                rx: containerData.network_rx,
+                timestamp: now
+            });
+        }
+    }
+}
+
+/**
+ * Cleanup stale container metrics
+ * Call this periodically to remove metrics for containers that no longer exist
+ */
+function cleanupStaleContainerMetrics() {
+    const currentContainers = new Set();
+
+    // Collect all currently visible containers
+    document.querySelectorAll('.container-item').forEach(item => {
+        const cpuCanvas = item.querySelector('[id^="container-cpu-"]');
+        if (cpuCanvas) {
+            const key = cpuCanvas.id.replace('container-cpu-', '');
+            currentContainers.add(key);
+        }
+    });
+
+    // Remove metrics for containers that no longer exist
+    for (const key of containerSparklineCharts.keys()) {
+        if (!currentContainers.has(key)) {
+            const [hostId, containerId] = key.split('-');
+            removeContainerMetrics(hostId, containerId);
+        }
+    }
+
+    // Also cleanup network history for containers that no longer exist
+    for (const key of containerNetworkHistory.keys()) {
+        if (!currentContainers.has(key)) {
+            containerNetworkHistory.delete(key);
+        }
+    }
+}
+
+// Run cleanup periodically
+const metricsCleanupInterval = setInterval(cleanupStaleContainerMetrics, METRICS_CLEANUP_INTERVAL);
+
+// Stop cleanup when page is unloaded
+window.addEventListener('beforeunload', () => {
+    clearInterval(metricsCleanupInterval);
+});

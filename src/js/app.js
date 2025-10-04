@@ -1,5 +1,5 @@
 async function init() {
-            console.log('Starting initialization...');
+            logger.debug('Starting initialization...');
 
             // Check authentication first
             const isAuthenticated = await checkAuthentication();
@@ -20,7 +20,7 @@ async function init() {
             await new Promise(resolve => setTimeout(resolve, 1000));
 
             // Fetch initial data with fallback handling
-            console.log('Fetching initial data...');
+            logger.debug('Fetching initial data...');
             const results = await Promise.allSettled([
                 fetchHosts(),
                 fetchContainers(),
@@ -33,9 +33,9 @@ async function init() {
             results.forEach((result, index) => {
                 const names = ['hosts', 'containers', 'settings', 'notificationChannels', 'alertRules'];
                 if (result.status === 'rejected') {
-                    console.warn(`Failed to fetch ${names[index]}:`, result.reason);
+                    logger.warn(`Failed to fetch ${names[index]}:`, result.reason);
                 } else {
-                    console.log(`Successfully fetched ${names[index]}`);
+                    logger.debug(`Successfully fetched ${names[index]}`);
                 }
             });
 
@@ -48,10 +48,10 @@ async function init() {
                     body: JSON.stringify(globalSettings)
                 });
             } catch (error) {
-                console.error('Failed to save timezone offset:', error);
+                logger.error('Failed to save timezone offset:', error);
             }
 
-            console.log('Rendering initial UI...');
+            logger.debug('Rendering initial UI...');
             renderAll();
 
             // Update quiet hours indicator on dashboard
@@ -60,7 +60,7 @@ async function init() {
             // Initialize dashboard if we're on the dashboard page
             // This handles the case when fetch completes before WebSocket
             if (currentPage === 'dashboard' && grid === null && hosts.length > 0) {
-                console.log('Initializing dashboard after fetch data load...');
+                logger.debug('Initializing dashboard after fetch data load...');
                 // Small delay to ensure DOM is ready, but data is already loaded
                 setTimeout(() => {
                     if (grid === null) {
@@ -69,7 +69,7 @@ async function init() {
                 }, 100);
             }
 
-            console.log('Initialization completed successfully');
+            logger.debug('Initialization completed successfully');
         }
 
         function renderAll() {
@@ -97,19 +97,26 @@ async function init() {
             // Show selected page
             const pageElement = document.getElementById(`${page}-page`);
             if (!pageElement) {
-                console.error(`Page element not found: ${page}-page`);
+                logger.error(`Page element not found: ${page}-page`);
                 showToast(`Page "${page}" not yet available`);
                 return;
             }
             pageElement.classList.add('active');
             currentPage = page;
 
-            // Initialize dashboard when switching to it
+            // Show/hide dashboard-specific controls
+            const searchContainer = document.getElementById('dashboardSearchContainer');
+            const sortSelect = document.getElementById('containerSort');
+
             if (page === 'dashboard') {
+                // Show search/sort controls
+                if (searchContainer) searchContainer.style.display = '';
+                if (sortSelect) sortSelect.style.display = '';
+
                 if (grid === null) {
                     // Wait for hosts data before initializing dashboard
                     if (hosts.length === 0) {
-                        console.log('Waiting for hosts data before initializing dashboard...');
+                        logger.debug('Waiting for hosts data before initializing dashboard...');
                         let checkData = null;
                         let timeoutId = null;
 
@@ -125,7 +132,7 @@ async function init() {
                         timeoutId = setTimeout(() => {
                             if (checkData) clearInterval(checkData);
                             if (grid === null) {
-                                console.log('Initializing dashboard after timeout');
+                                logger.debug('Initializing dashboard after timeout');
                                 initDashboard();
                             }
                         }, 5000);
@@ -135,6 +142,10 @@ async function init() {
                 } else {
                     renderDashboardWidgets(); // Refresh existing widgets
                 }
+            } else {
+                // Hide search/sort controls on other pages
+                if (searchContainer) searchContainer.style.display = 'none';
+                if (sortSelect) sortSelect.style.display = 'none';
             }
 
             // Update page title
@@ -212,7 +223,7 @@ async function init() {
                 hostCard.innerHTML = `
                     <div class="host-header">
                         <div class="host-name">
-                            <span>🖥️</span> ${host.name}
+                            <span>🖥️</span> ${escapeHtml(host.name)}
                             ${getSecurityStatusBadge(host)}
                         </div>
                         <span class="host-status status-${host.status}">${host.status}</span>
@@ -233,11 +244,11 @@ async function init() {
                 return `
                     <div class="alert-rule-card">
                         <div class="alert-rule-info">
-                            <div class="alert-rule-title">${host.name} ${getSecurityStatusBadge(host)}</div>
-                            <div class="alert-rule-details">${host.url} • ${hostContainers.length} containers</div>
+                            <div class="alert-rule-title">${escapeHtml(host.name)} ${getSecurityStatusBadge(host)}</div>
+                            <div class="alert-rule-details">${escapeHtml(host.url)} • ${hostContainers.length} containers</div>
                             <div class="alert-rule-details" style="margin-top: 4px;">
                                 Status: <span class="status-${host.status}">${host.status}</span>
-                                ${host.error ? `• Error: ${host.error}` : ''}
+                                ${host.error ? `• Error: ${escapeHtml(host.error)}` : ''}
                             </div>
                         </div>
                         <div style="display: flex; gap: var(--spacing-sm);">
@@ -262,7 +273,7 @@ async function init() {
                 alertRulesList.innerHTML = '';
 
                 if (!alertRules || !Array.isArray(alertRules)) {
-                    console.warn('alertRules is not an array:', alertRules);
+                    logger.warn('alertRules is not an array:', alertRules);
                     return;
                 }
 
@@ -317,7 +328,7 @@ async function init() {
                 const orphanedContainers = rule.orphaned_containers || [];
                 let orphanWarning = '';
                 if (isOrphaned && orphanedContainers.length > 0) {
-                    const orphanNames = orphanedContainers.map(c => `${c.container_name} (${c.host_name})`).join(', ');
+                    const orphanNames = orphanedContainers.map(c => `${escapeHtml(c.container_name)} (${escapeHtml(c.host_name)})`).join(', ');
                     orphanWarning = `
                         <div class="alert-warning" style="margin-top: 8px; padding: 8px; background: var(--warning); color: var(--dark); border-radius: 4px; font-size: 12px;">
                             <i data-lucide="alert-triangle" style="width:14px;height:14px;vertical-align:middle;"></i>
@@ -349,7 +360,7 @@ async function init() {
                 alertRulesList.appendChild(ruleCard);
                 });
             } catch (error) {
-                console.error('Error rendering alert rules:', error);
+                logger.error('Error rendering alert rules:', error);
             }
             initIcons();
         }
@@ -451,8 +462,6 @@ async function init() {
             }
             return null;
         }
-
-        // Removed regex pattern mode - now only using checkbox selection
 
         function toggleAllContainers(checkbox) {
             const containerCheckboxes = document.querySelectorAll('#containerSelectionCheckboxes input[type="checkbox"]');
@@ -706,7 +715,7 @@ async function init() {
                         updateNavBadges();
                     }
                 } catch (error) {
-                    console.error('Error deleting host:', error);
+                    logger.error('Error deleting host:', error);
                     showToast('❌ Failed to delete host');
                 }
             });
@@ -756,7 +765,7 @@ async function init() {
             }
         }
 
-        function showContainerDetails(hostId, containerId, preserveTab = null) {
+        async function showContainerDetails(hostId, containerId, preserveTab = null) {
             const container = containers.find(c => c.host_id === hostId && c.short_id === containerId);
             if (container) {
                 // Only reset logs if we're switching to a different container
@@ -800,13 +809,13 @@ async function init() {
                 const detailsHtml = `
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px;">
                         <div>
-                            <strong>Name:</strong> ${container.name}<br>
-                            <strong>ID:</strong> ${container.short_id}<br>
-                            <strong>Image:</strong> ${container.image}<br>
+                            <strong>Name:</strong> ${escapeHtml(container.name)}<br>
+                            <strong>ID:</strong> ${escapeHtml(container.short_id)}<br>
+                            <strong>Image:</strong> ${escapeHtml(container.image)}<br>
                         </div>
                         <div>
                             <strong>State:</strong> <span class="${getStateClass(container.state)}">${container.state}</span><br>
-                            <strong>Host:</strong> ${container.host_name}<br>
+                            <strong>Host:</strong> ${escapeHtml(container.host_name)}<br>
                             <strong>Created:</strong> ${new Date(container.created).toLocaleString()}<br>
                         </div>
                     </div>
@@ -831,6 +840,30 @@ async function init() {
                             <span><i data-lucide="rotate-cw" style="width:14px;height:14px;"></i> Auto-restart: ${container.auto_restart ? 'ON' : 'OFF'}</span>
                         </div>
                     </div>
+                    ${container.state === 'running' ? `
+                    <div class="container-stats-sparklines" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-top: 20px;">
+                        <div>
+                            <div style="font-size: 11px; color: var(--text-tertiary); margin-bottom: 5px;">CPU</div>
+                            <canvas id="info-cpu-sparkline" width="60" height="30"></canvas>
+                            <div style="font-size: 12px; font-weight: 600; margin-top: 5px;" id="info-cpu-value">0%</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 11px; color: var(--text-tertiary); margin-bottom: 5px;">Memory</div>
+                            <canvas id="info-memory-sparkline" width="60" height="30"></canvas>
+                            <div style="font-size: 12px; font-weight: 600; margin-top: 5px;" id="info-memory-value">0 B</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 11px; color: var(--text-tertiary); margin-bottom: 5px;">Network</div>
+                            <canvas id="info-network-sparkline" width="60" height="30"></canvas>
+                            <div style="font-size: 12px; font-weight: 600; margin-top: 5px;" id="info-network-value">0 B/s</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 11px; color: var(--text-tertiary); margin-bottom: 5px;">Disk I/O</div>
+                            <canvas id="info-disk-sparkline" width="60" height="30"></canvas>
+                            <div style="font-size: 12px; font-weight: 600; margin-top: 5px;" id="info-disk-value">0 B/s</div>
+                        </div>
+                    </div>
+                    ` : ''}
                     <div id="container-recent-events" style="margin-top: 20px;">
                         <div style="color: var(--text-tertiary); font-size: 14px;">Loading recent events...</div>
                     </div>
@@ -844,6 +877,24 @@ async function init() {
                 // Initialize Lucide icons after content is added
                 initIcons();
 
+                // Initialize both sparklines and stats charts if container is running
+                // A single master update loop will update both continuously
+                if (container.state === 'running') {
+                    initializeInfoSparklines();
+                    initializeContainerStatsCharts();
+                    // Start the master update loop after a delay to avoid initial spike
+                    setTimeout(updateContainerStats, 2000);
+
+                    // Notify backend to start stats collection for this container (even if global stats are disabled)
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({
+                            type: 'modal_opened',
+                            container_id: container.id,
+                            host_id: container.host_id
+                        }));
+                    }
+                }
+
                 // Show modal
                 const modal = document.getElementById('containerModal');
                 modal.classList.add('active');
@@ -851,11 +902,11 @@ async function init() {
                 // Load saved preferences or reset modal position
                 const modalContent = modal.querySelector('.modal-content');
                 if (modalContent) {
-                    const savedPrefs = loadModalPreferences();
+                    const savedPrefs = await loadModalPreferences();
                     if (!savedPrefs) {
                         // No saved preferences, use defaults
                         modalContent.style.width = '900px';
-                        modalContent.style.height = '600px';
+                        modalContent.style.height = '820px';
                         modalContent.style.transform = 'translate(0, 0)';
                     }
                 }
@@ -914,6 +965,8 @@ async function init() {
             document.getElementById(`tab-${tab}`).classList.remove('btn-secondary');
             document.getElementById(`tab-${tab}`).classList.add('btn-primary');
 
+            // Charts are already initialized and updating via master loop - no action needed
+
             // Adjust logs height when switching to logs tab
             if (tab === 'logs') {
                 // Check for saved logs height preference
@@ -964,6 +1017,11 @@ async function init() {
             } else if (tab !== 'logs') {
                 // Stop auto-refresh when leaving logs tab
                 stopAutoRefresh();
+
+                // Remove keydown event listener
+                if (window.logFilterKeyHandler) {
+                    document.removeEventListener('keydown', window.logFilterKeyHandler);
+                }
             }
             
             // Clear log stream if switching away from logs
@@ -971,6 +1029,593 @@ async function init() {
                 window.logStreamWs.close();
                 window.logStreamWs = null;
                 document.getElementById('streamLogsBtn').textContent = 'Start Live Stream';
+            }
+        }
+
+        // Container Statistics Charts
+        let containerStatsCharts = {};
+        let containerStatsPrevValues = null; // For rate calculation
+        let containerStatsFirstUpdate = true; // Flag to skip first rate calculation
+
+        function initializeContainerStatsCharts() {
+            if (!window.currentContainer) return;
+
+            // Destroy existing charts if they exist
+            Object.values(containerStatsCharts).forEach(chart => {
+                if (chart) chart.destroy();
+            });
+            containerStatsCharts = {};
+
+            // Reset first update flag
+            containerStatsFirstUpdate = true;
+
+            // Initialize previous values for rate calculation - will be set on first update
+            containerStatsPrevValues = null;
+
+            // Create CPU chart
+            const cpuCanvas = document.getElementById('container-cpu-chart');
+            if (cpuCanvas) {
+                containerStatsCharts.cpu = new Chart(cpuCanvas.getContext('2d'), {
+                    type: 'line',
+                    data: {
+                        labels: [],
+                        datasets: [{
+                            label: 'CPU %',
+                            data: [],
+                            borderColor: '#3b82f6',
+                            backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                            borderWidth: 2,
+                            fill: true,
+                            tension: 0.4
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: {
+                                enabled: true,
+                                callbacks: {
+                                    label: (context) => {
+                                        return `CPU: ${context.parsed.y.toFixed(1)}%`;
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            x: { display: false },
+                            y: {
+                                beginAtZero: true,
+                                max: 100,
+                                ticks: { callback: value => value + '%' }
+                            }
+                        },
+                        animation: { duration: 300 }
+                    }
+                });
+            }
+
+            // Create Memory chart
+            const memoryCanvas = document.getElementById('container-memory-chart');
+            if (memoryCanvas) {
+                containerStatsCharts.memory = new Chart(memoryCanvas.getContext('2d'), {
+                    type: 'line',
+                    data: {
+                        labels: [],
+                        datasets: [{
+                            label: 'Memory (MiB)',
+                            data: [],
+                            borderColor: '#10b981',
+                            backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                            borderWidth: 2,
+                            fill: true,
+                            tension: 0.4
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: {
+                                enabled: true,
+                                callbacks: {
+                                    label: (context) => {
+                                        return `Memory: ${context.parsed.y.toFixed(1)} MiB`;
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            x: { display: false },
+                            y: {
+                                beginAtZero: true,
+                                ticks: { callback: value => (value / 1024 / 1024).toFixed(0) + ' MiB' }
+                            }
+                        },
+                        animation: { duration: 300 }
+                    }
+                });
+            }
+
+            // Create Network chart (dual line: Tx and Rx)
+            const networkCanvas = document.getElementById('container-network-chart');
+            if (networkCanvas) {
+                containerStatsCharts.network = new Chart(networkCanvas.getContext('2d'), {
+                    type: 'line',
+                    data: {
+                        labels: [],
+                        datasets: [
+                            {
+                                label: 'TX (sent)',
+                                data: [],
+                                borderColor: '#06b6d4',
+                                backgroundColor: 'transparent',
+                                borderWidth: 2,
+                                tension: 0.4
+                            },
+                            {
+                                label: 'RX (received)',
+                                data: [],
+                                borderColor: '#a855f7',
+                                backgroundColor: 'transparent',
+                                borderWidth: 2,
+                                tension: 0.4
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        plugins: {
+                            legend: { display: true, position: 'top' },
+                            tooltip: {
+                                enabled: true,
+                                callbacks: {
+                                    label: (context) => {
+                                        return `${context.dataset.label}: ${formatBytes(context.parsed.y)}/s`;
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            x: { display: false },
+                            y: {
+                                beginAtZero: true,
+                                ticks: {
+                                    callback: function(value) {
+                                        if (typeof value !== 'number' || !isFinite(value)) return '0 B/s';
+                                        return formatBytes(value) + '/s';
+                                    }
+                                }
+                            }
+                        },
+                        animation: { duration: 300 }
+                    }
+                });
+            }
+
+            // Create Disk I/O chart (dual line: Read and Write)
+            const diskCanvas = document.getElementById('container-disk-chart');
+            if (diskCanvas) {
+                containerStatsCharts.disk = new Chart(diskCanvas.getContext('2d'), {
+                    type: 'line',
+                    data: {
+                        labels: [],
+                        datasets: [
+                            {
+                                label: 'Read',
+                                data: [],
+                                borderColor: '#f59e0b',
+                                backgroundColor: 'transparent',
+                                borderWidth: 2,
+                                tension: 0.4
+                            },
+                            {
+                                label: 'Write',
+                                data: [],
+                                borderColor: '#ef4444',
+                                backgroundColor: 'transparent',
+                                borderWidth: 2,
+                                tension: 0.4
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        plugins: {
+                            legend: { display: true, position: 'top' },
+                            tooltip: {
+                                enabled: true,
+                                callbacks: {
+                                    label: (context) => {
+                                        return `${context.dataset.label}: ${formatBytes(context.parsed.y)}/s`;
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            x: { display: false },
+                            y: {
+                                beginAtZero: true,
+                                ticks: {
+                                    callback: function(value) {
+                                        if (typeof value !== 'number' || !isFinite(value)) return '0 B/s';
+                                        return formatBytes(value) + '/s';
+                                    }
+                                }
+                            }
+                        },
+                        animation: { duration: 300 }
+                    }
+                });
+            }
+
+            // Don't start the loop here - it will be started by the master update loop
+        }
+
+        // Update container stats charts with latest data
+        function updateContainerStatsCharts(container, now) {
+            if (!containerStatsCharts.cpu) return;
+
+            // Update CPU chart
+            if (containerStatsCharts.cpu) {
+                const cpuData = containerStatsCharts.cpu.data;
+                cpuData.labels.push(now);
+                cpuData.datasets[0].data.push(container.cpu_percent || 0);
+                if (cpuData.labels.length > 60) {
+                    cpuData.labels.shift();
+                    cpuData.datasets[0].data.shift();
+                }
+                containerStatsCharts.cpu.update('none');
+            }
+
+            // Update Memory chart
+            if (containerStatsCharts.memory) {
+                const memData = containerStatsCharts.memory.data;
+                memData.labels.push(now);
+                memData.datasets[0].data.push(container.memory_usage || 0);
+                if (memData.labels.length > 60) {
+                    memData.labels.shift();
+                    memData.datasets[0].data.shift();
+                }
+                containerStatsCharts.memory.update('none');
+            }
+
+            // Initialize or update network/disk stats with rate calculation
+            const currentTx = container.network_tx || 0;
+            const currentRx = container.network_rx || 0;
+            const currentRead = container.disk_read || 0;
+            const currentWrite = container.disk_write || 0;
+            const currentTime = Date.now();
+
+            // On first update, just initialize previous values without calculating rates
+            if (containerStatsFirstUpdate) {
+                containerStatsPrevValues = {
+                    networkTx: currentTx,
+                    networkRx: currentRx,
+                    diskRead: currentRead,
+                    diskWrite: currentWrite,
+                    timestamp: currentTime
+                };
+                containerStatsFirstUpdate = false;
+            } else if (containerStatsPrevValues) {
+                // Calculate time delta
+                const timeDelta = (currentTime - containerStatsPrevValues.timestamp) / 1000; // seconds
+
+                // Only update if enough time has passed (minimum 1 second)
+                if (timeDelta >= 1) {
+                    // Update Network chart
+                    if (containerStatsCharts.network) {
+                        const txRate = Math.max(0, (currentTx - containerStatsPrevValues.networkTx) / timeDelta);
+                        const rxRate = Math.max(0, (currentRx - containerStatsPrevValues.networkRx) / timeDelta);
+
+                        const netData = containerStatsCharts.network.data;
+                        netData.labels.push(now);
+                        netData.datasets[0].data.push(txRate);
+                        netData.datasets[1].data.push(rxRate);
+                        if (netData.labels.length > 60) {
+                            netData.labels.shift();
+                            netData.datasets[0].data.shift();
+                            netData.datasets[1].data.shift();
+                        }
+                        containerStatsCharts.network.update('none');
+                    }
+
+                    // Update Disk chart
+                    if (containerStatsCharts.disk) {
+                        const readRate = Math.max(0, (currentRead - containerStatsPrevValues.diskRead) / timeDelta);
+                        const writeRate = Math.max(0, (currentWrite - containerStatsPrevValues.diskWrite) / timeDelta);
+
+                        const diskData = containerStatsCharts.disk.data;
+                        diskData.labels.push(now);
+                        diskData.datasets[0].data.push(readRate);
+                        diskData.datasets[1].data.push(writeRate);
+                        if (diskData.labels.length > 60) {
+                            diskData.labels.shift();
+                            diskData.datasets[0].data.shift();
+                            diskData.datasets[1].data.shift();
+                        }
+                        containerStatsCharts.disk.update('none');
+                    }
+
+                    // Update previous values
+                    containerStatsPrevValues.networkTx = currentTx;
+                    containerStatsPrevValues.networkRx = currentRx;
+                    containerStatsPrevValues.diskRead = currentRead;
+                    containerStatsPrevValues.diskWrite = currentWrite;
+                    containerStatsPrevValues.timestamp = currentTime;
+                }
+            }
+        }
+
+        // Info tab sparklines
+        let infoSparklineCharts = {};
+        let infoSparklineFirstUpdate = true; // Flag to skip first rate calculation
+
+        function initializeInfoSparklines() {
+            if (!window.currentContainer) return;
+
+            // Destroy existing sparklines
+            Object.values(infoSparklineCharts).forEach(chart => {
+                if (chart) chart.destroy();
+            });
+            infoSparklineCharts = {};
+
+            // Reset first update flag
+            infoSparklineFirstUpdate = true;
+
+            // Common sparkline options (minimal style, no axes)
+            const sparklineOptions = {
+                responsive: false,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: { enabled: false }
+                },
+                scales: {
+                    x: { display: false },
+                    y: { display: false }
+                },
+                animation: { duration: 0 },
+                elements: {
+                    point: { radius: 0 },
+                    line: { borderWidth: 1.5 }
+                }
+            };
+
+            // CPU sparkline
+            const cpuCanvas = document.getElementById('info-cpu-sparkline');
+            if (cpuCanvas) {
+                infoSparklineCharts.cpu = new Chart(cpuCanvas.getContext('2d'), {
+                    type: 'line',
+                    data: {
+                        labels: new Array(20).fill(''),
+                        datasets: [{
+                            data: new Array(20).fill(0),
+                            borderColor: '#3b82f6',
+                            backgroundColor: 'rgba(59, 130, 246, 0.2)',
+                            fill: true,
+                            tension: 0.4
+                        }]
+                    },
+                    options: {...sparklineOptions, scales: {...sparklineOptions.scales, y: {display: false, min: 0, max: 100}}}
+                });
+            }
+
+            // Memory sparkline
+            const memoryCanvas = document.getElementById('info-memory-sparkline');
+            if (memoryCanvas) {
+                infoSparklineCharts.memory = new Chart(memoryCanvas.getContext('2d'), {
+                    type: 'line',
+                    data: {
+                        labels: new Array(20).fill(''),
+                        datasets: [{
+                            data: new Array(20).fill(0),
+                            borderColor: '#10b981',
+                            backgroundColor: 'rgba(16, 185, 129, 0.2)',
+                            fill: true,
+                            tension: 0.4
+                        }]
+                    },
+                    options: {...sparklineOptions, scales: {...sparklineOptions.scales, y: {display: false, beginAtZero: true}}}
+                });
+            }
+
+            // Network sparkline (combined TX+RX) - purple to match host widget
+            const networkCanvas = document.getElementById('info-network-sparkline');
+            if (networkCanvas) {
+                infoSparklineCharts.network = new Chart(networkCanvas.getContext('2d'), {
+                    type: 'line',
+                    data: {
+                        labels: new Array(20).fill(''),
+                        datasets: [{
+                            data: new Array(20).fill(0),
+                            borderColor: '#a855f7',
+                            backgroundColor: 'rgba(168, 85, 247, 0.2)',
+                            fill: true,
+                            tension: 0.4
+                        }]
+                    },
+                    options: {...sparklineOptions, scales: {...sparklineOptions.scales, y: {display: false, beginAtZero: true}}}
+                });
+            }
+
+            // Disk I/O sparkline (combined read+write)
+            const diskCanvas = document.getElementById('info-disk-sparkline');
+            if (diskCanvas) {
+                infoSparklineCharts.disk = new Chart(diskCanvas.getContext('2d'), {
+                    type: 'line',
+                    data: {
+                        labels: new Array(20).fill(''),
+                        datasets: [{
+                            data: new Array(20).fill(0),
+                            borderColor: '#f59e0b',
+                            backgroundColor: 'rgba(245, 158, 11, 0.2)',
+                            fill: true,
+                            tension: 0.4
+                        }]
+                    },
+                    options: {...sparklineOptions, scales: {...sparklineOptions.scales, y: {display: false, beginAtZero: true}}}
+                });
+            }
+
+            // Initialize previous values - will be set on first update
+            window.infoSparklinePrevValues = null;
+
+            // Don't start the loop here - it will be started by the master update loop
+        }
+
+        function updateInfoSparklines(container) {
+            if (!infoSparklineCharts.cpu) return;
+
+            // Update CPU sparkline and value
+            if (infoSparklineCharts.cpu) {
+                const cpuValue = container.cpu_percent || 0;
+                const cpuData = infoSparklineCharts.cpu.data.datasets[0].data;
+                cpuData.push(cpuValue);
+                if (cpuData.length > 20) cpuData.shift();
+                infoSparklineCharts.cpu.update('none');
+
+                const cpuValueEl = document.getElementById('info-cpu-value');
+                if (cpuValueEl) cpuValueEl.textContent = `${cpuValue.toFixed(1)}%`;
+            }
+
+            // Update Memory sparkline and value (show bytes, not percentage)
+            if (infoSparklineCharts.memory) {
+                const memoryBytes = container.memory_usage || 0;
+                const memData = infoSparklineCharts.memory.data.datasets[0].data;
+                memData.push(memoryBytes);
+                if (memData.length > 20) memData.shift();
+                infoSparklineCharts.memory.update('none');
+
+                const memValueEl = document.getElementById('info-memory-value');
+                if (memValueEl) memValueEl.textContent = formatBytes(memoryBytes);
+            }
+
+            // Initialize or calculate rates - do both network and disk in one pass
+            const currentTx = container.network_tx || 0;
+            const currentRx = container.network_rx || 0;
+            const currentRead = container.disk_read || 0;
+            const currentWrite = container.disk_write || 0;
+            const now = Date.now();
+
+            // On first update, just initialize previous values without calculating rates
+            if (infoSparklineFirstUpdate) {
+                window.infoSparklinePrevValues = {
+                    networkTx: currentTx,
+                    networkRx: currentRx,
+                    diskRead: currentRead,
+                    diskWrite: currentWrite,
+                    timestamp: now
+                };
+                infoSparklineFirstUpdate = false;
+            } else if (window.infoSparklinePrevValues) {
+                const timeDelta = (now - window.infoSparklinePrevValues.timestamp) / 1000; // seconds
+
+                // Only update if enough time has passed (minimum 1 second)
+                if (timeDelta >= 1) {
+                    // Calculate network rate (TX + RX combined)
+                    if (infoSparklineCharts.network) {
+                        const txRate = (currentTx - window.infoSparklinePrevValues.networkTx) / timeDelta;
+                        const rxRate = (currentRx - window.infoSparklinePrevValues.networkRx) / timeDelta;
+                        const totalNetworkRate = Math.max(0, txRate + rxRate); // Combined rate
+
+                        const netData = infoSparklineCharts.network.data.datasets[0].data;
+                        netData.push(totalNetworkRate);
+                        if (netData.length > 20) netData.shift();
+                        infoSparklineCharts.network.update('none');
+
+                        const netValueEl = document.getElementById('info-network-value');
+                        if (netValueEl) netValueEl.textContent = formatBytes(totalNetworkRate) + '/s';
+                    }
+
+                    // Calculate disk I/O rate (read + write combined)
+                    if (infoSparklineCharts.disk) {
+                        const readRate = (currentRead - window.infoSparklinePrevValues.diskRead) / timeDelta;
+                        const writeRate = (currentWrite - window.infoSparklinePrevValues.diskWrite) / timeDelta;
+                        const totalDiskRate = Math.max(0, readRate + writeRate); // Combined rate
+
+                        const diskData = infoSparklineCharts.disk.data.datasets[0].data;
+                        diskData.push(totalDiskRate);
+                        if (diskData.length > 20) diskData.shift();
+                        infoSparklineCharts.disk.update('none');
+
+                        const diskValueEl = document.getElementById('info-disk-value');
+                        if (diskValueEl) diskValueEl.textContent = formatBytes(totalDiskRate) + '/s';
+                    }
+
+                    // Update previous values and timestamp
+                    window.infoSparklinePrevValues.networkTx = currentTx;
+                    window.infoSparklinePrevValues.networkRx = currentRx;
+                    window.infoSparklinePrevValues.diskRead = currentRead;
+                    window.infoSparklinePrevValues.diskWrite = currentWrite;
+                    window.infoSparklinePrevValues.timestamp = now;
+                }
+            }
+        }
+
+        // Clean up modal charts when modal closes
+        function cleanupModalCharts() {
+            // Destroy all Stats tab charts
+            if (containerStatsCharts.cpu) {
+                containerStatsCharts.cpu.destroy();
+            }
+            if (containerStatsCharts.memory) {
+                containerStatsCharts.memory.destroy();
+            }
+            if (containerStatsCharts.network) {
+                containerStatsCharts.network.destroy();
+            }
+            if (containerStatsCharts.disk) {
+                containerStatsCharts.disk.destroy();
+            }
+            containerStatsCharts = {};
+
+            // Destroy all Info tab sparklines
+            if (infoSparklineCharts.cpu) {
+                infoSparklineCharts.cpu.destroy();
+            }
+            if (infoSparklineCharts.memory) {
+                infoSparklineCharts.memory.destroy();
+            }
+            if (infoSparklineCharts.network) {
+                infoSparklineCharts.network.destroy();
+            }
+            if (infoSparklineCharts.disk) {
+                infoSparklineCharts.disk.destroy();
+            }
+            infoSparklineCharts = {};
+        }
+
+        // Make cleanup function globally available
+        window.cleanupModalCharts = cleanupModalCharts;
+
+        // Master update loop - updates both sparklines and charts
+        function updateContainerStats() {
+            if (!window.currentContainer) return;
+
+            // Find the current container to get latest stats
+            const container = containers.find(c =>
+                c.host_id === window.currentContainer.host_id &&
+                c.id === window.currentContainer.id
+            );
+
+            if (!container) return;
+
+            const now = new Date().toLocaleTimeString();
+
+            // Update Info tab sparklines
+            updateInfoSparklines(container);
+
+            // Update Stats tab charts
+            updateContainerStatsCharts(container, now);
+
+            // Schedule next update if modal is still open
+            if (window.currentContainer) {
+                setTimeout(updateContainerStats, 2000);
             }
         }
 
@@ -1032,7 +1677,7 @@ async function init() {
                     stopAutoRefresh();
                 }
             } catch (error) {
-                console.error('Error fetching logs:', error);
+                logger.error('Error fetching logs:', error);
                 if (error.name === 'AbortError') {
                     logsDiv.innerHTML = '<div style="color: var(--danger);">Log fetch timeout - try reducing the log count</div>';
                 } else {
@@ -1174,11 +1819,6 @@ async function init() {
             }
         }
 
-        // Old toggleLogStream function removed - replaced with auto-refresh checkbox
-
-        // Container exec functionality removed for security reasons
-        // Users should use direct SSH, Docker CLI, or other appropriate tools for container access
-
         async function restartContainer(hostId, containerId) {
             try {
                 const response = await fetch(`${API_BASE}/api/hosts/${hostId}/containers/${containerId}/restart`, {
@@ -1191,7 +1831,7 @@ async function init() {
                     showToast('❌ Failed to restart container');
                 }
             } catch (error) {
-                console.error('Error restarting container:', error);
+                logger.error('Error restarting container:', error);
                 showToast('❌ Failed to restart container');
             }
         }
@@ -1234,7 +1874,7 @@ async function init() {
                     }
                 }
             } catch (error) {
-                console.error('Error starting container:', error);
+                logger.error('Error starting container:', error);
                 showToast('❌ Failed to start container');
                 // Revert button state on error
                 if (container) {
@@ -1253,8 +1893,8 @@ async function init() {
 
         async function loadContainerRecentEvents(containerName, hostId) {
             try {
-                // Fetch last 7 events for this container
-                const response = await fetch(`${API_BASE}/api/events?limit=7&container_name=${encodeURIComponent(containerName)}&host_id=${hostId}&hours=168`);
+                // Fetch last 13 events for this container
+                const response = await fetch(`${API_BASE}/api/events?limit=13&container_name=${encodeURIComponent(containerName)}&host_id=${hostId}&hours=168`);
                 const data = await response.json();
 
                 const eventsDiv = document.getElementById('container-recent-events');
@@ -1341,7 +1981,7 @@ async function init() {
 
                 eventsDiv.innerHTML = eventsHtml;
             } catch (error) {
-                console.error('Error loading container events:', error);
+                logger.error('Error loading container events:', error);
                 const eventsDiv = document.getElementById('container-recent-events');
                 if (eventsDiv) {
                     eventsDiv.innerHTML = `
@@ -1392,7 +2032,7 @@ async function init() {
                     }
                 }
             } catch (error) {
-                console.error('Error stopping container:', error);
+                logger.error('Error stopping container:', error);
                 showToast('❌ Failed to stop container');
                 // Revert button state on error
                 if (container) {
@@ -1434,7 +2074,7 @@ async function init() {
                 // Dashboard will be initialized when WebSocket data arrives
                 // or when user navigates to dashboard page
             } catch (error) {
-                console.error('Failed to initialize application:', error);
+                logger.error('Failed to initialize application:', error);
                 // Don't show error toast - WebSocket will handle data delivery
             }
         });

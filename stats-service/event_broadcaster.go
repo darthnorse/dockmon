@@ -10,23 +10,33 @@ import (
 
 // EventBroadcaster manages WebSocket connections and broadcasts events
 type EventBroadcaster struct {
-	mu          sync.RWMutex
-	connections map[*websocket.Conn]bool
+	mu             sync.RWMutex
+	connections    map[*websocket.Conn]bool
+	maxConnections int
 }
 
 // NewEventBroadcaster creates a new event broadcaster
 func NewEventBroadcaster() *EventBroadcaster {
 	return &EventBroadcaster{
-		connections: make(map[*websocket.Conn]bool),
+		connections:    make(map[*websocket.Conn]bool),
+		maxConnections: 100, // Limit to 100 concurrent WebSocket connections
 	}
 }
 
 // AddConnection registers a new WebSocket connection
-func (eb *EventBroadcaster) AddConnection(conn *websocket.Conn) {
+func (eb *EventBroadcaster) AddConnection(conn *websocket.Conn) error {
 	eb.mu.Lock()
 	defer eb.mu.Unlock()
+
+	// Check connection limit
+	if len(eb.connections) >= eb.maxConnections {
+		log.Printf("WebSocket connection limit reached (%d), rejecting new connection", eb.maxConnections)
+		return &websocket.CloseError{Code: websocket.ClosePolicyViolation, Text: "Connection limit reached"}
+	}
+
 	eb.connections[conn] = true
 	log.Printf("WebSocket connected to events. Total connections: %d", len(eb.connections))
+	return nil
 }
 
 // RemoveConnection unregisters a WebSocket connection
@@ -51,6 +61,7 @@ func (eb *EventBroadcaster) Broadcast(event DockerEvent) {
 
 	// Send to all connections
 	eb.mu.RLock()
+	defer eb.mu.RUnlock()
 	for conn := range eb.connections {
 		err := conn.WriteMessage(websocket.TextMessage, data)
 		if err != nil {
@@ -58,11 +69,11 @@ func (eb *EventBroadcaster) Broadcast(event DockerEvent) {
 			deadConnections = append(deadConnections, conn)
 		}
 	}
-	eb.mu.RUnlock()
 
 	// Clean up dead connections (after releasing read lock)
 	if len(deadConnections) > 0 {
 		eb.mu.Lock()
+		defer eb.mu.Unlock()
 		for _, conn := range deadConnections {
 			// Only delete and close if connection still exists in map
 			if _, exists := eb.connections[conn]; exists {
@@ -70,7 +81,6 @@ func (eb *EventBroadcaster) Broadcast(event DockerEvent) {
 				conn.Close()
 			}
 		}
-		eb.mu.Unlock()
 	}
 }
 

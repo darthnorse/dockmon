@@ -18,7 +18,7 @@ A comprehensive Docker container monitoring and management platform with real-ti
 - **Real-Time Container Logs** - View logs from multiple containers simultaneously with live updates
 - **Event Viewer** - Comprehensive audit trail with filtering, search, and real-time updates
 - **Intelligent Auto-Restart** - Per-container auto-restart with configurable retry logic
-- **Advanced Alerting** - Discord, Slack, Telegram, Pushover with customizable templates
+- **Advanced Alerting** - Discord, Slack, Telegram, Pushover, Gotify, SMTP with customizable templates
 - **Real-Time Dashboard** - Drag-and-drop customizable widgets with WebSocket updates
 - **Secure by Design** - Session-based auth, rate limiting, mTLS for remote hosts
 - **Mobile-Friendly** - Responsive design that works seamlessly on all devices
@@ -47,7 +47,7 @@ A comprehensive Docker container monitoring and management platform with real-ti
 
 ### Small Business
 - Centralized monitoring across multiple servers
-- Multi-channel alerting (Discord, Slack, Telegram)
+- Multi-channel alerting (Discord, Slack, Telegram, Pushover, Gotify, SMTP)
 - Schedule maintenance windows with blackout periods
 - Audit trail of all container operations
 

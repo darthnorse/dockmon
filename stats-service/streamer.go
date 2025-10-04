@@ -14,10 +14,9 @@ import (
 
 // ContainerInfo holds basic container information
 type ContainerInfo struct {
-	ID      string
-	Name    string
-	HostID  string
-	Running bool
+	ID     string
+	Name   string
+	HostID string
 }
 
 // StreamManager manages persistent stats streams for all containers
@@ -84,13 +83,13 @@ func (sm *StreamManager) AddDockerHost(hostID, hostAddress string) error {
 func (sm *StreamManager) RemoveDockerHost(hostID string) {
 	// First, find all containers for this host
 	sm.containersMu.RLock()
+	defer sm.containersMu.RUnlock()
 	containersToStop := make([]string, 0)
 	for containerID, info := range sm.containers {
 		if info.HostID == hostID {
 			containersToStop = append(containersToStop, containerID)
 		}
 	}
-	sm.containersMu.RUnlock()
 
 	// Stop all streams for containers on this host
 	// Do this BEFORE closing the client to avoid streams trying to use a closed client
@@ -100,12 +99,15 @@ func (sm *StreamManager) RemoveDockerHost(hostID string) {
 
 	// Now close and remove the Docker client
 	sm.clientsMu.Lock()
+	defer sm.clientsMu.Unlock()
 	if cli, exists := sm.clients[hostID]; exists {
 		cli.Close()
 		delete(sm.clients, hostID)
 		log.Printf("Removed Docker host: %s", truncateID(hostID, 8))
 	}
-	sm.clientsMu.Unlock()
+
+	// Remove all stats for this host from cache
+	sm.cache.RemoveHostStats(hostID)
 }
 
 // StartStream starts a persistent stats stream for a container
@@ -113,16 +115,16 @@ func (sm *StreamManager) StartStream(ctx context.Context, containerID, container
 	// Check if stream already exists AND create if not - MUST BE ATOMIC
 	sm.streamsMu.Lock()
 	if _, exists := sm.streams[containerID]; exists {
-		sm.streamsMu.Unlock()
+		sm.streamsMu.Unlock() // Note: early return, can't use defer here
 		return nil // Already streaming
 	}
 
-	// Verify Docker client exists while holding lock to prevent race condition
+	// Verify Docker client exists to prevent race condition
 	sm.clientsMu.RLock()
-	_, ok := sm.clients[hostID]
-	sm.clientsMu.RUnlock()
+	defer sm.clientsMu.RUnlock()
+	_, clientExists := sm.clients[hostID]
 
-	if !ok {
+	if !clientExists {
 		sm.streamsMu.Unlock()
 		log.Printf("Warning: No Docker client for host %s", truncateID(hostID, 8))
 		return nil
@@ -135,13 +137,27 @@ func (sm *StreamManager) StartStream(ctx context.Context, containerID, container
 
 	// Store container info
 	sm.containersMu.Lock()
+	defer sm.containersMu.Unlock()
 	sm.containers[containerID] = &ContainerInfo{
-		ID:      containerID,
-		Name:    containerName,
-		HostID:  hostID,
-		Running: true,
+		ID:     containerID,
+		Name:   containerName,
+		HostID: hostID,
 	}
-	sm.containersMu.Unlock()
+
+	// Verify client still exists before starting goroutine (double-check pattern)
+	sm.clientsMu.RLock()
+	defer sm.clientsMu.RUnlock()
+	_, stillExists := sm.clients[hostID]
+
+	if !stillExists {
+		// Client was removed between checks - cleanup and exit
+		sm.streamsMu.Lock()
+		defer sm.streamsMu.Unlock()
+		delete(sm.streams, containerID)
+		cancel()
+		log.Printf("Client removed before stream start for container %s", truncateID(containerID, 12))
+		return nil
+	}
 
 	// Start streaming in a goroutine
 	go sm.streamStats(streamCtx, containerID, containerName, hostID)
@@ -153,18 +169,16 @@ func (sm *StreamManager) StartStream(ctx context.Context, containerID, container
 // StopStream stops the stats stream for a container
 func (sm *StreamManager) StopStream(containerID string) {
 	sm.streamsMu.Lock()
+	defer sm.streamsMu.Unlock()
 	cancel, exists := sm.streams[containerID]
 	if exists {
 		cancel()
 		delete(sm.streams, containerID)
 	}
-	sm.streamsMu.Unlock()
 
 	sm.containersMu.Lock()
-	if info, ok := sm.containers[containerID]; ok {
-		info.Running = false
-	}
-	sm.containersMu.Unlock()
+	defer sm.containersMu.Unlock()
+	delete(sm.containers, containerID)
 
 	// Remove from cache
 	sm.cache.RemoveContainerStats(containerID)
@@ -194,7 +208,7 @@ func (sm *StreamManager) streamStats(ctx context.Context, containerID, container
 		// Get current Docker client (may have changed if host was updated)
 		sm.clientsMu.RLock()
 		cli, ok := sm.clients[hostID]
-		sm.clientsMu.RUnlock()
+		sm.clientsMu.RUnlock() // Manual unlock needed - we're in a loop
 
 		if !ok {
 			log.Printf("No Docker client for host %s (container %s), retrying in %v", truncateID(hostID, 8), truncateID(containerID, 12), backoff)
@@ -266,6 +280,16 @@ func (sm *StreamManager) processStats(stat *types.StatsJSON, containerID, contai
 		netTx += net.TxBytes
 	}
 
+	// Disk I/O stats
+	var diskRead, diskWrite uint64
+	for _, bio := range stat.BlkioStats.IoServiceBytesRecursive {
+		if bio.Op == "Read" {
+			diskRead += bio.Value
+		} else if bio.Op == "Write" {
+			diskWrite += bio.Value
+		}
+	}
+
 	// Update cache
 	sm.cache.UpdateContainerStats(&ContainerStats{
 		ContainerID:   containerID,
@@ -277,6 +301,8 @@ func (sm *StreamManager) processStats(stat *types.StatsJSON, containerID, contai
 		MemoryPercent: roundToDecimal(memPercent, 1),
 		NetworkRx:     netRx,
 		NetworkTx:     netTx,
+		DiskRead:      diskRead,
+		DiskWrite:     diskWrite,
 	})
 }
 

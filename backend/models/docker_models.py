@@ -164,3 +164,12 @@ class Container(BaseModel):
     created: str
     auto_restart: bool = False
     restart_attempts: int = 0
+    # Stats from Go stats service
+    cpu_percent: Optional[float] = None
+    memory_usage: Optional[int] = None
+    memory_limit: Optional[int] = None
+    memory_percent: Optional[float] = None
+    network_rx: Optional[int] = None
+    network_tx: Optional[int] = None
+    disk_read: Optional[int] = None
+    disk_write: Optional[int] = None

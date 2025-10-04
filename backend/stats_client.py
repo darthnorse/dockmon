@@ -166,6 +166,10 @@ class StatsServiceClient:
                 else:
                     logger.warning(f"Failed to stop stream for {container_id[:12]}: {resp.status}")
                     return False
+        except asyncio.TimeoutError:
+            # Timeout errors are expected when bulk stopping streams - log at debug level
+            logger.debug(f"Timeout stopping stream for {container_id[:12]} (expected during bulk stop)")
+            return False
         except Exception as e:
             logger.warning(f"Error stopping stream for {container_id[:12]}: {e}")
             return False

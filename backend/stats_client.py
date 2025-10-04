@@ -81,13 +81,21 @@ class StatsServiceClient:
             logger.warning(f"Stats service health check failed: {e}")
             return False
 
-    async def add_docker_host(self, host_id: str, host_address: str) -> bool:
+    async def add_docker_host(self, host_id: str, host_address: str, tls_ca: str = None, tls_cert: str = None, tls_key: str = None) -> bool:
         """Register a Docker host with the stats service"""
         try:
             session = await self._get_session()
+            payload = {"host_id": host_id, "host_address": host_address}
+
+            # Add TLS certificates if provided
+            if tls_ca and tls_cert and tls_key:
+                payload["tls_ca_cert"] = tls_ca
+                payload["tls_cert"] = tls_cert
+                payload["tls_key"] = tls_key
+
             async with session.post(
                 f"{self.base_url}/api/hosts/add",
-                json={"host_id": host_id, "host_address": host_address}
+                json=payload
             ) as resp:
                 if resp.status == 200:
                     logger.info(f"Registered host {host_id} with stats service")
@@ -195,13 +203,21 @@ class StatsServiceClient:
 
     # Event service methods
 
-    async def add_event_host(self, host_id: str, host_address: str) -> bool:
+    async def add_event_host(self, host_id: str, host_address: str, tls_ca: str = None, tls_cert: str = None, tls_key: str = None) -> bool:
         """Register a Docker host with the event monitoring service"""
         try:
             session = await self._get_session()
+            payload = {"host_id": host_id, "host_address": host_address}
+
+            # Add TLS certificates if provided
+            if tls_ca and tls_cert and tls_key:
+                payload["tls_ca_cert"] = tls_ca
+                payload["tls_cert"] = tls_cert
+                payload["tls_key"] = tls_key
+
             async with session.post(
                 f"{self.base_url}/api/events/hosts/add",
-                json={"host_id": host_id, "host_address": host_address}
+                json=payload
             ) as resp:
                 if resp.status == 200:
                     logger.info(f"Registered host {host_id[:8]} with event service")

@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"sync"
 	"time"
 
@@ -17,6 +21,37 @@ type ContainerInfo struct {
 	ID     string
 	Name   string
 	HostID string
+}
+
+// createTLSOption creates a Docker client TLS option from PEM-encoded certificates
+func createTLSOption(caCertPEM, certPEM, keyPEM string) (client.Opt, error) {
+	// Parse CA certificate
+	caCertPool := x509.NewCertPool()
+	if !caCertPool.AppendCertsFromPEM([]byte(caCertPEM)) {
+		return nil, fmt.Errorf("failed to parse CA certificate")
+	}
+
+	// Parse client certificate and key
+	clientCert, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse client certificate/key: %v", err)
+	}
+
+	// Create TLS config
+	tlsConfig := &tls.Config{
+		Certificates: []tls.Certificate{clientCert},
+		RootCAs:      caCertPool,
+		MinVersion:   tls.VersionTLS12,
+	}
+
+	// Create HTTP client with TLS transport
+	httpClient := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: tlsConfig,
+		},
+	}
+
+	return client.WithHTTPClient(httpClient), nil
 }
 
 // StreamManager manages persistent stats streams for all containers
@@ -41,7 +76,7 @@ func NewStreamManager(cache *StatsCache) *StreamManager {
 }
 
 // AddDockerHost adds a Docker host client
-func (sm *StreamManager) AddDockerHost(hostID, hostAddress string) error {
+func (sm *StreamManager) AddDockerHost(hostID, hostAddress, tlsCACert, tlsCert, tlsKey string) error {
 	// Create Docker client for this host FIRST (before acquiring lock)
 	var cli *client.Client
 	var err error
@@ -53,11 +88,22 @@ func (sm *StreamManager) AddDockerHost(hostID, hostAddress string) error {
 			client.WithAPIVersionNegotiation(),
 		)
 	} else {
-		// Remote Docker host
-		cli, err = client.NewClientWithOpts(
+		// Remote Docker host - check if TLS is needed
+		clientOpts := []client.Opt{
 			client.WithHost(hostAddress),
 			client.WithAPIVersionNegotiation(),
-		)
+		}
+
+		// If TLS certificates provided, configure TLS
+		if tlsCACert != "" && tlsCert != "" && tlsKey != "" {
+			tlsOpt, err := createTLSOption(tlsCACert, tlsCert, tlsKey)
+			if err != nil {
+				return fmt.Errorf("failed to create TLS config: %v", err)
+			}
+			clientOpts = append(clientOpts, tlsOpt)
+		}
+
+		cli, err = client.NewClientWithOpts(clientOpts...)
 	}
 
 	if err != nil {

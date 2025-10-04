@@ -17,7 +17,7 @@ from docker import DockerClient
 from fastapi import HTTPException
 
 from config.paths import DATABASE_PATH, CERTS_DIR
-from database import DatabaseManager, AutoRestartConfig, GlobalSettings
+from database import DatabaseManager, AutoRestartConfig, GlobalSettings, DockerHostDB
 from models.docker_models import DockerHost, DockerHostConfig, Container
 from models.settings_models import AlertRule, NotificationSettings
 from websocket.connection import ConnectionManager
@@ -194,10 +194,10 @@ class DockerMonitor:
 
                     async def register_host():
                         try:
-                            await stats_client.add_docker_host(host.id, host.url)
+                            await stats_client.add_docker_host(host.id, host.url, config.tls_ca, config.tls_cert, config.tls_key)
                             logger.info(f"Registered {host.name} ({host.id[:8]}) with stats service")
 
-                            await stats_client.add_event_host(host.id, host.url)
+                            await stats_client.add_event_host(host.id, host.url, config.tls_ca, config.tls_cert, config.tls_key)
                             logger.info(f"Registered {host.name} ({host.id[:8]}) with event service")
                         except Exception as e:
                             logger.error(f"Failed to register {host.name} with Go services: {e}")
@@ -630,12 +630,12 @@ class DockerMonitor:
                 async def reregister_host():
                     try:
                         # Re-register with stats service (automatically closes old client)
-                        await stats_client.add_docker_host(host.id, host.url)
+                        await stats_client.add_docker_host(host.id, host.url, config.tls_ca, config.tls_cert, config.tls_key)
                         logger.info(f"Re-registered {host.name} ({host.id[:8]}) with stats service")
 
                         # Remove and re-add event monitoring
                         await stats_client.remove_event_host(host.id)
-                        await stats_client.add_event_host(host.id, host.url)
+                        await stats_client.add_event_host(host.id, host.url, config.tls_ca, config.tls_cert, config.tls_key)
                         logger.info(f"Re-registered {host.name} ({host.id[:8]}) with event service")
                     except Exception as e:
                         logger.error(f"Failed to re-register {host.name} with Go services: {e}")
@@ -1069,12 +1069,18 @@ class DockerMonitor:
         # Register all hosts with the stats and event services on startup
         for host_id, host in self.hosts.items():
             try:
+                # Get TLS certificates from database
+                db_host = self.db.get_session().query(DockerHostDB).filter_by(id=host_id).first()
+                tls_ca = db_host.tls_ca if db_host else None
+                tls_cert = db_host.tls_cert if db_host else None
+                tls_key = db_host.tls_key if db_host else None
+
                 # Register with stats service
-                await stats_client.add_docker_host(host_id, host.url)
+                await stats_client.add_docker_host(host_id, host.url, tls_ca, tls_cert, tls_key)
                 logger.info(f"Registered host {host.name} ({host_id[:8]}) with stats service")
 
                 # Register with event service
-                await stats_client.add_event_host(host_id, host.url)
+                await stats_client.add_event_host(host_id, host.url, tls_ca, tls_cert, tls_key)
                 logger.info(f"Registered host {host.name} ({host_id[:8]}) with event service")
             except Exception as e:
                 logger.error(f"Failed to register host {host_id} with services: {e}")

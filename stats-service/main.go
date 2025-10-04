@@ -290,6 +290,9 @@ func main() {
 		var req struct {
 			HostID      string `json:"host_id"`
 			HostAddress string `json:"host_address"`
+			TLSCACert   string `json:"tls_ca_cert,omitempty"`
+			TLSCert     string `json:"tls_cert,omitempty"`
+			TLSKey      string `json:"tls_key,omitempty"`
 		}
 
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -303,7 +306,7 @@ func main() {
 			return
 		}
 
-		if err := streamManager.AddDockerHost(req.HostID, req.HostAddress); err != nil {
+		if err := streamManager.AddDockerHost(req.HostID, req.HostAddress, req.TLSCACert, req.TLSCert, req.TLSKey); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -362,6 +365,9 @@ func main() {
 		var req struct {
 			HostID      string `json:"host_id"`
 			HostAddress string `json:"host_address"`
+			TLSCACert   string `json:"tls_ca_cert,omitempty"`
+			TLSCert     string `json:"tls_cert,omitempty"`
+			TLSKey      string `json:"tls_key,omitempty"`
 		}
 
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -375,7 +381,7 @@ func main() {
 			return
 		}
 
-		if err := eventManager.AddHost(req.HostID, req.HostAddress); err != nil {
+		if err := eventManager.AddHost(req.HostID, req.HostAddress, req.TLSCACert, req.TLSCert, req.TLSKey); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

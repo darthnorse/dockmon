@@ -2,7 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"fmt"
 	"log"
+	"net/http"
 	"sync"
 	"time"
 
@@ -40,6 +44,37 @@ type eventStream struct {
 	active    bool
 }
 
+// createEventTLSOption creates a Docker client TLS option from PEM-encoded certificates
+func createEventTLSOption(caCertPEM, certPEM, keyPEM string) (client.Opt, error) {
+	// Parse CA certificate
+	caCertPool := x509.NewCertPool()
+	if !caCertPool.AppendCertsFromPEM([]byte(caCertPEM)) {
+		return nil, fmt.Errorf("failed to parse CA certificate")
+	}
+
+	// Parse client certificate and key
+	clientCert, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse client certificate/key: %v", err)
+	}
+
+	// Create TLS config
+	tlsConfig := &tls.Config{
+		Certificates: []tls.Certificate{clientCert},
+		RootCAs:      caCertPool,
+		MinVersion:   tls.VersionTLS12,
+	}
+
+	// Create HTTP client with TLS transport
+	httpClient := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: tlsConfig,
+		},
+	}
+
+	return client.WithHTTPClient(httpClient), nil
+}
+
 // NewEventManager creates a new event manager
 func NewEventManager(broadcaster *EventBroadcaster, cache *EventCache) *EventManager {
 	return &EventManager{
@@ -50,7 +85,7 @@ func NewEventManager(broadcaster *EventBroadcaster, cache *EventCache) *EventMan
 }
 
 // AddHost starts monitoring Docker events for a host
-func (em *EventManager) AddHost(hostID, hostAddress string) error {
+func (em *EventManager) AddHost(hostID, hostAddress, tlsCACert, tlsCert, tlsKey string) error {
 	// Create Docker client FIRST (before acquiring lock or stopping old stream)
 	var dockerClient *client.Client
 	var err error
@@ -62,11 +97,22 @@ func (em *EventManager) AddHost(hostID, hostAddress string) error {
 			client.WithAPIVersionNegotiation(),
 		)
 	} else {
-		// Remote Docker host
-		dockerClient, err = client.NewClientWithOpts(
+		// Remote Docker host - check if TLS is needed
+		clientOpts := []client.Opt{
 			client.WithHost(hostAddress),
 			client.WithAPIVersionNegotiation(),
-		)
+		}
+
+		// If TLS certificates provided, configure TLS
+		if tlsCACert != "" && tlsCert != "" && tlsKey != "" {
+			tlsOpt, err := createEventTLSOption(tlsCACert, tlsCert, tlsKey)
+			if err != nil {
+				return fmt.Errorf("failed to create TLS config: %v", err)
+			}
+			clientOpts = append(clientOpts, tlsOpt)
+		}
+
+		dockerClient, err = client.NewClientWithOpts(clientOpts...)
 	}
 
 	if err != nil {

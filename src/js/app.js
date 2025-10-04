@@ -242,16 +242,16 @@ async function init() {
             hostsList.innerHTML = hosts.map(host => {
                 const hostContainers = containers.filter(c => c.host_id === host.id);
                 return `
-                    <div class="alert-rule-card">
-                        <div class="alert-rule-info">
-                            <div class="alert-rule-title">${escapeHtml(host.name)} ${getSecurityStatusBadge(host)}</div>
-                            <div class="alert-rule-details">${escapeHtml(host.url)} • ${hostContainers.length} containers</div>
-                            <div class="alert-rule-details" style="margin-top: 4px;">
+                    <div class="list-card">
+                        <div class="list-card-info">
+                            <div class="list-card-title">${escapeHtml(host.name)} ${getSecurityStatusBadge(host)}</div>
+                            <div class="list-card-details">${escapeHtml(host.url)} • ${hostContainers.length} containers</div>
+                            <div class="list-card-details" style="margin-top: 4px;">
                                 Status: <span class="status-${host.status}">${host.status}</span>
                                 ${host.error ? `• Error: ${escapeHtml(host.error)}` : ''}
                             </div>
                         </div>
-                        <div style="display: flex; gap: var(--spacing-sm);">
+                        <div class="list-card-actions">
                             <button class="btn-icon" onclick="editHost('${host.id}')" title="Edit Host"><i data-lucide="edit"></i></button>
                             <button class="btn-icon" onclick="deleteHost('${host.id}')" title="Delete Host"><i data-lucide="trash-2"></i></button>
                         </div>
@@ -279,7 +279,7 @@ async function init() {
 
                 alertRules.forEach(rule => {
                 const ruleCard = document.createElement('div');
-                ruleCard.className = 'alert-rule-card';
+                ruleCard.className = 'list-card';
 
                 // Map channel IDs to channel names
                 const channelBadges = (rule.notification_channels || []).map(channelId => {
@@ -338,16 +338,16 @@ async function init() {
                 }
 
                 ruleCard.innerHTML = `
-                    <div class="alert-rule-info">
-                        <div class="alert-rule-title">
+                    <div class="list-card-info">
+                        <div class="list-card-title">
                             ${rule.name}
                             ${isOrphaned ? '<span style="margin-left: 8px; padding: 2px 6px; background: var(--warning); color: var(--dark); border-radius: 3px; font-size: 11px; font-weight: bold;">⚠ BROKEN</span>' : ''}
                         </div>
-                        <div class="alert-rule-details">Containers: ${containerInfo} | ${triggerText}</div>
+                        <div class="list-card-details">Containers: ${containerInfo} | ${triggerText}</div>
                         <div class="alert-channels">${channelBadges}</div>
                         ${orphanWarning}
                     </div>
-                    <div class="alert-rule-actions">
+                    <div class="list-card-actions">
                         <button class="btn-icon" onclick="editAlertRule('${rule.id}')" title="Edit Alert Rule">
                             <i data-lucide="edit"></i>
                         </button>

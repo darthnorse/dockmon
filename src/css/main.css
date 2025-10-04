@@ -765,13 +765,12 @@
         }
 
         .security-status {
-            margin-left: 8px;
-            font-size: 12px;
+            font-size: 9px;
             font-weight: 600;
-            padding: 2px 8px;
-            border-radius: 12px;
+            padding: 2px 6px;
+            border-radius: 8px;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
+            letter-spacing: 0.3px;
         }
 
         .security-status.secure {
@@ -1290,8 +1289,8 @@
         }
 
 
-        /* Alert Rules */
-        .alert-rule-card {
+        /* Alert Rules and Hosts List Cards */
+        .list-card {
             background: var(--dark);
             padding: var(--spacing-md);
             border-radius: 8px;
@@ -1302,21 +1301,21 @@
             transition: var(--transition);
         }
 
-        .alert-rule-card:hover {
+        .list-card:hover {
             background: var(--surface-light);
         }
 
-        .alert-rule-info {
+        .list-card-info {
             flex: 1;
         }
 
-        .alert-rule-title {
+        .list-card-title {
             font-weight: 500;
             color: var(--text-primary);
             margin-bottom: var(--spacing-xs);
         }
 
-        .alert-rule-details {
+        .list-card-details {
             font-size: 13px;
             color: var(--text-tertiary);
         }
@@ -1327,7 +1326,7 @@
             margin-top: var(--spacing-sm);
         }
 
-        .alert-rule-actions {
+        .list-card-actions {
             display: flex;
             gap: var(--spacing-xs);
         }
@@ -1786,20 +1785,20 @@
                 padding: 12px !important;
             }
 
-            /* Host management list */
-            .host-list-item .host-name {
-                font-size: 12px !important;
+            /* Host management list and Alert rules (both use .list-card) */
+            .list-card {
+                padding: 12px !important;
             }
 
-            .host-list-item .host-url {
-                font-size: 10px !important;
+            .list-card-title {
+                font-size: 14px !important;
             }
 
-            .host-list-item {
-                padding: 10px !important;
+            .list-card-details {
+                font-size: 11px !important;
             }
 
-            /* Alert list */
+            /* Alert notifications list */
             .alert-item {
                 font-size: 11px !important;
                 padding: 10px !important;

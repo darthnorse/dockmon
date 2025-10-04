@@ -452,12 +452,15 @@ function renderDashboardWidgets() {
                 }
             }
 
-            // Only update if the container state has changed or it's the first render
-            if (containerStateKey !== previousStateKey) {
+            // Check if container stats visibility changed (independently of container state)
+            const previousShowStats = hostWidget.dataset.showContainerStats !== 'false';
+            const statsVisibilityChanged = previousShowStats !== showContainerStats;
+
+            // Only update if the container state has changed, stats visibility changed, or it's the first render
+            if (containerStateKey !== previousStateKey || statsVisibilityChanged) {
                 hostWidget.dataset.containerState = containerStateKey;
 
                 // Check if we're hiding container stats - cleanup charts for all containers on this host
-                const previousShowStats = hostWidget.dataset.showContainerStats !== 'false';
                 if (previousShowStats && !showContainerStats) {
                     // Clean up all container charts for this host
                     hostContainers.forEach(container => {

@@ -144,7 +144,7 @@ func main() {
 	streamManager := NewStreamManager(cache)
 
 	// Create aggregator with configured interval
-	aggregator := NewAggregator(cache, config.AggregationInterval)
+	aggregator := NewAggregator(cache, streamManager, config.AggregationInterval)
 
 	// Create event management components with configured cache size
 	eventCache := NewEventCache(config.EventCacheSize)

@@ -14,6 +14,9 @@ const hostMetricsCharts = new Map(); // host_id -> { cpu: Chart, ram: Chart, net
 // Store previous network values for rate calculation
 const networkHistory = new Map(); // host_id -> { lastRx: 0, lastTx: 0, lastTimestamp: 0 }
 
+// Track pending updates for hosts whose charts aren't ready yet
+const pendingHostUpdates = new Map(); // host_id -> metrics
+
 /**
  * Create sparkline charts for a host widget
  * Called after the host widget DOM is rendered
@@ -63,6 +66,13 @@ function createHostMetricsCharts(hostId) {
         });
 
         logger.debug(`Created metrics charts for host ${hostId}`);
+
+        // Process any pending updates
+        const pending = pendingHostUpdates.get(hostId);
+        if (pending) {
+            updateHostMetrics(hostId, pending);
+            pendingHostUpdates.delete(hostId);
+        }
     }, CHART_POLL_INTERVAL);
 
     // Timeout after configured duration
@@ -77,7 +87,8 @@ function createHostMetricsCharts(hostId) {
 function updateHostMetrics(hostId, metrics) {
     const charts = hostMetricsCharts.get(hostId);
     if (!charts) {
-        // Charts not created yet, skip
+        // Charts not created yet - store this update to apply when ready
+        pendingHostUpdates.set(hostId, metrics);
         return;
     }
 
@@ -150,6 +161,7 @@ function removeHostMetrics(hostId) {
     }
 
     networkHistory.delete(hostId);
+    pendingHostUpdates.delete(hostId);
 }
 
 // Container Sparklines Management

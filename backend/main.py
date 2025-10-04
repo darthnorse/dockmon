@@ -228,7 +228,7 @@ async def update_host(host_id: str, config: DockerHostConfig, authenticated: boo
 @app.delete("/api/hosts/{host_id}")
 async def remove_host(host_id: str, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_hosts):
     """Remove a Docker host"""
-    monitor.remove_host(host_id)
+    await monitor.remove_host(host_id)
 
     # Broadcast host removal to WebSocket clients so they refresh
     await monitor.manager.broadcast({

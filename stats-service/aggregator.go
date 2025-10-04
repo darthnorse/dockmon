@@ -8,14 +8,16 @@ import (
 
 // Aggregator aggregates container stats into host-level metrics
 type Aggregator struct {
-	cache           *StatsCache
+	cache             *StatsCache
+	streamManager     *StreamManager
 	aggregateInterval time.Duration
 }
 
 // NewAggregator creates a new aggregator
-func NewAggregator(cache *StatsCache, interval time.Duration) *Aggregator {
+func NewAggregator(cache *StatsCache, streamManager *StreamManager, interval time.Duration) *Aggregator {
 	return &Aggregator{
-		cache:           cache,
+		cache:             cache,
+		streamManager:     streamManager,
 		aggregateInterval: interval,
 	}
 }
@@ -51,10 +53,14 @@ func (a *Aggregator) aggregate() {
 		hostContainers[stats.HostID] = append(hostContainers[stats.HostID], stats)
 	}
 
-	// Aggregate stats for each host
+	// Aggregate stats for each host that has a registered Docker client
 	for hostID, containers := range hostContainers {
-		hostStats := a.aggregateHostStats(hostID, containers)
-		a.cache.UpdateHostStats(hostStats)
+		// Only aggregate if the host still has a registered Docker client
+		// This prevents recreating stats for hosts that were just deleted
+		if a.streamManager.HasHost(hostID) {
+			hostStats := a.aggregateHostStats(hostID, containers)
+			a.cache.UpdateHostStats(hostStats)
+		}
 	}
 }
 

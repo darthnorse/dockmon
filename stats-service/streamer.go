@@ -146,13 +146,13 @@ func (sm *StreamManager) AddDockerHost(hostID, hostAddress, tlsCACert, tlsCert, 
 func (sm *StreamManager) RemoveDockerHost(hostID string) {
 	// First, find all containers for this host
 	sm.containersMu.RLock()
-	defer sm.containersMu.RUnlock()
 	containersToStop := make([]string, 0)
 	for containerID, info := range sm.containers {
 		if info.HostID == hostID {
 			containersToStop = append(containersToStop, containerID)
 		}
 	}
+	sm.containersMu.RUnlock()
 
 	// Stop all streams for containers on this host
 	// Do this BEFORE closing the client to avoid streams trying to use a closed client
@@ -390,6 +390,14 @@ func (sm *StreamManager) GetStreamCount() int {
 	sm.streamsMu.RLock()
 	defer sm.streamsMu.RUnlock()
 	return len(sm.streams)
+}
+
+// HasHost checks if a Docker host is registered
+func (sm *StreamManager) HasHost(hostID string) bool {
+	sm.clientsMu.RLock()
+	defer sm.clientsMu.RUnlock()
+	_, exists := sm.clients[hostID]
+	return exists
 }
 
 // StopAllStreams stops all active streams and closes all Docker clients

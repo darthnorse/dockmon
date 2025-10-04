@@ -393,7 +393,7 @@ class DockerMonitor:
             except Exception as e:
                 logger.warning(f"Failed to clean up certificates for host {host_id}: {e}")
 
-    def remove_host(self, host_id: str):
+    async def remove_host(self, host_id: str):
         """Remove a Docker host"""
         # Validate host_id to prevent path traversal
         try:
@@ -412,29 +412,23 @@ class DockerMonitor:
                 self.clients[host_id].close()
                 del self.clients[host_id]
 
-            # Remove from Go stats and event services
+            # Remove from Go stats and event services (await to ensure cleanup completes before returning)
             try:
-                import asyncio
                 stats_client = get_stats_client()
 
-                async def unregister_host():
-                    try:
-                        # Remove from stats service (closes Docker client and stops all container streams)
-                        await stats_client.remove_docker_host(host_id)
-                        logger.info(f"Removed {host_name} ({host_id[:8]}) from stats service")
+                try:
+                    # Remove from stats service (closes Docker client and stops all container streams)
+                    await stats_client.remove_docker_host(host_id)
+                    logger.info(f"Removed {host_name} ({host_id[:8]}) from stats service")
 
-                        # Remove from event service
-                        await stats_client.remove_event_host(host_id)
-                        logger.info(f"Removed {host_name} ({host_id[:8]}) from event service")
-                    except asyncio.TimeoutError:
-                        # Timeout during cleanup is expected - Go service closes connections immediately
-                        logger.debug(f"Timeout removing {host_name} from Go services (expected during cleanup)")
-                    except Exception as e:
-                        logger.error(f"Failed to remove {host_name} from Go services: {e}")
-
-                # Create task to remove host from services (fire and forget)
-                task = asyncio.create_task(unregister_host())
-                task.add_done_callback(_handle_task_exception)
+                    # Remove from event service
+                    await stats_client.remove_event_host(host_id)
+                    logger.info(f"Removed {host_name} ({host_id[:8]}) from event service")
+                except asyncio.TimeoutError:
+                    # Timeout during cleanup is expected - Go service closes connections immediately
+                    logger.debug(f"Timeout removing {host_name} from Go services (expected during cleanup)")
+                except Exception as e:
+                    logger.error(f"Failed to remove {host_name} from Go services: {e}")
             except Exception as e:
                 logger.warning(f"Failed to remove host {host_id} from Go services: {e}")
 

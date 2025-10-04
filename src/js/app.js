@@ -587,6 +587,9 @@ async function init() {
                 // Clear all checkboxes (events, states, containers, channels)
                 document.querySelectorAll('#alertRuleModal input[type="checkbox"]').forEach(cb => cb.checked = false);
 
+                // Reset container selection visibility (in case it was hidden from editing an "all containers" rule)
+                document.getElementById('containerSelectionCheckboxes').style.display = 'block';
+
                 // Set default selections for new alerts
                 setTimeout(() => {
                     // Default events: OOM, Die (non-zero), Health: Unhealthy

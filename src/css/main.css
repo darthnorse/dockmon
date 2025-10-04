@@ -824,9 +824,9 @@
             border-radius: 6px;
             margin-bottom: var(--spacing-sm);
             display: grid;
-            grid-template-columns: 1fr 100px 85px;
+            grid-template-columns: 1fr 140px auto auto;
             align-items: center;
-            gap: var(--spacing-sm);
+            gap: var(--spacing-xs);
             transition: var(--transition);
             cursor: pointer;
         }
@@ -941,14 +941,6 @@
         .container-actions {
             display: contents;
             pointer-events: auto;
-        }
-
-        .container-actions .auto-restart-toggle {
-            margin-left: 12px;
-        }
-
-        .container-actions .container-state {
-            margin-left: 12px;
         }
 
         .container-state {
@@ -1436,9 +1428,7 @@
                 grid-template-columns: 1fr;
             }
 
-            .stats-grid {
-                grid-template-columns: repeat(2, 1fr);
-            }
+            /* Don't override stats-grid on mobile - let the widget width rules handle it */
 
             /* Mobile Dashboard Optimizations */
             .grid-stack {
@@ -1802,6 +1792,11 @@
             .alert-item {
                 font-size: 11px !important;
                 padding: 10px !important;
+            }
+
+            /* Container modal stats tab - single column on mobile */
+            .stats-tab-grid {
+                grid-template-columns: 1fr !important;
             }
 
             .alert-item .alert-message {

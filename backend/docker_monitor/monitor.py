@@ -1070,10 +1070,14 @@ class DockerMonitor:
         for host_id, host in self.hosts.items():
             try:
                 # Get TLS certificates from database
-                db_host = self.db.get_session().query(DockerHostDB).filter_by(id=host_id).first()
-                tls_ca = db_host.tls_ca if db_host else None
-                tls_cert = db_host.tls_cert if db_host else None
-                tls_key = db_host.tls_key if db_host else None
+                session = self.db.get_session()
+                try:
+                    db_host = session.query(DockerHostDB).filter_by(id=host_id).first()
+                    tls_ca = db_host.tls_ca if db_host else None
+                    tls_cert = db_host.tls_cert if db_host else None
+                    tls_key = db_host.tls_key if db_host else None
+                finally:
+                    session.close()
 
                 # Register with stats service
                 await stats_client.add_docker_host(host_id, host.url, tls_ca, tls_cert, tls_key)

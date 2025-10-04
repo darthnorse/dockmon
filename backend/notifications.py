@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 import requests
 import httpx
-from database import DatabaseManager, NotificationChannel, AlertRuleDB, ContainerHistory
+from database import DatabaseManager, NotificationChannel, AlertRuleDB
 from event_logger import EventSeverity, EventCategory, EventType
 
 logger = logging.getLogger(__name__)
@@ -252,6 +252,12 @@ class NotificationService:
                         elif channel.type == 'slack':
                             await self._send_slack(channel.config, message, event)
                             success_count += 1
+                        elif channel.type == 'gotify':
+                            await self._send_gotify(channel.config, message, event)
+                            success_count += 1
+                        elif channel.type == 'smtp':
+                            await self._send_smtp(channel.config, message, event)
+                            success_count += 1
                         host_name = self._get_host_name(event)
                         logger.info(f"Event notification sent via {channel.type} for container '{event.container_name}' on host '{host_name}'")
                     except Exception as e:
@@ -362,18 +368,6 @@ class NotificationService:
                     details={"rules_triggered": triggered_rules, "rules_count": success_count, "total_rules": total_rules}
                 )
 
-            # Legacy logging (for backward compatibility)
-            self.db.add_container_event({
-                'host_id': event.host_id,
-                'container_id': event.container_id,
-                'container_name': event.container_name,
-                'event_type': 'alert_triggered',
-                'old_state': event.old_state,
-                'new_state': event.new_state,
-                'triggered_by': event.triggered_by,
-                'details': {'rules_triggered': success_count, 'total_rules': total_rules}
-            })
-
             return success_count > 0
 
         except Exception as e:
@@ -395,7 +389,7 @@ class NotificationService:
 
             # Check if this container+host matches the rule
             # First check if rule has specific container+host pairs
-            if hasattr(rule, 'containers') and rule.containers and len(rule.containers) > 0:
+            if hasattr(rule, 'containers') and rule.containers:
                 # Use specific container+host pairs
                 matches = False
                 for container in rule.containers:
@@ -508,6 +502,10 @@ class NotificationService:
             return await self._send_pushover(channel.config, message, event)
         elif channel.type == "slack":
             return await self._send_slack(channel.config, message, event)
+        elif channel.type == "gotify":
+            return await self._send_gotify(channel.config, message, event)
+        elif channel.type == "smtp":
+            return await self._send_smtp(channel.config, message, event)
         else:
             logger.warning(f"Unknown notification channel type: {channel.type}")
             return False
@@ -742,6 +740,205 @@ Rule: {RULE_NAME}
 
         except Exception as e:
             logger.error(f"Failed to send Slack notification: {e}")
+            return False
+
+    async def _send_gotify(self, config: Dict[str, Any], message: str, event) -> bool:
+        """Send notification via Gotify"""
+        try:
+            # Validate required config fields
+            server_url = config.get('server_url', '').strip()
+            app_token = config.get('app_token', '').strip()
+
+            if not server_url:
+                logger.error("Gotify config missing server_url")
+                return False
+
+            if not app_token:
+                logger.error("Gotify config missing app_token")
+                return False
+
+            # Validate server URL format
+            if not server_url.startswith(('http://', 'https://')):
+                logger.error(f"Gotify server_url must start with http:// or https://: {server_url}")
+                return False
+
+            # Strip markdown formatting for plain text
+            plain_message = re.sub(r'\*\*(.*?)\*\*', r'\1', message)
+            plain_message = re.sub(r'`(.*?)`', r'\1', plain_message)
+            plain_message = re.sub(r'[🚨🔴🟢💀⚠️🏥✅🔄📢]', '', plain_message)  # Remove emojis
+
+            # Determine priority (0-10, default 5)
+            priority = 5
+            if hasattr(event, 'new_state') and event.new_state in ['exited', 'dead']:
+                priority = 8  # High priority for critical states
+            elif hasattr(event, 'event_type') and event.event_type in ['die', 'oom', 'kill']:
+                priority = 8  # High priority for critical events
+
+            # Build URL with proper path handling
+            base_url = server_url.rstrip('/')
+            url = f"{base_url}/message?token={app_token}"
+
+            # Create payload
+            payload = {
+                'title': f"DockMon: {event.container_name}",
+                'message': plain_message,
+                'priority': priority
+            }
+
+            # Send request with timeout
+            response = await self.http_client.post(url, json=payload)
+            response.raise_for_status()
+
+            logger.info("Gotify notification sent successfully")
+            return True
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Gotify HTTP error {e.response.status_code}: {e}")
+            return False
+        except httpx.RequestError as e:
+            logger.error(f"Gotify connection error: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to send Gotify notification: {e}")
+            return False
+
+    async def _send_smtp(self, config: Dict[str, Any], message: str, event) -> bool:
+        """Send notification via SMTP (Email)"""
+        try:
+            # Import SMTP libraries (only when needed to avoid dependency issues)
+            try:
+                import aiosmtplib
+                from email.mime.text import MIMEText
+                from email.mime.multipart import MIMEMultipart
+            except ImportError:
+                logger.error("SMTP support requires 'aiosmtplib' package. Install with: pip install aiosmtplib")
+                return False
+
+            # Validate required config fields
+            smtp_host = config.get('smtp_host', '').strip()
+            smtp_port = config.get('smtp_port', 587)
+            smtp_user = config.get('smtp_user', '').strip()
+            smtp_password = config.get('smtp_password', '').strip()
+            from_email = config.get('from_email', '').strip()
+            to_email = config.get('to_email', '').strip()
+            use_tls = config.get('use_tls', True)
+
+            # Validate all required fields
+            if not smtp_host:
+                logger.error("SMTP config missing smtp_host")
+                return False
+            if not smtp_user:
+                logger.error("SMTP config missing smtp_user")
+                return False
+            if not smtp_password:
+                logger.error("SMTP config missing smtp_password")
+                return False
+            if not from_email:
+                logger.error("SMTP config missing from_email")
+                return False
+            if not to_email:
+                logger.error("SMTP config missing to_email")
+                return False
+
+            # Validate port range
+            try:
+                smtp_port = int(smtp_port)
+                if smtp_port < 1 or smtp_port > 65535:
+                    logger.error(f"SMTP port must be between 1-65535: {smtp_port}")
+                    return False
+            except (ValueError, TypeError):
+                logger.error(f"Invalid SMTP port: {smtp_port}")
+                return False
+
+            # Validate email format (basic check)
+            email_pattern = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
+            if not email_pattern.match(from_email):
+                logger.error(f"Invalid from_email format: {from_email}")
+                return False
+            if not email_pattern.match(to_email):
+                logger.error(f"Invalid to_email format: {to_email}")
+                return False
+
+            # Create multipart email
+            msg = MIMEMultipart('alternative')
+            msg['Subject'] = f"DockMon Alert: {event.container_name}"
+            msg['From'] = from_email
+            msg['To'] = to_email
+
+            # Plain text version (strip markdown and emojis)
+            plain_text = re.sub(r'\*\*(.*?)\*\*', r'\1', message)
+            plain_text = re.sub(r'`(.*?)`', r'\1', plain_text)
+            plain_text = re.sub(r'[🚨🔴🟢💀⚠️🏥✅🔄📢]', '', plain_text)
+
+            # HTML version with basic styling (light theme for better email compatibility)
+            html_text = message.replace('\n', '<br>')
+            html_text = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', html_text)
+            html_text = re.sub(r'`(.*?)`', r'<code style="background:#f5f5f5;color:#333;padding:2px 6px;border-radius:3px;font-family:monospace;">\1</code>', html_text)
+
+            html_body = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;background:#f9f9f9;color:#333;">
+    <div style="max-width:600px;margin:20px auto;background:#ffffff;padding:24px;border-radius:8px;border:1px solid #e0e0e0;box-shadow:0 1px 3px rgba(0,0,0,0.1);">
+        <div style="line-height:1.6;font-size:14px;">
+            {html_text}
+        </div>
+        <div style="margin-top:20px;padding-top:20px;border-top:1px solid #e0e0e0;font-size:12px;color:#666;">
+            Sent by DockMon Container Monitoring
+        </div>
+    </div>
+</body>
+</html>"""
+
+            # Attach both versions
+            part1 = MIMEText(plain_text, 'plain', 'utf-8')
+            part2 = MIMEText(html_body, 'html', 'utf-8')
+            msg.attach(part1)
+            msg.attach(part2)
+
+            # Send email with proper connection handling
+            # Port 587 uses STARTTLS, port 465 uses direct TLS/SSL
+            if smtp_port == 587:
+                smtp_kwargs = {
+                    'hostname': smtp_host,
+                    'port': smtp_port,
+                    'start_tls': use_tls,  # Use STARTTLS for port 587
+                    'timeout': 30
+                }
+            elif smtp_port == 465:
+                smtp_kwargs = {
+                    'hostname': smtp_host,
+                    'port': smtp_port,
+                    'use_tls': use_tls,  # Use direct TLS for port 465
+                    'timeout': 30
+                }
+            else:
+                # Other ports (like 25) - no encryption by default unless use_tls is True
+                smtp_kwargs = {
+                    'hostname': smtp_host,
+                    'port': smtp_port,
+                    'start_tls': use_tls if use_tls else False,
+                    'timeout': 30
+                }
+
+            async with aiosmtplib.SMTP(**smtp_kwargs) as smtp:
+                await smtp.login(smtp_user, smtp_password)
+                await smtp.send_message(msg)
+
+            logger.info(f"SMTP notification sent successfully to {to_email}")
+            return True
+
+        except aiosmtplib.SMTPAuthenticationError as e:
+            logger.error(f"SMTP authentication failed: {e}")
+            return False
+        except aiosmtplib.SMTPException as e:
+            logger.error(f"SMTP error: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to send SMTP notification: {e}")
             return False
 
     async def test_channel(self, channel_id: int) -> Dict[str, Any]:

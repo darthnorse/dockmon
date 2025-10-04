@@ -2,7 +2,7 @@
 
 A comprehensive Docker container monitoring and management platform with real-time monitoring, intelligent auto-restart, multi-channel alerting, and complete event logging.
 
-![DockMon](https://img.shields.io/badge/DockMon-v1.0.0-blue.svg)
+![DockMon](https://img.shields.io/badge/DockMon-v1.1.0-blue.svg)
 ![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi&logoColor=white)
@@ -15,10 +15,11 @@ A comprehensive Docker container monitoring and management platform with real-ti
 ## Key Features
 
 - **Multi-Host Monitoring** - Monitor containers across unlimited Docker hosts (local and remote)
+- **Real-Time Statistics** - Live CPU, memory, network, and disk I/O metrics for hosts and containers
 - **Real-Time Container Logs** - View logs from multiple containers simultaneously with live updates
 - **Event Viewer** - Comprehensive audit trail with filtering, search, and real-time updates
 - **Intelligent Auto-Restart** - Per-container auto-restart with configurable retry logic
-- **Advanced Alerting** - Discord, Slack, Telegram, Pushover with customizable templates
+- **Advanced Alerting** - Discord, Slack, Telegram, Pushover, Gotify, SMTP with customizable templates
 - **Real-Time Dashboard** - Drag-and-drop customizable widgets with WebSocket updates
 - **Secure by Design** - Session-based auth, rate limiting, mTLS for remote hosts
 - **Mobile-Friendly** - Responsive design that works seamlessly on all devices
@@ -47,7 +48,7 @@ A comprehensive Docker container monitoring and management platform with real-ti
 
 ### Small Business
 - Centralized monitoring across multiple servers
-- Multi-channel alerting (Discord, Slack, Telegram)
+- Multi-channel alerting (Discord, Slack, Telegram, Pushover, Gotify, SMTP)
 - Schedule maintenance windows with blackout periods
 - Audit trail of all container operations
 
@@ -76,8 +77,15 @@ A comprehensive Docker container monitoring and management platform with real-ti
 - [x] Drag-and-drop dashboard
 - [x] Auto-restart with retry logic
 
-### Planned (v1.1+)
-- [ ] Performance metrics dashboard (CPU, memory, network graphs)
+### Completed (v1.1)
+- [x] Real-time performance metrics (CPU, memory, network, disk I/O)
+- [x] Host-level and container-level statistics
+- [x] TLS/mTLS support for secure remote Docker connections
+- [x] Optimized streaming architecture with Go backend
+
+### Planned (v1.5+)
+- [ ] Performance metrics dashboard with historical graphs
+- [ ] Container auto-update feature with version tracking
 - [ ] Configuration export/import
 - [ ] Automatic Proxmox LXC installation script
 

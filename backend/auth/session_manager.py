@@ -4,6 +4,8 @@ Provides secure session tokens with IP validation and automatic cleanup
 """
 
 import secrets
+import threading
+import time
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 
@@ -20,6 +22,17 @@ class SessionManager:
     def __init__(self):
         self.sessions: Dict[str, dict] = {}
         self.session_timeout = timedelta(hours=24)  # 24 hour sessions
+        self._cleanup_thread = threading.Thread(target=self._periodic_cleanup, daemon=True)
+        self._cleanup_thread.start()
+
+    def _periodic_cleanup(self):
+        """Run cleanup every hour"""
+        while True:
+            time.sleep(3600)  # Run every hour
+            try:
+                self.cleanup_expired_sessions()
+            except Exception:
+                pass  # Silent failure for background thread
 
     def create_session(self, request: Request, username: str = None) -> str:
         """Create a new session token"""

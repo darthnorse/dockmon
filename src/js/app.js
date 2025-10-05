@@ -1606,7 +1606,11 @@ async function init() {
                 c.id === window.currentContainer.id
             );
 
-            if (!container) return;
+            if (!container) {
+                // Container disappeared - clear tracking to prevent infinite loop
+                window.currentContainer = null;
+                return;
+            }
 
             const now = new Date().toLocaleTimeString();
 

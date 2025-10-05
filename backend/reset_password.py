@@ -38,7 +38,10 @@ def main():
     username = args.username
     if not username:
         users = db.list_users()
-        if len(users) == 1:
+        if not users:
+            print("Error: No users found in database.")
+            sys.exit(1)
+        elif len(users) == 1:
             username = users[0]
             print(f"Using username: {username}")
         elif 'admin' in users:

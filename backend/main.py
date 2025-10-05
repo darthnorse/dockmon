@@ -566,6 +566,10 @@ async def get_alert_rules(authenticated: bool = Depends(verify_session_auth)):
 async def create_alert_rule(rule: AlertRuleCreate, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_default):
     """Create a new alert rule"""
     try:
+        # Validate cooldown_minutes
+        if rule.cooldown_minutes < 0 or rule.cooldown_minutes > 10080:  # Max 1 week
+            raise HTTPException(status_code=400, detail="Cooldown must be between 0 and 10080 minutes (1 week)")
+
         rule_id = str(uuid.uuid4())
 
         # Convert ContainerHostPair objects to dicts for database
@@ -619,6 +623,11 @@ async def create_alert_rule(rule: AlertRuleCreate, authenticated: bool = Depends
 async def update_alert_rule(rule_id: str, updates: AlertRuleUpdate, authenticated: bool = Depends(verify_session_auth)):
     """Update an alert rule"""
     try:
+        # Validate cooldown_minutes if provided
+        if updates.cooldown_minutes is not None:
+            if updates.cooldown_minutes < 0 or updates.cooldown_minutes > 10080:  # Max 1 week
+                raise HTTPException(status_code=400, detail="Cooldown must be between 0 and 10080 minutes (1 week)")
+
         # Include all fields that are explicitly set, even if empty
         # This allows clearing trigger_events or trigger_states
         update_data = {}
@@ -1600,7 +1609,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.send_text(json.dumps({"type": "pong"}, cls=DateTimeEncoder))
 
     except WebSocketDisconnect:
-        monitor.manager.disconnect(websocket)
+        await monitor.manager.disconnect(websocket)
         await monitor.realtime.unsubscribe_from_events(websocket)
         # Unsubscribe from all stats
         for container_id in list(monitor.realtime.stats_subscribers):

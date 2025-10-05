@@ -102,6 +102,15 @@ class EventLogger:
                 await self._processing_task
             except asyncio.CancelledError:
                 pass
+
+            # Drain the queue to prevent memory leak
+            while not self._event_queue.empty():
+                try:
+                    self._event_queue.get_nowait()
+                    self._event_queue.task_done()
+                except:
+                    break
+
             logger.info("Event logger stopped")
 
     def log_event(self,

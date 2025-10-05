@@ -89,6 +89,11 @@ class DockerMonitor:
         self._recent_user_actions: Dict[str, float] = {}  # Track recent user actions: {container_key: timestamp}
         self.cleanup_task: Optional[asyncio.Task] = None  # Background cleanup task
 
+        # Locks for shared data structures to prevent race conditions
+        self._state_lock = asyncio.Lock()
+        self._actions_lock = asyncio.Lock()
+        self._restart_lock = asyncio.Lock()
+
         # Stats collection manager
         self.stats_manager = StatsManager()
         self._load_persistent_config()  # Load saved hosts and configs
@@ -111,8 +116,16 @@ class DockerMonitor:
                     # Create persistent certificate storage directory
                     safe_id = sanitize_host_id(existing_id or str(uuid.uuid4()))
                     cert_dir = os.path.join(CERTS_DIR, safe_id)
-                    # Create with secure permissions to avoid TOCTOU race condition
-                    os.makedirs(cert_dir, mode=0o700, exist_ok=True)
+
+                    # Create with secure permissions - handle TOCTOU race condition
+                    try:
+                        os.makedirs(cert_dir, mode=0o700, exist_ok=False)
+                    except FileExistsError:
+                        # Verify it's actually a directory and not a symlink/file
+                        import stat
+                        st = os.lstat(cert_dir)  # Use lstat to not follow symlinks
+                        if not stat.S_ISDIR(st.st_mode):
+                            raise ValueError("Certificate path exists but is not a directory")
 
                     # Write certificate files
                     cert_file = os.path.join(cert_dir, 'client-cert.pem')
@@ -234,7 +247,7 @@ class DockerMonitor:
 
         except Exception as e:
             # Clean up client if it was created but not stored
-            if client and not (hasattr(self, 'clients') and config.name in [h.name for h in self.hosts.values()]):
+            if client is not None:
                 try:
                     client.close()
                     logger.debug(f"Closed orphaned Docker client for {config.name}")
@@ -386,6 +399,14 @@ class DockerMonitor:
         """Clean up certificate files for a host"""
         safe_id = sanitize_host_id(host_id)
         cert_dir = os.path.join(CERTS_DIR, safe_id)
+
+        # Defense in depth: verify path is within CERTS_DIR
+        abs_cert_dir = os.path.abspath(cert_dir)
+        abs_certs_dir = os.path.abspath(CERTS_DIR)
+        if not abs_cert_dir.startswith(abs_certs_dir):
+            logger.error(f"Path traversal attempt detected: {host_id}")
+            raise ValueError("Invalid certificate path")
+
         if os.path.exists(cert_dir):
             try:
                 shutil.rmtree(cert_dir)
@@ -438,14 +459,16 @@ class DockerMonitor:
             self.db.delete_host(host_id)
 
             # Clean up container state tracking for this host
-            containers_to_remove = [key for key in self._container_states.keys() if key.startswith(f"{host_id}:")]
-            for container_key in containers_to_remove:
-                del self._container_states[container_key]
+            async with self._state_lock:
+                containers_to_remove = [key for key in self._container_states.keys() if key.startswith(f"{host_id}:")]
+                for container_key in containers_to_remove:
+                    del self._container_states[container_key]
 
             # Clean up recent user actions for this host
-            actions_to_remove = [key for key in self._recent_user_actions.keys() if key.startswith(f"{host_id}:")]
-            for container_key in actions_to_remove:
-                del self._recent_user_actions[container_key]
+            async with self._actions_lock:
+                actions_to_remove = [key for key in self._recent_user_actions.keys() if key.startswith(f"{host_id}:")]
+                for container_key in actions_to_remove:
+                    del self._recent_user_actions[container_key]
 
             # Clean up notification service's container state tracking for this host
             notification_states_to_remove = [key for key in self.notification_service._last_container_state.keys() if key.startswith(f"{host_id}:")]
@@ -463,13 +486,14 @@ class DockerMonitor:
                 del self.notification_service._last_alerts[container_key]
 
             # Clean up auto-restart tracking for this host
-            auto_restart_to_remove = [key for key in self.auto_restart_status.keys() if key.startswith(f"{host_id}:")]
-            for container_key in auto_restart_to_remove:
-                del self.auto_restart_status[container_key]
-                if container_key in self.restart_attempts:
-                    del self.restart_attempts[container_key]
-                if container_key in self.restarting_containers:
-                    del self.restarting_containers[container_key]
+            async with self._restart_lock:
+                auto_restart_to_remove = [key for key in self.auto_restart_status.keys() if key.startswith(f"{host_id}:")]
+                for container_key in auto_restart_to_remove:
+                    del self.auto_restart_status[container_key]
+                    if container_key in self.restart_attempts:
+                        del self.restart_attempts[container_key]
+                    if container_key in self.restarting_containers:
+                        del self.restarting_containers[container_key]
 
             # Clean up stats manager's streaming containers for this host
             # Remove using the full composite key (format: "host_id:container_id")
@@ -1124,12 +1148,15 @@ class DockerMonitor:
                 for container in containers:
                     container_key = f"{container.host_id}:{container.id}"
                     current_state = container.status
-                    previous_state = self._container_states.get(container_key)
+
+                    async with self._state_lock:
+                        previous_state = self._container_states.get(container_key)
 
                     # Log state changes
                     if previous_state is not None and previous_state != current_state:
                         # Check if this state change was expected (recent user action)
-                        last_user_action = self._recent_user_actions.get(container_key, 0)
+                        async with self._actions_lock:
+                            last_user_action = self._recent_user_actions.get(container_key, 0)
                         time_since_action = time.time() - last_user_action
                         is_user_initiated = time_since_action < 30  # Within 30 seconds
 
@@ -1138,7 +1165,8 @@ class DockerMonitor:
 
                         # Clean up old tracking entries (older than 5 minutes)
                         if time_since_action > 300:
-                            self._recent_user_actions.pop(container_key, None)
+                            async with self._actions_lock:
+                                self._recent_user_actions.pop(container_key, None)
 
                         self.event_logger.log_container_state_change(
                             container_name=container.name,
@@ -1151,7 +1179,8 @@ class DockerMonitor:
                         )
 
                     # Update tracked state
-                    self._container_states[container_key] = current_state
+                    async with self._state_lock:
+                        self._container_states[container_key] = current_state
 
                 # Check for containers that need auto-restart
                 for container in containers:

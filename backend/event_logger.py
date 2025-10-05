@@ -87,6 +87,7 @@ class EventLogger:
         self._event_queue = asyncio.Queue(maxsize=10000)  # Prevent unbounded memory growth
         self._processing_task: Optional[asyncio.Task] = None
         self._active_correlations: Dict[str, List[str]] = {}
+        self._dropped_events_count = 0  # Track dropped events for monitoring
 
     async def start(self):
         """Start the event processing task"""
@@ -153,7 +154,14 @@ class EventLogger:
         try:
             self._event_queue.put_nowait(event_data)
         except asyncio.QueueFull:
-            logger.warning("Event queue is full, dropping event")
+            self._dropped_events_count += 1
+            # Log more prominently for critical events
+            if severity in [EventSeverity.CRITICAL, EventSeverity.ERROR]:
+                logger.error(f"Event queue FULL! Dropped {severity.value} event: {title} (total dropped: {self._dropped_events_count})")
+            else:
+                # Periodic warning to avoid log spam
+                if self._dropped_events_count % 100 == 1:
+                    logger.warning(f"Event queue full, dropped {self._dropped_events_count} events total")
 
         # Also log to Python logger for immediate visibility
         python_logger_level = {

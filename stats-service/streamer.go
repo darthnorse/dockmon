@@ -121,6 +121,15 @@ func (sm *StreamManager) AddDockerHost(hostID, hostAddress, tlsCACert, tlsCert, 
 		return err
 	}
 
+	// Track whether client was successfully stored to prevent leak
+	clientStored := false
+	defer func() {
+		if !clientStored && cli != nil {
+			cli.Close()
+			log.Printf("Cleaned up unstored Docker client for host %s", truncateID(hostID, 8))
+		}
+	}()
+
 	// Now that new client is successfully created, acquire lock and swap
 	sm.clientsMu.Lock()
 	defer sm.clientsMu.Unlock()
@@ -132,6 +141,7 @@ func (sm *StreamManager) AddDockerHost(hostID, hostAddress, tlsCACert, tlsCert, 
 	}
 
 	sm.clients[hostID] = cli
+	clientStored = true // Mark as successfully stored
 	log.Printf("Added Docker host: %s (%s)", truncateID(hostID, 8), hostAddress)
 
 	// Initialize host stats with zero values so the host appears immediately in the UI

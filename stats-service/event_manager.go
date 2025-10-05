@@ -277,12 +277,16 @@ func (em *EventManager) processEvent(hostID string, event events.Message) {
 	// Extract container info
 	containerID := event.Actor.ID
 
-	// Safely extract attributes with nil check
+	// Safely extract attributes with defensive access pattern
 	containerName := ""
 	image := ""
-	if event.Actor.Attributes != nil {
-		containerName = event.Actor.Attributes["name"]
-		image = event.Actor.Attributes["image"]
+	if attrs := event.Actor.Attributes; attrs != nil {
+		if name, ok := attrs["name"]; ok {
+			containerName = name
+		}
+		if img, ok := attrs["image"]; ok {
+			image = img
+		}
 	}
 
 	// Create our event

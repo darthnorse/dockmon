@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"log"
@@ -103,14 +104,23 @@ func jsonResponse(w http.ResponseWriter, data interface{}) {
 	}
 }
 
-// authMiddleware validates the Bearer token
+// authMiddleware validates the Bearer token using constant-time comparison
 func authMiddleware(token string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Get Authorization header
 		authHeader := r.Header.Get("Authorization")
 		expectedAuth := "Bearer " + token
 
-		if authHeader != expectedAuth {
+		// Use constant-time comparison to prevent timing attacks
+		// Check length first (still constant-time for the comparison itself)
+		if len(authHeader) != len(expectedAuth) {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			log.Printf("Unauthorized request from %s to %s (length mismatch)", r.RemoteAddr, r.URL.Path)
+			return
+		}
+
+		// Constant-time comparison of the full auth header
+		if subtle.ConstantTimeCompare([]byte(authHeader), []byte(expectedAuth)) != 1 {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			log.Printf("Unauthorized request from %s to %s", r.RemoteAddr, r.URL.Path)
 			return

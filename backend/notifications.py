@@ -1077,6 +1077,15 @@ Rule: {RULE_NAME}
         """Clean up resources"""
         await self.http_client.aclose()
 
+    async def __aenter__(self):
+        """Context manager entry"""
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - ensure cleanup"""
+        await self.close()
+        return False
+
 class AlertProcessor:
     """Processes container state changes and triggers alerts"""
 

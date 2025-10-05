@@ -1598,7 +1598,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 if container_id and host_id:
                     # Verify container exists and user has access to it
                     try:
-                        containers = monitor.get_containers()
+                        containers = await monitor.get_containers()  # Must await async function
                         container_exists = any(
                             c.id == container_id and c.host_id == host_id
                             for c in containers

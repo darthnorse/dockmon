@@ -84,7 +84,7 @@ class EventLogger:
     def __init__(self, db: DatabaseManager, websocket_manager=None):
         self.db = db
         self.websocket_manager = websocket_manager
-        self._event_queue = asyncio.Queue()
+        self._event_queue = asyncio.Queue(maxsize=10000)  # Prevent unbounded memory growth
         self._processing_task: Optional[asyncio.Task] = None
         self._active_correlations: Dict[str, List[str]] = {}
 

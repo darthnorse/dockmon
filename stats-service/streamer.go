@@ -183,7 +183,7 @@ func (sm *StreamManager) StartStream(ctx context.Context, containerID, container
 	// Create composite key to support containers with duplicate IDs on different hosts
 	compositeKey := fmt.Sprintf("%s:%s", hostID, containerID)
 
-	// Acquire both locks in consistent order to prevent race conditions
+	// Acquire locks in consistent order: clientsMu → streamsMu → containersMu (when needed)
 	sm.clientsMu.RLock()
 	sm.streamsMu.Lock()
 
@@ -207,7 +207,11 @@ func (sm *StreamManager) StartStream(ctx context.Context, containerID, container
 	streamCtx, cancel := context.WithCancel(ctx)
 	sm.streams[compositeKey] = cancel
 
-	// Store container info
+	// Release locks before acquiring containersMu to prevent nested locking
+	sm.streamsMu.Unlock()
+	sm.clientsMu.RUnlock()
+
+	// Store container info with separate lock
 	sm.containersMu.Lock()
 	sm.containers[compositeKey] = &ContainerInfo{
 		ID:     containerID,
@@ -216,11 +220,8 @@ func (sm *StreamManager) StartStream(ctx context.Context, containerID, container
 	}
 	sm.containersMu.Unlock()
 
-	// Start streaming in a goroutine while holding locks
+	// Start streaming goroutine (no locks held)
 	go sm.streamStats(streamCtx, containerID, containerName, hostID)
-
-	sm.streamsMu.Unlock()
-	sm.clientsMu.RUnlock()
 
 	log.Printf("Started stats stream for container %s (%s) on host %s", containerName, truncateID(containerID, 12), truncateID(hostID, 12))
 	return nil

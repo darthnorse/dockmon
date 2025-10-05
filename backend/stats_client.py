@@ -28,7 +28,12 @@ class StatsServiceClient:
 
     async def _load_token(self) -> str:
         """Load auth token from file (with retry for startup race condition)"""
+        # Fast path: check without lock first (double-check locking pattern)
+        if self.token:
+            return self.token
+
         async with self._token_lock:
+            # Check again after acquiring lock (another thread may have loaded it)
             if self.token:
                 return self.token
 

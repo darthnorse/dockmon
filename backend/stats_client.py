@@ -24,26 +24,28 @@ class StatsServiceClient:
         self.ws_connection: Optional[aiohttp.ClientWebSocketResponse] = None
         self.ws_task: Optional[asyncio.Task] = None
         self.event_callback: Optional[Callable] = None
+        self._token_lock = asyncio.Lock()
 
     async def _load_token(self) -> str:
         """Load auth token from file (with retry for startup race condition)"""
-        if self.token:
-            return self.token
+        async with self._token_lock:
+            if self.token:
+                return self.token
 
-        # Retry logic: Wait up to 5 seconds for token file to appear
-        for attempt in range(10):
-            try:
-                if os.path.exists(TOKEN_FILE_PATH):
-                    with open(TOKEN_FILE_PATH, 'r') as f:
-                        self.token = f.read().strip()
-                        logger.info("Loaded stats service auth token")
-                        return self.token
-            except Exception as e:
-                logger.warning(f"Failed to read token file (attempt {attempt + 1}): {e}")
+            # Retry logic: Wait up to 5 seconds for token file to appear
+            for attempt in range(10):
+                try:
+                    if os.path.exists(TOKEN_FILE_PATH):
+                        with open(TOKEN_FILE_PATH, 'r') as f:
+                            self.token = f.read().strip()
+                            logger.info("Loaded stats service auth token")
+                            return self.token
+                except Exception as e:
+                    logger.warning(f"Failed to read token file (attempt {attempt + 1}): {e}")
 
-            await asyncio.sleep(0.5)
+                await asyncio.sleep(0.5)
 
-        raise RuntimeError(f"Failed to load stats service token from {TOKEN_FILE_PATH}")
+            raise RuntimeError(f"Failed to load stats service token from {TOKEN_FILE_PATH}")
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """Get or create aiohttp session with auth header"""

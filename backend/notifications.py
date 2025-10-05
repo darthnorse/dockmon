@@ -51,6 +51,7 @@ class NotificationService:
         self._last_alerts: Dict[str, datetime] = {}  # For cooldown tracking
         self._last_container_state: Dict[str, str] = {}  # Track last known state per container
         self._suppressed_alerts: List[AlertEvent] = []  # Track alerts suppressed during blackout windows
+        self.MAX_SUPPRESSED_ALERTS = 1000  # Prevent unbounded memory growth
 
         # Initialize blackout manager
         from blackout_manager import BlackoutManager
@@ -291,8 +292,13 @@ class NotificationService:
             is_blackout, window_name = self.blackout_manager.is_in_blackout_window()
             if is_blackout:
                 logger.info(f"Suppressed {len(alert_rules)} alerts during blackout window '{window_name}' for container '{event.container_name}' on host '{host_name}'")
-                # Track this alert for later
-                self._suppressed_alerts.append(event)
+                # Track this alert for later (with cap to prevent memory leak)
+                if len(self._suppressed_alerts) < self.MAX_SUPPRESSED_ALERTS:
+                    self._suppressed_alerts.append(event)
+                else:
+                    logger.warning(f"Suppressed alerts queue full ({self.MAX_SUPPRESSED_ALERTS}), dropping oldest")
+                    self._suppressed_alerts.pop(0)
+                    self._suppressed_alerts.append(event)
 
                 # Log suppression event
                 if self.event_logger:

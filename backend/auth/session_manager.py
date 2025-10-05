@@ -46,14 +46,15 @@ class SessionManager:
         client_ip = request.client.host
         user_agent = request.headers.get("user-agent", "Unknown")
 
-        self.sessions[session_id] = {
-            "created_at": datetime.utcnow(),
-            "last_accessed": datetime.utcnow(),
-            "client_ip": client_ip,
-            "user_agent": user_agent,
-            "authenticated": True,
-            "username": username
-        }
+        with self._sessions_lock:
+            self.sessions[session_id] = {
+                "created_at": datetime.utcnow(),
+                "last_accessed": datetime.utcnow(),
+                "client_ip": client_ip,
+                "user_agent": user_agent,
+                "authenticated": True,
+                "username": username
+            }
 
         # Security audit log
         security_audit.log_login_success(client_ip, user_agent, session_id)
@@ -62,48 +63,55 @@ class SessionManager:
 
     def validate_session(self, session_id: Optional[str], request: Request) -> bool:
         """Validate session token and update last accessed time"""
-        if not session_id or session_id not in self.sessions:
+        if not session_id:
             return False
 
-        session = self.sessions[session_id]
-        current_time = datetime.utcnow()
-        client_ip = request.client.host
+        with self._sessions_lock:
+            if session_id not in self.sessions:
+                return False
 
-        # Check if session has expired
-        if current_time - session["created_at"] > self.session_timeout:
-            self.delete_session(session_id)
-            security_audit.log_session_expired(client_ip, session_id)
-            return False
+            session = self.sessions[session_id]
+            current_time = datetime.utcnow()
+            client_ip = request.client.host
 
-        # Validate IP consistency for security
-        if session["client_ip"] != client_ip:
-            security_audit.log_session_hijack_attempt(
-                original_ip=session["client_ip"],
-                attempted_ip=client_ip,
-                session_id=session_id
-            )
-            self.delete_session(session_id)
-            return False
+            # Check if session has expired
+            if current_time - session["created_at"] > self.session_timeout:
+                del self.sessions[session_id]
+                security_audit.log_session_expired(client_ip, session_id)
+                return False
 
-        # Update last accessed time
-        session["last_accessed"] = current_time
-        return True
+            # Validate IP consistency for security
+            if session["client_ip"] != client_ip:
+                security_audit.log_session_hijack_attempt(
+                    original_ip=session["client_ip"],
+                    attempted_ip=client_ip,
+                    session_id=session_id
+                )
+                del self.sessions[session_id]
+                return False
+
+            # Update last accessed time
+            session["last_accessed"] = current_time
+            return True
 
     def delete_session(self, session_id: str):
         """Delete a session (logout)"""
-        if session_id in self.sessions:
-            del self.sessions[session_id]
+        with self._sessions_lock:
+            if session_id in self.sessions:
+                del self.sessions[session_id]
 
     def get_session_username(self, session_id: str) -> Optional[str]:
         """Get username from session"""
-        if session_id in self.sessions:
-            return self.sessions[session_id].get("username")
-        return None
+        with self._sessions_lock:
+            if session_id in self.sessions:
+                return self.sessions[session_id].get("username")
+            return None
 
     def update_session_username(self, session_id: str, new_username: str):
         """Update username in session"""
-        if session_id in self.sessions:
-            self.sessions[session_id]["username"] = new_username
+        with self._sessions_lock:
+            if session_id in self.sessions:
+                self.sessions[session_id]["username"] = new_username
 
     def cleanup_expired_sessions(self):
         """Clean up expired sessions periodically"""

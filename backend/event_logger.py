@@ -108,7 +108,7 @@ class EventLogger:
                 try:
                     self._event_queue.get_nowait()
                     self._event_queue.task_done()
-                except:
+                except Exception:
                     break
 
             logger.info("Event logger stopped")

@@ -44,12 +44,7 @@ class BlackoutManager:
                 if not window.get('enabled', True):
                     continue
 
-                # Check if today is in the selected days
                 days = window.get('days', [])
-                if current_weekday not in days:
-                    continue
-
-                # Parse time strings
                 start_str = window.get('start', '00:00')
                 end_str = window.get('end', '00:00')
 
@@ -58,11 +53,22 @@ class BlackoutManager:
 
                 # Handle overnight windows (e.g., 23:00 to 02:00)
                 if start_time > end_time:
-                    if current_time >= start_time or current_time <= end_time:
-                        window_name = window.get('name', f"{start_str}-{end_str}")
-                        return True, window_name
+                    # For overnight windows, check if we're in the late night part (before midnight)
+                    # or the early morning part (after midnight)
+                    if current_time >= start_time:
+                        # Late night part - check if today is in the window
+                        if current_weekday in days:
+                            window_name = window.get('name', f"{start_str}-{end_str}")
+                            return True, window_name
+                    elif current_time <= end_time:
+                        # Early morning part - check if YESTERDAY was in the window
+                        prev_day = (current_weekday - 1) % 7
+                        if prev_day in days:
+                            window_name = window.get('name', f"{start_str}-{end_str}")
+                            return True, window_name
                 else:
-                    if start_time <= current_time <= end_time:
+                    # Regular same-day window
+                    if current_weekday in days and start_time <= current_time <= end_time:
                         window_name = window.get('name', f"{start_str}-{end_str}")
                         return True, window_name
 

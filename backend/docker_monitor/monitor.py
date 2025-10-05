@@ -719,11 +719,14 @@ class DockerMonitor:
 
                 # Skip reconnection if we're in backoff period
                 if now - last_attempt < backoff_seconds:
+                    time_remaining = backoff_seconds - (now - last_attempt)
+                    logger.debug(f"Skipping reconnection for {host.name} - backoff active (attempt {attempts}, {time_remaining:.1f}s remaining)")
                     host.status = "offline"
                     continue
 
                 # Record this reconnection attempt
                 self.last_reconnect_attempt[hid] = now
+                logger.info(f"Attempting to reconnect to offline host {host.name} (attempt {attempts + 1})")
 
                 # Attempt to reconnect offline hosts
                 try:

@@ -218,6 +218,8 @@ func (em *EventManager) streamEvents(stream *eventStream) {
 	// Retry loop with exponential backoff
 	backoff := time.Second
 	maxBackoff := 30 * time.Second
+	// Track if we've received any successful events (to know when to reset backoff)
+	receivedSuccessfulEvent := false
 
 	for {
 		select {
@@ -237,9 +239,6 @@ func (em *EventManager) streamEvents(stream *eventStream) {
 
 		eventsChan, errChan := stream.client.Events(stream.ctx, eventOptions)
 
-		// Reset backoff on successful connection
-		backoff = time.Second
-
 		for {
 			select {
 			case <-stream.ctx.Done():
@@ -249,11 +248,23 @@ func (em *EventManager) streamEvents(stream *eventStream) {
 				if err != nil {
 					log.Printf("Event stream error for host %s: %v (retrying in %v)", truncateID(stream.hostID, 8), err, backoff)
 					time.Sleep(backoff)
-					backoff = min(backoff*2, maxBackoff)
+					// Only increase backoff if we never got a successful event
+					if !receivedSuccessfulEvent {
+						backoff = min(backoff*2, maxBackoff)
+					} else {
+						// We had a successful connection before, reset backoff
+						backoff = time.Second
+					}
 					goto reconnect
 				}
 
 			case event := <-eventsChan:
+				// Reset backoff on first successful event after reconnection
+				if !receivedSuccessfulEvent {
+					backoff = time.Second
+					receivedSuccessfulEvent = true
+				}
+
 				// Process the event with panic recovery
 				func() {
 					defer func() {
@@ -267,8 +278,7 @@ func (em *EventManager) streamEvents(stream *eventStream) {
 		}
 
 	reconnect:
-		// Brief pause before reconnecting
-		time.Sleep(time.Second)
+		// Continue to next iteration (backoff sleep already happened above)
 	}
 }
 

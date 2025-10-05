@@ -465,14 +465,11 @@ async function init() {
 
         function toggleAllContainers(checkbox) {
             const containerCheckboxes = document.querySelectorAll('#containerSelectionCheckboxes input[type="checkbox"]');
-            const containerList = document.getElementById('containerSelectionCheckboxes');
 
-            if (checkbox.checked) {
-                containerList.style.display = 'none';
-                containerCheckboxes.forEach(cb => cb.checked = false);
-            } else {
-                containerList.style.display = 'block';
-            }
+            // When "Monitor All" is checked, check all individual containers
+            // When unchecked, uncheck all individual containers
+            // This allows users to select all then uncheck the ones they don't want
+            containerCheckboxes.forEach(cb => cb.checked = checkbox.checked);
         }
 
         function populateContainerCheckboxes() {
@@ -633,7 +630,10 @@ async function init() {
                 } else {
                     // Empty containers array means "all containers"
                     document.getElementById('selectAllContainers').checked = true;
-                    document.getElementById('containerSelectionCheckboxes').style.display = 'none';
+                    // Check all individual checkboxes to show "all selected" state
+                    document.querySelectorAll('#containerSelectionCheckboxes input[type="checkbox"]').forEach(cb => {
+                        cb.checked = true;
+                    });
                 }
             }
 

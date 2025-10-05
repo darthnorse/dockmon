@@ -531,15 +531,19 @@ async function createAlertRule(event) {
     let containerHostPairs = [];
 
     // Determine container selection
-    // Check if "all containers" is selected
-    if (document.getElementById('selectAllContainers').checked) {
+    // Get selected containers with their host IDs
+    const allCheckboxes = document.querySelectorAll('#containerSelectionCheckboxes input[type="checkbox"]');
+    const checkedCheckboxes = document.querySelectorAll('#containerSelectionCheckboxes input[type="checkbox"]:checked');
+
+    // If all checkboxes are checked, treat it as "monitor all containers"
+    if (allCheckboxes.length > 0 && allCheckboxes.length === checkedCheckboxes.length) {
         containerPattern = '.*';
         hostId = null;
         // Don't use container+host pairs for "all containers"
         containerHostPairs = []; // Clear any previously selected containers
     } else {
         // Get selected containers with their host IDs
-        document.querySelectorAll('#containerSelectionCheckboxes input[type="checkbox"]:checked').forEach(cb => {
+        checkedCheckboxes.forEach(cb => {
             if (cb.dataset.hostId && cb.value) {
                 containerHostPairs.push({
                     host_id: cb.dataset.hostId,

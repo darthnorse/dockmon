@@ -80,6 +80,10 @@ class DockerMonitor:
         self.restart_attempts: Dict[str, int] = {}
         self.restarting_containers: Dict[str, bool] = {}  # Track containers currently being restarted
         self.monitoring_task: Optional[asyncio.Task] = None
+
+        # Reconnection tracking with exponential backoff
+        self.reconnect_attempts: Dict[str, int] = {}  # Track reconnect attempts per host
+        self.last_reconnect_attempt: Dict[str, float] = {}  # Track last attempt time per host
         self.manager = ConnectionManager()
         self.realtime = RealtimeMonitor()  # Real-time monitoring
         self.event_logger = EventLogger(self.db, self.manager)  # Event logging service with WebSocket support
@@ -701,26 +705,106 @@ class DockerMonitor:
 
             # Try to reconnect if host exists but has no client (offline)
             if hid not in self.clients:
+                # Exponential backoff: 5s, 10s, 20s, 40s, 80s, max 5 minutes
+                now = time.time()
+                attempts = self.reconnect_attempts.get(hid, 0)
+                last_attempt = self.last_reconnect_attempt.get(hid, 0)
+                backoff_seconds = min(5 * (2 ** attempts), 300)
+
+                # Skip reconnection if we're in backoff period
+                if now - last_attempt < backoff_seconds:
+                    host.status = "offline"
+                    continue
+
+                # Record this reconnection attempt
+                self.last_reconnect_attempt[hid] = now
+
                 # Attempt to reconnect offline hosts
                 try:
+                    # Fetch TLS certs from database for reconnection
+                    with self.db.get_session() as session:
+                        db_host = session.query(DockerHostDB).filter_by(id=hid).first()
+
                     if host.url.startswith("unix://"):
                         client = docker.DockerClient(base_url=host.url)
+                    elif db_host and db_host.tls_cert and db_host.tls_key and db_host.tls_ca:
+                        # Reconnect with TLS using certs from database
+                        logger.debug(f"Reconnecting to {host.name} with TLS")
+
+                        # Write certs to temporary files for TLS config
+                        cert_dir = os.path.join(CERTS_DIR, hid)
+                        os.makedirs(cert_dir, exist_ok=True)
+
+                        cert_file = os.path.join(cert_dir, 'cert.pem')
+                        key_file = os.path.join(cert_dir, 'key.pem')
+                        ca_file = os.path.join(cert_dir, 'ca.pem') if db_host.tls_ca else None
+
+                        with open(cert_file, 'w') as f:
+                            f.write(db_host.tls_cert)
+                        with open(key_file, 'w') as f:
+                            f.write(db_host.tls_key)
+                        if ca_file:
+                            with open(ca_file, 'w') as f:
+                                f.write(db_host.tls_ca)
+
+                        # Set secure permissions
+                        os.chmod(cert_file, 0o600)
+                        os.chmod(key_file, 0o600)
+                        if ca_file:
+                            os.chmod(ca_file, 0o600)
+
+                        tls_config = docker.tls.TLSConfig(
+                            client_cert=(cert_file, key_file),
+                            ca_cert=ca_file,
+                            verify=bool(db_host.tls_ca)
+                        )
+
+                        client = docker.DockerClient(
+                            base_url=host.url,
+                            tls=tls_config,
+                            timeout=self.settings.connection_timeout
+                        )
                     else:
-                        # For TCP, try without TLS first (client won't have certs stored)
+                        # Reconnect without TLS
                         client = docker.DockerClient(
                             base_url=host.url,
                             timeout=self.settings.connection_timeout
                         )
+
                     # Test the connection
                     client.ping()
                     # Connection successful - add to clients
                     self.clients[hid] = client
+
+                    # Reset reconnection attempts on success
+                    self.reconnect_attempts[hid] = 0
                     logger.info(f"Reconnected to offline host: {host.name}")
+
+                    # Re-register with stats and events service
+                    try:
+                        stats_client = get_stats_client()
+                        tls_ca = db_host.tls_ca if db_host else None
+                        tls_cert = db_host.tls_cert if db_host else None
+                        tls_key = db_host.tls_key if db_host else None
+
+                        await stats_client.add_docker_host(hid, host.url, tls_ca, tls_cert, tls_key)
+                        await stats_client.add_event_host(hid, host.url, tls_ca, tls_cert, tls_key)
+                        logger.info(f"Re-registered {host.name} ({hid[:8]}) with stats/events service after reconnection")
+                    except Exception as e:
+                        logger.warning(f"Failed to re-register {host.name} with Go services after reconnection: {e}")
+
                 except Exception as e:
+                    # Increment reconnection attempts on failure
+                    self.reconnect_attempts[hid] = attempts + 1
+
                     # Still offline - update status and continue
                     host.status = "offline"
                     host.error = f"Connection failed: {str(e)}"
                     host.last_checked = datetime.now()
+
+                    # Log with backoff info to help debugging
+                    next_attempt_in = min(5 * (2 ** (attempts + 1)), 300)
+                    logger.debug(f"Host {host.name} still offline (attempt {attempts + 1}). Next retry in {next_attempt_in}s")
                     continue
 
             client = self.clients[hid]

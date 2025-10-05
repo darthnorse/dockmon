@@ -183,20 +183,22 @@ func (sm *StreamManager) StartStream(ctx context.Context, containerID, container
 	// Create composite key to support containers with duplicate IDs on different hosts
 	compositeKey := fmt.Sprintf("%s:%s", hostID, containerID)
 
-	// Check if stream already exists AND create if not - MUST BE ATOMIC
+	// Acquire both locks in consistent order to prevent race conditions
+	sm.clientsMu.RLock()
 	sm.streamsMu.Lock()
+
+	// Check if stream already exists
 	if _, exists := sm.streams[compositeKey]; exists {
-		sm.streamsMu.Unlock() // Note: early return, can't use defer here
+		sm.streamsMu.Unlock()
+		sm.clientsMu.RUnlock()
 		return nil // Already streaming
 	}
 
-	// Verify Docker client exists to prevent race condition
-	sm.clientsMu.RLock()
-	defer sm.clientsMu.RUnlock()
+	// Check if client exists
 	_, clientExists := sm.clients[hostID]
-
 	if !clientExists {
 		sm.streamsMu.Unlock()
+		sm.clientsMu.RUnlock()
 		log.Printf("Warning: No Docker client for host %s", truncateID(hostID, 8))
 		return nil
 	}
@@ -204,34 +206,21 @@ func (sm *StreamManager) StartStream(ctx context.Context, containerID, container
 	// Create cancellable context for this stream
 	streamCtx, cancel := context.WithCancel(ctx)
 	sm.streams[compositeKey] = cancel
-	sm.streamsMu.Unlock()
 
 	// Store container info
 	sm.containersMu.Lock()
-	defer sm.containersMu.Unlock()
 	sm.containers[compositeKey] = &ContainerInfo{
 		ID:     containerID,
 		Name:   containerName,
 		HostID: hostID,
 	}
+	sm.containersMu.Unlock()
 
-	// Verify client still exists before starting goroutine (double-check pattern)
-	sm.clientsMu.RLock()
-	defer sm.clientsMu.RUnlock()
-	_, stillExists := sm.clients[hostID]
-
-	if !stillExists {
-		// Client was removed between checks - cleanup and exit
-		sm.streamsMu.Lock()
-		defer sm.streamsMu.Unlock()
-		delete(sm.streams, compositeKey)
-		cancel()
-		log.Printf("Client removed before stream start for container %s", truncateID(containerID, 12))
-		return nil
-	}
-
-	// Start streaming in a goroutine
+	// Start streaming in a goroutine while holding locks
 	go sm.streamStats(streamCtx, containerID, containerName, hostID)
+
+	sm.streamsMu.Unlock()
+	sm.clientsMu.RUnlock()
 
 	log.Printf("Started stats stream for container %s (%s) on host %s", containerName, truncateID(containerID, 12), truncateID(hostID, 12))
 	return nil

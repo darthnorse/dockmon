@@ -1163,8 +1163,8 @@ class DockerMonitor:
                         logger.info(f"State change for {container_key}: {previous_state} → {current_state}, "
                                   f"time_since_action={time_since_action:.1f}s, user_initiated={is_user_initiated}")
 
-                        # Clean up old tracking entries (older than 5 minutes)
-                        if time_since_action > 300:
+                        # Clean up old tracking entries (5 minutes or older)
+                        if time_since_action >= 300:
                             async with self._actions_lock:
                                 self._recent_user_actions.pop(container_key, None)
 

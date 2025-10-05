@@ -3,6 +3,7 @@ Session Management System for DockMon
 Provides secure session tokens with IP validation and automatic cleanup
 """
 
+import logging
 import secrets
 import threading
 import time
@@ -13,6 +14,8 @@ from fastapi import Request
 
 from security.audit import security_audit
 
+logger = logging.getLogger(__name__)
+
 
 class SessionManager:
     """
@@ -22,17 +25,20 @@ class SessionManager:
     def __init__(self):
         self.sessions: Dict[str, dict] = {}
         self.session_timeout = timedelta(hours=24)  # 24 hour sessions
+        self._sessions_lock = threading.Lock()
+        self._shutdown_event = threading.Event()
         self._cleanup_thread = threading.Thread(target=self._periodic_cleanup, daemon=True)
         self._cleanup_thread.start()
 
     def _periodic_cleanup(self):
         """Run cleanup every hour"""
-        while True:
-            time.sleep(3600)  # Run every hour
+        while not self._shutdown_event.wait(timeout=3600):
             try:
-                self.cleanup_expired_sessions()
-            except Exception:
-                pass  # Silent failure for background thread
+                deleted = self.cleanup_expired_sessions()
+                if deleted > 0:
+                    logger.info(f"Cleaned up {deleted} expired sessions")
+            except Exception as e:
+                logger.error(f"Session cleanup failed: {e}", exc_info=True)
 
     def create_session(self, request: Request, username: str = None) -> str:
         """Create a new session token"""
@@ -104,14 +110,20 @@ class SessionManager:
         current_time = datetime.utcnow()
         expired_sessions = []
 
-        for session_id, session_data in self.sessions.items():
-            if current_time - session_data["created_at"] > self.session_timeout:
-                expired_sessions.append(session_id)
+        with self._sessions_lock:
+            for session_id, session_data in self.sessions.items():
+                if current_time - session_data["created_at"] > self.session_timeout:
+                    expired_sessions.append(session_id)
 
         for session_id in expired_sessions:
             self.delete_session(session_id)
 
         return len(expired_sessions)
+
+    def shutdown(self):
+        """Shutdown the session manager and cleanup thread"""
+        self._shutdown_event.set()
+        self._cleanup_thread.join(timeout=5)
 
 
 # Global session manager instance

@@ -930,7 +930,17 @@ class DatabaseManager:
         """Verify user credentials and return user info if valid"""
         with self.get_session() as session:
             user = session.query(User).filter(User.username == username).first()
-            if user and self._verify_password(password, user.password_hash):
+
+            # Prevent timing attack: always run bcrypt even if user doesn't exist
+            if user:
+                is_valid = self._verify_password(password, user.password_hash)
+            else:
+                # Run dummy bcrypt to maintain constant time
+                dummy_hash = "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5GyYFj.N/wx9S"
+                self._verify_password(password, dummy_hash)
+                is_valid = False
+
+            if user and is_valid:
                 # Update last login
                 user.last_login = datetime.now()
                 session.commit()

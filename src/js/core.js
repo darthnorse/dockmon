@@ -46,19 +46,7 @@
         const API_BASE = '';  // Use same origin - nginx will proxy /api/* to backend
         const WS_URL = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
 
-        // XSS protection: Escape HTML special characters
-        function escapeHtml(unsafe) {
-            if (unsafe === null || unsafe === undefined) return '';
-            return String(unsafe)
-                .replace(/&/g, "&amp;")
-                .replace(/</g, "&lt;")
-                .replace(/>/g, "&gt;")
-                .replace(/"/g, "&quot;")
-                .replace(/'/g, "&#039;");
-        }
-
-        // Make escapeHtml globally available
-        window.escapeHtml = escapeHtml;
+        // Note: escapeHtml is defined at the top of this file and made globally available
 
         // Lucide icon helper function
         function icon(name, size = 16, className = '') {

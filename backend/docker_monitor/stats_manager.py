@@ -118,7 +118,13 @@ class StatsManager:
 
         for container_key in containers_to_stop:
             # Extract host_id and container_id from the key (format: host_id:container_id)
-            host_id, container_id = container_key.split(':', 1)
+            try:
+                host_id, container_id = container_key.split(':', 1)
+            except ValueError:
+                logger.error(f"Invalid container key format: {container_key}")
+                self.streaming_containers.discard(container_key)
+                continue
+
             task = asyncio.create_task(stats_client.stop_container_stream(container_id, host_id))
             task.add_done_callback(error_callback)
             self.streaming_containers.discard(container_key)
@@ -138,7 +144,12 @@ class StatsManager:
             logger.info(f"Stopping {len(self.streaming_containers)} stats streams")
             for container_key in list(self.streaming_containers):
                 # Extract host_id and container_id from the key (format: host_id:container_id)
-                host_id, container_id = container_key.split(':', 1)
+                try:
+                    host_id, container_id = container_key.split(':', 1)
+                except ValueError:
+                    logger.error(f"Invalid container key format during cleanup: {container_key}")
+                    continue
+
                 task = asyncio.create_task(stats_client.stop_container_stream(container_id, host_id))
                 task.add_done_callback(error_callback)
             self.streaming_containers.clear()

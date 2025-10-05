@@ -472,10 +472,9 @@ class DockerMonitor:
                     del self.restarting_containers[container_key]
 
             # Clean up stats manager's streaming containers for this host
-            # Extract container IDs from the container_keys (format: "host_id:container_id")
-            streaming_to_remove = [key.split(':')[1] for key in containers_to_remove]
-            for container_id in streaming_to_remove:
-                self.stats_manager.streaming_containers.discard(container_id)
+            # Remove using the full composite key (format: "host_id:container_id")
+            for container_key in containers_to_remove:
+                self.stats_manager.streaming_containers.discard(container_key)
 
             if containers_to_remove:
                 logger.debug(f"Cleaned up {len(containers_to_remove)} container state entries for removed host {host_id[:8]}")

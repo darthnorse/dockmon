@@ -510,8 +510,6 @@ class DockerMonitor:
                 logger.debug(f"Cleaned up {len(alert_cooldowns_to_remove)} alert cooldown entries for removed host {host_id[:8]}")
             if auto_restart_to_remove:
                 logger.debug(f"Cleaned up {len(auto_restart_to_remove)} auto-restart entries for removed host {host_id[:8]}")
-            if streaming_to_remove:
-                logger.debug(f"Cleaned up {len(streaming_to_remove)} streaming container entries for removed host {host_id[:8]}")
 
             # Log host removed
             self.event_logger.log_host_removed(

@@ -763,9 +763,11 @@ class DockerMonitor:
             stats_client = get_stats_client()
             container_stats = await stats_client.get_container_stats()
 
-            # Populate stats for each container
+            # Populate stats for each container using composite key (host_id:container_id)
             for container in containers:
-                stats = container_stats.get(container.id, {})
+                # Use composite key to support containers with duplicate IDs on different hosts
+                composite_key = f"{container.host_id}:{container.id}"
+                stats = container_stats.get(composite_key, {})
                 if stats:
                     container.cpu_percent = stats.get('cpu_percent')
                     container.memory_usage = stats.get('memory_usage')
@@ -775,6 +777,7 @@ class DockerMonitor:
                     container.network_tx = stats.get('network_tx')
                     container.disk_read = stats.get('disk_read')
                     container.disk_write = stats.get('disk_write')
+                    logger.debug(f"Populated stats for {container.name} ({container.short_id}) on {container.host_name}: CPU {container.cpu_percent}%")
         except Exception as e:
             logger.warning(f"Failed to fetch container stats from stats service: {e}")
 

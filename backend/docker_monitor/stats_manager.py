@@ -17,18 +17,20 @@ class StatsManager:
 
     def __init__(self):
         """Initialize stats manager"""
-        self.streaming_containers: Set[str] = set()  # Currently streaming container IDs
-        self.modal_containers: Set[str] = set()  # Container IDs with open modals
+        self.streaming_containers: Set[str] = set()  # Currently streaming container keys (host_id:container_id)
+        self.modal_containers: Set[str] = set()  # Composite keys (host_id:container_id) with open modals
 
-    def add_modal_container(self, container_id: str) -> None:
+    def add_modal_container(self, container_id: str, host_id: str) -> None:
         """Track that a container modal is open"""
-        self.modal_containers.add(container_id)
-        logger.debug(f"Container modal opened for {container_id[:12]} - stats tracking enabled")
+        composite_key = f"{host_id}:{container_id}"
+        self.modal_containers.add(composite_key)
+        logger.debug(f"Container modal opened for {container_id[:12]} on host {host_id[:8]} - stats tracking enabled")
 
-    def remove_modal_container(self, container_id: str) -> None:
+    def remove_modal_container(self, container_id: str, host_id: str) -> None:
         """Remove container from modal tracking"""
-        self.modal_containers.discard(container_id)
-        logger.debug(f"Container modal closed for {container_id[:12]}")
+        composite_key = f"{host_id}:{container_id}"
+        self.modal_containers.discard(composite_key)
+        logger.debug(f"Container modal closed for {container_id[:12]} on host {host_id[:8]}")
 
     def clear_modal_containers(self) -> None:
         """Clear all modal containers (e.g., on WebSocket disconnect)"""
@@ -54,7 +56,7 @@ class StatsManager:
             settings: Global settings with show_container_stats and show_host_stats flags
 
         Returns:
-            Set of container IDs that need stats collection
+            Set of composite keys (host_id:container_id) that need stats collection
         """
         containers_needing_stats = set()
 
@@ -63,14 +65,16 @@ class StatsManager:
         if settings.show_container_stats or settings.show_host_stats:
             for container in containers:
                 if container.status == 'running':
-                    containers_needing_stats.add(container.id)
+                    containers_needing_stats.add(f"{container.host_id}:{container.id}")
 
         # Rule 2: Always add modal containers (even if settings are off)
-        for modal_container_id in self.modal_containers:
+        # Modal containers are already stored as composite keys
+        for modal_composite_key in self.modal_containers:
             # Verify container is still running before adding
             for container in containers:
-                if container.id == modal_container_id and container.status == 'running':
-                    containers_needing_stats.add(container.id)
+                container_key = f"{container.host_id}:{container.id}"
+                if container_key == modal_composite_key and container.status == 'running':
+                    containers_needing_stats.add(container_key)
                     break
 
         return containers_needing_stats
@@ -90,13 +94,14 @@ class StatsManager:
 
         Args:
             containers: List of all containers
-            containers_needing_stats: Set of container IDs that need stats
+            containers_needing_stats: Set of composite keys (host_id:container_id) that need stats
             stats_client: Stats client instance
             error_callback: Callback for handling async task errors
         """
         # Start streams for containers that need stats but aren't streaming yet
         for container in containers:
-            if container.id in containers_needing_stats and container.id not in self.streaming_containers:
+            container_key = f"{container.host_id}:{container.id}"
+            if container_key in containers_needing_stats and container_key not in self.streaming_containers:
                 task = asyncio.create_task(
                     stats_client.start_container_stream(
                         container.id,
@@ -105,15 +110,18 @@ class StatsManager:
                     )
                 )
                 task.add_done_callback(error_callback)
-                self.streaming_containers.add(container.id)
-                logger.debug(f"Started stats stream for {container.name}")
+                self.streaming_containers.add(container_key)
+                logger.debug(f"Started stats stream for {container.name} on {container.host_name}")
 
         # Stop streams for containers that no longer need stats
         containers_to_stop = self.streaming_containers - containers_needing_stats
-        for container_id in containers_to_stop:
-            task = asyncio.create_task(stats_client.stop_container_stream(container_id))
+
+        for container_key in containers_to_stop:
+            # Extract host_id and container_id from the key (format: host_id:container_id)
+            host_id, container_id = container_key.split(':', 1)
+            task = asyncio.create_task(stats_client.stop_container_stream(container_id, host_id))
             task.add_done_callback(error_callback)
-            self.streaming_containers.discard(container_id)
+            self.streaming_containers.discard(container_key)
             logger.debug(f"Stopped stats stream for container {container_id[:12]}")
 
     async def stop_all_streams(self, stats_client, error_callback) -> None:
@@ -128,8 +136,10 @@ class StatsManager:
         """
         if self.streaming_containers:
             logger.info(f"Stopping {len(self.streaming_containers)} stats streams")
-            for container_id in list(self.streaming_containers):
-                task = asyncio.create_task(stats_client.stop_container_stream(container_id))
+            for container_key in list(self.streaming_containers):
+                # Extract host_id and container_id from the key (format: host_id:container_id)
+                host_id, container_id = container_key.split(':', 1)
+                task = asyncio.create_task(stats_client.stop_container_stream(container_id, host_id))
                 task.add_done_callback(error_callback)
             self.streaming_containers.clear()
 

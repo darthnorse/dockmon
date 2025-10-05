@@ -1585,14 +1585,16 @@ async def websocket_endpoint(websocket: WebSocket):
             elif message.get("type") == "modal_opened":
                 # Track that a container modal is open - keep stats running for this container
                 container_id = message.get("container_id")
-                if container_id:
-                    monitor.stats_manager.add_modal_container(container_id)
+                host_id = message.get("host_id")
+                if container_id and host_id:
+                    monitor.stats_manager.add_modal_container(container_id, host_id)
 
             elif message.get("type") == "modal_closed":
                 # Remove container from modal tracking
                 container_id = message.get("container_id")
-                if container_id:
-                    monitor.stats_manager.remove_modal_container(container_id)
+                host_id = message.get("host_id")
+                if container_id and host_id:
+                    monitor.stats_manager.remove_modal_container(container_id, host_id)
 
             elif message.get("type") == "ping":
                 await websocket.send_text(json.dumps({"type": "pong"}, cls=DateTimeEncoder))

@@ -37,7 +37,7 @@ type HostStats struct {
 // StatsCache is a thread-safe cache for container and host stats
 type StatsCache struct {
 	mu             sync.RWMutex
-	containerStats map[string]*ContainerStats // key: containerID
+	containerStats map[string]*ContainerStats // key: composite key (hostID:containerID)
 	hostStats      map[string]*HostStats      // key: hostID
 }
 
@@ -55,15 +55,18 @@ func (c *StatsCache) UpdateContainerStats(stats *ContainerStats) {
 	defer c.mu.Unlock()
 
 	stats.LastUpdate = time.Now()
-	c.containerStats[stats.ContainerID] = stats
+	// Use composite key to support containers with duplicate IDs on different hosts
+	compositeKey := stats.HostID + ":" + stats.ContainerID
+	c.containerStats[compositeKey] = stats
 }
 
 // GetContainerStats retrieves stats for a specific container
-func (c *StatsCache) GetContainerStats(containerID string) (*ContainerStats, bool) {
+func (c *StatsCache) GetContainerStats(containerID, hostID string) (*ContainerStats, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	stats, ok := c.containerStats[containerID]
+	compositeKey := hostID + ":" + containerID
+	stats, ok := c.containerStats[compositeKey]
 	return stats, ok
 }
 
@@ -82,11 +85,12 @@ func (c *StatsCache) GetAllContainerStats() map[string]*ContainerStats {
 }
 
 // RemoveContainerStats removes stats for a container (when it stops)
-func (c *StatsCache) RemoveContainerStats(containerID string) {
+func (c *StatsCache) RemoveContainerStats(containerID, hostID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	delete(c.containerStats, containerID)
+	compositeKey := hostID + ":" + containerID
+	delete(c.containerStats, compositeKey)
 }
 
 // UpdateHostStats updates aggregated stats for a host

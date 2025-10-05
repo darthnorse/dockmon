@@ -126,7 +126,8 @@ function closeModal(modalId) {
         if (window.currentContainer && ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({
                 type: 'modal_closed',
-                container_id: window.currentContainer.id
+                container_id: window.currentContainer.id,
+                host_id: window.currentContainer.host_id
             }));
         }
 

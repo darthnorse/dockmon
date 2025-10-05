@@ -261,6 +261,7 @@ func main() {
 
 		var req struct {
 			ContainerID string `json:"container_id"`
+			HostID      string `json:"host_id"`
 		}
 
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -269,12 +270,12 @@ func main() {
 		}
 
 		// Validate required fields
-		if req.ContainerID == "" {
-			http.Error(w, "container_id is required", http.StatusBadRequest)
+		if req.ContainerID == "" || req.HostID == "" {
+			http.Error(w, "container_id and host_id are required", http.StatusBadRequest)
 			return
 		}
 
-		streamManager.StopStream(req.ContainerID)
+		streamManager.StopStream(req.ContainerID, req.HostID)
 
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{"status": "stopped"})

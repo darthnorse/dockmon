@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -69,9 +70,9 @@ type StreamManager struct {
 	cache      *StatsCache
 	clients    map[string]*client.Client // hostID -> Docker client
 	clientsMu  sync.RWMutex
-	streams    map[string]context.CancelFunc // containerID -> cancel function
+	streams    map[string]context.CancelFunc // composite key (hostID:containerID) -> cancel function
 	streamsMu  sync.RWMutex
-	containers map[string]*ContainerInfo // containerID -> info
+	containers map[string]*ContainerInfo // composite key (hostID:containerID) -> info
 	containersMu sync.RWMutex
 }
 
@@ -147,17 +148,21 @@ func (sm *StreamManager) RemoveDockerHost(hostID string) {
 	// First, find all containers for this host
 	sm.containersMu.RLock()
 	containersToStop := make([]string, 0)
-	for containerID, info := range sm.containers {
+	for compositeKey, info := range sm.containers {
 		if info.HostID == hostID {
-			containersToStop = append(containersToStop, containerID)
+			containersToStop = append(containersToStop, compositeKey)
 		}
 	}
 	sm.containersMu.RUnlock()
 
 	// Stop all streams for containers on this host
 	// Do this BEFORE closing the client to avoid streams trying to use a closed client
-	for _, containerID := range containersToStop {
-		sm.StopStream(containerID)
+	for _, compositeKey := range containersToStop {
+		// Extract container ID from composite key (format: hostID:containerID)
+		parts := strings.SplitN(compositeKey, ":", 2)
+		if len(parts) == 2 {
+			sm.StopStream(parts[1], parts[0]) // containerID, hostID
+		}
 	}
 
 	// Now close and remove the Docker client
@@ -175,9 +180,12 @@ func (sm *StreamManager) RemoveDockerHost(hostID string) {
 
 // StartStream starts a persistent stats stream for a container
 func (sm *StreamManager) StartStream(ctx context.Context, containerID, containerName, hostID string) error {
+	// Create composite key to support containers with duplicate IDs on different hosts
+	compositeKey := fmt.Sprintf("%s:%s", hostID, containerID)
+
 	// Check if stream already exists AND create if not - MUST BE ATOMIC
 	sm.streamsMu.Lock()
-	if _, exists := sm.streams[containerID]; exists {
+	if _, exists := sm.streams[compositeKey]; exists {
 		sm.streamsMu.Unlock() // Note: early return, can't use defer here
 		return nil // Already streaming
 	}
@@ -195,13 +203,13 @@ func (sm *StreamManager) StartStream(ctx context.Context, containerID, container
 
 	// Create cancellable context for this stream
 	streamCtx, cancel := context.WithCancel(ctx)
-	sm.streams[containerID] = cancel
+	sm.streams[compositeKey] = cancel
 	sm.streamsMu.Unlock()
 
 	// Store container info
 	sm.containersMu.Lock()
 	defer sm.containersMu.Unlock()
-	sm.containers[containerID] = &ContainerInfo{
+	sm.containers[compositeKey] = &ContainerInfo{
 		ID:     containerID,
 		Name:   containerName,
 		HostID: hostID,
@@ -216,7 +224,7 @@ func (sm *StreamManager) StartStream(ctx context.Context, containerID, container
 		// Client was removed between checks - cleanup and exit
 		sm.streamsMu.Lock()
 		defer sm.streamsMu.Unlock()
-		delete(sm.streams, containerID)
+		delete(sm.streams, compositeKey)
 		cancel()
 		log.Printf("Client removed before stream start for container %s", truncateID(containerID, 12))
 		return nil
@@ -230,21 +238,24 @@ func (sm *StreamManager) StartStream(ctx context.Context, containerID, container
 }
 
 // StopStream stops the stats stream for a container
-func (sm *StreamManager) StopStream(containerID string) {
+func (sm *StreamManager) StopStream(containerID, hostID string) {
+	// Create composite key to support containers with duplicate IDs on different hosts
+	compositeKey := fmt.Sprintf("%s:%s", hostID, containerID)
+
 	sm.streamsMu.Lock()
 	defer sm.streamsMu.Unlock()
-	cancel, exists := sm.streams[containerID]
+	cancel, exists := sm.streams[compositeKey]
 	if exists {
 		cancel()
-		delete(sm.streams, containerID)
+		delete(sm.streams, compositeKey)
 	}
 
 	sm.containersMu.Lock()
 	defer sm.containersMu.Unlock()
-	delete(sm.containers, containerID)
+	delete(sm.containers, compositeKey)
 
 	// Remove from cache
-	sm.cache.RemoveContainerStats(containerID)
+	sm.cache.RemoveContainerStats(containerID, hostID)
 
 	log.Printf("Stopped stats stream for container %s", truncateID(containerID, 12))
 }

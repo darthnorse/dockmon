@@ -156,13 +156,13 @@ class StatsServiceClient:
             logger.warning(f"Error starting stream for {container_id[:12]}: {type(e).__name__}: {str(e)}", exc_info=True)
             return False
 
-    async def stop_container_stream(self, container_id: str) -> bool:
+    async def stop_container_stream(self, container_id: str, host_id: str) -> bool:
         """Stop stats streaming for a container"""
         try:
             session = await self._get_session()
             async with session.post(
                 f"{self.base_url}/api/streams/stop",
-                json={"container_id": container_id}
+                json={"container_id": container_id, "host_id": host_id}
             ) as resp:
                 if resp.status == 200:
                     logger.debug(f"Stopped stats stream for container {container_id[:12]}")

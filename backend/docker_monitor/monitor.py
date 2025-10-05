@@ -1147,37 +1147,37 @@ class DockerMonitor:
                     container_key = f"{container.host_id}:{container.id}"
                     current_state = container.status
 
+                    # Hold lock during entire read-process-write to prevent race conditions
                     async with self._state_lock:
                         previous_state = self._container_states.get(container_key)
 
-                    # Log state changes
-                    if previous_state is not None and previous_state != current_state:
-                        # Check if this state change was expected (recent user action)
-                        async with self._actions_lock:
-                            last_user_action = self._recent_user_actions.get(container_key, 0)
-                        time_since_action = time.time() - last_user_action
-                        is_user_initiated = time_since_action < 30  # Within 30 seconds
-
-                        logger.info(f"State change for {container_key}: {previous_state} → {current_state}, "
-                                  f"time_since_action={time_since_action:.1f}s, user_initiated={is_user_initiated}")
-
-                        # Clean up old tracking entries (5 minutes or older)
-                        if time_since_action >= 300:
+                        # Log state changes
+                        if previous_state is not None and previous_state != current_state:
+                            # Check if this state change was expected (recent user action)
                             async with self._actions_lock:
-                                self._recent_user_actions.pop(container_key, None)
+                                last_user_action = self._recent_user_actions.get(container_key, 0)
+                            time_since_action = time.time() - last_user_action
+                            is_user_initiated = time_since_action < 30  # Within 30 seconds
 
-                        self.event_logger.log_container_state_change(
-                            container_name=container.name,
-                            container_id=container.short_id,
-                            host_name=container.host_name,
-                            host_id=container.host_id,
-                            old_state=previous_state,
-                            new_state=current_state,
-                            triggered_by="user" if is_user_initiated else "system"
-                        )
+                            logger.info(f"State change for {container_key}: {previous_state} → {current_state}, "
+                                      f"time_since_action={time_since_action:.1f}s, user_initiated={is_user_initiated}")
 
-                    # Update tracked state
-                    async with self._state_lock:
+                            # Clean up old tracking entries (5 minutes or older)
+                            if time_since_action >= 300:
+                                async with self._actions_lock:
+                                    self._recent_user_actions.pop(container_key, None)
+
+                            self.event_logger.log_container_state_change(
+                                container_name=container.name,
+                                container_id=container.short_id,
+                                host_name=container.host_name,
+                                host_id=container.host_id,
+                                old_state=previous_state,
+                                new_state=current_state,
+                                triggered_by="user" if is_user_initiated else "system"
+                            )
+
+                        # Update tracked state (still inside lock)
                         self._container_states[container_key] = current_state
 
                 # Check for containers that need auto-restart

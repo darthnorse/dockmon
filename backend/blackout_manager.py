@@ -60,7 +60,7 @@ class BlackoutManager:
                         if current_weekday in days:
                             window_name = window.get('name', f"{start_str}-{end_str}")
                             return True, window_name
-                    elif current_time <= end_time:
+                    elif current_time < end_time:
                         # Early morning part - check if YESTERDAY was in the window
                         prev_day = (current_weekday - 1) % 7
                         if prev_day in days:
@@ -68,7 +68,7 @@ class BlackoutManager:
                             return True, window_name
                 else:
                     # Regular same-day window
-                    if current_weekday in days and start_time <= current_time <= end_time:
+                    if current_weekday in days and start_time <= current_time < end_time:
                         window_name = window.get('name', f"{start_str}-{end_str}")
                         return True, window_name
 

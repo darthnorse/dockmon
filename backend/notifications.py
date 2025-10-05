@@ -52,10 +52,36 @@ class NotificationService:
         self._last_container_state: Dict[str, str] = {}  # Track last known state per container
         self._suppressed_alerts: List[AlertEvent] = []  # Track alerts suppressed during blackout windows
         self.MAX_SUPPRESSED_ALERTS = 1000  # Prevent unbounded memory growth
+        self.MAX_COOLDOWN_ENTRIES = 10000  # Prevent unbounded cooldown dictionary
+        self.COOLDOWN_MAX_AGE_DAYS = 7  # Remove cooldown entries older than 7 days
 
         # Initialize blackout manager
         from blackout_manager import BlackoutManager
         self.blackout_manager = BlackoutManager(db)
+
+    def _cleanup_old_cooldowns(self) -> None:
+        """Clean up old cooldown entries to prevent memory leak"""
+        now = datetime.now()
+        max_age = timedelta(days=self.COOLDOWN_MAX_AGE_DAYS)
+
+        # Remove entries older than max age
+        keys_to_remove = [
+            key for key, timestamp in self._last_alerts.items()
+            if now - timestamp > max_age
+        ]
+
+        for key in keys_to_remove:
+            del self._last_alerts[key]
+
+        if keys_to_remove:
+            logger.info(f"Cleaned up {len(keys_to_remove)} old cooldown entries")
+
+        # If still over limit, remove oldest entries
+        if len(self._last_alerts) > self.MAX_COOLDOWN_ENTRIES:
+            # Sort by timestamp and keep only the newest MAX_COOLDOWN_ENTRIES
+            sorted_alerts = sorted(self._last_alerts.items(), key=lambda x: x[1], reverse=True)
+            self._last_alerts = dict(sorted_alerts[:self.MAX_COOLDOWN_ENTRIES])
+            logger.warning(f"Cooldown dictionary exceeded limit, truncated to {self.MAX_COOLDOWN_ENTRIES} entries")
 
     def _get_host_name(self, event) -> str:
         """Get host name from event, handling both AlertEvent and DockerEventAlert types"""
@@ -140,6 +166,10 @@ class NotificationService:
                 # Check cooldown
                 container_key = f"{event.host_id}:{event.container_id}"
                 cooldown_key = f"event:{rule.id}:{container_key}:{event.event_type}"
+
+                # Periodic cleanup of old cooldown entries (every ~100 alerts)
+                if len(self._last_alerts) % 100 == 0:
+                    self._cleanup_old_cooldowns()
 
                 # Check cooldown
                 if cooldown_key in self._last_alerts:

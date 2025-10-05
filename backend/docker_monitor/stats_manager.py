@@ -19,6 +19,7 @@ class StatsManager:
         """Initialize stats manager"""
         self.streaming_containers: Set[str] = set()  # Currently streaming container keys (host_id:container_id)
         self.modal_containers: Set[str] = set()  # Composite keys (host_id:container_id) with open modals
+        self._streaming_lock = asyncio.Lock()  # Protect streaming_containers set from race conditions
 
     def add_modal_container(self, container_id: str, host_id: str) -> None:
         """Track that a container modal is open"""
@@ -98,37 +99,38 @@ class StatsManager:
             stats_client: Stats client instance
             error_callback: Callback for handling async task errors
         """
-        # Start streams for containers that need stats but aren't streaming yet
-        for container in containers:
-            container_key = f"{container.host_id}:{container.id}"
-            if container_key in containers_needing_stats and container_key not in self.streaming_containers:
-                task = asyncio.create_task(
-                    stats_client.start_container_stream(
-                        container.id,
-                        container.name,
-                        container.host_id
+        async with self._streaming_lock:
+            # Start streams for containers that need stats but aren't streaming yet
+            for container in containers:
+                container_key = f"{container.host_id}:{container.id}"
+                if container_key in containers_needing_stats and container_key not in self.streaming_containers:
+                    task = asyncio.create_task(
+                        stats_client.start_container_stream(
+                            container.id,
+                            container.name,
+                            container.host_id
+                        )
                     )
-                )
+                    task.add_done_callback(error_callback)
+                    self.streaming_containers.add(container_key)
+                    logger.debug(f"Started stats stream for {container.name} on {container.host_name}")
+
+            # Stop streams for containers that no longer need stats
+            containers_to_stop = self.streaming_containers - containers_needing_stats
+
+            for container_key in containers_to_stop:
+                # Extract host_id and container_id from the key (format: host_id:container_id)
+                try:
+                    host_id, container_id = container_key.split(':', 1)
+                except ValueError:
+                    logger.error(f"Invalid container key format: {container_key}")
+                    self.streaming_containers.discard(container_key)
+                    continue
+
+                task = asyncio.create_task(stats_client.stop_container_stream(container_id, host_id))
                 task.add_done_callback(error_callback)
-                self.streaming_containers.add(container_key)
-                logger.debug(f"Started stats stream for {container.name} on {container.host_name}")
-
-        # Stop streams for containers that no longer need stats
-        containers_to_stop = self.streaming_containers - containers_needing_stats
-
-        for container_key in containers_to_stop:
-            # Extract host_id and container_id from the key (format: host_id:container_id)
-            try:
-                host_id, container_id = container_key.split(':', 1)
-            except ValueError:
-                logger.error(f"Invalid container key format: {container_key}")
                 self.streaming_containers.discard(container_key)
-                continue
-
-            task = asyncio.create_task(stats_client.stop_container_stream(container_id, host_id))
-            task.add_done_callback(error_callback)
-            self.streaming_containers.discard(container_key)
-            logger.debug(f"Stopped stats stream for container {container_id[:12]}")
+                logger.debug(f"Stopped stats stream for container {container_id[:12]}")
 
     async def stop_all_streams(self, stats_client, error_callback) -> None:
         """
@@ -140,19 +142,20 @@ class StatsManager:
             stats_client: Stats client instance
             error_callback: Callback for handling async task errors
         """
-        if self.streaming_containers:
-            logger.info(f"Stopping {len(self.streaming_containers)} stats streams")
-            for container_key in list(self.streaming_containers):
-                # Extract host_id and container_id from the key (format: host_id:container_id)
-                try:
-                    host_id, container_id = container_key.split(':', 1)
-                except ValueError:
-                    logger.error(f"Invalid container key format during cleanup: {container_key}")
-                    continue
+        async with self._streaming_lock:
+            if self.streaming_containers:
+                logger.info(f"Stopping {len(self.streaming_containers)} stats streams")
+                for container_key in list(self.streaming_containers):
+                    # Extract host_id and container_id from the key (format: host_id:container_id)
+                    try:
+                        host_id, container_id = container_key.split(':', 1)
+                    except ValueError:
+                        logger.error(f"Invalid container key format during cleanup: {container_key}")
+                        continue
 
-                task = asyncio.create_task(stats_client.stop_container_stream(container_id, host_id))
-                task.add_done_callback(error_callback)
-            self.streaming_containers.clear()
+                    task = asyncio.create_task(stats_client.stop_container_stream(container_id, host_id))
+                    task.add_done_callback(error_callback)
+                self.streaming_containers.clear()
 
     def should_broadcast_host_metrics(self, settings: GlobalSettings) -> bool:
         """Determine if host metrics should be included in broadcast"""

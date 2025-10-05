@@ -489,6 +489,12 @@ class DockerMonitor:
             for container_key in alert_cooldowns_to_remove:
                 del self.notification_service._last_alerts[container_key]
 
+            # Clean up reconnection tracking for this host
+            if host_id in self.reconnect_attempts:
+                del self.reconnect_attempts[host_id]
+            if host_id in self.last_reconnect_attempt:
+                del self.last_reconnect_attempt[host_id]
+
             # Clean up auto-restart tracking for this host
             async with self._restart_lock:
                 auto_restart_to_remove = [key for key in self.auto_restart_status.keys() if key.startswith(f"{host_id}:")]

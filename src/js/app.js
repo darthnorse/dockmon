@@ -1680,11 +1680,15 @@ async function init() {
                             .filter(entry => entry && entry.log && entry.log.trim())
                             .map(entry => entry.log);
 
-                        updateLogDisplay();
-                        // Auto-scroll to bottom only if no filter is active
-                        const filterText = document.getElementById('logSearchFilter')?.value || '';
-                        if (!filterText) {
-                            logsDiv.scrollTop = logsDiv.scrollHeight;
+                        if (accumulatedLogs.length === 0) {
+                            logsDiv.innerHTML = '<div style="color: var(--text-tertiary); padding: 20px; text-align: center;">No logs available</div>';
+                        } else {
+                            updateLogDisplay();
+                            // Auto-scroll to bottom only if no filter is active
+                            const filterText = document.getElementById('logSearchFilter')?.value || '';
+                            if (!filterText) {
+                                logsDiv.scrollTop = logsDiv.scrollHeight;
+                            }
                         }
                     } else {
                         logsDiv.innerHTML = '<div style="color: var(--text-tertiary);">No logs available</div>';
@@ -1788,8 +1792,10 @@ async function init() {
                 const highlightedLogs = filteredLogs.map(line => {
                     // HTML escape the line first
                     const escaped = line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-                    // Then add highlighting
-                    return escaped.replace(regex, '<mark style="background: #ffeb3b; color: #000; padding: 2px;">$1</mark>');
+                    // Then add highlighting using callback to prevent HTML re-injection
+                    return escaped.replace(regex, (match) => {
+                        return `<mark style="background: #ffeb3b; color: #000; padding: 2px;">${match}</mark>`;
+                    });
                 });
                 logsDiv.innerHTML = highlightedLogs.join('\n') || '<div style="color: var(--text-tertiary);">No matching logs found</div>';
             } else if (filterText && filteredLogs.length === 0) {

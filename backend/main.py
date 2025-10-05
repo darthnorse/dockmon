@@ -1596,7 +1596,19 @@ async def websocket_endpoint(websocket: WebSocket):
                 container_id = message.get("container_id")
                 host_id = message.get("host_id")
                 if container_id and host_id:
-                    monitor.stats_manager.add_modal_container(container_id, host_id)
+                    # Verify container exists and user has access to it
+                    try:
+                        containers = monitor.get_containers()
+                        container_exists = any(
+                            c.id == container_id and c.host_id == host_id
+                            for c in containers
+                        )
+                        if container_exists:
+                            monitor.stats_manager.add_modal_container(container_id, host_id)
+                        else:
+                            logger.warning(f"User attempted to access stats for non-existent container: {container_id[:12]} on host {host_id[:8]}")
+                    except Exception as e:
+                        logger.error(f"Error validating container access: {e}")
 
             elif message.get("type") == "modal_closed":
                 # Remove container from modal tracking

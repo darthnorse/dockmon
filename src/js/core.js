@@ -78,13 +78,15 @@
                 return;
             }
 
+            // Set flag immediately to prevent race condition
+            isConnecting = true;
+
             // Close existing connection if any
             if (ws && ws.readyState !== WebSocket.CLOSED) {
                 ws.close();
             }
 
             logger.debug('Connecting to WebSocket:', WS_URL);
-            isConnecting = true;
 
             ws = new WebSocket(WS_URL);
 
@@ -126,7 +128,7 @@
                 showToast(`✅ Successfully restarted ${restartNotificationBatch[0]}`);
             } else {
                 const containerNames = restartNotificationBatch.slice(0, 3).join(', ');
-                const remaining = restartNotificationBatch.length - 3;
+                const remaining = Math.max(0, restartNotificationBatch.length - 3);
                 const message = remaining > 0
                     ? `✅ Successfully restarted ${containerNames} and ${remaining} more`
                     : `✅ Successfully restarted ${containerNames}`;

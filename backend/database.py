@@ -248,7 +248,7 @@ class DatabaseManager:
 
                 # Migration: Add event_sort_order column to users table if it doesn't exist
                 inspector = session.connection().engine.dialect.get_columns(session.connection(), 'users')
-                column_names = [col['name'] for col in inspector]
+                column_names = [col.get('name', '') for col in inspector if 'name' in col]
 
                 if 'event_sort_order' not in column_names:
                     # Add the column using raw SQL

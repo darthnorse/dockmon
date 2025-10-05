@@ -1268,7 +1268,7 @@ async function init() {
                 const cpuData = containerStatsCharts.cpu.data;
                 cpuData.labels.push(now);
                 cpuData.datasets[0].data.push(container.cpu_percent || 0);
-                if (cpuData.labels.length > 60) {
+                while (cpuData.labels.length > 60) {
                     cpuData.labels.shift();
                     cpuData.datasets[0].data.shift();
                 }
@@ -1280,7 +1280,7 @@ async function init() {
                 const memData = containerStatsCharts.memory.data;
                 memData.labels.push(now);
                 memData.datasets[0].data.push(container.memory_usage || 0);
-                if (memData.labels.length > 60) {
+                while (memData.labels.length > 60) {
                     memData.labels.shift();
                     memData.datasets[0].data.shift();
                 }
@@ -1308,6 +1308,11 @@ async function init() {
                 // Calculate time delta
                 const timeDelta = (currentTime - containerStatsPrevValues.timestamp) / 1000; // seconds
 
+                // Protect against zero/negative time delta (clock changes, identical timestamps)
+                if (timeDelta < 0.1) {
+                    return; // Skip this update
+                }
+
                 // Only update if enough time has passed (minimum 1 second)
                 if (timeDelta >= 1) {
                     // Update Network chart
@@ -1319,7 +1324,7 @@ async function init() {
                         netData.labels.push(now);
                         netData.datasets[0].data.push(txRate);
                         netData.datasets[1].data.push(rxRate);
-                        if (netData.labels.length > 60) {
+                        while (netData.labels.length > 60) {
                             netData.labels.shift();
                             netData.datasets[0].data.shift();
                             netData.datasets[1].data.shift();
@@ -1336,7 +1341,7 @@ async function init() {
                         diskData.labels.push(now);
                         diskData.datasets[0].data.push(readRate);
                         diskData.datasets[1].data.push(writeRate);
-                        if (diskData.labels.length > 60) {
+                        while (diskData.labels.length > 60) {
                             diskData.labels.shift();
                             diskData.datasets[0].data.shift();
                             diskData.datasets[1].data.shift();
@@ -1517,6 +1522,11 @@ async function init() {
                 infoSparklineFirstUpdate = false;
             } else if (window.infoSparklinePrevValues) {
                 const timeDelta = (now - window.infoSparklinePrevValues.timestamp) / 1000; // seconds
+
+                // Protect against zero/negative time delta
+                if (timeDelta < 0.1) {
+                    return;
+                }
 
                 // Only update if enough time has passed (minimum 1 second)
                 if (timeDelta >= 1) {

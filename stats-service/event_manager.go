@@ -276,8 +276,14 @@ func (em *EventManager) streamEvents(stream *eventStream) {
 func (em *EventManager) processEvent(hostID string, event events.Message) {
 	// Extract container info
 	containerID := event.Actor.ID
-	containerName := event.Actor.Attributes["name"]
-	image := event.Actor.Attributes["image"]
+
+	// Safely extract attributes with nil check
+	containerName := ""
+	image := ""
+	if event.Actor.Attributes != nil {
+		containerName = event.Actor.Attributes["name"]
+		image = event.Actor.Attributes["image"]
+	}
 
 	// Create our event
 	dockerEvent := DockerEvent{

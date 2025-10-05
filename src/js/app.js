@@ -1308,7 +1308,18 @@ async function init() {
                 // Calculate time delta
                 const timeDelta = (currentTime - containerStatsPrevValues.timestamp) / 1000; // seconds
 
-                // Protect against zero/negative time delta (clock changes, identical timestamps)
+                // Handle clock adjustments (NTP, DST, manual changes)
+                if (timeDelta < 0 || timeDelta > 300) {
+                    // Clock moved backwards or jumped forward >5 minutes - reset and skip
+                    containerStatsPrevValues.networkTx = currentTx;
+                    containerStatsPrevValues.networkRx = currentRx;
+                    containerStatsPrevValues.diskRead = currentRead;
+                    containerStatsPrevValues.diskWrite = currentWrite;
+                    containerStatsPrevValues.timestamp = currentTime;
+                    return;
+                }
+
+                // Protect against very small time delta (identical timestamps)
                 if (timeDelta < 0.1) {
                     return; // Skip this update
                 }
@@ -1523,7 +1534,18 @@ async function init() {
             } else if (window.infoSparklinePrevValues) {
                 const timeDelta = (now - window.infoSparklinePrevValues.timestamp) / 1000; // seconds
 
-                // Protect against zero/negative time delta
+                // Handle clock adjustments (NTP, DST, manual changes)
+                if (timeDelta < 0 || timeDelta > 300) {
+                    // Clock moved backwards or jumped forward >5 minutes - reset and skip
+                    window.infoSparklinePrevValues.networkTx = currentTx;
+                    window.infoSparklinePrevValues.networkRx = currentRx;
+                    window.infoSparklinePrevValues.diskRead = currentRead;
+                    window.infoSparklinePrevValues.diskWrite = currentWrite;
+                    window.infoSparklinePrevValues.timestamp = now;
+                    return;
+                }
+
+                // Protect against very small time delta
                 if (timeDelta < 0.1) {
                     return;
                 }

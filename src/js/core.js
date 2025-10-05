@@ -259,6 +259,16 @@
         function attemptReconnect() {
             if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
                 showToast('❌ Could not reconnect to backend');
+
+                // Add persistent warning banner
+                let banner = document.getElementById('connection-lost-banner');
+                if (!banner) {
+                    banner = document.createElement('div');
+                    banner.id = 'connection-lost-banner';
+                    banner.style.cssText = 'position: fixed; top: 0; left: 0; right: 0; background: #dc2626; color: white; padding: 12px; text-align: center; z-index: 10000; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,0.3);';
+                    banner.innerHTML = '⚠️ Connection to backend lost. Data may be outdated. <button onclick="location.reload()" style="margin-left: 16px; padding: 6px 16px; background: white; color: #dc2626; border: none; border-radius: 4px; cursor: pointer; font-weight: 600;">Reload Page</button>';
+                    document.body.prepend(banner);
+                }
                 return;
             }
 

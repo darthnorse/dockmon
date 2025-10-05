@@ -82,6 +82,8 @@ func (a *Aggregator) aggregateHostStats(hostID string, containers []*ContainerSt
 		validContainers  int
 	)
 
+	const maxUint64 = ^uint64(0)
+
 	// Only count containers updated in the last 30 seconds
 	cutoff := time.Now().Add(-30 * time.Second)
 
@@ -93,8 +95,22 @@ func (a *Aggregator) aggregateHostStats(hostID string, containers []*ContainerSt
 		totalCPU += stats.CPUPercent
 		totalMemUsage += stats.MemoryUsage
 		totalMemLimit += stats.MemoryLimit
-		totalNetRx += stats.NetworkRx
-		totalNetTx += stats.NetworkTx
+
+		// Check for overflow before adding network bytes
+		if maxUint64-totalNetRx < stats.NetworkRx {
+			log.Printf("Warning: Network RX overflow prevented for host %s", truncateID(hostID, 8))
+			totalNetRx = maxUint64 // Cap at max instead of wrapping
+		} else {
+			totalNetRx += stats.NetworkRx
+		}
+
+		if maxUint64-totalNetTx < stats.NetworkTx {
+			log.Printf("Warning: Network TX overflow prevented for host %s", truncateID(hostID, 8))
+			totalNetTx = maxUint64
+		} else {
+			totalNetTx += stats.NetworkTx
+		}
+
 		validContainers++
 	}
 

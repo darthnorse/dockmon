@@ -209,6 +209,9 @@ class DatabaseManager:
             echo=False
         )
 
+        # Configure SQLite for production performance and safety
+        self._configure_sqlite_pragmas()
+
         # Create session factory
         self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
 
@@ -223,6 +226,40 @@ class DatabaseManager:
 
         # Initialize default settings if needed
         self._initialize_defaults()
+
+    def _configure_sqlite_pragmas(self):
+        """
+        Configure SQLite PRAGMA statements for production performance and safety.
+
+        SECURITY & PERFORMANCE:
+        - WAL mode: Write-Ahead Logging for concurrent reads during writes
+        - SYNCHRONOUS=NORMAL: Safe with WAL, faster than FULL
+        - TEMP_STORE=MEMORY: Keep temp tables in RAM (faster, no disk I/O)
+        - CACHE_SIZE=-64000: 64MB cache (negative = KB, default is 2MB)
+        """
+        try:
+            with self.engine.connect() as conn:
+                # Enable Write-Ahead Logging (concurrent reads + writes)
+                conn.execute(text("PRAGMA journal_mode=WAL"))
+
+                # Balanced safety/performance (safe with WAL mode)
+                conn.execute(text("PRAGMA synchronous=NORMAL"))
+
+                # Store temp tables/indexes in memory (faster)
+                conn.execute(text("PRAGMA temp_store=MEMORY"))
+
+                # 64MB cache size (improves query performance)
+                conn.execute(text("PRAGMA cache_size=-64000"))
+
+                # Foreign key constraints enforcement (data integrity)
+                conn.execute(text("PRAGMA foreign_keys=ON"))
+
+                conn.commit()
+
+            logger.info("SQLite PRAGMA configuration applied successfully (WAL mode, 64MB cache)")
+        except Exception as e:
+            logger.error(f"Failed to configure SQLite PRAGMAs: {e}", exc_info=True)
+            # Non-fatal: SQLite will work with defaults
 
     def _run_migrations(self):
         """Run database migrations for schema updates"""
@@ -906,8 +943,31 @@ class DatabaseManager:
         return hashed.decode('utf-8')
 
     def _verify_password(self, password: str, hashed: str) -> bool:
-        """Verify a password against a bcrypt hash"""
-        return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
+        """
+        Verify a password against a bcrypt or Argon2id hash.
+
+        BACKWARD COMPATIBILITY: Supports both bcrypt (v1) and Argon2id (v2) hashes.
+        """
+        # Try Argon2id first (v2 format: starts with $argon2id$)
+        if hashed.startswith('$argon2id$'):
+            try:
+                from argon2 import PasswordHasher
+                from argon2.exceptions import VerifyMismatchError
+                ph = PasswordHasher()
+                ph.verify(hashed, password)
+                return True
+            except VerifyMismatchError:
+                return False
+            except Exception as e:
+                logger.error(f"Argon2id verification failed: {e}")
+                return False
+
+        # Fall back to bcrypt (v1 format)
+        try:
+            return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
+        except Exception as e:
+            logger.error(f"bcrypt verification failed: {e}")
+            return False
 
     def get_or_create_default_user(self) -> None:
         """Create default admin user if no users exist"""

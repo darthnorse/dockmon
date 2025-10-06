@@ -123,8 +123,15 @@ logger.info(f"CORS configured for origins: {AppConfig.CORS_ORIGINS}")
 
 # ==================== API Routes ====================
 
-# Register authentication router
-app.include_router(auth_router)
+# Register authentication routers
+app.include_router(auth_router)  # v1 auth (existing)
+
+# Register v2 API routers
+from auth.v2_routes import router as auth_v2_router
+from api.v2.user import router as user_v2_router
+
+app.include_router(auth_v2_router)  # v2 cookie-based auth
+app.include_router(user_v2_router)  # v2 user preferences
 
 @app.get("/")
 async def root(authenticated: bool = Depends(verify_session_auth)):

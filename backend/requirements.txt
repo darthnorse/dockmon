@@ -9,6 +9,14 @@ aiohttp==3.11.11
 httpx==0.28.1
 python-dotenv==1.0.1
 sqlalchemy==2.0.36
+alembic==1.13.1
 requests==2.32.3
 bcrypt==4.2.1
+argon2-cffi==23.1.0
+itsdangerous==2.1.2
 aiosmtplib==3.0.2
+
+# Testing dependencies
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0

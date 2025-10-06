@@ -77,3 +77,4 @@ logs/
 *.bak
 .coverage
 htmlcov/
+.env.local

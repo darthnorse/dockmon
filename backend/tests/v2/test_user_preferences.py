@@ -351,3 +351,57 @@ class TestDatabaseIntegration:
             # Note: This test assumes foreign key is properly defined
             # In actual migration, CASCADE is defined
             # assert result is None
+
+
+class TestPreferencesDoSProtection:
+    """DOS protection tests for preferences API"""
+
+    def test_json_size_limit(self, test_client):
+        """DOS PROTECTION: Test preferences JSON size limit (100KB)"""
+        from sqlalchemy import text
+        from auth.routes import db
+
+        # Create a test user
+        with db.get_session() as session:
+            session.execute(text("""
+                INSERT INTO users (username, password_hash)
+                VALUES ('testuser', 'dummy_hash')
+            """))
+            session.commit()
+
+            # Get user ID
+            result = session.execute(
+                text("SELECT id FROM users WHERE username = 'testuser'")
+            ).fetchone()
+            user_id = result.id
+
+        # Create session for auth
+        from auth.cookie_sessions import cookie_session_manager
+        auth_token = cookie_session_manager.create_session(
+            user_id=user_id,
+            username="testuser",
+            client_ip="testclient"  # Match test client IP
+        )
+
+        try:
+            # Create a huge JSON payload (>100KB)
+            # Each group name is ~15 chars, 10000 groups = ~150KB
+            huge_collapsed_groups = ["group_name_" + str(i) for i in range(10000)]
+
+            response = test_client.patch(
+                "/api/v2/user/preferences",
+                json={"collapsed_groups": huge_collapsed_groups},
+                cookies={"session_id": auth_token}
+            )
+
+            # Should be rejected with 413 Payload Too Large
+            assert response.status_code == 413
+            assert "too large" in response.json()["detail"].lower()
+            assert "102400" in response.json()["detail"]  # Should mention byte limit
+
+        finally:
+            # Cleanup
+            cookie_session_manager.delete_session(auth_token)
+            with db.get_session() as session:
+                session.execute(text("DELETE FROM users WHERE username = 'testuser'"))
+                session.commit()

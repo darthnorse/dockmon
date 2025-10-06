@@ -228,6 +228,68 @@ class TestCookieSessionManager:
         # Cleanup thread should be stopped
         assert not session_manager._cleanup_thread.is_alive()
 
+    def test_session_count_limit(self):
+        """DOS PROTECTION: Test maximum session limit enforcement"""
+        # Create manager with small limit
+        manager = CookieSessionManager(session_timeout_hours=1, max_sessions=5)
+
+        try:
+            # Create 5 sessions (should succeed)
+            tokens = []
+            for i in range(5):
+                token = manager.create_session(
+                    user_id=i,
+                    username=f"user{i}",
+                    client_ip="192.168.1.100"
+                )
+                tokens.append(token)
+
+            # All 5 should be valid
+            assert manager.get_active_session_count() == 5
+
+            # 6th session should fail (at capacity)
+            with pytest.raises(Exception) as exc_info:
+                manager.create_session(
+                    user_id=999,
+                    username="overflow_user",
+                    client_ip="192.168.1.100"
+                )
+
+            assert "maximum capacity" in str(exc_info.value).lower()
+
+        finally:
+            manager.shutdown()
+
+    def test_session_limit_with_cleanup(self):
+        """DOS PROTECTION: Test session limit triggers cleanup"""
+        # Create manager with small limit and short timeout
+        manager = CookieSessionManager(session_timeout_hours=0.0001, max_sessions=3)  # ~0.36 seconds
+
+        try:
+            # Create 3 sessions
+            for i in range(3):
+                manager.create_session(
+                    user_id=i,
+                    username=f"user{i}",
+                    client_ip="192.168.1.100"
+                )
+
+            # Wait for sessions to expire
+            time.sleep(1)
+
+            # 4th session should succeed (triggers cleanup of expired sessions)
+            token = manager.create_session(
+                user_id=999,
+                username="new_user",
+                client_ip="192.168.1.100"
+            )
+
+            # Should have only 1 active session (old ones cleaned up)
+            assert manager.get_active_session_count() == 1
+
+        finally:
+            manager.shutdown()
+
 
 class TestSessionSecurity:
     """Additional security-focused tests"""

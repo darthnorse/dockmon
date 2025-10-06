@@ -17,14 +17,12 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 
 from auth.v2_routes import get_current_user
-from database import DatabaseManager
-from config.paths import DATABASE_PATH
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v2/user", tags=["user-v2"])
 
-# Use the same database instance as v1
-db = DatabaseManager(DATABASE_PATH)
+# Import shared database instance from v1 (single connection pool)
+from auth.routes import db
 
 
 class UserPreferences(BaseModel):
@@ -143,6 +141,17 @@ async def update_user_preferences(
         if updates.filter_defaults is not None:
             existing_defaults["filter_defaults"] = updates.filter_defaults
 
+        # Serialize and validate size
+        defaults_json_str = json.dumps(existing_defaults)
+
+        # DOS PROTECTION: Limit JSON size to 100KB
+        MAX_JSON_SIZE = 100 * 1024  # 100KB
+        if len(defaults_json_str) > MAX_JSON_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Preferences too large ({len(defaults_json_str)} bytes, max {MAX_JSON_SIZE} bytes)"
+            )
+
         # Upsert preferences
         # SECURITY: ON CONFLICT ensures atomic operation
         session.execute(
@@ -156,7 +165,7 @@ async def update_user_preferences(
             {
                 "user_id": user_id,
                 "theme": new_theme,
-                "defaults_json": json.dumps(existing_defaults)
+                "defaults_json": defaults_json_str
             }
         )
 

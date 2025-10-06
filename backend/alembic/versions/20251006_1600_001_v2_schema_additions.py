@@ -51,12 +51,12 @@ def upgrade() -> None:
     2. Role and display_name columns for future RBAC (v2.1)
     3. Event categorization columns (if not exist)
 
-    DEFENSIVE: Uses try-except to handle existing tables/columns gracefully.
+    DEFENSIVE: Checks if tables/columns exist before creating.
     """
 
     # Create user_prefs table (database-backed preferences)
     # SECURITY: user_id has CASCADE delete to prevent orphaned data
-    try:
+    if not _table_exists('user_prefs'):
         op.create_table(
             'user_prefs',
             sa.Column('user_id', sa.Integer, sa.ForeignKey('users.id', ondelete='CASCADE'), primary_key=True),
@@ -64,44 +64,28 @@ def upgrade() -> None:
             sa.Column('refresh_profile', sa.String, nullable=True, server_default='normal'),
             sa.Column('defaults_json', sa.Text, nullable=True)  # JSON: {groupBy, compactView, collapsedGroups, filterDefaults}
         )
-    except Exception:
-        pass  # Table already exists
 
     # Extend users table for future RBAC (v2.1)
     # NOTE: These columns are not used in v2.0, but prevent migration in v2.1
-    try:
+    if _table_exists('users'):
         with op.batch_alter_table('users', schema=None) as batch_op:
-            try:
+            if not _column_exists('users', 'role'):
                 batch_op.add_column(sa.Column('role', sa.String, nullable=True, server_default='owner'))
-            except Exception:
-                pass  # Column already exists
-            try:
+            if not _column_exists('users', 'display_name'):
                 batch_op.add_column(sa.Column('display_name', sa.String, nullable=True))
-            except Exception:
-                pass  # Column already exists
-    except Exception:
-        pass  # Table doesn't exist or other error
 
     # Extend event_logs for better filtering
     # NOTE: v1.1.2 already has 'category' column, so only add 'source'
-    try:
+    if _table_exists('event_logs'):
         with op.batch_alter_table('event_logs', schema=None) as batch_op:
-            try:
+            if not _column_exists('event_logs', 'source'):
                 batch_op.add_column(sa.Column('source', sa.String, nullable=True, server_default='docker'))
-            except Exception:
-                pass  # Column already exists
-    except Exception:
-        pass  # Table doesn't exist or other error
 
     # Create indexes on event_logs for faster queries
-    try:
+    if not _index_exists('idx_event_logs_category'):
         op.create_index('idx_event_logs_category', 'event_logs', ['category'])
-    except Exception:
-        pass  # Index already exists
-    try:
+    if not _index_exists('idx_event_logs_source'):
         op.create_index('idx_event_logs_source', 'event_logs', ['source'])
-    except Exception:
-        pass  # Index already exists
 
 
 def downgrade() -> None:

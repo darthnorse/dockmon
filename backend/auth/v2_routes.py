@@ -17,14 +17,13 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError, InvalidHashError
 
 from auth.cookie_sessions import cookie_session_manager
-from database import DatabaseManager
-from config.paths import DATABASE_PATH
+from security.rate_limiting import rate_limit_auth
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v2/auth", tags=["auth-v2"])
 
-# Use the same database instance as v1
-db = DatabaseManager(DATABASE_PATH)
+# Import shared database instance from v1 (single connection pool)
+from auth.routes import db
 
 # Argon2 password hasher (more secure than bcrypt)
 # SECURITY: Argon2id is resistant to GPU attacks
@@ -53,7 +52,8 @@ class LoginResponse(BaseModel):
 async def login_v2(
     credentials: LoginRequest,
     response: Response,
-    request: Request
+    request: Request,
+    rate_limit_check: bool = rate_limit_auth
 ):
     """
     Authenticate user and create session cookie.

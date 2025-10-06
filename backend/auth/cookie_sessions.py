@@ -18,15 +18,63 @@ MEMORY SAFETY:
 import logging
 import secrets
 import threading
+import os
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
 
 logger = logging.getLogger(__name__)
 
-# Secret key for signing cookies (should be from environment in production)
-# SECURITY: This should be loaded from env var in production
-SECRET_KEY = secrets.token_urlsafe(32)
+
+def _load_or_generate_secret() -> str:
+    """
+    Load existing session secret or generate new one.
+
+    SECURITY: Secret is persisted to survive server restarts.
+    Users stay logged in across deployments/restarts.
+
+    Returns:
+        Session secret key
+    """
+    secret_file = os.getenv('SESSION_SECRET_FILE', '/app/data/.session_secret')
+
+    if os.path.exists(secret_file):
+        # Load existing secret
+        try:
+            with open(secret_file, 'r') as f:
+                secret = f.read().strip()
+                if len(secret) >= 32:  # Validate minimum length
+                    logger.info("Loaded existing session secret from file")
+                    return secret
+                else:
+                    logger.warning(f"Invalid secret in {secret_file}, regenerating")
+        except Exception as e:
+            logger.error(f"Failed to load secret from {secret_file}: {e}")
+
+    # Generate new secret and save it
+    secret = secrets.token_urlsafe(32)
+    try:
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(secret_file), exist_ok=True)
+
+        # Write secret with secure permissions
+        with open(secret_file, 'w') as f:
+            f.write(secret)
+
+        # Set file permissions to 600 (owner read/write only)
+        os.chmod(secret_file, 0o600)
+
+        logger.info(f"Generated new session secret and saved to {secret_file}")
+    except Exception as e:
+        logger.error(f"Failed to save secret to {secret_file}: {e}")
+        logger.warning("Using ephemeral secret (sessions will be invalidated on restart)")
+
+    return secret
+
+
+# Secret key for signing cookies (persists across restarts)
+# SECURITY: Can be overridden with SESSION_SECRET_KEY env var
+SECRET_KEY = os.getenv('SESSION_SECRET_KEY') or _load_or_generate_secret()
 COOKIE_SIGNER = URLSafeTimedSerializer(SECRET_KEY, salt="dockmon-session")
 
 
@@ -38,15 +86,17 @@ class CookieSessionManager:
     and validates them server-side.
     """
 
-    def __init__(self, session_timeout_hours: int = 24):
+    def __init__(self, session_timeout_hours: int = 24, max_sessions: int = 10000):
         """
         Initialize session manager.
 
         Args:
             session_timeout_hours: Session expiry time (default 24 hours)
+            max_sessions: Maximum concurrent sessions (default 10,000)
         """
         self.sessions: Dict[str, dict] = {}
         self.session_timeout = timedelta(hours=session_timeout_hours)
+        self.max_sessions = max_sessions
         self._sessions_lock = threading.Lock()
         self._shutdown_event = threading.Event()
 
@@ -57,7 +107,7 @@ class CookieSessionManager:
             name="SessionCleanup"
         )
         self._cleanup_thread.start()
-        logger.info(f"Cookie session manager initialized (timeout: {session_timeout_hours}h)")
+        logger.info(f"Cookie session manager initialized (timeout: {session_timeout_hours}h, max: {max_sessions})")
 
     def _periodic_cleanup(self):
         """
@@ -85,12 +135,28 @@ class CookieSessionManager:
         Returns:
             Signed session token for cookie
 
+        Raises:
+            Exception: If max session limit reached after cleanup
+
         SECURITY: Session ID is cryptographically random (32 bytes)
+        DOS PROTECTION: Limits maximum concurrent sessions
         """
         session_id = secrets.token_urlsafe(32)
         now = datetime.utcnow()
 
         with self._sessions_lock:
+            # Check if at capacity
+            if len(self.sessions) >= self.max_sessions:
+                # Try cleanup first
+                expired = self._cleanup_expired_sessions_unsafe()
+                if expired > 0:
+                    logger.info(f"Session limit reached, cleaned {expired} expired sessions")
+
+                # Check again after cleanup
+                if len(self.sessions) >= self.max_sessions:
+                    logger.error(f"Session limit exceeded: {len(self.sessions)}/{self.max_sessions}")
+                    raise Exception("Server at maximum capacity - please try again later")
+
             self.sessions[session_id] = {
                 "user_id": user_id,
                 "username": username,
@@ -202,27 +268,39 @@ class CookieSessionManager:
 
         return False
 
+    def _cleanup_expired_sessions_unsafe(self) -> int:
+        """
+        Remove expired sessions (UNSAFE - must be called with lock held).
+
+        Returns:
+            Number of sessions deleted
+
+        MEMORY SAFETY: Prevents memory leak from abandoned sessions
+        WARNING: Caller must hold self._sessions_lock
+        """
+        now = datetime.utcnow()
+        expired = []
+
+        for session_id, data in self.sessions.items():
+            if now - data["created_at"] > self.session_timeout:
+                expired.append(session_id)
+
+        for session_id in expired:
+            del self.sessions[session_id]
+
+        return len(expired)
+
     def cleanup_expired_sessions(self) -> int:
         """
-        Remove all expired sessions.
+        Remove all expired sessions (thread-safe).
 
         Returns:
             Number of sessions deleted
 
         MEMORY SAFETY: Prevents memory leak from abandoned sessions
         """
-        now = datetime.utcnow()
-        expired = []
-
         with self._sessions_lock:
-            for session_id, data in self.sessions.items():
-                if now - data["created_at"] > self.session_timeout:
-                    expired.append(session_id)
-
-            for session_id in expired:
-                del self.sessions[session_id]
-
-        return len(expired)
+            return self._cleanup_expired_sessions_unsafe()
 
     def get_active_session_count(self) -> int:
         """Get number of active sessions."""

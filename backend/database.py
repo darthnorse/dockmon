@@ -209,6 +209,9 @@ class DatabaseManager:
             echo=False
         )
 
+        # Configure SQLite for production performance and safety
+        self._configure_sqlite_pragmas()
+
         # Create session factory
         self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
 
@@ -223,6 +226,40 @@ class DatabaseManager:
 
         # Initialize default settings if needed
         self._initialize_defaults()
+
+    def _configure_sqlite_pragmas(self):
+        """
+        Configure SQLite PRAGMA statements for production performance and safety.
+
+        SECURITY & PERFORMANCE:
+        - WAL mode: Write-Ahead Logging for concurrent reads during writes
+        - SYNCHRONOUS=NORMAL: Safe with WAL, faster than FULL
+        - TEMP_STORE=MEMORY: Keep temp tables in RAM (faster, no disk I/O)
+        - CACHE_SIZE=-64000: 64MB cache (negative = KB, default is 2MB)
+        """
+        try:
+            with self.engine.connect() as conn:
+                # Enable Write-Ahead Logging (concurrent reads + writes)
+                conn.execute(text("PRAGMA journal_mode=WAL"))
+
+                # Balanced safety/performance (safe with WAL mode)
+                conn.execute(text("PRAGMA synchronous=NORMAL"))
+
+                # Store temp tables/indexes in memory (faster)
+                conn.execute(text("PRAGMA temp_store=MEMORY"))
+
+                # 64MB cache size (improves query performance)
+                conn.execute(text("PRAGMA cache_size=-64000"))
+
+                # Foreign key constraints enforcement (data integrity)
+                conn.execute(text("PRAGMA foreign_keys=ON"))
+
+                conn.commit()
+
+            logger.info("SQLite PRAGMA configuration applied successfully (WAL mode, 64MB cache)")
+        except Exception as e:
+            logger.error(f"Failed to configure SQLite PRAGMAs: {e}", exc_info=True)
+            # Non-fatal: SQLite will work with defaults
 
     def _run_migrations(self):
         """Run database migrations for schema updates"""

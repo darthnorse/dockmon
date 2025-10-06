@@ -18,9 +18,13 @@ from pydantic import BaseModel, Field
 
 from auth.v2_routes import get_current_user
 from database import DatabaseManager
+from config.paths import DATABASE_PATH
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v2/user", tags=["user-v2"])
+
+# Use the same database instance as v1
+db = DatabaseManager(DATABASE_PATH)
 
 
 class UserPreferences(BaseModel):
@@ -47,8 +51,7 @@ class PreferencesUpdate(BaseModel):
 
 @router.get("/preferences", response_model=UserPreferences)
 async def get_user_preferences(
-    current_user: dict = Depends(get_current_user),
-    db: DatabaseManager = Depends()
+    current_user: dict = Depends(get_current_user)
 ):
     """
     Get user preferences (replaces localStorage).
@@ -92,8 +95,7 @@ async def get_user_preferences(
 @router.patch("/preferences")
 async def update_user_preferences(
     updates: PreferencesUpdate,
-    current_user: dict = Depends(get_current_user),
-    db: DatabaseManager = Depends()
+    current_user: dict = Depends(get_current_user)
 ):
     """
     Update user preferences (partial update supported).
@@ -167,8 +169,7 @@ async def update_user_preferences(
 
 @router.delete("/preferences")
 async def reset_user_preferences(
-    current_user: dict = Depends(get_current_user),
-    db: DatabaseManager = Depends()
+    current_user: dict = Depends(get_current_user)
 ):
     """
     Reset user preferences to defaults.

@@ -943,8 +943,31 @@ class DatabaseManager:
         return hashed.decode('utf-8')
 
     def _verify_password(self, password: str, hashed: str) -> bool:
-        """Verify a password against a bcrypt hash"""
-        return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
+        """
+        Verify a password against a bcrypt or Argon2id hash.
+
+        BACKWARD COMPATIBILITY: Supports both bcrypt (v1) and Argon2id (v2) hashes.
+        """
+        # Try Argon2id first (v2 format: starts with $argon2id$)
+        if hashed.startswith('$argon2id$'):
+            try:
+                from argon2 import PasswordHasher
+                from argon2.exceptions import VerifyMismatchError
+                ph = PasswordHasher()
+                ph.verify(hashed, password)
+                return True
+            except VerifyMismatchError:
+                return False
+            except Exception as e:
+                logger.error(f"Argon2id verification failed: {e}")
+                return False
+
+        # Fall back to bcrypt (v1 format)
+        try:
+            return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
+        except Exception as e:
+            logger.error(f"bcrypt verification failed: {e}")
+            return False
 
     def get_or_create_default_user(self) -> None:
         """Create default admin user if no users exist"""

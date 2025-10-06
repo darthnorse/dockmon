@@ -2,15 +2,16 @@
 
 **Date:** 2025-10-06
 **Branch:** feature/alembic-setup
-**Commit:** 59af5d3
+**Latest Commit:** e3e9263 (bcrypt compatibility + database path fix)
 **Test Status:** ✅ 49/49 tests passing
 **v1 Status:** ✅ Fully functional (no breaking changes)
+**v2 Status:** ✅ Fully functional (bcrypt compatibility working)
 
 ---
 
 ## Summary
 
-Phase 1 (Week 2: Backend Foundation) has been successfully completed and validated in Docker. All security and memory safety objectives have been met.
+Phase 1 (Week 2: Backend Foundation) has been successfully completed and validated in Docker. All security and memory safety objectives have been met, including backward compatibility with existing bcrypt password hashes.
 
 ---
 
@@ -172,6 +173,42 @@ docker exec dockmon bash -c "cd /app/backend && pytest tests/v2/ -v"
 - auth/v2_routes.py: 71%
 - api/v2/user.py: 39%
 
+### ✅ v2 API Endpoints
+```bash
+# Login with existing bcrypt hash
+curl -X POST https://localhost:8001/api/v2/auth/login \
+  -d '{"username":"admin","password":"test1234"}'
+# {"user":{"id":1,"username":"admin"},"message":"Login successful"}
+
+# Get current user
+curl https://localhost:8001/api/v2/auth/me -b cookies.txt
+# {"user":{"id":1,"username":"admin"}}
+
+# Get preferences
+curl https://localhost:8001/api/v2/user/preferences -b cookies.txt
+# {"theme":"dark","group_by":"env","compact_view":false}
+
+# Update preferences
+curl -X PATCH https://localhost:8001/api/v2/user/preferences \
+  -d '{"theme":"light"}' -b cookies.txt
+# {"status":"ok","message":"Preferences updated successfully"}
+```
+
+**Verified:**
+- ✅ bcrypt backward compatibility working
+- ✅ Automatic hash upgrade (bcrypt → Argon2id)
+- ✅ Cookie-based authentication
+- ✅ Preferences API working
+
+### ✅ Password Hash Upgrade
+```bash
+# Before v2 login
+Hash: $2b$12$... (bcrypt)
+
+# After v2 login
+Hash: $argon2id$v=19$m=65536... (Argon2id - automatically upgraded!)
+```
+
 ### ✅ Memory Safety
 ```bash
 docker stats dockmon --no-stream
@@ -202,24 +239,15 @@ docker stats dockmon --no-stream
 
 ## Known Issues & TODOs
 
-### ⚠️ High Priority
-1. **Password Hash Migration**
-   - v1 uses bcrypt, v2 expects Argon2id
-   - Current: v2 login fails for existing users
-   - **Solution:** Add backward compatibility in v2_routes.py:
-     ```python
-     try:
-         ph.verify(user.password_hash, password)
-     except Exception:
-         # Try bcrypt fallback
-         import bcrypt
-         if bcrypt.checkpw(password.encode(), user.password_hash.encode()):
-             # Upgrade to Argon2id
-             user.password_hash = ph.hash(password)
-             session.commit()
-     ```
+### ✅ Resolved
+1. **~~Password Hash Migration~~** ✅ FIXED (commit e3e9263)
+   - ✅ Added bcrypt backward compatibility
+   - ✅ Automatic hash upgrade on login (bcrypt → Argon2id)
+   - ✅ v2 login now works with existing users
+   - ✅ Database path fixed (now uses /app/data/dockmon.db)
+   - **Result:** Existing users can log in with v2 endpoints, and their password hash is automatically upgraded to Argon2id
 
-### ✅ Low Priority (Deferred to v2.1)
+### ✅ Deferred to v2.1
 2. **Multi-user RBAC UI**
    - Schema ready (users.role, users.display_name)
    - API endpoints exist

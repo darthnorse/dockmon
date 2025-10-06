@@ -321,13 +321,14 @@ class TestDatabaseIntegration:
             conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS users (
                     id INTEGER PRIMARY KEY,
-                    username TEXT
+                    username TEXT NOT NULL,
+                    password_hash TEXT NOT NULL
                 )
             """))
 
             # Create user
             conn.execute(
-                text("INSERT INTO users (id, username) VALUES (1, 'testuser')")
+                text("INSERT INTO users (id, username, password_hash) VALUES (1, 'testuser', 'dummy_hash')")
             )
 
             # Create preferences

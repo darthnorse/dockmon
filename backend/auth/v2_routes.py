@@ -150,23 +150,6 @@ async def logout_v2(
     return {"message": "Logout successful"}
 
 
-@router.get("/me")
-async def get_current_user_v2(
-    current_user: dict = Depends(lambda: get_current_user_dependency)
-):
-    """
-    Get current authenticated user.
-
-    Requires valid session cookie.
-    """
-    return {
-        "user": {
-            "id": current_user["user_id"],
-            "username": current_user["username"]
-        }
-    }
-
-
 # Dependency for protected routes
 async def get_current_user_dependency(
     request: Request,
@@ -208,3 +191,20 @@ async def get_current_user_dependency(
 
 # Export dependency for use in other routes
 get_current_user = get_current_user_dependency
+
+
+@router.get("/me")
+async def get_current_user_v2(
+    current_user: dict = Depends(get_current_user_dependency)
+):
+    """
+    Get current authenticated user.
+
+    Requires valid session cookie.
+    """
+    return {
+        "user": {
+            "id": current_user["user_id"],
+            "username": current_user["username"]
+        }
+    }

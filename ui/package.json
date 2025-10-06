@@ -9,6 +9,8 @@
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview",
     "test": "vitest",
+    "test:ui": "vitest --ui",
+    "test:coverage": "vitest run --coverage",
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
@@ -29,8 +31,10 @@
     "typescript": "^5.5.3",
     "vite": "^5.4.6",
     "vitest": "^2.1.1",
+    "@vitest/coverage-v8": "^2.1.1",
     "@testing-library/react": "^16.0.1",
     "@testing-library/jest-dom": "^6.5.0",
-    "@testing-library/user-event": "^14.5.2"
+    "@testing-library/user-event": "^14.5.2",
+    "jsdom": "^25.0.1"
   }
 }

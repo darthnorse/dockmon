@@ -77,6 +77,9 @@ class DockerHostConfig(BaseModel):
     tls_cert: Optional[str] = Field(None, max_length=10000)
     tls_key: Optional[str] = Field(None, max_length=10000)
     tls_ca: Optional[str] = Field(None, max_length=10000)
+    # Phase 3d - Host organization
+    tags: Optional[list[str]] = Field(None, max_items=50)  # Max 50 tags per host
+    description: Optional[str] = Field(None, max_length=1000)  # Optional description
 
     @validator('name')
     def validate_name(cls, v):
@@ -204,6 +207,9 @@ class DockerHost(BaseModel):
     last_checked: datetime = Field(default_factory=datetime.now)
     container_count: int = 0
     error: Optional[str] = None
+    # Phase 3d - Host organization
+    tags: Optional[list[str]] = None  # User-defined tags for filtering/grouping
+    description: Optional[str] = None  # Optional notes about the host
 
 
 class Container(BaseModel):

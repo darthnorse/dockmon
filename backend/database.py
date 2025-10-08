@@ -52,6 +52,9 @@ class DockerHostDB(Base):
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    # Phase 3d - Host organization
+    tags = Column(Text, nullable=True)  # JSON array of tags
+    description = Column(Text, nullable=True)  # Optional host description
 
     # Relationships
     auto_restart_configs = relationship("AutoRestartConfig", back_populates="host", cascade="all, delete-orphan")

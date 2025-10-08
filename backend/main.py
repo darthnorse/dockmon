@@ -2,6 +2,14 @@
 """
 DockMon Backend - Docker Container Monitoring System
 Supports multiple Docker hosts with auto-restart and alerts
+
+IMPORTANT: Container Identification
+-----------------------------------
+All container-related API endpoints MUST use both host_id AND container_id
+to uniquely identify containers. This is because container IDs can collide
+across different Docker hosts (e.g., cloned VMs, LXC containers).
+
+URL Pattern: /api/hosts/{host_id}/containers/{container_id}/...
 """
 
 import asyncio
@@ -36,7 +44,8 @@ from models.request_models import (
 from security.audit import security_audit
 from security.rate_limiting import rate_limiter, rate_limit_auth, rate_limit_hosts, rate_limit_containers, rate_limit_notifications, rate_limit_default
 from auth.routes import router as auth_router, verify_frontend_session
-verify_session_auth = verify_frontend_session
+from auth.v2_routes import get_current_user  # v2 cookie-based auth
+verify_session_auth = verify_frontend_session  # Keep v1 for backward compat
 from websocket.connection import ConnectionManager, DateTimeEncoder
 from websocket.rate_limiter import ws_rate_limiter
 from docker_monitor.monitor import DockerMonitor
@@ -134,7 +143,7 @@ app.include_router(auth_v2_router)  # v2 cookie-based auth
 app.include_router(user_v2_router)  # v2 user preferences
 
 @app.get("/")
-async def root(authenticated: bool = Depends(verify_session_auth)):
+async def root(current_user: dict = Depends(get_current_user)):
     """Backend API root - frontend is served separately"""
     return {"message": "DockMon Backend API", "version": "1.0.0", "docs": "/docs"}
 
@@ -187,12 +196,12 @@ async def verify_session_auth(request: Request):
 
 
 @app.get("/api/hosts")
-async def get_hosts(authenticated: bool = Depends(verify_session_auth)):
+async def get_hosts(current_user: dict = Depends(get_current_user)):
     """Get all configured Docker hosts"""
     return list(monitor.hosts.values())
 
 @app.post("/api/hosts")
-async def add_host(config: DockerHostConfig, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_hosts, request: Request = None):
+async def add_host(config: DockerHostConfig, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_hosts, request: Request = None):
     """Add a new Docker host"""
     try:
         host = monitor.add_host(config)
@@ -227,13 +236,13 @@ async def add_host(config: DockerHostConfig, authenticated: bool = Depends(verif
         raise
 
 @app.put("/api/hosts/{host_id}")
-async def update_host(host_id: str, config: DockerHostConfig, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_hosts):
+async def update_host(host_id: str, config: DockerHostConfig, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_hosts):
     """Update an existing Docker host"""
     host = monitor.update_host(host_id, config)
     return host
 
 @app.delete("/api/hosts/{host_id}")
-async def remove_host(host_id: str, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_hosts):
+async def remove_host(host_id: str, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_hosts):
     """Remove a Docker host"""
     await monitor.remove_host(host_id)
 
@@ -246,7 +255,7 @@ async def remove_host(host_id: str, authenticated: bool = Depends(verify_session
     return {"status": "success", "message": f"Host {host_id} removed"}
 
 @app.get("/api/hosts/{host_id}/metrics")
-async def get_host_metrics(host_id: str, authenticated: bool = Depends(verify_session_auth)):
+async def get_host_metrics(host_id: str, current_user: dict = Depends(get_current_user)):
     """Get aggregated metrics for a Docker host (CPU, RAM, Network)"""
     try:
         host = monitor.hosts.get(host_id)
@@ -322,24 +331,24 @@ async def get_host_metrics(host_id: str, authenticated: bool = Depends(verify_se
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/containers")
-async def get_containers(host_id: Optional[str] = None, authenticated: bool = Depends(verify_session_auth)):
+async def get_containers(host_id: Optional[str] = None, current_user: dict = Depends(get_current_user)):
     """Get all containers"""
     return await monitor.get_containers(host_id)
 
 @app.post("/api/hosts/{host_id}/containers/{container_id}/restart")
-async def restart_container(host_id: str, container_id: str, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_containers):
+async def restart_container(host_id: str, container_id: str, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
     """Restart a container"""
     success = monitor.restart_container(host_id, container_id)
     return {"status": "success" if success else "failed"}
 
 @app.post("/api/hosts/{host_id}/containers/{container_id}/stop")
-async def stop_container(host_id: str, container_id: str, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_containers):
+async def stop_container(host_id: str, container_id: str, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
     """Stop a container"""
     success = monitor.stop_container(host_id, container_id)
     return {"status": "success" if success else "failed"}
 
 @app.post("/api/hosts/{host_id}/containers/{container_id}/start")
-async def start_container(host_id: str, container_id: str, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_containers):
+async def start_container(host_id: str, container_id: str, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
     """Start a container"""
     success = monitor.start_container(host_id, container_id)
     return {"status": "success" if success else "failed"}
@@ -350,7 +359,7 @@ async def get_container_logs(
     container_id: str,
     tail: int = 100,
     since: Optional[str] = None,  # ISO timestamp for getting logs since a specific time
-    authenticated: bool = Depends(verify_session_auth)
+    current_user: dict = Depends(get_current_user)
     # No rate limiting - authenticated users can poll logs freely
 ):
     """Get container logs - Portainer-style polling approach"""
@@ -471,19 +480,19 @@ async def get_container_logs(
 # This is more reliable for remote Docker hosts
 
 
-@app.post("/api/containers/{container_id}/auto-restart")
-async def toggle_auto_restart(container_id: str, request: AutoRestartRequest, authenticated: bool = Depends(verify_session_auth)):
+@app.post("/api/hosts/{host_id}/containers/{container_id}/auto-restart")
+async def toggle_auto_restart(host_id: str, container_id: str, request: AutoRestartRequest, current_user: dict = Depends(get_current_user)):
     """Toggle auto-restart for a container"""
-    monitor.toggle_auto_restart(request.host_id, container_id, request.container_name, request.enabled)
-    return {"container_id": container_id, "auto_restart": request.enabled}
+    monitor.toggle_auto_restart(host_id, container_id, request.container_name, request.enabled)
+    return {"host_id": host_id, "container_id": container_id, "auto_restart": request.enabled}
 
 @app.get("/api/rate-limit/stats")
-async def get_rate_limit_stats(authenticated: bool = Depends(verify_session_auth)):
+async def get_rate_limit_stats(current_user: dict = Depends(get_current_user)):
     """Get rate limiter statistics - admin only"""
     return rate_limiter.get_stats()
 
 @app.get("/api/security/audit")
-async def get_security_audit_stats(authenticated: bool = Depends(verify_session_auth), request: Request = None):
+async def get_security_audit_stats(current_user: dict = Depends(get_current_user), request: Request = None):
     """Get security audit statistics - admin only"""
     if request:
         security_audit.log_privileged_action(
@@ -496,7 +505,7 @@ async def get_security_audit_stats(authenticated: bool = Depends(verify_session_
     return security_audit.get_security_stats()
 
 @app.get("/api/settings")
-async def get_settings(authenticated: bool = Depends(verify_session_auth)):
+async def get_settings(current_user: dict = Depends(get_current_user)):
     """Get global settings"""
     settings = monitor.db.get_settings()
     return {
@@ -515,7 +524,7 @@ async def get_settings(authenticated: bool = Depends(verify_session_auth)):
     }
 
 @app.post("/api/settings")
-async def update_settings(settings: GlobalSettings, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_default):
+async def update_settings(settings: GlobalSettings, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_default):
     """Update global settings"""
     # Check if stats settings changed
     old_show_host_stats = monitor.settings.show_host_stats
@@ -543,7 +552,7 @@ async def update_settings(settings: GlobalSettings, authenticated: bool = Depend
     return settings
 
 @app.get("/api/alerts")
-async def get_alert_rules(authenticated: bool = Depends(verify_session_auth)):
+async def get_alert_rules(current_user: dict = Depends(get_current_user)):
     """Get all alert rules"""
     rules = monitor.db.get_alert_rules(enabled_only=False)
     logger.info(f"Retrieved {len(rules)} alert rules from database")
@@ -570,7 +579,7 @@ async def get_alert_rules(authenticated: bool = Depends(verify_session_auth)):
 
 
 @app.post("/api/alerts")
-async def create_alert_rule(rule: AlertRuleCreate, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_default):
+async def create_alert_rule(rule: AlertRuleCreate, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_default):
     """Create a new alert rule"""
     try:
         # Validate cooldown_minutes
@@ -627,7 +636,7 @@ async def create_alert_rule(rule: AlertRuleCreate, authenticated: bool = Depends
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.put("/api/alerts/{rule_id}")
-async def update_alert_rule(rule_id: str, updates: AlertRuleUpdate, authenticated: bool = Depends(verify_session_auth)):
+async def update_alert_rule(rule_id: str, updates: AlertRuleUpdate, current_user: dict = Depends(get_current_user)):
     """Update an alert rule"""
     try:
         # Validate cooldown_minutes if provided
@@ -693,7 +702,7 @@ async def update_alert_rule(rule_id: str, updates: AlertRuleUpdate, authenticate
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.delete("/api/alerts/{rule_id}")
-async def delete_alert_rule(rule_id: str, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_default):
+async def delete_alert_rule(rule_id: str, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_default):
     """Delete an alert rule"""
     try:
         # Get rule info before deleting for logging
@@ -722,7 +731,7 @@ async def delete_alert_rule(rule_id: str, authenticated: bool = Depends(verify_s
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/api/alerts/orphaned")
-async def get_orphaned_alerts(authenticated: bool = Depends(verify_session_auth)):
+async def get_orphaned_alerts(current_user: dict = Depends(get_current_user)):
     """Get alert rules that reference non-existent containers"""
     try:
         orphaned = await monitor.check_orphaned_alerts()
@@ -737,7 +746,7 @@ async def get_orphaned_alerts(authenticated: bool = Depends(verify_session_auth)
 # ==================== Blackout Window Routes ====================
 
 @app.get("/api/blackout/status")
-async def get_blackout_status(authenticated: bool = Depends(verify_session_auth)):
+async def get_blackout_status(current_user: dict = Depends(get_current_user)):
     """Get current blackout window status"""
     try:
         is_blackout, window_name = monitor.notification_service.blackout_manager.is_in_blackout_window()
@@ -753,7 +762,7 @@ async def get_blackout_status(authenticated: bool = Depends(verify_session_auth)
 
 
 @app.get("/api/notifications/template-variables")
-async def get_template_variables(authenticated: bool = Depends(verify_session_auth)):
+async def get_template_variables(current_user: dict = Depends(get_current_user)):
     """Get available template variables for notification messages"""
     return {
         "variables": [
@@ -796,7 +805,7 @@ Triggered by: {RULE_NAME}""",
     }
 
 @app.get("/api/notifications/channels")
-async def get_notification_channels(authenticated: bool = Depends(verify_session_auth)):
+async def get_notification_channels(current_user: dict = Depends(get_current_user)):
     """Get all notification channels"""
     channels = monitor.db.get_notification_channels(enabled_only=False)
     return [{
@@ -810,7 +819,7 @@ async def get_notification_channels(authenticated: bool = Depends(verify_session
     } for ch in channels]
 
 @app.post("/api/notifications/channels")
-async def create_notification_channel(channel: NotificationChannelCreate, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_notifications):
+async def create_notification_channel(channel: NotificationChannelCreate, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
     """Create a new notification channel"""
     try:
         db_channel = monitor.db.add_notification_channel({
@@ -841,7 +850,7 @@ async def create_notification_channel(channel: NotificationChannelCreate, authen
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.put("/api/notifications/channels/{channel_id}")
-async def update_notification_channel(channel_id: int, updates: NotificationChannelUpdate, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_notifications):
+async def update_notification_channel(channel_id: int, updates: NotificationChannelUpdate, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
     """Update a notification channel"""
     try:
         update_data = {k: v for k, v in updates.dict().items() if v is not None}
@@ -866,7 +875,7 @@ async def update_notification_channel(channel_id: int, updates: NotificationChan
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/api/notifications/channels/{channel_id}/dependent-alerts")
-async def get_dependent_alerts(channel_id: int, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_notifications):
+async def get_dependent_alerts(channel_id: int, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
     """Get alerts that would be orphaned if this channel is deleted"""
     try:
         dependent_alerts = monitor.db.get_alerts_dependent_on_channel(channel_id)
@@ -876,7 +885,7 @@ async def get_dependent_alerts(channel_id: int, authenticated: bool = Depends(ve
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.delete("/api/notifications/channels/{channel_id}")
-async def delete_notification_channel(channel_id: int, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_notifications):
+async def delete_notification_channel(channel_id: int, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
     """Delete a notification channel and cascade delete alerts that would become orphaned"""
     try:
         # Find alerts that would be orphaned (only have this channel)
@@ -935,7 +944,7 @@ async def delete_notification_channel(channel_id: int, authenticated: bool = Dep
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/api/notifications/channels/{channel_id}/test")
-async def test_notification_channel(channel_id: int, authenticated: bool = Depends(verify_session_auth), rate_limit_check: bool = rate_limit_notifications):
+async def test_notification_channel(channel_id: int, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
     """Test a notification channel"""
     try:
         if not hasattr(monitor, 'notification_service'):
@@ -966,7 +975,7 @@ async def get_events(
     limit: int = 100,
     offset: int = 0,
     hours: Optional[int] = None,
-    authenticated: bool = Depends(verify_session_auth),
+    current_user: dict = Depends(get_current_user),
     rate_limit_check: bool = rate_limit_default
 ):
     """
@@ -1066,7 +1075,7 @@ async def get_events(
 @app.get("/api/events/{event_id}")
 async def get_event_by_id(
     event_id: int,
-    authenticated: bool = Depends(verify_session_auth),
+    current_user: dict = Depends(get_current_user),
     rate_limit_check: bool = rate_limit_default
 ):
     """Get a specific event by ID"""
@@ -1103,7 +1112,7 @@ async def get_event_by_id(
 @app.get("/api/events/correlation/{correlation_id}")
 async def get_events_by_correlation(
     correlation_id: str,
-    authenticated: bool = Depends(verify_session_auth),
+    current_user: dict = Depends(get_current_user),
     rate_limit_check: bool = rate_limit_default
 ):
     """Get all events with the same correlation ID (related events)"""
@@ -1140,7 +1149,7 @@ async def get_events_by_correlation(
 # ==================== User Dashboard Routes ====================
 
 @app.get("/api/user/dashboard-layout")
-async def get_dashboard_layout(request: Request, authenticated: bool = Depends(verify_session_auth)):
+async def get_dashboard_layout(request: Request, current_user: dict = Depends(get_current_user)):
     """Get dashboard layout for current user"""
     from auth.routes import _get_session_from_cookie
     from auth.session_manager import session_manager
@@ -1152,7 +1161,7 @@ async def get_dashboard_layout(request: Request, authenticated: bool = Depends(v
     return {"layout": layout}
 
 @app.post("/api/user/dashboard-layout")
-async def save_dashboard_layout(request: Request, authenticated: bool = Depends(verify_session_auth)):
+async def save_dashboard_layout(request: Request, current_user: dict = Depends(get_current_user)):
     """Save dashboard layout for current user"""
     from auth.routes import _get_session_from_cookie
     from auth.session_manager import session_manager
@@ -1204,7 +1213,7 @@ async def save_dashboard_layout(request: Request, authenticated: bool = Depends(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/user/event-sort-order")
-async def get_event_sort_order(request: Request, authenticated: bool = Depends(verify_session_auth)):
+async def get_event_sort_order(request: Request, current_user: dict = Depends(get_current_user)):
     """Get event sort order preference for current user"""
     from auth.routes import _get_session_from_cookie
     from auth.session_manager import session_manager
@@ -1216,7 +1225,7 @@ async def get_event_sort_order(request: Request, authenticated: bool = Depends(v
     return {"sort_order": sort_order}
 
 @app.post("/api/user/event-sort-order")
-async def save_event_sort_order(request: Request, authenticated: bool = Depends(verify_session_auth)):
+async def save_event_sort_order(request: Request, current_user: dict = Depends(get_current_user)):
     """Save event sort order preference for current user"""
     from auth.routes import _get_session_from_cookie
     from auth.session_manager import session_manager
@@ -1243,7 +1252,7 @@ async def save_event_sort_order(request: Request, authenticated: bool = Depends(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/user/container-sort-order")
-async def get_container_sort_order(request: Request, authenticated: bool = Depends(verify_session_auth)):
+async def get_container_sort_order(request: Request, current_user: dict = Depends(get_current_user)):
     """Get container sort order preference for current user"""
     from auth.routes import _get_session_from_cookie
     from auth.session_manager import session_manager
@@ -1255,7 +1264,7 @@ async def get_container_sort_order(request: Request, authenticated: bool = Depen
     return {"sort_order": sort_order}
 
 @app.post("/api/user/container-sort-order")
-async def save_container_sort_order(request: Request, authenticated: bool = Depends(verify_session_auth)):
+async def save_container_sort_order(request: Request, current_user: dict = Depends(get_current_user)):
     """Save container sort order preference for current user"""
     from auth.routes import _get_session_from_cookie
     from auth.session_manager import session_manager
@@ -1283,7 +1292,7 @@ async def save_container_sort_order(request: Request, authenticated: bool = Depe
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/user/modal-preferences")
-async def get_modal_preferences(request: Request, authenticated: bool = Depends(verify_session_auth)):
+async def get_modal_preferences(request: Request, current_user: dict = Depends(get_current_user)):
     """Get modal preferences for current user"""
     from auth.routes import _get_session_from_cookie
     from auth.session_manager import session_manager
@@ -1295,7 +1304,7 @@ async def get_modal_preferences(request: Request, authenticated: bool = Depends(
     return {"preferences": preferences}
 
 @app.post("/api/user/modal-preferences")
-async def save_modal_preferences(request: Request, authenticated: bool = Depends(verify_session_auth)):
+async def save_modal_preferences(request: Request, current_user: dict = Depends(get_current_user)):
     """Save modal preferences for current user"""
     from auth.routes import _get_session_from_cookie
     from auth.session_manager import session_manager
@@ -1325,7 +1334,7 @@ async def save_modal_preferences(request: Request, authenticated: bool = Depends
 # Note: Main /api/events endpoint is defined earlier with full feature set
 
 @app.get("/api/events/{event_id}")
-async def get_event(event_id: int, authenticated: bool = Depends(verify_session_auth)):
+async def get_event(event_id: int, current_user: dict = Depends(get_current_user)):
     """Get a specific event by ID"""
     try:
         event = monitor.db.get_event_by_id(event_id)
@@ -1358,7 +1367,7 @@ async def get_event(event_id: int, authenticated: bool = Depends(verify_session_
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/events/correlation/{correlation_id}")
-async def get_events_by_correlation(correlation_id: str, authenticated: bool = Depends(verify_session_auth)):
+async def get_events_by_correlation(correlation_id: str, current_user: dict = Depends(get_current_user)):
     """Get all events with the same correlation ID"""
     try:
         events = monitor.db.get_events_by_correlation(correlation_id)
@@ -1392,7 +1401,7 @@ async def get_events_by_correlation(correlation_id: str, authenticated: bool = D
 @app.get("/api/events/statistics")
 async def get_event_statistics(start_date: Optional[str] = None,
                              end_date: Optional[str] = None,
-                             authenticated: bool = Depends(verify_session_auth)):
+                             current_user: dict = Depends(get_current_user)):
     """Get event statistics for dashboard"""
     try:
         # Parse dates
@@ -1423,17 +1432,19 @@ async def get_event_statistics(start_date: Optional[str] = None,
         logger.error(f"Failed to get event statistics: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/events/container/{container_id}")
-async def get_container_events(container_id: str, limit: int = 50, authenticated: bool = Depends(verify_session_auth)):
+@app.get("/api/hosts/{host_id}/events/container/{container_id}")
+async def get_container_events(host_id: str, container_id: str, limit: int = 50, current_user: dict = Depends(get_current_user)):
     """Get events for a specific container"""
     try:
         events, total_count = monitor.db.get_events(
+            host_id=host_id,
             container_id=container_id,
             limit=limit,
             offset=0
         )
 
         return {
+            "host_id": host_id,
             "container_id": container_id,
             "events": [{
                 "id": event.id,
@@ -1461,7 +1472,7 @@ async def get_container_events(container_id: str, limit: int = 50, authenticated
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/events/host/{host_id}")
-async def get_host_events(host_id: str, limit: int = 50, authenticated: bool = Depends(verify_session_auth)):
+async def get_host_events(host_id: str, limit: int = 50, current_user: dict = Depends(get_current_user)):
     """Get events for a specific host"""
     try:
         events, total_count = monitor.db.get_events(
@@ -1498,7 +1509,7 @@ async def get_host_events(host_id: str, limit: int = 50, authenticated: bool = D
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/events/cleanup")
-async def cleanup_old_events(days: int = 30, authenticated: bool = Depends(verify_session_auth)):
+async def cleanup_old_events(days: int = 30, current_user: dict = Depends(get_current_user)):
     """Clean up old events - DANGEROUS: Can delete audit logs"""
     try:
         if days < 1:
@@ -1525,41 +1536,61 @@ async def cleanup_old_events(days: int = 30, authenticated: bool = Depends(verif
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket endpoint for real-time updates"""
+@app.websocket("/ws/")
+async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = Cookie(None)):
+    """WebSocket endpoint for real-time updates with authentication"""
     # Generate a unique connection ID for rate limiting
     connection_id = f"ws_{id(websocket)}_{time.time()}"
 
-    await monitor.manager.connect(websocket)
-    await monitor.realtime.subscribe_to_events(websocket)
+    # Authenticate before accepting connection
+    if not session_id:
+        logger.warning("WebSocket connection attempted without session cookie")
+        await websocket.close(code=1008, reason="Authentication required")
+        return
 
-    # Send initial state
-    settings_dict = {
-        "max_retries": monitor.settings.max_retries,
-        "retry_delay": monitor.settings.retry_delay,
-        "default_auto_restart": monitor.settings.default_auto_restart,
-        "polling_interval": monitor.settings.polling_interval,
-        "connection_timeout": monitor.settings.connection_timeout,
-        "log_retention_days": monitor.settings.log_retention_days,
-        "enable_notifications": monitor.settings.enable_notifications,
-        "alert_template": getattr(monitor.settings, 'alert_template', None),
-        "blackout_windows": getattr(monitor.settings, 'blackout_windows', None),
-        "timezone_offset": getattr(monitor.settings, 'timezone_offset', 0),
-        "show_host_stats": getattr(monitor.settings, 'show_host_stats', True),
-        "show_container_stats": getattr(monitor.settings, 'show_container_stats', True)
-    }
+    # Validate session using v2 auth
+    from auth.cookie_sessions import cookie_session_manager
+    client_ip = websocket.client.host if websocket.client else "unknown"
+    session_data = cookie_session_manager.validate_session(session_id, client_ip)
 
-    initial_state = {
-        "type": "initial_state",
-        "data": {
-            "hosts": [h.dict() for h in monitor.hosts.values()],
-            "containers": [c.dict() for c in await monitor.get_containers()],
-            "settings": settings_dict
-        }
-    }
-    await websocket.send_text(json.dumps(initial_state, cls=DateTimeEncoder))
+    if not session_data:
+        logger.warning(f"WebSocket connection with invalid session from {client_ip}")
+        await websocket.close(code=1008, reason="Invalid or expired session")
+        return
+
+    logger.info(f"WebSocket authenticated for user: {session_data.get('username')}")
 
     try:
+        # Accept connection and subscribe to events
+        await monitor.manager.connect(websocket)
+        await monitor.realtime.subscribe_to_events(websocket)
+
+        # Send initial state
+        settings_dict = {
+            "max_retries": monitor.settings.max_retries,
+            "retry_delay": monitor.settings.retry_delay,
+            "default_auto_restart": monitor.settings.default_auto_restart,
+            "polling_interval": monitor.settings.polling_interval,
+            "connection_timeout": monitor.settings.connection_timeout,
+            "log_retention_days": monitor.settings.log_retention_days,
+            "enable_notifications": monitor.settings.enable_notifications,
+            "alert_template": getattr(monitor.settings, 'alert_template', None),
+            "blackout_windows": getattr(monitor.settings, 'blackout_windows', None),
+            "timezone_offset": getattr(monitor.settings, 'timezone_offset', 0),
+            "show_host_stats": getattr(monitor.settings, 'show_host_stats', True),
+            "show_container_stats": getattr(monitor.settings, 'show_container_stats', True)
+        }
+
+        initial_state = {
+            "type": "initial_state",
+            "data": {
+                "hosts": [h.dict() for h in monitor.hosts.values()],
+                "containers": [c.dict() for c in await monitor.get_containers()],
+                "settings": settings_dict
+            }
+        }
+        await websocket.send_text(json.dumps(initial_state, cls=DateTimeEncoder))
+
         while True:
             # Keep connection alive and handle incoming messages
             message = await websocket.receive_json()
@@ -1628,6 +1659,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.send_text(json.dumps({"type": "pong"}, cls=DateTimeEncoder))
 
     except WebSocketDisconnect:
+        logger.info(f"WebSocket disconnected: {connection_id}")
+    except Exception as e:
+        logger.error(f"WebSocket error for {connection_id}: {e}", exc_info=True)
+    finally:
+        # Always cleanup, regardless of how we exited
         await monitor.manager.disconnect(websocket)
         await monitor.realtime.unsubscribe_from_events(websocket)
         # Unsubscribe from all stats
@@ -1637,3 +1673,4 @@ async def websocket_endpoint(websocket: WebSocket):
         monitor.stats_manager.clear_modal_containers()
         # Clean up rate limiter tracking
         ws_rate_limiter.cleanup_connection(connection_id)
+        logger.debug(f"WebSocket cleanup completed for {connection_id}")

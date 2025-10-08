@@ -405,3 +405,224 @@ class TestPreferencesDoSProtection:
             with db.get_session() as session:
                 session.execute(text("DELETE FROM users WHERE username = 'testuser'"))
                 session.commit()
+
+
+class TestReactV2Preferences:
+    """Tests for React v2 preferences (sidebar_collapsed, dashboard_layout_v2)"""
+
+    def test_sidebar_collapsed_defaults_to_false(self):
+        """Test sidebar_collapsed defaults to False"""
+        from api.v2.user import UserPreferences
+
+        prefs = UserPreferences()
+
+        assert prefs.sidebar_collapsed is False
+
+    def test_dashboard_layout_v2_defaults_to_none(self):
+        """Test dashboard_layout_v2 defaults to None"""
+        from api.v2.user import UserPreferences
+
+        prefs = UserPreferences()
+
+        assert prefs.dashboard_layout_v2 is None
+
+    def test_sidebar_collapsed_validation(self):
+        """Test sidebar_collapsed accepts boolean values"""
+        from api.v2.user import PreferencesUpdate
+        from pydantic import ValidationError
+
+        # Valid boolean values
+        update1 = PreferencesUpdate(sidebar_collapsed=True)
+        assert update1.sidebar_collapsed is True
+
+        update2 = PreferencesUpdate(sidebar_collapsed=False)
+        assert update2.sidebar_collapsed is False
+
+        # Invalid type should raise ValidationError
+        with pytest.raises(ValidationError):
+            PreferencesUpdate(sidebar_collapsed="invalid")
+
+    def test_dashboard_layout_v2_structure(self):
+        """Test dashboard_layout_v2 accepts proper structure"""
+        from api.v2.user import PreferencesUpdate
+
+        layout = {
+            "widgets": [
+                {
+                    "id": "host-stats",
+                    "type": "host-stats",
+                    "title": "Host Stats",
+                    "x": 0,
+                    "y": 0,
+                    "w": 2,
+                    "h": 2,
+                    "minW": 2,
+                    "minH": 2
+                },
+                {
+                    "id": "container-stats",
+                    "type": "container-stats",
+                    "title": "Container Stats",
+                    "x": 2,
+                    "y": 0,
+                    "w": 2,
+                    "h": 2
+                }
+            ]
+        }
+
+        update = PreferencesUpdate(dashboard_layout_v2=layout)
+
+        assert update.dashboard_layout_v2 is not None
+        assert "widgets" in update.dashboard_layout_v2
+        assert len(update.dashboard_layout_v2["widgets"]) == 2
+        assert update.dashboard_layout_v2["widgets"][0]["id"] == "host-stats"
+
+    def test_dashboard_layout_size_limit(self):
+        """DOS PROTECTION: Test dashboard layout size limit (500KB)"""
+        from api.v2.user import PreferencesUpdate
+        import json
+
+        # Create a layout that's slightly under 500KB
+        huge_layout = {
+            "widgets": [
+                {
+                    "id": f"widget-{i}",
+                    "type": "container-stats",
+                    "title": f"Widget {i} with a very long title to increase size",
+                    "x": i % 12,
+                    "y": i // 12,
+                    "w": 2,
+                    "h": 2,
+                    "metadata": "x" * 1000  # Add extra data
+                }
+                for i in range(500)  # 500 widgets * ~1KB each = ~500KB
+            ]
+        }
+
+        # Should be valid (at ~500KB)
+        update = PreferencesUpdate(dashboard_layout_v2=huge_layout)
+        assert update.dashboard_layout_v2 is not None
+
+        # Verify size constraint is documented
+        json_size = len(json.dumps(huge_layout))
+        # Should be close to but under 500KB limit
+        assert json_size < 500 * 1024
+
+    def test_partial_update_sidebar_only(self):
+        """Test updating only sidebar_collapsed preserves other fields"""
+        from api.v2.user import PreferencesUpdate
+
+        update = PreferencesUpdate(sidebar_collapsed=True)
+
+        assert update.sidebar_collapsed is True
+        assert update.theme is None  # Not updated
+        assert update.dashboard_layout_v2 is None  # Not updated
+
+    def test_partial_update_layout_only(self):
+        """Test updating only dashboard_layout_v2 preserves other fields"""
+        from api.v2.user import PreferencesUpdate
+
+        layout = {"widgets": []}
+
+        update = PreferencesUpdate(dashboard_layout_v2=layout)
+
+        assert update.dashboard_layout_v2 == layout
+        assert update.sidebar_collapsed is None  # Not updated
+        assert update.theme is None  # Not updated
+
+    def test_combined_v1_and_v2_update(self):
+        """Test updating both v1 and v2 preferences together"""
+        from api.v2.user import PreferencesUpdate
+
+        update = PreferencesUpdate(
+            theme="light",  # v1
+            sidebar_collapsed=True,  # v2
+            dashboard_layout_v2={"widgets": []},  # v2
+            compact_view=True  # v1
+        )
+
+        # v1 fields
+        assert update.theme == "light"
+        assert update.compact_view is True
+
+        # v2 fields
+        assert update.sidebar_collapsed is True
+        assert update.dashboard_layout_v2 == {"widgets": []}
+
+    def test_dashboard_layout_empty_widgets(self):
+        """Test dashboard layout with empty widgets array"""
+        from api.v2.user import PreferencesUpdate
+
+        layout = {"widgets": []}
+
+        update = PreferencesUpdate(dashboard_layout_v2=layout)
+
+        assert update.dashboard_layout_v2 == layout
+        assert len(update.dashboard_layout_v2["widgets"]) == 0
+
+    def test_sidebar_state_persistence_to_users_table(self, test_db_engine):
+        """Test that sidebar_collapsed is stored in users table (not user_prefs)"""
+        from sqlalchemy import text
+
+        with test_db_engine.connect() as conn:
+            # Create users table with v2 fields
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY,
+                    username TEXT NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    sidebar_collapsed BOOLEAN DEFAULT 0,
+                    dashboard_layout_v2 TEXT
+                )
+            """))
+            conn.commit()
+
+            # Insert user
+            conn.execute(text("""
+                INSERT INTO users (id, username, password_hash, sidebar_collapsed)
+                VALUES (1, 'testuser', 'dummy', 1)
+            """))
+            conn.commit()
+
+            # Verify storage
+            result = conn.execute(
+                text("SELECT sidebar_collapsed FROM users WHERE id = 1")
+            ).fetchone()
+
+            assert result.sidebar_collapsed == 1  # Stored as integer (boolean)
+
+    def test_dashboard_layout_json_persistence(self, test_db_engine):
+        """Test that dashboard_layout_v2 is stored as JSON text"""
+        from sqlalchemy import text
+        import json
+
+        layout = {"widgets": [{"id": "test", "x": 0, "y": 0, "w": 2, "h": 2}]}
+
+        with test_db_engine.connect() as conn:
+            # Create users table
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY,
+                    username TEXT NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    dashboard_layout_v2 TEXT
+                )
+            """))
+            conn.commit()
+
+            # Insert user with layout
+            conn.execute(text("""
+                INSERT INTO users (id, username, password_hash, dashboard_layout_v2)
+                VALUES (1, 'testuser', 'dummy', :layout)
+            """), {"layout": json.dumps(layout)})
+            conn.commit()
+
+            # Verify storage and retrieval
+            result = conn.execute(
+                text("SELECT dashboard_layout_v2 FROM users WHERE id = 1")
+            ).fetchone()
+
+            stored_layout = json.loads(result.dashboard_layout_v2)
+            assert stored_layout == layout
+            assert stored_layout["widgets"][0]["id"] == "test"

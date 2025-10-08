@@ -37,6 +37,10 @@ class UserPreferences(BaseModel):
     collapsed_groups: list[str] = Field(default_factory=list)
     filter_defaults: Dict[str, Any] = Field(default_factory=dict)
 
+    # React v2 preferences
+    sidebar_collapsed: bool = Field(default=False)
+    dashboard_layout_v2: Optional[Dict[str, Any]] = Field(default=None)  # react-grid-layout format
+
 
 class PreferencesUpdate(BaseModel):
     """Partial update to preferences"""
@@ -45,6 +49,10 @@ class PreferencesUpdate(BaseModel):
     compact_view: Optional[bool] = None
     collapsed_groups: Optional[list[str]] = None
     filter_defaults: Optional[Dict[str, Any]] = None
+
+    # React v2 preferences
+    sidebar_collapsed: Optional[bool] = None
+    dashboard_layout_v2: Optional[Dict[str, Any]] = None
 
 
 @router.get("/preferences", response_model=UserPreferences)
@@ -62,31 +70,50 @@ async def get_user_preferences(
     user_id = current_user["user_id"]
 
     with db.get_session() as session:
-        # Query user_prefs table
         from sqlalchemy import text
-        result = session.execute(
+
+        # Query user_prefs table and users table (for React v2 preferences)
+        prefs_result = session.execute(
             text("SELECT * FROM user_prefs WHERE user_id = :user_id"),
             {"user_id": user_id}
         ).fetchone()
 
-        if not result:
+        user_result = session.execute(
+            text("SELECT sidebar_collapsed, dashboard_layout_v2 FROM users WHERE id = :user_id"),
+            {"user_id": user_id}
+        ).fetchone()
+
+        if not prefs_result and not user_result:
             # Return defaults if no preferences saved
             logger.info(f"No preferences found for user {user_id}, returning defaults")
             return UserPreferences()
 
-        # Parse stored preferences
-        try:
-            defaults_json = json.loads(result.defaults_json) if result.defaults_json else {}
-        except json.JSONDecodeError:
-            logger.error(f"Invalid JSON in user_prefs for user {user_id}")
-            defaults_json = {}
+        # Parse stored preferences from user_prefs table
+        defaults_json = {}
+        if prefs_result and prefs_result.defaults_json:
+            try:
+                defaults_json = json.loads(prefs_result.defaults_json)
+            except json.JSONDecodeError:
+                logger.error(f"Invalid JSON in user_prefs for user {user_id}")
+                defaults_json = {}
+
+        # Parse React v2 preferences from users table
+        dashboard_layout_v2 = None
+        if user_result and user_result.dashboard_layout_v2:
+            try:
+                dashboard_layout_v2 = json.loads(user_result.dashboard_layout_v2)
+            except json.JSONDecodeError:
+                logger.error(f"Invalid JSON in dashboard_layout_v2 for user {user_id}")
+                dashboard_layout_v2 = None
 
         return UserPreferences(
-            theme=result.theme or "dark",
+            theme=prefs_result.theme if prefs_result else "dark",
             group_by=defaults_json.get("group_by", "env"),
             compact_view=defaults_json.get("compact_view", False),
             collapsed_groups=defaults_json.get("collapsed_groups", []),
-            filter_defaults=defaults_json.get("filter_defaults", {})
+            filter_defaults=defaults_json.get("filter_defaults", {}),
+            sidebar_collapsed=user_result.sidebar_collapsed if user_result else False,
+            dashboard_layout_v2=dashboard_layout_v2
         )
 
 
@@ -152,7 +179,7 @@ async def update_user_preferences(
                 detail=f"Preferences too large ({len(defaults_json_str)} bytes, max {MAX_JSON_SIZE} bytes)"
             )
 
-        # Upsert preferences
+        # Upsert preferences in user_prefs table
         # SECURITY: ON CONFLICT ensures atomic operation
         session.execute(
             text("""
@@ -168,6 +195,30 @@ async def update_user_preferences(
                 "defaults_json": defaults_json_str
             }
         )
+
+        # Update React v2 preferences in users table
+        update_parts = []
+        update_params = {"user_id": user_id}
+
+        if updates.sidebar_collapsed is not None:
+            update_parts.append("sidebar_collapsed = :sidebar_collapsed")
+            update_params["sidebar_collapsed"] = updates.sidebar_collapsed
+
+        if updates.dashboard_layout_v2 is not None:
+            dashboard_json = json.dumps(updates.dashboard_layout_v2)
+            # DOS PROTECTION: Limit JSON size to 500KB for layout
+            MAX_LAYOUT_SIZE = 500 * 1024  # 500KB
+            if len(dashboard_json) > MAX_LAYOUT_SIZE:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Dashboard layout too large ({len(dashboard_json)} bytes, max {MAX_LAYOUT_SIZE} bytes)"
+                )
+            update_parts.append("dashboard_layout_v2 = :dashboard_layout_v2")
+            update_params["dashboard_layout_v2"] = dashboard_json
+
+        if update_parts:
+            query = f"UPDATE users SET {', '.join(update_parts)} WHERE id = :user_id"
+            session.execute(text(query), update_params)
 
         session.commit()
 

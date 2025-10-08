@@ -1,5 +1,5 @@
 # DockMon All-in-One Container
-# Multi-stage build: Go stats service + Python backend + Nginx frontend
+# Multi-stage build: Go stats service + Python backend + React frontend
 
 # Stage 1: Build Go stats service
 FROM golang:1.23-alpine AS go-builder
@@ -18,7 +18,24 @@ COPY stats-service/*.go ./
 # Build binary (static linking for alpine)
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o stats-service .
 
-# Stage 2: Final image with Python + Go binary
+# Stage 2: Build React frontend
+FROM node:20-alpine AS frontend-builder
+
+WORKDIR /build
+
+# Copy package files
+COPY ui/package*.json ./
+
+# Install dependencies
+RUN npm ci
+
+# Copy source files
+COPY ui/ ./
+
+# Build the React app
+RUN npm run build
+
+# Stage 3: Final image with Python + Go binary + built React app
 FROM python:3.11.10-slim
 
 # Install system dependencies
@@ -44,17 +61,10 @@ RUN pip install --no-cache-dir -r /app/backend/requirements.txt
 # Copy backend code
 COPY backend/ /app/backend/
 
-# Copy frontend files
-COPY src/index.html /usr/share/nginx/html/index.html
-COPY src/login.html /usr/share/nginx/html/login.html
-COPY src/favicon.ico /usr/share/nginx/html/favicon.ico
-COPY src/lucide.min.js /usr/share/nginx/html/lucide.min.js
-COPY src/images/ /usr/share/nginx/html/images/
-COPY src/css/ /usr/share/nginx/html/css/
-COPY src/js/ /usr/share/nginx/html/js/
-RUN chmod 644 /usr/share/nginx/html/*.html /usr/share/nginx/html/*.ico /usr/share/nginx/html/*.js
-RUN chmod -R 644 /usr/share/nginx/html/css/ /usr/share/nginx/html/js/
-RUN find /usr/share/nginx/html/css /usr/share/nginx/html/js -type d -exec chmod 755 {} \;
+# Copy built React frontend from frontend-builder stage
+COPY --from=frontend-builder /build/dist /usr/share/nginx/html/
+RUN chmod -R 644 /usr/share/nginx/html/*
+RUN find /usr/share/nginx/html -type d -exec chmod 755 {} \;
 
 # Create certs directory (certificates will be generated at runtime if not present)
 RUN mkdir -p /etc/nginx/certs

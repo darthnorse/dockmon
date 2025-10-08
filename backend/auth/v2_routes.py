@@ -130,14 +130,16 @@ async def login_v2(
 
         # Set HttpOnly cookie (XSS protection)
         # SECURITY: JavaScript cannot access this cookie
+        # NOTE: Domain is not set, letting browser use the request host
         response.set_cookie(
             key="session_id",
             value=signed_token,
             httponly=True,          # Prevents XSS
             secure=True,            # HTTPS only (disable for localhost dev)
-            samesite="strict",      # CSRF protection
+            samesite="lax",         # CSRF protection (allows same-origin GET requests)
             max_age=86400 * 7,      # 7 days
-            path="/"                # Available to all routes
+            path="/",               # Available to all routes
+            domain=None             # Let browser use request host (handles ports correctly)
         )
 
         logger.info(f"User '{user.username}' logged in successfully from {client_ip}")
@@ -198,6 +200,7 @@ async def get_current_user_dependency(
         Dict with user_id, username, session_id
     """
     if not session_id:
+        logger.warning("No session cookie provided")
         raise HTTPException(
             status_code=401,
             detail="Not authenticated - no session cookie"
@@ -207,6 +210,7 @@ async def get_current_user_dependency(
     session_data = cookie_session_manager.validate_session(session_id, client_ip)
 
     if not session_data:
+        logger.warning(f"Session validation failed for IP: {client_ip}")
         raise HTTPException(
             status_code=401,
             detail="Invalid or expired session"

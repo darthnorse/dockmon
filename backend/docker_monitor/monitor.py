@@ -845,6 +845,13 @@ class DockerMonitor:
                                 else:
                                     image_name = image_id[:12] if image_id else 'unknown'
 
+                        # Extract labels from Docker container (Phase 3d)
+                        labels = dc.attrs.get('Config', {}).get('Labels', {}) or {}
+
+                        # Derive tags from labels (Phase 3d)
+                        from models.docker_models import derive_container_tags
+                        tags = derive_container_tags(labels)
+
                         container = Container(
                             id=dc.id,
                             short_id=container_id,
@@ -856,7 +863,9 @@ class DockerMonitor:
                             image=image_name,
                             created=dc.attrs['Created'],
                             auto_restart=self._get_auto_restart_status(hid, container_id),
-                            restart_attempts=self.restart_attempts.get(container_id, 0)
+                            restart_attempts=self.restart_attempts.get(container_id, 0),
+                            labels=labels,
+                            tags=tags
                         )
                         containers.append(container)
                     except Exception as container_error:

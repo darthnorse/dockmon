@@ -15,6 +15,61 @@ from pydantic import BaseModel, Field, validator, model_validator
 logger = logging.getLogger(__name__)
 
 
+def derive_container_tags(labels: dict[str, str]) -> list[str]:
+    """
+    Derive tags from Docker container labels
+
+    Extracts tags from:
+    - com.docker.compose.project → compose:{project}
+    - com.docker.swarm.service.name → swarm:{service}
+    - dockmon.tag → custom tags (comma-separated)
+
+    Args:
+        labels: Dictionary of Docker labels
+
+    Returns:
+        List of derived tags (lowercase, trimmed)
+
+    Example:
+        >>> derive_container_tags({'com.docker.compose.project': 'frontend'})
+        ['compose:frontend']
+    """
+    tags = []
+
+    # Compose project tag
+    if 'com.docker.compose.project' in labels:
+        project = labels['com.docker.compose.project'].strip()
+        if project:
+            tags.append(f"compose:{project}")
+
+    # Swarm service tag
+    if 'com.docker.swarm.service.name' in labels:
+        service = labels['com.docker.swarm.service.name'].strip()
+        if service:
+            tags.append(f"swarm:{service}")
+
+    # Custom DockMon tags (comma-separated)
+    if 'dockmon.tag' in labels:
+        custom_tags = labels['dockmon.tag'].split(',')
+        for tag in custom_tags:
+            tag = tag.strip()
+            if tag:
+                tags.append(tag)
+
+    # Normalize: lowercase, remove empty
+    tags = [t.lower() for t in tags if t.strip()]
+
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_tags = []
+    for tag in tags:
+        if tag not in seen:
+            seen.add(tag)
+            unique_tags.append(tag)
+
+    return unique_tags
+
+
 class DockerHostConfig(BaseModel):
     """Configuration for a Docker host"""
     name: str = Field(..., min_length=1, max_length=100, pattern=r'^[a-zA-Z0-9][a-zA-Z0-9 ._-]*$')
@@ -173,3 +228,7 @@ class Container(BaseModel):
     network_tx: Optional[int] = None
     disk_read: Optional[int] = None
     disk_write: Optional[int] = None
+    # Labels from Docker (Phase 3d)
+    labels: Optional[dict[str, str]] = None
+    # Derived tags (Phase 3d - computed from labels)
+    tags: Optional[list[str]] = None

@@ -217,7 +217,6 @@ class NotificationChannelCreate(BaseModel):
                 v['smtp_port'] = 587
 
             # Validate email format
-            import re
             email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
             from_email = v.get('from_email', '')
             to_email = v.get('to_email', '')

@@ -1,15 +1,24 @@
 /**
- * Login Page
+ * Login Page - Design System v2
  *
  * SECURITY:
  * - No password stored in state longer than necessary
  * - Form submission uses secure cookie-based auth
  * - Error messages don't reveal if username exists (security best practice)
+ *
+ * DESIGN:
+ * - Tailwind CSS + shadcn/ui components
+ * - Grafana/Portainer-inspired dark theme
+ * - WCAG 2.1 AA accessible
  */
 
 import { useState, type FormEvent } from 'react'
+import { LogIn } from 'lucide-react'
 import { useAuth } from './AuthContext'
 import { ApiError } from '@/lib/api/client'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 
 export function LoginPage() {
   const { login, isLoading } = useAuth()
@@ -46,161 +55,109 @@ export function LoginPage() {
   }
 
   return (
-    <div style={styles.container}>
-      <div style={styles.card}>
-        <h1 style={styles.title}>DockMon</h1>
-        <p style={styles.subtitle}>Docker Container Monitor</p>
-
-        <form onSubmit={handleSubmit} style={styles.form}>
-          {error && (
-            <div style={styles.error} role="alert">
-              {error}
+    <div className="flex min-h-screen items-center justify-center bg-background p-4">
+      <Card className="w-full max-w-md">
+        <CardHeader className="space-y-1 text-center">
+          <div className="mb-2 flex justify-center">
+            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
+              <LogIn className="h-6 w-6 text-primary" />
             </div>
-          )}
-
-          <div style={styles.fieldGroup}>
-            <label htmlFor="username" style={styles.label}>
-              Username
-            </label>
-            <input
-              id="username"
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              disabled={isLoading}
-              autoComplete="username"
-              autoFocus
-              required
-              style={styles.input}
-            />
           </div>
+          <CardTitle className="text-2xl">DockMon</CardTitle>
+          <CardDescription>Docker Container Monitor</CardDescription>
+        </CardHeader>
 
-          <div style={styles.fieldGroup}>
-            <label htmlFor="password" style={styles.label}>
-              Password
-            </label>
-            <input
-              id="password"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
+        <CardContent>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            {/* Error Alert */}
+            {error && (
+              <div
+                role="alert"
+                className="rounded-lg border-l-4 border-danger bg-danger/10 p-3 text-sm text-danger"
+              >
+                {error}
+              </div>
+            )}
+
+            {/* Username Field */}
+            <div className="space-y-2">
+              <label
+                htmlFor="username"
+                className="text-xs font-medium text-muted-foreground"
+              >
+                Username
+              </label>
+              <Input
+                id="username"
+                type="text"
+                value={username}
+                onChange={(e) => {
+                  setUsername(e.target.value)
+                  if (error) setError(null) // Clear error when typing
+                }}
+                disabled={isLoading}
+                autoComplete="username"
+                autoFocus
+                placeholder="Enter your username"
+              />
+            </div>
+
+            {/* Password Field */}
+            <div className="space-y-2">
+              <label
+                htmlFor="password"
+                className="text-xs font-medium text-muted-foreground"
+              >
+                Password
+              </label>
+              <Input
+                id="password"
+                type="password"
+                value={password}
+                onChange={(e) => {
+                  setPassword(e.target.value)
+                  if (error) setError(null) // Clear error when typing
+                }}
+                disabled={isLoading}
+                autoComplete="current-password"
+                placeholder="Enter your password"
+              />
+            </div>
+
+            {/* Submit Button */}
+            <Button
+              type="submit"
               disabled={isLoading}
-              autoComplete="current-password"
-              required
-              style={styles.input}
-            />
-          </div>
+              className="w-full"
+              size="lg"
+            >
+              {isLoading ? (
+                <>
+                  <span className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-primary-foreground border-t-transparent" />
+                  Logging in...
+                </>
+              ) : (
+                <>
+                  <LogIn className="h-4 w-4" />
+                  Log In
+                </>
+              )}
+            </Button>
+          </form>
 
-          <button
-            type="submit"
-            disabled={isLoading}
-            style={{
-              ...styles.button,
-              ...(isLoading ? styles.buttonDisabled : {}),
-            }}
-          >
-            {isLoading ? 'Logging in...' : 'Log In'}
-          </button>
-        </form>
-
-        <p style={styles.footer}>
-          Default credentials: <code style={styles.code}>admin</code> /{' '}
-          <code style={styles.code}>dockmon123</code>
-        </p>
-      </div>
+          {/* Footer - Default Credentials */}
+          <p className="mt-6 text-center text-xs text-muted-foreground">
+            Default credentials:{' '}
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-foreground">
+              admin
+            </code>{' '}
+            /{' '}
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-foreground">
+              test1234
+            </code>
+          </p>
+        </CardContent>
+      </Card>
     </div>
   )
-}
-
-// Inline styles for Phase 2 MVP (will be replaced with CSS/Tailwind later)
-const styles = {
-  container: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: '100vh',
-    backgroundColor: '#0f172a',
-  },
-  card: {
-    width: '100%',
-    maxWidth: '400px',
-    padding: '2rem',
-    backgroundColor: '#1e293b',
-    borderRadius: '0.5rem',
-    boxShadow: '0 10px 25px rgba(0, 0, 0, 0.5)',
-  },
-  title: {
-    fontSize: '2rem',
-    fontWeight: 'bold',
-    color: '#f8fafc',
-    margin: 0,
-    marginBottom: '0.5rem',
-    textAlign: 'center' as const,
-  },
-  subtitle: {
-    fontSize: '0.875rem',
-    color: '#94a3b8',
-    margin: 0,
-    marginBottom: '2rem',
-    textAlign: 'center' as const,
-  },
-  form: {
-    display: 'flex',
-    flexDirection: 'column' as const,
-    gap: '1rem',
-  },
-  error: {
-    padding: '0.75rem',
-    backgroundColor: '#7f1d1d',
-    border: '1px solid #991b1b',
-    borderRadius: '0.25rem',
-    color: '#fecaca',
-    fontSize: '0.875rem',
-  },
-  fieldGroup: {
-    display: 'flex',
-    flexDirection: 'column' as const,
-    gap: '0.5rem',
-  },
-  label: {
-    fontSize: '0.875rem',
-    fontWeight: '500',
-    color: '#e2e8f0',
-  },
-  input: {
-    padding: '0.75rem',
-    backgroundColor: '#334155',
-    border: '1px solid #475569',
-    borderRadius: '0.25rem',
-    color: '#f8fafc',
-    fontSize: '1rem',
-  },
-  button: {
-    padding: '0.75rem',
-    backgroundColor: '#3b82f6',
-    border: 'none',
-    borderRadius: '0.25rem',
-    color: '#ffffff',
-    fontSize: '1rem',
-    fontWeight: '500',
-    cursor: 'pointer',
-    marginTop: '0.5rem',
-  },
-  buttonDisabled: {
-    opacity: 0.5,
-    cursor: 'not-allowed',
-  },
-  footer: {
-    marginTop: '1.5rem',
-    fontSize: '0.75rem',
-    color: '#64748b',
-    textAlign: 'center' as const,
-  },
-  code: {
-    padding: '0.125rem 0.25rem',
-    backgroundColor: '#334155',
-    borderRadius: '0.125rem',
-    fontFamily: 'monospace',
-    color: '#94a3b8',
-  },
 }

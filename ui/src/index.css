@@ -1,47 +1,237 @@
 /**
- * Global Styles - Phase 2 MVP
- * TODO: Replace with Tailwind CSS or CSS-in-JS later
+ * Global Styles - DockMon Design System v2
+ *
+ * ARCHITECTURE:
+ * - Tailwind CSS directives
+ * - CSS custom properties for theming
+ * - Self-hosted JetBrains Mono fonts
+ * - Dark-first design (Grafana/Portainer-inspired)
  */
 
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
+/* Tailwind CSS */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ==================== Font Faces ==================== */
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('/fonts/JetBrainsMono-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
 }
 
-html,
-body {
-  height: 100%;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('/fonts/JetBrainsMono-Medium.woff2') format('woff2');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
 }
 
-#root {
-  height: 100%;
+/* ==================== CSS Variables - Design System Tokens ==================== */
+
+@layer base {
+  :root {
+    /* Background & Surfaces */
+    --bg: #0F1115;
+    --surface-1: #171925;
+    --surface-2: #1F2230;
+    --border: #2A2E3E;
+
+    /* Text Colors (Updated for 15:1 contrast) */
+    --text: #F3F4F6;
+    --text-muted: #9CA3AF;
+    --text-tertiary: #6B7280;
+
+    /* Accent Colors */
+    --accent: #3B82F6;
+    --accent-2: #06B6D4;
+    --accent-3: #6366F1;
+
+    /* Semantic Colors */
+    --success: #22C55E;
+    --warning: #F59E0B;
+    --danger: #EF4444;
+    --info: #38BDF8;
+
+    /* shadcn/ui Theme Mapping */
+    --background: var(--bg);
+    --foreground: var(--text);
+
+    --card: var(--surface-1);
+    --card-foreground: var(--text);
+
+    --popover: var(--surface-2);
+    --popover-foreground: var(--text);
+
+    --primary: #3B82F6;
+    --primary-foreground: #0B1020;
+
+    --secondary: #1F2230;
+    --secondary-foreground: #F3F4F6;
+
+    --muted: #151827;
+    --muted-foreground: #9CA3AF;
+
+    --accent-color: #3B82F6;
+    --accent-foreground: #0B1020;
+
+    --destructive: #EF4444;
+    --destructive-foreground: #0B0F1A;
+
+    --border-color: var(--border);
+    --input: #12141C;
+    --ring: #3B82F6;
+
+    --radius: 0.75rem; /* 12px */
+  }
+
+  /* Global Resets */
+  * {
+    border-color: var(--border);
+  }
+
+  html,
+  body {
+    height: 100%;
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  #root {
+    height: 100%;
+  }
+
+  /* Monospace Elements */
+  code,
+  pre,
+  .font-mono {
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+
+  /* Ensure Form Elements Inherit Font */
+  input,
+  button,
+  textarea,
+  select {
+    font-family: inherit;
+    font-size: inherit;
+  }
+
+  /* Focus Styles for Accessibility (WCAG 2.1 AA) */
+  button:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible,
+  a:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
 }
 
-code {
-  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
-    monospace;
-}
+/* ==================== Utility Classes ==================== */
 
-/* Ensure inputs inherit font */
-input,
-button,
-textarea,
-select {
-  font-family: inherit;
-  font-size: inherit;
-}
+@layer utilities {
+  /* Reduced Motion Support */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
 
-/* Focus styles for accessibility */
-button:focus-visible,
-input:focus-visible,
-textarea:focus-visible,
-select:focus-visible {
-  outline: 2px solid #3b82f6;
-  outline-offset: 2px;
+  /* Skeleton Loader */
+  .skeleton {
+    background: linear-gradient(90deg, var(--surface-1) 0%, var(--surface-2) 50%, var(--surface-1) 100%);
+    background-size: 200% 100%;
+    animation: shimmer 1.4s ease-in-out infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .skeleton {
+      animation: pulse 2s ease-in-out infinite;
+    }
+  }
+
+  /* Scrollbar Styling (Webkit/Blink) */
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 0.5rem;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background-color: var(--surface-1);
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background-color: var(--text-tertiary);
+    border-radius: 0.25rem;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background-color: var(--text-muted);
+  }
+
+  /* react-grid-layout custom styles */
+  .react-grid-layout {
+    position: relative;
+    transition: height 200ms ease;
+  }
+
+  .react-grid-item {
+    transition: all 200ms ease;
+    transition-property: left, top;
+  }
+
+  .react-grid-item.cssTransforms {
+    transition-property: transform;
+  }
+
+  .react-grid-item.resizing {
+    z-index: 100;
+    will-change: width, height;
+  }
+
+  .react-grid-item.react-draggable-dragging {
+    transition: none;
+    z-index: 100;
+    will-change: transform;
+    opacity: 0.9;
+  }
+
+  .react-grid-item.react-grid-placeholder {
+    background: var(--primary);
+    opacity: 0.2;
+    transition-duration: 100ms;
+    z-index: 2;
+    border-radius: var(--radius);
+  }
+
+  .react-grid-item > .react-resizable-handle {
+    position: absolute;
+    width: 20px;
+    height: 20px;
+    bottom: 0;
+    right: 0;
+    cursor: se-resize;
+  }
+
+  .react-grid-item > .react-resizable-handle::after {
+    content: "";
+    position: absolute;
+    right: 3px;
+    bottom: 3px;
+    width: 5px;
+    height: 5px;
+    border-right: 2px solid var(--border);
+    border-bottom: 2px solid var(--border);
+  }
 }

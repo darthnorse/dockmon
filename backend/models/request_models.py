@@ -19,7 +19,6 @@ class ContainerHostPair(BaseModel):
 
 class AutoRestartRequest(BaseModel):
     """Request model for toggling auto-restart"""
-    host_id: str
     container_name: str
     enabled: bool
 

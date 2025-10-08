@@ -1,0 +1,205 @@
+/**
+ * Grid Dashboard Component - Phase 3b
+ *
+ * FEATURES:
+ * - Drag-and-drop widget layout (react-grid-layout)
+ * - Persistent layout (database - syncs across devices)
+ * - Responsive grid (12 columns)
+ * - Real-time data updates via TanStack Query
+ *
+ * ARCHITECTURE:
+ * - Layout state persisted to database via API
+ * - Widgets registered in widgetComponents registry
+ * - Grid automatically adjusts on resize
+ */
+
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import GridLayout, { WidthProvider, type Layout } from 'react-grid-layout'
+import { Button } from '@/components/ui/button'
+import { RotateCcw } from 'lucide-react'
+import type { WidgetConfig, DashboardLayout } from './types'
+import { widgetComponents } from './widgets'
+import { useDashboardLayout } from '@/lib/hooks/useUserPreferences'
+import { debug } from '@/lib/debug'
+import 'react-grid-layout/css/styles.css'
+
+// Responsive grid that auto-adjusts width
+const ResponsiveGridLayout = WidthProvider(GridLayout)
+
+// Default dashboard layout (Hosts → Containers → Events → Alerts)
+// Grid is 12 columns: 2 small (3 cols) + 2 large (4 cols) = 14... adjusting to fit
+const defaultLayout: WidgetConfig[] = [
+  {
+    id: 'host-stats',
+    type: 'host-stats',
+    title: 'Host Stats',
+    x: 0,
+    y: 0,
+    w: 2,
+    h: 2,
+    minW: 2,
+    minH: 2,
+  },
+  {
+    id: 'container-stats',
+    type: 'container-stats',
+    title: 'Container Stats',
+    x: 2,
+    y: 0,
+    w: 2,
+    h: 2,
+    minW: 2,
+    minH: 2,
+  },
+  {
+    id: 'recent-events',
+    type: 'recent-events',
+    title: 'Recent Events',
+    x: 4,
+    y: 0,
+    w: 4,
+    h: 2,
+    minW: 3,
+    minH: 2,
+  },
+  {
+    id: 'alert-summary',
+    type: 'alert-summary',
+    title: 'Active Alerts',
+    x: 8,
+    y: 0,
+    w: 4,
+    h: 2,
+    minW: 3,
+    minH: 2,
+  },
+]
+
+export function GridDashboard() {
+  const { layout: savedLayout, setLayout } = useDashboardLayout()
+  const [widgets, setWidgets] = useState<WidgetConfig[]>(defaultLayout)
+
+  // Debounce timer for saving layout changes
+  const saveTimerRef = useRef<NodeJS.Timeout>()
+
+  // Load layout from database on mount
+  useEffect(() => {
+    if (savedLayout?.widgets) {
+      debug.log('GridDashboard', 'Loading layout from database')
+      setWidgets(savedLayout.widgets)
+    }
+  }, [savedLayout])
+
+  // Persist layout changes (debounced to avoid excessive API calls)
+  const handleLayoutChange = useCallback((newLayout: Layout[]) => {
+    // Use functional update to avoid stale closure
+    setWidgets((currentWidgets) => {
+      const updatedWidgets = currentWidgets.map((widget) => {
+        const layoutItem = newLayout.find((l) => l.i === widget.id)
+        if (layoutItem) {
+          return {
+            ...widget,
+            x: layoutItem.x,
+            y: layoutItem.y,
+            w: layoutItem.w,
+            h: layoutItem.h,
+          }
+        }
+        return widget
+      })
+
+      // Debounce save to database (1 second after last change)
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current)
+      }
+
+      saveTimerRef.current = setTimeout(() => {
+        debug.log('GridDashboard', 'Saving layout to database')
+        const dashboardLayout: DashboardLayout = { widgets: updatedWidgets }
+        setLayout(dashboardLayout)
+      }, 1000)
+
+      return updatedWidgets
+    })
+  }, [setLayout])
+
+  // Cleanup timer on unmount
+  useEffect(() => {
+    return () => {
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current)
+      }
+    }
+  }, [])
+
+  // Reset to default layout
+  const handleReset = () => {
+    debug.log('GridDashboard', 'Resetting layout to defaults')
+    setWidgets(defaultLayout)
+    const dashboardLayout: DashboardLayout = { widgets: defaultLayout }
+    setLayout(dashboardLayout)
+  }
+
+  // Convert widgets to react-grid-layout format (memoized for performance)
+  const layout: Layout[] = useMemo(
+    () =>
+      widgets.map((w) => ({
+        i: w.id,
+        x: w.x,
+        y: w.y,
+        w: w.w,
+        h: w.h,
+        minW: w.minW,
+        minH: w.minH,
+        maxW: w.maxW,
+        maxH: w.maxH,
+      })),
+    [widgets]
+  )
+
+  return (
+    <div className="p-6 min-w-[900px] overflow-x-auto">
+      {/* Header */}
+      <div className="mb-6 flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold">Dashboard</h1>
+          <p className="text-sm text-muted-foreground">
+            Monitor your Docker containers and hosts
+          </p>
+        </div>
+        <Button variant="outline" size="sm" onClick={handleReset}>
+          <RotateCcw className="mr-2 h-4 w-4" />
+          Reset Layout
+        </Button>
+      </div>
+
+      {/* Grid Layout - Responsive width with 900px minimum */}
+      <ResponsiveGridLayout
+        className="layout"
+        layout={layout}
+        cols={12}
+        rowHeight={120}
+        onLayoutChange={handleLayoutChange}
+        draggableHandle=".widget-drag-handle"
+        compactType="vertical"
+        preventCollision={false}
+      >
+        {widgets.map((widget) => {
+          const WidgetComponent = widgetComponents[widget.type]
+
+          return (
+            <div key={widget.id} className="widget-container">
+              {/* Drag handle (invisible but functional) */}
+              <div className="widget-drag-handle absolute inset-x-0 top-0 z-10 h-12 cursor-move" />
+
+              {/* Widget content */}
+              <div className="h-full">
+                <WidgetComponent />
+              </div>
+            </div>
+          )
+        })}
+      </ResponsiveGridLayout>
+    </div>
+  )
+}

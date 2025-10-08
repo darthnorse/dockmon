@@ -116,7 +116,8 @@ describe('AuthContext', () => {
       // Wait for refetch after login
       await waitFor(() => expect(result.current.isAuthenticated).toBe(true))
 
-      expect(authApi.login).toHaveBeenCalledWith({
+      expect(authApi.login).toHaveBeenCalled()
+      expect(vi.mocked(authApi.login).mock.calls[0]?.[0]).toEqual({
         username: 'testuser',
         password: 'password',
       })

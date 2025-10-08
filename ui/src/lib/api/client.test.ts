@@ -103,7 +103,7 @@ describe('ApiClient', () => {
         '/api/auth/logout',
         expect.objectContaining({
           method: 'POST',
-          body: undefined,
+          body: null,
         })
       )
     })
@@ -160,11 +160,16 @@ describe('ApiClient', () => {
         headers: new Headers({ 'content-type': 'application/json' }),
       })
 
-      await expect(apiClient.get('/test')).rejects.toThrow(ApiError)
-      await expect(apiClient.get('/test')).rejects.toMatchObject({
-        status: 401,
-        data: errorData,
-      })
+      try {
+        await apiClient.get('/test')
+        expect.fail('Should have thrown ApiError')
+      } catch (error) {
+        expect(error).toBeInstanceOf(ApiError)
+        expect(error).toMatchObject({
+          status: 401,
+          data: errorData,
+        })
+      }
     })
 
     it('should throw ApiError on 429 Rate Limit', async () => {

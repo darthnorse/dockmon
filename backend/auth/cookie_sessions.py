@@ -228,9 +228,9 @@ class CookieSessionManager:
 
             # 4. Validate IP consistency (prevent session hijacking)
             if session["client_ip"] != client_ip:
-                logger.error(
-                    f"Session hijack attempt detected! Session from {session['client_ip']} "
-                    f"accessed from {client_ip}. User: {session['username']}"
+                logger.warning(
+                    f"IP mismatch: Session created from {session['client_ip']}, "
+                    f"accessed from {client_ip}. Invalidating session for user: {session['username']}"
                 )
                 del self.sessions[session_id]
                 return None

@@ -1442,6 +1442,221 @@ async def save_modal_preferences(request: Request, current_user: dict = Depends(
         logger.error(f"Failed to save modal preferences: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# ==================== Phase 4: View Mode Preference ====================
+
+@app.get("/api/user/view-mode")
+async def get_view_mode(request: Request, current_user: dict = Depends(get_current_user)):
+    """Get dashboard view mode preference for current user"""
+    # Get username directly from current_user dependency
+    username = current_user.get('username')
+
+    if not username:
+        return {"view_mode": "compact"}  # Default if no username
+
+    try:
+        session = monitor.db.get_session()
+        try:
+            from database import User
+            user = session.query(User).filter(User.username == username).first()
+            if user:
+                return {"view_mode": user.view_mode or "compact"}  # Default to compact
+            return {"view_mode": "compact"}
+        finally:
+            session.close()
+    except Exception as e:
+        logger.error(f"Failed to get view mode: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/user/view-mode")
+async def save_view_mode(request: Request, current_user: dict = Depends(get_current_user)):
+    """Save dashboard view mode preference for current user"""
+    # Get username directly from current_user dependency
+    username = current_user.get('username')
+
+    if not username:
+        logger.error(f"No username in current_user: {current_user}")
+        raise HTTPException(status_code=401, detail="Username not found in session")
+
+    try:
+        body = await request.json()
+        view_mode = body.get('view_mode')
+
+        if view_mode not in ['compact', 'standard', 'expanded']:
+            raise HTTPException(status_code=400, detail="Invalid view_mode. Must be 'compact', 'standard', or 'expanded'")
+
+        session = monitor.db.get_session()
+        try:
+            from database import User
+            from datetime import datetime
+
+            user = session.query(User).filter(User.username == username).first()
+            if user:
+                user.view_mode = view_mode
+                user.updated_at = datetime.now()
+                session.commit()
+                return {"success": True}
+
+            raise HTTPException(status_code=404, detail="User not found")
+        finally:
+            session.close()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to save view mode: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==================== Phase 4c: Dashboard Hosts with Stats ====================
+
+@app.get("/api/dashboard/hosts")
+async def get_dashboard_hosts(
+    group_by: Optional[str] = None,
+    search: Optional[str] = None,
+    status: Optional[str] = None,
+    alerts: Optional[bool] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get hosts with aggregated stats for dashboard view
+
+    Returns hosts grouped by tag (if group_by specified) with:
+    - Current stats (CPU, Memory, Network)
+    - Sparkline data (last 30-40 data points)
+    - Top 3 containers by CPU
+    - Container count, alerts, updates
+    """
+    try:
+        # Get all hosts
+        hosts_list = list(monitor.hosts.values())
+
+        # Filter by status if specified
+        if status:
+            hosts_list = [h for h in hosts_list if h.status == status]
+
+        # Get containers for all hosts
+        all_containers = await monitor.get_containers()
+
+        # Build host data with stats
+        host_data = []
+        for host in hosts_list:
+            # Filter containers for this host
+            host_containers = [c for c in all_containers if c.host_id == host.id]
+            running_containers = [c for c in host_containers if c.status == 'running']
+
+            # Get top 3 containers by CPU
+            top_containers = sorted(
+                [c for c in running_containers if c.cpu_percent is not None],
+                key=lambda x: x.cpu_percent or 0,
+                reverse=True
+            )[:3]
+
+            # Calculate aggregate stats from containers
+            total_cpu = sum(c.cpu_percent or 0 for c in running_containers)
+            total_mem_used = sum(c.memory_usage or 0 for c in running_containers) / (1024 * 1024 * 1024)  # Convert to GB
+
+            # Get real sparkline data from stats history buffer (Phase 4c)
+            # Uses EMA smoothing (α = 0.3) and maintains 60-90s of history
+            sparklines = monitor.stats_history.get_sparklines(host.id, num_points=30)
+
+            # Calculate current memory percent (TODO: Get actual host total memory from stats service)
+            mem_percent = (total_mem_used / 16 * 100) if running_containers else 0
+
+            # Parse tags
+            tags = []
+            if host.tags:
+                try:
+                    tags = json.loads(host.tags) if isinstance(host.tags, str) else host.tags
+                except:
+                    pass
+
+            # Apply search filter
+            if search:
+                search_lower = search.lower()
+                if not (search_lower in host.name.lower() or
+                       search_lower in host.url.lower() or
+                       any(search_lower in tag.lower() for tag in tags)):
+                    continue
+
+            host_data.append({
+                "id": host.id,
+                "name": host.name,
+                "url": host.url,
+                "status": host.status,
+                "tags": tags,
+                "stats": {
+                    "cpu_percent": round(sparklines["cpu"][-1] if sparklines["cpu"] else total_cpu, 1),
+                    "mem_percent": round(sparklines["mem"][-1] if sparklines["mem"] else mem_percent, 1),
+                    "mem_used_gb": round(total_mem_used, 1),
+                    "mem_total_gb": 16.0,  # TODO: Get from host metrics
+                    "net_bytes_per_sec": int(sparklines["net"][-1]) if sparklines["net"] else 0
+                },
+                "sparklines": sparklines,
+                "containers": {
+                    "total": len(host_containers),
+                    "running": len(running_containers),
+                    "stopped": len(host_containers) - len(running_containers),
+                    "top": [
+                        {
+                            "id": c.id,
+                            "name": c.name,
+                            "state": c.status,
+                            "cpu_percent": round(c.cpu_percent or 0, 1)
+                        }
+                        for c in top_containers
+                    ]
+                },
+                "alerts": {
+                    "open": 0,  # TODO: Get from alert rules
+                    "snoozed": 0
+                },
+                "updates_available": 0  # TODO: Implement update detection
+            })
+
+        # Group hosts if group_by is specified
+        if group_by and group_by in ['env', 'region', 'datacenter', 'compose.project']:
+            groups = {}
+            ungrouped = []
+
+            for host in host_data:
+                # Find matching tag
+                group_value = None
+                for tag in host.get('tags', []):
+                    if ':' in tag:
+                        key, value = tag.split(':', 1)
+                        if key == group_by or (group_by == 'compose.project' and key == 'compose' and tag.startswith('compose:')):
+                            group_value = value
+                            break
+                    elif group_by == tag:  # Simple tag without value
+                        group_value = tag
+                        break
+
+                if group_value:
+                    if group_value not in groups:
+                        groups[group_value] = []
+                    groups[group_value].append(host)
+                else:
+                    ungrouped.append(host)
+
+            # Add ungrouped hosts
+            if ungrouped:
+                groups["(ungrouped)"] = ungrouped
+
+            return {
+                "groups": groups,
+                "group_by": group_by,
+                "total_hosts": len(host_data)
+            }
+        else:
+            # No grouping - return all in single group
+            return {
+                "groups": {"All Hosts": host_data},
+                "group_by": None,
+                "total_hosts": len(host_data)
+            }
+
+    except Exception as e:
+        logger.error(f"Failed to get dashboard hosts: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 # ==================== Event Log Routes ====================
 # Note: Main /api/events endpoint is defined earlier with full feature set
 

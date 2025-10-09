@@ -26,8 +26,9 @@ import 'react-grid-layout/css/styles.css'
 // Responsive grid that auto-adjusts width
 const ResponsiveGridLayout = WidthProvider(GridLayout)
 
-// Default dashboard layout (Hosts → Containers → Events → Alerts)
-// Grid is 12 columns: 2 small (3 cols) + 2 large (4 cols) = 14... adjusting to fit
+// Default dashboard layout (Hosts → Containers → Updates → Events → Alerts)
+// Phase 4: Added Updates widget
+// Grid is 12 columns: 3 small widgets (2 cols) + 2 large widgets (3 cols) = 12
 const defaultLayout: WidgetConfig[] = [
   {
     id: 'host-stats',
@@ -52,12 +53,23 @@ const defaultLayout: WidgetConfig[] = [
     minH: 2,
   },
   {
+    id: 'updates',
+    type: 'updates',
+    title: 'Updates',
+    x: 4,
+    y: 0,
+    w: 2,
+    h: 2,
+    minW: 2,
+    minH: 2,
+  },
+  {
     id: 'recent-events',
     type: 'recent-events',
     title: 'Recent Events',
-    x: 4,
+    x: 6,
     y: 0,
-    w: 4,
+    w: 3,
     h: 2,
     minW: 3,
     minH: 2,
@@ -66,9 +78,9 @@ const defaultLayout: WidgetConfig[] = [
     id: 'alert-summary',
     type: 'alert-summary',
     title: 'Active Alerts',
-    x: 8,
+    x: 9,
     y: 0,
-    w: 4,
+    w: 3,
     h: 2,
     minW: 3,
     minH: 2,

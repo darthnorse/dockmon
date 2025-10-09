@@ -10,6 +10,7 @@ export type WidgetType =
   | 'host-stats'
   | 'recent-events'
   | 'alert-summary'
+  | 'updates'
   | 'cpu-usage'
   | 'memory-usage'
 

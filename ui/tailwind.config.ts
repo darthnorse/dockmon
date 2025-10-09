@@ -20,15 +20,45 @@ export default {
     extend: {
       colors: {
         // Custom color system - maps to CSS variables
-        background: 'var(--bg)',
+        background: 'var(--background)',
+        foreground: 'var(--foreground)',
+
+        // shadcn/ui compatible colors
+        card: {
+          DEFAULT: 'var(--card)',
+          foreground: 'var(--card-foreground)',
+        },
+        popover: {
+          DEFAULT: 'var(--popover)',
+          foreground: 'var(--popover-foreground)',
+        },
+        primary: {
+          DEFAULT: 'var(--primary)',
+          foreground: 'var(--primary-foreground)',
+        },
+        secondary: {
+          DEFAULT: 'var(--secondary)',
+          foreground: 'var(--secondary-foreground)',
+        },
+        muted: {
+          DEFAULT: 'var(--muted)',
+          foreground: 'var(--muted-foreground)',
+        },
+        destructive: {
+          DEFAULT: 'var(--destructive)',
+          foreground: 'var(--destructive-foreground)',
+        },
+
+        // Legacy custom colors
         surface: {
+          DEFAULT: 'var(--surface-1)',
           1: 'var(--surface-1)',
           2: 'var(--surface-2)',
         },
         border: 'var(--border)',
         'border-color': 'var(--border-color)', // Alias for border utility
         input: 'var(--input)', // Input field background
-        primary: 'var(--primary)', // Primary accent color
+        ring: 'var(--ring)',
         text: {
           DEFAULT: 'var(--text)',
           muted: 'var(--text-muted)',
@@ -36,6 +66,7 @@ export default {
         },
         accent: {
           DEFAULT: 'var(--accent)',
+          foreground: 'var(--accent-foreground)',
           2: 'var(--accent-2)',
           3: 'var(--accent-3)',
         },

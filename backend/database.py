@@ -31,6 +31,7 @@ class User(Base):
     dashboard_layout = Column(Text, nullable=True)  # JSON string of GridStack layout (v1 - deprecated)
     dashboard_layout_v2 = Column(Text, nullable=True)  # JSON string of react-grid-layout (v2)
     sidebar_collapsed = Column(Boolean, default=False)  # Sidebar collapse state (v2)
+    view_mode = Column(String, nullable=True)  # Dashboard view mode: 'compact' | 'standard' | 'expanded' (Phase 4)
     event_sort_order = Column(String, default='desc')  # 'desc' (newest first) or 'asc' (oldest first)
     container_sort_order = Column(String, default='name-asc')  # Container sort preference on dashboard
     modal_preferences = Column(Text, nullable=True)  # JSON string of modal size/position preferences
@@ -311,6 +312,13 @@ class DatabaseManager:
                     session.execute(text("ALTER TABLE users ADD COLUMN modal_preferences TEXT"))
                     session.commit()
                     print("Added modal_preferences column to users table")
+
+                # Migration: Add view_mode column to users table if it doesn't exist (Phase 4)
+                if 'view_mode' not in column_names:
+                    # Add the column using raw SQL
+                    session.execute(text("ALTER TABLE users ADD COLUMN view_mode VARCHAR"))
+                    session.commit()
+                    print("Added view_mode column to users table")
 
                 # Migration: Add show_host_stats and show_container_stats columns to global_settings table
                 settings_inspector = session.connection().engine.dialect.get_columns(session.connection(), 'global_settings')

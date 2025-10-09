@@ -27,6 +27,7 @@ from notifications import NotificationService, AlertProcessor
 from event_logger import EventLogger, EventSeverity, EventType
 from stats_client import get_stats_client
 from docker_monitor.stats_manager import StatsManager
+from docker_monitor.stats_history import StatsHistoryBuffer
 from auth.session_manager import session_manager
 
 
@@ -101,6 +102,13 @@ class DockerMonitor:
 
         # Stats collection manager
         self.stats_manager = StatsManager()
+
+        # Stats history buffer for sparklines (Phase 4c)
+        self.stats_history = StatsHistoryBuffer()
+
+        # Track previous network stats for rate calculation (Phase 4c)
+        self._last_net_stats: Dict[str, float] = {}  # host_id -> cumulative bytes
+
         self._load_persistent_config()  # Load saved hosts and configs
 
     def add_host(self, config: DockerHostConfig, existing_id: str = None, skip_db_save: bool = False, suppress_event_loop_errors: bool = False) -> DockerHost:
@@ -1240,6 +1248,7 @@ class DockerMonitor:
 
                 # Centralized stats collection decision using StatsManager
                 has_viewers = self.manager.has_active_connections()
+                logger.info(f"Monitor loop: has_viewers={has_viewers}, active_connections={len(self.manager.active_connections)}")
 
                 if has_viewers:
                     # Determine which containers need stats (centralized logic)
@@ -1327,11 +1336,82 @@ class DockerMonitor:
                     }
 
                     # Only include host metrics if host stats are enabled
-                    if self.stats_manager.should_broadcast_host_metrics(self.settings):
-                        # Get host metrics from stats service (fast HTTP call)
-                        host_metrics = await stats_client.get_host_stats()
-                        logger.debug(f"Retrieved metrics for {len(host_metrics)} hosts from stats service")
+                    should_broadcast = self.stats_manager.should_broadcast_host_metrics(self.settings)
+                    if should_broadcast:
+                        # Aggregate host metrics from container stats (Phase 4c)
+                        host_metrics = {}
+                        host_sparklines = {}
+
+                        # Group containers by host and aggregate stats
+                        for host_id in self.hosts.keys():
+                            host_containers = [c for c in containers if c.host_id == host_id]
+                            running_containers = [c for c in host_containers if c.status == 'running']
+
+                            if running_containers:
+                                # Aggregate CPU: Σ(container_cpu_percent) / num_cpus - per spec line 99
+                                total_cpu_sum = sum(c.cpu_percent or 0 for c in running_containers)
+                                # TODO: Get actual num_cpus from Docker info - for now assume 4
+                                num_cpus = 4
+                                total_cpu = total_cpu_sum / num_cpus
+
+                                # Aggregate Memory: Σ(container_mem_usage) / host_mem_total * 100 - per spec line 138
+                                total_mem_bytes = sum(c.memory_usage or 0 for c in running_containers)
+                                # TODO: Get actual host total memory from Docker info - for now assume 16GB
+                                total_mem_limit = 16 * 1024 * 1024 * 1024
+                                mem_percent = (total_mem_bytes / total_mem_limit * 100) if total_mem_limit > 0 else 0
+
+                                # Aggregate Network: Σ(container_rx_rate + container_tx_rate) - per spec line 122-123
+                                # Calculate rate by tracking delta from previous measurement
+                                total_net_rx = sum(c.network_rx or 0 for c in running_containers)
+                                total_net_tx = sum(c.network_tx or 0 for c in running_containers)
+                                total_net_bytes = total_net_rx + total_net_tx
+
+                                # Calculate bytes per second from delta
+                                if host_id in self._last_net_stats:
+                                    net_delta = total_net_bytes - self._last_net_stats[host_id]
+
+                                    # Handle counter reset (container restart) - Fix #4
+                                    if net_delta < 0:
+                                        logger.debug(f"Network counter reset detected for host {host_id[:8]}")
+                                        # Reset baseline, no rate this cycle
+                                        net_bytes_per_sec = 0
+                                    else:
+                                        # Normal case: Delta / polling_interval = bytes per second
+                                        net_bytes_per_sec = net_delta / self.settings.polling_interval
+
+                                        # Sanity check: Cap at 100 Gbps (reasonable max for aggregated hosts)
+                                        max_rate = 100 * 1024 * 1024 * 1024  # 100 GB/s
+                                        if net_bytes_per_sec > max_rate:
+                                            logger.warning(f"Network rate outlier detected for host {host_id[:8]}: {net_bytes_per_sec / (1024**3):.2f} GB/s, capping")
+                                            net_bytes_per_sec = 0  # Drop outlier
+                                else:
+                                    # First measurement - prime baseline, no rate yet (Fix #1)
+                                    net_bytes_per_sec = 0
+
+                                # Store for next calculation
+                                self._last_net_stats[host_id] = total_net_bytes
+
+                                host_metrics[host_id] = {
+                                    "cpu_percent": total_cpu,
+                                    "mem_percent": mem_percent,
+                                    "mem_bytes": total_mem_bytes,
+                                    "net_bytes_per_sec": net_bytes_per_sec
+                                }
+
+                                # Feed stats history buffer for sparklines
+                                self.stats_history.add_stats(
+                                    host_id=host_id,
+                                    cpu=total_cpu,
+                                    mem=mem_percent,
+                                    net=net_bytes_per_sec
+                                )
+
+                                # Get sparklines for this host (last 30 points)
+                                host_sparklines[host_id] = self.stats_history.get_sparklines(host_id, num_points=30)
+
                         broadcast_data["host_metrics"] = host_metrics
+                        broadcast_data["host_sparklines"] = host_sparklines
+                        logger.info(f"Aggregated metrics for {len(host_metrics)} hosts from {len(containers)} containers")
 
                     # Broadcast update to all connected clients
                     await self.manager.broadcast({

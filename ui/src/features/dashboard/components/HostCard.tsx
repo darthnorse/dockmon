@@ -13,7 +13,7 @@
  * <HostCard host={hostData} />
  */
 
-import { Circle, MoreVertical } from 'lucide-react'
+import { Circle, MoreVertical, Container } from 'lucide-react'
 import { MiniChart } from '@/lib/charts/MiniChart'
 import { TagChip } from '@/components/TagChip'
 import { useNavigate } from 'react-router-dom'
@@ -114,6 +114,13 @@ export function HostCard({ host }: HostCardProps) {
   const navigate = useNavigate()
 
   const hasStats = host.stats && host.sparklines
+
+  // Fix #7: Check if sparklines have valid data (not just priming zeros)
+  // Network sparklines start at 0 during priming - wait for at least 2 valid readings
+  const hasValidNetworkData = host.sparklines
+    ? host.sparklines.net.filter(v => v > 0).length >= 2
+    : false
+
   const hasContainers = host.containers && host.containers.total > 0
   const topContainers = host.containers?.top?.slice(0, 3) || []
 
@@ -202,16 +209,22 @@ export function HostCard({ host }: HostCardProps) {
           <div className="flex items-center gap-2">
             <span className="text-xs text-muted-foreground w-8">Net:</span>
             <div className="flex-1">
-              <MiniChart
-                data={host.sparklines!.net}
-                color="network"
-                width={120}
-                height={32}
-                label={`${host.name} Network I/O`}
-              />
+              {hasValidNetworkData ? (
+                <MiniChart
+                  data={host.sparklines!.net}
+                  color="network"
+                  width={120}
+                  height={32}
+                  label={`${host.name} Network I/O`}
+                />
+              ) : (
+                <div className="w-[120px] h-[32px] flex items-center justify-center text-xs text-muted-foreground">
+                  —
+                </div>
+              )}
             </div>
             <span className="text-xs font-mono text-foreground w-20 text-right">
-              {formatNetworkSpeed(host.stats!.net_bytes_per_sec)}
+              {hasValidNetworkData ? formatNetworkSpeed(host.stats!.net_bytes_per_sec) : '—'}
             </span>
           </div>
         </div>
@@ -250,7 +263,7 @@ export function HostCard({ host }: HostCardProps) {
         {/* Container count */}
         {hasContainers && (
           <div className="flex items-center gap-1 text-muted-foreground">
-            <span>🐳</span>
+            <Container className="w-3 h-3" />
             <span>
               {host.containers!.running} / {host.containers!.total}
             </span>

@@ -1369,10 +1369,23 @@ class DockerMonitor:
                                 # Calculate bytes per second from delta
                                 if host_id in self._last_net_stats:
                                     net_delta = total_net_bytes - self._last_net_stats[host_id]
-                                    # Delta / polling_interval = bytes per second
-                                    net_bytes_per_sec = max(0, net_delta / self.settings.polling_interval)
+
+                                    # Handle counter reset (container restart) - Fix #4
+                                    if net_delta < 0:
+                                        logger.debug(f"Network counter reset detected for host {host_id[:8]}")
+                                        # Reset baseline, no rate this cycle
+                                        net_bytes_per_sec = 0
+                                    else:
+                                        # Normal case: Delta / polling_interval = bytes per second
+                                        net_bytes_per_sec = net_delta / self.settings.polling_interval
+
+                                        # Sanity check: Cap at 100 Gbps (reasonable max for aggregated hosts)
+                                        max_rate = 100 * 1024 * 1024 * 1024  # 100 GB/s
+                                        if net_bytes_per_sec > max_rate:
+                                            logger.warning(f"Network rate outlier detected for host {host_id[:8]}: {net_bytes_per_sec / (1024**3):.2f} GB/s, capping")
+                                            net_bytes_per_sec = 0  # Drop outlier
                                 else:
-                                    # First measurement - no rate available yet
+                                    # First measurement - prime baseline, no rate yet (Fix #1)
                                     net_bytes_per_sec = 0
 
                                 # Store for next calculation

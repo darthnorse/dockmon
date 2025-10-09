@@ -248,3 +248,36 @@ export function useTopContainers(
     .sort((a, b) => b.cpu_percent - a.cpu_percent)
     .slice(0, limit)
 }
+
+/**
+ * Hook: useContainerCounts
+ * Get container counts (total, running, stopped) for a specific host
+ *
+ * @param hostId - The host ID
+ * @returns Object with total, running, and stopped counts
+ */
+export function useContainerCounts(
+  hostId: string | undefined
+): { total: number; running: number; stopped: number } {
+  const { containerStats } = useStatsContext()
+
+  if (!hostId) return { total: 0, running: 0, stopped: 0 }
+
+  let total = 0
+  let running = 0
+  let stopped = 0
+
+  containerStats.forEach((container, compositeKey) => {
+    // Check if this container belongs to the specified host
+    if (compositeKey.startsWith(`${hostId}:`)) {
+      total++
+      if (container.state === 'running') {
+        running++
+      } else if (container.state === 'exited' || container.state === 'stopped') {
+        stopped++
+      }
+    }
+  })
+
+  return { total, running, stopped }
+}

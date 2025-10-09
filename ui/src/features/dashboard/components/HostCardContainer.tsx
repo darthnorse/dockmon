@@ -11,7 +11,7 @@
  * <HostCardContainer hostId={host.id} host={host} />
  */
 
-import { useHostMetrics, useHostSparklines, useTopContainers } from '@/lib/stats/StatsProvider'
+import { useHostMetrics, useHostSparklines, useTopContainers, useContainerCounts } from '@/lib/stats/StatsProvider'
 import { HostCard, type HostCardData } from './HostCard'
 
 interface Host {
@@ -31,6 +31,7 @@ export function HostCardContainer({ host }: HostCardContainerProps) {
   const metrics = useHostMetrics(host.id)
   const sparklines = useHostSparklines(host.id)
   const topContainers = useTopContainers(host.id, 3)
+  const containerCounts = useContainerCounts(host.id)
 
   // Transform to HostCard format
   const hostCardData: HostCardData = {
@@ -61,11 +62,11 @@ export function HostCardContainer({ host }: HostCardContainerProps) {
     }),
 
     // Top containers from WebSocket
-    ...(topContainers.length > 0 && {
+    ...(containerCounts.total > 0 && {
       containers: {
-        total: topContainers.length, // TODO: Get actual total count
-        running: topContainers.length, // TODO: Get actual running count
-        stopped: 0, // TODO: Get actual stopped count
+        total: containerCounts.total,
+        running: containerCounts.running,
+        stopped: containerCounts.stopped,
         top: topContainers,
       },
     }),

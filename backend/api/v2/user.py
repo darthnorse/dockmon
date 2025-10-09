@@ -25,6 +25,13 @@ router = APIRouter(prefix="/api/v2/user", tags=["user-v2"])
 from auth.routes import db
 
 
+class DashboardPreferences(BaseModel):
+    """Dashboard-specific preferences"""
+    enableCustomLayout: bool = Field(default=True)
+    hostOrder: list[str] = Field(default_factory=list)
+    containerSortKey: str = Field(default="state", pattern="^(name|state|cpu|memory|start_time)$")
+
+
 class UserPreferences(BaseModel):
     """
     User preferences schema.
@@ -40,6 +47,7 @@ class UserPreferences(BaseModel):
     # React v2 preferences
     sidebar_collapsed: bool = Field(default=False)
     dashboard_layout_v2: Optional[Dict[str, Any]] = Field(default=None)  # react-grid-layout format
+    dashboard: DashboardPreferences = Field(default_factory=DashboardPreferences)
 
 
 class PreferencesUpdate(BaseModel):
@@ -53,6 +61,7 @@ class PreferencesUpdate(BaseModel):
     # React v2 preferences
     sidebar_collapsed: Optional[bool] = None
     dashboard_layout_v2: Optional[Dict[str, Any]] = None
+    dashboard: Optional[DashboardPreferences] = None
 
 
 @router.get("/preferences", response_model=UserPreferences)
@@ -79,7 +88,7 @@ async def get_user_preferences(
         ).fetchone()
 
         user_result = session.execute(
-            text("SELECT sidebar_collapsed, dashboard_layout_v2 FROM users WHERE id = :user_id"),
+            text("SELECT sidebar_collapsed, dashboard_layout_v2, prefs, view_mode, container_sort_order FROM users WHERE id = :user_id"),
             {"user_id": user_id}
         ).fetchone()
 
@@ -106,6 +115,43 @@ async def get_user_preferences(
                 logger.error(f"Invalid JSON in dashboard_layout_v2 for user {user_id}")
                 dashboard_layout_v2 = None
 
+        # Parse prefs column (new JSONB-style preferences)
+        prefs_data = {}
+        if user_result and user_result.prefs:
+            try:
+                prefs_data = json.loads(user_result.prefs)
+            except json.JSONDecodeError:
+                logger.error(f"Invalid JSON in prefs for user {user_id}")
+                prefs_data = {}
+
+        # Build dashboard preferences (with migration from old columns)
+        dashboard_prefs = prefs_data.get("dashboard", {})
+
+        # Migrate view_mode and container_sort_order if present in old columns
+        if not dashboard_prefs and user_result:
+            # Map old container_sort_order values to new containerSortKey
+            old_sort_order = user_result.container_sort_order or "state"
+            # Migrate old "status" to new "state"
+            if old_sort_order == "status":
+                old_sort_order = "state"
+
+            dashboard_prefs = {
+                "enableCustomLayout": True,
+                "hostOrder": [],
+                "containerSortKey": old_sort_order
+            }
+
+        # Get containerSortKey with migration for old "status" value
+        container_sort_key = dashboard_prefs.get("containerSortKey", "state")
+        if container_sort_key == "status":
+            container_sort_key = "state"
+
+        dashboard = DashboardPreferences(
+            enableCustomLayout=dashboard_prefs.get("enableCustomLayout", True),
+            hostOrder=dashboard_prefs.get("hostOrder", []),
+            containerSortKey=container_sort_key
+        )
+
         return UserPreferences(
             theme=prefs_result.theme if prefs_result else "dark",
             group_by=defaults_json.get("group_by", "env"),
@@ -113,7 +159,8 @@ async def get_user_preferences(
             collapsed_groups=defaults_json.get("collapsed_groups", []),
             filter_defaults=defaults_json.get("filter_defaults", {}),
             sidebar_collapsed=user_result.sidebar_collapsed if user_result else False,
-            dashboard_layout_v2=dashboard_layout_v2
+            dashboard_layout_v2=dashboard_layout_v2,
+            dashboard=dashboard
         )
 
 
@@ -215,6 +262,34 @@ async def update_user_preferences(
                 )
             update_parts.append("dashboard_layout_v2 = :dashboard_layout_v2")
             update_params["dashboard_layout_v2"] = dashboard_json
+
+        # Handle prefs column (new JSONB-style preferences)
+        if updates.dashboard is not None:
+            # Get existing prefs
+            user_result = session.execute(
+                text("SELECT prefs FROM users WHERE id = :user_id"),
+                {"user_id": user_id}
+            ).fetchone()
+
+            existing_prefs = {}
+            if user_result and user_result.prefs:
+                try:
+                    existing_prefs = json.loads(user_result.prefs)
+                except json.JSONDecodeError:
+                    existing_prefs = {}
+
+            # Merge dashboard preferences
+            existing_prefs["dashboard"] = updates.dashboard.model_dump()
+
+            prefs_json = json.dumps(existing_prefs)
+            # DOS PROTECTION: Limit JSON size to 100KB
+            if len(prefs_json) > MAX_JSON_SIZE:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Preferences too large ({len(prefs_json)} bytes, max {MAX_JSON_SIZE} bytes)"
+                )
+            update_parts.append("prefs = :prefs")
+            update_params["prefs"] = prefs_json
 
         if update_parts:
             query = f"UPDATE users SET {', '.join(update_parts)} WHERE id = :user_id"

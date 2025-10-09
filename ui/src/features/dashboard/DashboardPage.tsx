@@ -14,6 +14,7 @@
 import { GridDashboard } from './GridDashboard'
 import { ViewModeSelector } from './components/ViewModeSelector'
 import { HostCardContainer } from './components/HostCardContainer'
+import { HostCardsGrid } from './HostCardsGrid'
 import { useViewMode } from './hooks/useViewMode'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
 
@@ -61,10 +62,14 @@ export function DashboardPage() {
         </div>
       )}
 
-      {viewMode === 'expanded' && (
-        <div className="p-4 border border-dashed border-border rounded-lg text-center text-muted-foreground">
-          Expanded mode: Detailed host cards with inline containers will appear here
-        </div>
+      {viewMode === 'expanded' && hosts && (
+        <HostCardsGrid hosts={hosts.map(h => ({
+          id: h.id,
+          name: h.name,
+          url: h.url,
+          status: h.status as 'online' | 'offline' | 'error',
+          ...(h.tags && { tags: h.tags }),
+        }))} />
       )}
     </div>
   )

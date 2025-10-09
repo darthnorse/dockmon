@@ -30,6 +30,7 @@ class DashboardPreferences(BaseModel):
     enableCustomLayout: bool = Field(default=True)
     hostOrder: list[str] = Field(default_factory=list)
     containerSortKey: str = Field(default="state", pattern="^(name|state|cpu|memory|start_time)$")
+    hostCardLayout: Optional[list[Dict[str, Any]]] = Field(default=None)
 
 
 class UserPreferences(BaseModel):
@@ -149,7 +150,8 @@ async def get_user_preferences(
         dashboard = DashboardPreferences(
             enableCustomLayout=dashboard_prefs.get("enableCustomLayout", True),
             hostOrder=dashboard_prefs.get("hostOrder", []),
-            containerSortKey=container_sort_key
+            containerSortKey=container_sort_key,
+            hostCardLayout=dashboard_prefs.get("hostCardLayout")
         )
 
         return UserPreferences(
@@ -278,8 +280,10 @@ async def update_user_preferences(
                 except json.JSONDecodeError:
                     existing_prefs = {}
 
-            # Merge dashboard preferences
-            existing_prefs["dashboard"] = updates.dashboard.model_dump()
+            # Merge dashboard preferences (don't overwrite, merge with existing)
+            if "dashboard" not in existing_prefs:
+                existing_prefs["dashboard"] = {}
+            existing_prefs["dashboard"].update(updates.dashboard.model_dump(exclude_unset=True))
 
             prefs_json = json.dumps(existing_prefs)
             # DOS PROTECTION: Limit JSON size to 100KB

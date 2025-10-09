@@ -37,7 +37,7 @@ export function useUserPrefs() {
 }
 
 export function useDashboardPrefs() {
-  const { prefs, updatePrefs, isUpdating } = useUserPrefs()
+  const { prefs, updatePrefs, isUpdating, isLoading } = useUserPrefs()
 
   const updateDashboardPrefs = (updates: Partial<UserPreferences['dashboard']>) => {
     updatePrefs({
@@ -49,5 +49,6 @@ export function useDashboardPrefs() {
     dashboardPrefs: prefs?.dashboard,
     updateDashboardPrefs,
     isUpdating,
+    isLoading,
   }
 }

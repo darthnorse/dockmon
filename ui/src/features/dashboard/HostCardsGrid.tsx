@@ -44,7 +44,7 @@ function generateDefaultLayout(hosts: Host[]): Layout[] {
 }
 
 export function HostCardsGrid({ hosts }: HostCardsGridProps) {
-  const { dashboardPrefs, updateDashboardPrefs } = useDashboardPrefs()
+  const { dashboardPrefs, updateDashboardPrefs, isLoading } = useDashboardPrefs()
   const isInitialMount = useRef(true)
 
   // Get layout from user prefs or generate default
@@ -92,6 +92,16 @@ export function HostCardsGrid({ hosts }: HostCardsGridProps) {
     },
     [updateDashboardPrefs]
   )
+
+  // Don't render grid until prefs have loaded to prevent flash of default layout
+  if (isLoading) {
+    return (
+      <div className="mt-4">
+        <h2 className="text-lg font-semibold mb-4">Hosts</h2>
+        <div className="min-h-[400px]" />
+      </div>
+    )
+  }
 
   return (
     <div className="mt-4">

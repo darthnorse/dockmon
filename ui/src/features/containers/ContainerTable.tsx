@@ -42,6 +42,7 @@ import {
   RotateCw,
   MoreVertical,
   ArrowUpDown,
+  FileText,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { apiClient } from '@/lib/api/client'
@@ -61,14 +62,16 @@ import type { Container, ContainerAction } from './types'
 function StatusIcon({ state }: { state: Container['state'] }) {
   const iconMap = {
     running: { color: 'text-success', fill: 'fill-success', label: 'Running', animate: false },
-    stopped: { color: 'text-muted-foreground', fill: 'fill-muted-foreground', label: 'Stopped', animate: false },
+    stopped: { color: 'text-danger', fill: 'fill-danger', label: 'Exited', animate: false },
+    exited: { color: 'text-danger', fill: 'fill-danger', label: 'Exited', animate: false },
+    created: { color: 'text-muted-foreground', fill: 'fill-muted-foreground', label: 'Created', animate: false },
     paused: { color: 'text-warning', fill: 'fill-warning', label: 'Paused', animate: false },
     restarting: { color: 'text-info', fill: 'fill-info', label: 'Restarting', animate: true },
     removing: { color: 'text-danger', fill: 'fill-danger', label: 'Removing', animate: false },
     dead: { color: 'text-danger', fill: 'fill-danger', label: 'Dead', animate: false },
   }
 
-  const config = iconMap[state] || iconMap.stopped
+  const config = iconMap[state] || iconMap.exited
 
   return (
     <div className="flex items-center gap-2" title={config.label}>
@@ -194,7 +197,17 @@ export function ContainerTable() {
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['containers'] })
       const actionLabel = variables.type.charAt(0).toUpperCase() + variables.type.slice(1)
-      toast.success(`Container ${variables.type}ed successfully`, {
+      // Map action types to proper past tense
+      const actionPastTense: Record<string, string> = {
+        start: 'started',
+        stop: 'stopped',
+        restart: 'restarted',
+        pause: 'paused',
+        unpause: 'unpaused',
+        remove: 'removed',
+      }
+      const pastTense = actionPastTense[variables.type] || `${variables.type}ed`
+      toast.success(`Container ${pastTense} successfully`, {
         description: `Action: ${actionLabel}`,
       })
     },
@@ -212,31 +225,37 @@ export function ContainerTable() {
       // 1. Status (icon)
       {
         accessorKey: 'state',
-        header: ({ column }) => (
-          <Button
-            variant="ghost"
-            onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
-            className="h-8 px-2 hover:bg-surface-2"
-          >
-            Status
-            <ArrowUpDown className="ml-2 h-4 w-4" />
-          </Button>
-        ),
+        header: ({ column }) => {
+          const sortDirection = column.getIsSorted()
+          return (
+            <Button
+              variant="ghost"
+              onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
+              className="h-8 px-2 hover:bg-surface-2"
+            >
+              Status
+              <ArrowUpDown className={`ml-2 h-4 w-4 ${sortDirection ? 'text-primary' : 'text-muted-foreground'}`} />
+            </Button>
+          )
+        },
         cell: ({ row }) => <StatusIcon state={row.original.state} />,
       },
       // 2. Name (clickable)
       {
         accessorKey: 'name',
-        header: ({ column }) => (
-          <Button
-            variant="ghost"
-            onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
-            className="h-8 px-2 hover:bg-surface-2"
-          >
-            Name
-            <ArrowUpDown className="ml-2 h-4 w-4" />
-          </Button>
-        ),
+        header: ({ column }) => {
+          const sortDirection = column.getIsSorted()
+          return (
+            <Button
+              variant="ghost"
+              onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
+              className="h-8 px-2 hover:bg-surface-2"
+            >
+              Name
+              <ArrowUpDown className={`ml-2 h-4 w-4 ${sortDirection ? 'text-primary' : 'text-muted-foreground'}`} />
+            </Button>
+          )
+        },
         cell: ({ row }) => (
           <div className="font-medium">{row.original.name || 'Unknown'}</div>
         ),
@@ -333,96 +352,119 @@ export function ContainerTable() {
       {
         id: 'network',
         header: 'Network',
-        cell: ({ row }) => (
-          <NetworkIO rx={row.original.network_rx} tx={row.original.network_tx} />
-        ),
+        cell: ({ row }) => {
+          const { network_rx, network_tx } = row.original
+          return (
+            <NetworkIO
+              {...(network_rx !== undefined && { rx: network_rx })}
+              {...(network_tx !== undefined && { tx: network_tx })}
+            />
+          )
+        },
       },
-      // 9. Actions (Start/Stop/Restart/More)
+      // 9. Actions (Start/Stop/Restart/Logs/View details)
       {
         id: 'actions',
         header: 'Actions',
         cell: ({ row }) => {
           const container = row.original
           const isRunning = container.state === 'running'
-          const isStopped = container.state === 'stopped'
+          const isStopped = container.state === 'exited' || container.state === 'stopped' || container.state === 'created'
+          const canStart = isStopped && container.host_id
+          const canStop = isRunning && container.host_id
+          const canRestart = isRunning && container.host_id
 
           return (
-            <div className="flex items-center gap-2">
-              {isStopped && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-8 w-8"
-                  onClick={() => {
-                    if (!container.host_id) {
-                      toast.error('Cannot start container', {
-                        description: 'Container missing host information',
-                      })
-                      return
-                    }
-                    actionMutation.mutate({
-                      type: 'start',
-                      container_id: container.id,
-                      host_id: container.host_id,
+            <div className="flex items-center gap-1">
+              {/* Start button - enabled only when stopped */}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() => {
+                  if (!container.host_id) {
+                    toast.error('Cannot start container', {
+                      description: 'Container missing host information',
                     })
-                  }}
-                  disabled={actionMutation.isPending || !container.host_id}
-                  title="Start container"
-                >
-                  <PlayCircle className="h-4 w-4 text-success" />
-                </Button>
-              )}
+                    return
+                  }
+                  actionMutation.mutate({
+                    type: 'start',
+                    container_id: container.id,
+                    host_id: container.host_id,
+                  })
+                }}
+                disabled={!canStart || actionMutation.isPending}
+                title="Start container"
+              >
+                <PlayCircle className={`h-4 w-4 ${canStart ? 'text-success' : 'text-muted-foreground'}`} />
+              </Button>
 
-              {isRunning && (
-                <>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8"
-                    onClick={() => {
-                      if (!container.host_id) {
-                        toast.error('Cannot stop container', {
-                          description: 'Container missing host information',
-                        })
-                        return
-                      }
-                      actionMutation.mutate({
-                        type: 'stop',
-                        container_id: container.id,
-                        host_id: container.host_id,
-                      })
-                    }}
-                    disabled={actionMutation.isPending || !container.host_id}
-                    title="Stop container"
-                  >
-                    <Square className="h-4 w-4 text-danger" />
-                  </Button>
+              {/* Stop button - enabled only when running */}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() => {
+                  if (!container.host_id) {
+                    toast.error('Cannot stop container', {
+                      description: 'Container missing host information',
+                    })
+                    return
+                  }
+                  actionMutation.mutate({
+                    type: 'stop',
+                    container_id: container.id,
+                    host_id: container.host_id,
+                  })
+                }}
+                disabled={!canStop || actionMutation.isPending}
+                title="Stop container"
+              >
+                <Square className={`h-4 w-4 ${canStop ? 'text-danger' : 'text-muted-foreground'}`} />
+              </Button>
 
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8"
-                    onClick={() => {
-                      if (!container.host_id) {
-                        toast.error('Cannot restart container', {
-                          description: 'Container missing host information',
-                        })
-                        return
-                      }
-                      actionMutation.mutate({
-                        type: 'restart',
-                        container_id: container.id,
-                        host_id: container.host_id,
-                      })
-                    }}
-                    disabled={actionMutation.isPending || !container.host_id}
-                    title="Restart container"
-                  >
-                    <RotateCw className="h-4 w-4 text-info" />
-                  </Button>
-                </>
-              )}
+              {/* Restart button - enabled only when running */}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() => {
+                  if (!container.host_id) {
+                    toast.error('Cannot restart container', {
+                      description: 'Container missing host information',
+                    })
+                    return
+                  }
+                  actionMutation.mutate({
+                    type: 'restart',
+                    container_id: container.id,
+                    host_id: container.host_id,
+                  })
+                }}
+                disabled={!canRestart || actionMutation.isPending}
+                title="Restart container"
+              >
+                <RotateCw className={`h-4 w-4 ${canRestart ? 'text-info' : 'text-muted-foreground'}`} />
+              </Button>
 
+              {/* Logs button - always enabled */}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() => {
+                  // TODO: Open logs modal/drawer
+                  toast.info('Logs', {
+                    description: `View logs for ${container.name}`,
+                  })
+                }}
+                title="View logs"
+              >
+                <FileText className="h-4 w-4" />
+              </Button>
+
+              {/* More actions menu */}
               <Button
                 variant="ghost"
                 size="icon"
@@ -493,9 +535,9 @@ export function ContainerTable() {
       </div>
 
       {/* Table */}
-      <div className="overflow-hidden rounded-lg border border-border bg-surface-1">
+      <div className="overflow-hidden rounded-lg border border-border">
         <table className="w-full">
-          <thead className="border-b border-border bg-surface-2 sticky top-0">
+          <thead className="border-b border-border bg-muted/50 sticky top-0 z-10">
             {table.getHeaderGroups().map((headerGroup) => (
               <tr key={headerGroup.id}>
                 {headerGroup.headers.map((header) => (
@@ -528,7 +570,7 @@ export function ContainerTable() {
               table.getRowModel().rows.map((row) => (
                 <tr
                   key={row.id}
-                  className="hover:bg-[#151827] transition-colors"
+                  className="border-t hover:bg-[#151827] transition-colors"
                 >
                   {row.getVisibleCells().map((cell) => (
                     <td key={cell.id} className="px-4 py-3">

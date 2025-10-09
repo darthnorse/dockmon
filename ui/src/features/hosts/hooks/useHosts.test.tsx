@@ -57,7 +57,7 @@ describe('useHosts', () => {
         },
       ]
 
-      vi.mocked(apiClient.get).mockResolvedValue({ data: mockHosts })
+      vi.mocked(apiClient.get).mockResolvedValue(mockHosts)
 
       const { result } = renderHook(() => useHosts(), {
         wrapper: createWrapper(),
@@ -66,7 +66,7 @@ describe('useHosts', () => {
       await waitFor(() => expect(result.current.isSuccess).toBe(true))
 
       expect(result.current.data).toEqual(mockHosts)
-      expect(apiClient.get).toHaveBeenCalledWith('/api/hosts')
+      expect(apiClient.get).toHaveBeenCalledWith('/hosts')
     })
 
     it('should handle fetch error', async () => {
@@ -81,13 +81,13 @@ describe('useHosts', () => {
       expect(result.current.error).toBeTruthy()
     })
 
-    it('should return empty array by default', () => {
+    it('should return undefined by default before data loads', () => {
       const { result } = renderHook(() => useHosts(), {
         wrapper: createWrapper(),
       })
 
       // Before data loads
-      expect(result.current.data).toEqual([])
+      expect(result.current.data).toBeUndefined()
     })
   })
 
@@ -111,7 +111,7 @@ describe('useHosts', () => {
         description: 'Test host',
       }
 
-      vi.mocked(apiClient.post).mockResolvedValue({ data: newHost })
+      vi.mocked(apiClient.post).mockResolvedValue(newHost)
 
       const { result } = renderHook(() => useAddHost(), {
         wrapper: createWrapper(),
@@ -121,7 +121,7 @@ describe('useHosts', () => {
 
       await waitFor(() => expect(result.current.isSuccess).toBe(true))
 
-      expect(apiClient.post).toHaveBeenCalledWith('/api/hosts', hostConfig)
+      expect(apiClient.post).toHaveBeenCalledWith('/hosts', hostConfig)
       expect(toast.success).toHaveBeenCalledWith('Host "new-host" added successfully')
     })
 
@@ -190,7 +190,7 @@ describe('useHosts', () => {
         tags: ['updated'],
       }
 
-      vi.mocked(apiClient.put).mockResolvedValue({ data: updatedHost })
+      vi.mocked(apiClient.put).mockResolvedValue(updatedHost)
 
       const { result } = renderHook(() => useUpdateHost(), {
         wrapper: createWrapper(),
@@ -200,7 +200,7 @@ describe('useHosts', () => {
 
       await waitFor(() => expect(result.current.isSuccess).toBe(true))
 
-      expect(apiClient.put).toHaveBeenCalledWith('/api/hosts/1', hostConfig)
+      expect(apiClient.put).toHaveBeenCalledWith('/hosts/1', hostConfig)
       expect(toast.success).toHaveBeenCalledWith('Host "updated-host" updated successfully')
     })
 
@@ -244,7 +244,7 @@ describe('useHosts', () => {
 
       await waitFor(() => expect(result.current.isSuccess).toBe(true))
 
-      expect(apiClient.delete).toHaveBeenCalledWith('/api/hosts/1')
+      expect(apiClient.delete).toHaveBeenCalledWith('/hosts/1')
       expect(toast.success).toHaveBeenCalledWith('Host deleted successfully')
     })
 
@@ -282,7 +282,7 @@ describe('useHosts', () => {
         container_count: 0,
       }
 
-      vi.mocked(apiClient.post).mockResolvedValue({ data: newHost })
+      vi.mocked(apiClient.post).mockResolvedValue(newHost)
 
       const wrapper = createWrapper()
       const { result } = renderHook(() => useAddHost(), { wrapper })

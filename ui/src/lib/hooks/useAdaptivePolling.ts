@@ -62,6 +62,8 @@ export function useAdaptivePolling({
       (entries) => {
         // An element is visible if it intersects with the viewport
         const entry = entries[0]
+        if (!entry) return
+
         const visible = entry.isIntersecting
 
         setIsVisible(visible)

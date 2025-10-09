@@ -9,7 +9,7 @@ export interface Container {
   id: string
   name: string
   image: string
-  state: 'running' | 'stopped' | 'paused' | 'restarting' | 'removing' | 'dead'
+  state: 'running' | 'stopped' | 'exited' | 'created' | 'paused' | 'restarting' | 'removing' | 'dead'
   status: string // e.g., "Up 2 hours", "Exited (0) 5 minutes ago"
   created: string // ISO timestamp
   ports: ContainerPort[]

@@ -20,7 +20,6 @@
 
 import { useState, useRef, useEffect } from 'react'
 import { X } from 'lucide-react'
-import { Input } from '@/components/ui/input'
 import { TagChip } from '@/components/TagChip'
 
 export interface TagInputProps {
@@ -107,7 +106,10 @@ export function TagInput({
       e.preventDefault()
       if (selectedSuggestionIndex >= 0 && filteredSuggestions.length > 0) {
         // Select suggestion
-        addTag(filteredSuggestions[selectedSuggestionIndex])
+        const suggestion = filteredSuggestions[selectedSuggestionIndex]
+        if (suggestion) {
+          addTag(suggestion)
+        }
       } else if (inputValue) {
         // Add typed tag
         addTag(inputValue)
@@ -115,7 +117,10 @@ export function TagInput({
     } else if (e.key === 'Backspace' && !inputValue && value.length > 0) {
       // Remove last tag on backspace when input is empty
       e.preventDefault()
-      removeTag(value[value.length - 1])
+      const lastTag = value[value.length - 1]
+      if (lastTag) {
+        removeTag(lastTag)
+      }
     } else if (e.key === 'ArrowDown') {
       e.preventDefault()
       setSelectedSuggestionIndex((prev) =>

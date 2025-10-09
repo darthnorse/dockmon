@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, within, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { TagInput } from './TagInput'
 
@@ -269,10 +269,26 @@ describe('TagInput', () => {
       )
 
       const input = screen.getByRole('textbox')
-      await user.type(input, 'p')
+      await user.type(input, 's')
 
-      expect(screen.queryByRole('button', { name: /production/ })).not.toBeInTheDocument()
+      // Wait for suggestions to appear
+      await waitFor(() => {
+        expect(screen.getByText('staging')).toBeInTheDocument()
+      })
+
+      // staging should be in suggestions, production should not (except as a selected tag chip)
       expect(screen.getByText('staging')).toBeInTheDocument()
+
+      // Get all buttons - suggestion buttons should not include 'production' (except the Remove button for the selected tag)
+      const suggestionButtons = screen.getAllByRole('button').filter(btn => {
+        const text = btn.textContent
+        // Filter out the "Remove production" button (which is for the selected tag chip)
+        return text && !text.includes('Remove')
+      })
+
+      // Should have a button for 'staging' but not for 'production'
+      expect(suggestionButtons.some(btn => btn.textContent?.includes('staging'))).toBe(true)
+      expect(suggestionButtons.filter(btn => btn.textContent?.includes('production')).length).toBe(0)
     })
 
     it('should add tag from suggestion on click', async () => {
@@ -324,12 +340,16 @@ describe('TagInput', () => {
         <TagInput
           value={[]}
           onChange={vi.fn()}
-          suggestions={['production', 'staging', 'development']}
+          suggestions={['production', 'preview', 'development']}
         />
       )
 
       const input = screen.getByRole('textbox')
       await user.type(input, 'p')
+
+      // Should show "production" and "preview" (both match "p")
+      expect(screen.getByText('production')).toBeInTheDocument()
+      expect(screen.getByText('preview')).toBeInTheDocument()
 
       // Arrow down to select first suggestion
       await user.type(input, '{ArrowDown}')
@@ -338,7 +358,7 @@ describe('TagInput', () => {
 
       // Arrow down again
       await user.type(input, '{ArrowDown}')
-      const secondButton = screen.getByText('staging').closest('button')
+      const secondButton = screen.getByText('preview').closest('button')
       expect(secondButton).toHaveClass('bg-accent')
     })
 

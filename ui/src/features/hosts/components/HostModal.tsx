@@ -29,6 +29,8 @@ import { Input } from '@/components/ui/input'
 import { TagInput } from '@/components/TagInput'
 import { useTags } from '@/lib/hooks/useTags'
 import { useAddHost, useUpdateHost, type Host, type HostConfig } from '../hooks/useHosts'
+import { toast } from 'sonner'
+import { apiClient } from '@/lib/api/client'
 
 // Zod schema for host form
 const hostSchema = z.object({
@@ -62,9 +64,15 @@ interface HostModalProps {
 
 export function HostModal({ isOpen, onClose, host }: HostModalProps) {
   const [showTlsFields, setShowTlsFields] = useState(false)
+  const [replaceCa, setReplaceCa] = useState(false)
+  const [replaceCert, setReplaceCert] = useState(false)
+  const [replaceKey, setReplaceKey] = useState(false)
   const { tags: allTags } = useTags()
   const addMutation = useAddHost()
   const updateMutation = useUpdateHost()
+
+  // Check if host has existing certificates (indicates mTLS is enabled)
+  const hostHasCerts = host?.security_status === 'secure'
 
   const {
     register,
@@ -78,7 +86,7 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
     defaultValues: {
       name: host?.name || '',
       url: host?.url || '',
-      enableTls: false,
+      enableTls: hostHasCerts || false,
       tls_ca: '',
       tls_cert: '',
       tls_key: '',
@@ -88,22 +96,95 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
   })
 
   const watchTags = watch('tags')
+  const watchUrl = watch('url')
 
   // Update form when host prop changes
   useEffect(() => {
     if (host) {
+      const hasCerts = host.security_status === 'secure'
+      setShowTlsFields(hasCerts)
+      setReplaceCa(false)
+      setReplaceCert(false)
+      setReplaceKey(false)
+
       reset({
         name: host.name,
         url: host.url,
-        enableTls: false,
+        enableTls: hasCerts,
         tls_ca: '',
         tls_cert: '',
         tls_key: '',
         tags: host.tags || [],
         description: host.description || '',
       })
+    } else {
+      // New host - reset replace states
+      setReplaceCa(false)
+      setReplaceCert(false)
+      setReplaceKey(false)
     }
   }, [host, reset])
+
+  const testConnection = async () => {
+    const formData = watch()
+
+    // Validate required fields
+    if (!formData.url) {
+      toast.error('Please enter an address/endpoint first')
+      return
+    }
+
+    // Build test config
+    const testConfig: HostConfig = {
+      name: formData.name || 'test',
+      url: formData.url,
+      tags: [],
+      description: null,
+    }
+
+    // Add certs if mTLS is enabled
+    if (showTlsFields) {
+      // For existing hosts with certs, we can't test without replacement
+      if (hostHasCerts && !replaceCa && !replaceCert && !replaceKey) {
+        toast.info('Using existing certificates for test connection')
+        // Send empty certs - backend will use existing ones
+        testConfig.tls_ca = null
+        testConfig.tls_cert = null
+        testConfig.tls_key = null
+      } else {
+        // New certs or replacement - validate they're provided
+        if (!formData.tls_ca || !formData.tls_cert || !formData.tls_key) {
+          toast.error('All three certificates are required for mTLS connection')
+          return
+        }
+        testConfig.tls_ca = formData.tls_ca
+        testConfig.tls_cert = formData.tls_cert
+        testConfig.tls_key = formData.tls_key
+      }
+    }
+
+    try {
+      toast.loading('Testing connection...', { id: 'test-connection' })
+
+      const response = await apiClient.post<{
+        success: boolean
+        message: string
+        docker_version: string
+        api_version: string
+      }>('/hosts/test-connection', testConfig)
+
+      const dockerVersion = response.docker_version || 'unknown'
+      const apiVersion = response.api_version || 'unknown'
+
+      toast.success(`Connection successful! Docker ${dockerVersion} (API ${apiVersion})`, {
+        id: 'test-connection',
+        duration: 5000
+      })
+    } catch (error: any) {
+      const message = error.response?.data?.detail || error.message || 'Connection failed'
+      toast.error(message, { id: 'test-connection' })
+    }
+  }
 
   const onSubmit = async (data: HostFormData) => {
     const config: HostConfig = {
@@ -115,9 +196,17 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
 
     // Add TLS fields if enabled
     if (data.enableTls) {
-      config.tls_ca = data.tls_ca || null
-      config.tls_cert = data.tls_cert || null
-      config.tls_key = data.tls_key || null
+      // For existing hosts, only send certs if user clicked Replace
+      if (host && hostHasCerts) {
+        config.tls_ca = replaceCa ? (data.tls_ca || null) : null
+        config.tls_cert = replaceCert ? (data.tls_cert || null) : null
+        config.tls_key = replaceKey ? (data.tls_key || null) : null
+      } else {
+        // New host or new mTLS setup - send all certs
+        config.tls_ca = data.tls_ca || null
+        config.tls_cert = data.tls_cert || null
+        config.tls_key = data.tls_key || null
+      }
     }
 
     try {
@@ -197,78 +286,173 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
             )}
           </div>
 
-          {/* TLS Toggle */}
-          <div className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              id="enableTls"
-              checked={showTlsFields}
-              onChange={(e) => setShowTlsFields(e.target.checked)}
-              className="h-4 w-4"
-            />
-            <label htmlFor="enableTls" className="text-sm font-medium">
-              Enable TLS / mTLS
-            </label>
-          </div>
-
-          {/* TLS Certificate Fields (conditional) */}
-          {showTlsFields && (
-            <div className="space-y-4 rounded-lg border border-border p-4 bg-muted/20">
-              <p className="text-xs text-muted-foreground">
-                Provide TLS certificates for secure connection. All three certificates are required for TLS.
+          {/* TLS Toggle or UNIX Socket Note */}
+          {watchUrl?.startsWith('unix://') ? (
+            <div className="rounded-lg border border-border p-3 bg-muted/10">
+              <p className="text-sm text-muted-foreground">
+                Local UNIX socket — TLS not applicable
               </p>
-
-              {/* CA Certificate */}
-              <div>
-                <label htmlFor="tls_ca" className="block text-sm font-medium mb-1">
-                  CA Certificate
-                </label>
-                <textarea
-                  id="tls_ca"
-                  {...register('tls_ca')}
-                  rows={4}
-                  placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
-                />
-                {errors.tls_ca && (
-                  <p className="text-xs text-destructive mt-1">{errors.tls_ca.message}</p>
-                )}
-              </div>
-
-              {/* Client Certificate */}
-              <div>
-                <label htmlFor="tls_cert" className="block text-sm font-medium mb-1">
-                  Client Certificate
-                </label>
-                <textarea
-                  id="tls_cert"
-                  {...register('tls_cert')}
-                  rows={4}
-                  placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
-                />
-                {errors.tls_cert && (
-                  <p className="text-xs text-destructive mt-1">{errors.tls_cert.message}</p>
-                )}
-              </div>
-
-              {/* Client Key */}
-              <div>
-                <label htmlFor="tls_key" className="block text-sm font-medium mb-1">
-                  Client Private Key
-                </label>
-                <textarea
-                  id="tls_key"
-                  {...register('tls_key')}
-                  rows={4}
-                  placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----"
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
-                />
-                {errors.tls_key && (
-                  <p className="text-xs text-destructive mt-1">{errors.tls_key.message}</p>
-                )}
-              </div>
             </div>
+          ) : (
+            <>
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="enableTls"
+                    checked={showTlsFields}
+                    onChange={(e) => {
+                      const checked = e.target.checked
+                      setShowTlsFields(checked)
+                      setValue('enableTls', checked)
+                    }}
+                    className="h-4 w-4"
+                  />
+                  <label htmlFor="enableTls" className="text-sm font-medium">
+                    Enable mTLS (mutual TLS)
+                  </label>
+                </div>
+                {!showTlsFields && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={testConnection}
+                    className="h-7 text-xs"
+                  >
+                    Test Connection
+                  </Button>
+                )}
+              </div>
+
+              {/* mTLS Certificate Fields (conditional) */}
+              {showTlsFields && (
+                <div className="space-y-4 rounded-lg border border-border p-4 bg-muted/20">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-muted-foreground">
+                      All three certificates are required for secure mTLS connection.
+                    </p>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={testConnection}
+                      className="h-7 text-xs"
+                    >
+                      Test Connection
+                    </Button>
+                  </div>
+
+                  {/* CA Certificate */}
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label htmlFor="tls_ca" className="block text-sm font-medium">
+                        CA Certificate <span className="text-destructive">*</span>
+                      </label>
+                      {hostHasCerts && !replaceCa && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setReplaceCa(true)}
+                          className="h-7 text-xs"
+                        >
+                          Replace
+                        </Button>
+                      )}
+                    </div>
+                    {hostHasCerts && !replaceCa ? (
+                      <div className="w-full rounded-md border border-input bg-muted px-3 py-2 text-sm text-muted-foreground">
+                        Uploaded — •••
+                      </div>
+                    ) : (
+                      <textarea
+                        id="tls_ca"
+                        {...register('tls_ca')}
+                        rows={4}
+                        placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+                        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+                      />
+                    )}
+                    {errors.tls_ca && (
+                      <p className="text-xs text-destructive mt-1">{errors.tls_ca.message}</p>
+                    )}
+                  </div>
+
+                  {/* Client Certificate */}
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label htmlFor="tls_cert" className="block text-sm font-medium">
+                        Client Certificate <span className="text-destructive">*</span>
+                      </label>
+                      {hostHasCerts && !replaceCert && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setReplaceCert(true)}
+                          className="h-7 text-xs"
+                        >
+                          Replace
+                        </Button>
+                      )}
+                    </div>
+                    {hostHasCerts && !replaceCert ? (
+                      <div className="w-full rounded-md border border-input bg-muted px-3 py-2 text-sm text-muted-foreground">
+                        Uploaded — •••
+                      </div>
+                    ) : (
+                      <textarea
+                        id="tls_cert"
+                        {...register('tls_cert')}
+                        rows={4}
+                        placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+                        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+                      />
+                    )}
+                    {errors.tls_cert && (
+                      <p className="text-xs text-destructive mt-1">{errors.tls_cert.message}</p>
+                    )}
+                  </div>
+
+                  {/* Client Key */}
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label htmlFor="tls_key" className="block text-sm font-medium">
+                        Client Private Key <span className="text-destructive">*</span>
+                      </label>
+                      {hostHasCerts && !replaceKey && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setReplaceKey(true)}
+                          className="h-7 text-xs"
+                        >
+                          Replace
+                        </Button>
+                      )}
+                    </div>
+                    {hostHasCerts && !replaceKey ? (
+                      <div className="w-full rounded-md border border-input bg-muted px-3 py-2 text-sm text-muted-foreground">
+                        Uploaded — •••
+                      </div>
+                    ) : (
+                      <textarea
+                        id="tls_key"
+                        {...register('tls_key')}
+                        rows={4}
+                        placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----"
+                        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+                      />
+                    )}
+                    {errors.tls_key && (
+                      <p className="text-xs text-destructive mt-1">{errors.tls_key.message}</p>
+                    )}
+                  </div>
+                </div>
+              )}
+            </>
           )}
 
           {/* Tags */}

@@ -27,12 +27,12 @@ export interface Host {
  * Fetch all hosts and extract unique tags
  */
 async function fetchTags(): Promise<string[]> {
-  const response = await apiClient.get<Host[]>('/api/hosts')
+  const hosts = await apiClient.get<Host[]>('/hosts')
 
   // Extract all tags from all hosts
-  const allTags = response.data
-    .flatMap((host) => host.tags || [])
-    .filter((tag, index, self) => self.indexOf(tag) === index) // Unique
+  const allTags = hosts
+    .flatMap((host: Host) => host.tags || [])
+    .filter((tag: string, index: number, self: string[]) => self.indexOf(tag) === index) // Unique
     .sort() // Alphabetical
 
   return allTags

@@ -76,7 +76,7 @@ export function HostsPage() {
       </div>
 
       {/* Host Table */}
-      <HostTable />
+      <HostTable onEditHost={handleEditHost} />
 
       {/* Host Modal */}
       <HostModal

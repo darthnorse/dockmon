@@ -81,7 +81,8 @@ export function useStatsHistory(entityId: string) {
    */
   const getLatest = useCallback((metric: MetricType): number | null => {
     const history = historyRef.current[metric]
-    return history.length > 0 ? history[history.length - 1] : null
+    const latest = history.length > 0 ? history[history.length - 1] : undefined
+    return latest !== undefined ? latest : null
   }, [])
 
   /**

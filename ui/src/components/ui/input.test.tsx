@@ -56,7 +56,7 @@ describe('Input', () => {
 
       const input = screen.getByPlaceholderText('Enter your username')
       expect(input).toBeInTheDocument()
-      expect(input).toHaveClass('placeholder:text-muted-foreground')
+      expect(input).toHaveClass('placeholder:text-gray-400')
     })
 
     it('should merge custom className', () => {

@@ -45,31 +45,28 @@ export interface HostConfig {
  * Fetch all hosts
  */
 async function fetchHosts(): Promise<Host[]> {
-  const response = await apiClient.get<Host[]>('/api/hosts')
-  return response.data
+  return await apiClient.get<Host[]>('/hosts')
 }
 
 /**
  * Add a new host
  */
 async function addHost(config: HostConfig): Promise<Host> {
-  const response = await apiClient.post<Host>('/api/hosts', config)
-  return response.data
+  return await apiClient.post<Host>('/hosts', config)
 }
 
 /**
  * Update an existing host
  */
 async function updateHost(id: string, config: HostConfig): Promise<Host> {
-  const response = await apiClient.put<Host>(`/api/hosts/${id}`, config)
-  return response.data
+  return await apiClient.put<Host>(`/hosts/${id}`, config)
 }
 
 /**
  * Delete a host
  */
 async function deleteHost(id: string): Promise<void> {
-  await apiClient.delete(`/api/hosts/${id}`)
+  await apiClient.delete(`/hosts/${id}`)
 }
 
 /**

@@ -61,12 +61,17 @@ export interface MiniChartProps {
 function applyEMASmoothing(data: number[], alpha: number = 0.3): number[] {
   if (data.length === 0) return []
 
-  const smoothed: number[] = [data[0]]
+  const first = data[0]
+  if (first === undefined) return []
+
+  const smoothed: number[] = [first]
 
   for (let i = 1; i < data.length; i++) {
     const current = data[i]
     const previous = smoothed[i - 1]
-    smoothed[i] = alpha * current + (1 - alpha) * previous
+    if (current !== undefined && previous !== undefined) {
+      smoothed[i] = alpha * current + (1 - alpha) * previous
+    }
   }
 
   return smoothed
@@ -124,7 +129,7 @@ export function MiniChart({
       },
       y: {
         auto: true,
-        range: (u, dataMin, dataMax) => {
+        range: (_u, dataMin, dataMax) => {
           // Add 10% padding for visual breathing room
           const padding = (dataMax - dataMin) * 0.1
           return [dataMin - padding, dataMax + padding]
@@ -171,6 +176,7 @@ export function MiniChart({
       }
     } catch (error) {
       debug.error('MiniChart', 'Failed to initialize chart:', error)
+      return undefined
     }
   }, []) // Only run once on mount
 

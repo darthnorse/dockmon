@@ -45,6 +45,11 @@ export default {
           danger: 'var(--danger)',
           info: 'var(--info)',
         },
+        // Semantic color aliases for utility classes (text-success, fill-success, etc.)
+        success: 'var(--success)',
+        warning: 'var(--warning)',
+        danger: 'var(--danger)',
+        info: 'var(--info)',
       },
       fontFamily: {
         sans: [

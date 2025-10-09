@@ -72,13 +72,11 @@ describe('ContainerStatsWidget', () => {
 
   describe('data rendering', () => {
     it('should display total container count', async () => {
-      vi.mocked(apiClient.apiClient.get).mockResolvedValue({
-        containers: [
-          { id: '1', name: 'container1', state: 'running' },
-          { id: '2', name: 'container2', state: 'stopped' },
-          { id: '3', name: 'container3', state: 'running' },
-        ],
-      })
+      vi.mocked(apiClient.apiClient.get).mockResolvedValue([
+        { id: '1', name: 'container1', state: 'running' },
+        { id: '2', name: 'container2', state: 'stopped' },
+        { id: '3', name: 'container3', state: 'running' },
+      ])
 
       renderWidget()
 
@@ -89,13 +87,11 @@ describe('ContainerStatsWidget', () => {
     })
 
     it('should display running count', async () => {
-      vi.mocked(apiClient.apiClient.get).mockResolvedValue({
-        containers: [
-          { id: '1', state: 'running' },
-          { id: '2', state: 'running' },
-          { id: '3', state: 'stopped' },
-        ],
-      })
+      vi.mocked(apiClient.apiClient.get).mockResolvedValue([
+        { id: '1', state: 'running' },
+        { id: '2', state: 'running' },
+        { id: '3', state: 'stopped' },
+      ])
 
       renderWidget()
 
@@ -107,12 +103,10 @@ describe('ContainerStatsWidget', () => {
     })
 
     it('should display stopped count', async () => {
-      vi.mocked(apiClient.apiClient.get).mockResolvedValue({
-        containers: [
-          { id: '1', state: 'running' },
-          { id: '2', state: 'stopped' },
-        ],
-      })
+      vi.mocked(apiClient.apiClient.get).mockResolvedValue([
+        { id: '1', state: 'running' },
+        { id: '2', state: 'stopped' },
+      ])
 
       renderWidget()
 
@@ -122,9 +116,7 @@ describe('ContainerStatsWidget', () => {
     })
 
     it('should handle empty container list', async () => {
-      vi.mocked(apiClient.apiClient.get).mockResolvedValue({
-        containers: [],
-      })
+      vi.mocked(apiClient.apiClient.get).mockResolvedValue([])
 
       renderWidget()
 

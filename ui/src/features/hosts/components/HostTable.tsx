@@ -39,6 +39,8 @@ import {
   RotateCw,
   FileText,
   Settings,
+  ShieldCheck,
+  Shield,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -54,7 +56,11 @@ function StatusIcon({ status }: { status: string }) {
     degraded: { color: 'text-warning', fill: 'fill-warning', label: 'Degraded' },
   }
 
-  const config = statusMap[status.toLowerCase()] || statusMap.offline
+  const config = statusMap[status?.toLowerCase()] || statusMap.offline
+
+  if (!config) {
+    return <span className="text-sm text-muted-foreground">Unknown</span>
+  }
 
   return (
     <div className="flex items-center gap-2" title={config.label}>
@@ -62,6 +68,45 @@ function StatusIcon({ status }: { status: string }) {
       <span className="text-sm text-muted-foreground">{config.label}</span>
     </div>
   )
+}
+
+// Security indicator component for TLS/Channel status
+function SecurityIndicator({ url, securityStatus }: { url: string; securityStatus?: string | null | undefined }) {
+  // Determine connection type and security
+  const isUnixSocket = url.startsWith('unix://')
+  const isTcp = url.startsWith('tcp://')
+
+  // For UNIX sockets - always secure (local)
+  if (isUnixSocket) {
+    return (
+      <div title="Local UNIX socket (TLS not applicable)">
+        <Shield className="h-4 w-4 text-muted-foreground opacity-70" />
+      </div>
+    )
+  }
+
+  // For TCP connections - check security_status
+  if (isTcp) {
+    // Backend uses 'secure' for mTLS (we only support mTLS, not plain TLS)
+    const isSecure = securityStatus === 'secure' || securityStatus === 'tls' || securityStatus === 'mtls'
+
+    if (isSecure) {
+      return (
+        <div title="Secure (mTLS)">
+          <ShieldCheck className="h-4 w-4 text-[--accent] opacity-80" />
+        </div>
+      )
+    } else {
+      return (
+        <div title="Insecure connection (no mTLS)">
+          <Shield className="h-4 w-4 text-muted-foreground opacity-70 ring-1 ring-dashed ring-border rounded-sm" />
+        </div>
+      )
+    }
+  }
+
+  // Default - no indicator
+  return null
 }
 
 // OS/Version component
@@ -136,7 +181,11 @@ function Uptime({ lastChecked }: { lastChecked: string }) {
   }
 }
 
-export function HostTable() {
+interface HostTableProps {
+  onEditHost?: (host: Host) => void
+}
+
+export function HostTable({ onEditHost }: HostTableProps = {}) {
   const { data: hosts = [], isLoading, error } = useHosts()
   const [sorting, setSorting] = useState<SortingState>([])
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
@@ -153,26 +202,32 @@ export function HostTable() {
       // 2. Hostname
       {
         accessorKey: 'name',
-        header: ({ column }) => (
-          <Button
-            variant="ghost"
-            onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
-            className="flex items-center gap-1"
-          >
-            Hostname
-            <ArrowUpDown className="h-4 w-4" />
-          </Button>
-        ),
+        header: ({ column }) => {
+          const sortDirection = column.getIsSorted()
+          return (
+            <Button
+              variant="ghost"
+              onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
+              className="flex items-center gap-1"
+            >
+              Hostname
+              <ArrowUpDown className={`h-4 w-4 ${sortDirection ? 'text-primary' : 'text-muted-foreground'}`} />
+            </Button>
+          )
+        },
         cell: ({ row }) => {
           const host = row.original
           return (
             <div className="flex flex-col gap-1">
-              <button
-                className="text-sm font-medium text-left hover:text-primary transition-colors"
-                title={`URL: ${host.url}`}
-              >
-                {host.name}
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  className="text-sm font-medium text-left hover:text-primary transition-colors"
+                  title={`URL: ${host.url}`}
+                >
+                  {host.name}
+                </button>
+                <SecurityIndicator url={host.url} securityStatus={host.security_status} />
+              </div>
               {host.tags && host.tags.length > 0 && (
                 <div className="flex flex-wrap gap-1">
                   {host.tags.slice(0, 2).map((tag) => (
@@ -264,8 +319,7 @@ export function HostTable() {
               size="sm"
               title="View Details"
               onClick={() => {
-                // TODO: Open host drawer/modal
-                console.log('View details:', row.original.id)
+                onEditHost?.(row.original)
               }}
             >
               <Settings className="h-4 w-4" />
@@ -299,7 +353,7 @@ export function HostTable() {
         ),
       },
     ],
-    []
+    [onEditHost]
   )
 
   const table = useReactTable({
@@ -346,7 +400,7 @@ export function HostTable() {
   return (
     <div className="rounded-md border">
       <table className="w-full">
-        <thead className="bg-muted/50">
+        <thead className="bg-muted/50 sticky top-0 z-10">
           {table.getHeaderGroups().map((headerGroup) => (
             <tr key={headerGroup.id}>
               {headerGroup.headers.map((header) => (
@@ -366,7 +420,7 @@ export function HostTable() {
           {table.getRowModel().rows.map((row) => (
             <tr
               key={row.id}
-              className="border-t hover:bg-muted/50 transition-colors"
+              className="border-t hover:bg-[#151827] transition-colors"
             >
               {row.getVisibleCells().map((cell) => (
                 <td key={cell.id} className="px-4 py-3">

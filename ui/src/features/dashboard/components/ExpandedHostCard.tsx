@@ -385,7 +385,8 @@ export function ExpandedHostCard({ host }: ExpandedHostCardProps) {
               {displayContainers.map((container) => (
                 <div
                   key={container.id}
-                  className="px-2 py-1.5 hover:bg-accent/10 cursor-pointer flex items-center gap-2"
+                  className="px-2 hover:bg-accent/10 cursor-pointer flex items-center gap-2"
+                  style={{ height: '36px' }}
                   onClick={(e) => {
                     e.stopPropagation()
                     handleContainerClick(container.id)

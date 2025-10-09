@@ -30,16 +30,16 @@ interface HostCardsGridProps {
 }
 
 // Default layout for host cards (3 columns, each 4 grid units wide)
-// Using smaller row height (40px) for finer height control
+// Using 36px row height to align with container row height
 function generateDefaultLayout(hosts: Host[]): Layout[] {
   return hosts.map((host, index) => ({
     i: host.id,
     x: (index % 3) * 4, // 3 columns: 0, 4, 8
-    y: Math.floor(index / 3) * 9, // Stack cards vertically
+    y: Math.floor(index / 3) * 10, // Stack cards vertically
     w: 4, // Width: 4 units (12/3 = 3 columns)
-    h: 9, // Height: 9 units (9 * 40px = 360px default)
+    h: 10, // Height: 10 units (10 * 36px = 360px default)
     minW: 3, // Minimum 3 units wide
-    minH: 5, // Minimum 5 units tall (5 * 40px = 200px minimum)
+    minH: 6, // Minimum 6 units tall (6 * 36px = 216px minimum - fits header + footer)
   }))
 }
 
@@ -112,7 +112,7 @@ export function HostCardsGrid({ hosts }: HostCardsGridProps) {
         layout={currentLayout}
         onLayoutChange={handleLayoutChange}
         cols={12}
-        rowHeight={40}
+        rowHeight={36}
         draggableHandle=".host-card-drag-handle"
         compactType="vertical"
         preventCollision={false}

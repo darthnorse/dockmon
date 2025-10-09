@@ -86,6 +86,7 @@ export interface ExpandedHostData {
 
 interface ExpandedHostCardProps {
   host: ExpandedHostData
+  cardRef?: React.RefObject<HTMLDivElement>
 }
 
 /**
@@ -135,7 +136,7 @@ function getStateColor(state: string): string {
 
 type ContainerSortKey = 'name' | 'state' | 'cpu' | 'memory' | 'start_time'
 
-export function ExpandedHostCard({ host }: ExpandedHostCardProps) {
+export function ExpandedHostCard({ host, cardRef }: ExpandedHostCardProps) {
   const [sortKey, setSortKey] = useState<ContainerSortKey>('state')
   const [isCollapsed, setIsCollapsed] = useState(false)
 
@@ -205,6 +206,7 @@ export function ExpandedHostCard({ host }: ExpandedHostCardProps) {
 
   return (
     <div
+      ref={cardRef}
       className="bg-surface border border-border rounded-lg p-4 hover:shadow-lg hover:border-accent/50 transition-all h-full flex flex-col"
       aria-label={`Host ${host.name}, ${host.status}`}
     >

@@ -119,9 +119,5 @@ export function ExpandedHostCardContainer({ host }: ExpandedHostCardContainerPro
     // TODO: Alerts & updates (Phase 4e+)
   }
 
-  return (
-    <div ref={cardRef}>
-      <ExpandedHostCard host={hostCardData} />
-    </div>
-  )
+  return <ExpandedHostCard host={hostCardData} cardRef={cardRef} />
 }

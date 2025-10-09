@@ -313,6 +313,13 @@ class DatabaseManager:
                     session.commit()
                     print("Added modal_preferences column to users table")
 
+                # Migration: Add view_mode column to users table if it doesn't exist (Phase 4)
+                if 'view_mode' not in column_names:
+                    # Add the column using raw SQL
+                    session.execute(text("ALTER TABLE users ADD COLUMN view_mode VARCHAR"))
+                    session.commit()
+                    print("Added view_mode column to users table")
+
                 # Migration: Add show_host_stats and show_container_stats columns to global_settings table
                 settings_inspector = session.connection().engine.dialect.get_columns(session.connection(), 'global_settings')
                 settings_column_names = [col['name'] for col in settings_inspector]

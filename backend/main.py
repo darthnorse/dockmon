@@ -1442,6 +1442,66 @@ async def save_modal_preferences(request: Request, current_user: dict = Depends(
         logger.error(f"Failed to save modal preferences: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# ==================== Phase 4: View Mode Preference ====================
+
+@app.get("/api/user/view-mode")
+async def get_view_mode(request: Request, current_user: dict = Depends(get_current_user)):
+    """Get dashboard view mode preference for current user"""
+    from auth.routes import _get_session_from_cookie
+    from auth.session_manager import session_manager
+
+    session_id = _get_session_from_cookie(request)
+    username = session_manager.get_session_username(session_id)
+
+    try:
+        session = monitor.db.get_session()
+        try:
+            from database import User
+            user = session.query(User).filter(User.username == username).first()
+            if user:
+                return {"view_mode": user.view_mode or "compact"}  # Default to compact
+            return {"view_mode": "compact"}
+        finally:
+            session.close()
+    except Exception as e:
+        logger.error(f"Failed to get view mode: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/user/view-mode")
+async def save_view_mode(request: Request, current_user: dict = Depends(get_current_user)):
+    """Save dashboard view mode preference for current user"""
+    from auth.routes import _get_session_from_cookie
+    from auth.session_manager import session_manager
+
+    session_id = _get_session_from_cookie(request)
+    username = session_manager.get_session_username(session_id)
+
+    try:
+        body = await request.json()
+        view_mode = body.get('view_mode')
+
+        if view_mode not in ['compact', 'standard', 'expanded']:
+            raise HTTPException(status_code=400, detail="Invalid view_mode. Must be 'compact', 'standard', or 'expanded'")
+
+        session = monitor.db.get_session()
+        try:
+            from database import User
+            from datetime import datetime
+            user = session.query(User).filter(User.username == username).first()
+            if user:
+                user.view_mode = view_mode
+                user.updated_at = datetime.now()
+                session.commit()
+                return {"success": True}
+            raise HTTPException(status_code=404, detail="User not found")
+        finally:
+            session.close()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to save view mode: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # ==================== Event Log Routes ====================
 # Note: Main /api/events endpoint is defined earlier with full feature set
 

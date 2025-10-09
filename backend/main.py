@@ -1447,11 +1447,11 @@ async def save_modal_preferences(request: Request, current_user: dict = Depends(
 @app.get("/api/user/view-mode")
 async def get_view_mode(request: Request, current_user: dict = Depends(get_current_user)):
     """Get dashboard view mode preference for current user"""
-    from auth.routes import _get_session_from_cookie
-    from auth.session_manager import session_manager
+    # Get username directly from current_user dependency
+    username = current_user.get('username')
 
-    session_id = _get_session_from_cookie(request)
-    username = session_manager.get_session_username(session_id)
+    if not username:
+        return {"view_mode": "compact"}  # Default if no username
 
     try:
         session = monitor.db.get_session()
@@ -1470,11 +1470,12 @@ async def get_view_mode(request: Request, current_user: dict = Depends(get_curre
 @app.post("/api/user/view-mode")
 async def save_view_mode(request: Request, current_user: dict = Depends(get_current_user)):
     """Save dashboard view mode preference for current user"""
-    from auth.routes import _get_session_from_cookie
-    from auth.session_manager import session_manager
+    # Get username directly from current_user dependency
+    username = current_user.get('username')
 
-    session_id = _get_session_from_cookie(request)
-    username = session_manager.get_session_username(session_id)
+    if not username:
+        logger.error(f"No username in current_user: {current_user}")
+        raise HTTPException(status_code=401, detail="Username not found in session")
 
     try:
         body = await request.json()
@@ -1487,12 +1488,14 @@ async def save_view_mode(request: Request, current_user: dict = Depends(get_curr
         try:
             from database import User
             from datetime import datetime
+
             user = session.query(User).filter(User.username == username).first()
             if user:
                 user.view_mode = view_mode
                 user.updated_at = datetime.now()
                 session.commit()
                 return {"success": True}
+
             raise HTTPException(status_code=404, detail="User not found")
         finally:
             session.close()

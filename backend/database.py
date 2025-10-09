@@ -31,6 +31,7 @@ class User(Base):
     dashboard_layout = Column(Text, nullable=True)  # JSON string of GridStack layout (v1 - deprecated)
     dashboard_layout_v2 = Column(Text, nullable=True)  # JSON string of react-grid-layout (v2)
     sidebar_collapsed = Column(Boolean, default=False)  # Sidebar collapse state (v2)
+    view_mode = Column(String, nullable=True)  # Dashboard view mode: 'compact' | 'standard' | 'expanded' (Phase 4)
     event_sort_order = Column(String, default='desc')  # 'desc' (newest first) or 'asc' (oldest first)
     container_sort_order = Column(String, default='name-asc')  # Container sort preference on dashboard
     modal_preferences = Column(Text, nullable=True)  # JSON string of modal size/position preferences

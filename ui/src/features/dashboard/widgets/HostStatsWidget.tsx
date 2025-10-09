@@ -1,11 +1,13 @@
 /**
- * Host Stats Widget
+ * Host Stats Widget - Phase 4 Enhanced
  *
  * Shows total hosts and their connection status
+ * Clickable widget navigates to /hosts page
  * Data from /api/hosts endpoint
  */
 
 import { useQuery } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
 import { Server, CheckCircle2, XCircle } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { apiClient } from '@/lib/api/client'
@@ -18,6 +20,8 @@ interface HostStatus {
 }
 
 export function HostStatsWidget() {
+  const navigate = useNavigate()
+
   // Backend returns array directly, not wrapped in object
   const { data, isLoading, error } = useQuery<unknown[]>({
     queryKey: ['hosts'],
@@ -76,7 +80,19 @@ export function HostStatsWidget() {
   }
 
   return (
-    <Card className="h-full">
+    <Card
+      className="h-full cursor-pointer transition-all hover:shadow-md hover:border-accent/50"
+      onClick={() => navigate('/hosts')}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          navigate('/hosts')
+        }
+      }}
+      aria-label={`View all ${stats.total} hosts (${stats.online} online, ${stats.offline} offline)`}
+    >
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-base">
           <Server className="h-5 w-5" />

@@ -1,5 +1,5 @@
 /**
- * Container Types - Phase 3b
+ * Container Types - Phase 3b/3d
  *
  * Type definitions for Docker containers
  * Matches backend API response structure
@@ -9,13 +9,21 @@ export interface Container {
   id: string
   name: string
   image: string
-  state: 'running' | 'stopped' | 'paused' | 'restarting' | 'removing' | 'dead'
+  state: 'running' | 'stopped' | 'exited' | 'created' | 'paused' | 'restarting' | 'removing' | 'dead'
   status: string // e.g., "Up 2 hours", "Exited (0) 5 minutes ago"
   created: string // ISO timestamp
   ports: ContainerPort[]
   labels: Record<string, string>
+  tags?: string[] // Phase 3d - Derived from labels (compose:*, swarm:*, custom)
   host_id?: string
   host_name?: string
+  // Stats fields (Phase 3d - from Go stats service)
+  cpu_percent?: number
+  memory_usage?: number
+  memory_limit?: number
+  memory_percent?: number
+  network_rx?: number
+  network_tx?: number
 }
 
 export interface ContainerPort {

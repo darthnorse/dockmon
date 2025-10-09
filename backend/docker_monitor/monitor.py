@@ -4,6 +4,7 @@ Main monitoring class for Docker containers and hosts
 """
 
 import asyncio
+import json
 import logging
 import os
 import shutil
@@ -182,7 +183,9 @@ class DockerMonitor:
                 name=config.name,
                 url=config.url,
                 status="online",
-                security_status=security_status
+                security_status=security_status,
+                tags=config.tags,
+                description=config.description
             )
 
             # Store client and host
@@ -191,6 +194,9 @@ class DockerMonitor:
 
             # Save to database only if not reconnecting to an existing host
             if not skip_db_save:
+                # Serialize tags as JSON for database storage
+                tags_json = json.dumps(config.tags) if config.tags else None
+
                 db_host = self.db.add_host({
                     'id': host.id,
                     'name': config.name,
@@ -198,7 +204,9 @@ class DockerMonitor:
                     'tls_cert': config.tls_cert,
                     'tls_key': config.tls_key,
                     'tls_ca': config.tls_ca,
-                    'security_status': security_status
+                    'security_status': security_status,
+                    'tags': tags_json,
+                    'description': config.description
                 })
 
             # Register host with stats and event services
@@ -577,13 +585,18 @@ class DockerMonitor:
             security_status = self._validate_host_security(config)
 
             # Update database
+            # Serialize tags as JSON for database storage
+            tags_json = json.dumps(config.tags) if config.tags else None
+
             updated_db_host = self.db.update_host(host_id, {
                 'name': config.name,
                 'url': config.url,
                 'tls_cert': config.tls_cert,
                 'tls_key': config.tls_key,
                 'tls_ca': config.tls_ca,
-                'security_status': security_status
+                'security_status': security_status,
+                'tags': tags_json,
+                'description': config.description
             })
 
             if not updated_db_host:
@@ -642,7 +655,9 @@ class DockerMonitor:
                 name=config.name,
                 url=config.url,
                 status="online",
-                security_status=security_status
+                security_status=security_status,
+                tags=config.tags,
+                description=config.description
             )
 
             # Store client and host
@@ -845,6 +860,13 @@ class DockerMonitor:
                                 else:
                                     image_name = image_id[:12] if image_id else 'unknown'
 
+                        # Extract labels from Docker container (Phase 3d)
+                        labels = dc.attrs.get('Config', {}).get('Labels', {}) or {}
+
+                        # Derive tags from labels (Phase 3d)
+                        from models.docker_models import derive_container_tags
+                        tags = derive_container_tags(labels)
+
                         container = Container(
                             id=dc.id,
                             short_id=container_id,
@@ -856,7 +878,9 @@ class DockerMonitor:
                             image=image_name,
                             created=dc.attrs['Created'],
                             auto_restart=self._get_auto_restart_status(hid, container_id),
-                            restart_attempts=self.restart_attempts.get(container_id, 0)
+                            restart_attempts=self.restart_attempts.get(container_id, 0),
+                            labels=labels,
+                            tags=tags
                         )
                         containers.append(container)
                     except Exception as container_error:
@@ -1458,12 +1482,23 @@ class DockerMonitor:
 
             for db_host in db_hosts:
                 try:
+                    # Deserialize tags from JSON
+                    tags = None
+                    if db_host.tags:
+                        try:
+                            tags = json.loads(db_host.tags)
+                        except (json.JSONDecodeError, TypeError):
+                            logger.warning(f"Failed to parse tags for host {db_host.name}, ignoring")
+                            tags = None
+
                     config = DockerHostConfig(
                         name=db_host.name,
                         url=db_host.url,
                         tls_cert=db_host.tls_cert,
                         tls_key=db_host.tls_key,
-                        tls_ca=db_host.tls_ca
+                        tls_ca=db_host.tls_ca,
+                        tags=tags,
+                        description=db_host.description
                     )
                     # Try to connect to the host with existing ID and preserve security status
                     host = self.add_host(config, existing_id=db_host.id, skip_db_save=True, suppress_event_loop_errors=True)
@@ -1477,12 +1512,22 @@ class DockerMonitor:
                         logger.error(f"Failed to reconnect to saved host {db_host.name}: {e}")
                     # Add host to UI even if connection failed, mark as offline
                     # This prevents "disappearing hosts" bug after restart
+                    # Deserialize tags for offline host
+                    tags = None
+                    if db_host.tags:
+                        try:
+                            tags = json.loads(db_host.tags)
+                        except (json.JSONDecodeError, TypeError):
+                            tags = None
+
                     host = DockerHost(
                         id=db_host.id,
                         name=db_host.name,
                         url=db_host.url,
                         status="offline",
-                        client=None
+                        client=None,
+                        tags=tags,
+                        description=db_host.description
                     )
                     host.security_status = db_host.security_status or "unknown"
                     self.hosts[db_host.id] = host

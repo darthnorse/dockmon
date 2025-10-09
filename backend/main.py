@@ -235,6 +235,118 @@ async def add_host(config: DockerHostConfig, current_user: dict = Depends(get_cu
             )
         raise
 
+@app.post("/api/hosts/test-connection")
+async def test_host_connection(config: DockerHostConfig, current_user: dict = Depends(get_current_user)):
+    """Test connection to a Docker host without adding it
+
+    For existing hosts with mTLS, if certs are null, we'll retrieve them from the database.
+    """
+    import tempfile
+    import os
+    import shutil
+
+    temp_dir = None
+
+    try:
+        logger.info(f"Testing connection to {config.url}")
+
+        # Check if this is an existing host (by matching URL)
+        # If certs are null, try to load from database
+        if (config.tls_ca is None or config.tls_cert is None or config.tls_key is None):
+            # Try to find existing host by URL to get certificates
+            from database import DockerHostDB
+            db_session = monitor.db.get_session()
+            try:
+                existing_host = db_session.query(DockerHostDB).filter(DockerHostDB.url == config.url).first()
+                if existing_host:
+                    logger.info(f"Found existing host for URL {config.url}, using stored certificates")
+                    if config.tls_ca is None and existing_host.tls_ca:
+                        config.tls_ca = existing_host.tls_ca
+                    if config.tls_cert is None and existing_host.tls_cert:
+                        config.tls_cert = existing_host.tls_cert
+                    if config.tls_key is None and existing_host.tls_key:
+                        config.tls_key = existing_host.tls_key
+            finally:
+                db_session.close()
+
+        # Build Docker client kwargs
+        kwargs = {}
+
+        # Handle TLS/mTLS certificates
+        if config.tls_ca or config.tls_cert or config.tls_key:
+            # Create temp directory for certificates
+            temp_dir = tempfile.mkdtemp()
+            tls_config = {}
+
+            # Write certificates to temp files
+            if config.tls_ca:
+                ca_path = os.path.join(temp_dir, 'ca.pem')
+                with open(ca_path, 'w') as f:
+                    f.write(config.tls_ca)
+                tls_config['ca_cert'] = ca_path
+
+            if config.tls_cert:
+                cert_path = os.path.join(temp_dir, 'cert.pem')
+                with open(cert_path, 'w') as f:
+                    f.write(config.tls_cert)
+                tls_config['client_cert'] = (cert_path,)
+
+            if config.tls_key:
+                key_path = os.path.join(temp_dir, 'key.pem')
+                with open(key_path, 'w') as f:
+                    f.write(config.tls_key)
+                # Add key to cert tuple
+                if 'client_cert' in tls_config:
+                    tls_config['client_cert'] = (tls_config['client_cert'][0], key_path)
+
+            # Create TLS config
+            tls = docker.tls.TLSConfig(
+                verify=tls_config.get('ca_cert'),
+                client_cert=tls_config.get('client_cert')
+            )
+            kwargs['tls'] = tls
+
+        # Create Docker client
+        client = docker.DockerClient(base_url=config.url, **kwargs)
+
+        try:
+            # Test connection by pinging
+            info = client.ping()
+
+            # Get some basic info
+            version_info = client.version()
+
+            logger.info(f"Connection test successful for {config.url}")
+            return {
+                "success": True,
+                "message": "Connection successful",
+                "docker_version": version_info.get('Version', 'unknown'),
+                "api_version": version_info.get('ApiVersion', 'unknown')
+            }
+        finally:
+            # Close client
+            client.close()
+
+            # Clean up temp files
+            if temp_dir:
+                try:
+                    shutil.rmtree(temp_dir)
+                except Exception:
+                    # Silently ignore cleanup errors
+                    pass
+
+    except Exception as e:
+        # Clean up temp files on error too
+        if temp_dir:
+            try:
+                shutil.rmtree(temp_dir)
+            except Exception:
+                # Silently ignore cleanup errors
+                pass
+
+        logger.error(f"Connection test failed for {config.url}: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Connection failed: {str(e)}")
+
 @app.put("/api/hosts/{host_id}")
 async def update_host(host_id: str, config: DockerHostConfig, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_hosts):
     """Update an existing Docker host"""

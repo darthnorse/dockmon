@@ -129,7 +129,7 @@ describe('ContainerTable', () => {
 
       await waitFor(() => {
         expect(screen.getByText('Running')).toBeInTheDocument()
-        expect(screen.getByText('Stopped')).toBeInTheDocument()
+        expect(screen.getByText('Exited')).toBeInTheDocument()
       })
     })
 
@@ -268,7 +268,7 @@ describe('ContainerTable', () => {
 
       await waitFor(() => {
         // Check column headers
-        expect(screen.getByText('Image')).toBeInTheDocument()
+        expect(screen.getByText('Image:Tag')).toBeInTheDocument()
         expect(screen.getByText('Uptime')).toBeInTheDocument()
         expect(screen.getByText('Host')).toBeInTheDocument()
         expect(screen.getByText('Actions')).toBeInTheDocument()

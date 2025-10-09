@@ -1,19 +1,29 @@
 /**
- * Container Table Component - Phase 3b
+ * Container Table Component - Phase 3b/3d
  *
  * FEATURES:
  * - Sortable, filterable table (TanStack Table)
- * - Real-time status updates
+ * - Real-time status updates via WebSocket
  * - Container actions (start/stop/restart)
- * - Color-coded status badges
+ * - CPU/Memory sparklines with adaptive polling
+ * - Status icons with color coding
+ * - Tag chips for container organization
+ *
+ * PHASE 3d UPDATES:
+ * - Status icons instead of badges (per UX spec)
+ * - Image:Tag split with tooltip
+ * - CPU/Memory sparklines using MiniChart
+ * - Network I/O column
+ * - Tag chips in host column
  *
  * ARCHITECTURE:
  * - TanStack Table v8 for table logic
  * - TanStack Query for data fetching
  * - Mutation hooks for actions
+ * - WebSocket for real-time stats
  */
 
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   useReactTable,
@@ -26,11 +36,13 @@ import {
   type ColumnFiltersState,
 } from '@tanstack/react-table'
 import {
+  Circle,
   PlayCircle,
   Square,
   RotateCw,
   MoreVertical,
   ArrowUpDown,
+  FileText,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { apiClient } from '@/lib/api/client'
@@ -38,27 +50,129 @@ import { debug } from '@/lib/debug'
 import { POLLING_CONFIG } from '@/lib/config/polling'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { TagChip } from '@/components/TagChip'
+import { MiniChart } from '@/lib/charts/MiniChart'
+import { useStatsHistory } from '@/lib/hooks/useStatsHistory'
 import type { Container, ContainerAction } from './types'
 
-// Status badge component
-function StatusBadge({ state }: { state: Container['state'] }) {
-  const colorMap = {
-    running: 'bg-success/10 text-success',
-    stopped: 'bg-muted text-muted-foreground',
-    paused: 'bg-warning/10 text-warning',
-    restarting: 'bg-info/10 text-info',
-    removing: 'bg-danger/10 text-danger',
-    dead: 'bg-danger/10 text-danger',
+/**
+ * Status icon with color coding (Phase 3d UX spec)
+ * Uses Circle icon with fill for visual consistency
+ */
+function StatusIcon({ state }: { state: Container['state'] }) {
+  const iconMap = {
+    running: { color: 'text-success', fill: 'fill-success', label: 'Running', animate: false },
+    stopped: { color: 'text-danger', fill: 'fill-danger', label: 'Exited', animate: false },
+    exited: { color: 'text-danger', fill: 'fill-danger', label: 'Exited', animate: false },
+    created: { color: 'text-muted-foreground', fill: 'fill-muted-foreground', label: 'Created', animate: false },
+    paused: { color: 'text-warning', fill: 'fill-warning', label: 'Paused', animate: false },
+    restarting: { color: 'text-info', fill: 'fill-info', label: 'Restarting', animate: true },
+    removing: { color: 'text-danger', fill: 'fill-danger', label: 'Removing', animate: false },
+    dead: { color: 'text-danger', fill: 'fill-danger', label: 'Dead', animate: false },
+  }
+
+  const config = iconMap[state] || iconMap.exited
+
+  return (
+    <div className="flex items-center gap-2" title={config.label}>
+      <Circle
+        className={`h-3 w-3 ${config.color} ${config.fill} ${config.animate ? 'animate-spin' : ''}`}
+      />
+      <span className="text-sm text-muted-foreground">{config.label}</span>
+    </div>
+  )
+}
+
+/**
+ * Image:Tag display with tooltip (Phase 3d UX spec)
+ * Shows short version, tooltip reveals full image string
+ */
+function ImageTag({ image }: { image: string }) {
+  // Extract image:tag from full string
+  const parseImage = (fullImage: string) => {
+    // Remove registry prefix if present (e.g., docker.io/library/)
+    const parts = fullImage.split('/')
+    const imageTag = parts[parts.length - 1] || fullImage
+
+    // Split by @ to remove digest if present
+    const withoutDigest = imageTag.split('@')[0]
+
+    return withoutDigest || fullImage
+  }
+
+  const shortImage = parseImage(image)
+
+  return (
+    <div className="max-w-md truncate text-sm text-muted-foreground" title={image}>
+      {shortImage}
+    </div>
+  )
+}
+
+/**
+ * Network I/O display (Phase 3d UX spec)
+ * Shows RX/TX rates in kB/s with green text
+ */
+function NetworkIO({ rx, tx }: { rx?: number; tx?: number }) {
+  if (!rx && !tx) {
+    return <span className="text-xs text-muted-foreground">-</span>
+  }
+
+  const formatRate = (bytes?: number) => {
+    if (!bytes) return '0'
+    const kb = bytes / 1024
+    return kb.toFixed(1)
   }
 
   return (
-    <span
-      className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-medium ${
-        colorMap[state] || 'bg-muted text-muted-foreground'
-      }`}
-    >
-      {state.charAt(0).toUpperCase() + state.slice(1)}
+    <span className="text-xs text-green-500">
+      {formatRate(rx)} ↓ | {formatRate(tx)} ↑
     </span>
+  )
+}
+
+/**
+ * Container sparkline with stats history
+ * Uses adaptive polling for bandwidth optimization
+ */
+function ContainerSparkline({
+  containerId,
+  metric,
+  color,
+  currentValue
+}: {
+  containerId: string
+  metric: 'cpu' | 'memory'
+  color: 'cpu' | 'memory'
+  currentValue?: number
+}) {
+  const rowRef = useRef<HTMLDivElement>(null)
+  const { getHistory } = useStatsHistory(containerId)
+
+  // TODO: Hook up WebSocket listener for stats
+  // For now, show current value if available
+
+  const history = getHistory(metric)
+  const latest = currentValue ?? (history.length > 0 ? history[history.length - 1] : null)
+
+  return (
+    <div ref={rowRef} className="flex items-center gap-2">
+      {history.length > 0 && (
+        <MiniChart
+          data={history}
+          color={color}
+          height={40}
+          width={80}
+          label={`${metric} usage`}
+          showTooltip
+        />
+      )}
+      {latest !== null && latest !== undefined && (
+        <span className="text-xs text-muted-foreground">
+          {latest.toFixed(1)}%
+        </span>
+      )}
+    </div>
   )
 }
 
@@ -69,7 +183,7 @@ export function ContainerTable() {
 
   const queryClient = useQueryClient()
 
-  // Fetch containers (backend returns array directly, not wrapped in object)
+  // Fetch containers with stats
   const { data, isLoading, error } = useQuery<Container[]>({
     queryKey: ['containers'],
     queryFn: () => apiClient.get('/containers'),
@@ -81,12 +195,19 @@ export function ContainerTable() {
     mutationFn: (action: ContainerAction) =>
       apiClient.post(`/hosts/${action.host_id}/containers/${action.container_id}/${action.type}`, {}),
     onSuccess: (_data, variables) => {
-      // Invalidate and refetch containers
       queryClient.invalidateQueries({ queryKey: ['containers'] })
-
-      // Show success toast
       const actionLabel = variables.type.charAt(0).toUpperCase() + variables.type.slice(1)
-      toast.success(`Container ${variables.type}ed successfully`, {
+      // Map action types to proper past tense
+      const actionPastTense: Record<string, string> = {
+        start: 'started',
+        stop: 'stopped',
+        restart: 'restarted',
+        pause: 'paused',
+        unpause: 'unpaused',
+        remove: 'removed',
+      }
+      const pastTense = actionPastTense[variables.type] || `${variables.type}ed`
+      toast.success(`Container ${pastTense} successfully`, {
         description: `Action: ${actionLabel}`,
       })
     },
@@ -98,48 +219,79 @@ export function ContainerTable() {
     },
   })
 
-  // Table columns
+  // Table columns (Phase 3d UX spec order)
   const columns = useMemo<ColumnDef<Container>[]>(
     () => [
+      // 1. Status (icon)
+      {
+        accessorKey: 'state',
+        header: ({ column }) => {
+          const sortDirection = column.getIsSorted()
+          return (
+            <Button
+              variant="ghost"
+              onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
+              className="h-8 px-2 hover:bg-surface-2"
+            >
+              Status
+              <ArrowUpDown className={`ml-2 h-4 w-4 ${sortDirection ? 'text-primary' : 'text-muted-foreground'}`} />
+            </Button>
+          )
+        },
+        cell: ({ row }) => <StatusIcon state={row.original.state} />,
+      },
+      // 2. Name (clickable)
       {
         accessorKey: 'name',
-        header: ({ column }) => (
-          <Button
-            variant="ghost"
-            onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
-            className="h-8 px-2 hover:bg-surface-2"
-          >
-            Name
-            <ArrowUpDown className="ml-2 h-4 w-4" />
-          </Button>
-        ),
+        header: ({ column }) => {
+          const sortDirection = column.getIsSorted()
+          return (
+            <Button
+              variant="ghost"
+              onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
+              className="h-8 px-2 hover:bg-surface-2"
+            >
+              Name
+              <ArrowUpDown className={`ml-2 h-4 w-4 ${sortDirection ? 'text-primary' : 'text-muted-foreground'}`} />
+            </Button>
+          )
+        },
         cell: ({ row }) => (
           <div className="font-medium">{row.original.name || 'Unknown'}</div>
         ),
       },
-      {
-        accessorKey: 'state',
-        header: ({ column }) => (
-          <Button
-            variant="ghost"
-            onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
-            className="h-8 px-2 hover:bg-surface-2"
-          >
-            Status
-            <ArrowUpDown className="ml-2 h-4 w-4" />
-          </Button>
-        ),
-        cell: ({ row }) => <StatusBadge state={row.original.state} />,
-      },
+      // 3. Image:Tag (tooltip)
       {
         accessorKey: 'image',
-        header: 'Image',
-        cell: ({ row }) => (
-          <div className="max-w-md truncate text-sm text-muted-foreground">
-            {row.original.image}
-          </div>
-        ),
+        header: 'Image:Tag',
+        cell: ({ row }) => <ImageTag image={row.original.image} />,
       },
+      // 4. Host (chip with tags)
+      {
+        accessorKey: 'host_name',
+        header: 'Host',
+        cell: ({ row }) => {
+          const container = row.original
+          return (
+            <div className="flex flex-col gap-1">
+              <div className="text-sm">{container.host_name || 'localhost'}</div>
+              {container.tags && container.tags.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {container.tags.slice(0, 2).map((tag) => (
+                    <TagChip key={tag} tag={tag} size="sm" />
+                  ))}
+                  {container.tags.length > 2 && (
+                    <span className="text-xs text-muted-foreground">
+                      +{container.tags.length - 2}
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+          )
+        },
+      },
+      // 5. Uptime (duration)
       {
         accessorKey: 'status',
         header: 'Uptime',
@@ -149,100 +301,170 @@ export function ContainerTable() {
           </div>
         ),
       },
+      // 6. CPU (sparkline)
       {
-        accessorKey: 'host_name',
-        header: 'Host',
-        cell: ({ row }) => (
-          <div className="text-sm">
-            {row.original.host_name || 'localhost'}
-          </div>
-        ),
+        id: 'cpu',
+        header: 'CPU',
+        cell: ({ row }) => {
+          const container = row.original
+          // If we have real-time stats, show sparkline
+          if (container.cpu_percent !== undefined) {
+            return (
+              <ContainerSparkline
+                containerId={container.id}
+                metric="cpu"
+                color="cpu"
+                currentValue={container.cpu_percent}
+              />
+            )
+          }
+          // Fallback: show dash
+          return <span className="text-xs text-muted-foreground">-</span>
+        },
       },
+      // 7. Memory (sparkline/bar)
+      {
+        id: 'memory',
+        header: 'Memory',
+        cell: ({ row }) => {
+          const container = row.original
+          // If we have real-time stats, show sparkline
+          if (container.memory_percent !== undefined) {
+            const usage = container.memory_usage ? (container.memory_usage / (1024 * 1024)).toFixed(0) : '-'
+            const limit = container.memory_limit ? (container.memory_limit / (1024 * 1024)).toFixed(0) : '-'
+
+            return (
+              <div title={`${usage} MB / ${limit} MB`}>
+                <ContainerSparkline
+                  containerId={container.id}
+                  metric="memory"
+                  color="memory"
+                  currentValue={container.memory_percent}
+                />
+              </div>
+            )
+          }
+          // Fallback: show dash
+          return <span className="text-xs text-muted-foreground">-</span>
+        },
+      },
+      // 8. Network I/O (optional)
+      {
+        id: 'network',
+        header: 'Network',
+        cell: ({ row }) => {
+          const { network_rx, network_tx } = row.original
+          return (
+            <NetworkIO
+              {...(network_rx !== undefined && { rx: network_rx })}
+              {...(network_tx !== undefined && { tx: network_tx })}
+            />
+          )
+        },
+      },
+      // 9. Actions (Start/Stop/Restart/Logs/View details)
       {
         id: 'actions',
         header: 'Actions',
         cell: ({ row }) => {
           const container = row.original
           const isRunning = container.state === 'running'
-          const isStopped = container.state === 'stopped'
+          const isStopped = container.state === 'exited' || container.state === 'stopped' || container.state === 'created'
+          const canStart = isStopped && container.host_id
+          const canStop = isRunning && container.host_id
+          const canRestart = isRunning && container.host_id
 
           return (
-            <div className="flex items-center gap-2">
-              {isStopped && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-8 w-8"
-                  onClick={() => {
-                    if (!container.host_id) {
-                      toast.error('Cannot start container', {
-                        description: 'Container missing host information',
-                      })
-                      return
-                    }
-                    actionMutation.mutate({
-                      type: 'start',
-                      container_id: container.id,
-                      host_id: container.host_id,
+            <div className="flex items-center gap-1">
+              {/* Start button - enabled only when stopped */}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() => {
+                  if (!container.host_id) {
+                    toast.error('Cannot start container', {
+                      description: 'Container missing host information',
                     })
-                  }}
-                  disabled={actionMutation.isPending || !container.host_id}
-                  title="Start container"
-                >
-                  <PlayCircle className="h-4 w-4 text-success" />
-                </Button>
-              )}
+                    return
+                  }
+                  actionMutation.mutate({
+                    type: 'start',
+                    container_id: container.id,
+                    host_id: container.host_id,
+                  })
+                }}
+                disabled={!canStart || actionMutation.isPending}
+                title="Start container"
+              >
+                <PlayCircle className={`h-4 w-4 ${canStart ? 'text-success' : 'text-muted-foreground'}`} />
+              </Button>
 
-              {isRunning && (
-                <>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8"
-                    onClick={() => {
-                      if (!container.host_id) {
-                        toast.error('Cannot stop container', {
-                          description: 'Container missing host information',
-                        })
-                        return
-                      }
-                      actionMutation.mutate({
-                        type: 'stop',
-                        container_id: container.id,
-                        host_id: container.host_id,
-                      })
-                    }}
-                    disabled={actionMutation.isPending || !container.host_id}
-                    title="Stop container"
-                  >
-                    <Square className="h-4 w-4 text-danger" />
-                  </Button>
+              {/* Stop button - enabled only when running */}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() => {
+                  if (!container.host_id) {
+                    toast.error('Cannot stop container', {
+                      description: 'Container missing host information',
+                    })
+                    return
+                  }
+                  actionMutation.mutate({
+                    type: 'stop',
+                    container_id: container.id,
+                    host_id: container.host_id,
+                  })
+                }}
+                disabled={!canStop || actionMutation.isPending}
+                title="Stop container"
+              >
+                <Square className={`h-4 w-4 ${canStop ? 'text-danger' : 'text-muted-foreground'}`} />
+              </Button>
 
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8"
-                    onClick={() => {
-                      if (!container.host_id) {
-                        toast.error('Cannot restart container', {
-                          description: 'Container missing host information',
-                        })
-                        return
-                      }
-                      actionMutation.mutate({
-                        type: 'restart',
-                        container_id: container.id,
-                        host_id: container.host_id,
-                      })
-                    }}
-                    disabled={actionMutation.isPending || !container.host_id}
-                    title="Restart container"
-                  >
-                    <RotateCw className="h-4 w-4 text-info" />
-                  </Button>
-                </>
-              )}
+              {/* Restart button - enabled only when running */}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() => {
+                  if (!container.host_id) {
+                    toast.error('Cannot restart container', {
+                      description: 'Container missing host information',
+                    })
+                    return
+                  }
+                  actionMutation.mutate({
+                    type: 'restart',
+                    container_id: container.id,
+                    host_id: container.host_id,
+                  })
+                }}
+                disabled={!canRestart || actionMutation.isPending}
+                title="Restart container"
+              >
+                <RotateCw className={`h-4 w-4 ${canRestart ? 'text-info' : 'text-muted-foreground'}`} />
+              </Button>
 
+              {/* Logs button - always enabled */}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() => {
+                  // TODO: Open logs modal/drawer
+                  toast.info('Logs', {
+                    description: `View logs for ${container.name}`,
+                  })
+                }}
+                title="View logs"
+              >
+                <FileText className="h-4 w-4" />
+              </Button>
+
+              {/* More actions menu */}
               <Button
                 variant="ghost"
                 size="icon"
@@ -313,9 +535,9 @@ export function ContainerTable() {
       </div>
 
       {/* Table */}
-      <div className="overflow-hidden rounded-lg border border-border bg-surface-1">
+      <div className="overflow-hidden rounded-lg border border-border">
         <table className="w-full">
-          <thead className="border-b border-border bg-surface-2">
+          <thead className="border-b border-border bg-muted/50 sticky top-0 z-10">
             {table.getHeaderGroups().map((headerGroup) => (
               <tr key={headerGroup.id}>
                 {headerGroup.headers.map((header) => (
@@ -348,7 +570,7 @@ export function ContainerTable() {
               table.getRowModel().rows.map((row) => (
                 <tr
                   key={row.id}
-                  className="hover:bg-surface-2 transition-colors"
+                  className="border-t hover:bg-[#151827] transition-colors"
                 >
                   {row.getVisibleCells().map((cell) => (
                     <td key={cell.id} className="px-4 py-3">

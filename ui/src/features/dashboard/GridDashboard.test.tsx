@@ -20,6 +20,13 @@ vi.mock('@/lib/hooks/useUserPreferences', () => ({
   useDashboardLayout: () => mockDashboardLayout,
 }))
 
+// Mock API client for widgets
+vi.mock('@/lib/api/client', () => ({
+  apiClient: {
+    get: vi.fn().mockResolvedValue([]),
+  },
+}))
+
 // Mock react-grid-layout to avoid DOM measurement issues in tests
 vi.mock('react-grid-layout', () => ({
   default: ({ children }: { children: ReactNode }) => (
@@ -66,8 +73,8 @@ describe('GridDashboard', () => {
       renderDashboard()
 
       await waitFor(() => {
-        expect(screen.getByText('Host Stats')).toBeInTheDocument()
-        expect(screen.getByText('Container Stats')).toBeInTheDocument()
+        expect(screen.getByText('Hosts')).toBeInTheDocument()
+        expect(screen.getByText('Containers')).toBeInTheDocument()
         expect(screen.getByText('Recent Events')).toBeInTheDocument()
         expect(screen.getByText('Active Alerts')).toBeInTheDocument()
       })
@@ -101,7 +108,7 @@ describe('GridDashboard', () => {
       renderDashboard()
 
       // Should load from database (verify by checking that widget renders)
-      expect(screen.getByText('Host Stats')).toBeInTheDocument()
+      expect(screen.getByText('Hosts')).toBeInTheDocument()
     })
 
     it('should use default layout when no saved layout exists', () => {
@@ -110,8 +117,8 @@ describe('GridDashboard', () => {
       renderDashboard()
 
       // Should render all default widgets
-      expect(screen.getByText('Host Stats')).toBeInTheDocument()
-      expect(screen.getByText('Container Stats')).toBeInTheDocument()
+      expect(screen.getByText('Hosts')).toBeInTheDocument()
+      expect(screen.getByText('Containers')).toBeInTheDocument()
       expect(screen.getByText('Recent Events')).toBeInTheDocument()
       expect(screen.getByText('Active Alerts')).toBeInTheDocument()
     })
@@ -172,8 +179,8 @@ describe('GridDashboard', () => {
 
       // All widgets should be rendered
       await waitFor(() => {
-        expect(screen.getByText('Host Stats')).toBeInTheDocument()
-        expect(screen.getByText('Container Stats')).toBeInTheDocument()
+        expect(screen.getByText('Hosts')).toBeInTheDocument()
+        expect(screen.getByText('Containers')).toBeInTheDocument()
         expect(screen.getByText('Recent Events')).toBeInTheDocument()
         expect(screen.getByText('Active Alerts')).toBeInTheDocument()
       })

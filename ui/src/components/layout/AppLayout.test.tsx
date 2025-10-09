@@ -21,6 +21,15 @@ vi.mock('@/lib/websocket/WebSocketProvider', () => ({
   }),
 }))
 
+// Mock user preferences hook
+vi.mock('@/lib/hooks/useUserPreferences', () => ({
+  useSidebarCollapsed: () => ({
+    isCollapsed: false,
+    setCollapsed: vi.fn(),
+    isLoading: false,
+  }),
+}))
+
 function renderWithRouter() {
   return render(
     <BrowserRouter>

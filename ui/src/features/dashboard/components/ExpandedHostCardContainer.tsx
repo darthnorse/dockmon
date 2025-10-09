@@ -14,6 +14,8 @@
 import { useHostMetrics, useHostSparklines, useContainerCounts } from '@/lib/stats/StatsProvider'
 import { ExpandedHostCard, type ExpandedHostData } from './ExpandedHostCard'
 import { useStatsContext } from '@/lib/stats/StatsProvider'
+import { useIntersectionObserver } from '@/lib/hooks/useIntersectionObserver'
+import { useUserPrefs } from '@/hooks/useUserPrefs'
 
 interface Host {
   id: string
@@ -28,6 +30,16 @@ interface ExpandedHostCardContainerProps {
 }
 
 export function ExpandedHostCardContainer({ host }: ExpandedHostCardContainerProps) {
+  const { prefs } = useUserPrefs()
+  const optimizedLoadingEnabled = prefs?.dashboard?.optimizedLoading ?? true
+
+  // Use Intersection Observer to detect if card is visible
+  const { ref: cardRef, isVisible } = useIntersectionObserver<HTMLDivElement>({
+    threshold: 0,
+    rootMargin: '100px', // Start loading 100px before card enters viewport
+    enabled: optimizedLoadingEnabled,
+  })
+
   // Get real-time stats from StatsProvider (WebSocket)
   const metrics = useHostMetrics(host.id)
   const sparklines = useHostSparklines(host.id)
@@ -85,8 +97,8 @@ export function ExpandedHostCardContainer({ host }: ExpandedHostCardContainerPro
       },
     }),
 
-    // Sparklines from WebSocket
-    ...(sparklines && {
+    // Sparklines from WebSocket (only when visible for performance)
+    ...(isVisible && sparklines && {
       sparklines: {
         cpu: sparklines.cpu,
         mem: sparklines.mem,
@@ -107,5 +119,9 @@ export function ExpandedHostCardContainer({ host }: ExpandedHostCardContainerPro
     // TODO: Alerts & updates (Phase 4e+)
   }
 
-  return <ExpandedHostCard host={hostCardData} />
+  return (
+    <div ref={cardRef}>
+      <ExpandedHostCard host={hostCardData} />
+    </div>
+  )
 }

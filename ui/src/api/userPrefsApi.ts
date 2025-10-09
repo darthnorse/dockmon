@@ -8,6 +8,7 @@ export interface DashboardPreferences {
   hostOrder: string[]
   containerSortKey: 'name' | 'state' | 'cpu' | 'memory' | 'start_time'
   hostCardLayout?: unknown
+  optimizedLoading?: boolean
 }
 
 export interface UserPreferences {

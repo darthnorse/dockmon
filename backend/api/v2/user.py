@@ -31,6 +31,8 @@ class DashboardPreferences(BaseModel):
     hostOrder: list[str] = Field(default_factory=list)
     containerSortKey: str = Field(default="state", pattern="^(name|state|cpu|memory|start_time)$")
     hostCardLayout: Optional[list[Dict[str, Any]]] = Field(default=None)
+    showKpiBar: bool = Field(default=True)
+    showStatsWidgets: bool = Field(default=False)
     optimizedLoading: bool = Field(default=True)
 
 
@@ -153,6 +155,8 @@ async def get_user_preferences(
             hostOrder=dashboard_prefs.get("hostOrder", []),
             containerSortKey=container_sort_key,
             hostCardLayout=dashboard_prefs.get("hostCardLayout"),
+            showKpiBar=dashboard_prefs.get("showKpiBar", True),
+            showStatsWidgets=dashboard_prefs.get("showStatsWidgets", False),
             optimizedLoading=dashboard_prefs.get("optimizedLoading", True)
         )
 

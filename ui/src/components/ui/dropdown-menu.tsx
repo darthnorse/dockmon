@@ -4,6 +4,7 @@
  */
 
 import * as React from 'react'
+import { createPortal } from 'react-dom'
 import { cn } from '@/lib/utils'
 
 interface DropdownMenuProps {
@@ -14,11 +15,18 @@ interface DropdownMenuProps {
 
 export function DropdownMenu({ trigger, children, align = 'end' }: DropdownMenuProps) {
   const [open, setOpen] = React.useState(false)
+  const triggerRef = React.useRef<HTMLDivElement>(null)
   const menuRef = React.useRef<HTMLDivElement>(null)
+  const [position, setPosition] = React.useState({ top: 0, left: 0, right: 0 })
 
   React.useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+      if (
+        menuRef.current &&
+        !menuRef.current.contains(event.target as Node) &&
+        triggerRef.current &&
+        !triggerRef.current.contains(event.target as Node)
+      ) {
         setOpen(false)
       }
     }
@@ -30,20 +38,40 @@ export function DropdownMenu({ trigger, children, align = 'end' }: DropdownMenuP
     return undefined
   }, [open])
 
+  // Calculate position when opened
+  React.useEffect(() => {
+    if (open && triggerRef.current) {
+      const rect = triggerRef.current.getBoundingClientRect()
+      setPosition({
+        top: rect.bottom + 4,
+        left: rect.left,
+        right: window.innerWidth - rect.right,
+      })
+    }
+  }, [open])
+
   return (
-    <div className="relative inline-block" ref={menuRef}>
-      <div onClick={(e) => { e.stopPropagation(); setOpen(!open) }}>{trigger}</div>
-      {open && (
-        <div
-          className={cn(
-            'absolute top-full mt-1 z-[9999] min-w-[180px] rounded-md border border-border bg-popover text-popover-foreground p-1 shadow-xl',
-            align === 'end' ? 'right-0' : 'left-0'
-          )}
-        >
-          <div onClick={(e) => { e.stopPropagation(); setOpen(false) }}>{children}</div>
-        </div>
-      )}
-    </div>
+    <>
+      <div className="relative inline-block" ref={triggerRef}>
+        <div onClick={(e) => { e.stopPropagation(); setOpen(!open) }}>{trigger}</div>
+      </div>
+      {open &&
+        createPortal(
+          <div
+            ref={menuRef}
+            className={cn(
+              'fixed z-[9999] min-w-[180px] rounded-md border border-border bg-popover text-popover-foreground p-1 shadow-xl',
+            )}
+            style={{
+              top: `${position.top}px`,
+              ...(align === 'end' ? { right: `${position.right}px` } : { left: `${position.left}px` }),
+            }}
+          >
+            <div onClick={(e) => { e.stopPropagation(); setOpen(false) }}>{children}</div>
+          </div>,
+          document.body
+        )}
+    </>
   )
 }
 

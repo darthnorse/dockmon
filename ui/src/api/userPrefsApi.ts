@@ -3,11 +3,15 @@
  * Handles fetching and updating user preferences
  */
 
+import type { Layout } from 'react-grid-layout'
+
 export interface DashboardPreferences {
   enableCustomLayout: boolean
   hostOrder: string[]
   containerSortKey: 'name' | 'state' | 'cpu' | 'memory' | 'start_time'
-  hostCardLayout?: unknown
+  hostCardLayout?: Layout[]
+  showKpiBar?: boolean
+  showStatsWidgets?: boolean
   optimizedLoading?: boolean
 }
 

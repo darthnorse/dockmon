@@ -15,12 +15,18 @@ import { GridDashboard } from './GridDashboard'
 import { ViewModeSelector } from './components/ViewModeSelector'
 import { HostCardContainer } from './components/HostCardContainer'
 import { HostCardsGrid } from './HostCardsGrid'
+import { KpiBar } from './components/KpiBar'
 import { useViewMode } from './hooks/useViewMode'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
+import { useDashboardPrefs } from '@/hooks/useUserPrefs'
 
 export function DashboardPage() {
   const { viewMode, setViewMode, isLoading: isViewModeLoading } = useViewMode()
   const { data: hosts, isLoading: isHostsLoading } = useHosts()
+  const { dashboardPrefs } = useDashboardPrefs()
+
+  const showKpiBar = dashboardPrefs?.showKpiBar ?? true
+  const showStatsWidgets = dashboardPrefs?.showStatsWidgets ?? false
 
   return (
     <div className="flex flex-col h-full gap-4 p-4">
@@ -30,8 +36,11 @@ export function DashboardPage() {
         <ViewModeSelector viewMode={viewMode} onChange={setViewMode} disabled={isViewModeLoading} />
       </div>
 
+      {/* KPI Bar - Phase 4c */}
+      {showKpiBar && <KpiBar />}
+
       {/* Widget Grid - Phase 3b */}
-      <GridDashboard />
+      {showStatsWidgets && <GridDashboard />}
 
       {/* View Mode Content - Phase 4c */}
       {viewMode === 'standard' && (

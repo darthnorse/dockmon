@@ -52,8 +52,17 @@ export function HostCardsGrid({ hosts }: HostCardsGridProps) {
     const storedLayout = dashboardPrefs?.hostCardLayout as Layout[] | undefined
 
     if (storedLayout && storedLayout.length === hosts.length) {
-      // Use stored layout
-      return storedLayout
+      // Validate that all IDs in stored layout exist in current hosts
+      const hostIds = new Set(hosts.map((h) => h.id))
+      const allIdsValid = storedLayout.every((item) => hostIds.has(item.i))
+
+      if (allIdsValid) {
+        // Use stored layout - all host IDs match
+        return storedLayout
+      }
+
+      // Host IDs don't match - hosts were added/removed, regenerate layout
+      debug.log('Stored layout invalid (host IDs changed), regenerating default layout')
     }
 
     // Generate default layout

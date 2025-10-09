@@ -14,6 +14,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { Toaster } from 'sonner'
 import { AuthProvider, useAuth } from '@/features/auth/AuthContext'
 import { WebSocketProvider } from '@/lib/websocket/WebSocketProvider'
+import { StatsProvider } from '@/lib/stats/StatsProvider'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { LoginPage } from '@/features/auth/LoginPage'
 import { DashboardPage } from '@/features/dashboard/DashboardPage'
@@ -60,12 +61,14 @@ function AppRoutes() {
         element={isAuthenticated ? <Navigate to="/" replace /> : <LoginPage />}
       />
 
-      {/* Protected routes - All use AppLayout with sidebar + WebSocket */}
+      {/* Protected routes - All use AppLayout with sidebar + WebSocket + Stats */}
       <Route
         element={
           <ProtectedRoute>
             <WebSocketProvider>
-              <AppLayout />
+              <StatsProvider>
+                <AppLayout />
+              </StatsProvider>
             </WebSocketProvider>
           </ProtectedRoute>
         }

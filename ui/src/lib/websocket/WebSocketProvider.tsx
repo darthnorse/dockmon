@@ -26,14 +26,17 @@
  * - pong: Heartbeat response
  */
 
-import { createContext, useContext, useCallback } from 'react'
+import { createContext, useContext, useCallback, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { debug } from '@/lib/debug'
 import { useWebSocket, type WebSocketMessage, type WebSocketStatus } from './useWebSocket'
 
+type MessageHandler = (message: WebSocketMessage) => void
+
 interface WebSocketContextValue {
   status: WebSocketStatus
   send: (data: unknown) => void
+  addMessageHandler: (handler: MessageHandler) => () => void
 }
 
 const WebSocketContext = createContext<WebSocketContextValue | null>(null)
@@ -52,12 +55,35 @@ interface WebSocketProviderProps {
 
 export function WebSocketProvider({ children }: WebSocketProviderProps) {
   const queryClient = useQueryClient()
+  const messageHandlersRef = useRef<Set<MessageHandler>>(new Set())
+
+  // Register a custom message handler
+  const addMessageHandler = useCallback((handler: MessageHandler) => {
+    messageHandlersRef.current.add(handler)
+    debug.log('WebSocket', 'Added message handler (total:', messageHandlersRef.current.size, ')')
+
+    // Return cleanup function
+    return () => {
+      messageHandlersRef.current.delete(handler)
+      debug.log('WebSocket', 'Removed message handler (total:', messageHandlersRef.current.size, ')')
+    }
+  }, [])
 
   // Handle WebSocket messages
   const handleMessage = useCallback(
     (message: WebSocketMessage) => {
       debug.log('WebSocket', 'Received message:', message.type)
 
+      // Notify all custom handlers first
+      messageHandlersRef.current.forEach((handler) => {
+        try {
+          handler(message)
+        } catch (error) {
+          debug.error('WebSocket', 'Message handler error:', error)
+        }
+      })
+
+      // Then handle query invalidation
       switch (message.type) {
         // Initial state sent on connection
         case 'initial_state':
@@ -69,6 +95,8 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
         // Container status/metrics updates
         case 'containers_update':
           queryClient.invalidateQueries({ queryKey: ['containers'] })
+          // Also invalidate dashboard hosts for sparkline updates (Phase 4c)
+          queryClient.invalidateQueries({ queryKey: ['dashboard', 'hosts'] })
           break
 
         // Real-time container statistics
@@ -139,7 +167,7 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
   })
 
   return (
-    <WebSocketContext.Provider value={{ status, send }}>
+    <WebSocketContext.Provider value={{ status, send, addMessageHandler }}>
       {children}
     </WebSocketContext.Provider>
   )

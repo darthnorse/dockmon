@@ -282,3 +282,29 @@ export function useContainerCounts(
 
   return { total, running, stopped }
 }
+
+/**
+ * Hook: useAllContainers
+ * Get all containers for a host (unsorted)
+ *
+ * @param hostId - The host ID
+ * @returns Array of all containers for the host
+ */
+export function useAllContainers(
+  hostId: string | undefined
+): ContainerStats[] {
+  const { containerStats } = useStatsContext()
+
+  if (!hostId) return []
+
+  const hostContainers: ContainerStats[] = []
+
+  containerStats.forEach((container, compositeKey) => {
+    // Check if this container belongs to the specified host
+    if (compositeKey.startsWith(`${hostId}:`)) {
+      hostContainers.push(container)
+    }
+  })
+
+  return hostContainers
+}

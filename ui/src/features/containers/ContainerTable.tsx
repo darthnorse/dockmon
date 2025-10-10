@@ -165,7 +165,6 @@ function ContainerSparkline({
           height={40}
           width={80}
           label={`${metric} usage`}
-          showTooltip
         />
       )}
       {latest !== null && latest !== undefined && (

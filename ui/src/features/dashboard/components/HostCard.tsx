@@ -14,7 +14,7 @@
  */
 
 import { Circle, MoreVertical, Container } from 'lucide-react'
-import { MiniChart } from '@/lib/charts/MiniChart'
+import { ResponsiveMiniChart } from '@/lib/charts/ResponsiveMiniChart'
 import { TagChip } from '@/components/TagChip'
 
 export interface HostCardData {
@@ -173,10 +173,9 @@ export function HostCard({ host, onHostClick }: HostCardProps) {
           <div className="flex items-center gap-2">
             <span className="text-xs text-muted-foreground w-8">CPU:</span>
             <div className="flex-1">
-              <MiniChart
+              <ResponsiveMiniChart
                 data={host.sparklines!.cpu}
                 color="cpu"
-                width={120}
                 height={32}
                 label={`${host.name} CPU usage`}
               />
@@ -190,10 +189,9 @@ export function HostCard({ host, onHostClick }: HostCardProps) {
           <div className="flex items-center gap-2">
             <span className="text-xs text-muted-foreground w-8">Mem:</span>
             <div className="flex-1">
-              <MiniChart
+              <ResponsiveMiniChart
                 data={host.sparklines!.mem}
                 color="memory"
-                width={120}
                 height={32}
                 label={`${host.name} Memory usage`}
               />
@@ -208,15 +206,14 @@ export function HostCard({ host, onHostClick }: HostCardProps) {
             <span className="text-xs text-muted-foreground w-8">Net:</span>
             <div className="flex-1">
               {hasValidNetworkData ? (
-                <MiniChart
+                <ResponsiveMiniChart
                   data={host.sparklines!.net}
                   color="network"
-                  width={120}
                   height={32}
                   label={`${host.name} Network I/O`}
                 />
               ) : (
-                <div className="w-[120px] h-[32px] flex items-center justify-center text-xs text-muted-foreground">
+                <div className="h-[32px] flex items-center justify-center text-xs text-muted-foreground">
                   —
                 </div>
               )}

@@ -17,6 +17,7 @@ import { ViewModeSelector } from './components/ViewModeSelector'
 import { HostCardContainer } from './components/HostCardContainer'
 import { HostCardsGrid } from './HostCardsGrid'
 import { KpiBar } from './components/KpiBar'
+import { CompactHostCard } from './components/CompactHostCard'
 import { useViewMode } from './hooks/useViewMode'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
 import { useDashboardPrefs } from '@/hooks/useUserPrefs'
@@ -55,7 +56,36 @@ export function DashboardPage() {
       {/* Widget Grid - Phase 3b */}
       {showStatsWidgets && <GridDashboard />}
 
-      {/* View Mode Content - Phase 4c */}
+      {/* View Mode Content - Phase 4c/4d */}
+      {viewMode === 'compact' && (
+        <div className="mt-4">
+          <h2 className="text-lg font-semibold mb-4">Hosts</h2>
+          {isHostsLoading ? (
+            <div className="text-muted-foreground">Loading hosts...</div>
+          ) : hosts && hosts.length > 0 ? (
+            <div className="flex flex-col gap-2">
+              {hosts.map((host) => (
+                <CompactHostCard
+                  key={host.id}
+                  host={{
+                    id: host.id,
+                    name: host.name,
+                    url: host.url,
+                    status: host.status as 'online' | 'offline' | 'error',
+                    ...(host.tags && { tags: host.tags }),
+                  }}
+                  onClick={() => handleHostClick(host.id)}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="p-8 border border-dashed border-border rounded-lg text-center text-muted-foreground">
+              No hosts configured. Add a host to get started.
+            </div>
+          )}
+        </div>
+      )}
+
       {viewMode === 'standard' && (
         <div className="mt-4">
           <h2 className="text-lg font-semibold mb-4">Hosts</h2>

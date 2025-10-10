@@ -1,20 +1,63 @@
 /**
  * HostContainersSection Component
  *
- * Displays top 5 containers by CPU usage for a host
+ * Displays containers for a host with configurable sorting
  */
 
-import { Box, ArrowRight, Circle } from 'lucide-react'
+import { Box, ArrowRight, Circle, ChevronDown } from 'lucide-react'
 import { DrawerSection } from '@/components/ui/drawer'
-import { useTopContainers } from '@/lib/stats/StatsProvider'
+import { useAllContainers } from '@/lib/stats/StatsProvider'
 import { Link } from 'react-router-dom'
+import { useState, useMemo } from 'react'
+import { DropdownMenu, DropdownMenuItem } from '@/components/ui/dropdown-menu'
 
 interface HostContainersSectionProps {
   hostId: string
 }
 
+type SortKey = 'name' | 'state' | 'cpu' | 'memory' | 'start_time'
+
 export function HostContainersSection({ hostId }: HostContainersSectionProps) {
-  const topContainers = useTopContainers(hostId, 5)
+  const allContainers = useAllContainers(hostId)
+  const [sortKey, setSortKey] = useState<SortKey>('state')
+
+  // Sort containers based on selected key
+  const sortedContainers = useMemo(() => {
+    const containers = [...allContainers]
+
+    switch (sortKey) {
+      case 'name':
+        return containers.sort((a, b) => a.name.localeCompare(b.name))
+
+      case 'state':
+        // Running first, then alphabetically by name
+        return containers.sort((a, b) => {
+          if (a.state === 'running' && b.state !== 'running') return -1
+          if (a.state !== 'running' && b.state === 'running') return 1
+          return a.name.localeCompare(b.name)
+        })
+
+      case 'cpu':
+        return containers.sort((a, b) => (b.cpu_percent || 0) - (a.cpu_percent || 0))
+
+      case 'memory':
+        return containers.sort((a, b) => (b.memory_percent || 0) - (a.memory_percent || 0))
+
+      case 'start_time':
+        // Sort by created timestamp (newest first)
+        return containers.sort((a, b) => {
+          const dateA = new Date(a.created).getTime()
+          const dateB = new Date(b.created).getTime()
+          return dateB - dateA
+        })
+
+      default:
+        return containers
+    }
+  }, [allContainers, sortKey])
+
+  // Show top 5 after sorting
+  const displayContainers = sortedContainers.slice(0, 5)
 
   const getStatusColor = (state: string) => {
     switch (state.toLowerCase()) {
@@ -48,16 +91,66 @@ export function HostContainersSection({ hostId }: HostContainersSectionProps) {
     }
   }
 
+  const getSortLabel = (key: SortKey): string => {
+    switch (key) {
+      case 'name':
+        return 'Name (A–Z)'
+      case 'state':
+        return 'State (Running first)'
+      case 'cpu':
+        return 'CPU (High to Low)'
+      case 'memory':
+        return 'Memory (High to Low)'
+      case 'start_time':
+        return 'Start Time (Newest first)'
+      default:
+        return 'Sort'
+    }
+  }
+
   return (
     <DrawerSection title="Containers">
-      {topContainers.length === 0 ? (
+      {allContainers.length === 0 ? (
         <div className="text-center py-8 text-muted-foreground">
           <Box className="h-12 w-12 mx-auto mb-3 opacity-50" />
-          <p className="text-sm">No containers running on this host</p>
+          <p className="text-sm">No containers on this host</p>
         </div>
       ) : (
         <div className="space-y-3">
-          {topContainers.map((container) => (
+          {/* Sort Dropdown */}
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-muted-foreground">
+              Showing {displayContainers.length} of {allContainers.length}
+            </span>
+            <DropdownMenu
+              trigger={
+                <button className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors">
+                  <span>{getSortLabel(sortKey)}</span>
+                  <ChevronDown className="h-3 w-3" />
+                </button>
+              }
+              align="end"
+            >
+              <DropdownMenuItem onClick={() => setSortKey('state')}>
+                State (Running first)
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setSortKey('name')}>
+                Name (A–Z)
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setSortKey('cpu')}>
+                CPU (High to Low)
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setSortKey('memory')}>
+                Memory (High to Low)
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setSortKey('start_time')}>
+                Start Time (Newest first)
+              </DropdownMenuItem>
+            </DropdownMenu>
+          </div>
+
+          {/* Container List */}
+          {displayContainers.map((container) => (
             <div
               key={container.id}
               className="flex items-center gap-3 p-3 rounded-lg bg-muted hover:bg-muted/80 transition-colors"
@@ -82,7 +175,7 @@ export function HostContainersSection({ hostId }: HostContainersSectionProps) {
             to={`/containers?hostId=${hostId}`}
             className="flex items-center justify-center gap-2 p-3 rounded-lg border border-border hover:bg-muted transition-colors text-sm text-muted-foreground hover:text-foreground"
           >
-            <span>View all containers on this host</span>
+            <span>View all {allContainers.length} containers on this host</span>
             <ArrowRight className="h-4 w-4" />
           </Link>
         </div>

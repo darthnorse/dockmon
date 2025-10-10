@@ -49,8 +49,6 @@ export interface MiniChartProps {
   width?: number
   /** Optional label for accessibility */
   label?: string
-  /** Show Y-axis value on hover */
-  showTooltip?: boolean
 }
 
 /**
@@ -83,7 +81,6 @@ export function MiniChart({
   height = 50,
   width = 100,
   label,
-  showTooltip = true,
 }: MiniChartProps) {
   const chartRef = useRef<HTMLDivElement>(null)
   const plotRef = useRef<uPlot | null>(null)
@@ -104,11 +101,7 @@ export function MiniChart({
     width,
     height,
     cursor: {
-      show: showTooltip,
-      drag: {
-        x: false,
-        y: false,
-      },
+      show: false,
     },
     legend: {
       show: false,
@@ -147,12 +140,16 @@ export function MiniChart({
         stroke: CHART_COLORS[color],
         width: 2,
         points: {
-          show: false,
+          show: true,
+          size: 4,
+          stroke: CHART_COLORS[color],
+          fill: '#ffffff',
+          width: 2,
         },
       },
     ],
     padding: [4, 4, 4, 4],
-  }), [width, height, color, label, showTooltip])
+  }), [width, height, color, label])
 
   // Initialize chart
   useEffect(() => {

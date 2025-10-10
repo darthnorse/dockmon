@@ -87,6 +87,7 @@ export interface ExpandedHostData {
 interface ExpandedHostCardProps {
   host: ExpandedHostData
   cardRef?: React.RefObject<HTMLDivElement>
+  onHostClick?: (hostId: string) => void
 }
 
 /**
@@ -136,7 +137,7 @@ function getStateColor(state: string): string {
 
 type ContainerSortKey = 'name' | 'state' | 'cpu' | 'memory' | 'start_time'
 
-export function ExpandedHostCard({ host, cardRef }: ExpandedHostCardProps) {
+export function ExpandedHostCard({ host, cardRef, onHostClick }: ExpandedHostCardProps) {
   const [sortKey, setSortKey] = useState<ContainerSortKey>('state')
   const [isCollapsed, setIsCollapsed] = useState(false)
 
@@ -214,7 +215,12 @@ export function ExpandedHostCard({ host, cardRef }: ExpandedHostCardProps) {
       <div className="flex items-start justify-between mb-3">
         <div className="flex items-center gap-2 min-w-0 flex-1">
           <Circle className={`w-3 h-3 ${getStatusColor(host.status)}`} />
-          <h3 className="text-base font-semibold text-foreground truncate">{host.name}</h3>
+          <h3
+            className="text-base font-semibold text-foreground truncate cursor-pointer hover:text-primary transition-colors"
+            onClick={() => onHostClick?.(host.id)}
+          >
+            {host.name}
+          </h3>
         </div>
         <div onClick={(e) => e.stopPropagation()}>
           <DropdownMenu

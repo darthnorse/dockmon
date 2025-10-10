@@ -16,7 +16,6 @@
 import { Circle, MoreVertical, Container } from 'lucide-react'
 import { MiniChart } from '@/lib/charts/MiniChart'
 import { TagChip } from '@/components/TagChip'
-import { useNavigate } from 'react-router-dom'
 
 export interface HostCardData {
   id: string
@@ -64,6 +63,7 @@ export interface HostCardData {
 
 interface HostCardProps {
   host: HostCardData
+  onHostClick?: (hostId: string) => void
 }
 
 /**
@@ -110,9 +110,7 @@ function getStateColor(state: string): string {
   }
 }
 
-export function HostCard({ host }: HostCardProps) {
-  const navigate = useNavigate()
-
+export function HostCard({ host, onHostClick }: HostCardProps) {
   const hasStats = host.stats && host.sparklines
 
   // Fix #7: Check if sparklines have valid data (not just priming zeros)
@@ -127,13 +125,13 @@ export function HostCard({ host }: HostCardProps) {
   return (
     <div
       className="bg-surface border border-border rounded-lg p-4 hover:shadow-lg hover:border-accent/50 transition-all cursor-pointer"
-      onClick={() => navigate(`/hosts/${host.id}`)}
+      onClick={() => onHostClick?.(host.id)}
       role="button"
       tabIndex={0}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault()
-          navigate(`/hosts/${host.id}`)
+          onHostClick?.(host.id)
         }
       }}
       aria-label={`Host ${host.name}, ${host.status}`}

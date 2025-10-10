@@ -41,12 +41,15 @@ import {
   Settings,
   ShieldCheck,
   Shield,
+  Eye,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { TagChip } from '@/components/TagChip'
 import { useHosts, type Host } from '../hooks/useHosts'
-import { formatDistanceToNow } from 'date-fns'
+import { HostDrawer } from './drawer/HostDrawer'
+import { useHostMetrics, useHostSparklines, useContainerCounts } from '@/lib/stats/StatsProvider'
+import { MiniChart } from '@/lib/charts/MiniChart'
 
 // Status icon component
 function StatusIcon({ status }: { status: string }) {
@@ -110,36 +113,63 @@ function SecurityIndicator({ url, securityStatus }: { url: string; securityStatu
 }
 
 // OS/Version component
-function OSVersion() {
-  // TODO: Get actual OS/Version from host info
-  // For now, placeholder
-  return (
-    <span className="text-sm text-muted-foreground">
-      Ubuntu 24.04 • Docker 27.1
-    </span>
-  )
+function OSVersion({ osVersion, dockerVersion }: { osVersion?: string | null | undefined; dockerVersion?: string | null | undefined }) {
+  if (!osVersion && !dockerVersion) {
+    return <span className="text-sm text-muted-foreground">-</span>
+  }
+
+  const parts = []
+  if (osVersion) parts.push(osVersion)
+  if (dockerVersion) parts.push(`Docker ${dockerVersion}`)
+
+  return <span className="text-sm text-muted-foreground">{parts.join(' • ')}</span>
 }
 
-// Container count component
-function ContainerCount({ running, total }: { running: number; total: number }) {
+// Container count component with real-time data
+function ContainerCount({ hostId }: { hostId: string }) {
+  const counts = useContainerCounts(hostId)
+
   return (
     <span className="text-sm">
-      <span className="font-medium text-success">{running}</span>
-      <span className="text-muted-foreground"> / {total}</span>
+      <span className="font-medium text-success">{counts.running}</span>
+      <span className="text-muted-foreground"> / {counts.total}</span>
     </span>
   )
 }
 
-// CPU/Memory sparkline placeholder
-function HostSparkline({ metric }: { metric: 'cpu' | 'memory' }) {
-  // TODO: Integrate with MiniChart when WebSocket stats are available
-  const color = metric === 'cpu' ? 'text-amber-500' : 'text-blue-500'
+// CPU/Memory sparkline with real-time data
+function HostSparkline({ hostId, metric }: { hostId: string; metric: 'cpu' | 'memory' }) {
+  const metrics = useHostMetrics(hostId)
+  const sparklines = useHostSparklines(hostId)
+
+  // Show placeholder if no data yet
+  if (!sparklines) {
+    return (
+      <div className="flex items-center gap-2">
+        <div className="h-8 w-16 rounded bg-muted-foreground/10" />
+        <span className="text-xs text-muted-foreground">-</span>
+      </div>
+    )
+  }
+
+  const data = metric === 'cpu' ? sparklines.cpu : sparklines.mem
+  const currentValue = metric === 'cpu' ? metrics?.cpu_percent : metrics?.mem_percent
+  const color = metric === 'cpu' ? 'cpu' : 'memory'
+
   return (
     <div className="flex items-center gap-2">
-      <div className={`h-8 w-16 rounded ${color} opacity-20`}>
-        {/* Placeholder for sparkline */}
-      </div>
-      <span className="text-xs text-muted-foreground">-</span>
+      <MiniChart
+        data={data}
+        color={color}
+        width={60}
+        height={24}
+        label={`${metric.toUpperCase()} usage`}
+      />
+      {currentValue !== undefined && (
+        <span className="text-xs text-muted-foreground font-mono w-12 text-right">
+          {currentValue.toFixed(1)}%
+        </span>
+      )}
     </div>
   )
 }
@@ -171,11 +201,31 @@ function UpdatesBadge({ hasUpdates }: { hasUpdates: boolean }) {
   )
 }
 
-// Uptime component
-function Uptime({ lastChecked }: { lastChecked: string }) {
+// Uptime component - Shows time since Docker daemon started
+function Uptime({ daemonStartedAt }: { daemonStartedAt?: string | null | undefined }) {
+  if (!daemonStartedAt) {
+    return <span className="text-sm text-muted-foreground">-</span>
+  }
+
   try {
-    const uptime = formatDistanceToNow(new Date(lastChecked), { addSuffix: false })
-    return <span className="text-sm text-muted-foreground">{uptime}</span>
+    const startTime = new Date(daemonStartedAt)
+    const now = new Date()
+    const diffMs = now.getTime() - startTime.getTime()
+
+    const days = Math.floor(diffMs / (1000 * 60 * 60 * 24))
+    const hours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60))
+    const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60))
+
+    let uptimeStr = ''
+    if (days > 0) {
+      uptimeStr = `${days}d ${hours}h`
+    } else if (hours > 0) {
+      uptimeStr = `${hours}h ${minutes}m`
+    } else {
+      uptimeStr = `${minutes}m`
+    }
+
+    return <span className="text-sm text-muted-foreground">{uptimeStr}</span>
   } catch {
     return <span className="text-sm text-muted-foreground">-</span>
   }
@@ -189,6 +239,12 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
   const { data: hosts = [], isLoading, error } = useHosts()
   const [sorting, setSorting] = useState<SortingState>([])
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
+
+  // Drawer state
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [selectedHostId, setSelectedHostId] = useState<string | null>(null)
+
+  const selectedHost = hosts.find(h => h.id === selectedHostId)
 
   const columns = useMemo<ColumnDef<Host>[]>(
     () => [
@@ -221,8 +277,12 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
             <div className="flex flex-col gap-1">
               <div className="flex items-center gap-2">
                 <button
-                  className="text-sm font-medium text-left hover:text-primary transition-colors"
+                  className="text-sm font-medium text-left hover:text-primary transition-colors cursor-pointer"
                   title={`URL: ${host.url}`}
+                  onClick={() => {
+                    setSelectedHostId(row.original.id)
+                    setDrawerOpen(true)
+                  }}
                 >
                   {host.name}
                 </button>
@@ -249,7 +309,7 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
       {
         accessorKey: 'os_version',
         header: 'OS / Version',
-        cell: () => <OSVersion />,
+        cell: ({ row }) => <OSVersion osVersion={row.original.os_version} dockerVersion={row.original.docker_version} />,
       },
 
       // 4. Containers
@@ -265,26 +325,21 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
             <ArrowUpDown className="h-4 w-4" />
           </Button>
         ),
-        cell: ({ row }) => {
-          const total = row.original.container_count
-          // TODO: Get running count from host stats
-          const running = Math.floor(total * 0.7) // Placeholder
-          return <ContainerCount running={running} total={total} />
-        },
+        cell: ({ row }) => <ContainerCount hostId={row.original.id} />,
       },
 
       // 5. CPU
       {
         accessorKey: 'cpu',
         header: 'CPU',
-        cell: () => <HostSparkline metric="cpu" />,
+        cell: ({ row }) => <HostSparkline hostId={row.original.id} metric="cpu" />,
       },
 
       // 6. Memory
       {
         accessorKey: 'memory',
         header: 'Memory',
-        cell: () => <HostSparkline metric="memory" />,
+        cell: ({ row }) => <HostSparkline hostId={row.original.id} metric="memory" />,
       },
 
       // 7. Alerts
@@ -303,9 +358,9 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
 
       // 9. Uptime
       {
-        accessorKey: 'last_checked',
+        accessorKey: 'daemon_started_at',
         header: 'Uptime',
-        cell: ({ row }) => <Uptime lastChecked={row.original.last_checked} />,
+        cell: ({ row }) => <Uptime daemonStartedAt={row.original.daemon_started_at} />,
       },
 
       // 10. Actions
@@ -318,6 +373,17 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
               variant="ghost"
               size="sm"
               title="View Details"
+              onClick={() => {
+                setSelectedHostId(row.original.id)
+                setDrawerOpen(true)
+              }}
+            >
+              <Eye className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              title="Edit Host"
               onClick={() => {
                 onEditHost?.(row.original)
               }}
@@ -431,6 +497,32 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
           ))}
         </tbody>
       </table>
+
+      {/* Host Drawer */}
+      <HostDrawer
+        hostId={selectedHostId}
+        host={selectedHost}
+        open={drawerOpen}
+        onClose={() => {
+          setDrawerOpen(false)
+          setSelectedHostId(null)
+        }}
+        onEdit={(hostId) => {
+          const host = hosts.find(h => h.id === hostId)
+          if (host) {
+            onEditHost?.(host)
+          }
+          setDrawerOpen(false)
+        }}
+        onDelete={(hostId) => {
+          // TODO: Implement delete dialog
+          console.log('Delete host:', hostId)
+        }}
+        onExpand={(hostId) => {
+          // TODO: Open full Host Modal
+          console.log('Expand to modal:', hostId)
+        }}
+      />
     </div>
   )
 }

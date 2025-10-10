@@ -223,13 +223,13 @@ export function useStatsMetadata() {
 export function useTopContainers(
   hostId: string | undefined,
   limit: number = 3
-): Array<{ id: string; name: string; state: string; cpu_percent: number }> {
+): Array<{ id: string; name: string; state: string; cpu_percent: number; memory_percent: number }> {
   const { containerStats } = useStatsContext()
 
   if (!hostId) return []
 
   // Get all containers for this host
-  const hostContainers: Array<{ id: string; name: string; state: string; cpu_percent: number }> = []
+  const hostContainers: Array<{ id: string; name: string; state: string; cpu_percent: number; memory_percent: number }> = []
 
   containerStats.forEach((container, compositeKey) => {
     // Check if this container belongs to the specified host
@@ -239,6 +239,7 @@ export function useTopContainers(
         name: container.name,
         state: container.state,
         cpu_percent: container.cpu_percent || 0,
+        memory_percent: container.memory_percent || 0,
       })
     }
   })

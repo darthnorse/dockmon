@@ -56,6 +56,12 @@ class DockerHostDB(Base):
     # Phase 3d - Host organization
     tags = Column(Text, nullable=True)  # JSON array of tags
     description = Column(Text, nullable=True)  # Optional host description
+    # Phase 5 - System information
+    os_type = Column(String, nullable=True)  # "linux", "windows", etc.
+    os_version = Column(String, nullable=True)  # e.g., "Ubuntu 22.04.3 LTS"
+    kernel_version = Column(String, nullable=True)  # e.g., "5.15.0-88-generic"
+    docker_version = Column(String, nullable=True)  # e.g., "24.0.6"
+    daemon_started_at = Column(String, nullable=True)  # ISO timestamp when Docker daemon started
 
     # Relationships
     auto_restart_configs = relationship("AutoRestartConfig", back_populates="host", cascade="all, delete-orphan")
@@ -319,6 +325,35 @@ class DatabaseManager:
                     session.execute(text("ALTER TABLE users ADD COLUMN view_mode VARCHAR"))
                     session.commit()
                     print("Added view_mode column to users table")
+
+                # Migration: Add OS info columns to docker_hosts table (Phase 5)
+                hosts_inspector = session.connection().engine.dialect.get_columns(session.connection(), 'docker_hosts')
+                hosts_column_names = [col.get('name', '') for col in hosts_inspector if 'name' in col]
+
+                if 'os_type' not in hosts_column_names:
+                    session.execute(text("ALTER TABLE docker_hosts ADD COLUMN os_type TEXT"))
+                    session.commit()
+                    print("Added os_type column to docker_hosts table")
+
+                if 'os_version' not in hosts_column_names:
+                    session.execute(text("ALTER TABLE docker_hosts ADD COLUMN os_version TEXT"))
+                    session.commit()
+                    print("Added os_version column to docker_hosts table")
+
+                if 'kernel_version' not in hosts_column_names:
+                    session.execute(text("ALTER TABLE docker_hosts ADD COLUMN kernel_version TEXT"))
+                    session.commit()
+                    print("Added kernel_version column to docker_hosts table")
+
+                if 'docker_version' not in hosts_column_names:
+                    session.execute(text("ALTER TABLE docker_hosts ADD COLUMN docker_version TEXT"))
+                    session.commit()
+                    print("Added docker_version column to docker_hosts table")
+
+                if 'daemon_started_at' not in hosts_column_names:
+                    session.execute(text("ALTER TABLE docker_hosts ADD COLUMN daemon_started_at TEXT"))
+                    session.commit()
+                    print("Added daemon_started_at column to docker_hosts table")
 
                 # Migration: Add show_host_stats and show_container_stats columns to global_settings table
                 settings_inspector = session.connection().engine.dialect.get_columns(session.connection(), 'global_settings')

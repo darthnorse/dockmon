@@ -24,9 +24,10 @@ interface Host {
 
 interface HostCardContainerProps {
   host: Host
+  onHostClick?: (hostId: string) => void
 }
 
-export function HostCardContainer({ host }: HostCardContainerProps) {
+export function HostCardContainer({ host, onHostClick }: HostCardContainerProps) {
   // Get real-time stats from StatsProvider (WebSocket)
   const metrics = useHostMetrics(host.id)
   const sparklines = useHostSparklines(host.id)
@@ -74,5 +75,5 @@ export function HostCardContainer({ host }: HostCardContainerProps) {
     // TODO: Alerts & updates (future phases)
   }
 
-  return <HostCard host={hostCardData} />
+  return <HostCard host={hostCardData} {...(onHostClick && { onHostClick })} />
 }

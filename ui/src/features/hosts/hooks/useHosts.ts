@@ -29,6 +29,12 @@ export interface Host {
   error?: string | null
   tags?: string[]
   description?: string | null
+  // Phase 5 - System information
+  os_type?: string | null
+  os_version?: string | null
+  kernel_version?: string | null
+  docker_version?: string | null
+  daemon_started_at?: string | null
 }
 
 export interface HostConfig {

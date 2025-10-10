@@ -11,6 +11,7 @@
  * - WebSocket live sparkline updates (2s interval via query invalidation)
  */
 
+import { useState } from 'react'
 import { GridDashboard } from './GridDashboard'
 import { ViewModeSelector } from './components/ViewModeSelector'
 import { HostCardContainer } from './components/HostCardContainer'
@@ -19,11 +20,23 @@ import { KpiBar } from './components/KpiBar'
 import { useViewMode } from './hooks/useViewMode'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
 import { useDashboardPrefs } from '@/hooks/useUserPrefs'
+import { HostDrawer } from '@/features/hosts/components/drawer/HostDrawer'
 
 export function DashboardPage() {
   const { viewMode, setViewMode, isLoading: isViewModeLoading } = useViewMode()
   const { data: hosts, isLoading: isHostsLoading } = useHosts()
   const { dashboardPrefs } = useDashboardPrefs()
+
+  // Drawer state
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [selectedHostId, setSelectedHostId] = useState<string | null>(null)
+
+  const selectedHost = hosts?.find(h => h.id === selectedHostId)
+
+  const handleHostClick = (hostId: string) => {
+    setSelectedHostId(hostId)
+    setDrawerOpen(true)
+  }
 
   const showKpiBar = dashboardPrefs?.showKpiBar ?? true
   const showStatsWidgets = dashboardPrefs?.showStatsWidgets ?? false
@@ -60,6 +73,7 @@ export function DashboardPage() {
                     status: host.status as 'online' | 'offline' | 'error',
                     ...(host.tags && { tags: host.tags }),
                   }}
+                  onHostClick={handleHostClick}
                 />
               ))}
             </div>
@@ -72,14 +86,41 @@ export function DashboardPage() {
       )}
 
       {viewMode === 'expanded' && hosts && (
-        <HostCardsGrid hosts={hosts.map(h => ({
-          id: h.id,
-          name: h.name,
-          url: h.url,
-          status: h.status as 'online' | 'offline' | 'error',
-          ...(h.tags && { tags: h.tags }),
-        }))} />
+        <HostCardsGrid
+          hosts={hosts.map(h => ({
+            id: h.id,
+            name: h.name,
+            url: h.url,
+            status: h.status as 'online' | 'offline' | 'error',
+            ...(h.tags && { tags: h.tags }),
+          }))}
+          onHostClick={handleHostClick}
+        />
       )}
+
+      {/* Host Drawer */}
+      <HostDrawer
+        hostId={selectedHostId}
+        host={selectedHost}
+        open={drawerOpen}
+        onClose={() => {
+          setDrawerOpen(false)
+          setSelectedHostId(null)
+        }}
+        onEdit={(hostId) => {
+          // TODO: Open edit host modal
+          console.log('Edit host:', hostId)
+          setDrawerOpen(false)
+        }}
+        onDelete={(hostId) => {
+          // TODO: Open delete confirmation dialog
+          console.log('Delete host:', hostId)
+        }}
+        onExpand={(hostId) => {
+          // TODO: Open full host modal (Phase 5)
+          console.log('Expand host:', hostId)
+        }}
+      />
     </div>
   )
 }

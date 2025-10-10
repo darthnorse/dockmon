@@ -27,6 +27,7 @@ interface Host {
 
 interface HostCardsGridProps {
   hosts: Host[]
+  onHostClick?: (hostId: string) => void
 }
 
 // Default layout for host cards (3 columns, each 4 grid units wide)
@@ -43,7 +44,7 @@ function generateDefaultLayout(hosts: Host[]): Layout[] {
   }))
 }
 
-export function HostCardsGrid({ hosts }: HostCardsGridProps) {
+export function HostCardsGrid({ hosts, onHostClick }: HostCardsGridProps) {
   const { dashboardPrefs, updateDashboardPrefs, isLoading } = useDashboardPrefs()
   const isInitialMount = useRef(true)
 
@@ -128,11 +129,11 @@ export function HostCardsGrid({ hosts }: HostCardsGridProps) {
       >
         {hosts.map((host) => (
           <div key={host.id} className="widget-container">
-            {/* Drag handle - left side only to avoid blocking kebab menu */}
-            <div className="host-card-drag-handle absolute left-0 top-0 z-10 h-16 cursor-move" style={{ width: 'calc(100% - 60px)' }} />
+            {/* Drag handle - positioned to avoid blocking host name and kebab menu */}
+            <div className="host-card-drag-handle absolute left-0 top-0 z-10 h-16 cursor-move pointer-events-auto" style={{ width: '40px' }} />
 
             {/* Host card content */}
-            <div className="h-full overflow-hidden">
+            <div className="h-full overflow-hidden relative">
               <ExpandedHostCardContainer
                 host={{
                   id: host.id,
@@ -141,6 +142,7 @@ export function HostCardsGrid({ hosts }: HostCardsGridProps) {
                   status: host.status,
                   ...(host.tags && { tags: host.tags }),
                 }}
+                {...(onHostClick && { onHostClick })}
               />
             </div>
           </div>

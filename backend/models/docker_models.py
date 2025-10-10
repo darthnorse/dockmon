@@ -210,6 +210,12 @@ class DockerHost(BaseModel):
     # Phase 3d - Host organization
     tags: Optional[list[str]] = None  # User-defined tags for filtering/grouping
     description: Optional[str] = None  # Optional notes about the host
+    # Phase 5 - System information
+    os_type: Optional[str] = None  # "linux", "windows", etc.
+    os_version: Optional[str] = None  # e.g., "Ubuntu 22.04.3 LTS"
+    kernel_version: Optional[str] = None  # e.g., "5.15.0-88-generic"
+    docker_version: Optional[str] = None  # e.g., "24.0.6"
+    daemon_started_at: Optional[str] = None  # ISO timestamp when Docker daemon started (from bridge network)
 
 
 class Container(BaseModel):

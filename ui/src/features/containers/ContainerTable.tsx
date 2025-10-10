@@ -23,8 +23,9 @@
  * - WebSocket for real-time stats
  */
 
-import { useMemo, useState, useRef } from 'react'
+import { useMemo, useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useSearchParams } from 'react-router-dom'
 import {
   useReactTable,
   getCoreRowModel,
@@ -180,8 +181,17 @@ export function ContainerTable() {
   const [sorting, setSorting] = useState<SortingState>([])
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
   const [globalFilter, setGlobalFilter] = useState('')
+  const [searchParams] = useSearchParams()
 
   const queryClient = useQueryClient()
+
+  // Filter by hostId from URL params if present
+  useEffect(() => {
+    const hostId = searchParams.get('hostId')
+    if (hostId) {
+      setColumnFilters([{ id: 'host_id', value: hostId }])
+    }
+  }, [searchParams])
 
   // Fetch containers with stats
   const { data, isLoading, error } = useQuery<Container[]>({
@@ -269,7 +279,24 @@ export function ContainerTable() {
       // 4. Host (chip with tags)
       {
         accessorKey: 'host_name',
-        header: 'Host',
+        id: 'host_id',
+        header: ({ column }) => {
+          const sortDirection = column.getIsSorted()
+          return (
+            <Button
+              variant="ghost"
+              onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
+              className="h-8 px-2 hover:bg-surface-2"
+            >
+              Host
+              <ArrowUpDown className={`ml-2 h-4 w-4 ${sortDirection ? 'text-primary' : 'text-muted-foreground'}`} />
+            </Button>
+          )
+        },
+        filterFn: (row, _columnId, filterValue) => {
+          // Filter by host_id when set from URL params
+          return row.original.host_id === filterValue
+        },
         cell: ({ row }) => {
           const container = row.original
           return (

@@ -174,6 +174,33 @@ class DockerMonitor:
             # Test connection
             client.ping()
 
+            # Fetch system information
+            try:
+                system_info = client.info()
+                os_type = system_info.get('OSType', None)
+                os_version = system_info.get('OperatingSystem', None)
+                kernel_version = system_info.get('KernelVersion', None)
+
+                version_info = client.version()
+                docker_version = version_info.get('Version', None)
+
+                # Get Docker daemon start time from bridge network creation
+                daemon_started_at = None
+                try:
+                    networks = client.networks.list()
+                    bridge_net = next((n for n in networks if n.name == 'bridge'), None)
+                    if bridge_net:
+                        daemon_started_at = bridge_net.attrs.get('Created')
+                except Exception as e:
+                    logger.debug(f"Failed to get daemon start time for {config.name}: {e}")
+            except Exception as e:
+                logger.warning(f"Failed to fetch system info for {config.name}: {e}")
+                os_type = None
+                os_version = None
+                kernel_version = None
+                docker_version = None
+                daemon_started_at = None
+
             # Validate TLS configuration for TCP connections
             security_status = self._validate_host_security(config)
 
@@ -193,12 +220,41 @@ class DockerMonitor:
                 status="online",
                 security_status=security_status,
                 tags=config.tags,
-                description=config.description
+                description=config.description,
+                os_type=os_type,
+                os_version=os_version,
+                kernel_version=kernel_version,
+                docker_version=docker_version,
+                daemon_started_at=daemon_started_at
             )
 
             # Store client and host
             self.clients[host.id] = client
             self.hosts[host.id] = host
+
+            # Update OS info in database if reconnecting (when info wasn't saved before)
+            if skip_db_save and (os_type or os_version or kernel_version or docker_version or daemon_started_at):
+                # Update existing host with OS info
+                try:
+                    session = self.db.get_session()
+                    from database import DockerHostDB
+                    db_host = session.query(DockerHostDB).filter(DockerHostDB.id == host.id).first()
+                    if db_host:
+                        if os_type:
+                            db_host.os_type = os_type
+                        if os_version:
+                            db_host.os_version = os_version
+                        if kernel_version:
+                            db_host.kernel_version = kernel_version
+                        if docker_version:
+                            db_host.docker_version = docker_version
+                        if daemon_started_at:
+                            db_host.daemon_started_at = daemon_started_at
+                        session.commit()
+                        logger.info(f"Updated OS info for {host.name}: {os_version} / Docker {docker_version}")
+                    session.close()
+                except Exception as e:
+                    logger.warning(f"Failed to update OS info for {host.name}: {e}")
 
             # Save to database only if not reconnecting to an existing host
             if not skip_db_save:
@@ -214,7 +270,12 @@ class DockerMonitor:
                     'tls_ca': config.tls_ca,
                     'security_status': security_status,
                     'tags': tags_json,
-                    'description': config.description
+                    'description': config.description,
+                    'os_type': host.os_type,
+                    'os_version': host.os_version,
+                    'kernel_version': host.kernel_version,
+                    'docker_version': host.docker_version,
+                    'daemon_started_at': host.daemon_started_at
                 })
 
             # Register host with stats and event services

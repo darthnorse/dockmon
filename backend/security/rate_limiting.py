@@ -17,6 +17,30 @@ from .audit import security_audit
 logger = logging.getLogger(__name__)
 
 
+def _get_int_env(key: str, default: int) -> int:
+    """
+    Safely parse integer from environment variable with validation.
+
+    Args:
+        key: Environment variable name
+        default: Default value if not set or invalid
+
+    Returns:
+        Parsed integer value or default
+    """
+    try:
+        value = os.getenv(key)
+        if value is not None:
+            parsed = int(value)
+            if parsed < 0:
+                logger.warning(f"Invalid negative value for {key}={value}, using default {default}")
+                return default
+            return parsed
+    except ValueError:
+        logger.warning(f"Invalid integer for {key}={os.getenv(key)}, using default {default}")
+    return default
+
+
 class RateLimiter:
     """
     In-memory rate limiter using token bucket algorithm
@@ -31,29 +55,29 @@ class RateLimiter:
         self.limits = {
             # endpoint_pattern: (requests_per_minute, burst_limit, violation_threshold)
             "default": (
-                int(os.getenv('DOCKMON_RATE_LIMIT_DEFAULT', 120)),
-                int(os.getenv('DOCKMON_RATE_BURST_DEFAULT', 20)),
-                int(os.getenv('DOCKMON_RATE_VIOLATIONS_DEFAULT', 8))
+                _get_int_env('DOCKMON_RATE_LIMIT_DEFAULT', 120),
+                _get_int_env('DOCKMON_RATE_BURST_DEFAULT', 20),
+                _get_int_env('DOCKMON_RATE_VIOLATIONS_DEFAULT', 8)
             ),
             "auth": (
-                int(os.getenv('DOCKMON_RATE_LIMIT_AUTH', 10)),  # 10 per minute for auth
-                int(os.getenv('DOCKMON_RATE_BURST_AUTH', 5)),   # Lower burst
-                int(os.getenv('DOCKMON_RATE_VIOLATIONS_AUTH', 10))  # More lenient violations
+                _get_int_env('DOCKMON_RATE_LIMIT_AUTH', 10),  # 10 per minute for auth
+                _get_int_env('DOCKMON_RATE_BURST_AUTH', 5),   # Lower burst
+                _get_int_env('DOCKMON_RATE_VIOLATIONS_AUTH', 10)  # More lenient violations
             ),
             "hosts": (
-                int(os.getenv('DOCKMON_RATE_LIMIT_HOSTS', 60)),
-                int(os.getenv('DOCKMON_RATE_BURST_HOSTS', 15)),
-                int(os.getenv('DOCKMON_RATE_VIOLATIONS_HOSTS', 8))
+                _get_int_env('DOCKMON_RATE_LIMIT_HOSTS', 60),
+                _get_int_env('DOCKMON_RATE_BURST_HOSTS', 15),
+                _get_int_env('DOCKMON_RATE_VIOLATIONS_HOSTS', 8)
             ),
             "containers": (
-                int(os.getenv('DOCKMON_RATE_LIMIT_CONTAINERS', 900)),  # Increased for logs polling with multiple containers
-                int(os.getenv('DOCKMON_RATE_BURST_CONTAINERS', 180)),
-                int(os.getenv('DOCKMON_RATE_VIOLATIONS_CONTAINERS', 25))
+                _get_int_env('DOCKMON_RATE_LIMIT_CONTAINERS', 900),  # Increased for logs polling with multiple containers
+                _get_int_env('DOCKMON_RATE_BURST_CONTAINERS', 180),
+                _get_int_env('DOCKMON_RATE_VIOLATIONS_CONTAINERS', 25)
             ),
             "notifications": (
-                int(os.getenv('DOCKMON_RATE_LIMIT_NOTIFICATIONS', 30)),
-                int(os.getenv('DOCKMON_RATE_BURST_NOTIFICATIONS', 10)),
-                int(os.getenv('DOCKMON_RATE_VIOLATIONS_NOTIFICATIONS', 5))
+                _get_int_env('DOCKMON_RATE_LIMIT_NOTIFICATIONS', 30),
+                _get_int_env('DOCKMON_RATE_BURST_NOTIFICATIONS', 10),
+                _get_int_env('DOCKMON_RATE_VIOLATIONS_NOTIFICATIONS', 5)
             ),
         }
 

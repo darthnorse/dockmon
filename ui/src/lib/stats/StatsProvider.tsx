@@ -107,21 +107,23 @@ export function StatsProvider({ children }: StatsProviderProps) {
 
       // Update container sparklines Map
       if (container_sparklines) {
-        const newContainerSparklines = new Map<string, Sparklines>()
-        Object.entries(container_sparklines).forEach(([containerKey, sparklines]) => {
-          newContainerSparklines.set(containerKey, sparklines)
+        setContainerSparklines((prevSparklines) => {
+          const newContainerSparklines = new Map<string, Sparklines>()
+          Object.entries(container_sparklines).forEach(([containerKey, sparklines]) => {
+            newContainerSparklines.set(containerKey, sparklines)
 
-          // Debug: Log when sparklines become empty for containers that previously had data
-          if (containerSparklines.has(containerKey)) {
-            const previous = containerSparklines.get(containerKey)
-            if (previous && (previous.cpu.length > 0 || previous.mem.length > 0 || previous.net.length > 0)) {
-              if (sparklines.cpu.length === 0 || sparklines.mem.length === 0 || sparklines.net.length === 0) {
-                debug.warn('StatsProvider', `Sparklines became empty for ${containerKey}: cpu ${previous.cpu.length}→${sparklines.cpu.length}, mem ${previous.mem.length}→${sparklines.mem.length}, net ${previous.net.length}→${sparklines.net.length}`)
+            // Debug: Log when sparklines become empty for containers that previously had data
+            if (prevSparklines.has(containerKey)) {
+              const previous = prevSparklines.get(containerKey)
+              if (previous && (previous.cpu.length > 0 || previous.mem.length > 0 || previous.net.length > 0)) {
+                if (sparklines.cpu.length === 0 || sparklines.mem.length === 0 || sparklines.net.length === 0) {
+                  debug.warn('StatsProvider', `Sparklines became empty for ${containerKey}: cpu ${previous.cpu.length}→${sparklines.cpu.length}, mem ${previous.mem.length}→${sparklines.mem.length}, net ${previous.net.length}→${sparklines.net.length}`)
+                }
               }
             }
-          }
+          })
+          return newContainerSparklines
         })
-        setContainerSparklines(newContainerSparklines)
       }
 
       // Update timestamp

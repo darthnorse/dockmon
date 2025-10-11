@@ -204,7 +204,11 @@ export function BatchJobPanel({ jobId, onClose, bulkActionBarOpen = false }: Bat
                   setLoading(true)
                   apiClient.get<BatchJobStatus>(`/batch/${jobId}`)
                     .then(data => setJob(data))
-                    .catch(err => setError(err instanceof Error ? err.message : 'Failed to fetch job status'))
+                    .catch(err => {
+                      const errorMsg = err instanceof Error ? err.message : 'Failed to fetch job status'
+                      console.error('Batch job retry failed:', err)
+                      setError(errorMsg)
+                    })
                     .finally(() => setLoading(false))
                 }}
                 className="mt-2 text-xs text-primary hover:text-primary/80 font-medium"

@@ -25,7 +25,13 @@ function isDebugEnabled(): boolean {
 
   // In production, check localStorage flag
   if (typeof window !== 'undefined') {
-    return localStorage.getItem(DEBUG_KEY) === 'true'
+    try {
+      return localStorage.getItem(DEBUG_KEY) === 'true'
+    } catch (e) {
+      // localStorage may throw in incognito/private mode or if quota exceeded
+      console.warn('Failed to access localStorage for debug flag:', e)
+      return false
+    }
   }
 
   return false
@@ -37,12 +43,20 @@ function isDebugEnabled(): boolean {
  */
 if (typeof window !== 'undefined') {
   ;(window as any).enableDebug = () => {
-    localStorage.setItem(DEBUG_KEY, 'true')
-    console.log('✅ Debug mode enabled. Reload to see debug messages.')
+    try {
+      localStorage.setItem(DEBUG_KEY, 'true')
+      console.log('✅ Debug mode enabled. Reload to see debug messages.')
+    } catch (e) {
+      console.error('Failed to enable debug mode (localStorage unavailable):', e)
+    }
   }
   ;(window as any).disableDebug = () => {
-    localStorage.removeItem(DEBUG_KEY)
-    console.log('❌ Debug mode disabled.')
+    try {
+      localStorage.removeItem(DEBUG_KEY)
+      console.log('❌ Debug mode disabled.')
+    } catch (e) {
+      console.error('Failed to disable debug mode (localStorage unavailable):', e)
+    }
   }
 }
 

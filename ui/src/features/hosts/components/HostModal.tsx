@@ -23,6 +23,15 @@ import { useState, useEffect } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
+
+// Type for API errors
+interface ApiError extends Error {
+  response?: {
+    data?: {
+      detail?: string
+    }
+  }
+}
 import { X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -180,8 +189,9 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
         id: 'test-connection',
         duration: 5000
       })
-    } catch (error: any) {
-      const message = error.response?.data?.detail || error.message || 'Connection failed'
+    } catch (error: unknown) {
+      const apiError = error as ApiError
+      const message = apiError.response?.data?.detail || apiError.message || 'Connection failed'
       toast.error(message, { id: 'test-connection' })
     }
   }

@@ -125,7 +125,10 @@ export function useWebSocket({
         // Attempt reconnection
         if (reconnect && reconnectCountRef.current < reconnectAttempts) {
           reconnectCountRef.current++
-          const delay = reconnectInterval * Math.pow(1.5, reconnectCountRef.current - 1)
+          // Cap the exponent to prevent overflow after many attempts
+          const cappedExponent = Math.min(reconnectCountRef.current - 1, 10)
+          const baseDelay = reconnectInterval * Math.pow(1.5, cappedExponent)
+          const delay = Math.min(baseDelay, POLLING_CONFIG.WEBSOCKET_MAX_DELAY)
 
           reconnectTimeoutRef.current = setTimeout(() => {
             debug.log(
@@ -133,7 +136,7 @@ export function useWebSocket({
               `Reconnecting (attempt ${reconnectCountRef.current}/${reconnectAttempts})...`
             )
             connect()
-          }, Math.min(delay, POLLING_CONFIG.WEBSOCKET_MAX_DELAY))
+          }, delay)
         }
       }
 

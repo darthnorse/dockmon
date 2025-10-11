@@ -18,6 +18,15 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { apiClient } from '@/lib/api/client'
 
+// Type for API errors from axios/fetch responses
+interface ApiError extends Error {
+  response?: {
+    data?: {
+      detail?: string
+    }
+  }
+}
+
 export interface Host {
   id: string
   name: string
@@ -100,8 +109,9 @@ export function useAddHost() {
       queryClient.invalidateQueries({ queryKey: ['tags'] }) // Invalidate tags cache
       toast.success(`Host "${data.name}" added successfully`)
     },
-    onError: (error: any) => {
-      const message = error.response?.data?.detail || error.message || 'Failed to add host'
+    onError: (error: unknown) => {
+      const apiError = error as ApiError
+      const message = apiError.response?.data?.detail || apiError.message || 'Failed to add host'
       toast.error(message)
     },
   })
@@ -120,8 +130,9 @@ export function useUpdateHost() {
       queryClient.invalidateQueries({ queryKey: ['tags'] })
       toast.success(`Host "${data.name}" updated successfully`)
     },
-    onError: (error: any) => {
-      const message = error.response?.data?.detail || error.message || 'Failed to update host'
+    onError: (error: unknown) => {
+      const apiError = error as ApiError
+      const message = apiError.response?.data?.detail || apiError.message || 'Failed to update host'
       toast.error(message)
     },
   })
@@ -140,8 +151,9 @@ export function useDeleteHost() {
       queryClient.invalidateQueries({ queryKey: ['tags'] })
       toast.success('Host deleted successfully')
     },
-    onError: (error: any) => {
-      const message = error.response?.data?.detail || error.message || 'Failed to delete host'
+    onError: (error: unknown) => {
+      const apiError = error as ApiError
+      const message = apiError.response?.data?.detail || apiError.message || 'Failed to delete host'
       toast.error(message)
     },
   })

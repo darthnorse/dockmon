@@ -35,6 +35,7 @@ import { TagChip } from '@/components/TagChip'
 import { useState, useEffect } from 'react'
 import { DropdownMenu, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
 import { useDashboardPrefs } from '@/hooks/useUserPrefs'
+import { debug } from '@/lib/debug'
 
 export interface ExpandedHostData {
   id: string
@@ -189,18 +190,18 @@ export function ExpandedHostCard({ host, cardRef, onHostClick }: ExpandedHostCar
   const displayContainers = sortedContainers
 
   const handleContainerClick = (containerId: string) => {
-    // TODO: Open Container Drawer (Phase 5+)
-    console.log('Open container drawer:', containerId)
+    // Future feature: Open Container Drawer
+    debug.log('ExpandedHostCard', 'Open container drawer:', containerId)
   }
 
   const handleHostAction = (action: string) => {
-    // TODO: Implement host actions (Phase 4d+)
-    console.log(`${action} host:`, host.id)
+    // Future feature: Implement host actions
+    debug.log('ExpandedHostCard', `${action} host:`, host.id)
   }
 
   const handleContainerAction = (containerId: string, action: string) => {
-    // TODO: Implement container actions (Phase 4d+)
-    console.log(`${action} container:`, containerId)
+    // Future feature: Implement container actions
+    debug.log('ExpandedHostCard', `${action} container:`, containerId)
   }
 
   const getSortLabel = (key: ContainerSortKey) => {

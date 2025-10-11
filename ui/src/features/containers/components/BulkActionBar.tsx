@@ -180,7 +180,7 @@ export function BulkActionBar({
       setSelectedTags([])
       setInputValue('')
     } catch (error) {
-      console.error('Failed to update tags:', error)
+      debug.error('BulkActionBar', 'Failed to update tags:', error)
     } finally {
       setIsLoading(false)
     }
@@ -193,7 +193,7 @@ export function BulkActionBar({
     try {
       await onAutoRestartUpdate(autoRestartMode === 'enable')
     } catch (error) {
-      console.error('Failed to update auto-restart:', error)
+      debug.error('BulkActionBar', 'Failed to update auto-restart:', error)
     } finally {
       setIsLoading(false)
     }
@@ -206,7 +206,7 @@ export function BulkActionBar({
     try {
       await onDesiredStateUpdate(desiredStateMode)
     } catch (error) {
-      console.error('Failed to update desired state:', error)
+      debug.error('BulkActionBar', 'Failed to update desired state:', error)
     } finally {
       setIsLoading(false)
     }

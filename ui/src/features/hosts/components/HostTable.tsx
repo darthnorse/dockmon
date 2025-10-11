@@ -51,6 +51,7 @@ import { HostDrawer } from './drawer/HostDrawer'
 import { HostDetailsModal } from './HostDetailsModal'
 import { useHostMetrics, useHostSparklines, useContainerCounts } from '@/lib/stats/StatsProvider'
 import { MiniChart } from '@/lib/charts/MiniChart'
+import { debug } from '@/lib/debug'
 
 // Status icon component
 function StatusIcon({ status }: { status: string }) {
@@ -400,7 +401,7 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
               title="Restart Docker"
               onClick={() => {
                 // TODO: Restart Docker engine
-                console.log('Restart Docker:', row.original.id)
+                debug.log('HostTable', 'Restart Docker:', row.original.id)
               }}
             >
               <RotateCw className="h-4 w-4" />
@@ -411,7 +412,7 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
               title="View Logs"
               onClick={() => {
                 // TODO: View Docker logs
-                console.log('View logs:', row.original.id)
+                debug.log('HostTable', 'View logs:', row.original.id)
               }}
             >
               <FileText className="h-4 w-4" />
@@ -520,7 +521,7 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
         }}
         onDelete={(hostId) => {
           // TODO: Implement delete dialog
-          console.log('Delete host:', hostId)
+          debug.log('HostTable', 'Delete host:', hostId)
         }}
         onExpand={() => {
           setDrawerOpen(false)

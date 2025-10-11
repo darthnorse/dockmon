@@ -24,6 +24,7 @@ import { useDashboardPrefs } from '@/hooks/useUserPrefs'
 import { HostDrawer } from '@/features/hosts/components/drawer/HostDrawer'
 import { HostDetailsModal } from '@/features/hosts/components/HostDetailsModal'
 import { HostModal } from '@/features/hosts/components/HostModal'
+import { debug } from '@/lib/debug'
 
 export function DashboardPage() {
   const { viewMode, setViewMode, isLoading: isViewModeLoading } = useViewMode()
@@ -156,7 +157,7 @@ export function DashboardPage() {
         }}
         onDelete={(hostId) => {
           // TODO: Open delete confirmation dialog
-          console.log('Delete host:', hostId)
+          debug.log('DashboardPage', 'Delete host:', hostId)
         }}
         onExpand={() => {
           setDrawerOpen(false)

@@ -17,6 +17,7 @@ import { useState, useEffect } from 'react'
 import { X, ChevronRight, MoreVertical, RotateCw } from 'lucide-react'
 import { Tabs } from '@/components/ui/tabs'
 import { useContainerCounts } from '@/lib/stats/StatsProvider'
+import { debug } from '@/lib/debug'
 
 // Import tab content components
 import { HostOverviewTab } from './modal-tabs/HostOverviewTab'
@@ -147,7 +148,7 @@ export function HostDetailsModal({
               <button
                 onClick={() => {
                   // TODO: Implement restart
-                  console.log('Restart host')
+                  debug.log('HostDetailsModal', 'Restart host')
                 }}
                 className="flex items-center gap-2 px-4 py-2 rounded-lg border border-border hover:bg-muted transition-colors text-sm"
               >
@@ -159,7 +160,7 @@ export function HostDetailsModal({
                 className="p-2 rounded-lg border border-border hover:bg-muted transition-colors"
                 onClick={() => {
                   // TODO: Implement more menu
-                  console.log('More menu')
+                  debug.log('HostDetailsModal', 'More menu')
                 }}
               >
                 <MoreVertical className="h-4 w-4" />

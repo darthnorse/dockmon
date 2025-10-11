@@ -40,6 +40,7 @@ import { useTags } from '@/lib/hooks/useTags'
 import { useAddHost, useUpdateHost, type Host, type HostConfig } from '../hooks/useHosts'
 import { toast } from 'sonner'
 import { apiClient } from '@/lib/api/client'
+import { debug } from '@/lib/debug'
 
 // Zod schema for host form
 const hostSchema = z.object({
@@ -231,7 +232,7 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
       reset()
     } catch (error) {
       // Error handled by mutation hooks (toast)
-      console.error('Error saving host:', error)
+      debug.error('HostModal', 'Error saving host:', error)
     }
   }
 

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { X, CheckCircle, XCircle, Clock, Loader2 } from 'lucide-react'
 import { apiClient } from '@/lib/api/client'
 import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
+import { debug } from '@/lib/debug'
 import type { WebSocketMessage } from '@/lib/websocket/useWebSocket'
 
 interface BatchJobStatus {
@@ -206,7 +207,7 @@ export function BatchJobPanel({ jobId, onClose, bulkActionBarOpen = false }: Bat
                     .then(data => setJob(data))
                     .catch(err => {
                       const errorMsg = err instanceof Error ? err.message : 'Failed to fetch job status'
-                      console.error('Batch job retry failed:', err)
+                      debug.error('BatchJobPanel', 'Batch job retry failed:', err)
                       setError(errorMsg)
                     })
                     .finally(() => setLoading(false))

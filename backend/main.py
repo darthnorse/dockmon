@@ -1768,72 +1768,8 @@ async def get_dashboard_hosts(
         raise HTTPException(status_code=500, detail=str(e))
 
 # ==================== Event Log Routes ====================
-# Note: Main /api/events endpoint is defined earlier with full feature set
-
-@app.get("/api/events/{event_id}")
-async def get_event(event_id: int, current_user: dict = Depends(get_current_user)):
-    """Get a specific event by ID"""
-    try:
-        event = monitor.db.get_event_by_id(event_id)
-        if not event:
-            raise HTTPException(status_code=404, detail="Event not found")
-
-        return {
-            "id": event.id,
-            "correlation_id": event.correlation_id,
-            "category": event.category,
-            "event_type": event.event_type,
-            "severity": event.severity,
-            "host_id": event.host_id,
-            "host_name": event.host_name,
-            "container_id": event.container_id,
-            "container_name": event.container_name,
-            "title": event.title,
-            "message": event.message,
-            "old_state": event.old_state,
-            "new_state": event.new_state,
-            "triggered_by": event.triggered_by,
-            "details": event.details,
-            "duration_ms": event.duration_ms,
-            "timestamp": event.timestamp.isoformat()
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get event {event_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/events/correlation/{correlation_id}")
-async def get_events_by_correlation(correlation_id: str, current_user: dict = Depends(get_current_user)):
-    """Get all events with the same correlation ID"""
-    try:
-        events = monitor.db.get_events_by_correlation(correlation_id)
-
-        return {
-            "correlation_id": correlation_id,
-            "events": [{
-                "id": event.id,
-                "correlation_id": event.correlation_id,
-                "category": event.category,
-                "event_type": event.event_type,
-                "severity": event.severity,
-                "host_id": event.host_id,
-                "host_name": event.host_name,
-                "container_id": event.container_id,
-                "container_name": event.container_name,
-                "title": event.title,
-                "message": event.message,
-                "old_state": event.old_state,
-                "new_state": event.new_state,
-                "triggered_by": event.triggered_by,
-                "details": event.details,
-                "duration_ms": event.duration_ms,
-                "timestamp": event.timestamp.isoformat()
-            } for event in events]
-        }
-    except Exception as e:
-        logger.error(f"Failed to get events by correlation {correlation_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+# Note: Main /api/events endpoints are defined earlier (lines 1185-1367) with full feature set
+# including rate limiting. Additional event endpoints below:
 
 @app.get("/api/events/statistics")
 async def get_event_statistics(start_date: Optional[str] = None,

@@ -4,6 +4,7 @@ Handles bulk operations on containers with rate limiting and progress tracking
 """
 
 import asyncio
+import json
 import logging
 import uuid
 from datetime import datetime
@@ -60,7 +61,7 @@ class BatchJobManager:
                 user_id=user_id,
                 scope=scope,
                 action=action,
-                params=str(params) if params else None,
+                params=json.dumps(params) if params else None,
                 status='queued',
                 total_items=len(container_ids)
             )
@@ -190,8 +191,8 @@ class BatchJobManager:
                     if not job:
                         raise Exception("Job not found")
                     action = job.action
-                    # Parse params if they exist
-                    params = eval(job.params) if job.params else None
+                    # Parse params if they exist (JSON format)
+                    params = json.loads(job.params) if job.params else None
 
                 # Execute the action
                 result = await self._execute_action(action, host_id, container_id, container_name, params)

@@ -39,7 +39,7 @@ from models.docker_models import DockerHostConfig, DockerHost
 from models.settings_models import GlobalSettings, AlertRule
 from models.request_models import (
     AutoRestartRequest, DesiredStateRequest, AlertRuleCreate, AlertRuleUpdate,
-    NotificationChannelCreate, NotificationChannelUpdate, EventLogFilter, BatchJobCreate, ContainerTagUpdate
+    NotificationChannelCreate, NotificationChannelUpdate, EventLogFilter, BatchJobCreate, ContainerTagUpdate, HostTagUpdate
 )
 from security.audit import security_audit
 from security.rate_limiting import rate_limiter, rate_limit_auth, rate_limit_hosts, rate_limit_containers, rate_limit_notifications, rate_limit_default
@@ -385,6 +385,50 @@ async def remove_host(host_id: str, current_user: dict = Depends(get_current_use
         logger.error(f"Error removing host {host_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to remove host: {str(e)}")
 
+@app.patch("/api/hosts/{host_id}/tags")
+async def update_host_tags(
+    host_id: str,
+    request: HostTagUpdate,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Update tags for a host
+
+    Add or remove custom tags for organizing hosts (e.g., 'prod', 'dev', 'us-west-1').
+    Host tags are separate from container tags and used for filtering/grouping hosts.
+    """
+    # Get host from monitor
+    host = monitor.hosts.get(host_id)
+    if not host:
+        raise HTTPException(status_code=404, detail="Host not found")
+
+    # Get current tags from database
+    with monitor.db.get_session() as session:
+        from database import DockerHostDB
+        db_host = session.query(DockerHostDB).filter(DockerHostDB.id == host_id).first()
+
+        if not db_host:
+            raise HTTPException(status_code=404, detail="Host not found in database")
+
+        # Parse existing tags
+        try:
+            current_tags = set(json.loads(db_host.tags) if db_host.tags else [])
+        except (json.JSONDecodeError, TypeError):
+            current_tags = set()
+
+        # Apply changes
+        new_tags = current_tags.copy()
+        new_tags.update(request.tags_to_add)
+        new_tags.difference_update(request.tags_to_remove)
+
+        # Update database
+        db_host.tags = json.dumps(sorted(list(new_tags)))
+        session.commit()
+
+        logger.info(f"User {current_user.get('username')} updated tags for host {host.name}")
+
+        return {"tags": sorted(list(new_tags))}
+
 @app.get("/api/hosts/{host_id}/metrics")
 async def get_host_metrics(host_id: str, current_user: dict = Depends(get_current_user)):
     """Get aggregated metrics for a Docker host (CPU, RAM, Network)"""
@@ -667,13 +711,49 @@ async def suggest_tags(
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Get tag suggestions for autocomplete
+    Get container tag suggestions for autocomplete
 
-    Returns a list of existing tags that match the query string.
-    Used by the bulk tag management UI.
+    Returns a list of existing container tags that match the query string.
+    Used by the bulk tag management UI for containers.
     """
     tags = monitor.db.get_all_tags(query=q, limit=limit)
     return {"tags": tags}
+
+@app.get("/api/hosts/tags/suggest")
+async def suggest_host_tags(
+    q: str = "",
+    limit: int = 20,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get host tag suggestions for autocomplete
+
+    Returns a list of existing host tags that match the query string.
+    Host tags are separate from container tags (e.g., 'prod', 'dev', 'us-west-1').
+    """
+    with monitor.db.get_session() as session:
+        from database import DockerHostDB
+        hosts = session.query(DockerHostDB).all()
+
+        # Collect all unique tags from all hosts
+        all_tags = set()
+        for host in hosts:
+            if host.tags:
+                try:
+                    host_tags = json.loads(host.tags) if isinstance(host.tags, str) else host.tags
+                    if isinstance(host_tags, list):
+                        all_tags.update(host_tags)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+
+        # Filter by query
+        if q:
+            filtered_tags = [tag for tag in all_tags if q.lower() in tag.lower()]
+        else:
+            filtered_tags = list(all_tags)
+
+        # Sort and limit
+        return {"tags": sorted(filtered_tags)[:limit]}
 
 
 # ==================== Batch Operations ====================

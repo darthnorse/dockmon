@@ -240,6 +240,8 @@ class DockerMonitor:
                 os_type = system_info.get('OSType', None)
                 os_version = system_info.get('OperatingSystem', None)
                 kernel_version = system_info.get('KernelVersion', None)
+                total_memory = system_info.get('MemTotal', None)  # Total memory in bytes
+                num_cpus = system_info.get('NCPU', None)  # Number of CPUs
 
                 version_info = client.version()
                 docker_version = version_info.get('Version', None)
@@ -260,6 +262,8 @@ class DockerMonitor:
                 kernel_version = None
                 docker_version = None
                 daemon_started_at = None
+                total_memory = None
+                num_cpus = None
 
             # Validate TLS configuration for TCP connections
             security_status = self._validate_host_security(config)
@@ -285,7 +289,9 @@ class DockerMonitor:
                 os_version=os_version,
                 kernel_version=kernel_version,
                 docker_version=docker_version,
-                daemon_started_at=daemon_started_at
+                daemon_started_at=daemon_started_at,
+                total_memory=total_memory,
+                num_cpus=num_cpus
             )
 
             # Store client and host
@@ -293,7 +299,7 @@ class DockerMonitor:
             self.hosts[host.id] = host
 
             # Update OS info in database if reconnecting (when info wasn't saved before)
-            if skip_db_save and (os_type or os_version or kernel_version or docker_version or daemon_started_at):
+            if skip_db_save and (os_type or os_version or kernel_version or docker_version or daemon_started_at or total_memory or num_cpus):
                 # Update existing host with OS info
                 try:
                     session = self.db.get_session()
@@ -310,6 +316,10 @@ class DockerMonitor:
                             db_host.docker_version = docker_version
                         if daemon_started_at:
                             db_host.daemon_started_at = daemon_started_at
+                        if total_memory:
+                            db_host.total_memory = total_memory
+                        if num_cpus:
+                            db_host.num_cpus = num_cpus
                         session.commit()
                         logger.info(f"Updated OS info for {host.name}: {os_version} / Docker {docker_version}")
                     session.close()
@@ -335,7 +345,9 @@ class DockerMonitor:
                     'os_version': host.os_version,
                     'kernel_version': host.kernel_version,
                     'docker_version': host.docker_version,
-                    'daemon_started_at': host.daemon_started_at
+                    'daemon_started_at': host.daemon_started_at,
+                    'total_memory': host.total_memory,
+                    'num_cpus': host.num_cpus
                 })
 
             # Register host with stats and event services
@@ -1563,18 +1575,19 @@ class DockerMonitor:
                         for host_id in self.hosts.keys():
                             host_containers = [c for c in containers if c.host_id == host_id]
                             running_containers = [c for c in host_containers if c.status == 'running']
+                            host = self.hosts[host_id]
 
                             if running_containers:
                                 # Aggregate CPU: Σ(container_cpu_percent) / num_cpus - per spec line 99
                                 total_cpu_sum = sum(c.cpu_percent or 0 for c in running_containers)
-                                # TODO: Get actual num_cpus from Docker info - for now assume 4
-                                num_cpus = 4
+                                # Use actual num_cpus from Docker info, fallback to 4 if not available
+                                num_cpus = host.num_cpus or 4
                                 total_cpu = total_cpu_sum / num_cpus
 
                                 # Aggregate Memory: Σ(container_mem_usage) / host_mem_total * 100 - per spec line 138
                                 total_mem_bytes = sum(c.memory_usage or 0 for c in running_containers)
-                                # TODO: Get actual host total memory from Docker info - for now assume 16GB
-                                total_mem_limit = 16 * 1024 * 1024 * 1024
+                                # Use actual host total memory from Docker info, fallback to 16GB if not available
+                                total_mem_limit = host.total_memory or (16 * 1024 * 1024 * 1024)
                                 mem_percent = (total_mem_bytes / total_mem_limit * 100) if total_mem_limit > 0 else 0
 
                                 # Aggregate Network: Σ(container_rx_rate + container_tx_rate) - per spec line 122-123

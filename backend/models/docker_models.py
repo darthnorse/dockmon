@@ -216,6 +216,9 @@ class DockerHost(BaseModel):
     kernel_version: Optional[str] = None  # e.g., "5.15.0-88-generic"
     docker_version: Optional[str] = None  # e.g., "24.0.6"
     daemon_started_at: Optional[str] = None  # ISO timestamp when Docker daemon started (from bridge network)
+    # System resources
+    total_memory: Optional[int] = None  # Total memory in bytes
+    num_cpus: Optional[int] = None  # Number of CPUs
 
 
 class Container(BaseModel):

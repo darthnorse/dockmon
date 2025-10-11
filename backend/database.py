@@ -5,7 +5,7 @@ Uses SQLite for persistent storage of configuration and settings
 
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
-from sqlalchemy import create_engine, Column, String, Integer, Boolean, DateTime, JSON, ForeignKey, Text, UniqueConstraint, text
+from sqlalchemy import create_engine, Column, String, Integer, BigInteger, Boolean, DateTime, JSON, ForeignKey, Text, UniqueConstraint, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from sqlalchemy.pool import StaticPool
@@ -62,6 +62,9 @@ class DockerHostDB(Base):
     kernel_version = Column(String, nullable=True)  # e.g., "5.15.0-88-generic"
     docker_version = Column(String, nullable=True)  # e.g., "24.0.6"
     daemon_started_at = Column(String, nullable=True)  # ISO timestamp when Docker daemon started
+    # System resources
+    total_memory = Column(BigInteger, nullable=True)  # Total memory in bytes
+    num_cpus = Column(Integer, nullable=True)  # Number of CPUs
 
     # Relationships
     auto_restart_configs = relationship("AutoRestartConfig", back_populates="host", cascade="all, delete-orphan")

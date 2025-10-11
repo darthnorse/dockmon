@@ -584,8 +584,9 @@ async def get_container_logs(
                         "timestamp": datetime.utcnow().isoformat() + 'Z',
                         "log": line
                     })
-            except Exception:
-                # If parsing fails, use current time
+            except (ValueError, IndexError, AttributeError) as e:
+                # If timestamp parsing fails, use current time
+                logger.debug(f"Failed to parse log timestamp: {e}")
                 parsed_logs.append({
                     "timestamp": datetime.utcnow().isoformat() + 'Z',
                     "log": line
@@ -1684,8 +1685,9 @@ async def get_dashboard_hosts(
             if host.tags:
                 try:
                     tags = json.loads(host.tags) if isinstance(host.tags, str) else host.tags
-                except:
-                    pass
+                except (json.JSONDecodeError, TypeError, AttributeError) as e:
+                    logger.warning(f"Failed to parse tags for host {host.id}: {e}")
+                    tags = []
 
             # Apply search filter
             if search:

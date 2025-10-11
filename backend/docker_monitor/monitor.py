@@ -44,25 +44,31 @@ def parse_container_ports(port_bindings: dict) -> list[str]:
 
     Returns:
         List of formatted port strings like ["8080:80/tcp", "443/tcp"]
+
+    Note:
+        Deduplicates IPv4 and IPv6 bindings for the same port (e.g., 0.0.0.0 and ::)
     """
     if not port_bindings:
         return []
 
-    ports = []
+    ports_set = set()
     for container_port, host_bindings in port_bindings.items():
         if host_bindings:
             # Port is exposed to host
+            # Track seen ports to avoid IPv4/IPv6 duplicates
+            seen_host_ports = set()
             for binding in host_bindings:
                 host_port = binding.get('HostPort', '')
-                if host_port:
-                    ports.append(f"{host_port}:{container_port}")
-                else:
-                    ports.append(container_port)
+                if host_port and host_port not in seen_host_ports:
+                    ports_set.add(f"{host_port}:{container_port}")
+                    seen_host_ports.add(host_port)
+                elif not host_port:
+                    ports_set.add(container_port)
         else:
             # Port is exposed but not bound to host
-            ports.append(container_port)
+            ports_set.add(container_port)
 
-    return sorted(ports)
+    return sorted(list(ports_set))
 
 
 def parse_restart_policy(host_config: dict) -> str:
@@ -1253,6 +1259,15 @@ class DockerMonitor:
         # Save to database
         self.db.set_desired_state(host_id, container_id, container_name, desired_state)
         logger.info(f"Desired state set to '{desired_state}' for container '{container_name}' on host '{host_name}'")
+
+    # Alias methods for batch operations (consistent naming)
+    def update_container_auto_restart(self, host_id: str, container_id: str, container_name: str, enabled: bool):
+        """Alias for toggle_auto_restart - used by batch operations"""
+        return self.toggle_auto_restart(host_id, container_id, container_name, enabled)
+
+    def update_container_desired_state(self, host_id: str, container_id: str, container_name: str, desired_state: str):
+        """Alias for set_container_desired_state - used by batch operations"""
+        return self.set_container_desired_state(host_id, container_id, container_name, desired_state)
 
     def update_container_tags(self, host_id: str, container_id: str, container_name: str, tags_to_add: list[str], tags_to_remove: list[str]) -> dict:
         """

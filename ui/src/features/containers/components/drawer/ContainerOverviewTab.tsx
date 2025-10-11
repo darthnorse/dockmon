@@ -14,12 +14,14 @@ import { Circle, Cpu, MemoryStick, Network } from 'lucide-react'
 import { useContainer, useContainerSparklines } from '@/lib/stats/StatsProvider'
 import { MiniChart } from '@/lib/charts/MiniChart'
 import { TagEditor } from './TagEditor'
+import { toast } from 'sonner'
 
 interface ContainerOverviewTabProps {
   containerId: string
+  actionButtons?: React.ReactNode
 }
 
-export function ContainerOverviewTab({ containerId }: ContainerOverviewTabProps) {
+export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOverviewTabProps) {
   const container = useContainer(containerId)
   const sparklines = useContainerSparklines(containerId)
   const [uptime, setUptime] = useState<string>('')
@@ -33,17 +35,19 @@ export function ContainerOverviewTab({ containerId }: ContainerOverviewTabProps)
   const netData = useMemo(() => sparklines?.net || [], [sparklines?.net?.length, sparklines?.net?.[0], sparklines?.net?.[sparklines.net.length - 1]])
 
   // Initialize auto-restart and desired state from container
-  // Only update if values actually changed to prevent resetting during API calls
+  // Reset whenever containerId changes (drawer opens for different container)
   useEffect(() => {
     if (container) {
-      setAutoRestart(prev => container.auto_restart !== undefined ? container.auto_restart : prev)
+      // Set auto-restart value (default to false if undefined)
+      setAutoRestart(container.auto_restart ?? false)
 
+      // Set desired state (default to 'unspecified' if not valid)
       const validStates: Array<'should_run' | 'on_demand' | 'unspecified'> = ['should_run', 'on_demand', 'unspecified']
       const containerState = container.desired_state as 'should_run' | 'on_demand' | 'unspecified' | undefined
       const newState = containerState && validStates.includes(containerState) ? containerState : 'unspecified'
-      setDesiredState(prev => newState !== prev ? newState : prev)
+      setDesiredState(newState)
     }
-  }, [container?.auto_restart, container?.desired_state])
+  }, [containerId, container?.auto_restart, container?.desired_state])
 
   useEffect(() => {
     if (!container?.created) return
@@ -116,8 +120,11 @@ export function ContainerOverviewTab({ containerId }: ContainerOverviewTabProps)
       if (!response.ok) {
         throw new Error('Failed to update auto-restart setting')
       }
+
+      toast.success(`Auto-restart ${checked ? 'enabled' : 'disabled'}`)
     } catch (error) {
       console.error('Error toggling auto-restart:', error)
+      toast.error(`Failed to update auto-restart: ${error instanceof Error ? error.message : 'Unknown error'}`)
       // Revert the checkbox on error
       setAutoRestart(!checked)
     }
@@ -144,8 +151,12 @@ export function ContainerOverviewTab({ containerId }: ContainerOverviewTabProps)
       if (!response.ok) {
         throw new Error('Failed to update desired state')
       }
+
+      const stateLabel = state === 'should_run' ? 'Should Run' : state === 'on_demand' ? 'On-Demand' : 'Unspecified'
+      toast.success(`Desired state set to ${stateLabel}`)
     } catch (error) {
       console.error('Error setting desired state:', error)
+      toast.error(`Failed to update desired state: ${error instanceof Error ? error.message : 'Unknown error'}`)
       // Revert on error
       setDesiredState(previousState)
     }
@@ -171,9 +182,17 @@ export function ContainerOverviewTab({ containerId }: ContainerOverviewTabProps)
     <div className="p-4 space-y-6">
       {/* Container Name and Status */}
       <div>
-        <div className="flex items-center gap-2 mb-2">
-          <Circle className={`w-3 h-3 ${getStatusColor(container.state)}`} />
-          <h3 className="text-lg font-semibold text-foreground">{container.name}</h3>
+        <div className="flex items-center justify-between gap-2 mb-2">
+          <div className="flex items-center gap-2">
+            <Circle className={`w-3 h-3 ${getStatusColor(container.state)}`} />
+            <h3 className="text-lg font-semibold text-foreground">{container.name}</h3>
+          </div>
+          {/* Action Buttons */}
+          {actionButtons && (
+            <div className="flex gap-2">
+              {actionButtons}
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <span className={`text-sm px-2 py-1 rounded ${
@@ -189,6 +208,11 @@ export function ContainerOverviewTab({ containerId }: ContainerOverviewTabProps)
       {/* Identity Section */}
       <div className="space-y-3">
         <div className="flex justify-between text-sm">
+          <span className="text-muted-foreground">Host</span>
+          <span className="text-foreground">{container.host_name || '-'}</span>
+        </div>
+
+        <div className="flex justify-between text-sm">
           <span className="text-muted-foreground">Image</span>
           <span className="text-foreground font-mono">{container.image || '-'}</span>
         </div>
@@ -201,11 +225,6 @@ export function ContainerOverviewTab({ containerId }: ContainerOverviewTabProps)
             hostId={container.host_id}
             containerName={container.name}
           />
-        </div>
-
-        <div className="flex justify-between text-sm pt-3 border-t border-border">
-          <span className="text-muted-foreground">Host</span>
-          <span className="text-foreground">{container.host_name || '-'}</span>
         </div>
       </div>
 
@@ -391,24 +410,6 @@ export function ContainerOverviewTab({ containerId }: ContainerOverviewTabProps)
       </div>
 
       {/* TODO: Add Ports and Labels when available in ContainerStats */}
-
-      {/* Action Buttons */}
-      <div className="border-t border-border pt-4 flex gap-2">
-        {container.state === 'running' ? (
-          <>
-            <button className="flex-1 px-4 py-2 border border-border rounded text-sm font-medium text-foreground hover:bg-accent/10 transition-colors">
-              Stop
-            </button>
-            <button className="flex-1 px-4 py-2 bg-primary text-primary-foreground rounded text-sm font-medium hover:bg-primary/90 transition-colors">
-              Restart
-            </button>
-          </>
-        ) : (
-          <button className="flex-1 px-4 py-2 bg-primary text-primary-foreground rounded text-sm font-medium hover:bg-primary/90 transition-colors">
-            Start
-          </button>
-        )}
-      </div>
     </div>
   )
 }

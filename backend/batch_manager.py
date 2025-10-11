@@ -253,6 +253,9 @@ class BatchJobManager:
             Dict with 'status' ('success', 'error', 'skipped') and 'message'
         """
         try:
+            # Normalize to short ID (12 chars) for consistency across the system
+            short_id = container_id[:12] if len(container_id) > 12 else container_id
+
             # Get current container state
             containers = await self.monitor.get_containers(host_id)
             container = next((c for c in containers if c.id == container_id), None)
@@ -277,15 +280,15 @@ class BatchJobManager:
                         'message': 'Already stopped'
                     }
 
-            # Execute the action via monitor
+            # Execute the action via monitor (using short_id for consistency)
             if action == 'start':
-                self.monitor.start_container(host_id, container_id)
+                self.monitor.start_container(host_id, short_id)
                 message = 'Started successfully'
             elif action == 'stop':
-                self.monitor.stop_container(host_id, container_id)
+                self.monitor.stop_container(host_id, short_id)
                 message = 'Stopped successfully'
             elif action == 'restart':
-                self.monitor.restart_container(host_id, container_id)
+                self.monitor.restart_container(host_id, short_id)
                 message = 'Restarted successfully'
             elif action == 'add-tags' or action == 'remove-tags':
                 # Tag operations require params
@@ -301,7 +304,7 @@ class BatchJobManager:
 
                 result = self.monitor.update_container_tags(
                     host_id,
-                    container_id,
+                    short_id,
                     container_name,
                     tags_to_add,
                     tags_to_remove
@@ -311,6 +314,45 @@ class BatchJobManager:
                 tag_text = f"{tag_count} tag{'s' if tag_count != 1 else ''}"
                 action_text = 'Added' if action == 'add-tags' else 'Removed'
                 message = f'{action_text} {tag_text}'
+            elif action == 'set-auto-restart':
+                # Auto-restart requires params
+                if not params or 'enabled' not in params:
+                    return {
+                        'status': 'error',
+                        'message': 'Missing enabled parameter'
+                    }
+
+                enabled = params['enabled']
+                self.monitor.update_container_auto_restart(
+                    host_id,
+                    short_id,
+                    container_name,
+                    enabled
+                )
+                message = f"Auto-restart {'enabled' if enabled else 'disabled'}"
+            elif action == 'set-desired-state':
+                # Desired state requires params
+                if not params or 'desired_state' not in params:
+                    return {
+                        'status': 'error',
+                        'message': 'Missing desired_state parameter'
+                    }
+
+                desired_state = params['desired_state']
+                if desired_state not in ['should_run', 'on_demand', 'unspecified']:
+                    return {
+                        'status': 'error',
+                        'message': f'Invalid desired_state: {desired_state}'
+                    }
+
+                self.monitor.update_container_desired_state(
+                    host_id,
+                    short_id,
+                    container_name,
+                    desired_state
+                )
+                state_text = 'Should Run' if desired_state == 'should_run' else 'On-Demand'
+                message = f"Desired state set to {state_text}"
             else:
                 return {
                     'status': 'error',
@@ -332,14 +374,34 @@ class BatchJobManager:
     async def _broadcast_job_update(self, job_id: str, status: str, message: Optional[str]):
         """Broadcast job status update via WebSocket"""
         logger.info(f"Broadcasting job update: {job_id} - {status}")
-        await self.ws_manager.broadcast({
-            'type': 'batch_job_update',
-            'data': {
-                'job_id': job_id,
-                'status': status,
-                'message': message
-            }
-        })
+
+        # Get job details to include progress counters
+        with self.db.get_session() as session:
+            job = session.query(BatchJob).filter_by(id=job_id).first()
+            if job:
+                await self.ws_manager.broadcast({
+                    'type': 'batch_job_update',
+                    'data': {
+                        'job_id': job_id,
+                        'status': status,
+                        'message': message,
+                        'total_items': job.total_items,
+                        'completed_items': job.completed_items,
+                        'success_items': job.success_items,
+                        'error_items': job.error_items,
+                        'skipped_items': job.skipped_items,
+                    }
+                })
+            else:
+                # Fallback if job not found
+                await self.ws_manager.broadcast({
+                    'type': 'batch_job_update',
+                    'data': {
+                        'job_id': job_id,
+                        'status': status,
+                        'message': message
+                    }
+                })
 
     async def _broadcast_item_update(
         self,

@@ -2,7 +2,7 @@
  * ContainerDrawer - Side panel for container details
  *
  * Slides in from the right (400-480px width)
- * Tabs: Overview (default), Live Stats, Events, Logs
+ * Tabs: Overview (default), Events, Logs
  */
 
 import { useState } from 'react'
@@ -12,6 +12,8 @@ import { Tabs } from '@/components/ui/tabs'
 import { ContainerOverviewTab } from './drawer/ContainerOverviewTab'
 import { DropdownMenu, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
 import { useContainer } from '@/lib/stats/StatsProvider'
+import { Button } from '@/components/ui/button'
+import { toast } from 'sonner'
 
 interface ContainerDrawerProps {
   isOpen: boolean
@@ -22,29 +24,80 @@ interface ContainerDrawerProps {
 
 export function ContainerDrawer({ isOpen, onClose, containerId, onExpand }: ContainerDrawerProps) {
   const [activeTab, setActiveTab] = useState('overview')
+  const [isActionLoading, setIsActionLoading] = useState(false)
   const container = useContainer(containerId)
 
   if (!containerId) return null
 
-  const handleAction = (action: string) => {
-    console.log(`Container action: ${action} for ${container?.name}`)
-    // TODO: Implement API calls for each action
+  const handleAction = async (action: 'start' | 'stop' | 'restart') => {
+    if (!container) return
+
+    setIsActionLoading(true)
+    try {
+      const response = await fetch(`/api/hosts/${container.host_id}/containers/${container.id}/${action}`, {
+        method: 'POST',
+      })
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(errorText || `Failed to ${action} container`)
+      }
+
+      toast.success(`Container ${action === 'restart' ? 'restarting' : action === 'stop' ? 'stopping' : 'starting'}...`)
+    } catch (error) {
+      console.error(`Error ${action}ing container:`, error)
+      toast.error(`Failed to ${action} container: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    } finally {
+      setIsActionLoading(false)
+    }
   }
+
+  // Action buttons to pass to Overview tab
+  const actionButtons = (
+    <>
+      {container?.state === 'running' ? (
+        <>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => handleAction('stop')}
+            disabled={isActionLoading}
+            className="text-danger hover:text-danger hover:bg-danger/10"
+          >
+            <Square className="w-3.5 h-3.5 mr-1.5" />
+            Stop
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => handleAction('restart')}
+            disabled={isActionLoading}
+            className="text-info hover:text-info hover:bg-info/10"
+          >
+            <RotateCw className="w-3.5 h-3.5 mr-1.5" />
+            Restart
+          </Button>
+        </>
+      ) : (
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => handleAction('start')}
+          disabled={isActionLoading}
+          className="text-success hover:text-success hover:bg-success/10"
+        >
+          <Play className="w-3.5 h-3.5 mr-1.5" />
+          Start
+        </Button>
+      )}
+    </>
+  )
 
   const tabs = [
     {
       id: 'overview',
       label: 'Overview',
-      content: <ContainerOverviewTab containerId={containerId} />,
-    },
-    {
-      id: 'stats',
-      label: 'Live Stats',
-      content: (
-        <div className="p-4 text-muted-foreground text-sm">
-          Live Stats - Coming soon
-        </div>
-      ),
+      content: <ContainerOverviewTab containerId={containerId} actionButtons={actionButtons} />,
     },
     {
       id: 'logs',
@@ -96,33 +149,15 @@ export function ContainerDrawer({ isOpen, onClose, containerId, onExpand }: Cont
             </>
           )}
 
-          {/* Start/Stop/Restart */}
-          {container?.state === 'running' ? (
-            <>
-              <DropdownMenuItem onClick={() => handleAction('stop')} icon={<Square className="w-4 h-4" />}>
-                Stop
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => handleAction('restart')} icon={<RotateCw className="w-4 h-4" />}>
-                Restart
-              </DropdownMenuItem>
-            </>
-          ) : (
-            <DropdownMenuItem onClick={() => handleAction('start')} icon={<Play className="w-4 h-4" />}>
-              Start
-            </DropdownMenuItem>
-          )}
-
-          <DropdownMenuSeparator />
-
-          <DropdownMenuItem onClick={() => handleAction('silence-alerts')} icon={<BellOff className="w-4 h-4" />}>
+          <DropdownMenuItem onClick={() => console.log('silence-alerts')} icon={<BellOff className="w-4 h-4" />}>
             Silence Alerts…
           </DropdownMenuItem>
 
-          <DropdownMenuItem onClick={() => handleAction('toggle-visibility')} icon={<EyeOff className="w-4 h-4" />}>
+          <DropdownMenuItem onClick={() => console.log('toggle-visibility')} icon={<EyeOff className="w-4 h-4" />}>
             Hide on Dashboard
           </DropdownMenuItem>
 
-          <DropdownMenuItem onClick={() => handleAction('toggle-pin')} icon={<Pin className="w-4 h-4" />}>
+          <DropdownMenuItem onClick={() => console.log('toggle-pin')} icon={<Pin className="w-4 h-4" />}>
             Pin on Dashboard
           </DropdownMenuItem>
         </DropdownMenu>

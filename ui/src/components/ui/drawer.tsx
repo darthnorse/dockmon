@@ -26,9 +26,9 @@ export interface DrawerProps {
   onClose: () => void
 
   /**
-   * Drawer title
+   * Drawer title (can be string or ReactNode for custom content)
    */
-  title: string
+  title: string | React.ReactNode
 
   /**
    * Optional subtitle

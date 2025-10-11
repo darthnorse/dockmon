@@ -27,6 +27,29 @@ def test_client():
     return TestClient(app)
 
 
+@pytest.fixture
+def test_db_engine():
+    """Create in-memory database for testing"""
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    # Create user_prefs table
+    with engine.connect() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS user_prefs (
+                user_id INTEGER PRIMARY KEY,
+                theme TEXT DEFAULT 'dark',
+                refresh_profile TEXT DEFAULT 'normal',
+                defaults_json TEXT
+            )
+        """))
+        conn.commit()
+
+    yield engine
+
+    Base.metadata.drop_all(engine)
+
+
 class TestUserPreferencesAPI:
     """Test user preferences CRUD operations"""
 
@@ -242,28 +265,6 @@ class TestPreferencesPartialUpdate:
 
 class TestDatabaseIntegration:
     """Database-level tests for preferences"""
-
-    @pytest.fixture
-    def test_db_engine(self):
-        """Create in-memory database for testing"""
-        engine = create_engine("sqlite:///:memory:")
-        Base.metadata.create_all(engine)
-
-        # Create user_prefs table
-        with engine.connect() as conn:
-            conn.execute(text("""
-                CREATE TABLE IF NOT EXISTS user_prefs (
-                    user_id INTEGER PRIMARY KEY,
-                    theme TEXT DEFAULT 'dark',
-                    refresh_profile TEXT DEFAULT 'normal',
-                    defaults_json TEXT
-                )
-            """))
-            conn.commit()
-
-        yield engine
-
-        Base.metadata.drop_all(engine)
 
     def test_upsert_preferences(self, test_db_engine):
         """Test INSERT ON CONFLICT UPDATE (upsert) logic"""
@@ -484,6 +485,7 @@ class TestReactV2Preferences:
         import json
 
         # Create a layout that's slightly under 500KB
+        # Each widget is ~1160 bytes, so 400 widgets = ~464KB (safely under 500KB)
         huge_layout = {
             "widgets": [
                 {
@@ -496,11 +498,11 @@ class TestReactV2Preferences:
                     "h": 2,
                     "metadata": "x" * 1000  # Add extra data
                 }
-                for i in range(500)  # 500 widgets * ~1KB each = ~500KB
+                for i in range(400)  # 400 widgets * ~1160 bytes = ~464KB (under 500KB)
             ]
         }
 
-        # Should be valid (at ~500KB)
+        # Should be valid (under 500KB)
         update = PreferencesUpdate(dashboard_layout_v2=huge_layout)
         assert update.dashboard_layout_v2 is not None
 

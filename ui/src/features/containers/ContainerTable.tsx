@@ -51,6 +51,11 @@ import {
   MoreVertical,
   ArrowUpDown,
   FileText,
+  RefreshCw,
+  RefreshCwOff,
+  Play,
+  Clock,
+  AlertTriangle,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { apiClient } from '@/lib/api/client'
@@ -66,6 +71,59 @@ import { BulkActionBar } from './components/BulkActionBar'
 import { BulkActionConfirmModal } from './components/BulkActionConfirmModal'
 import { BatchJobPanel } from './components/BatchJobPanel'
 import type { Container, ContainerAction } from './types'
+
+/**
+ * Policy icons component showing auto-restart and desired state
+ */
+function PolicyIcons({ container }: { container: Container }) {
+  const isRunning = container.state === 'running'
+  const isExited = container.status === 'exited'
+  const desiredState = container.desired_state
+  const autoRestart = container.auto_restart
+
+  // Determine if we should show warning (desired state is "should_run" but container is exited)
+  const showWarning = desiredState === 'should_run' && isExited
+
+  return (
+    <div className="flex items-center gap-2">
+      {/* Auto-restart icon */}
+      <div className="relative group">
+        {autoRestart ? (
+          <RefreshCw className="h-4 w-4 text-info" />
+        ) : (
+          <RefreshCwOff className="h-4 w-4 text-muted-foreground" />
+        )}
+        {/* Tooltip */}
+        <div className="invisible group-hover:visible absolute left-1/2 -translate-x-1/2 bottom-full mb-2 z-10 px-2 py-1 text-xs bg-surface-1 border border-border rounded shadow-lg whitespace-nowrap">
+          Auto-restart: {autoRestart ? 'Enabled' : 'Disabled'}
+        </div>
+      </div>
+
+      {/* Desired state icon */}
+      <div className="relative group">
+        {showWarning ? (
+          <AlertTriangle className="h-4 w-4 text-warning" />
+        ) : desiredState === 'should_run' ? (
+          <Play className={`h-4 w-4 ${isRunning ? 'text-success fill-success' : 'text-foreground'}`} />
+        ) : desiredState === 'on_demand' ? (
+          <Clock className="h-4 w-4 text-muted-foreground" />
+        ) : null}
+        {/* Tooltip */}
+        {desiredState && desiredState !== 'unspecified' && (
+          <div className="invisible group-hover:visible absolute left-1/2 -translate-x-1/2 bottom-full mb-2 z-10 px-2 py-1 text-xs bg-surface-1 border border-border rounded shadow-lg whitespace-nowrap">
+            {showWarning ? (
+              <span>Should be running but is exited!</span>
+            ) : desiredState === 'should_run' ? (
+              <span>Desired state: Should Run</span>
+            ) : (
+              <span>Desired state: On-Demand</span>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
 
 /**
  * Status icon with color coding (Phase 3d UX spec)
@@ -302,6 +360,75 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
     }
   }
 
+  const handleBulkAutoRestartUpdate = async (enabled: boolean) => {
+    if (!data) return
+
+    const count = selectedContainerIds.size
+
+    try {
+      // Create batch job for auto-restart update
+      const response = await fetch('/api/batch', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          scope: 'container',
+          action: 'set-auto-restart',
+          ids: Array.from(selectedContainerIds),
+          params: { enabled },
+        }),
+      })
+
+      if (!response.ok) {
+        throw new Error('Failed to create batch job')
+      }
+
+      const result = await response.json()
+      setBatchJobId(result.job_id)
+
+      toast.success(`${enabled ? 'Enabling' : 'Disabling'} auto-restart for ${count} container${count !== 1 ? 's' : ''}...`)
+    } catch (error) {
+      toast.error(`Failed to update auto-restart: ${error instanceof Error ? error.message : 'Unknown error'}`)
+      throw error
+    }
+  }
+
+  const handleBulkDesiredStateUpdate = async (state: 'should_run' | 'on_demand') => {
+    if (!data) return
+
+    const count = selectedContainerIds.size
+
+    try {
+      // Create batch job for desired state update
+      const response = await fetch('/api/batch', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          scope: 'container',
+          action: 'set-desired-state',
+          ids: Array.from(selectedContainerIds),
+          params: { desired_state: state },
+        }),
+      })
+
+      if (!response.ok) {
+        throw new Error('Failed to create batch job')
+      }
+
+      const result = await response.json()
+      setBatchJobId(result.job_id)
+
+      const stateText = state === 'should_run' ? 'Should Run' : 'On-Demand'
+      toast.success(`Setting desired state to "${stateText}" for ${count} container${count !== 1 ? 's' : ''}...`)
+    } catch (error) {
+      toast.error(`Failed to update desired state: ${error instanceof Error ? error.message : 'Unknown error'}`)
+      throw error
+    }
+  }
+
   // Filter by hostId from prop or URL params if present
   useEffect(() => {
     const hostId = propHostId || searchParams.get('hostId')
@@ -532,13 +659,21 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
           )
         },
       },
-      // 3. Image:Tag (tooltip)
+      // 3. Policy (auto-restart and desired state)
+      {
+        id: 'policy',
+        header: 'Policy',
+        cell: ({ row }) => <PolicyIcons container={row.original} />,
+        size: 100,
+        enableSorting: false,
+      },
+      // 4. Image:Tag (tooltip)
       {
         accessorKey: 'image',
         header: 'Image:Tag',
         cell: ({ row }) => <ImageTag image={row.original.image} />,
       },
-      // 4. Host
+      // 5. Host
       {
         accessorKey: 'host_name',
         id: 'host_id',
@@ -943,6 +1078,8 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         onClearSelection={clearSelection}
         onAction={handleBulkAction}
         onTagUpdate={handleBulkTagUpdate}
+        onAutoRestartUpdate={handleBulkAutoRestartUpdate}
+        onDesiredStateUpdate={handleBulkDesiredStateUpdate}
       />
 
       {/* Bulk Action Confirmation Modal */}
@@ -963,6 +1100,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
       <BatchJobPanel
         jobId={batchJobId}
         onClose={() => setBatchJobId(null)}
+        bulkActionBarOpen={selectedContainerIds.size > 0}
       />
     </div>
   )

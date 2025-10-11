@@ -290,9 +290,9 @@ class EventLogFilter(BaseModel):
 class BatchJobCreate(BaseModel):
     """Request model for creating batch jobs"""
     scope: str = Field(..., pattern='^container$')  # Only 'container' for now
-    action: str = Field(..., pattern='^(start|stop|restart|add-tags|remove-tags)$')  # Container actions
+    action: str = Field(..., pattern='^(start|stop|restart|add-tags|remove-tags|set-auto-restart|set-desired-state)$')  # Container actions
     ids: List[str] = Field(..., min_items=1, max_items=100)  # Container IDs
-    params: Optional[Dict[str, Any]] = None  # Optional parameters (e.g., tags for add-tags/remove-tags)
+    params: Optional[Dict[str, Any]] = None  # Optional parameters (e.g., tags, enabled, desired_state)
     dry_run: bool = False  # Not implemented in Phase 1
 
     @validator('scope')
@@ -305,7 +305,7 @@ class BatchJobCreate(BaseModel):
     @validator('action')
     def validate_action(cls, v):
         """Validate batch job action"""
-        valid_actions = {'start', 'stop', 'restart', 'add-tags', 'remove-tags'}
+        valid_actions = {'start', 'stop', 'restart', 'add-tags', 'remove-tags', 'set-auto-restart', 'set-desired-state'}
         if v not in valid_actions:
             raise ValueError(f'Invalid action. Must be one of: {valid_actions}')
         return v

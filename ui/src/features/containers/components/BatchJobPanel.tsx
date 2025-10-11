@@ -34,9 +34,10 @@ interface BatchJobItem {
 interface BatchJobPanelProps {
   jobId: string | null
   onClose: () => void
+  bulkActionBarOpen?: boolean
 }
 
-export function BatchJobPanel({ jobId, onClose }: BatchJobPanelProps) {
+export function BatchJobPanel({ jobId, onClose, bulkActionBarOpen = false }: BatchJobPanelProps) {
   const [job, setJob] = useState<BatchJobStatus | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -117,7 +118,11 @@ export function BatchJobPanel({ jobId, onClose }: BatchJobPanelProps) {
   }
 
   return (
-    <div className="fixed bottom-0 right-0 w-96 bg-surface-1 border-l border-t border-border shadow-xl flex flex-col max-h-[70vh] z-40">
+    <div
+      className={`fixed right-0 w-96 bg-surface-1 border-l border-t border-border shadow-xl flex flex-col max-h-[70vh] z-40 transition-all duration-200 ${
+        bulkActionBarOpen ? 'bottom-[200px]' : 'bottom-0'
+      }`}
+    >
       {/* Header */}
       <div className="px-4 py-3 border-b border-border flex items-center justify-between">
         <div>

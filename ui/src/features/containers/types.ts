@@ -17,6 +17,9 @@ export interface Container {
   tags?: string[] // Phase 3d - Derived from labels (compose:*, swarm:*, custom)
   host_id?: string
   host_name?: string
+  // Policy fields
+  auto_restart?: boolean // DockMon's auto-restart feature (not Docker's restart policy)
+  desired_state?: 'should_run' | 'on_demand' | 'unspecified' // Expected operational state
   // Stats fields (Phase 3d - from Go stats service)
   cpu_percent?: number
   memory_usage?: number

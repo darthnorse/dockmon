@@ -605,13 +605,17 @@ async def get_container_logs(
 @app.post("/api/hosts/{host_id}/containers/{container_id}/auto-restart")
 async def toggle_auto_restart(host_id: str, container_id: str, request: AutoRestartRequest, current_user: dict = Depends(get_current_user)):
     """Toggle auto-restart for a container"""
-    monitor.toggle_auto_restart(host_id, container_id, request.container_name, request.enabled)
+    # Normalize to short ID (12 chars) for consistency with monitor's internal tracking
+    short_id = container_id[:12] if len(container_id) > 12 else container_id
+    monitor.toggle_auto_restart(host_id, short_id, request.container_name, request.enabled)
     return {"host_id": host_id, "container_id": container_id, "auto_restart": request.enabled}
 
 @app.post("/api/hosts/{host_id}/containers/{container_id}/desired-state")
 async def set_desired_state(host_id: str, container_id: str, request: DesiredStateRequest, current_user: dict = Depends(get_current_user)):
     """Set desired state for a container"""
-    monitor.set_container_desired_state(host_id, container_id, request.container_name, request.desired_state)
+    # Normalize to short ID (12 chars) for consistency
+    short_id = container_id[:12] if len(container_id) > 12 else container_id
+    monitor.set_container_desired_state(host_id, short_id, request.container_name, request.desired_state)
     return {"host_id": host_id, "container_id": container_id, "desired_state": request.desired_state}
 
 @app.patch("/api/hosts/{host_id}/containers/{container_id}/tags")

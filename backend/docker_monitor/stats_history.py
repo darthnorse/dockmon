@@ -31,6 +31,15 @@ class HostStatsPoint:
     net_bytes_per_sec: float
 
 
+@dataclass
+class ContainerStatsPoint:
+    """Single stats data point for a container"""
+    timestamp: datetime
+    cpu_percent: float
+    mem_percent: float
+    net_bytes_per_sec: float
+
+
 class StatsHistoryBuffer:
     """
     Manages historical stats data for sparkline generation
@@ -175,5 +184,152 @@ class StatsHistoryBuffer:
             "hosts": {
                 host_id[:8]: len(history)
                 for host_id, history in self._history.items()
+            }
+        }
+
+
+class ContainerStatsHistoryBuffer:
+    """
+    Manages historical stats data for container sparkline generation
+
+    Features:
+    - Circular buffer (max 50 points = ~90s at 2s interval)
+    - EMA smoothing (α = 0.3)
+    - Per-container tracking using composite key (host_id:container_id)
+    """
+
+    def __init__(self):
+        # composite_key (host_id:container_id) -> deque of ContainerStatsPoint
+        self._history: Dict[str, deque] = {}
+
+        # Last raw values for EMA calculation
+        self._last_raw: Dict[str, ContainerStatsPoint] = {}
+
+    def add_stats(self, container_key: str, cpu: float, mem: float, net: float):
+        """
+        Add a new stats point with EMA smoothing
+
+        Args:
+            container_key: Container identifier (composite key: host_id:container_id)
+            cpu: CPU usage percentage
+            mem: Memory usage percentage
+            net: Network bytes per second
+        """
+        # Initialize history buffer if needed
+        if container_key not in self._history:
+            self._history[container_key] = deque(maxlen=MAX_HISTORY_POINTS)
+            logger.debug(f"Initialized stats history buffer for container {container_key[:16]}")
+
+        # Apply EMA smoothing if we have previous raw data
+        if container_key in self._last_raw:
+            prev = self._last_raw[container_key]
+
+            # EMA formula: new_value = α * current + (1 - α) * previous
+            smoothed_cpu = EMA_ALPHA * cpu + (1 - EMA_ALPHA) * prev.cpu_percent
+            smoothed_mem = EMA_ALPHA * mem + (1 - EMA_ALPHA) * prev.mem_percent
+            smoothed_net = EMA_ALPHA * net + (1 - EMA_ALPHA) * prev.net_bytes_per_sec
+        else:
+            # First data point - no smoothing needed
+            smoothed_cpu = cpu
+            smoothed_mem = mem
+            smoothed_net = net
+
+        # Store raw value for next EMA calculation
+        self._last_raw[container_key] = ContainerStatsPoint(
+            timestamp=datetime.now(),
+            cpu_percent=cpu,
+            mem_percent=mem,
+            net_bytes_per_sec=net
+        )
+
+        # Add smoothed point to history
+        point = ContainerStatsPoint(
+            timestamp=datetime.now(),
+            cpu_percent=smoothed_cpu,
+            mem_percent=smoothed_mem,
+            net_bytes_per_sec=smoothed_net
+        )
+
+        self._history[container_key].append(point)
+
+    def get_sparklines(self, container_key: str, num_points: int = 30) -> Dict[str, List[float]]:
+        """
+        Get sparkline data for a container
+
+        Args:
+            container_key: Container identifier (composite key: host_id:container_id)
+            num_points: Number of data points to return (default 30 for UI)
+
+        Returns:
+            Dict with 'cpu', 'mem', 'net' arrays
+        """
+        if container_key not in self._history or len(self._history[container_key]) == 0:
+            # No history yet - return empty arrays
+            return {
+                "cpu": [],
+                "mem": [],
+                "net": []
+            }
+
+        history = list(self._history[container_key])
+
+        # If we have fewer points than requested, return what we have
+        if len(history) <= num_points:
+            return {
+                "cpu": [p.cpu_percent for p in history],
+                "mem": [p.mem_percent for p in history],
+                "net": [p.net_bytes_per_sec for p in history]
+            }
+
+        # Sample evenly from history to get requested number of points
+        step = len(history) / num_points
+        indices = [int(i * step) for i in range(num_points)]
+
+        return {
+            "cpu": [history[i].cpu_percent for i in indices],
+            "mem": [history[i].mem_percent for i in indices],
+            "net": [history[i].net_bytes_per_sec for i in indices]
+        }
+
+    def cleanup_old_data(self, max_age_seconds: int = 300):
+        """
+        Remove old stats history (older than max_age_seconds)
+        Called periodically to prevent memory leaks
+
+        Args:
+            max_age_seconds: Max age in seconds (default 5 minutes)
+        """
+        cutoff_time = datetime.now() - timedelta(seconds=max_age_seconds)
+
+        for container_key in list(self._history.keys()):
+            history = self._history[container_key]
+
+            # Remove old points
+            while history and history[0].timestamp < cutoff_time:
+                history.popleft()
+
+            # If history is empty, remove the container entry
+            if not history:
+                del self._history[container_key]
+                if container_key in self._last_raw:
+                    del self._last_raw[container_key]
+                logger.debug(f"Cleaned up empty history for container {container_key[:16]}")
+
+    def remove_container(self, container_key: str):
+        """Remove all history for a container (when container is deleted)"""
+        if container_key in self._history:
+            del self._history[container_key]
+        if container_key in self._last_raw:
+            del self._last_raw[container_key]
+        logger.debug(f"Removed stats history for container {container_key[:16]}")
+
+    def get_stats_summary(self) -> dict:
+        """Get summary of current stats buffer state (for debugging)"""
+        return {
+            "tracked_containers": len(self._history),
+            "total_points": sum(len(h) for h in self._history.values()),
+            "containers": {
+                container_key[:16]: len(history)
+                for container_key, history in self._history.items()
             }
         }

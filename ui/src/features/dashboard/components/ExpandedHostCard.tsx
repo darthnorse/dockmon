@@ -32,8 +32,9 @@ import {
 } from 'lucide-react'
 import { ResponsiveMiniChart } from '@/lib/charts/ResponsiveMiniChart'
 import { TagChip } from '@/components/TagChip'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { DropdownMenu, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
+import { useDashboardPrefs } from '@/hooks/useUserPrefs'
 
 export interface ExpandedHostData {
   id: string
@@ -138,8 +139,22 @@ function getStateColor(state: string): string {
 type ContainerSortKey = 'name' | 'state' | 'cpu' | 'memory' | 'start_time'
 
 export function ExpandedHostCard({ host, cardRef, onHostClick }: ExpandedHostCardProps) {
-  const [sortKey, setSortKey] = useState<ContainerSortKey>('state')
+  const { dashboardPrefs, updateDashboardPrefs } = useDashboardPrefs()
   const [isCollapsed, setIsCollapsed] = useState(false)
+
+  // Initialize sort key from preferences, fallback to 'state'
+  const [sortKey, setSortKey] = useState<ContainerSortKey>(() => {
+    const savedSort = dashboardPrefs?.hostContainerSorts?.[host.id]
+    return (savedSort as ContainerSortKey) || 'state'
+  })
+
+  // Update local state when preferences change (e.g., loaded from server)
+  useEffect(() => {
+    const savedSort = dashboardPrefs?.hostContainerSorts?.[host.id]
+    if (savedSort) {
+      setSortKey(savedSort as ContainerSortKey)
+    }
+  }, [dashboardPrefs?.hostContainerSorts, host.id])
 
   const hasStats = host.stats && host.sparklines
   const hasValidNetworkData = host.sparklines
@@ -203,6 +218,17 @@ export function ExpandedHostCard({ host, cardRef, onHostClick }: ExpandedHostCar
       default:
         return 'Sort by'
     }
+  }
+
+  // Handle sort change and save to preferences
+  const handleSortChange = (newSort: ContainerSortKey) => {
+    setSortKey(newSort)
+    updateDashboardPrefs({
+      hostContainerSorts: {
+        ...(dashboardPrefs?.hostContainerSorts || {}),
+        [host.id]: newSort,
+      },
+    })
   }
 
   return (
@@ -355,17 +381,17 @@ export function ExpandedHostCard({ host, cardRef, onHostClick }: ExpandedHostCar
               }
               align="end"
             >
-              <DropdownMenuItem onClick={() => setSortKey('state')}>
+              <DropdownMenuItem onClick={() => handleSortChange('state')}>
                 State (Running first)
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setSortKey('name')}>Name (A–Z)</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setSortKey('cpu')}>
+              <DropdownMenuItem onClick={() => handleSortChange('name')}>Name (A–Z)</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleSortChange('cpu')}>
                 CPU (High to Low)
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setSortKey('memory')}>
+              <DropdownMenuItem onClick={() => handleSortChange('memory')}>
                 Memory (High to Low)
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setSortKey('start_time')} disabled>
+              <DropdownMenuItem onClick={() => handleSortChange('start_time')} disabled>
                 Start Time (Newest first)
               </DropdownMenuItem>
             </DropdownMenu>

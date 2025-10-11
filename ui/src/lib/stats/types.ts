@@ -28,12 +28,17 @@ export interface ContainerStats {
   created: string
   auto_restart: boolean
   restart_attempts: number
+  desired_state?: string
+  ports?: string[]
+  restart_policy?: string
+  tags?: string[]  // Container tags (from labels + custom)
   cpu_percent: number | null
   memory_usage: number | null
   memory_limit: number | null
   memory_percent: number | null
   network_rx: number | null
   network_tx: number | null
+  net_bytes_per_sec: number | null
   disk_read: number | null
   disk_write: number | null
 }
@@ -54,6 +59,7 @@ export interface ContainersUpdateMessage {
     }>
     host_metrics?: Record<string, HostMetrics>
     host_sparklines?: Record<string, Sparklines>
+    container_sparklines?: Record<string, Sparklines>  // key format: "host_id:container_id"
     timestamp: string
   }
 }

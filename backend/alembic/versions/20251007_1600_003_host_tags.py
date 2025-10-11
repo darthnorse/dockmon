@@ -1,6 +1,6 @@
 """host tags and description - Phase 3d
 
-Revision ID: 003
+Revision ID: 003_host_tags
 Revises: 002
 Create Date: 2025-10-07 16:00:00
 
@@ -11,7 +11,7 @@ from sqlalchemy import inspect, text
 
 
 # revision identifiers, used by Alembic.
-revision = '003'
+revision = '003_host_tags'
 down_revision = '002'
 branch_labels = None
 depends_on = None

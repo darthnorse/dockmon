@@ -9,6 +9,7 @@ export interface DashboardPreferences {
   enableCustomLayout: boolean
   hostOrder: string[]
   containerSortKey: 'name' | 'state' | 'cpu' | 'memory' | 'start_time'
+  hostContainerSorts?: Record<string, 'name' | 'state' | 'cpu' | 'memory' | 'start_time'>  // Per-host container sort
   hostCardLayout?: Layout[]
   showKpiBar?: boolean
   showStatsWidgets?: boolean

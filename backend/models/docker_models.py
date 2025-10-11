@@ -231,6 +231,10 @@ class Container(BaseModel):
     created: str
     auto_restart: bool = False
     restart_attempts: int = 0
+    desired_state: Optional[str] = 'unspecified'  # 'should_run', 'on_demand', or 'unspecified'
+    # Docker configuration
+    ports: Optional[list[str]] = None  # e.g., ["8080:80/tcp", "443:443/tcp"]
+    restart_policy: Optional[str] = None  # e.g., "always", "unless-stopped", "no"
     # Stats from Go stats service
     cpu_percent: Optional[float] = None
     memory_usage: Optional[int] = None
@@ -238,6 +242,7 @@ class Container(BaseModel):
     memory_percent: Optional[float] = None
     network_rx: Optional[int] = None
     network_tx: Optional[int] = None
+    net_bytes_per_sec: Optional[float] = None
     disk_read: Optional[int] = None
     disk_write: Optional[int] = None
     # Labels from Docker (Phase 3d)

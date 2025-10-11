@@ -48,6 +48,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { TagChip } from '@/components/TagChip'
 import { useHosts, type Host } from '../hooks/useHosts'
 import { HostDrawer } from './drawer/HostDrawer'
+import { HostDetailsModal } from './HostDetailsModal'
 import { useHostMetrics, useHostSparklines, useContainerCounts } from '@/lib/stats/StatsProvider'
 import { MiniChart } from '@/lib/charts/MiniChart'
 
@@ -243,6 +244,9 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
   // Drawer state
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [selectedHostId, setSelectedHostId] = useState<string | null>(null)
+
+  // Modal state
+  const [modalOpen, setModalOpen] = useState(false)
 
   const selectedHost = hosts.find(h => h.id === selectedHostId)
 
@@ -518,9 +522,19 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
           // TODO: Implement delete dialog
           console.log('Delete host:', hostId)
         }}
-        onExpand={(hostId) => {
-          // TODO: Open full Host Modal
-          console.log('Expand to modal:', hostId)
+        onExpand={() => {
+          setDrawerOpen(false)
+          setModalOpen(true)
+        }}
+      />
+
+      {/* Host Details Modal */}
+      <HostDetailsModal
+        hostId={selectedHostId}
+        host={selectedHost}
+        open={modalOpen}
+        onClose={() => {
+          setModalOpen(false)
         }}
       />
     </div>

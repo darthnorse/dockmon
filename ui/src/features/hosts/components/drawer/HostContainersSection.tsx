@@ -8,8 +8,9 @@ import { Box, ArrowRight, Circle, ChevronDown } from 'lucide-react'
 import { DrawerSection } from '@/components/ui/drawer'
 import { useAllContainers } from '@/lib/stats/StatsProvider'
 import { Link } from 'react-router-dom'
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { DropdownMenu, DropdownMenuItem } from '@/components/ui/dropdown-menu'
+import { useDashboardPrefs } from '@/hooks/useUserPrefs'
 
 interface HostContainersSectionProps {
   hostId: string
@@ -19,7 +20,21 @@ type SortKey = 'name' | 'state' | 'cpu' | 'memory' | 'start_time'
 
 export function HostContainersSection({ hostId }: HostContainersSectionProps) {
   const allContainers = useAllContainers(hostId)
-  const [sortKey, setSortKey] = useState<SortKey>('state')
+  const { dashboardPrefs, updateDashboardPrefs } = useDashboardPrefs()
+
+  // Initialize sort key from preferences, fallback to 'state'
+  const [sortKey, setSortKey] = useState<SortKey>(() => {
+    const savedSort = dashboardPrefs?.hostContainerSorts?.[hostId]
+    return (savedSort as SortKey) || 'state'
+  })
+
+  // Update local state when preferences change (e.g., loaded from server)
+  useEffect(() => {
+    const savedSort = dashboardPrefs?.hostContainerSorts?.[hostId]
+    if (savedSort) {
+      setSortKey(savedSort as SortKey)
+    }
+  }, [dashboardPrefs?.hostContainerSorts, hostId])
 
   // Sort containers based on selected key
   const sortedContainers = useMemo(() => {
@@ -108,6 +123,17 @@ export function HostContainersSection({ hostId }: HostContainersSectionProps) {
     }
   }
 
+  // Handle sort change and save to preferences
+  const handleSortChange = (newSort: SortKey) => {
+    setSortKey(newSort)
+    updateDashboardPrefs({
+      hostContainerSorts: {
+        ...(dashboardPrefs?.hostContainerSorts || {}),
+        [hostId]: newSort,
+      },
+    })
+  }
+
   return (
     <DrawerSection title="Containers">
       {allContainers.length === 0 ? (
@@ -131,19 +157,19 @@ export function HostContainersSection({ hostId }: HostContainersSectionProps) {
               }
               align="end"
             >
-              <DropdownMenuItem onClick={() => setSortKey('state')}>
+              <DropdownMenuItem onClick={() => handleSortChange('state')}>
                 State (Running first)
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setSortKey('name')}>
+              <DropdownMenuItem onClick={() => handleSortChange('name')}>
                 Name (A–Z)
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setSortKey('cpu')}>
+              <DropdownMenuItem onClick={() => handleSortChange('cpu')}>
                 CPU (High to Low)
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setSortKey('memory')}>
+              <DropdownMenuItem onClick={() => handleSortChange('memory')}>
                 Memory (High to Low)
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setSortKey('start_time')}>
+              <DropdownMenuItem onClick={() => handleSortChange('start_time')}>
                 Start Time (Newest first)
               </DropdownMenuItem>
             </DropdownMenu>

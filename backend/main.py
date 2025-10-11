@@ -38,8 +38,8 @@ from config.settings import AppConfig, get_cors_origins, setup_logging
 from models.docker_models import DockerHostConfig, DockerHost
 from models.settings_models import GlobalSettings, AlertRule
 from models.request_models import (
-    AutoRestartRequest, AlertRuleCreate, AlertRuleUpdate,
-    NotificationChannelCreate, NotificationChannelUpdate, EventLogFilter
+    AutoRestartRequest, DesiredStateRequest, AlertRuleCreate, AlertRuleUpdate,
+    NotificationChannelCreate, NotificationChannelUpdate, EventLogFilter, BatchJobCreate, ContainerTagUpdate
 )
 from security.audit import security_audit
 from security.rate_limiting import rate_limiter, rate_limit_auth, rate_limit_hosts, rate_limit_containers, rate_limit_notifications, rate_limit_default
@@ -49,6 +49,7 @@ verify_session_auth = verify_frontend_session  # Keep v1 for backward compat
 from websocket.connection import ConnectionManager, DateTimeEncoder
 from websocket.rate_limiter import ws_rate_limiter
 from docker_monitor.monitor import DockerMonitor
+from batch_manager import BatchJobManager
 
 # Configure logging
 setup_logging()
@@ -63,6 +64,9 @@ logger = logging.getLogger(__name__)
 
 # Create monitor instance
 monitor = DockerMonitor()
+
+# Global instances (initialized in lifespan)
+batch_manager: Optional[BatchJobManager] = None
 
 
 # ==================== Authentication ====================
@@ -92,6 +96,12 @@ async def lifespan(app: FastAPI):
         monitor,  # Pass DockerMonitor instance to avoid re-initialization
         monitor.manager  # Pass ConnectionManager for WebSocket broadcasts
     )
+
+    # Initialize batch job manager
+    global batch_manager
+    batch_manager = BatchJobManager(monitor.db, monitor, monitor.manager)
+    logger.info("Batch job manager initialized")
+
     yield
     # Shutdown
     logger.info("Shutting down DockMon backend...")
@@ -597,6 +607,102 @@ async def toggle_auto_restart(host_id: str, container_id: str, request: AutoRest
     """Toggle auto-restart for a container"""
     monitor.toggle_auto_restart(host_id, container_id, request.container_name, request.enabled)
     return {"host_id": host_id, "container_id": container_id, "auto_restart": request.enabled}
+
+@app.post("/api/hosts/{host_id}/containers/{container_id}/desired-state")
+async def set_desired_state(host_id: str, container_id: str, request: DesiredStateRequest, current_user: dict = Depends(get_current_user)):
+    """Set desired state for a container"""
+    monitor.set_container_desired_state(host_id, container_id, request.container_name, request.desired_state)
+    return {"host_id": host_id, "container_id": container_id, "desired_state": request.desired_state}
+
+@app.patch("/api/hosts/{host_id}/containers/{container_id}/tags")
+async def update_container_tags(
+    host_id: str,
+    container_id: str,
+    request: ContainerTagUpdate,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Update tags for a container
+
+    Add or remove custom tags. Tags are stored in DockMon's database and merged with
+    tags derived from Docker labels (compose:project, swarm:service).
+    """
+    # Get container name from monitor
+    containers = await monitor.get_containers()
+    container = next((c for c in containers if c.id == container_id and c.host_id == host_id), None)
+
+    if not container:
+        raise HTTPException(status_code=404, detail="Container not found")
+
+    result = monitor.update_container_tags(
+        host_id,
+        container_id,
+        container.name,
+        request.tags_to_add,
+        request.tags_to_remove
+    )
+
+    logger.info(f"User {current_user.get('username')} updated tags for container {container.name}")
+
+    return result
+
+@app.get("/api/tags/suggest")
+async def suggest_tags(
+    q: str = "",
+    limit: int = 20,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get tag suggestions for autocomplete
+
+    Returns a list of existing tags that match the query string.
+    Used by the bulk tag management UI.
+    """
+    tags = monitor.db.get_all_tags(query=q, limit=limit)
+    return {"tags": tags}
+
+
+# ==================== Batch Operations ====================
+
+@app.post("/api/batch", status_code=201)
+async def create_batch_job(request: BatchJobCreate, current_user: dict = Depends(get_current_user)):
+    """
+    Create a batch job for bulk operations on containers
+
+    Currently supports: start, stop, restart
+    """
+    if not batch_manager:
+        raise HTTPException(status_code=500, detail="Batch manager not initialized")
+
+    try:
+        job_id = await batch_manager.create_job(
+            user_id=current_user.get('id'),
+            scope=request.scope,
+            action=request.action,
+            container_ids=request.ids,
+            params=request.params
+        )
+
+        logger.info(f"User {current_user.get('username')} created batch job {job_id}: {request.action} on {len(request.ids)} containers")
+
+        return {"job_id": job_id}
+    except Exception as e:
+        logger.error(f"Error creating batch job: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/batch/{job_id}")
+async def get_batch_job(job_id: str, current_user: dict = Depends(get_current_user)):
+    """Get status and results of a batch job"""
+    if not batch_manager:
+        raise HTTPException(status_code=500, detail="Batch manager not initialized")
+
+    job_status = batch_manager.get_job_status(job_id)
+
+    if not job_status:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    return job_status
 
 @app.get("/api/rate-limit/stats")
 async def get_rate_limit_stats(current_user: dict = Depends(get_current_user)):

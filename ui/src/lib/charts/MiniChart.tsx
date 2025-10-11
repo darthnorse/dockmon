@@ -123,6 +123,17 @@ export function MiniChart({
       y: {
         auto: true,
         range: (_u, dataMin, dataMax) => {
+          // If all values are the same (or very close), use a fixed range
+          if (dataMax - dataMin < 0.01) {
+            // For values near zero, show 0-1 range
+            if (dataMax < 0.5) {
+              return [0, 1]
+            }
+            // For other values, show ±10% around the value
+            const center = dataMax
+            const margin = Math.max(center * 0.1, 0.1)
+            return [center - margin, center + margin]
+          }
           // Add 10% padding for visual breathing room
           const padding = (dataMax - dataMin) * 0.1
           return [dataMin - padding, dataMax + padding]

@@ -27,11 +27,64 @@ from notifications import NotificationService, AlertProcessor
 from event_logger import EventLogger, EventSeverity, EventType
 from stats_client import get_stats_client
 from docker_monitor.stats_manager import StatsManager
-from docker_monitor.stats_history import StatsHistoryBuffer
+from docker_monitor.stats_history import StatsHistoryBuffer, ContainerStatsHistoryBuffer
 from auth.session_manager import session_manager
 
 
 logger = logging.getLogger(__name__)
+
+
+def parse_container_ports(port_bindings: dict) -> list[str]:
+    """
+    Parse Docker port bindings into human-readable format.
+
+    Args:
+        port_bindings: Docker NetworkSettings.Ports dict
+        Example: {'80/tcp': [{'HostIp': '0.0.0.0', 'HostPort': '8080'}], '443/tcp': None}
+
+    Returns:
+        List of formatted port strings like ["8080:80/tcp", "443/tcp"]
+    """
+    if not port_bindings:
+        return []
+
+    ports = []
+    for container_port, host_bindings in port_bindings.items():
+        if host_bindings:
+            # Port is exposed to host
+            for binding in host_bindings:
+                host_port = binding.get('HostPort', '')
+                if host_port:
+                    ports.append(f"{host_port}:{container_port}")
+                else:
+                    ports.append(container_port)
+        else:
+            # Port is exposed but not bound to host
+            ports.append(container_port)
+
+    return sorted(ports)
+
+
+def parse_restart_policy(host_config: dict) -> str:
+    """
+    Parse Docker restart policy from HostConfig.
+
+    Args:
+        host_config: Docker HostConfig dict
+
+    Returns:
+        Restart policy name (e.g., "always", "unless-stopped", "on-failure", "no")
+    """
+    restart_policy = host_config.get('RestartPolicy', {})
+    policy_name = restart_policy.get('Name', 'no')
+
+    # Include max retry count for on-failure policy
+    if policy_name == 'on-failure':
+        max_retry = restart_policy.get('MaximumRetryCount', 0)
+        if max_retry > 0:
+            return f"{policy_name}:{max_retry}"
+
+    return policy_name if policy_name else 'no'
 
 
 def _handle_task_exception(task: asyncio.Task) -> None:
@@ -105,6 +158,7 @@ class DockerMonitor:
 
         # Stats history buffer for sparklines (Phase 4c)
         self.stats_history = StatsHistoryBuffer()
+        self.container_stats_history = ContainerStatsHistoryBuffer()
 
         # Track previous network stats for rate calculation (Phase 4c)
         self._last_net_stats: Dict[str, float] = {}  # host_id -> cumulative bytes
@@ -934,7 +988,30 @@ class DockerMonitor:
 
                         # Derive tags from labels (Phase 3d)
                         from models.docker_models import derive_container_tags
-                        tags = derive_container_tags(labels)
+                        derived_tags = derive_container_tags(labels)
+
+                        # Get custom tags from database (use full ID for lookup)
+                        custom_tags = self.db.get_container_tags(hid, dc.id)
+
+                        # Combine tags: custom tags first, then derived tags (remove duplicates)
+                        # This ensures custom tags appear before derived tags in the UI
+                        tags = []
+                        seen = set()
+                        for tag in custom_tags + derived_tags:
+                            if tag not in seen:
+                                tags.append(tag)
+                                seen.add(tag)
+
+                        # Get desired state from database
+                        desired_state = self.db.get_desired_state(hid, container_id)
+
+                        # Extract ports from NetworkSettings
+                        port_bindings = dc.attrs.get('NetworkSettings', {}).get('Ports', {})
+                        ports = parse_container_ports(port_bindings)
+
+                        # Extract restart policy from HostConfig
+                        host_config = dc.attrs.get('HostConfig', {})
+                        restart_policy = parse_restart_policy(host_config)
 
                         container = Container(
                             id=dc.id,
@@ -948,6 +1025,9 @@ class DockerMonitor:
                             created=dc.attrs['Created'],
                             auto_restart=self._get_auto_restart_status(hid, container_id),
                             restart_attempts=self.restart_attempts.get(container_id, 0),
+                            desired_state=desired_state,
+                            ports=ports,
+                            restart_policy=restart_policy,
                             labels=labels,
                             tags=tags
                         )
@@ -982,6 +1062,7 @@ class DockerMonitor:
                     container.memory_percent = stats.get('memory_percent')
                     container.network_rx = stats.get('network_rx')
                     container.network_tx = stats.get('network_tx')
+                    container.net_bytes_per_sec = stats.get('net_bytes_per_sec')
                     container.disk_read = stats.get('disk_read')
                     container.disk_write = stats.get('disk_write')
                     logger.debug(f"Populated stats for {container.name} ({container.short_id}) on {container.host_name}: CPU {container.cpu_percent}%")
@@ -1162,6 +1243,66 @@ class DockerMonitor:
         # Save to database
         self.db.set_auto_restart(host_id, container_id, container_name, enabled)
         logger.info(f"Auto-restart {'enabled' if enabled else 'disabled'} for container '{container_name}' on host '{host_name}'")
+
+    def set_container_desired_state(self, host_id: str, container_id: str, container_name: str, desired_state: str):
+        """Set desired state for a container"""
+        # Get host name for logging
+        host = self.hosts.get(host_id)
+        host_name = host.name if host else 'Unknown Host'
+
+        # Save to database
+        self.db.set_desired_state(host_id, container_id, container_name, desired_state)
+        logger.info(f"Desired state set to '{desired_state}' for container '{container_name}' on host '{host_name}'")
+
+    def update_container_tags(self, host_id: str, container_id: str, container_name: str, tags_to_add: list[str], tags_to_remove: list[str]) -> dict:
+        """
+        Update container custom tags in database
+
+        Args:
+            host_id: Docker host ID
+            container_id: Container ID
+            container_name: Container name
+            tags_to_add: List of tags to add
+            tags_to_remove: List of tags to remove
+
+        Returns:
+            dict with updated tags list
+        """
+        if host_id not in self.clients:
+            raise HTTPException(status_code=404, detail="Host not found")
+
+        try:
+            # Verify container exists
+            client = self.clients[host_id]
+            container = client.containers.get(container_id)
+
+            # Get labels to derive compose/swarm tags
+            labels = container.labels if container.labels else {}
+
+            # Update custom tags in database
+            custom_tags = self.db.update_container_tags(host_id, container_id, container_name, tags_to_add, tags_to_remove)
+
+            # Get all tags (compose, swarm, custom)
+            from models.docker_models import derive_container_tags
+            derived_tags = derive_container_tags(labels)
+
+            # Combine derived tags with custom tags (remove duplicates)
+            all_tags_set = set(derived_tags + custom_tags)
+            all_tags = sorted(list(all_tags_set))
+
+            logger.info(f"Updated tags for container {container_name} on host {host_id}: +{tags_to_add}, -{tags_to_remove}")
+
+            return {
+                "success": True,
+                "tags": all_tags,
+                "custom_tags": custom_tags
+            }
+
+        except docker.errors.NotFound:
+            raise HTTPException(status_code=404, detail="Container not found")
+        except Exception as e:
+            logger.error(f"Failed to update tags for container {container_id}: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
 
     async def check_orphaned_alerts(self):
         """Check for alert rules that reference non-existent containers
@@ -1473,6 +1614,33 @@ class DockerMonitor:
                         broadcast_data["host_metrics"] = host_metrics
                         broadcast_data["host_sparklines"] = host_sparklines
                         logger.info(f"Aggregated metrics for {len(host_metrics)} hosts from {len(containers)} containers")
+
+                    # Collect container sparklines for all containers
+                    container_sparklines = {}
+                    for container in containers:
+                        # Use composite key: host_id:container_id
+                        container_key = f"{container.host_id}:{container.id}"
+
+                        # Collect sparklines for ALL containers (running or not)
+                        # This ensures we always send sparkline data in every broadcast
+                        if container.state == 'running':
+                            # Feed stats to history buffer (use 0 for missing values)
+                            cpu_val = container.cpu_percent if container.cpu_percent is not None else 0
+                            mem_val = container.memory_percent if container.memory_percent is not None else 0
+                            net_val = container.net_bytes_per_sec if container.net_bytes_per_sec is not None else 0
+
+                            self.container_stats_history.add_stats(
+                                container_key=container_key,
+                                cpu=cpu_val,
+                                mem=mem_val,
+                                net=net_val
+                            )
+
+                        # Always get sparklines (even for stopped containers) to maintain consistency
+                        sparklines = self.container_stats_history.get_sparklines(container_key, num_points=30)
+                        container_sparklines[container_key] = sparklines
+
+                    broadcast_data["container_sparklines"] = container_sparklines
 
                     # Broadcast update to all connected clients
                     await self.manager.broadcast({

@@ -86,6 +86,66 @@ class AutoRestartConfig(Base):
     host = relationship("DockerHostDB", back_populates="auto_restart_configs")
 
 
+class ContainerDesiredState(Base):
+    """Desired state configuration for containers"""
+    __tablename__ = "container_desired_states"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    host_id = Column(String, ForeignKey("docker_hosts.id"))
+    container_id = Column(String, nullable=False)
+    container_name = Column(String, nullable=False)
+    desired_state = Column(String, default='unspecified')  # 'should_run', 'on_demand', 'unspecified'
+    custom_tags = Column(Text, nullable=True)  # Comma-separated custom tags
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    # Relationships
+    host = relationship("DockerHostDB")
+
+
+class BatchJob(Base):
+    """Batch job for bulk operations"""
+    __tablename__ = "batch_jobs"
+
+    id = Column(String, primary_key=True)  # e.g., "job_abc123"
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    scope = Column(String, nullable=False)  # 'container' (hosts in future)
+    action = Column(String, nullable=False)  # 'start', 'stop', 'restart', etc.
+    params = Column(Text, nullable=True)  # JSON string of action parameters
+    status = Column(String, default='queued')  # 'queued', 'running', 'completed', 'partial', 'failed'
+    total_items = Column(Integer, default=0)
+    completed_items = Column(Integer, default=0)
+    success_items = Column(Integer, default=0)
+    error_items = Column(Integer, default=0)
+    skipped_items = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.now)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+
+    # Relationships
+    user = relationship("User")
+    items = relationship("BatchJobItem", back_populates="job", cascade="all, delete-orphan")
+
+
+class BatchJobItem(Base):
+    """Individual item in a batch job"""
+    __tablename__ = "batch_job_items"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    job_id = Column(String, ForeignKey("batch_jobs.id"), nullable=False)
+    container_id = Column(String, nullable=False)
+    container_name = Column(String, nullable=False)
+    host_id = Column(String, nullable=False)
+    host_name = Column(String, nullable=True)
+    status = Column(String, default='queued')  # 'queued', 'running', 'success', 'error', 'skipped'
+    message = Column(Text, nullable=True)  # Success message or error details
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+
+    # Relationships
+    job = relationship("BatchJob", back_populates="items")
+
+
 class GlobalSettings(Base):
     """Global application settings"""
     __tablename__ = "global_settings"
@@ -608,6 +668,133 @@ class DatabaseManager:
             except Exception as e:
                 logger.error(f"Failed to reset restart count for {container_id[:12]}: {e}")
                 raise
+
+    # Container Desired State Operations
+    def get_desired_state(self, host_id: str, container_id: str) -> Optional[str]:
+        """Get desired state for a container"""
+        with self.get_session() as session:
+            config = session.query(ContainerDesiredState).filter(
+                ContainerDesiredState.host_id == host_id,
+                ContainerDesiredState.container_id == container_id
+            ).first()
+            return config.desired_state if config else 'unspecified'
+
+    def set_desired_state(self, host_id: str, container_id: str, container_name: str, desired_state: str):
+        """Set desired state for a container"""
+        with self.get_session() as session:
+            try:
+                config = session.query(ContainerDesiredState).filter(
+                    ContainerDesiredState.host_id == host_id,
+                    ContainerDesiredState.container_id == container_id
+                ).first()
+
+                if config:
+                    config.desired_state = desired_state
+                    config.updated_at = datetime.now()
+                    logger.info(f"Updated desired state for {container_name} ({container_id[:12]}): {desired_state}")
+                else:
+                    config = ContainerDesiredState(
+                        host_id=host_id,
+                        container_id=container_id,
+                        container_name=container_name,
+                        desired_state=desired_state
+                    )
+                    session.add(config)
+                    logger.info(f"Created desired state config for {container_name} ({container_id[:12]}): {desired_state}")
+
+                session.commit()
+            except Exception as e:
+                logger.error(f"Failed to set desired state for {container_id[:12]}: {e}")
+                raise
+
+    def update_container_tags(self, host_id: str, container_id: str, container_name: str, tags_to_add: list[str], tags_to_remove: list[str]) -> list[str]:
+        """Update custom tags for a container"""
+        with self.get_session() as session:
+            try:
+                config = session.query(ContainerDesiredState).filter(
+                    ContainerDesiredState.host_id == host_id,
+                    ContainerDesiredState.container_id == container_id
+                ).first()
+
+                # Get current custom tags
+                current_tags = []
+                if config and config.custom_tags:
+                    current_tags = [t.strip() for t in config.custom_tags.split(',') if t.strip()]
+
+                # Convert to set for manipulation
+                tag_set = set(current_tags)
+
+                # Add new tags
+                for tag in tags_to_add:
+                    tag_set.add(tag.strip().lower())
+
+                # Remove tags
+                for tag in tags_to_remove:
+                    tag_set.discard(tag.strip().lower())
+
+                # Convert back to sorted list
+                new_tags = sorted(list(tag_set))
+                new_tags_str = ','.join(new_tags) if new_tags else None
+
+                if config:
+                    config.custom_tags = new_tags_str
+                    config.updated_at = datetime.now()
+                    logger.info(f"Updated tags for {container_name} ({container_id[:12]}): {new_tags}")
+                else:
+                    config = ContainerDesiredState(
+                        host_id=host_id,
+                        container_id=container_id,
+                        container_name=container_name,
+                        custom_tags=new_tags_str
+                    )
+                    session.add(config)
+                    logger.info(f"Created tag config for {container_name} ({container_id[:12]}): {new_tags}")
+
+                session.commit()
+                return new_tags
+            except Exception as e:
+                logger.error(f"Failed to update tags for {container_id[:12]}: {e}")
+                raise
+
+    def get_container_tags(self, host_id: str, container_id: str) -> list[str]:
+        """Get custom tags for a container"""
+        with self.get_session() as session:
+            config = session.query(ContainerDesiredState).filter(
+                ContainerDesiredState.host_id == host_id,
+                ContainerDesiredState.container_id == container_id
+            ).first()
+
+            if config and config.custom_tags:
+                return [t.strip() for t in config.custom_tags.split(',') if t.strip()]
+            return []
+
+    def get_all_tags(self, query: str = "", limit: int = 20) -> list[str]:
+        """Get all unique custom tags across all containers, optionally filtered by query"""
+        with self.get_session() as session:
+            # Get all container configs with custom tags
+            configs = session.query(ContainerDesiredState).filter(
+                ContainerDesiredState.custom_tags.isnot(None)
+            ).all()
+
+            # Collect all unique tags
+            tags_set = set()
+            for config in configs:
+                if config.custom_tags:
+                    tags = [t.strip() for t in config.custom_tags.split(',') if t.strip()]
+                    tags_set.update(tags)
+
+            # Filter by query if provided
+            if query:
+                query_lower = query.lower()
+                tags_list = [tag for tag in tags_set if query_lower in tag.lower()]
+            else:
+                tags_list = list(tags_set)
+
+            # Sort by frequency (most used first) then alphabetically
+            # For now, just sort alphabetically
+            tags_list.sort()
+
+            return tags_list[:limit]
 
     # Global Settings
     def get_settings(self) -> GlobalSettings:

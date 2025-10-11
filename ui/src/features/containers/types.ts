@@ -24,6 +24,7 @@ export interface Container {
   memory_percent?: number
   network_rx?: number
   network_tx?: number
+  net_bytes_per_sec?: number // Calculated network rate (bytes/sec)
 }
 
 export interface ContainerPort {
@@ -46,6 +47,7 @@ export interface ContainerStats {
   memory_percent: number
   network_rx: number
   network_tx: number
+  net_bytes_per_sec: number // Calculated network rate (bytes/sec)
   block_read: number
   block_write: number
 }

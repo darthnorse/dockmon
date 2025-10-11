@@ -22,6 +22,8 @@ import { useViewMode } from './hooks/useViewMode'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
 import { useDashboardPrefs } from '@/hooks/useUserPrefs'
 import { HostDrawer } from '@/features/hosts/components/drawer/HostDrawer'
+import { HostDetailsModal } from '@/features/hosts/components/HostDetailsModal'
+import { HostModal } from '@/features/hosts/components/HostModal'
 
 export function DashboardPage() {
   const { viewMode, setViewMode, isLoading: isViewModeLoading } = useViewMode()
@@ -31,6 +33,13 @@ export function DashboardPage() {
   // Drawer state
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [selectedHostId, setSelectedHostId] = useState<string | null>(null)
+
+  // Details Modal state
+  const [modalOpen, setModalOpen] = useState(false)
+
+  // Edit Modal state
+  const [editModalOpen, setEditModalOpen] = useState(false)
+  const [editingHost, setEditingHost] = useState<typeof selectedHost | null>(null)
 
   const selectedHost = hosts?.find(h => h.id === selectedHostId)
 
@@ -138,18 +147,41 @@ export function DashboardPage() {
           setSelectedHostId(null)
         }}
         onEdit={(hostId) => {
-          // TODO: Open edit host modal
-          console.log('Edit host:', hostId)
+          const host = hosts?.find(h => h.id === hostId)
+          if (host) {
+            setEditingHost(host)
+            setEditModalOpen(true)
+          }
           setDrawerOpen(false)
         }}
         onDelete={(hostId) => {
           // TODO: Open delete confirmation dialog
           console.log('Delete host:', hostId)
         }}
-        onExpand={(hostId) => {
-          // TODO: Open full host modal (Phase 5)
-          console.log('Expand host:', hostId)
+        onExpand={() => {
+          setDrawerOpen(false)
+          setModalOpen(true)
         }}
+      />
+
+      {/* Host Details Modal */}
+      <HostDetailsModal
+        hostId={selectedHostId}
+        host={selectedHost}
+        open={modalOpen}
+        onClose={() => {
+          setModalOpen(false)
+        }}
+      />
+
+      {/* Edit Host Modal */}
+      <HostModal
+        isOpen={editModalOpen}
+        onClose={() => {
+          setEditModalOpen(false)
+          setEditingHost(null)
+        }}
+        host={editingHost ?? null}
       />
     </div>
   )

@@ -34,6 +34,7 @@ interface StatsContextValue {
 
   // Container-level stats (individual containers)
   containerStats: Map<string, ContainerStats> // Key: "hostId:containerId"
+  containerSparklines: Map<string, Sparklines> // Key: "hostId:containerId"
 
   // Metadata
   lastUpdate: Date | null
@@ -61,6 +62,7 @@ export function StatsProvider({ children }: StatsProviderProps) {
   const [hostMetrics, setHostMetrics] = useState<Map<string, HostMetrics>>(new Map())
   const [hostSparklines, setHostSparklines] = useState<Map<string, Sparklines>>(new Map())
   const [containerStats, setContainerStats] = useState<Map<string, ContainerStats>>(new Map())
+  const [containerSparklines, setContainerSparklines] = useState<Map<string, Sparklines>>(new Map())
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null)
 
   // Handle WebSocket messages
@@ -73,7 +75,7 @@ export function StatsProvider({ children }: StatsProviderProps) {
 
       // Type guard: message is now known to be containers_update
       const data = message.data as ContainersUpdateMessage['data']
-      const { containers, host_metrics, host_sparklines, timestamp } = data
+      const { containers, host_metrics, host_sparklines, container_sparklines, timestamp } = data
 
       debug.log('StatsProvider', `Received update: ${containers?.length || 0} containers, ${Object.keys(host_metrics || {}).length} hosts`)
 
@@ -103,6 +105,25 @@ export function StatsProvider({ children }: StatsProviderProps) {
         setHostSparklines(newHostSparklines)
       }
 
+      // Update container sparklines Map
+      if (container_sparklines) {
+        const newContainerSparklines = new Map<string, Sparklines>()
+        Object.entries(container_sparklines).forEach(([containerKey, sparklines]) => {
+          newContainerSparklines.set(containerKey, sparklines)
+
+          // Debug: Log when sparklines become empty for containers that previously had data
+          if (containerSparklines.has(containerKey)) {
+            const previous = containerSparklines.get(containerKey)
+            if (previous && (previous.cpu.length > 0 || previous.mem.length > 0 || previous.net.length > 0)) {
+              if (sparklines.cpu.length === 0 || sparklines.mem.length === 0 || sparklines.net.length === 0) {
+                debug.warn('StatsProvider', `Sparklines became empty for ${containerKey}: cpu ${previous.cpu.length}→${sparklines.cpu.length}, mem ${previous.mem.length}→${sparklines.mem.length}, net ${previous.net.length}→${sparklines.net.length}`)
+              }
+            }
+          }
+        })
+        setContainerSparklines(newContainerSparklines)
+      }
+
       // Update timestamp
       setLastUpdate(new Date(timestamp))
     } catch (error) {
@@ -130,6 +151,7 @@ export function StatsProvider({ children }: StatsProviderProps) {
     hostMetrics,
     hostSparklines,
     containerStats,
+    containerSparklines,
     lastUpdate,
     isConnected: status === 'connected',
   }
@@ -307,4 +329,51 @@ export function useAllContainers(
   })
 
   return hostContainers
+}
+
+/**
+ * Hook: useContainer
+ * Get a single container by ID (searches across all hosts)
+ *
+ * @param containerId - The container ID
+ * @returns Container stats or null if not found
+ */
+export function useContainer(containerId: string | null | undefined): ContainerStats | null {
+  const { containerStats } = useStatsContext()
+
+  if (!containerId) return null
+
+  // Search through all containers to find matching ID
+  for (const [, container] of containerStats) {
+    if (container.id === containerId) {
+      return container
+    }
+  }
+
+  return null
+}
+
+/**
+ * Hook: useContainerSparklines
+ * Get sparkline data for a specific container
+ *
+ * @param containerId - The container ID
+ * @returns Sparklines (cpu, mem, net arrays) or null if not available
+ */
+export function useContainerSparklines(containerId: string | null | undefined): Sparklines | null {
+  const { containerSparklines, containerStats } = useStatsContext()
+
+  if (!containerId) return null
+
+  // Find the container and return its sparklines using the composite key
+  for (const [compositeKey, container] of containerStats) {
+    if (container.id === containerId) {
+      // Return sparklines immediately using the composite key from the Map
+      return containerSparklines.get(compositeKey) || null
+    }
+  }
+
+  // If container not found in stats, return null
+  debug.warn('useContainerSparklines', `Container ${containerId} not found in containerStats`)
+  return null
 }

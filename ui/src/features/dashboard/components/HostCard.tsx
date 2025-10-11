@@ -13,9 +13,12 @@
  * <HostCard host={hostData} />
  */
 
-import { Circle, MoreVertical, Container } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { Circle, MoreVertical, Container, ChevronDown } from 'lucide-react'
 import { ResponsiveMiniChart } from '@/lib/charts/ResponsiveMiniChart'
 import { TagChip } from '@/components/TagChip'
+import { DropdownMenu, DropdownMenuItem } from '@/components/ui/dropdown-menu'
+import { useDashboardPrefs } from '@/hooks/useUserPrefs'
 
 export interface HostCardData {
   id: string
@@ -50,6 +53,7 @@ export interface HostCardData {
       name: string
       state: string
       cpu_percent: number
+      memory_percent?: number
     }>
   }
 
@@ -110,7 +114,25 @@ function getStateColor(state: string): string {
   }
 }
 
+type ContainerSortKey = 'name' | 'state' | 'cpu' | 'memory'
+
 export function HostCard({ host, onHostClick }: HostCardProps) {
+  const { dashboardPrefs, updateDashboardPrefs } = useDashboardPrefs()
+
+  // Initialize sort key from preferences, fallback to 'cpu'
+  const [sortKey, setSortKey] = useState<ContainerSortKey>(() => {
+    const savedSort = dashboardPrefs?.hostContainerSorts?.[host.id]
+    return (savedSort as ContainerSortKey) || 'cpu'
+  })
+
+  // Update local state when preferences change (e.g., loaded from server)
+  useEffect(() => {
+    const savedSort = dashboardPrefs?.hostContainerSorts?.[host.id]
+    if (savedSort) {
+      setSortKey(savedSort as ContainerSortKey)
+    }
+  }, [dashboardPrefs?.hostContainerSorts, host.id])
+
   const hasStats = host.stats && host.sparklines
 
   // Fix #7: Check if sparklines have valid data (not just priming zeros)
@@ -120,7 +142,54 @@ export function HostCard({ host, onHostClick }: HostCardProps) {
     : false
 
   const hasContainers = host.containers && host.containers.total > 0
-  const topContainers = host.containers?.top?.slice(0, 3) || []
+  const containers = host.containers?.top || []
+
+  // Sort containers based on selected key
+  const sortedContainers = [...containers].sort((a, b) => {
+    switch (sortKey) {
+      case 'name':
+        return a.name.localeCompare(b.name)
+      case 'state':
+        // Running first, then alphabetically
+        if (a.state === 'running' && b.state !== 'running') return -1
+        if (a.state !== 'running' && b.state === 'running') return 1
+        return a.name.localeCompare(b.name)
+      case 'cpu':
+        return (b.cpu_percent || 0) - (a.cpu_percent || 0)
+      case 'memory':
+        return (b.memory_percent || 0) - (a.memory_percent || 0)
+      default:
+        return 0
+    }
+  })
+
+  const topContainers = sortedContainers.slice(0, 3)
+
+  const getSortLabel = (key: ContainerSortKey) => {
+    switch (key) {
+      case 'name':
+        return 'Name (A–Z)'
+      case 'state':
+        return 'State (Running first)'
+      case 'cpu':
+        return 'CPU (High to Low)'
+      case 'memory':
+        return 'Memory (High to Low)'
+      default:
+        return 'Sort by'
+    }
+  }
+
+  // Handle sort change and save to preferences
+  const handleSortChange = (newSort: ContainerSortKey) => {
+    setSortKey(newSort)
+    updateDashboardPrefs({
+      hostContainerSorts: {
+        ...(dashboardPrefs?.hostContainerSorts || {}),
+        [host.id]: newSort,
+      },
+    })
+  }
 
   return (
     <div
@@ -230,7 +299,31 @@ export function HostCard({ host, onHostClick }: HostCardProps) {
       {/* Top Containers */}
       {topContainers.length > 0 && (
         <div className="border-t border-border pt-3 mb-3">
-          <div className="text-xs text-muted-foreground mb-2">Top Containers:</div>
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-xs text-muted-foreground">Top Containers:</div>
+            <DropdownMenu
+              trigger={
+                <button className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors">
+                  <span>{getSortLabel(sortKey)}</span>
+                  <ChevronDown className="h-3 w-3" />
+                </button>
+              }
+              align="end"
+            >
+              <DropdownMenuItem onClick={() => handleSortChange('cpu')}>
+                CPU (High to Low)
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleSortChange('state')}>
+                State (Running first)
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleSortChange('name')}>
+                Name (A–Z)
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleSortChange('memory')}>
+                Memory (High to Low)
+              </DropdownMenuItem>
+            </DropdownMenu>
+          </div>
           <div className="space-y-1">
             {topContainers.map((container) => (
               <div

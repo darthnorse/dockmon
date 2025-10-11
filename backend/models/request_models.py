@@ -8,7 +8,7 @@ import time
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, validator, root_validator
 
 
 class ContainerHostPair(BaseModel):
@@ -21,6 +21,20 @@ class AutoRestartRequest(BaseModel):
     """Request model for toggling auto-restart"""
     container_name: str
     enabled: bool
+
+
+class DesiredStateRequest(BaseModel):
+    """Request model for setting container desired state"""
+    container_name: str
+    desired_state: str = Field(..., pattern='^(should_run|on_demand|unspecified)$')
+
+    @validator('desired_state')
+    def validate_desired_state(cls, v):
+        """Validate desired state value"""
+        valid_states = {'should_run', 'on_demand', 'unspecified'}
+        if v not in valid_states:
+            raise ValueError(f'Invalid desired state. Must be one of: {valid_states}')
+        return v
 
 
 class AlertRuleCreate(BaseModel):
@@ -271,3 +285,70 @@ class EventLogFilter(BaseModel):
     search: Optional[str] = None
     limit: int = 100
     offset: int = 0
+
+
+class BatchJobCreate(BaseModel):
+    """Request model for creating batch jobs"""
+    scope: str = Field(..., pattern='^container$')  # Only 'container' for now
+    action: str = Field(..., pattern='^(start|stop|restart|add-tags|remove-tags)$')  # Container actions
+    ids: List[str] = Field(..., min_items=1, max_items=100)  # Container IDs
+    params: Optional[Dict[str, Any]] = None  # Optional parameters (e.g., tags for add-tags/remove-tags)
+    dry_run: bool = False  # Not implemented in Phase 1
+
+    @validator('scope')
+    def validate_scope(cls, v):
+        """Validate batch job scope"""
+        if v != 'container':
+            raise ValueError('Only "container" scope is supported')
+        return v
+
+    @validator('action')
+    def validate_action(cls, v):
+        """Validate batch job action"""
+        valid_actions = {'start', 'stop', 'restart', 'add-tags', 'remove-tags'}
+        if v not in valid_actions:
+            raise ValueError(f'Invalid action. Must be one of: {valid_actions}')
+        return v
+
+    @validator('ids')
+    def validate_ids(cls, v):
+        """Validate container IDs"""
+        if not v:
+            raise ValueError('At least one container ID is required')
+        if len(v) > 100:
+            raise ValueError('Maximum 100 containers per batch job')
+        return v
+
+
+class ContainerTagUpdate(BaseModel):
+    """Request model for adding/removing tags from a container"""
+    tags_to_add: List[str] = Field(default_factory=list, max_items=20)
+    tags_to_remove: List[str] = Field(default_factory=list, max_items=20)
+
+    @validator('tags_to_add', 'tags_to_remove', each_item=True)
+    def validate_tag(cls, v):
+        """Validate individual tag format"""
+        if not v or not v.strip():
+            raise ValueError('Tag cannot be empty')
+        if len(v) > 50:
+            raise ValueError('Tag cannot exceed 50 characters')
+        # Allow alphanumeric, dash, underscore, colon, dot
+        if not all(c.isalnum() or c in '-_:.' for c in v):
+            raise ValueError('Tag can only contain alphanumeric characters, dash, underscore, colon, and dot')
+        return v.strip().lower()
+
+    @root_validator(skip_on_failure=True)
+    def validate_tags(cls, values):
+        """Ensure at least one operation is specified"""
+        tags_to_add = values.get('tags_to_add', [])
+        tags_to_remove = values.get('tags_to_remove', [])
+
+        if not tags_to_add and not tags_to_remove:
+            raise ValueError('At least one tag operation (add or remove) is required')
+
+        # Check for conflicts (adding and removing the same tag)
+        conflicts = set(tags_to_add) & set(tags_to_remove)
+        if conflicts:
+            raise ValueError(f'Cannot add and remove the same tags: {conflicts}')
+
+        return values

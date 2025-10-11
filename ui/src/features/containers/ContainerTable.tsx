@@ -223,9 +223,7 @@ function ContainerSparkline({
   const rowRef = useRef<HTMLDivElement>(null)
   const { getHistory } = useStatsHistory(containerId)
 
-  // TODO: Hook up WebSocket listener for stats
-  // For now, show current value if available
-
+  // Stats are managed by StatsProvider via WebSocket
   const history = getHistory(metric)
   const latest = currentValue ?? (history.length > 0 ? history[history.length - 1] : null)
 
@@ -860,7 +858,8 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
                 size="icon"
                 className="h-8 w-8"
                 onClick={() => {
-                  // TODO: Open logs modal/drawer
+                  // Future feature: Logs viewer modal/drawer
+                  // For now, show informational toast
                   toast.info('Logs', {
                     description: `View logs for ${container.name}`,
                   })

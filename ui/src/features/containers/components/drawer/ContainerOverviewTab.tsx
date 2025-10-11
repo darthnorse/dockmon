@@ -31,10 +31,10 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
   const [desiredState, setDesiredState] = useState<'should_run' | 'on_demand' | 'unspecified'>('unspecified')
 
   // Memoize sparkline arrays to prevent unnecessary MiniChart re-renders
-  // Only create new arrays when the actual data changes
-  const cpuData = useMemo(() => sparklines?.cpu || [], [sparklines?.cpu?.length, sparklines?.cpu?.[0], sparklines?.cpu?.[sparklines.cpu.length - 1]])
-  const memData = useMemo(() => sparklines?.mem || [], [sparklines?.mem?.length, sparklines?.mem?.[0], sparklines?.mem?.[sparklines.mem.length - 1]])
-  const netData = useMemo(() => sparklines?.net || [], [sparklines?.net?.length, sparklines?.net?.[0], sparklines?.net?.[sparklines.net.length - 1]])
+  // Use JSON.stringify for simple deep comparison of array values
+  const cpuData = useMemo(() => sparklines?.cpu || [], [JSON.stringify(sparklines?.cpu)])
+  const memData = useMemo(() => sparklines?.mem || [], [JSON.stringify(sparklines?.mem)])
+  const netData = useMemo(() => sparklines?.net || [], [JSON.stringify(sparklines?.net)])
 
   // Initialize auto-restart and desired state from container
   // Reset whenever containerId changes (drawer opens for different container)
@@ -203,7 +203,6 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
             tags={container.tags || []}
             containerId={container.id}
             hostId={container.host_id}
-            containerName={container.name}
           />
         </div>
       </div>
@@ -388,8 +387,6 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
           )}
         </div>
       </div>
-
-      {/* TODO: Add Ports and Labels when available in ContainerStats */}
     </div>
   )
 }

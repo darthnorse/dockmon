@@ -193,7 +193,26 @@ export function BatchJobPanel({ jobId, onClose, bulkActionBarOpen = false }: Bat
       {/* Error State */}
       {error && (
         <div className="px-4 py-3 bg-destructive/10 border-b border-border">
-          <p className="text-sm text-destructive">{error}</p>
+          <div className="flex items-start gap-2">
+            <XCircle className="h-4 w-4 text-destructive mt-0.5 flex-shrink-0" />
+            <div className="flex-1">
+              <p className="text-sm text-destructive font-medium">Failed to load batch job</p>
+              <p className="text-xs text-destructive/80 mt-1">{error}</p>
+              <button
+                onClick={() => {
+                  setError(null)
+                  setLoading(true)
+                  apiClient.get<BatchJobStatus>(`/batch/${jobId}`)
+                    .then(data => setJob(data))
+                    .catch(err => setError(err instanceof Error ? err.message : 'Failed to fetch job status'))
+                    .finally(() => setLoading(false))
+                }}
+                className="mt-2 text-xs text-primary hover:text-primary/80 font-medium"
+              >
+                Retry
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

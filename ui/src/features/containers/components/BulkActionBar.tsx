@@ -239,6 +239,8 @@ export function BulkActionBar({
               <button
                 onClick={() => toggleSection('run-actions')}
                 className="flex items-center gap-2 px-3 py-2 text-sm font-medium hover:bg-muted transition-colors rounded-t-lg w-full"
+                aria-expanded={expandedSections.has('run-actions')}
+                aria-label="Toggle run actions menu"
               >
                 <span>Run Actions</span>
                 {expandedSections.has('run-actions') ? (
@@ -286,6 +288,8 @@ export function BulkActionBar({
               <button
                 onClick={() => toggleSection('manage-state')}
                 className="flex items-center gap-2 px-3 py-2 text-sm font-medium hover:bg-muted transition-colors rounded-t-lg w-full"
+                aria-expanded={expandedSections.has('manage-state')}
+                aria-label="Toggle manage state menu"
               >
                 <span>Manage State</span>
                 {expandedSections.has('manage-state') ? (
@@ -397,6 +401,8 @@ export function BulkActionBar({
               <button
                 onClick={() => toggleSection('tags')}
                 className="flex items-center gap-2 px-3 py-2 text-sm font-medium hover:bg-muted transition-colors rounded-t-lg w-full"
+                aria-expanded={expandedSections.has('tags')}
+                aria-label="Toggle tags menu"
               >
                 <span>Tags</span>
                 {expandedSections.has('tags') ? (
@@ -569,6 +575,7 @@ export function BulkActionBar({
               size="icon"
               onClick={onClearSelection}
               title="Clear selection"
+              aria-label="Clear selection"
             >
               <X className="h-4 w-4" />
             </Button>

@@ -24,7 +24,6 @@ interface TagEditorProps {
   tags: string[]
   containerId: string
   hostId: string
-  containerName?: string
 }
 
 export function TagEditor({ tags, containerId, hostId }: TagEditorProps) {
@@ -265,12 +264,20 @@ export function TagEditor({ tags, containerId, hostId }: TagEditorProps) {
                 onFocus={() => setShowSuggestions(true)}
                 placeholder="Type to add..."
                 className="w-full px-2 py-1 text-sm border border-border rounded bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+                aria-label="Add new tag"
+                aria-describedby={error ? "tag-error" : "tag-helper"}
+                aria-invalid={error ? "true" : "false"}
+                aria-autocomplete="list"
+                aria-controls={showSuggestions && suggestions.length > 0 ? "tag-suggestions" : undefined}
+                aria-expanded={showSuggestions && suggestions.length > 0}
               />
 
               {/* Suggestions dropdown */}
               {showSuggestions && suggestions.length > 0 && (
                 <div
                   ref={suggestionsRef}
+                  id="tag-suggestions"
+                  role="listbox"
                   className="absolute top-full left-0 mt-1 w-full bg-surface-1 border border-border rounded-lg shadow-xl max-h-[150px] overflow-y-auto z-10"
                 >
                   <div className="p-1">
@@ -279,6 +286,8 @@ export function TagEditor({ tags, containerId, hostId }: TagEditorProps) {
                         key={suggestion}
                         onClick={() => addTag(suggestion)}
                         className="w-full text-left px-3 py-2 text-sm hover:bg-muted rounded transition-colors"
+                        role="option"
+                        aria-selected="false"
                       >
                         {suggestion}
                       </button>
@@ -291,9 +300,9 @@ export function TagEditor({ tags, containerId, hostId }: TagEditorProps) {
 
           {/* Helper text or error */}
           {error ? (
-            <p className="text-xs text-danger">{error}</p>
+            <p id="tag-error" className="text-xs text-danger" role="alert">{error}</p>
           ) : (
-            <p className="text-xs text-muted-foreground">
+            <p id="tag-helper" className="text-xs text-muted-foreground">
               Enter to add · Backspace to remove last
             </p>
           )}
@@ -303,12 +312,14 @@ export function TagEditor({ tags, containerId, hostId }: TagEditorProps) {
             <button
               onClick={handleSave}
               className="px-3 py-1.5 text-sm bg-primary text-primary-foreground rounded hover:bg-primary/90 transition-colors"
+              aria-label="Save tag changes"
             >
               Save
             </button>
             <button
               onClick={handleCancel}
               className="px-3 py-1.5 text-sm border border-border rounded hover:bg-muted transition-colors"
+              aria-label="Cancel tag editing"
             >
               Cancel
             </button>
@@ -351,6 +362,7 @@ export function TagEditor({ tags, containerId, hostId }: TagEditorProps) {
           onClick={() => setIsEditing(true)}
           className="text-xs text-primary hover:text-primary/80 transition-colors flex items-center gap-1"
           title="Edit tags"
+          aria-label="Edit container tags"
         >
           <Edit className="w-3 h-3" />
           Edit

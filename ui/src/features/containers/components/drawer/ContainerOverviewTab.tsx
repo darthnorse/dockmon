@@ -15,6 +15,8 @@ import { useContainer, useContainerSparklines } from '@/lib/stats/StatsProvider'
 import { MiniChart } from '@/lib/charts/MiniChart'
 import { TagEditor } from './TagEditor'
 import { toast } from 'sonner'
+import { apiClient } from '@/lib/api/client'
+import { debug } from '@/lib/debug'
 
 interface ContainerOverviewTabProps {
   containerId: string
@@ -106,24 +108,13 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
     setAutoRestart(checked)
 
     try {
-      const response = await fetch(`/api/hosts/${container.host_id}/containers/${container.id}/auto-restart`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          enabled: checked,
-          container_name: container.name
-        })
+      await apiClient.post(`/hosts/${container.host_id}/containers/${container.id}/auto-restart`, {
+        enabled: checked,
+        container_name: container.name
       })
-
-      if (!response.ok) {
-        throw new Error('Failed to update auto-restart setting')
-      }
-
       toast.success(`Auto-restart ${checked ? 'enabled' : 'disabled'}`)
     } catch (error) {
-      console.error('Error toggling auto-restart:', error)
+      debug.error('ContainerOverviewTab', 'Error toggling auto-restart:', error)
       toast.error(`Failed to update auto-restart: ${error instanceof Error ? error.message : 'Unknown error'}`)
       // Revert the checkbox on error
       setAutoRestart(!checked)
@@ -137,25 +128,14 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
     setDesiredState(state)
 
     try {
-      const response = await fetch(`/api/hosts/${container.host_id}/containers/${container.id}/desired-state`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          desired_state: state,
-          container_name: container.name
-        })
+      await apiClient.post(`/hosts/${container.host_id}/containers/${container.id}/desired-state`, {
+        desired_state: state,
+        container_name: container.name
       })
-
-      if (!response.ok) {
-        throw new Error('Failed to update desired state')
-      }
-
       const stateLabel = state === 'should_run' ? 'Should Run' : state === 'on_demand' ? 'On-Demand' : 'Unspecified'
       toast.success(`Desired state set to ${stateLabel}`)
     } catch (error) {
-      console.error('Error setting desired state:', error)
+      debug.error('ContainerOverviewTab', 'Error setting desired state:', error)
       toast.error(`Failed to update desired state: ${error instanceof Error ? error.message : 'Unknown error'}`)
       // Revert on error
       setDesiredState(previousState)

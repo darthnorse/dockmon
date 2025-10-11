@@ -15,6 +15,10 @@ import { useState, KeyboardEvent, useRef, useEffect } from 'react'
 import { X, Tag, Edit, Lock } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
+import { apiClient } from '@/lib/api/client'
+import { debug } from '@/lib/debug'
+import { validateTag, normalizeTag, isDerivedTag, validateTagSuggestionsResponse } from '@/lib/validation/tags'
+import type { Container } from '../../types'
 
 interface TagEditorProps {
   tags: string[]
@@ -34,10 +38,6 @@ export function TagEditor({ tags, containerId, hostId }: TagEditorProps) {
   const suggestionsRef = useRef<HTMLDivElement>(null)
   const queryClient = useQueryClient()
 
-  const isDerivedTag = (tag: string) => {
-    return tag.startsWith('compose:') || tag.startsWith('swarm:')
-  }
-
   const userTags = tags.filter(tag => !isDerivedTag(tag))
   const derivedTags = tags.filter(tag => isDerivedTag(tag))
 
@@ -48,7 +48,7 @@ export function TagEditor({ tags, containerId, hostId }: TagEditorProps) {
       setError(null)
       inputRef.current?.focus()
     }
-  }, [isEditing])
+  }, [isEditing, userTags])
 
   // Fetch tag suggestions from API
   useEffect(() => {
@@ -57,20 +57,33 @@ export function TagEditor({ tags, containerId, hostId }: TagEditorProps) {
       return
     }
 
+    let cancelled = false
+
     const fetchSuggestions = async () => {
       try {
-        const response = await fetch(`/api/tags/suggest?q=${encodeURIComponent(inputValue)}`)
-        if (response.ok) {
-          const data = await response.json()
-          setSuggestions(data.tags || [])
+        const data = await apiClient.get<{ tags: string[] }>(`/tags/suggest?q=${encodeURIComponent(inputValue)}`)
+        if (!cancelled) {
+          const validTags = validateTagSuggestionsResponse(data)
+          if (validTags.length > 0) {
+            setSuggestions(validTags)
+          } else {
+            debug.warn('TagEditor', 'Invalid tag suggestions response format:', data)
+            setSuggestions([])
+          }
         }
       } catch (error) {
-        console.error('Failed to fetch tag suggestions:', error)
+        if (!cancelled) {
+          debug.error('TagEditor', 'Failed to fetch tag suggestions:', error)
+          setSuggestions([])
+        }
       }
     }
 
     const debounce = setTimeout(fetchSuggestions, 200)
-    return () => clearTimeout(debounce)
+    return () => {
+      cancelled = true
+      clearTimeout(debounce)
+    }
   }, [inputValue, showSuggestions])
 
   // Close suggestions when clicking outside
@@ -86,39 +99,14 @@ export function TagEditor({ tags, containerId, hostId }: TagEditorProps) {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
-  const validateTag = (tag: string): { valid: boolean; error?: string } => {
-    const trimmed = tag.trim()
-
-    if (!trimmed) {
-      return { valid: false, error: 'Tag cannot be empty' }
-    }
-
-    if (trimmed.length < 1 || trimmed.length > 24) {
-      return { valid: false, error: 'Tag must be 1-24 characters' }
-    }
-
-    // Allow alphanumeric + dash, underscore, colon, dot
-    const validPattern = /^[a-zA-Z0-9\-_:.]+$/
-    if (!validPattern.test(trimmed)) {
-      return { valid: false, error: 'Invalid characters (alphanumeric, -, _, :, . only)' }
-    }
-
-    const normalizedTag = trimmed.toLowerCase()
-    if (selectedTags.map(t => t.toLowerCase()).includes(normalizedTag)) {
-      return { valid: false, error: 'Duplicate tag' }
-    }
-
-    return { valid: true }
-  }
-
   const addTag = (tag: string) => {
-    const validation = validateTag(tag)
+    const validation = validateTag(tag, selectedTags)
     if (!validation.valid) {
       setError(validation.error || 'Invalid tag')
       return
     }
 
-    const normalizedTag = tag.trim().toLowerCase()
+    const normalizedTag = normalizeTag(tag)
     setSelectedTags([...selectedTags, normalizedTag])
     setInputValue('')
     setError(null)
@@ -167,29 +155,18 @@ export function TagEditor({ tags, containerId, hostId }: TagEditorProps) {
 
     // Optimistic update
     const optimisticTags = [...selectedTags, ...derivedTags]
-    queryClient.setQueryData(['containers'], (old: any) => {
+    queryClient.setQueryData<Container[]>(['containers'], (old) => {
       if (!old) return old
-      return old.map((c: any) =>
+      return old.map((c) =>
         c.id === containerId ? { ...c, tags: optimisticTags } : c
       )
     })
 
     try {
-      const response = await fetch(`/api/hosts/${hostId}/containers/${containerId}/tags`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          tags_to_add: tagsToAdd,
-          tags_to_remove: tagsToRemove,
-        }),
+      await apiClient.patch(`/hosts/${hostId}/containers/${containerId}/tags`, {
+        tags_to_add: tagsToAdd,
+        tags_to_remove: tagsToRemove,
       })
-
-      if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.detail || 'Failed to update tags')
-      }
 
       // Success toast
       const addedCount = tagsToAdd.length
@@ -223,28 +200,18 @@ export function TagEditor({ tags, containerId, hostId }: TagEditorProps) {
   const handleQuickRemove = async (tagToRemove: string) => {
     // Optimistic update
     const optimisticTags = tags.filter(t => t !== tagToRemove)
-    queryClient.setQueryData(['containers'], (old: any) => {
+    queryClient.setQueryData<Container[]>(['containers'], (old) => {
       if (!old) return old
-      return old.map((c: any) =>
+      return old.map((c) =>
         c.id === containerId ? { ...c, tags: optimisticTags } : c
       )
     })
 
     try {
-      const response = await fetch(`/api/hosts/${hostId}/containers/${containerId}/tags`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          tags_to_add: [],
-          tags_to_remove: [tagToRemove],
-        }),
+      await apiClient.patch(`/hosts/${hostId}/containers/${containerId}/tags`, {
+        tags_to_add: [],
+        tags_to_remove: [tagToRemove],
       })
-
-      if (!response.ok) {
-        throw new Error('Failed to remove tag')
-      }
 
       toast.success(`Removed tag "${tagToRemove}"`)
       queryClient.invalidateQueries({ queryKey: ['containers'] })

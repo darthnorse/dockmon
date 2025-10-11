@@ -130,6 +130,12 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
           queryClient.invalidateQueries({ queryKey: ['settings'] })
           break
 
+        // Batch job updates (handled by BatchJobPanel component)
+        case 'batch_job_update':
+        case 'batch_item_update':
+          // These are handled by the BatchJobPanel component via addMessageHandler
+          break
+
         // Heartbeat response (no action needed)
         case 'pong':
           break

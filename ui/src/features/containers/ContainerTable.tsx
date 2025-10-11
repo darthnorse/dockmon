@@ -35,6 +35,7 @@ import {
   type ColumnDef,
   type SortingState,
   type ColumnFiltersState,
+  type Table,
 } from '@tanstack/react-table'
 
 // Extend TanStack Table's ColumnMeta to include our custom align property
@@ -280,9 +281,9 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
     })
   }
 
-  const toggleSelectAll = (table: any) => {
+  const toggleSelectAll = (table: Table<Container>) => {
     const currentRows = table.getFilteredRowModel().rows
-    const currentIds = currentRows.map((row: any) => row.original.id)
+    const currentIds = currentRows.map((row) => row.original.id)
 
     // Check if all current rows are selected
     const allCurrentSelected = currentIds.every((id: string) => selectedContainerIds.has(id))
@@ -331,24 +332,12 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
 
     try {
       // Create batch job for tag update
-      const response = await fetch('/api/batch', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          scope: 'container',
-          action,
-          ids: Array.from(selectedContainerIds),
-          params: { tags },
-        }),
+      const result = await apiClient.post<{ job_id: string }>('/batch', {
+        scope: 'container',
+        action,
+        ids: Array.from(selectedContainerIds),
+        params: { tags },
       })
-
-      if (!response.ok) {
-        throw new Error('Failed to create batch job')
-      }
-
-      const result = await response.json()
       setBatchJobId(result.job_id)
 
       // Show success toast
@@ -367,24 +356,12 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
 
     try {
       // Create batch job for auto-restart update
-      const response = await fetch('/api/batch', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          scope: 'container',
-          action: 'set-auto-restart',
-          ids: Array.from(selectedContainerIds),
-          params: { enabled },
-        }),
+      const result = await apiClient.post<{ job_id: string }>('/batch', {
+        scope: 'container',
+        action: 'set-auto-restart',
+        ids: Array.from(selectedContainerIds),
+        params: { enabled },
       })
-
-      if (!response.ok) {
-        throw new Error('Failed to create batch job')
-      }
-
-      const result = await response.json()
       setBatchJobId(result.job_id)
 
       toast.success(`${enabled ? 'Enabling' : 'Disabling'} auto-restart for ${count} container${count !== 1 ? 's' : ''}...`)
@@ -401,24 +378,12 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
 
     try {
       // Create batch job for desired state update
-      const response = await fetch('/api/batch', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          scope: 'container',
-          action: 'set-desired-state',
-          ids: Array.from(selectedContainerIds),
-          params: { desired_state: state },
-        }),
+      const result = await apiClient.post<{ job_id: string }>('/batch', {
+        scope: 'container',
+        action: 'set-desired-state',
+        ids: Array.from(selectedContainerIds),
+        params: { desired_state: state },
       })
-
-      if (!response.ok) {
-        throw new Error('Failed to create batch job')
-      }
-
-      const result = await response.json()
       setBatchJobId(result.job_id)
 
       const stateText = state === 'should_run' ? 'Should Run' : 'On-Demand'

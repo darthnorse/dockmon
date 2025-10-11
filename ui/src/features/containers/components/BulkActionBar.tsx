@@ -11,6 +11,9 @@
 import { useState, useRef, useEffect } from 'react'
 import { X, Tag, ChevronDown, ChevronUp, Info } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { apiClient } from '@/lib/api/client'
+import { debug } from '@/lib/debug'
+import { validateTagSuggestionsResponse } from '@/lib/validation/tags'
 import type { Container } from '../types'
 
 interface BulkActionBarProps {
@@ -99,20 +102,33 @@ export function BulkActionBar({
   useEffect(() => {
     if (!showSuggestions || tagMode === 'remove') return
 
+    let cancelled = false
+
     const fetchSuggestions = async () => {
       try {
-        const response = await fetch(`/api/tags/suggest?q=${encodeURIComponent(inputValue)}`)
-        if (response.ok) {
-          const data = await response.json()
-          setSuggestions(data.tags || [])
+        const data = await apiClient.get<{ tags: string[] }>(`/tags/suggest?q=${encodeURIComponent(inputValue)}`)
+        if (!cancelled) {
+          const validTags = validateTagSuggestionsResponse(data)
+          if (validTags.length > 0) {
+            setSuggestions(validTags)
+          } else {
+            debug.warn('BulkActionBar', 'Invalid tag suggestions response format:', data)
+            setSuggestions([])
+          }
         }
       } catch (error) {
-        console.error('Failed to fetch tag suggestions:', error)
+        if (!cancelled) {
+          debug.error('BulkActionBar', 'Failed to fetch tag suggestions:', error)
+          setSuggestions([])
+        }
       }
     }
 
     const debounce = setTimeout(fetchSuggestions, 200)
-    return () => clearTimeout(debounce)
+    return () => {
+      cancelled = true
+      clearTimeout(debounce)
+    }
   }, [inputValue, showSuggestions, tagMode])
 
   // Handle clicking outside suggestions

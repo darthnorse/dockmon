@@ -14,6 +14,8 @@ import { DropdownMenu, DropdownMenuItem, DropdownMenuSeparator } from '@/compone
 import { useContainer } from '@/lib/stats/StatsProvider'
 import { Button } from '@/components/ui/button'
 import { toast } from 'sonner'
+import { apiClient } from '@/lib/api/client'
+import { debug } from '@/lib/debug'
 
 interface ContainerDrawerProps {
   isOpen: boolean
@@ -34,18 +36,10 @@ export function ContainerDrawer({ isOpen, onClose, containerId, onExpand }: Cont
 
     setIsActionLoading(true)
     try {
-      const response = await fetch(`/api/hosts/${container.host_id}/containers/${container.id}/${action}`, {
-        method: 'POST',
-      })
-
-      if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(errorText || `Failed to ${action} container`)
-      }
-
+      await apiClient.post(`/hosts/${container.host_id}/containers/${container.id}/${action}`)
       toast.success(`Container ${action === 'restart' ? 'restarting' : action === 'stop' ? 'stopping' : 'starting'}...`)
     } catch (error) {
-      console.error(`Error ${action}ing container:`, error)
+      debug.error('ContainerDrawer', `Error ${action}ing container:`, error)
       toast.error(`Failed to ${action} container: ${error instanceof Error ? error.message : 'Unknown error'}`)
     } finally {
       setIsActionLoading(false)
@@ -149,15 +143,15 @@ export function ContainerDrawer({ isOpen, onClose, containerId, onExpand }: Cont
             </>
           )}
 
-          <DropdownMenuItem onClick={() => console.log('silence-alerts')} icon={<BellOff className="w-4 h-4" />}>
+          <DropdownMenuItem onClick={() => debug.log('ContainerDrawer', 'Silence alerts - Not yet implemented')} icon={<BellOff className="w-4 h-4" />}>
             Silence Alerts…
           </DropdownMenuItem>
 
-          <DropdownMenuItem onClick={() => console.log('toggle-visibility')} icon={<EyeOff className="w-4 h-4" />}>
+          <DropdownMenuItem onClick={() => debug.log('ContainerDrawer', 'Toggle visibility - Not yet implemented')} icon={<EyeOff className="w-4 h-4" />}>
             Hide on Dashboard
           </DropdownMenuItem>
 
-          <DropdownMenuItem onClick={() => console.log('toggle-pin')} icon={<Pin className="w-4 h-4" />}>
+          <DropdownMenuItem onClick={() => debug.log('ContainerDrawer', 'Toggle pin - Not yet implemented')} icon={<Pin className="w-4 h-4" />}>
             Pin on Dashboard
           </DropdownMenuItem>
         </DropdownMenu>

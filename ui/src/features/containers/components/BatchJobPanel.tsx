@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { X, CheckCircle, XCircle, Clock, Loader2 } from 'lucide-react'
 import { apiClient } from '@/lib/api/client'
 import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
+import type { WebSocketMessage } from '@/lib/websocket/useWebSocket'
 
 interface BatchJobStatus {
   id: string
@@ -67,27 +68,33 @@ export function BatchJobPanel({ jobId, onClose, bulkActionBarOpen = false }: Bat
   }, [jobId])
 
   // Handle WebSocket messages
-  const handleMessage = useCallback((message: any) => {
+  const handleMessage = useCallback((message: WebSocketMessage) => {
     if (!jobId) return
 
     // Handle batch job updates
-    if (message.type === 'batch_job_update' && message.data?.job_id === jobId) {
-      setJob(prev => prev ? { ...prev, ...message.data } : null)
+    if (message.type === 'batch_job_update' && message.data && typeof message.data === 'object') {
+      const data = message.data as Record<string, unknown>
+      if (data.job_id === jobId) {
+        setJob(prev => prev ? { ...prev, ...data } : null)
+      }
     }
 
     // Handle individual item updates
-    if (message.type === 'batch_item_update' && message.data?.job_id === jobId) {
-      setJob(prev => {
-        if (!prev) return null
+    if (message.type === 'batch_item_update' && message.data && typeof message.data === 'object') {
+      const data = message.data as Record<string, unknown>
+      if (data.job_id === jobId) {
+        setJob(prev => {
+          if (!prev) return null
 
-        const items = prev.items.map(item =>
-          item.id === message.data.item_id
-            ? { ...item, ...message.data }
-            : item
-        )
+          const items = prev.items.map(item =>
+            item.id === data.item_id
+              ? { ...item, ...data }
+              : item
+          )
 
-        return { ...prev, items }
-      })
+          return { ...prev, items }
+        })
+      }
     }
   }, [jobId])
 
@@ -99,7 +106,7 @@ export function BatchJobPanel({ jobId, onClose, bulkActionBarOpen = false }: Bat
 
   if (!jobId) return null
 
-  const progressPercent = job
+  const progressPercent = job && job.total_items > 0
     ? Math.round((job.completed_items / job.total_items) * 100)
     : 0
 

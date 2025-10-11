@@ -43,6 +43,8 @@ export type WebSocketMessage =
   | { type: 'auto_restart_success'; data: unknown }
   | { type: 'auto_restart_failed'; data: unknown }
   | { type: 'blackout_status_changed'; data: unknown }
+  | { type: 'batch_job_update'; data: unknown }
+  | { type: 'batch_item_update'; data: unknown }
   | { type: 'pong'; data?: unknown }
 
 export type WebSocketStatus = 'connecting' | 'connected' | 'disconnected' | 'error'

@@ -366,15 +366,24 @@ async def update_host(host_id: str, config: DockerHostConfig, current_user: dict
 @app.delete("/api/hosts/{host_id}")
 async def remove_host(host_id: str, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_hosts):
     """Remove a Docker host"""
-    await monitor.remove_host(host_id)
+    try:
+        await monitor.remove_host(host_id)
 
-    # Broadcast host removal to WebSocket clients so they refresh
-    await monitor.manager.broadcast({
-        "type": "host_removed",
-        "data": {"host_id": host_id}
-    })
+        # Broadcast host removal to WebSocket clients so they refresh
+        await monitor.manager.broadcast({
+            "type": "host_removed",
+            "data": {"host_id": host_id}
+        })
 
-    return {"status": "success", "message": f"Host {host_id} removed"}
+        return {"status": "success", "message": f"Host {host_id} removed"}
+    except ValueError as e:
+        # Host not found or invalid host_id format
+        logger.warning(f"Failed to remove host {host_id}: {e}")
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        # Unexpected error during removal
+        logger.error(f"Error removing host {host_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to remove host: {str(e)}")
 
 @app.get("/api/hosts/{host_id}/metrics")
 async def get_host_metrics(host_id: str, current_user: dict = Depends(get_current_user)):

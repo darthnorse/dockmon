@@ -17,6 +17,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { apiClient } from '@/lib/api/client'
+import type { Host } from '@/types/api'
 
 // Type for API errors from axios/fetch responses
 interface ApiError extends Error {
@@ -25,25 +26,6 @@ interface ApiError extends Error {
       detail?: string
     }
   }
-}
-
-export interface Host {
-  id: string
-  name: string
-  url: string
-  status: string
-  security_status?: string | null
-  last_checked: string
-  container_count: number
-  error?: string | null
-  tags?: string[]
-  description?: string | null
-  // Phase 5 - System information
-  os_type?: string | null
-  os_version?: string | null
-  kernel_version?: string | null
-  docker_version?: string | null
-  daemon_started_at?: string | null
 }
 
 export interface HostConfig {

@@ -22,7 +22,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { HostTable } from './components/HostTable'
 import { HostModal } from './components/HostModal'
-import { type Host } from './hooks/useHosts'
+import type { Host } from '@/types/api'
 
 export function HostsPage() {
   const [isModalOpen, setIsModalOpen] = useState(false)

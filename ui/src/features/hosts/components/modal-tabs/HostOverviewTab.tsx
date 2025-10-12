@@ -7,18 +7,36 @@
  * - Right sidebar with Host Information and Events
  */
 
-import { Cpu, MemoryStick, Network } from 'lucide-react'
+import { Cpu, MemoryStick, Network, Plus } from 'lucide-react'
 import { useHostMetrics, useHostSparklines } from '@/lib/stats/StatsProvider'
 import { MiniChart } from '@/lib/charts/MiniChart'
+import { TagInput } from '@/components/TagInput'
+import { TagChip } from '@/components/TagChip'
+import { Button } from '@/components/ui/button'
+import { useHostTagEditor } from '@/hooks/useHostTagEditor'
+import type { Host } from '@/types/api'
 
 interface HostOverviewTabProps {
   hostId: string
-  host: any
+  host: Host
 }
 
 export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
   const metrics = useHostMetrics(hostId)
   const sparklines = useHostSparklines(hostId)
+
+  const currentTags = host.tags || []
+
+  const {
+    isEditing: isEditingTags,
+    editedTags,
+    tagSuggestions,
+    isLoading: isLoadingTags,
+    setEditedTags,
+    handleStartEdit,
+    handleCancelEdit,
+    handleSaveTags,
+  } = useHostTagEditor({ hostId, currentTags })
 
   // Format network rate (bytes/sec to KB/s or MB/s)
   const formatNetworkRate = (bytesPerSec: number | undefined): string => {
@@ -159,6 +177,64 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
               <span className="text-muted-foreground">Address</span>
               <span className="font-mono text-xs">{host.url || '—'}</span>
             </div>
+
+            {/* Tags Row */}
+            <div>
+              {isEditingTags ? (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-muted-foreground">Tags</span>
+                  </div>
+                  <TagInput
+                    value={editedTags}
+                    onChange={setEditedTags}
+                    suggestions={tagSuggestions}
+                    placeholder="Add tags..."
+                    maxTags={20}
+                  />
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      onClick={handleSaveTags}
+                      disabled={isLoadingTags}
+                      className="flex-1"
+                    >
+                      Save
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={handleCancelEdit}
+                      disabled={isLoadingTags}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-start justify-between text-sm gap-2">
+                  <span className="text-muted-foreground shrink-0">Tags</span>
+                  <div className="flex flex-wrap gap-1.5 justify-end">
+                    {currentTags.length === 0 ? (
+                      <span className="text-xs text-muted-foreground">No tags</span>
+                    ) : (
+                      (currentTags as string[]).map((tag) => (
+                        <TagChip key={tag} tag={tag} size="sm" />
+                      ))
+                    )}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={handleStartEdit}
+                      className="h-5 px-1.5 text-xs -mr-1.5"
+                    >
+                      <Plus className="h-3 w-3" />
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+
             <div className="flex justify-between text-sm">
               <span className="text-muted-foreground">OS</span>
               <span>{host.os_version || 'Unknown'}</span>
@@ -169,11 +245,11 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
             </div>
             <div className="flex justify-between text-sm">
               <span className="text-muted-foreground">CPU</span>
-              <span>{host.cpu_count || '—'}</span>
+              <span>{host.num_cpus || '—'}</span>
             </div>
             <div className="flex justify-between text-sm">
               <span className="text-muted-foreground">Memory</span>
-              <span>{host.mem_total ? formatBytes(host.mem_total) : '—'}</span>
+              <span>{host.total_memory ? formatBytes(host.total_memory) : '—'}</span>
             </div>
           </div>
         </div>

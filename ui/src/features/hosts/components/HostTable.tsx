@@ -31,6 +31,7 @@ import {
   type ColumnDef,
   type SortingState,
   type ColumnFiltersState,
+  type Table,
 } from '@tanstack/react-table'
 import {
   Circle,
@@ -46,10 +47,13 @@ import {
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { TagChip } from '@/components/TagChip'
-import { useHosts, type Host } from '../hooks/useHosts'
+import { useHosts } from '../hooks/useHosts'
+import type { Host } from '@/types/api'
 import { HostDrawer } from './drawer/HostDrawer'
 import { HostDetailsModal } from './HostDetailsModal'
+import { HostBulkActionBar } from './HostBulkActionBar'
 import { useHostMetrics, useHostSparklines, useContainerCounts } from '@/lib/stats/StatsProvider'
+import { useQueryClient } from '@tanstack/react-query'
 import { MiniChart } from '@/lib/charts/MiniChart'
 import { debug } from '@/lib/debug'
 
@@ -239,6 +243,7 @@ interface HostTableProps {
 
 export function HostTable({ onEditHost }: HostTableProps = {}) {
   const { data: hosts = [], isLoading, error } = useHosts()
+  const queryClient = useQueryClient()
   const [sorting, setSorting] = useState<SortingState>([])
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
 
@@ -249,10 +254,88 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
   // Modal state
   const [modalOpen, setModalOpen] = useState(false)
 
+  // Selection state for bulk operations
+  const [selectedHostIds, setSelectedHostIds] = useState<Set<string>>(new Set())
+
   const selectedHost = hosts.find(h => h.id === selectedHostId)
+
+  // Selection handlers
+  const toggleHostSelection = (hostId: string) => {
+    setSelectedHostIds(prev => {
+      const newSet = new Set(prev)
+      if (newSet.has(hostId)) {
+        newSet.delete(hostId)
+      } else {
+        newSet.add(hostId)
+      }
+      return newSet
+    })
+  }
+
+  const toggleSelectAll = (table: Table<Host>) => {
+    const currentRows = table.getFilteredRowModel().rows
+    const currentIds = currentRows.map((row) => row.original.id)
+
+    // Check if all current rows are selected
+    const allCurrentSelected = currentIds.every((id: string) => selectedHostIds.has(id))
+
+    if (allCurrentSelected) {
+      // Deselect all current rows
+      setSelectedHostIds(prev => {
+        const newSet = new Set(prev)
+        currentIds.forEach((id) => newSet.delete(id))
+        return newSet
+      })
+    } else {
+      // Select all current rows
+      setSelectedHostIds(prev => {
+        const newSet = new Set(prev)
+        currentIds.forEach((id) => newSet.add(id))
+        return newSet
+      })
+    }
+  }
+
+  const clearSelection = () => {
+    setSelectedHostIds(new Set())
+  }
 
   const columns = useMemo<ColumnDef<Host>[]>(
     () => [
+      // Checkbox column
+      {
+        id: 'select',
+        header: ({ table }) => {
+          const currentRows = table.getFilteredRowModel().rows
+          const currentIds = currentRows.map(row => row.original.id)
+          const allCurrentSelected = currentIds.length > 0 && currentIds.every(id => selectedHostIds.has(id))
+
+          return (
+            <div className="flex items-center justify-center">
+              <input
+                type="checkbox"
+                checked={allCurrentSelected}
+                onChange={() => toggleSelectAll(table)}
+                className="h-4 w-4 rounded border-border text-primary focus:ring-primary cursor-pointer"
+              />
+            </div>
+          )
+        },
+        cell: ({ row }) => (
+          <div className="flex items-center justify-center">
+            <input
+              type="checkbox"
+              checked={selectedHostIds.has(row.original.id)}
+              onChange={() => toggleHostSelection(row.original.id)}
+              onClick={(e) => e.stopPropagation()}
+              className="h-4 w-4 rounded border-border text-primary focus:ring-primary cursor-pointer"
+            />
+          </div>
+        ),
+        size: 50,
+        enableSorting: false,
+      },
+
       // 1. Status
       {
         accessorKey: 'status',
@@ -424,7 +507,7 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
         ),
       },
     ],
-    [onEditHost]
+    [selectedHostIds, toggleHostSelection, toggleSelectAll, onEditHost]
   )
 
   const table = useReactTable({
@@ -538,6 +621,17 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
           setModalOpen(false)
         }}
       />
+
+      {/* Host Bulk Action Bar */}
+      {selectedHostIds.size > 0 && (
+        <HostBulkActionBar
+          selectedHostIds={selectedHostIds}
+          onClearSelection={clearSelection}
+          onTagsUpdated={() => {
+            queryClient.invalidateQueries({ queryKey: ['hosts'] })
+          }}
+        />
+      )}
     </div>
   )
 }

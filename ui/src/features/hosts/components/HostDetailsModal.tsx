@@ -18,6 +18,7 @@ import { X, ChevronRight, MoreVertical, RotateCw } from 'lucide-react'
 import { Tabs } from '@/components/ui/tabs'
 import { useContainerCounts } from '@/lib/stats/StatsProvider'
 import { debug } from '@/lib/debug'
+import type { Host } from '@/types/api'
 
 // Import tab content components
 import { HostOverviewTab } from './modal-tabs/HostOverviewTab'
@@ -34,7 +35,7 @@ export interface HostDetailsModalProps {
   /**
    * Host data (from useHosts query)
    */
-  host: any
+  host: Host | null | undefined
 
   /**
    * Whether modal is open

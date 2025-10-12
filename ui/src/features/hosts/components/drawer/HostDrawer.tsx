@@ -8,6 +8,7 @@
 import { Edit, Trash2, Maximize2 } from 'lucide-react'
 import { Drawer } from '@/components/ui/drawer'
 import { HostOverviewSection } from './HostOverviewSection'
+import { HostTagsSection } from './HostTagsSection'
 import { HostConnectionSection } from './HostConnectionSection'
 import { HostPerformanceSection } from './HostPerformanceSection'
 import { HostContainersSection } from './HostContainersSection'
@@ -107,6 +108,7 @@ export function HostDrawer({
 
       {/* Sections */}
       <HostOverviewSection host={host} />
+      <HostTagsSection host={host} />
       <HostConnectionSection host={host} />
       <HostPerformanceSection hostId={hostId} />
       <HostContainersSection hostId={hostId} />

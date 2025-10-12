@@ -425,6 +425,9 @@ async def update_host_tags(
         db_host.tags = json.dumps(sorted(list(new_tags)))
         session.commit()
 
+        # Update in-memory host object so changes are immediately visible
+        host.tags = sorted(list(new_tags))
+
         logger.info(f"User {current_user.get('username')} updated tags for host {host.name}")
 
         return {"tags": sorted(list(new_tags))}
@@ -731,29 +734,9 @@ async def suggest_host_tags(
     Returns a list of existing host tags that match the query string.
     Host tags are separate from container tags (e.g., 'prod', 'dev', 'us-west-1').
     """
-    with monitor.db.get_session() as session:
-        from database import DockerHostDB
-        hosts = session.query(DockerHostDB).all()
-
-        # Collect all unique tags from all hosts
-        all_tags = set()
-        for host in hosts:
-            if host.tags:
-                try:
-                    host_tags = json.loads(host.tags) if isinstance(host.tags, str) else host.tags
-                    if isinstance(host_tags, list):
-                        all_tags.update(host_tags)
-                except (json.JSONDecodeError, TypeError):
-                    continue
-
-        # Filter by query
-        if q:
-            filtered_tags = [tag for tag in all_tags if q.lower() in tag.lower()]
-        else:
-            filtered_tags = list(all_tags)
-
-        # Sort and limit
-        return {"tags": sorted(filtered_tags)[:limit]}
+    # Use optimized database method - filters at SQL level for better performance
+    tags = monitor.db.get_all_host_tags(query=q, limit=limit)
+    return {"tags": tags}
 
 
 # ==================== Batch Operations ====================

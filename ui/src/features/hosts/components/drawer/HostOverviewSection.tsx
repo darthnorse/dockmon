@@ -5,7 +5,6 @@
  */
 
 import { Server } from 'lucide-react'
-import { TagChip } from '@/components/TagChip'
 import { DrawerSection } from '@/components/ui/drawer'
 
 interface Host {
@@ -109,18 +108,6 @@ export function HostOverviewSection({ host }: HostOverviewSectionProps) {
                 <p className="text-sm mt-1">{host.docker_version}</p>
               </div>
             )}
-          </div>
-        )}
-
-        {/* Tags */}
-        {host.tags && host.tags.length > 0 && (
-          <div>
-            <label className="text-xs font-medium text-muted-foreground">Tags</label>
-            <div className="flex flex-wrap gap-2 mt-2">
-              {host.tags.map((tag) => (
-                <TagChip key={tag} tag={tag} size="sm" />
-              ))}
-            </div>
           </div>
         )}
 

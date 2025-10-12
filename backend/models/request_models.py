@@ -320,8 +320,11 @@ class BatchJobCreate(BaseModel):
         return v
 
 
-class ContainerTagUpdate(BaseModel):
-    """Request model for adding/removing tags from a container"""
+class TagUpdateBase(BaseModel):
+    """
+    Base model for adding/removing tags from containers or hosts.
+    Provides common validation logic for all tag operations.
+    """
     tags_to_add: List[str] = Field(default_factory=list, max_items=20)
     tags_to_remove: List[str] = Field(default_factory=list, max_items=20)
 
@@ -339,7 +342,7 @@ class ContainerTagUpdate(BaseModel):
 
     @root_validator(skip_on_failure=True)
     def validate_tags(cls, values):
-        """Ensure at least one operation is specified"""
+        """Ensure at least one operation is specified and no conflicts"""
         tags_to_add = values.get('tags_to_add', [])
         tags_to_remove = values.get('tags_to_remove', [])
 
@@ -354,35 +357,11 @@ class ContainerTagUpdate(BaseModel):
         return values
 
 
-class HostTagUpdate(BaseModel):
+class ContainerTagUpdate(TagUpdateBase):
+    """Request model for adding/removing tags from a container"""
+    pass
+
+
+class HostTagUpdate(TagUpdateBase):
     """Request model for adding/removing tags from a host"""
-    tags_to_add: List[str] = Field(default_factory=list, max_items=20)
-    tags_to_remove: List[str] = Field(default_factory=list, max_items=20)
-
-    @validator('tags_to_add', 'tags_to_remove', each_item=True)
-    def validate_tag(cls, v):
-        """Validate individual tag format"""
-        if not v or not v.strip():
-            raise ValueError('Tag cannot be empty')
-        if len(v) > 50:
-            raise ValueError('Tag cannot exceed 50 characters')
-        # Allow alphanumeric, dash, underscore, colon, dot
-        if not all(c.isalnum() or c in '-_:.' for c in v):
-            raise ValueError('Tag can only contain alphanumeric characters, dash, underscore, colon, and dot')
-        return v.strip().lower()
-
-    @root_validator(skip_on_failure=True)
-    def validate_tags(cls, values):
-        """Ensure at least one operation is specified"""
-        tags_to_add = values.get('tags_to_add', [])
-        tags_to_remove = values.get('tags_to_remove', [])
-
-        if not tags_to_add and not tags_to_remove:
-            raise ValueError('At least one tag operation (add or remove) is required')
-
-        # Check for conflicts (adding and removing the same tag)
-        conflicts = set(tags_to_add) & set(tags_to_remove)
-        if conflicts:
-            raise ValueError(f'Cannot add and remove the same tags: {conflicts}')
-
-        return values
+    pass

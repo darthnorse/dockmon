@@ -799,6 +799,36 @@ class DatabaseManager:
 
             return tags_list[:limit]
 
+    def get_all_host_tags(self, query: str = "", limit: int = 20) -> list[str]:
+        """Get all unique tags across all hosts, optionally filtered by query"""
+        with self.get_session() as session:
+            # Get all hosts with tags
+            hosts = session.query(DockerHostDB).filter(
+                DockerHostDB.tags.isnot(None)
+            ).all()
+
+            # Collect all unique tags
+            tags_set = set()
+            for host in hosts:
+                if host.tags:
+                    try:
+                        host_tags = json.loads(host.tags) if isinstance(host.tags, str) else host.tags
+                        if isinstance(host_tags, list):
+                            tags_set.update(host_tags)
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+
+            # Filter by query if provided
+            if query:
+                query_lower = query.lower()
+                tags_list = [tag for tag in tags_set if query_lower in tag.lower()]
+            else:
+                tags_list = list(tags_set)
+
+            # Sort alphabetically
+            tags_list.sort()
+            return tags_list[:limit]
+
     # Global Settings
     def get_settings(self) -> GlobalSettings:
         """Get global settings"""

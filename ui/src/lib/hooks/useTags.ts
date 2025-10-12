@@ -13,15 +13,7 @@
 
 import { useQuery } from '@tanstack/react-query'
 import { apiClient } from '@/lib/api/client'
-
-export interface Host {
-  id: string
-  name: string
-  url: string
-  status: string
-  tags?: string[]
-  description?: string
-}
+import type { Host } from '@/types/api'
 
 /**
  * Fetch all hosts and extract unique tags

@@ -19,7 +19,7 @@
  */
 
 import { useState, useEffect, useMemo } from 'react'
-import { Cpu, MemoryStick, Network, Plus } from 'lucide-react'
+import { Cpu, MemoryStick, Network } from 'lucide-react'
 import type { Container } from '../../types'
 import { useContainerSparklines } from '@/lib/stats/StatsProvider'
 import { MiniChart } from '@/lib/charts/MiniChart'
@@ -155,13 +155,13 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="max-w-7xl mx-auto p-6">
-        <div className="grid grid-cols-2 gap-8">
+      <div className="p-6">
+        <div className="grid grid-cols-2 gap-6">
           {/* LEFT COLUMN */}
           <div className="space-y-6">
             {/* Overview */}
             <div>
-              <h3 className="text-sm font-medium text-muted-foreground mb-2">Overview</h3>
+              <h4 className="text-base font-medium text-foreground mb-3">Overview</h4>
               <div className="space-y-1.5">
                 <div className="flex justify-between text-sm">
                   <span className="text-muted-foreground">State</span>
@@ -181,7 +181,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
               {isEditingTags ? (
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <h3 className="text-sm font-medium text-muted-foreground">Tags</h3>
+                    <h4 className="text-base font-medium text-foreground">Tags</h4>
                   </div>
                   <TagInput
                     value={editedTags}
@@ -212,14 +212,13 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
                 </div>
               ) : (
                 <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <h3 className="text-sm font-medium text-muted-foreground">Tags</h3>
+                  <div className="flex items-center justify-between mb-3">
+                    <h4 className="text-base font-medium text-foreground">Tags</h4>
                     <button
                       onClick={handleStartEdit}
-                      className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1"
+                      className="text-xs text-primary hover:text-primary/80"
                     >
-                      <Plus className="h-3 w-3" />
-                      <span>Edit</span>
+                      + Edit
                     </button>
                   </div>
                   {currentTags.length > 0 ? (
@@ -237,7 +236,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
 
             {/* Image */}
             <div>
-              <h3 className="text-sm font-medium text-muted-foreground mb-2">Image</h3>
+              <h4 className="text-base font-medium text-foreground mb-3">Image</h4>
               <div className="text-sm font-mono bg-surface-1 px-3 py-2 rounded">
                 {container.image}
               </div>
@@ -246,8 +245,8 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
             {/* Ports */}
             {container.ports && container.ports.length > 0 && (
               <div>
-                <h3 className="text-sm font-medium text-muted-foreground mb-2">Ports</h3>
-                <div className="space-y-1">
+                <h4 className="text-base font-medium text-foreground mb-3">Ports</h4>
+                <div className="flex flex-wrap gap-2">
                   {container.ports.map((port, idx) => (
                     <div key={idx} className="text-sm font-mono bg-surface-1 px-3 py-1.5 rounded">
                       {port}
@@ -260,7 +259,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
             {/* Volumes */}
             {container.volumes && container.volumes.length > 0 && (
               <div>
-                <h3 className="text-sm font-medium text-muted-foreground mb-2">Volumes</h3>
+                <h4 className="text-base font-medium text-foreground mb-3">Volumes</h4>
                 <div className="space-y-1">
                   {container.volumes.map((volume, idx) => (
                     <div key={idx} className="text-xs font-mono bg-surface-1 px-3 py-1.5 rounded break-all">
@@ -271,17 +270,17 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
               </div>
             )}
 
-            {/* Labels */}
-            {container.labels && Object.keys(container.labels).length > 0 && (
+            {/* Environment Variables */}
+            {filteredEnv.length > 0 && (
               <div>
-                <h3 className="text-sm font-medium text-muted-foreground mb-2">Labels</h3>
-                <div className="space-y-1.5 max-h-48 overflow-y-auto">
-                  {Object.entries(container.labels).map(([key, value]) => (
-                    <div key={key} className="flex justify-between text-sm">
-                      <span className="text-muted-foreground font-mono text-xs truncate flex-shrink-0 max-w-[40%]">
+                <h4 className="text-base font-medium text-foreground mb-3">Environment Variables</h4>
+                <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                  {filteredEnv.map(([key, value]) => (
+                    <div key={key} className="flex justify-between text-sm gap-4">
+                      <span className="text-muted-foreground font-mono flex-shrink-0">
                         {key}
                       </span>
-                      <span className="font-mono text-xs truncate text-right">{value}</span>
+                      <span className="font-mono truncate text-right">{value}</span>
                     </div>
                   ))}
                 </div>
@@ -293,7 +292,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
           <div className="space-y-6">
             {/* Auto-restart Toggle */}
             <div>
-              <h3 className="text-sm font-medium text-muted-foreground mb-2">Auto-restart</h3>
+              <h4 className="text-base font-medium text-foreground mb-3">Auto-restart</h4>
               <label className="flex items-center gap-3 cursor-pointer">
                 <input
                   type="checkbox"
@@ -309,7 +308,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
 
             {/* Desired State */}
             <div>
-              <h3 className="text-sm font-medium text-muted-foreground mb-2">Desired State</h3>
+              <h4 className="text-base font-medium text-foreground mb-3">Desired State</h4>
               <div className="flex gap-2">
                 <button
                   onClick={() => handleDesiredStateChange('should_run')}
@@ -344,91 +343,79 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
               </div>
             </div>
 
+            {/* Live Stats Header */}
+            <div className="-mb-3">
+              <h4 className="text-base font-medium text-foreground">Live Stats</h4>
+            </div>
+
             {/* CPU */}
-            <div className="bg-surface-2 rounded-lg p-6 border border-border">
-              <div className="flex items-center justify-between mb-4">
+            <div className="bg-surface-2 rounded-lg p-3 border border-border overflow-hidden">
+              <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
-                  <Cpu className="h-5 w-5 text-amber-500" />
-                  <span className="font-medium">CPU Usage</span>
+                  <Cpu className="h-4 w-4 text-amber-500" />
+                  <span className="font-medium text-sm">CPU Usage</span>
                 </div>
-                <span className="text-sm text-muted-foreground">
+                <span className="text-xs text-muted-foreground">
                   {container.cpu_percent !== null && container.cpu_percent !== undefined
                     ? `${container.cpu_percent.toFixed(0)}%`
                     : '—'}
                 </span>
               </div>
               {cpuData.length > 0 ? (
-                <div className="h-[120px]">
-                  <MiniChart data={cpuData} color="cpu" height={120} width={500} />
+                <div className="h-[100px] w-full overflow-hidden">
+                  <MiniChart data={cpuData} color="cpu" height={100} width={780} />
                 </div>
               ) : (
-                <div className="h-[120px] flex items-center justify-center text-muted-foreground text-sm">
+                <div className="h-[100px] flex items-center justify-center text-muted-foreground text-xs">
                   No data available
                 </div>
               )}
             </div>
 
             {/* Memory */}
-            <div className="bg-surface-2 rounded-lg p-6 border border-border">
-              <div className="flex items-center justify-between mb-4">
+            <div className="bg-surface-2 rounded-lg p-3 border border-border overflow-hidden">
+              <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
-                  <MemoryStick className="h-5 w-5 text-green-500" />
-                  <span className="font-medium">Memory Usage</span>
+                  <MemoryStick className="h-4 w-4 text-green-500" />
+                  <span className="font-medium text-sm">Memory Usage</span>
                 </div>
-                <span className="text-sm text-muted-foreground">
+                <span className="text-xs text-muted-foreground">
                   {container.memory_usage ? formatBytes(container.memory_usage) : '—'}
                   {container.memory_limit && ` / ${formatBytes(container.memory_limit)}`}
                 </span>
               </div>
               {memData.length > 0 ? (
-                <div className="h-[120px]">
-                  <MiniChart data={memData} color="memory" height={120} width={500} />
+                <div className="h-[100px] w-full overflow-hidden">
+                  <MiniChart data={memData} color="memory" height={100} width={780} />
                 </div>
               ) : (
-                <div className="h-[120px] flex items-center justify-center text-muted-foreground text-sm">
+                <div className="h-[100px] flex items-center justify-center text-muted-foreground text-xs">
                   No data available
                 </div>
               )}
             </div>
 
             {/* Network */}
-            <div className="bg-surface-2 rounded-lg p-6 border border-border">
-              <div className="flex items-center justify-between mb-4">
+            <div className="bg-surface-2 rounded-lg p-3 border border-border overflow-hidden">
+              <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
-                  <Network className="h-5 w-5 text-orange-500" />
-                  <span className="font-medium">Network I/O</span>
+                  <Network className="h-4 w-4 text-orange-500" />
+                  <span className="font-medium text-sm">Network I/O</span>
                 </div>
-                <span className="text-sm text-muted-foreground">
+                <span className="text-xs text-muted-foreground">
                   {formatNetworkRate(container.net_bytes_per_sec)}
                 </span>
               </div>
               {netData.length > 0 ? (
-                <div className="h-[120px]">
-                  <MiniChart data={netData} color="network" height={120} width={500} />
+                <div className="h-[100px] w-full overflow-hidden">
+                  <MiniChart data={netData} color="network" height={100} width={780} />
                 </div>
               ) : (
-                <div className="h-[120px] flex items-center justify-center text-muted-foreground text-sm">
+                <div className="h-[100px] flex items-center justify-center text-muted-foreground text-xs">
                   No data available
                 </div>
               )}
             </div>
-
-            {/* Environment Variables */}
-            {filteredEnv.length > 0 && (
-              <div>
-                <h3 className="text-sm font-medium text-muted-foreground mb-2">Environment Variables</h3>
-                <div className="space-y-1.5 max-h-64 overflow-y-auto">
-                  {filteredEnv.map(([key, value]) => (
-                    <div key={key} className="flex justify-between text-sm gap-4">
-                      <span className="text-muted-foreground font-mono flex-shrink-0">
-                        {key}
-                      </span>
-                      <span className="font-mono truncate text-right">{value}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
           </div>
         </div>
       </div>

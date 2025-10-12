@@ -7,7 +7,7 @@
  * - Right sidebar with Host Information and Events
  */
 
-import { Cpu, MemoryStick, Network, Plus } from 'lucide-react'
+import { Cpu, MemoryStick, Network } from 'lucide-react'
 import { useHostMetrics, useHostSparklines } from '@/lib/stats/StatsProvider'
 import { MiniChart } from '@/lib/charts/MiniChart'
 import { TagInput } from '@/components/TagInput'
@@ -68,122 +68,44 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
   ]
 
   return (
-    <div className="flex h-full">
-      {/* Main Content */}
-      <div className="flex-1 p-6 overflow-y-auto">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-6">
-          <h2 className="text-xl font-semibold">Overview</h2>
-        </div>
-
-        {/* Performance Charts Grid */}
-        <div className="grid grid-cols-1 gap-6">
-          {/* CPU Usage */}
-          <div className="bg-surface-2 rounded-lg p-6 border border-border">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2">
-                <Cpu className="h-5 w-5 text-amber-500" />
-                <span className="font-medium">CPU Usage</span>
+    <div className="flex-1 overflow-y-auto">
+      <div className="p-6">
+        <div className="grid grid-cols-2 gap-6">
+          {/* LEFT COLUMN */}
+          <div className="space-y-6">
+            {/* Host Information */}
+            <div>
+              <h4 className="text-base font-medium text-foreground mb-3">Host Information</h4>
+              <div className="space-y-2">
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">Address</span>
+                  <span className="font-mono text-xs">{host.url || '—'}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">OS</span>
+                  <span>{host.os_version || 'Unknown'}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">Docker Version</span>
+                  <span>{host.docker_version || '—'}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">CPU</span>
+                  <span>{host.num_cpus || '—'}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">Memory</span>
+                  <span>{host.total_memory ? formatBytes(host.total_memory) : '—'}</span>
+                </div>
               </div>
-              <span className="text-sm text-muted-foreground">
-                {metrics?.cpu_percent !== undefined
-                  ? `${metrics.cpu_percent.toFixed(0)}%`
-                  : '—'}
-              </span>
-            </div>
-            {sparklines?.cpu && sparklines.cpu.length > 0 ? (
-              <div className="h-[120px]">
-                <MiniChart
-                  data={sparklines.cpu}
-                  color="cpu"
-                  height={120}
-                  width={800}
-                />
-              </div>
-            ) : (
-              <div className="h-[120px] flex items-center justify-center bg-muted rounded text-xs text-muted-foreground">
-                No data available
-              </div>
-            )}
-          </div>
-
-          {/* Memory Usage */}
-          <div className="bg-surface-2 rounded-lg p-6 border border-border">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2">
-                <MemoryStick className="h-5 w-5 text-blue-500" />
-                <span className="font-medium">Memory Usage</span>
-              </div>
-              <span className="text-sm text-muted-foreground">
-                {metrics?.mem_bytes
-                  ? `${formatBytes(metrics.mem_bytes)}`
-                  : '—'}
-              </span>
-            </div>
-            {sparklines?.mem && sparklines.mem.length > 0 ? (
-              <div className="h-[120px]">
-                <MiniChart
-                  data={sparklines.mem}
-                  color="memory"
-                  height={120}
-                  width={800}
-                />
-              </div>
-            ) : (
-              <div className="h-[120px] flex items-center justify-center bg-muted rounded text-xs text-muted-foreground">
-                No data available
-              </div>
-            )}
-          </div>
-
-          {/* Network Traffic */}
-          <div className="bg-surface-2 rounded-lg p-6 border border-border">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2">
-                <Network className="h-5 w-5 text-green-500" />
-                <span className="font-medium">Network Traffic</span>
-              </div>
-              <span className="text-sm text-muted-foreground">
-                {metrics?.net_bytes_per_sec !== undefined
-                  ? formatNetworkRate(metrics.net_bytes_per_sec)
-                  : '—'}
-              </span>
-            </div>
-            {sparklines?.net && sparklines.net.length > 0 ? (
-              <div className="h-[120px]">
-                <MiniChart
-                  data={sparklines.net}
-                  color="network"
-                  height={120}
-                  width={800}
-                />
-              </div>
-            ) : (
-              <div className="h-[120px] flex items-center justify-center bg-muted rounded text-xs text-muted-foreground">
-                No data available
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Right Sidebar */}
-      <div className="w-80 border-l border-border p-6 overflow-y-auto shrink-0">
-        {/* Host Information */}
-        <div className="mb-8">
-          <h3 className="text-lg font-semibold mb-4">Host information</h3>
-          <div className="space-y-3">
-            <div className="flex justify-between text-sm">
-              <span className="text-muted-foreground">Address</span>
-              <span className="font-mono text-xs">{host.url || '—'}</span>
             </div>
 
-            {/* Tags Row */}
+            {/* Tags */}
             <div>
               {isEditingTags ? (
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <span className="text-sm text-muted-foreground">Tags</span>
+                    <h4 className="text-base font-medium text-foreground">Tags</h4>
                   </div>
                   <TagInput
                     value={editedTags}
@@ -212,94 +134,146 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
                   </div>
                 </div>
               ) : (
-                <div className="flex items-start justify-between text-sm gap-2">
-                  <span className="text-muted-foreground shrink-0">Tags</span>
-                  <div className="flex flex-wrap gap-1.5 justify-end">
-                    {currentTags.length === 0 ? (
-                      <span className="text-xs text-muted-foreground">No tags</span>
-                    ) : (
-                      (currentTags as string[]).map((tag) => (
-                        <TagChip key={tag} tag={tag} size="sm" />
-                      ))
-                    )}
-                    <Button
-                      variant="ghost"
-                      size="sm"
+                <div>
+                  <div className="flex items-center justify-between mb-3">
+                    <h4 className="text-base font-medium text-foreground">Tags</h4>
+                    <button
                       onClick={handleStartEdit}
-                      className="h-5 px-1.5 text-xs -mr-1.5"
+                      className="text-xs text-primary hover:text-primary/80"
                     >
-                      <Plus className="h-3 w-3" />
-                    </Button>
+                      + Edit
+                    </button>
                   </div>
+                  {currentTags.length === 0 ? (
+                    <span className="text-sm text-muted-foreground">No tags</span>
+                  ) : (
+                    <div className="flex flex-wrap gap-2">
+                      {(currentTags as string[]).map((tag) => (
+                        <TagChip key={tag} tag={tag} size="sm" />
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
 
-            <div className="flex justify-between text-sm">
-              <span className="text-muted-foreground">OS</span>
-              <span>{host.os_version || 'Unknown'}</span>
-            </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-muted-foreground">Docker Version</span>
-              <span>{host.docker_version || '—'}</span>
-            </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-muted-foreground">CPU</span>
-              <span>{host.num_cpus || '—'}</span>
-            </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-muted-foreground">Memory</span>
-              <span>{host.total_memory ? formatBytes(host.total_memory) : '—'}</span>
+            {/* Events */}
+            <div>
+              <h4 className="text-base font-medium text-foreground mb-3">Recent Events</h4>
+              <div className="space-y-3">
+                {mockEvents.map((event, index) => (
+                  <div key={index} className="text-sm">
+                    <div className="flex items-start gap-2">
+                      <span className="text-muted-foreground">{event.time}</span>
+                      <span
+                        className={`px-2 py-0.5 rounded text-xs ${
+                          event.severity === 'error'
+                            ? 'bg-red-500/20 text-red-500'
+                            : 'bg-yellow-500/20 text-yellow-500'
+                        }`}
+                      >
+                        {event.type}
+                      </span>
+                      <span className="text-muted-foreground">{event.action}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
-        </div>
 
-        {/* Events */}
-        <div>
-          <h3 className="text-lg font-semibold mb-4">Events</h3>
-          <div className="space-y-3">
-            {mockEvents.map((event, index) => (
-              <div key={index} className="text-sm">
-                <div className="flex items-start gap-2">
-                  <span className="text-muted-foreground">{event.time}</span>
-                  <span
-                    className={`px-2 py-0.5 rounded text-xs ${
-                      event.severity === 'error'
-                        ? 'bg-red-500/20 text-red-500'
-                        : 'bg-yellow-500/20 text-yellow-500'
-                    }`}
-                  >
-                    {event.type}
-                  </span>
-                  <span className="text-muted-foreground">{event.action}</span>
-                </div>
-              </div>
-            ))}
-          </div>
+          {/* RIGHT COLUMN */}
+          <div className="space-y-6">
+            {/* Live Stats Header */}
+            <div className="-mb-3">
+              <h4 className="text-base font-medium text-foreground">Live Stats</h4>
+            </div>
 
-          {/* Alerts section */}
-          <div className="mt-8 pt-8 border-t border-border">
-            <h3 className="text-lg font-semibold mb-4">Alerts</h3>
-            <div className="space-y-3">
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-muted-foreground">Action</span>
-                <span className="text-muted-foreground">Alert</span>
-              </div>
-              {mockEvents.map((event, index) => (
-                <div key={index} className="flex items-start gap-2 text-sm">
-                  <span className="text-muted-foreground">{event.time}</span>
-                  <span
-                    className={`px-2 py-0.5 rounded text-xs ${
-                      event.severity === 'error'
-                        ? 'bg-red-500/20 text-red-500'
-                        : 'bg-yellow-500/20 text-yellow-500'
-                    }`}
-                  >
-                    {event.severity === 'error' ? 'Error' : 'Warning'}
-                  </span>
-                  <span className="text-muted-foreground flex-1">{event.action}</span>
+            {/* CPU Usage */}
+            <div className="bg-surface-2 rounded-lg p-3 border border-border overflow-hidden">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <Cpu className="h-4 w-4 text-amber-500" />
+                  <span className="font-medium text-sm">CPU Usage</span>
                 </div>
-              ))}
+                <span className="text-xs text-muted-foreground">
+                  {metrics?.cpu_percent !== undefined
+                    ? `${metrics.cpu_percent.toFixed(0)}%`
+                    : '—'}
+                </span>
+              </div>
+              {sparklines?.cpu && sparklines.cpu.length > 0 ? (
+                <div className="h-[100px] w-full overflow-hidden">
+                  <MiniChart
+                    data={sparklines.cpu}
+                    color="cpu"
+                    height={100}
+                    width={780}
+                  />
+                </div>
+              ) : (
+                <div className="h-[100px] flex items-center justify-center text-muted-foreground text-xs">
+                  No data available
+                </div>
+              )}
+            </div>
+
+            {/* Memory Usage */}
+            <div className="bg-surface-2 rounded-lg p-3 border border-border overflow-hidden">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <MemoryStick className="h-4 w-4 text-green-500" />
+                  <span className="font-medium text-sm">Memory Usage</span>
+                </div>
+                <span className="text-xs text-muted-foreground">
+                  {metrics?.mem_bytes
+                    ? `${formatBytes(metrics.mem_bytes)}`
+                    : '—'}
+                </span>
+              </div>
+              {sparklines?.mem && sparklines.mem.length > 0 ? (
+                <div className="h-[100px] w-full overflow-hidden">
+                  <MiniChart
+                    data={sparklines.mem}
+                    color="memory"
+                    height={100}
+                    width={780}
+                  />
+                </div>
+              ) : (
+                <div className="h-[100px] flex items-center justify-center text-muted-foreground text-xs">
+                  No data available
+                </div>
+              )}
+            </div>
+
+            {/* Network Traffic */}
+            <div className="bg-surface-2 rounded-lg p-3 border border-border overflow-hidden">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <Network className="h-4 w-4 text-orange-500" />
+                  <span className="font-medium text-sm">Network Traffic</span>
+                </div>
+                <span className="text-xs text-muted-foreground">
+                  {metrics?.net_bytes_per_sec !== undefined
+                    ? formatNetworkRate(metrics.net_bytes_per_sec)
+                    : '—'}
+                </span>
+              </div>
+              {sparklines?.net && sparklines.net.length > 0 ? (
+                <div className="h-[100px] w-full overflow-hidden">
+                  <MiniChart
+                    data={sparklines.net}
+                    color="network"
+                    height={100}
+                    width={780}
+                  />
+                </div>
+              ) : (
+                <div className="h-[100px] flex items-center justify-center text-muted-foreground text-xs">
+                  No data available
+                </div>
+              )}
             </div>
           </div>
         </div>

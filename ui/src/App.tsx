@@ -20,6 +20,7 @@ import { LoginPage } from '@/features/auth/LoginPage'
 import { DashboardPage } from '@/features/dashboard/DashboardPage'
 import { ContainersPage } from '@/features/containers/ContainersPage'
 import { HostsPage } from '@/features/hosts/HostsPage'
+import { EventsPage } from '@/features/events/EventsPage'
 import { SettingsPage } from '@/features/settings/SettingsPage'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { LoadingSkeleton } from '@/components/layout/LoadingSkeleton'
@@ -77,9 +78,9 @@ function AppRoutes() {
         <Route path="/" element={<DashboardPage />} />
         <Route path="/containers" element={<ContainersPage />} />
         <Route path="/hosts" element={<HostsPage />} />
+        <Route path="/events" element={<EventsPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         {/* Future routes */}
-        {/* <Route path="/events" element={<EventsPage />} /> */}
         {/* <Route path="/alerts" element={<AlertsPage />} /> */}
       </Route>
 

@@ -50,7 +50,7 @@ export function useEvents(
     queryKey: ['events', filters],
     queryFn: () => fetchEvents(filters),
     enabled: options?.enabled !== false,
-    refetchInterval: options?.refetchInterval,
+    ...(options?.refetchInterval && { refetchInterval: options.refetchInterval }),
   })
 }
 

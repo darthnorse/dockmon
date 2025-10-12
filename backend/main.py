@@ -865,9 +865,9 @@ async def get_alert_rules(current_user: dict = Depends(get_current_user)):
         "notification_channels": rule.notification_channels,
         "cooldown_minutes": rule.cooldown_minutes,
         "enabled": rule.enabled,
-        "last_triggered": rule.last_triggered.isoformat() if rule.last_triggered else None,
-        "created_at": rule.created_at.isoformat(),
-        "updated_at": rule.updated_at.isoformat(),
+        "last_triggered": rule.last_triggered.isoformat() + 'Z' if rule.last_triggered else None,
+        "created_at": rule.created_at.isoformat() + 'Z',
+        "updated_at": rule.updated_at.isoformat() + 'Z',
         "is_orphaned": rule.id in orphaned,
         "orphaned_containers": orphaned.get(rule.id, {}).get('orphaned_containers', []) if rule.id in orphaned else []
     } for rule in rules]
@@ -923,8 +923,8 @@ async def create_alert_rule(rule: AlertRuleCreate, current_user: dict = Depends(
             "cooldown_minutes": db_rule.cooldown_minutes,
             "enabled": db_rule.enabled,
             "last_triggered": None,
-            "created_at": db_rule.created_at.isoformat(),
-            "updated_at": db_rule.updated_at.isoformat()
+            "created_at": db_rule.created_at.isoformat() + 'Z',
+            "updated_at": db_rule.updated_at.isoformat() + 'Z'
         }
     except Exception as e:
         logger.error(f"Failed to create alert rule: {e}")
@@ -986,9 +986,9 @@ async def update_alert_rule(rule_id: str, updates: AlertRuleUpdate, current_user
             "notification_channels": db_rule.notification_channels,
             "cooldown_minutes": db_rule.cooldown_minutes,
             "enabled": db_rule.enabled,
-            "last_triggered": db_rule.last_triggered.isoformat() if db_rule.last_triggered else None,
-            "created_at": db_rule.created_at.isoformat(),
-            "updated_at": db_rule.updated_at.isoformat()
+            "last_triggered": db_rule.last_triggered.isoformat() + 'Z' if db_rule.last_triggered else None,
+            "created_at": db_rule.created_at.isoformat() + 'Z',
+            "updated_at": db_rule.updated_at.isoformat() + 'Z'
         }
     except HTTPException:
         raise
@@ -1109,8 +1109,8 @@ async def get_notification_channels(current_user: dict = Depends(get_current_use
         "type": ch.type,
         "config": ch.config,
         "enabled": ch.enabled,
-        "created_at": ch.created_at.isoformat(),
-        "updated_at": ch.updated_at.isoformat()
+        "created_at": ch.created_at.isoformat() + 'Z',
+        "updated_at": ch.updated_at.isoformat() + 'Z'
     } for ch in channels]
 
 @app.post("/api/notifications/channels")
@@ -1315,6 +1315,11 @@ async def get_events(
         if limit > 500:
             limit = 500
 
+        # Get user's sort order preference
+        username = current_user.get('username')
+        sort_order = monitor.db.get_event_sort_order(username) if username else 'desc'
+        logger.info(f"Getting events for user {username}, sort_order: {sort_order}")
+
         # Query events from database
         events, total_count = monitor.db.get_events(
             category=category,
@@ -1328,7 +1333,8 @@ async def get_events(
             correlation_id=correlation_id,
             search=search,
             limit=limit,
-            offset=offset
+            offset=offset,
+            sort_order=sort_order
         )
 
         # Convert to JSON-serializable format
@@ -1351,7 +1357,7 @@ async def get_events(
                 "triggered_by": event.triggered_by,
                 "details": event.details,
                 "duration_ms": event.duration_ms,
-                "timestamp": event.timestamp.isoformat()
+                "timestamp": event.timestamp.isoformat() + 'Z'
             })
 
         return {
@@ -1433,7 +1439,7 @@ async def get_events_by_correlation(
                 "triggered_by": event.triggered_by,
                 "details": event.details,
                 "duration_ms": event.duration_ms,
-                "timestamp": event.timestamp.isoformat()
+                "timestamp": event.timestamp.isoformat() + 'Z'
             })
 
         return {"events": events_json, "count": len(events_json)}
@@ -1522,20 +1528,21 @@ async def get_event_sort_order(request: Request, current_user: dict = Depends(ge
 @app.post("/api/user/event-sort-order")
 async def save_event_sort_order(request: Request, current_user: dict = Depends(get_current_user)):
     """Save event sort order preference for current user"""
-    from auth.routes import _get_session_from_cookie
-    from auth.session_manager import session_manager
-
-    session_id = _get_session_from_cookie(request)
-    username = session_manager.get_session_username(session_id)
-
     try:
+        # Get username from current_user (already authenticated)
+        username = current_user.get('username')
+        if not username:
+            raise HTTPException(status_code=401, detail="User not authenticated")
+
         body = await request.json()
         sort_order = body.get('sort_order')
+        logger.info(f"Saving sort_order for {username}: {sort_order}")
 
         if sort_order not in ['asc', 'desc']:
             raise HTTPException(status_code=400, detail="sort_order must be 'asc' or 'desc'")
 
         success = monitor.db.save_event_sort_order(username, sort_order)
+        logger.info(f"Save result: {success}")
         if not success:
             raise HTTPException(status_code=500, detail="Failed to save sort order")
 
@@ -1910,7 +1917,7 @@ async def get_container_events(host_id: str, container_id: str, limit: int = 50,
                 "triggered_by": event.triggered_by,
                 "details": event.details,
                 "duration_ms": event.duration_ms,
-                "timestamp": event.timestamp.isoformat()
+                "timestamp": event.timestamp.isoformat() + 'Z'
             } for event in events],
             "total_count": total_count
         }
@@ -1947,7 +1954,7 @@ async def get_host_events(host_id: str, limit: int = 50, current_user: dict = De
                 "triggered_by": event.triggered_by,
                 "details": event.details,
                 "duration_ms": event.duration_ms,
-                "timestamp": event.timestamp.isoformat()
+                "timestamp": event.timestamp.isoformat() + 'Z'
             } for event in events],
             "total_count": total_count
         }

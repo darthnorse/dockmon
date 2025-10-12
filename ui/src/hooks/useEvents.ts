@@ -20,10 +20,12 @@ async function fetchEvents(filters: EventFilters = {}): Promise<EventsResponse> 
   if (filters.host_id) {
     filters.host_id.forEach((h) => params.append('host_id', h))
   }
+  if (filters.container_id) {
+    filters.container_id.forEach((c) => params.append('container_id', c))
+  }
 
   // Add single value parameters
   if (filters.event_type) params.set('event_type', filters.event_type)
-  if (filters.container_id) params.set('container_id', filters.container_id)
   if (filters.container_name) params.set('container_name', filters.container_name)
   if (filters.start_date) params.set('start_date', filters.start_date)
   if (filters.end_date) params.set('end_date', filters.end_date)

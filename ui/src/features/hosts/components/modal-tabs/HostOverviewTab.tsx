@@ -7,13 +7,14 @@
  * - Right sidebar with Host Information and Events
  */
 
-import { Cpu, MemoryStick, Network } from 'lucide-react'
+import { Cpu, MemoryStick, Network, Calendar, AlertCircle } from 'lucide-react'
 import { useHostMetrics, useHostSparklines } from '@/lib/stats/StatsProvider'
 import { MiniChart } from '@/lib/charts/MiniChart'
 import { TagInput } from '@/components/TagInput'
 import { TagChip } from '@/components/TagChip'
 import { Button } from '@/components/ui/button'
 import { useHostTagEditor } from '@/hooks/useHostTagEditor'
+import { useHostEvents } from '@/hooks/useEvents'
 import type { Host } from '@/types/api'
 
 interface HostOverviewTabProps {
@@ -24,6 +25,8 @@ interface HostOverviewTabProps {
 export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
   const metrics = useHostMetrics(hostId)
   const sparklines = useHostSparklines(hostId)
+  const { data: eventsData, isLoading: isLoadingEvents, error: eventsError } = useHostEvents(hostId, 3)
+  const events = eventsData?.events ?? []
 
   const currentTags = host.tags || []
 
@@ -59,13 +62,6 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
     }
     return `${value.toFixed(value < 10 ? 1 : 0)} ${units[unitIndex]}`
   }
-
-  // Mock events data (replace with real data)
-  const mockEvents = [
-    { time: '15:32', type: 'Container', action: 'failed to start', severity: 'error' },
-    { time: '14:58', type: 'Warning', action: 'High memory', severity: 'warning' },
-    { time: '14:17', type: 'Warning', action: 'High memory', severity: 'warning' },
-  ]
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -160,25 +156,51 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
             {/* Events */}
             <div>
               <h4 className="text-base font-medium text-foreground mb-3">Recent Events</h4>
-              <div className="space-y-3">
-                {mockEvents.map((event, index) => (
-                  <div key={index} className="text-sm">
-                    <div className="flex items-start gap-2">
-                      <span className="text-muted-foreground">{event.time}</span>
-                      <span
-                        className={`px-2 py-0.5 rounded text-xs ${
-                          event.severity === 'error'
-                            ? 'bg-red-500/20 text-red-500'
-                            : 'bg-yellow-500/20 text-yellow-500'
-                        }`}
-                      >
-                        {event.type}
-                      </span>
-                      <span className="text-muted-foreground">{event.action}</span>
-                    </div>
+              {isLoadingEvents ? (
+                <div className="text-center py-4 text-muted-foreground">
+                  <p className="text-sm">Loading events...</p>
+                </div>
+              ) : eventsError ? (
+                <div className="text-center py-4">
+                  <AlertCircle className="h-8 w-8 mx-auto mb-2 text-red-500 opacity-50" />
+                  <p className="text-sm text-red-500">Failed to load events</p>
+                </div>
+              ) : events.length === 0 ? (
+                <div className="text-center py-4 text-muted-foreground">
+                  <Calendar className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                  <p className="text-sm">No recent events</p>
+                </div>
+              ) : (
+                <div className="border border-border rounded-lg overflow-hidden">
+                  {/* Mini table header */}
+                  <div className="bg-surface-2 px-3 py-1.5 grid grid-cols-[80px_60px_1fr] gap-2 text-xs font-medium text-muted-foreground border-b border-border">
+                    <div>TIME</div>
+                    <div>SEVERITY</div>
+                    <div>DETAILS</div>
                   </div>
-                ))}
-              </div>
+                  {/* Events */}
+                  <div className="divide-y divide-border bg-surface-1">
+                    {events.map((event) => (
+                      <div key={event.id} className="px-3 py-2 grid grid-cols-[80px_60px_1fr] gap-2 text-xs hover:bg-surface-2 transition-colors">
+                        <div className="font-mono text-muted-foreground truncate">
+                          {new Date(event.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
+                        </div>
+                        <div className={`font-medium ${
+                          event.severity === 'critical' ? 'text-red-500' :
+                          event.severity === 'error' ? 'text-red-400' :
+                          event.severity === 'warning' ? 'text-yellow-500' :
+                          event.severity === 'info' ? 'text-blue-400' : 'text-gray-400'
+                        }`}>
+                          {event.severity.charAt(0).toUpperCase() + event.severity.slice(1)}
+                        </div>
+                        <div className="text-foreground truncate" title={event.title}>
+                          {event.title}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 

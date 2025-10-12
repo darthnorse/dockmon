@@ -14,10 +14,9 @@
  */
 
 import { useState, useEffect } from 'react'
-import { X, ChevronRight, MoreVertical, RotateCw } from 'lucide-react'
+import { X, ChevronRight } from 'lucide-react'
 import { Tabs } from '@/components/ui/tabs'
 import { useContainerCounts } from '@/lib/stats/StatsProvider'
-import { debug } from '@/lib/debug'
 import type { Host } from '@/types/api'
 
 // Import tab content components
@@ -144,37 +143,14 @@ export function HostDetailsModal({
               </span>
             </div>
 
-            {/* Actions */}
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => {
-                  // TODO: Implement restart
-                  debug.log('HostDetailsModal', 'Restart host')
-                }}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg border border-border hover:bg-muted transition-colors text-sm"
-              >
-                <RotateCw className="h-4 w-4" />
-                <span>Restart</span>
-              </button>
-
-              <button
-                className="p-2 rounded-lg border border-border hover:bg-muted transition-colors"
-                onClick={() => {
-                  // TODO: Implement more menu
-                  debug.log('HostDetailsModal', 'More menu')
-                }}
-              >
-                <MoreVertical className="h-4 w-4" />
-              </button>
-
-              <button
-                onClick={onClose}
-                className="p-2 rounded-lg hover:bg-muted transition-colors focus:outline-none focus:ring-2 focus:ring-accent ml-2"
-                aria-label="Close modal"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
+            {/* Close Button */}
+            <button
+              onClick={onClose}
+              className="p-2 rounded-lg hover:bg-muted transition-colors focus:outline-none focus:ring-2 focus:ring-accent"
+              aria-label="Close modal"
+            >
+              <X className="h-5 w-5" />
+            </button>
           </div>
 
           {/* KPI Cards */}

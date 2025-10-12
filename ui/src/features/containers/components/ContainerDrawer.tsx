@@ -10,6 +10,7 @@ import { Maximize2, MoreVertical, Play, Square, RotateCw, BellOff, EyeOff, Pin }
 import { Drawer } from '@/components/ui/drawer'
 import { Tabs } from '@/components/ui/tabs'
 import { ContainerOverviewTab } from './drawer/ContainerOverviewTab'
+import { ContainerEventsTab } from './drawer/ContainerEventsTab'
 import { DropdownMenu, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
 import { useContainer } from '@/lib/stats/StatsProvider'
 import { Button } from '@/components/ui/button'
@@ -94,20 +95,22 @@ export function ContainerDrawer({ isOpen, onClose, containerId, onExpand }: Cont
       content: <ContainerOverviewTab containerId={containerId} actionButtons={actionButtons} />,
     },
     {
+      id: 'events',
+      label: 'Events',
+      content: container ? (
+        <ContainerEventsTab hostId={container.host_id} containerId={container.id} />
+      ) : (
+        <div className="p-4 text-muted-foreground text-sm">
+          Loading...
+        </div>
+      ),
+    },
+    {
       id: 'logs',
       label: 'Logs',
       content: (
         <div className="p-4 text-muted-foreground text-sm">
           Logs - Coming soon
-        </div>
-      ),
-    },
-    {
-      id: 'events',
-      label: 'Events',
-      content: (
-        <div className="p-4 text-muted-foreground text-sm">
-          Events - Coming soon
         </div>
       ),
     },

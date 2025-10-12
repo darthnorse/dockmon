@@ -35,14 +35,11 @@ import {
 } from '@tanstack/react-table'
 import {
   Circle,
-  MoreVertical,
   ArrowUpDown,
-  RotateCw,
   FileText,
   Settings,
   ShieldCheck,
   Shield,
-  Eye,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -460,34 +457,12 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
             <Button
               variant="ghost"
               size="sm"
-              title="View Details"
-              onClick={() => {
-                setSelectedHostId(row.original.id)
-                setDrawerOpen(true)
-              }}
-            >
-              <Eye className="h-4 w-4" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
               title="Edit Host"
               onClick={() => {
                 onEditHost?.(row.original)
               }}
             >
               <Settings className="h-4 w-4" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              title="Restart Docker"
-              onClick={() => {
-                // TODO: Restart Docker engine
-                debug.log('HostTable', 'Restart Docker:', row.original.id)
-              }}
-            >
-              <RotateCw className="h-4 w-4" />
             </Button>
             <Button
               variant="ghost"
@@ -499,9 +474,6 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
               }}
             >
               <FileText className="h-4 w-4" />
-            </Button>
-            <Button variant="ghost" size="sm" title="More actions">
-              <MoreVertical className="h-4 w-4" />
             </Button>
           </div>
         ),

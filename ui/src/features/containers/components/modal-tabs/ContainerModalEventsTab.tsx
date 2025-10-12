@@ -1,18 +1,18 @@
 /**
- * HostEventsTab Component (with filtering)
+ * ContainerModalEventsTab Component
  *
- * Events tab for host modal - Shows filtered events for specific host
- * Includes filtering by time range, severity, category, container, and search (but not host)
+ * Events tab for container modal - Shows filtered events for specific container
+ * Includes filtering by time range, severity, event type, and search
  */
 
-import { useState, useRef, useEffect } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { Calendar, AlertCircle, X, ArrowUpDown, Search, Check, Download } from 'lucide-react'
-import { useHostEvents } from '@/hooks/useEvents'
+import { useState } from 'react'
+import { Calendar, AlertCircle, X, ArrowUpDown, Download } from 'lucide-react'
+import { useContainerEvents } from '@/hooks/useEvents'
 import { EventRow } from '@/features/events/components/EventRow'
 
-interface HostEventsTabProps {
+interface ContainerModalEventsTabProps {
   hostId: string
+  containerId: string
 }
 
 const TIME_RANGE_OPTIONS = [
@@ -27,50 +27,26 @@ const TIME_RANGE_OPTIONS = [
 ]
 
 const SEVERITY_OPTIONS = ['critical', 'error', 'warning', 'info']
-const CATEGORY_OPTIONS = ['container', 'host', 'system', 'network', 'volume']
 
-export function HostEventsTab({ hostId }: HostEventsTabProps) {
+// Event type options matching backend EventType enum values
+const EVENT_TYPE_OPTIONS = [
+  { value: 'state_change', label: 'State Changes' },
+  { value: 'action_taken', label: 'Actions' },
+  { value: 'auto_restart', label: 'Auto-Restart' },
+]
+
+export function ContainerModalEventsTab({ hostId, containerId }: ContainerModalEventsTabProps) {
   const [filters, setFilters] = useState({
     hours: 24,
     severity: '' as string,
-    category: '' as string,
+    eventType: '',
     search: '',
   })
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc')
-  const [containerSearchInput, setContainerSearchInput] = useState('')
-  const [selectedContainerIds, setSelectedContainerIds] = useState<string[]>([])
-  const [showContainerDropdown, setShowContainerDropdown] = useState(false)
-  const containerDropdownRef = useRef<HTMLDivElement>(null)
 
-  // TODO: Update useHostEvents to support filtering parameters
-  const { data: eventsData, isLoading, error } = useHostEvents(hostId, 200)
+  // TODO: Update useContainerEvents to support filtering parameters
+  const { data: eventsData, isLoading, error } = useContainerEvents(hostId, containerId, 100)
   const allEvents = eventsData?.events ?? []
-
-  // Fetch containers for this host
-  const { data: allContainers = [] } = useQuery<any[]>({
-    queryKey: ['containers'],
-    queryFn: () => fetch('/api/containers').then((res) => res.json()),
-  })
-
-  // Filter to only show containers from this host
-  const hostContainers = allContainers.filter((c) => c.host_id === hostId)
-
-  // Filter containers based on search
-  const filteredContainers = hostContainers.filter((c) =>
-    c.name.toLowerCase().includes(containerSearchInput.toLowerCase())
-  )
-
-  // Close dropdown when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (containerDropdownRef.current && !containerDropdownRef.current.contains(event.target as Node)) {
-        setShowContainerDropdown(false)
-      }
-    }
-
-    document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [])
 
   // Client-side filtering (TODO: move to backend)
   const filteredEvents = allEvents
@@ -85,13 +61,8 @@ export function HostEventsTab({ hostId }: HostEventsTabProps) {
         return false
       }
 
-      // Category filter
-      if (filters.category && event.category?.toLowerCase() !== filters.category.toLowerCase()) {
-        return false
-      }
-
-      // Container filter
-      if (selectedContainerIds.length > 0 && event.container_id && !selectedContainerIds.includes(event.container_id)) {
+      // Event type filter (filter by event_type, not category)
+      if (filters.eventType && event.event_type !== filters.eventType) {
         return false
       }
 
@@ -100,8 +71,7 @@ export function HostEventsTab({ hostId }: HostEventsTabProps) {
         const searchLower = filters.search.toLowerCase()
         const titleMatch = event.title?.toLowerCase().includes(searchLower)
         const messageMatch = event.message?.toLowerCase().includes(searchLower)
-        const containerMatch = event.container_name?.toLowerCase().includes(searchLower)
-        if (!titleMatch && !messageMatch && !containerMatch) return false
+        if (!titleMatch && !messageMatch) return false
       }
 
       return true
@@ -120,17 +90,9 @@ export function HostEventsTab({ hostId }: HostEventsTabProps) {
     setFilters({
       hours: 24,
       severity: '',
-      category: '',
+      eventType: '',
       search: '',
     })
-    setSelectedContainerIds([])
-    setContainerSearchInput('')
-  }
-
-  const toggleContainerSelection = (containerId: string) => {
-    setSelectedContainerIds((prev) =>
-      prev.includes(containerId) ? prev.filter((id) => id !== containerId) : [...prev, containerId]
-    )
   }
 
   const toggleSortOrder = () => {
@@ -145,11 +107,9 @@ export function HostEventsTab({ hostId }: HostEventsTabProps) {
     const headers = [
       'Timestamp',
       'Severity',
-      'Category',
       'Type',
       'Title',
       'Message',
-      'Container',
       'Old State',
       'New State',
     ]
@@ -158,11 +118,9 @@ export function HostEventsTab({ hostId }: HostEventsTabProps) {
     const rows = filteredEvents.map((event) => [
       event.timestamp,
       event.severity,
-      event.category || '',
       event.event_type || '',
       event.title || '',
       event.message || '',
-      event.container_name || '',
       event.old_state || '',
       event.new_state || '',
     ])
@@ -186,7 +144,7 @@ export function HostEventsTab({ hostId }: HostEventsTabProps) {
     const link = document.createElement('a')
     const url = URL.createObjectURL(blob)
     link.setAttribute('href', url)
-    link.setAttribute('download', `dockmon-host-events-${new Date().toISOString().split('T')[0]}.csv`)
+    link.setAttribute('download', `dockmon-container-events-${new Date().toISOString().split('T')[0]}.csv`)
     link.style.visibility = 'hidden'
     document.body.appendChild(link)
     link.click()
@@ -217,7 +175,7 @@ export function HostEventsTab({ hostId }: HostEventsTabProps) {
       {/* Filters */}
       <div className="border-b border-border bg-surface px-6 py-4 shrink-0">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold">Host Events</h3>
+          <h3 className="text-lg font-semibold">Container Events</h3>
           <div className="flex items-center gap-2">
             <button
               onClick={exportToCSV}
@@ -245,7 +203,7 @@ export function HostEventsTab({ hostId }: HostEventsTabProps) {
         </div>
 
         {/* Filter Row */}
-        <div className="grid grid-cols-5 gap-3">
+        <div className="grid grid-cols-4 gap-3">
           {/* Time Range */}
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1.5">TIME RANGE</label>
@@ -279,70 +237,21 @@ export function HostEventsTab({ hostId }: HostEventsTabProps) {
             </select>
           </div>
 
-          {/* Category */}
+          {/* Event Type */}
           <div>
-            <label className="block text-xs font-medium text-muted-foreground mb-1.5">CATEGORY</label>
+            <label className="block text-xs font-medium text-muted-foreground mb-1.5">EVENT TYPE</label>
             <select
-              value={filters.category}
-              onChange={(e) => updateFilter('category', e.target.value)}
+              value={filters.eventType}
+              onChange={(e) => updateFilter('eventType', e.target.value)}
               className="w-full px-3 py-2 rounded-lg border border-border bg-surface-1 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
             >
-              <option value="">All Categories</option>
-              {CATEGORY_OPTIONS.map((cat) => (
-                <option key={cat} value={cat}>
-                  {cat.charAt(0).toUpperCase() + cat.slice(1)}
+              <option value="">All Types</option>
+              {EVENT_TYPE_OPTIONS.map((type) => (
+                <option key={type.value} value={type.value}>
+                  {type.label}
                 </option>
               ))}
             </select>
-          </div>
-
-          {/* Container Search with Checkboxes */}
-          <div ref={containerDropdownRef} className="relative">
-            <label className="block text-xs font-medium text-muted-foreground mb-1.5">CONTAINER</label>
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
-              <input
-                type="text"
-                value={containerSearchInput}
-                onChange={(e) => setContainerSearchInput(e.target.value)}
-                onFocus={() => setShowContainerDropdown(true)}
-                placeholder={selectedContainerIds.length > 0 ? `${selectedContainerIds.length} selected` : 'Search containers...'}
-                className="w-full pl-9 pr-3 py-2 rounded-lg border border-border bg-surface-1 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-              />
-            </div>
-
-            {/* Container Dropdown with Checkboxes */}
-            {showContainerDropdown && (
-              <div className="absolute z-50 w-full mt-1 py-1 rounded-lg border border-border bg-surface shadow-lg max-h-[300px] overflow-y-auto">
-                {filteredContainers.length === 0 ? (
-                  <div className="px-3 py-2 text-sm text-muted-foreground">No containers found</div>
-                ) : (
-                  filteredContainers.map((container) => {
-                    const isSelected = selectedContainerIds.includes(container.id)
-                    return (
-                      <button
-                        key={container.id}
-                        onClick={() => toggleContainerSelection(container.id)}
-                        className="w-full px-3 py-2 text-left text-sm flex items-center gap-2 hover:bg-surface-2 transition-colors"
-                      >
-                        <div
-                          className={`h-4 w-4 rounded border flex items-center justify-center ${
-                            isSelected
-                              ? 'bg-primary border-primary'
-                              : 'border-border bg-surface-1'
-                          }`}
-                        >
-                          {isSelected && <Check className="h-3 w-3 text-primary-foreground" />}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="font-medium truncate">{container.name}</div>
-                        </div>
-                      </button>
-                    )
-                  })
-                )}
-              </div>
-            )}
           </div>
 
           {/* Search */}
@@ -379,7 +288,7 @@ export function HostEventsTab({ hostId }: HostEventsTabProps) {
           {/* Table Rows */}
           <div className="flex-1 overflow-y-auto divide-y divide-border">
             {filteredEvents.map((event) => (
-              <EventRow key={event.id} event={event} showMetadata={true} compact={false} />
+              <EventRow key={event.id} event={event} showMetadata={false} compact={false} />
             ))}
           </div>
         </>

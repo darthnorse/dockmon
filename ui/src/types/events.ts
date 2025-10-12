@@ -37,7 +37,7 @@ export interface EventFilters {
   event_type?: string
   severity?: EventSeverity[]
   host_id?: string[]
-  container_id?: string
+  container_id?: string[]
   container_name?: string
   start_date?: string
   end_date?: string

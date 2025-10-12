@@ -19,6 +19,7 @@ import { apiClient } from '@/lib/api/client'
 
 // Import tab content components
 import { ContainerInfoTab } from './modal-tabs/ContainerInfoTab'
+import { ContainerModalEventsTab } from './modal-tabs/ContainerModalEventsTab'
 
 export interface ContainerDetailsModalProps {
   containerId: string | null
@@ -171,7 +172,7 @@ export function ContainerDetailsModal({
     {
       id: 'events',
       label: 'Events',
-      content: <div className="p-6 text-muted-foreground">Events coming soon...</div>,
+      content: <ContainerModalEventsTab hostId={container.host_id!} containerId={container.id} />,
     },
     {
       id: 'alerts',
@@ -218,7 +219,10 @@ export function ContainerDetailsModal({
             {/* Container Info */}
             <div>
               <div className="flex items-center gap-2">
-                <h2 className="text-xl font-semibold">{container.name}</h2>
+                <h2 className="text-xl font-semibold">
+                  {container.name}
+                  <span className="text-muted-foreground ml-2">({container.host_name})</span>
+                </h2>
                 {/* Update available badge - placeholder */}
                 {/* <span className="px-2 py-0.5 text-xs bg-info/10 text-info rounded">Update available</span> */}
               </div>

@@ -1093,7 +1093,8 @@ class DatabaseManager:
                    correlation_id: Optional[str] = None,
                    search: Optional[str] = None,
                    limit: int = 100,
-                   offset: int = 0) -> tuple[List[EventLog], int]:
+                   offset: int = 0,
+                   sort_order: str = 'desc') -> tuple[List[EventLog], int]:
         """Get events with filtering and pagination - returns (events, total_count)
 
         Multi-select filters (category, severity, host_id) accept lists for OR filtering.
@@ -1140,8 +1141,11 @@ class DatabaseManager:
             # Get total count for pagination
             total_count = query.count()
 
-            # Apply ordering, limit and offset
-            events = query.order_by(EventLog.timestamp.desc()).offset(offset).limit(limit).all()
+            # Apply ordering based on sort_order preference, limit and offset
+            if sort_order == 'asc':
+                events = query.order_by(EventLog.timestamp.asc()).offset(offset).limit(limit).all()
+            else:
+                events = query.order_by(EventLog.timestamp.desc()).offset(offset).limit(limit).all()
 
             return events, total_count
 

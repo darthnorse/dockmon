@@ -160,10 +160,10 @@ export function ContainerDrawer({ isOpen, onClose, containerId, onExpand }: Cont
         {onExpand && (
           <button
             onClick={onExpand}
-            className="p-2 text-muted-foreground hover:text-foreground transition-colors"
-            aria-label="Expand to full view"
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent hover:bg-accent/90 text-accent-foreground transition-colors text-sm"
           >
-            <Maximize2 className="w-4 h-4" />
+            <Maximize2 className="h-4 w-4" />
+            <span>Expand</span>
           </button>
         )}
       </div>

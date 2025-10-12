@@ -18,6 +18,7 @@
 
 import { Circle } from 'lucide-react'
 import { useHostMetrics, useContainerCounts } from '@/lib/stats/StatsProvider'
+import { TagChip } from '@/components/TagChip'
 
 interface CompactHostCardProps {
   host: {
@@ -62,9 +63,19 @@ export function CompactHostCard({ host, onClick }: CompactHostCardProps) {
       {/* Status Dot */}
       <Circle className={`h-2 w-2 ${getStatusColor(host.status)}`} />
 
-      {/* Host Name */}
-      <div className="flex-1 min-w-0">
+      {/* Host Name with Tags */}
+      <div className="flex-1 min-w-0 flex items-center gap-2">
         <span className="text-sm font-medium truncate">{host.name}</span>
+        {host.tags && host.tags.length > 0 && (
+          <div className="flex items-center gap-1">
+            {host.tags.slice(0, 2).map((tag) => (
+              <TagChip key={tag} tag={tag} size="sm" />
+            ))}
+            {host.tags.length > 2 && (
+              <span className="text-xs text-muted-foreground">+{host.tags.length - 2}</span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Container Count */}

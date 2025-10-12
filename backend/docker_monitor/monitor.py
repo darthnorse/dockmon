@@ -93,6 +93,59 @@ def parse_restart_policy(host_config: dict) -> str:
     return policy_name if policy_name else 'no'
 
 
+def parse_container_volumes(mounts: list) -> list[str]:
+    """
+    Parse Docker volume mounts into human-readable format.
+
+    Args:
+        mounts: Docker Mounts list from container attrs
+        Example: [{'Type': 'bind', 'Source': '/var/www', 'Destination': '/usr/share/nginx/html'}]
+
+    Returns:
+        List of formatted volume strings like ["/var/www:/usr/share/nginx/html", "volume-name:/data"]
+    """
+    if not mounts:
+        return []
+
+    volumes = []
+    for mount in mounts:
+        mount_type = mount.get('Type', '')
+        source = mount.get('Source', '')
+        destination = mount.get('Destination', '')
+
+        if source and destination:
+            # Format: source:destination (works for both bind mounts and named volumes)
+            volumes.append(f"{source}:{destination}")
+        elif destination:
+            # Just destination (anonymous volume)
+            volumes.append(destination)
+
+    return volumes
+
+
+def parse_container_env(env_list: list) -> dict[str, str]:
+    """
+    Parse Docker environment variables into dict.
+
+    Args:
+        env_list: Docker Env list from container Config
+        Example: ['PATH=/usr/bin', 'NGINX_VERSION=1.21.0']
+
+    Returns:
+        Dict of environment variables like {'PATH': '/usr/bin', 'NGINX_VERSION': '1.21.0'}
+    """
+    if not env_list:
+        return {}
+
+    env_dict = {}
+    for env_var in env_list:
+        if '=' in env_var:
+            key, value = env_var.split('=', 1)
+            env_dict[key] = value
+
+    return env_dict
+
+
 def _handle_task_exception(task: asyncio.Task) -> None:
     """Handle exceptions from fire-and-forget async tasks"""
     try:
@@ -1031,6 +1084,14 @@ class DockerMonitor:
                         host_config = dc.attrs.get('HostConfig', {})
                         restart_policy = parse_restart_policy(host_config)
 
+                        # Extract volumes from Mounts
+                        mounts = dc.attrs.get('Mounts', [])
+                        volumes = parse_container_volumes(mounts)
+
+                        # Extract environment variables from Config
+                        env_list = dc.attrs.get('Config', {}).get('Env', [])
+                        env = parse_container_env(env_list)
+
                         container = Container(
                             id=dc.id,
                             short_id=container_id,
@@ -1046,6 +1107,8 @@ class DockerMonitor:
                             desired_state=desired_state,
                             ports=ports,
                             restart_policy=restart_policy,
+                            volumes=volumes,
+                            env=env,
                             labels=labels,
                             tags=tags
                         )

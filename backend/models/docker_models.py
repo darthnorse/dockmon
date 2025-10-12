@@ -238,6 +238,8 @@ class Container(BaseModel):
     # Docker configuration
     ports: Optional[list[str]] = None  # e.g., ["8080:80/tcp", "443:443/tcp"]
     restart_policy: Optional[str] = None  # e.g., "always", "unless-stopped", "no"
+    volumes: Optional[list[str]] = None  # e.g., ["/var/www:/usr/share/nginx/html"]
+    env: Optional[dict[str, str]] = None  # Environment variables
     # Stats from Go stats service
     cpu_percent: Optional[float] = None
     memory_usage: Optional[int] = None

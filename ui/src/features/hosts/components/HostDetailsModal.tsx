@@ -130,7 +130,7 @@ export function HostDetailsModal({
         onClick={onClose}
       >
         <div
-          className="relative w-full h-full md:w-[90vw] md:h-[90vh] bg-background border-0 md:border border-border md:rounded-2xl shadow-2xl flex flex-col"
+          className="relative w-full h-full md:w-[90vw] md:h-[90vh] bg-surface border-0 md:border border-border md:rounded-2xl shadow-2xl flex flex-col"
           onClick={(e) => e.stopPropagation()}
         >
           {/* Header */}

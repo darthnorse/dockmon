@@ -95,6 +95,9 @@ export interface Container {
   // Docker configuration
   ports?: string[] | null  // e.g., ["8080:80/tcp", "443:443/tcp"]
   restart_policy?: string | null  // e.g., "always", "unless-stopped", "no"
+  volumes?: string[] | null  // e.g., ["/var/www:/usr/share/nginx/html"]
+  env?: Record<string, string> | null  // Environment variables
+  labels?: Record<string, string> | null  // Docker labels
   // Stats from Go stats service
   cpu_percent?: number | null
   memory_usage?: number | null

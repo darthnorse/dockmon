@@ -69,6 +69,19 @@ export function HostDrawer({
       title={host.name}
       width="w-[600px]"
     >
+      {/* Expand Button - positioned next to close button */}
+      {onExpand && (
+        <div className="absolute top-6 right-16 z-10">
+          <button
+            onClick={() => onExpand(hostId)}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent hover:bg-accent/90 text-accent-foreground transition-colors text-sm"
+          >
+            <Maximize2 className="h-4 w-4" />
+            <span>Expand</span>
+          </button>
+        </div>
+      )}
+
       {/* Action Buttons */}
       <div className="px-6 py-4 border-b border-border bg-muted/30">
         <div className="flex items-center gap-2">
@@ -79,16 +92,6 @@ export function HostDrawer({
             >
               <Edit className="h-4 w-4" />
               <span>Edit Host</span>
-            </button>
-          )}
-
-          {onExpand && (
-            <button
-              onClick={() => onExpand(hostId)}
-              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent hover:bg-accent/90 text-accent-foreground transition-colors text-sm"
-            >
-              <Maximize2 className="h-4 w-4" />
-              <span>Expand</span>
             </button>
           )}
 

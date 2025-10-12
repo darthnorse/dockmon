@@ -57,6 +57,7 @@ import {
   Play,
   Clock,
   AlertTriangle,
+  Maximize2,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { apiClient } from '@/lib/api/client'
@@ -68,10 +69,11 @@ import { TagChip } from '@/components/TagChip'
 import { MiniChart } from '@/lib/charts/MiniChart'
 import { useStatsHistory } from '@/lib/hooks/useStatsHistory'
 import { ContainerDrawer } from './components/ContainerDrawer'
+import { ContainerDetailsModal } from './components/ContainerDetailsModal'
 import { BulkActionBar } from './components/BulkActionBar'
 import { BulkActionConfirmModal } from './components/BulkActionConfirmModal'
 import { BatchJobPanel } from './components/BatchJobPanel'
-import type { Container, ContainerAction } from './types'
+import type { Container, ContainerAction} from './types'
 
 /**
  * Policy icons component showing auto-restart and desired state
@@ -257,6 +259,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   const [globalFilter, setGlobalFilter] = useState('')
   const [searchParams] = useSearchParams()
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [modalOpen, setModalOpen] = useState(false)
   const [selectedContainerId, setSelectedContainerId] = useState<string | null>(null)
   const [selectedContainerIds, setSelectedContainerIds] = useState<Set<string>>(new Set())
   const [confirmModalOpen, setConfirmModalOpen] = useState(false)
@@ -852,6 +855,20 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
                 <RotateCw className={`h-4 w-4 ${canRestart ? 'text-info' : 'text-muted-foreground'}`} />
               </Button>
 
+              {/* Maximize button - opens full details modal */}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() => {
+                  setSelectedContainerId(container.id)
+                  setModalOpen(true)
+                }}
+                title="View full details"
+              >
+                <Maximize2 className="h-4 w-4" />
+              </Button>
+
               {/* Logs button - always enabled */}
               <Button
                 variant="ghost"
@@ -1033,6 +1050,21 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
           setSelectedContainerId(null)
         }}
         containerId={selectedContainerId}
+        onExpand={() => {
+          setDrawerOpen(false)
+          setModalOpen(true)
+        }}
+      />
+
+      {/* Container Details Modal */}
+      <ContainerDetailsModal
+        open={modalOpen}
+        onClose={() => {
+          setModalOpen(false)
+          setSelectedContainerId(null)
+        }}
+        containerId={selectedContainerId}
+        container={data?.find((c) => c.id === selectedContainerId)}
       />
 
       {/* Bulk Action Bar */}

@@ -1,0 +1,437 @@
+/**
+ * ContainerInfoTab - Info content for Container Details Modal
+ *
+ * 2-column layout displaying:
+ * LEFT COLUMN:
+ * - Status (with restart policy)
+ * - Image
+ * - Labels (key: value pairs)
+ * - Ports
+ * - Volumes
+ *
+ * RIGHT COLUMN:
+ * - CPU usage with sparkline
+ * - Memory usage with sparkline
+ * - Network I/O with sparkline
+ * - Environment Variables (key: value pairs)
+ * - Auto-restart toggle
+ * - Desired state selector
+ */
+
+import { useState, useEffect, useMemo } from 'react'
+import { Cpu, MemoryStick, Network, Plus } from 'lucide-react'
+import type { Container } from '../../types'
+import { useContainerSparklines } from '@/lib/stats/StatsProvider'
+import { MiniChart } from '@/lib/charts/MiniChart'
+import { toast } from 'sonner'
+import { apiClient } from '@/lib/api/client'
+import { TagInput } from '@/components/TagInput'
+import { TagChip } from '@/components/TagChip'
+import { Button } from '@/components/ui/button'
+import { useContainerTagEditor } from '@/hooks/useContainerTagEditor'
+
+interface ContainerInfoTabProps {
+  container: Container
+}
+
+export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
+  const sparklines = useContainerSparklines(container.id)
+  const [autoRestart, setAutoRestart] = useState(false)
+  const [desiredState, setDesiredState] = useState<'should_run' | 'on_demand' | 'unspecified'>('unspecified')
+
+  // Tag editor
+  const currentTags = container.tags || []
+  const {
+    isEditing: isEditingTags,
+    editedTags,
+    tagSuggestions,
+    isLoading: isLoadingTags,
+    setEditedTags,
+    handleStartEdit,
+    handleCancelEdit,
+    handleSaveTags,
+  } = useContainerTagEditor({
+    hostId: container.host_id || '',
+    containerId: container.id,
+    containerName: container.name,
+    currentTags
+  })
+
+  // Memoize sparkline arrays
+  const cpuData = useMemo(() => sparklines?.cpu || [], [JSON.stringify(sparklines?.cpu)])
+  const memData = useMemo(() => sparklines?.mem || [], [JSON.stringify(sparklines?.mem)])
+  const netData = useMemo(() => sparklines?.net || [], [JSON.stringify(sparklines?.net)])
+
+  // Initialize auto-restart and desired state
+  useEffect(() => {
+    setAutoRestart(container.auto_restart ?? false)
+
+    const validStates: Array<'should_run' | 'on_demand' | 'unspecified'> = ['should_run', 'on_demand', 'unspecified']
+    const containerState = container.desired_state as 'should_run' | 'on_demand' | 'unspecified' | undefined
+    const newState = containerState && validStates.includes(containerState) ? containerState : 'unspecified'
+    setDesiredState(newState)
+  }, [container.auto_restart, container.desired_state])
+
+  const handleAutoRestartToggle = async (checked: boolean) => {
+    setAutoRestart(checked)
+
+    try {
+      await apiClient.post(`/hosts/${container.host_id}/containers/${container.id}/auto-restart`, {
+        enabled: checked,
+        container_name: container.name
+      })
+      toast.success(`Auto-restart ${checked ? 'enabled' : 'disabled'}`)
+    } catch (error) {
+      toast.error(`Failed to update auto-restart: ${error instanceof Error ? error.message : 'Unknown error'}`)
+      setAutoRestart(!checked)
+    }
+  }
+
+  const handleDesiredStateChange = async (newState: string) => {
+    const previousState = desiredState
+    setDesiredState(newState as typeof desiredState)
+
+    try {
+      await apiClient.post(`/hosts/${container.host_id}/containers/${container.id}/desired-state`, {
+        desired_state: newState,
+        container_name: container.name
+      })
+      toast.success(`Desired state set to "${newState}"`)
+    } catch (error) {
+      toast.error(`Failed to update desired state: ${error instanceof Error ? error.message : 'Unknown error'}`)
+      setDesiredState(previousState)
+    }
+  }
+
+  const formatBytes = (bytes: number | null | undefined): string => {
+    if (!bytes) return '0 B'
+    const k = 1024
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
+    const i = Math.floor(Math.log(bytes) / Math.log(k))
+    return `${(bytes / Math.pow(k, i)).toFixed(2)} ${sizes[i]}`
+  }
+
+  const formatNetworkRate = (bytesPerSec: number | null | undefined): string => {
+    if (!bytesPerSec) return '0 B/s'
+    const k = 1024
+    if (bytesPerSec < k) return `${bytesPerSec.toFixed(0)} B/s`
+    if (bytesPerSec < k * k) return `${(bytesPerSec / k).toFixed(2)} KB/s`
+    return `${(bytesPerSec / (k * k)).toFixed(2)} MB/s`
+  }
+
+  // Filter out common system env vars for cleaner display
+  const filteredEnv = container.env
+    ? Object.entries(container.env).filter(([key]) => {
+        // Show app-specific variables, hide common system paths
+        return !['PATH', 'HOME', 'HOSTNAME', 'TERM'].includes(key)
+      })
+    : []
+
+  // Get state color based on desired state and current state
+  const getStateColor = () => {
+    const state = container.state.toLowerCase()
+    const desired = desiredState
+
+    // If should_run but not running -> amber/yellow (warning)
+    if (desired === 'should_run' && state !== 'running') {
+      return <span className="text-warning">Stopped (Should Run)</span>
+    }
+
+    // Otherwise use standard colors
+    switch (state) {
+      case 'running':
+        return <span className="text-success">Running</span>
+      case 'paused':
+        return <span className="text-warning">Paused</span>
+      case 'restarting':
+        return <span className="text-info">Restarting</span>
+      case 'exited':
+      case 'dead':
+        return <span className="text-danger">Stopped</span>
+      default:
+        return <span className="text-muted-foreground capitalize">{state}</span>
+    }
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto">
+      <div className="max-w-7xl mx-auto p-6">
+        <div className="grid grid-cols-2 gap-8">
+          {/* LEFT COLUMN */}
+          <div className="space-y-6">
+            {/* Overview */}
+            <div>
+              <h3 className="text-sm font-medium text-muted-foreground mb-2">Overview</h3>
+              <div className="space-y-1.5">
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">State</span>
+                  {getStateColor()}
+                </div>
+                {container.restart_policy && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-muted-foreground">Restart Policy</span>
+                    <span className="font-mono text-xs">{container.restart_policy}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Tags */}
+            <div>
+              {isEditingTags ? (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-medium text-muted-foreground">Tags</h3>
+                  </div>
+                  <TagInput
+                    value={editedTags}
+                    onChange={setEditedTags}
+                    suggestions={tagSuggestions}
+                    placeholder="Add tags..."
+                    maxTags={20}
+                  />
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      onClick={handleSaveTags}
+                      disabled={isLoadingTags}
+                      className="flex-1"
+                    >
+                      {isLoadingTags ? 'Saving...' : 'Save'}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={handleCancelEdit}
+                      disabled={isLoadingTags}
+                      className="flex-1"
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="text-sm font-medium text-muted-foreground">Tags</h3>
+                    <button
+                      onClick={handleStartEdit}
+                      className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1"
+                    >
+                      <Plus className="h-3 w-3" />
+                      <span>Edit</span>
+                    </button>
+                  </div>
+                  {currentTags.length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5">
+                      {currentTags.map((tag) => (
+                        <TagChip key={tag} tag={tag} />
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">No tags</p>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Image */}
+            <div>
+              <h3 className="text-sm font-medium text-muted-foreground mb-2">Image</h3>
+              <div className="text-sm font-mono bg-surface-1 px-3 py-2 rounded">
+                {container.image}
+              </div>
+            </div>
+
+            {/* Ports */}
+            {container.ports && container.ports.length > 0 && (
+              <div>
+                <h3 className="text-sm font-medium text-muted-foreground mb-2">Ports</h3>
+                <div className="space-y-1">
+                  {container.ports.map((port, idx) => (
+                    <div key={idx} className="text-sm font-mono bg-surface-1 px-3 py-1.5 rounded">
+                      {port}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Volumes */}
+            {container.volumes && container.volumes.length > 0 && (
+              <div>
+                <h3 className="text-sm font-medium text-muted-foreground mb-2">Volumes</h3>
+                <div className="space-y-1">
+                  {container.volumes.map((volume, idx) => (
+                    <div key={idx} className="text-xs font-mono bg-surface-1 px-3 py-1.5 rounded break-all">
+                      {volume}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Labels */}
+            {container.labels && Object.keys(container.labels).length > 0 && (
+              <div>
+                <h3 className="text-sm font-medium text-muted-foreground mb-2">Labels</h3>
+                <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                  {Object.entries(container.labels).map(([key, value]) => (
+                    <div key={key} className="flex justify-between text-sm">
+                      <span className="text-muted-foreground font-mono text-xs truncate flex-shrink-0 max-w-[40%]">
+                        {key}
+                      </span>
+                      <span className="font-mono text-xs truncate text-right">{value}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* RIGHT COLUMN */}
+          <div className="space-y-6">
+            {/* Auto-restart Toggle */}
+            <div>
+              <h3 className="text-sm font-medium text-muted-foreground mb-2">Auto-restart</h3>
+              <label className="flex items-center gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={autoRestart}
+                  onChange={(e) => handleAutoRestartToggle(e.target.checked)}
+                  className="w-4 h-4 rounded border-border bg-surface-1 checked:bg-primary"
+                />
+                <span className="text-sm">
+                  Automatically restart container if it stops unexpectedly
+                </span>
+              </label>
+            </div>
+
+            {/* Desired State */}
+            <div>
+              <h3 className="text-sm font-medium text-muted-foreground mb-2">Desired State</h3>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => handleDesiredStateChange('should_run')}
+                  className={`flex-1 px-3 py-2 text-sm rounded transition-colors ${
+                    desiredState === 'should_run'
+                      ? 'bg-primary text-primary-foreground'
+                      : 'bg-surface-1 hover:bg-surface-2'
+                  }`}
+                >
+                  Should Run
+                </button>
+                <button
+                  onClick={() => handleDesiredStateChange('on_demand')}
+                  className={`flex-1 px-3 py-2 text-sm rounded transition-colors ${
+                    desiredState === 'on_demand'
+                      ? 'bg-primary text-primary-foreground'
+                      : 'bg-surface-1 hover:bg-surface-2'
+                  }`}
+                >
+                  On Demand
+                </button>
+                <button
+                  onClick={() => handleDesiredStateChange('unspecified')}
+                  className={`flex-1 px-3 py-2 text-sm rounded transition-colors ${
+                    desiredState === 'unspecified'
+                      ? 'bg-primary text-primary-foreground'
+                      : 'bg-surface-1 hover:bg-surface-2'
+                  }`}
+                >
+                  Unspecified
+                </button>
+              </div>
+            </div>
+
+            {/* CPU */}
+            <div className="bg-surface-2 rounded-lg p-6 border border-border">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2">
+                  <Cpu className="h-5 w-5 text-amber-500" />
+                  <span className="font-medium">CPU Usage</span>
+                </div>
+                <span className="text-sm text-muted-foreground">
+                  {container.cpu_percent !== null && container.cpu_percent !== undefined
+                    ? `${container.cpu_percent.toFixed(0)}%`
+                    : '—'}
+                </span>
+              </div>
+              {cpuData.length > 0 ? (
+                <div className="h-[120px]">
+                  <MiniChart data={cpuData} color="cpu" height={120} width={500} />
+                </div>
+              ) : (
+                <div className="h-[120px] flex items-center justify-center text-muted-foreground text-sm">
+                  No data available
+                </div>
+              )}
+            </div>
+
+            {/* Memory */}
+            <div className="bg-surface-2 rounded-lg p-6 border border-border">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2">
+                  <MemoryStick className="h-5 w-5 text-green-500" />
+                  <span className="font-medium">Memory Usage</span>
+                </div>
+                <span className="text-sm text-muted-foreground">
+                  {container.memory_usage ? formatBytes(container.memory_usage) : '—'}
+                  {container.memory_limit && ` / ${formatBytes(container.memory_limit)}`}
+                </span>
+              </div>
+              {memData.length > 0 ? (
+                <div className="h-[120px]">
+                  <MiniChart data={memData} color="memory" height={120} width={500} />
+                </div>
+              ) : (
+                <div className="h-[120px] flex items-center justify-center text-muted-foreground text-sm">
+                  No data available
+                </div>
+              )}
+            </div>
+
+            {/* Network */}
+            <div className="bg-surface-2 rounded-lg p-6 border border-border">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2">
+                  <Network className="h-5 w-5 text-orange-500" />
+                  <span className="font-medium">Network I/O</span>
+                </div>
+                <span className="text-sm text-muted-foreground">
+                  {formatNetworkRate(container.net_bytes_per_sec)}
+                </span>
+              </div>
+              {netData.length > 0 ? (
+                <div className="h-[120px]">
+                  <MiniChart data={netData} color="network" height={120} width={500} />
+                </div>
+              ) : (
+                <div className="h-[120px] flex items-center justify-center text-muted-foreground text-sm">
+                  No data available
+                </div>
+              )}
+            </div>
+
+            {/* Environment Variables */}
+            {filteredEnv.length > 0 && (
+              <div>
+                <h3 className="text-sm font-medium text-muted-foreground mb-2">Environment Variables</h3>
+                <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                  {filteredEnv.map(([key, value]) => (
+                    <div key={key} className="flex justify-between text-sm gap-4">
+                      <span className="text-muted-foreground font-mono flex-shrink-0">
+                        {key}
+                      </span>
+                      <span className="font-mono truncate text-right">{value}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}

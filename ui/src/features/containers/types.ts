@@ -12,11 +12,15 @@ export interface Container {
   state: 'running' | 'stopped' | 'exited' | 'created' | 'paused' | 'restarting' | 'removing' | 'dead'
   status: string // e.g., "Up 2 hours", "Exited (0) 5 minutes ago"
   created: string // ISO timestamp
-  ports: ContainerPort[]
-  labels: Record<string, string>
+  ports?: string[] // e.g., ["8080:80/tcp", "443:443/tcp"]
+  labels?: Record<string, string>
   tags?: string[] // Phase 3d - Derived from labels (compose:*, swarm:*, custom)
   host_id?: string
   host_name?: string
+  // Docker configuration
+  volumes?: string[] // e.g., ["/var/www:/usr/share/nginx/html"]
+  env?: Record<string, string> // Environment variables
+  restart_policy?: string // e.g., "always", "unless-stopped", "no"
   // Policy fields
   auto_restart?: boolean // DockMon's auto-restart feature (not Docker's restart policy)
   desired_state?: 'should_run' | 'on_demand' | 'unspecified' // Expected operational state

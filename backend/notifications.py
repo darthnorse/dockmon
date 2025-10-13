@@ -7,7 +7,7 @@ import asyncio
 import json
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 import requests
@@ -1088,7 +1088,6 @@ Rule: {RULE_NAME}
             # Prevent duplicate notifications within 5 seconds (Docker sends kill/stop/die almost simultaneously)
             # This protects against rapid-fire notifications from the same event
             if hasattr(alert, 'notified_at') and alert.notified_at:
-                from datetime import datetime, timezone, timedelta
                 time_since_notified = datetime.now(timezone.utc) - alert.notified_at.replace(tzinfo=timezone.utc if not alert.notified_at.tzinfo else None)
                 if time_since_notified.total_seconds() < 5:
                     logger.debug(f"Skipping duplicate notification for alert {alert.id} (last notified {time_since_notified.total_seconds():.1f}s ago)")
@@ -1104,7 +1103,6 @@ Rule: {RULE_NAME}
 
             # Parse notification channels from rule
             try:
-                import json
                 channel_ids = json.loads(rule.notify_channels_json) if rule.notify_channels_json else []
             except (json.JSONDecodeError, TypeError):
                 logger.warning(f"Invalid notify_channels_json for rule {rule.id}")
@@ -1163,7 +1161,6 @@ Rule: {RULE_NAME}
 
             # Update notified_at timestamp to prevent immediate duplicates
             if success_count > 0:
-                from datetime import datetime, timezone
                 with self.db.get_session() as session:
                     alert_to_update = session.query(AlertV2).filter(AlertV2.id == alert.id).first()
                     if alert_to_update:
@@ -1222,15 +1219,12 @@ Rule: {RULE_NAME}
 
     def _format_message_v2(self, alert, rule, template):
         """Format message for v2 alert with variable substitution"""
-        from datetime import datetime, timezone
-
         # Get timezone offset from settings
         settings = self.db.get_settings()
         tz_offset_minutes = settings.timezone_offset if settings else 0
 
         # Create timezone object from offset
-        from datetime import timezone as tz_module, timedelta
-        local_tz = tz_module(timedelta(minutes=tz_offset_minutes))
+        local_tz = timezone(timedelta(minutes=tz_offset_minutes))
 
         # Convert UTC timestamps to local time
         first_seen_local = alert.first_seen.replace(tzinfo=timezone.utc).astimezone(local_tz) if alert.first_seen else datetime.now(timezone.utc)
@@ -1284,7 +1278,6 @@ Rule: {RULE_NAME}
         # Optional labels
         if alert.labels_json:
             try:
-                import json
                 labels = json.loads(alert.labels_json)
                 labels_str = ', '.join([f'{k}={v}' for k, v in labels.items()])
                 variables['{LABELS}'] = labels_str
@@ -1296,7 +1289,6 @@ Rule: {RULE_NAME}
         # Event-specific context (for state change and health check alerts)
         if hasattr(alert, 'event_context_json') and alert.event_context_json:
             try:
-                import json
                 event_context = json.loads(alert.event_context_json)
 
                 # State transition info

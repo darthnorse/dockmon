@@ -10,6 +10,7 @@ Runs periodic evaluation of metric-driven rules and processes events for event-d
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 
@@ -250,7 +251,6 @@ class AlertEvaluationService:
         Also logs alert events to the event log.
         """
         # Deduplicate rapid-fire notifications (Docker kill/die/stop events happen within milliseconds)
-        import time
         current_time = time.time()
 
         if alert.id in self._recent_notifications:

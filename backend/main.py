@@ -165,11 +165,12 @@ app.include_router(auth_router)  # v1 auth (existing)
 # Register v2 API routers
 from auth.v2_routes import router as auth_v2_router
 from api.v2.user import router as user_v2_router
-from alerts.api import router as alerts_router
+# NOTE: alerts_router is registered AFTER v2 rules routes are defined below (around line 1060)
+# This is to ensure v2 /api/alerts/rules routes take precedence over the /api/alerts/ router
 
 app.include_router(auth_v2_router)  # v2 cookie-based auth
 app.include_router(user_v2_router)  # v2 user preferences
-app.include_router(alerts_router)  # v2 alerts system (instances, not rules - rules are in main.py)
+# app.include_router(alerts_router)  # MOVED: Registered after v2 rules routes
 
 @app.get("/")
 async def root(current_user: dict = Depends(get_current_user)):
@@ -851,200 +852,10 @@ async def update_settings(settings: GlobalSettings, current_user: dict = Depends
 
     return settings
 
-@app.get("/api/alerts")
-async def get_alert_rules(current_user: dict = Depends(get_current_user)):
-    """Get all alert rules"""
-    rules = monitor.db.get_alert_rules(enabled_only=False)
-    logger.info(f"Retrieved {len(rules)} alert rules from database")
-
-    # Check for orphaned alerts
-    orphaned = await monitor.check_orphaned_alerts()
-
-    return [{
-        "id": rule.id,
-        "name": rule.name,
-        "containers": [{"host_id": c.host_id, "container_name": c.container_name}
-                      for c in rule.containers] if rule.containers else [],
-        "trigger_events": rule.trigger_events,
-        "trigger_states": rule.trigger_states,
-        "notification_channels": rule.notification_channels,
-        "cooldown_minutes": rule.cooldown_minutes,
-        "enabled": rule.enabled,
-        "last_triggered": rule.last_triggered.isoformat() + 'Z' if rule.last_triggered else None,
-        "created_at": rule.created_at.isoformat() + 'Z',
-        "updated_at": rule.updated_at.isoformat() + 'Z',
-        "is_orphaned": rule.id in orphaned,
-        "orphaned_containers": orphaned.get(rule.id, {}).get('orphaned_containers', []) if rule.id in orphaned else []
-    } for rule in rules]
-
-
-@app.post("/api/alerts")
-async def create_alert_rule(rule: AlertRuleCreate, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_default):
-    """Create a new alert rule"""
-    try:
-        # Validate cooldown_minutes
-        if rule.cooldown_minutes < 0 or rule.cooldown_minutes > 10080:  # Max 1 week
-            raise HTTPException(status_code=400, detail="Cooldown must be between 0 and 10080 minutes (1 week)")
-
-        rule_id = str(uuid.uuid4())
-
-        # Convert ContainerHostPair objects to dicts for database
-        containers_data = None
-        if rule.containers:
-            containers_data = [{"host_id": c.host_id, "container_name": c.container_name}
-                             for c in rule.containers]
-
-        logger.info(f"Creating alert rule: {rule.name} with {len(containers_data) if containers_data else 0} container+host pairs")
-
-        db_rule = monitor.db.add_alert_rule({
-            "id": rule_id,
-            "name": rule.name,
-            "containers": containers_data,
-            "trigger_events": rule.trigger_events,
-            "trigger_states": rule.trigger_states,
-            "notification_channels": rule.notification_channels,
-            "cooldown_minutes": rule.cooldown_minutes,
-            "enabled": rule.enabled
-        })
-        logger.info(f"Successfully created alert rule with ID: {db_rule.id}")
-
-        # Log alert rule creation
-        monitor.event_logger.log_alert_rule_created(
-            rule_name=db_rule.name,
-            rule_id=db_rule.id,
-            container_count=len(db_rule.containers) if db_rule.containers else 0,
-            channels=db_rule.notification_channels or [],
-            triggered_by="user"
-        )
-
-        return {
-            "id": db_rule.id,
-            "name": db_rule.name,
-            "containers": [{"host_id": c.host_id, "container_name": c.container_name}
-                          for c in db_rule.containers] if db_rule.containers else [],
-            "trigger_events": db_rule.trigger_events,
-            "trigger_states": db_rule.trigger_states,
-            "notification_channels": db_rule.notification_channels,
-            "cooldown_minutes": db_rule.cooldown_minutes,
-            "enabled": db_rule.enabled,
-            "last_triggered": None,
-            "created_at": db_rule.created_at.isoformat() + 'Z',
-            "updated_at": db_rule.updated_at.isoformat() + 'Z'
-        }
-    except Exception as e:
-        logger.error(f"Failed to create alert rule: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
-
-@app.put("/api/alerts/{rule_id}")
-async def update_alert_rule(rule_id: str, updates: AlertRuleUpdate, current_user: dict = Depends(get_current_user)):
-    """Update an alert rule"""
-    try:
-        # Validate cooldown_minutes if provided
-        if updates.cooldown_minutes is not None:
-            if updates.cooldown_minutes < 0 or updates.cooldown_minutes > 10080:  # Max 1 week
-                raise HTTPException(status_code=400, detail="Cooldown must be between 0 and 10080 minutes (1 week)")
-
-        # Include all fields that are explicitly set, even if empty
-        # This allows clearing trigger_events or trigger_states
-        update_data = {}
-        for k, v in updates.dict().items():
-            if v is not None:
-                # Convert empty lists to None for trigger fields
-                if k in ['trigger_events', 'trigger_states'] and isinstance(v, list) and not v:
-                    update_data[k] = None
-                # Handle containers field separately
-                elif k == 'containers':
-                    # v is already a list of dicts after .dict() call
-                    # Include it even if None to clear the containers (set to "all containers")
-                    update_data[k] = v
-                else:
-                    update_data[k] = v
-            elif k == 'containers':
-                # Explicitly handle containers=None to clear specific container selection
-                update_data[k] = None
-
-        # Validate that at least one trigger type remains after update
-        if 'trigger_events' in update_data or 'trigger_states' in update_data:
-            # Get current rule to check what will remain
-            current_rule = monitor.db.get_alert_rule(rule_id)
-            if current_rule:
-                final_events = update_data.get('trigger_events', current_rule.trigger_events)
-                final_states = update_data.get('trigger_states', current_rule.trigger_states)
-
-                if not final_events and not final_states:
-                    raise HTTPException(status_code=400,
-                        detail="Alert rule must have at least one trigger event or state")
-
-        db_rule = monitor.db.update_alert_rule(rule_id, update_data)
-
-        if not db_rule:
-            raise HTTPException(status_code=404, detail="Alert rule not found")
-
-        # Refresh in-memory alert rules
-        return {
-            "id": db_rule.id,
-            "name": db_rule.name,
-            "containers": [{"host_id": c.host_id, "container_name": c.container_name}
-                          for c in db_rule.containers] if db_rule.containers else [],
-            "trigger_events": db_rule.trigger_events,
-            "trigger_states": db_rule.trigger_states,
-            "notification_channels": db_rule.notification_channels,
-            "cooldown_minutes": db_rule.cooldown_minutes,
-            "enabled": db_rule.enabled,
-            "last_triggered": db_rule.last_triggered.isoformat() + 'Z' if db_rule.last_triggered else None,
-            "created_at": db_rule.created_at.isoformat() + 'Z',
-            "updated_at": db_rule.updated_at.isoformat() + 'Z'
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to update alert rule: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
-
-@app.delete("/api/alerts/{rule_id}")
-async def delete_alert_rule(rule_id: str, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_default):
-    """Delete an alert rule"""
-    try:
-        # Get rule info before deleting for logging
-        rule = monitor.db.get_alert_rule(rule_id)
-        if not rule:
-            raise HTTPException(status_code=404, detail="Alert rule not found")
-
-        rule_name = rule.name
-        success = monitor.db.delete_alert_rule(rule_id)
-        if not success:
-            raise HTTPException(status_code=404, detail="Alert rule not found")
-
-        # Refresh in-memory alert rules
-        # Log alert rule deletion
-        monitor.event_logger.log_alert_rule_deleted(
-            rule_name=rule_name,
-            rule_id=rule_id,
-            triggered_by="user"
-        )
-
-        return {"status": "success", "message": f"Alert rule {rule_id} deleted"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to delete alert rule: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
-
-@app.get("/api/alerts/orphaned")
-async def get_orphaned_alerts(current_user: dict = Depends(get_current_user)):
-    """Get alert rules that reference non-existent containers"""
-    try:
-        orphaned = await monitor.check_orphaned_alerts()
-        return {
-            "count": len(orphaned),
-            "orphaned_rules": orphaned
-        }
-    except Exception as e:
-        logger.error(f"Failed to check orphaned alerts: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
 
 # ==================== Alert Rules V2 Routes ====================
+# IMPORTANT: These routes must be defined BEFORE the alerts_router is registered
+# Otherwise FastAPI will match /api/alerts/ before /api/alerts/rules
 
 @app.get("/api/alerts/rules")
 async def get_alert_rules_v2(current_user: dict = Depends(get_current_user)):
@@ -1248,6 +1059,13 @@ async def toggle_alert_rule_v2(
     except Exception as e:
         logger.error(f"Failed to toggle alert rule v2: {e}")
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ==================== Register Alerts Router (AFTER v2 rules routes) ====================
+# The alerts_router must be registered AFTER the v2 alert rules routes above
+# so that FastAPI matches /api/alerts/rules before /api/alerts/
+from alerts.api import router as alerts_router
+app.include_router(alerts_router)  # Alert instances (not rules - rules are defined above)
 
 
 # ==================== Blackout Window Routes ====================

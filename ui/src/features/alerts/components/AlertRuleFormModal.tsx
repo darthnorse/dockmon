@@ -115,8 +115,15 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
     queryFn: () => apiClient.get('/containers'),
   })
 
+  // Fetch configured notification channels
+  const { data: channelsData } = useQuery<{ channels: Array<{ id: number; type: string; name: string; enabled: boolean }> }>({
+    queryKey: ['notification-channels'],
+    queryFn: () => apiClient.get('/notifications/channels'),
+  })
+
   const hosts: Host[] = hostsData || []
   const containers: Container[] = containersData || []
+  const configuredChannels = channelsData?.channels || []
 
   // Parse existing selectors
   const parseSelector = (json: string | null | undefined) => {
@@ -716,9 +723,8 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                   <button
                     type="button"
                     onClick={() => {
-                      const allIds = hosts.map(h => h.id)
-                      handleChange('host_selector_ids', allIds)
-                      handleChange('host_selector_all', false)
+                      handleChange('host_selector_ids', [])
+                      handleChange('host_selector_all', true)
                     }}
                     className="text-xs text-blue-400 hover:text-blue-300 underline"
                   >
@@ -729,7 +735,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                     type="button"
                     onClick={() => {
                       handleChange('host_selector_ids', [])
-                      handleChange('host_selector_all', true)
+                      handleChange('host_selector_all', false)
                     }}
                     className="text-xs text-blue-400 hover:text-blue-300 underline"
                   >
@@ -821,9 +827,8 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                   <button
                     type="button"
                     onClick={() => {
-                      const allNames = containers.map(c => c.name)
-                      handleChange('container_selector_names', allNames)
-                      handleChange('container_selector_all', false)
+                      handleChange('container_selector_names', [])
+                      handleChange('container_selector_all', true)
                     }}
                     className="text-xs text-blue-400 hover:text-blue-300 underline"
                   >
@@ -834,7 +839,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                     type="button"
                     onClick={() => {
                       handleChange('container_selector_names', [])
-                      handleChange('container_selector_all', true)
+                      handleChange('container_selector_all', false)
                     }}
                     className="text-xs text-blue-400 hover:text-blue-300 underline"
                   >
@@ -922,29 +927,52 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
             <h3 className="text-sm font-semibold text-white">Notification Channels</h3>
             <p className="text-xs text-gray-400">Select which channels to notify when this alert fires</p>
 
-            <div className="grid grid-cols-2 gap-2">
-              {NOTIFICATION_CHANNELS.map((channel) => {
-                const IconComponent = channel.icon
-                return (
-                  <label key={channel.value} className="flex items-center gap-2 text-sm text-gray-300 hover:bg-gray-800/50 p-2 rounded cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={formData.notify_channels.includes(channel.value)}
-                      onChange={(e) => {
-                        if (e.target.checked) {
-                          handleChange('notify_channels', [...formData.notify_channels, channel.value])
-                        } else {
-                          handleChange('notify_channels', formData.notify_channels.filter((ch: string) => ch !== channel.value))
-                        }
-                      }}
-                      className="h-4 w-4 rounded border-gray-600 bg-gray-800 text-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-0"
-                    />
-                    <IconComponent className="h-4 w-4" />
-                    <span>{channel.label}</span>
-                  </label>
-                )
-              })}
-            </div>
+            {configuredChannels.length === 0 ? (
+              <div className="text-sm text-gray-400 py-4 text-center">
+                No notification channels configured. Configure channels in Settings to enable notifications.
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-2">
+                {NOTIFICATION_CHANNELS.filter(channel =>
+                  configuredChannels.some(cc => cc.type === channel.value)
+                ).map((channel) => {
+                  const IconComponent = channel.icon
+                  const configuredChannel = configuredChannels.find(cc => cc.type === channel.value)
+                  const isDisabled = configuredChannel && !configuredChannel.enabled
+
+                  return (
+                    <label
+                      key={channel.value}
+                      className={`flex items-center gap-2 text-sm p-2 rounded ${
+                        isDisabled
+                          ? 'text-gray-500 cursor-not-allowed'
+                          : 'text-gray-300 hover:bg-gray-800/50 cursor-pointer'
+                      }`}
+                      title={isDisabled ? `${channel.label} is disabled` : undefined}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={formData.notify_channels.includes(channel.value)}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            handleChange('notify_channels', [...formData.notify_channels, channel.value])
+                          } else {
+                            handleChange('notify_channels', formData.notify_channels.filter((ch: string) => ch !== channel.value))
+                          }
+                        }}
+                        disabled={isDisabled}
+                        className="h-4 w-4 rounded border-gray-600 bg-gray-800 text-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-0 disabled:opacity-50 disabled:cursor-not-allowed"
+                      />
+                      <IconComponent className="h-4 w-4" />
+                      <span>{channel.label}</span>
+                      {configuredChannel && (
+                        <span className="ml-auto text-xs text-gray-500">({configuredChannel.name})</span>
+                      )}
+                    </label>
+                  )
+                })}
+              </div>
+            )}
           </div>
 
           {/* Enable/Disable */}

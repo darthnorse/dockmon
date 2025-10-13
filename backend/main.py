@@ -1091,41 +1091,66 @@ async def get_template_variables(current_user: dict = Depends(get_current_user))
     """Get available template variables for notification messages"""
     return {
         "variables": [
+            # Basic entity info
             {"name": "{CONTAINER_NAME}", "description": "Name of the container"},
             {"name": "{CONTAINER_ID}", "description": "Short container ID (12 characters)"},
             {"name": "{HOST_NAME}", "description": "Name of the Docker host"},
             {"name": "{HOST_ID}", "description": "ID of the Docker host"},
+            {"name": "{IMAGE}", "description": "Docker image name"},
+
+            # State changes (event-driven alerts)
             {"name": "{OLD_STATE}", "description": "Previous state of the container"},
             {"name": "{NEW_STATE}", "description": "New state of the container"},
-            {"name": "{IMAGE}", "description": "Docker image name"},
+            {"name": "{EVENT_TYPE}", "description": "Docker event type (if applicable)"},
+            {"name": "{EXIT_CODE}", "description": "Container exit code (if applicable)"},
+
+            # Metrics (metric-driven alerts)
+            {"name": "{CURRENT_VALUE}", "description": "Current metric value (e.g., 92.5 for CPU)"},
+            {"name": "{THRESHOLD}", "description": "Threshold that was breached (e.g., 90)"},
+            {"name": "{KIND}", "description": "Alert kind (cpu_high, memory_high, unhealthy, etc.)"},
+            {"name": "{SEVERITY}", "description": "Alert severity (info, warning, critical)"},
+            {"name": "{SCOPE_TYPE}", "description": "Alert scope (host, container, group)"},
+
+            # Temporal info
             {"name": "{TIMESTAMP}", "description": "Full timestamp (YYYY-MM-DD HH:MM:SS)"},
             {"name": "{TIME}", "description": "Time only (HH:MM:SS)"},
             {"name": "{DATE}", "description": "Date only (YYYY-MM-DD)"},
+            {"name": "{FIRST_SEEN}", "description": "When alert first triggered"},
+            {"name": "{OCCURRENCES}", "description": "Number of times this alert has fired"},
+
+            # Rule context
             {"name": "{RULE_NAME}", "description": "Name of the alert rule"},
             {"name": "{RULE_ID}", "description": "ID of the alert rule"},
             {"name": "{TRIGGERED_BY}", "description": "What triggered the alert"},
-            {"name": "{EVENT_TYPE}", "description": "Docker event type (if applicable)"},
-            {"name": "{EXIT_CODE}", "description": "Container exit code (if applicable)"}
-        ],
-        "default_template": """🚨 **DockMon Alert**
 
-**Container:** `{CONTAINER_NAME}`
+            # Tags/Labels
+            {"name": "{LABELS}", "description": "Container/host labels as JSON (env=prod, app=web, etc.)"},
+        ],
+        "default_template": """🚨 **{SEVERITY} Alert: {KIND}**
+
+**{SCOPE_TYPE}:** `{CONTAINER_NAME}`
 **Host:** {HOST_NAME}
-**State Change:** `{OLD_STATE}` → `{NEW_STATE}`
-**Image:** {IMAGE}
+**Current Value:** {CURRENT_VALUE} (threshold: {THRESHOLD})
+**Occurrences:** {OCCURRENCES}
 **Time:** {TIMESTAMP}
 **Rule:** {RULE_NAME}
 ───────────────────────""",
         "examples": {
-            "simple": "Alert: {CONTAINER_NAME} on {HOST_NAME} changed from {OLD_STATE} to {NEW_STATE}",
-            "detailed": """🔴 Container Alert
+            "simple": "Alert: {CONTAINER_NAME} on {HOST_NAME} - {KIND} ({SEVERITY})",
+            "metric_based": """⚠️ **Metric Alert**
+{SCOPE_TYPE}: {CONTAINER_NAME}
+Metric: {KIND}
+Current: {CURRENT_VALUE} | Threshold: {THRESHOLD}
+Severity: {SEVERITY}
+First seen: {FIRST_SEEN} | Occurrences: {OCCURRENCES}""",
+            "state_change": """🔴 **State Change Alert**
 Container: {CONTAINER_NAME} ({CONTAINER_ID})
 Host: {HOST_NAME}
 Status: {OLD_STATE} → {NEW_STATE}
 Image: {IMAGE}
 Time: {TIMESTAMP}
-Triggered by: {RULE_NAME}""",
-            "minimal": "{CONTAINER_NAME}: {NEW_STATE} at {TIME}"
+Rule: {RULE_NAME}""",
+            "minimal": "{CONTAINER_NAME}: {KIND} at {TIME}"
         }
     }
 

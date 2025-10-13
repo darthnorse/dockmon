@@ -7,9 +7,8 @@
 import { useState } from 'react'
 import { useAlertRules, useDeleteAlertRule, useToggleAlertRule } from './hooks/useAlertRules'
 import type { AlertRule } from '@/types/alerts'
-import { Plus, Settings, Trash2, Power, PowerOff, Edit, AlertTriangle, Bell } from 'lucide-react'
+import { Plus, Settings, Trash2, Power, PowerOff, Edit, AlertTriangle } from 'lucide-react'
 import { AlertRuleFormModal } from './components/AlertRuleFormModal'
-import { NotificationChannelsModal } from './components/NotificationChannelsModal'
 
 export function AlertRulesPage() {
   const { data: rulesData, isLoading } = useAlertRules()
@@ -19,7 +18,6 @@ export function AlertRulesPage() {
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [editingRule, setEditingRule] = useState<AlertRule | null>(null)
   const [deletingRuleId, setDeletingRuleId] = useState<string | null>(null)
-  const [showChannelsModal, setShowChannelsModal] = useState(false)
 
   const rules = rulesData?.rules ?? []
 
@@ -70,22 +68,13 @@ export function AlertRulesPage() {
           <p className="text-sm text-gray-400">Configure rules that trigger alerts based on metrics and conditions</p>
         </div>
 
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => setShowChannelsModal(true)}
-            className="flex items-center gap-2 rounded-md bg-gray-700 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-gray-600"
-          >
-            <Bell className="h-4 w-4" />
-            Notification Channels
-          </button>
-          <button
-            onClick={() => setShowCreateModal(true)}
-            className="flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700"
-          >
-            <Plus className="h-4 w-4" />
-            Create Rule
-          </button>
-        </div>
+        <button
+          onClick={() => setShowCreateModal(true)}
+          className="flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700"
+        >
+          <Plus className="h-4 w-4" />
+          Create Rule
+        </button>
       </div>
 
       {/* Rules List */}
@@ -195,11 +184,6 @@ export function AlertRulesPage() {
             setEditingRule(null)
           }}
         />
-      )}
-
-      {/* Notification Channels Modal */}
-      {showChannelsModal && (
-        <NotificationChannelsModal onClose={() => setShowChannelsModal(false)} />
       )}
 
       {/* Delete Confirmation */}

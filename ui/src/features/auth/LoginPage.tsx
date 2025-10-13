@@ -15,7 +15,7 @@
 import { useState, type FormEvent } from 'react'
 import { LogIn } from 'lucide-react'
 import { useAuth } from './AuthContext'
-import { ApiError } from '@/lib/api/client'
+import { ApiError, apiClient } from '@/lib/api/client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -38,6 +38,13 @@ export function LoginPage() {
 
     try {
       await login({ username: username.trim(), password })
+
+      // Sync browser timezone to backend on successful login
+      const browserTimezoneOffset = -new Date().getTimezoneOffset()
+      apiClient.put('/settings', { timezone_offset: browserTimezoneOffset }).catch(err => {
+        console.warn('Failed to sync timezone offset:', err)
+      })
+
       // On success, AuthContext will handle navigation
     } catch (err) {
       if (err instanceof ApiError) {

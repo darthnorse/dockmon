@@ -12,6 +12,7 @@ from fastapi import HTTPException
 
 from database import DatabaseManager
 from models.docker_models import DockerHost, derive_container_tags
+from models.settings_models import GlobalSettings
 
 logger = logging.getLogger(__name__)
 
@@ -19,10 +20,11 @@ logger = logging.getLogger(__name__)
 class StateManager:
     """Manages container state, auto-restart, and tags"""
 
-    def __init__(self, db: DatabaseManager, hosts: Dict[str, DockerHost], clients: Dict[str, DockerClient]):
+    def __init__(self, db: DatabaseManager, hosts: Dict[str, DockerHost], clients: Dict[str, DockerClient], settings: GlobalSettings):
         self.db = db
         self.hosts = hosts
         self.clients = clients
+        self.settings = settings
 
         # In-memory state tracking
         # Note: These get replaced with shared references from DockerMonitor
@@ -47,13 +49,14 @@ class StateManager:
         if container_key in self.auto_restart_status:
             return self.auto_restart_status[container_key]
 
-        # Check database
+        # Check database for explicit configuration
         config = self.db.get_auto_restart_config(host_id, container_id)
         if config:
             self.auto_restart_status[container_key] = config.enabled
             return config.enabled
 
-        return False
+        # No explicit configuration - use global default setting
+        return self.settings.default_auto_restart
 
     def toggle_auto_restart(self, host_id: str, container_id: str, container_name: str, enabled: bool) -> None:
         """

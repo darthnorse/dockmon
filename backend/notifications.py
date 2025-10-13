@@ -1073,6 +1073,258 @@ Rule: {RULE_NAME}
 
         logger.info(f"Sent {len(alerts_to_send)} of {len(self._suppressed_alerts) + len(alerts_to_send)} suppressed alerts")
 
+    async def send_alert_v2(self, alert, rule=None) -> bool:
+        """
+        Send notifications for Alert System v2
+
+        Args:
+            alert: AlertV2 database object
+            rule: Optional AlertRuleV2 object (if not provided, will be fetched)
+
+        Returns:
+            True if notification sent successfully to at least one channel
+        """
+        try:
+            # Prevent duplicate notifications within 5 seconds (Docker sends kill/stop/die almost simultaneously)
+            # This protects against rapid-fire notifications from the same event
+            if hasattr(alert, 'notified_at') and alert.notified_at:
+                from datetime import datetime, timezone, timedelta
+                time_since_notified = datetime.now(timezone.utc) - alert.notified_at.replace(tzinfo=timezone.utc if not alert.notified_at.tzinfo else None)
+                if time_since_notified.total_seconds() < 5:
+                    logger.debug(f"Skipping duplicate notification for alert {alert.id} (last notified {time_since_notified.total_seconds():.1f}s ago)")
+                    return False
+
+            # Get the rule if not provided
+            if rule is None and alert.rule_id:
+                rule = self.db.get_alert_rule_v2(alert.rule_id)
+
+            if not rule:
+                logger.warning(f"No rule found for alert {alert.id}, cannot send notification")
+                return False
+
+            # Parse notification channels from rule
+            try:
+                import json
+                channel_ids = json.loads(rule.notify_channels_json) if rule.notify_channels_json else []
+            except (json.JSONDecodeError, TypeError):
+                logger.warning(f"Invalid notify_channels_json for rule {rule.id}")
+                return False
+
+            if not channel_ids:
+                logger.debug(f"No notification channels configured for rule {rule.name}")
+                return False
+
+            # Check blackout window
+            is_blackout, window_name = self.blackout_manager.is_in_blackout_window()
+            if is_blackout:
+                logger.info(f"Suppressed alert '{alert.title}' during blackout window '{window_name}'")
+                return False
+
+            # Get enabled channels
+            channels = self.db.get_notification_channels(enabled_only=True)
+            # Support both ID-based (integers) and type-based (strings like "discord") lookup
+            channel_map_by_id = {ch.id: ch for ch in channels}
+            channel_map_by_type = {ch.type: ch for ch in channels}
+
+            success_count = 0
+            total_channels = len(channel_ids)
+
+            # Determine which template to use (priority: custom > category > global)
+            template = self._get_template_for_alert_v2(alert, rule)
+
+            # Format the message with alert variables
+            message = self._format_message_v2(alert, rule, template)
+
+            # Send to each configured channel
+            for channel_id in channel_ids:
+                # Try to find channel by ID first (integer), then by type (string)
+                channel = None
+                if isinstance(channel_id, int) and channel_id in channel_map_by_id:
+                    channel = channel_map_by_id[channel_id]
+                elif isinstance(channel_id, str) and channel_id in channel_map_by_type:
+                    channel = channel_map_by_type[channel_id]
+
+                if channel:
+                    try:
+                        if channel.type == "telegram":
+                            if await self._send_telegram(channel.config, message):
+                                success_count += 1
+                        elif channel.type == "discord":
+                            if await self._send_discord(channel.config, message):
+                                success_count += 1
+                        elif channel.type == "slack":
+                            if await self._send_slack(channel.config, message):
+                                success_count += 1
+                        elif channel.type == "pushover":
+                            if await self._send_pushover(channel.config, message, alert.title):
+                                success_count += 1
+                    except Exception as e:
+                        logger.error(f"Failed to send alert to channel {channel.name}: {e}")
+
+            # Update notified_at timestamp to prevent immediate duplicates
+            if success_count > 0:
+                from datetime import datetime, timezone
+                with self.db.get_session() as session:
+                    alert_to_update = session.query(AlertV2).filter(AlertV2.id == alert.id).first()
+                    if alert_to_update:
+                        alert_to_update.notified_at = datetime.now(timezone.utc)
+                        alert_to_update.notification_count = (alert_to_update.notification_count or 0) + 1
+                        session.commit()
+
+            logger.info(f"Alert '{alert.title}' sent to {success_count}/{total_channels} channels")
+            return success_count > 0
+
+        except Exception as e:
+            logger.error(f"Error sending alert v2 notification: {e}", exc_info=True)
+            return False
+
+    def _get_template_for_alert_v2(self, alert, rule):
+        """Get the appropriate template for v2 alert based on priority"""
+        # Priority 1: Custom template on the rule
+        if rule.custom_template:
+            return rule.custom_template
+
+        # Priority 2: Category-specific template based on alert kind
+        settings = self.db.get_settings()
+        if settings:
+            # Check if it's a metric alert
+            if rule.metric and settings.alert_template_metric:
+                return settings.alert_template_metric
+            # Check if it's a state change alert
+            elif rule.kind in ['container_stopped', 'container_died', 'container_restarted'] and settings.alert_template_state_change:
+                return settings.alert_template_state_change
+            # Check if it's a health alert
+            elif rule.kind in ['container_unhealthy', 'host_unhealthy'] and settings.alert_template_health:
+                return settings.alert_template_health
+            # Priority 3: Global default template
+            elif settings.alert_template:
+                return settings.alert_template
+
+        # Fallback: Built-in default template
+        return self._get_default_template_v2()
+
+    def _get_default_template_v2(self):
+        """Get built-in default template for v2 alerts"""
+        return """🚨 **{SEVERITY} Alert: {KIND}**
+
+**{TITLE}**
+{MESSAGE}
+
+**Details:**
+- Container: {CONTAINER_NAME}
+- Host: {HOST_NAME}
+- Severity: {SEVERITY}
+- Scope: {SCOPE_TYPE}
+- First Seen: {FIRST_SEEN}
+- Occurrences: {OCCURRENCES}
+
+🤖 DockMon Alert System"""
+
+    def _format_message_v2(self, alert, rule, template):
+        """Format message for v2 alert with variable substitution"""
+        from datetime import datetime, timezone
+
+        # Get timezone offset from settings
+        settings = self.db.get_settings()
+        tz_offset_minutes = settings.timezone_offset if settings else 0
+
+        # Create timezone object from offset
+        from datetime import timezone as tz_module, timedelta
+        local_tz = tz_module(timedelta(minutes=tz_offset_minutes))
+
+        # Convert UTC timestamps to local time
+        first_seen_local = alert.first_seen.replace(tzinfo=timezone.utc).astimezone(local_tz) if alert.first_seen else datetime.now(timezone.utc)
+        last_seen_local = alert.last_seen.replace(tzinfo=timezone.utc).astimezone(local_tz) if alert.last_seen else datetime.now(timezone.utc)
+
+        # Build variable substitution map
+        # Shorten container ID to 12 characters (Docker standard)
+        container_id_short = alert.scope_id[:12] if alert.scope_type == 'container' and alert.scope_id else 'N/A'
+
+        variables = {
+            # Basic entity info
+            '{CONTAINER_NAME}': alert.container_name or 'N/A',
+            '{CONTAINER_ID}': container_id_short,
+            '{HOST_NAME}': alert.host_name or 'N/A',
+            '{HOST_ID}': alert.scope_id if alert.scope_type == 'host' else 'N/A',
+
+            # Alert info
+            '{SEVERITY}': alert.severity.upper(),
+            '{KIND}': alert.kind,
+            '{TITLE}': alert.title,
+            '{MESSAGE}': alert.message,
+            '{SCOPE_TYPE}': alert.scope_type.capitalize(),
+            '{SCOPE_ID}': alert.scope_id,
+            '{STATE}': alert.state,
+
+            # Temporal info
+            '{FIRST_SEEN}': first_seen_local.strftime('%Y-%m-%d %H:%M:%S'),
+            '{LAST_SEEN}': last_seen_local.strftime('%Y-%m-%d %H:%M:%S'),
+            '{TIMESTAMP}': last_seen_local.strftime('%Y-%m-%d %H:%M:%S'),
+            '{TIME}': last_seen_local.strftime('%H:%M:%S'),
+            '{DATE}': last_seen_local.strftime('%Y-%m-%d'),
+            '{OCCURRENCES}': str(alert.occurrences),
+
+            # Rule context
+            '{RULE_NAME}': rule.name if rule else 'N/A',
+            '{RULE_ID}': alert.rule_id or 'N/A',
+
+            # Metrics (for metric-driven alerts)
+            '{CURRENT_VALUE}': str(alert.current_value) if alert.current_value is not None else 'N/A',
+            '{THRESHOLD}': str(alert.threshold) if alert.threshold is not None else 'N/A',
+
+            # Initialize state change variables (will be overridden if event_context_json exists)
+            '{OLD_STATE}': '',
+            '{NEW_STATE}': '',
+            '{EXIT_CODE}': '',
+            '{IMAGE}': '',
+            '{EVENT_TYPE}': '',
+            '{TRIGGERED_BY}': 'system',
+        }
+
+        # Optional labels
+        if alert.labels_json:
+            try:
+                import json
+                labels = json.loads(alert.labels_json)
+                labels_str = ', '.join([f'{k}={v}' for k, v in labels.items()])
+                variables['{LABELS}'] = labels_str
+            except:
+                variables['{LABELS}'] = ''
+        else:
+            variables['{LABELS}'] = ''
+
+        # Event-specific context (for state change and health check alerts)
+        if hasattr(alert, 'event_context_json') and alert.event_context_json:
+            try:
+                import json
+                event_context = json.loads(alert.event_context_json)
+
+                # State transition info
+                variables['{OLD_STATE}'] = event_context.get('old_state', '') or ''
+                variables['{NEW_STATE}'] = event_context.get('new_state', '') or ''
+                variables['{EXIT_CODE}'] = str(event_context.get('exit_code', '')) if event_context.get('exit_code') is not None else ''
+                variables['{IMAGE}'] = event_context.get('image', '') or ''
+                variables['{EVENT_TYPE}'] = event_context.get('event_type', '') or ''
+                variables['{TRIGGERED_BY}'] = event_context.get('triggered_by', 'system') or 'system'
+
+                # Also check attributes for additional info if not directly available
+                if not variables['{IMAGE}'] and 'attributes' in event_context:
+                    attributes = event_context.get('attributes', {})
+                    variables['{IMAGE}'] = attributes.get('image', '') or ''
+            except Exception as e:
+                logger.debug(f"Error parsing event context: {e}")
+
+        # Replace all variables in template
+        message = template
+        for var, value in variables.items():
+            message = message.replace(var, value)
+
+        # Clean up any unused variables
+        import re
+        message = re.sub(r'\{[A-Z_]+\}', '', message)
+
+        return message
+
     async def close(self):
         """Clean up resources"""
         await self.http_client.aclose()

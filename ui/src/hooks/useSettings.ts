@@ -12,6 +12,16 @@ export interface GlobalSettings {
   polling_interval: number
   connection_timeout: number
   alert_template: string | null
+  alert_template_metric?: string | null
+  alert_template_state_change?: string | null
+  alert_template_health?: string | null
+  blackout_windows?: Array<{
+    name: string
+    enabled: boolean
+    start_time: string
+    end_time: string
+    days: number[]
+  }> | null
   timezone_offset: number
   show_host_stats: boolean
   show_container_stats: boolean
@@ -31,7 +41,25 @@ export interface TemplateVariablesResponse {
 export function useGlobalSettings() {
   return useQuery<GlobalSettings>({
     queryKey: ['global-settings'],
-    queryFn: () => apiClient.get('/settings'),
+    queryFn: async () => {
+      const settings = await apiClient.get<GlobalSettings>('/settings')
+
+      // Always sync browser timezone offset with backend
+      // This ensures timestamps are displayed in the user's local timezone
+      const browserTimezoneOffset = -new Date().getTimezoneOffset()
+
+      if (settings.timezone_offset !== browserTimezoneOffset) {
+        // Update backend with browser's timezone (don't await to avoid slowing down the query)
+        apiClient.put('/settings', { timezone_offset: browserTimezoneOffset }).catch(err => {
+          console.warn('Failed to sync timezone offset:', err)
+        })
+
+        // Update local cache immediately
+        settings.timezone_offset = browserTimezoneOffset
+      }
+
+      return settings
+    },
     staleTime: 5 * 60 * 1000, // 5 minutes
   })
 }

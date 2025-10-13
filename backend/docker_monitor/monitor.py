@@ -31,7 +31,7 @@ from docker_monitor.stats_history import StatsHistoryBuffer, ContainerStatsHisto
 from docker_monitor.container_discovery import ContainerDiscovery
 from docker_monitor.state_manager import StateManager
 from docker_monitor.operations import ContainerOperations
-from docker_monitor.cleanup import CleanupManager
+from docker_monitor.periodic_jobs import PeriodicJobsManager
 from auth.session_manager import session_manager
 
 
@@ -205,11 +205,11 @@ class DockerMonitor:
         self.manager = ConnectionManager()
         self.realtime = RealtimeMonitor()  # Real-time monitoring
         self.event_logger = EventLogger(self.db, self.manager)  # Event logging service with WebSocket support
-        self.notification_service = NotificationService(self.db, self.event_logger)  # Notification service
-        self.alert_processor = AlertProcessor(self.notification_service)  # Alert processor
+        self.notification_service = NotificationService(self.db, self.event_logger)  # Notification service (v1 - for channels only)
         self._container_states: Dict[str, str] = {}  # Track container states for change detection
         self._recent_user_actions: Dict[str, float] = {}  # Track recent user actions: {container_key: timestamp}
-        self.cleanup_task: Optional[asyncio.Task] = None  # Background cleanup task
+        self.alert_evaluation_service = None  # Will be set by main.py after initialization
+        self.maintenance_task: Optional[asyncio.Task] = None  # Background maintenance task (daily cleanup, updates, etc.)
 
         # Locks for shared data structures to prevent race conditions
         self._state_lock = asyncio.Lock()
@@ -232,14 +232,14 @@ class DockerMonitor:
         self.discovery.reconnect_attempts = self.reconnect_attempts
         self.discovery.last_reconnect_attempt = self.last_reconnect_attempt
 
-        self.state_manager = StateManager(self.db, self.hosts, self.clients)
+        self.state_manager = StateManager(self.db, self.hosts, self.clients, self.settings)
         # Share state dictionaries with state_manager
         self.state_manager.auto_restart_status = self.auto_restart_status
         self.state_manager.restart_attempts = self.restart_attempts
         self.state_manager.restarting_containers = self.restarting_containers
 
         self.operations = ContainerOperations(self.hosts, self.clients, self.event_logger, self._recent_user_actions)
-        self.cleanup_manager = CleanupManager(self.db, self.event_logger)
+        self.periodic_jobs = PeriodicJobsManager(self.db, self.event_logger)
 
         self._load_persistent_config()  # Load saved hosts and configs
 
@@ -700,10 +700,7 @@ class DockerMonitor:
             for container_key in notification_states_to_remove:
                 del self.notification_service._last_container_state[container_key]
 
-            # Clean up alert processor's container state tracking for this host
-            alert_processor_states_to_remove = [key for key in self.alert_processor._container_states.keys() if key.startswith(f"{host_id}:")]
-            for container_key in alert_processor_states_to_remove:
-                del self.alert_processor._container_states[container_key]
+            # V1 alert processor cleanup removed - v2 uses event-driven architecture
 
             # Clean up notification service's alert cooldown tracking for this host
             alert_cooldowns_to_remove = [key for key in self.notification_service._last_alerts.keys() if key.startswith(f"{host_id}:")]
@@ -1053,7 +1050,75 @@ class DockerMonitor:
             if action in important_events:
                 logger.info(f"Docker event: {action} - {container_name} ({container_id[:12]}) on host {host_id[:8]}")
 
-            # Process event for notifications/alerts
+            # Process event for v2 alerts
+            logger.info(f"V2 alert check: alert_evaluation_service={self.alert_evaluation_service is not None}, action={action}")
+            if self.alert_evaluation_service and action in ['die', 'oom', 'kill', 'health_status', 'restart', 'stop', 'start']:
+                logger.info(f"V2: Processing {action} event for {container_name}")
+
+                # Parse timestamp
+                from datetime import datetime
+                try:
+                    timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                except (ValueError, AttributeError, TypeError) as e:
+                    logger.warning(f"Failed to parse timestamp '{timestamp_str}': {e}, using current time")
+                    timestamp = datetime.now()
+
+                # Map Docker events to v2 alert engine format
+                # Engine expects "state_change" with new_state in event_data
+                event_type = "state_change"
+                new_state = None
+                exit_code = None
+
+                if action in ['die', 'stop', 'kill']:
+                    new_state = "exited"
+                    if action == 'die':
+                        exit_code_str = attributes.get('exitCode', '0')
+                        try:
+                            exit_code = int(exit_code_str)
+                        except (ValueError, TypeError):
+                            exit_code = None
+                elif action == 'start':
+                    new_state = "running"
+                elif action == 'health_status':
+                    # Health status change
+                    health_status = attributes.get('health_status', attributes.get('health', 'unhealthy'))
+                    new_state = health_status
+                elif action == 'oom':
+                    new_state = "oom"
+
+                # Get old state from container state tracking
+                container_key = f"{host_id}:{container_id}"
+                old_state = self._container_states.get(container_key)
+
+                # Build event data with new_state that engine expects
+                event_data = {
+                    'timestamp': timestamp.isoformat(),
+                    'event_type': event_type,
+                    'new_state': new_state,
+                    'old_state': old_state,
+                    'exit_code': exit_code,
+                    'image': attributes.get('image', ''),
+                    'triggered_by': 'system',  # Docker events are system-triggered
+                    'attributes': attributes
+                }
+
+                # Get host name
+                host_name = self.hosts.get(host_id).name if host_id in self.hosts else host_id
+
+                # Process in background to not block event monitoring
+                task = asyncio.create_task(
+                    self.alert_evaluation_service.handle_container_event(
+                        event_type=event_type,
+                        container_id=container_id,
+                        container_name=container_name,
+                        host_id=host_id,
+                        host_name=host_name,
+                        event_data=event_data
+                    )
+                )
+                task.add_done_callback(_handle_task_exception)
+
+            # Keep v1 for comparison (temporarily)
             if self.notification_service and action in ['die', 'oom', 'kill', 'health_status', 'restart']:
                 # Parse timestamp
                 from datetime import datetime
@@ -1210,8 +1275,8 @@ class DockerMonitor:
                             )
                             task.add_done_callback(_handle_task_exception)
 
-                # Process alerts for container state changes
-                await self.alert_processor.process_container_update(containers, self.hosts)
+                # V1 alert processor removed - v2 uses event-driven alerts via handle_container_event()
+                # Container state changes are detected via Docker events in _handle_go_event()
 
                 # Only fetch and broadcast stats if there are active viewers
                 if has_viewers:
@@ -1537,6 +1602,6 @@ class DockerMonitor:
         """Get auto-restart status for a container"""
         return self.state_manager.get_auto_restart_status(host_id, container_id)
 
-    async def cleanup_old_data(self):
-        """Periodic cleanup of old data"""
-        await self.cleanup_manager.cleanup_old_data()
+    async def run_daily_maintenance(self):
+        """Run daily maintenance tasks"""
+        await self.periodic_jobs.daily_maintenance()

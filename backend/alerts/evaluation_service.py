@@ -34,19 +34,23 @@ class AlertEvaluationService:
     def __init__(
         self,
         db: DatabaseManager,
+        monitor=None,
         stats_client=None,
         event_logger: Optional[EventLogger] = None,
+        notification_service=None,
         evaluation_interval: int = 10  # seconds
     ):
         self.db = db
+        self.monitor = monitor  # Reference to DockerMonitor for container lookups
         self.stats_client = stats_client
         self.event_logger = event_logger
+        self.notification_service = notification_service
         self.evaluation_interval = evaluation_interval
         self.engine = AlertEngine(db)
 
         self._running = False
         self._task: Optional[asyncio.Task] = None
-        self._container_cache: Dict[str, Dict] = {}  # Cache container metadata
+        self._recent_notifications: Dict[str, float] = {}  # {alert_id: timestamp} for deduplication
 
     async def start(self):
         """Start the alert evaluation service"""
@@ -197,16 +201,41 @@ class AlertEvaluationService:
                     exc_info=True
                 )
 
-    async def _get_container_info(self, container_id: str) -> Optional[Dict[str, Any]]:
+    async def _get_container_info(self, container_id: str, host_id: str) -> Optional[Dict[str, Any]]:
         """
-        Get container metadata (name, host, labels)
+        Get container metadata (name, host, labels) from database
+        """
+        # Query the database for container info
+        with self.db.get_session() as session:
+            from sqlalchemy import text
 
-        This should fetch from the monitor's container cache or database.
-        For now, return minimal info.
-        """
-        # TODO: Integrate with docker_monitor to get actual container info
-        # For now, return cached or None
-        return self._container_cache.get(container_id)
+            # Query containers table for this container
+            query = text("""
+                SELECT name, image, labels
+                FROM containers
+                WHERE container_id LIKE :container_id_pattern
+                LIMIT 1
+            """)
+            result = session.execute(query, {"container_id_pattern": f"{container_id}%"})
+            row = result.fetchone()
+
+            if row:
+                # Get host name from hosts table
+                host_query = text("SELECT name FROM docker_hosts WHERE id = :host_id")
+                host_result = session.execute(host_query, {"host_id": host_id})
+                host_row = host_result.fetchone()
+                host_name = host_row[0] if host_row else host_id
+
+                return {
+                    'name': row[0],
+                    'host_name': host_name,
+                    'host_id': host_id,
+                    'labels': {},  # Labels are JSON, would need parsing
+                    'state': 'unknown',  # State is tracked in real-time, not in DB
+                    'image': row[1]
+                }
+
+        return None
 
     def update_container_cache(self, container_id: str, info: Dict[str, Any]):
         """Update container metadata cache"""
@@ -220,6 +249,30 @@ class AlertEvaluationService:
         Should check notification settings and send notifications.
         Also logs alert events to the event log.
         """
+        # Deduplicate rapid-fire notifications (Docker kill/die/stop events happen within milliseconds)
+        import time
+        current_time = time.time()
+
+        if alert.id in self._recent_notifications:
+            time_since_last = current_time - self._recent_notifications[alert.id]
+            if time_since_last < 5.0:  # 5 second deduplication window
+                logger.debug(
+                    f"Skipping duplicate notification for alert {alert.id} "
+                    f"(last notified {time_since_last:.1f}s ago)"
+                )
+                return
+
+        # Record this notification
+        self._recent_notifications[alert.id] = current_time
+
+        # Clean up old entries periodically (keep only last 5 minutes)
+        if len(self._recent_notifications) > 100:
+            cutoff_time = current_time - 300  # 5 minutes ago
+            self._recent_notifications = {
+                k: v for k, v in self._recent_notifications.items()
+                if v > cutoff_time
+            }
+
         logger.info(
             f"Alert notification: {alert.title} "
             f"(severity={alert.severity}, state={alert.state})"
@@ -257,7 +310,7 @@ class AlertEvaluationService:
                 event_severity = severity_map.get(alert.severity, EventSeverity.INFO)
 
                 # Log the event
-                await self.event_logger.log(
+                self.event_logger.log_event(
                     category=EventCategory.ALERT,
                     event_type=event_type,
                     severity=event_severity,
@@ -282,7 +335,22 @@ class AlertEvaluationService:
             except Exception as e:
                 logger.error(f"Failed to log alert event: {e}", exc_info=True)
 
-        # TODO: Integrate with notification system to send actual notifications
+        # Send notification via notification service
+        if alert.state == "open":
+            # Only send notifications for new/open alerts, not resolved ones
+            # (You might want to make this configurable)
+            try:
+                # Get the rule for this alert
+                rule = self.engine.db.get_alert_rule_v2(alert.rule_id) if alert.rule_id else None
+
+                # Import and get notification service from main
+                # The notification service should be passed to evaluation service on init
+                if hasattr(self, 'notification_service') and self.notification_service:
+                    await self.notification_service.send_alert_v2(alert, rule)
+                else:
+                    logger.warning("Notification service not available, skipping notification")
+            except Exception as e:
+                logger.error(f"Failed to send alert notification: {e}", exc_info=True)
 
     # ==================== Event-Driven Rule Evaluation ====================
 
@@ -290,31 +358,33 @@ class AlertEvaluationService:
         self,
         event_type: str,
         container_id: str,
+        container_name: str,
         host_id: str,
+        host_name: str,
         event_data: Dict[str, Any]
     ):
         """
         Handle container event for event-driven rules
 
-        Called by event logger when container events occur.
+        Args:
+            event_type: Type of event (container_stopped, container_started, etc.)
+            container_id: Full container ID
+            container_name: Container name
+            host_id: Host ID
+            host_name: Host name
+            event_data: Additional event data (timestamp, exit_code, etc.)
         """
+        logger.info(f"V2: Processing {event_type} for {container_name} on {host_name}")
         try:
-            # Get container info
-            container_info = await self._get_container_info(container_id)
-
-            if not container_info:
-                logger.debug(f"No metadata for container {container_id} in event handler")
-                return
-
-            # Create evaluation context
+            # Create evaluation context with the data passed in
             context = EvaluationContext(
                 scope_type="container",
                 scope_id=container_id,
                 host_id=host_id,
-                host_name=container_info.get("host_name"),
+                host_name=host_name,
                 container_id=container_id,
-                container_name=container_info.get("name"),
-                labels=container_info.get("labels", {})
+                container_name=container_name,
+                labels={}  # Labels not needed for basic event-driven rules
             )
 
             # Evaluate event-driven rules

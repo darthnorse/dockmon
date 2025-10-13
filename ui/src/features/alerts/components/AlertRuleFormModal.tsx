@@ -8,6 +8,7 @@ import { useState, useRef, useEffect } from 'react'
 import { X, Search, Check, Bell, Send, MessageSquare, Hash, Smartphone, Mail } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { useCreateAlertRule, useUpdateAlertRule } from '../hooks/useAlertRules'
+import { useNotificationChannels } from '../hooks/useNotificationChannels'
 import type { AlertRule, AlertSeverity, AlertScope } from '@/types/alerts'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
 import type { Host } from '@/types/api'
@@ -116,10 +117,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
   })
 
   // Fetch configured notification channels
-  const { data: channelsData } = useQuery<{ channels: Array<{ id: number; type: string; name: string; enabled: boolean }> }>({
-    queryKey: ['notification-channels'],
-    queryFn: () => apiClient.get('/notifications/channels'),
-  })
+  const { data: channelsData } = useNotificationChannels()
 
   const hosts: Host[] = hostsData || []
   const containers: Container[] = containersData || []
@@ -138,28 +136,40 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
     }
   }
 
-  const [formData, setFormData] = useState<any>({
-    name: rule?.name || '',
-    description: rule?.description || '',
-    scope: rule?.scope || 'container',
-    kind: rule?.kind || 'cpu_high',
-    enabled: rule?.enabled ?? true,
-    severity: rule?.severity || 'warning',
-    metric: rule?.metric || 'cpu_percent',
-    threshold: rule?.threshold || 90,
-    operator: rule?.operator || '>=',
-    duration_seconds: rule?.duration_seconds || 300,
-    occurrences: rule?.occurrences || 3,
-    clear_threshold: rule?.clear_threshold,
-    clear_duration_seconds: rule?.clear_duration_seconds,
-    grace_seconds: rule?.grace_seconds || 0,
-    cooldown_seconds: rule?.cooldown_seconds || 300,
-    // Selectors
-    host_selector_all: parseSelector(rule?.host_selector_json).all,
-    host_selector_ids: parseSelector(rule?.host_selector_json).selected,
-    container_selector_all: parseSelector(rule?.container_selector_json).all,
-    container_selector_names: parseSelector(rule?.container_selector_json).selected,
-    notify_channels: rule?.notify_channels_json ? JSON.parse(rule.notify_channels_json) : [],
+  const [formData, setFormData] = useState<any>(() => {
+    // Determine if this rule requires a metric
+    const ruleKind = rule?.kind || 'cpu_high'
+    const kindConfig = RULE_KINDS.find((k) => k.value === ruleKind)
+    const isMetricDriven = kindConfig?.requiresMetric ?? true
+
+    return {
+      name: rule?.name || '',
+      description: rule?.description || '',
+      scope: rule?.scope || 'container',
+      kind: ruleKind,
+      enabled: rule?.enabled ?? true,
+      severity: rule?.severity || 'warning',
+      metric: rule?.metric || 'cpu_percent',
+      threshold: rule?.threshold || 90,
+      operator: rule?.operator || '>=',
+      // Event-driven rules: fire immediately (0s, 1 occurrence)
+      // Metric-driven rules: require sustained breach (300s, 3 occurrences)
+      duration_seconds: rule?.duration_seconds ?? (isMetricDriven ? 300 : 0),
+      occurrences: rule?.occurrences ?? (isMetricDriven ? 3 : 1),
+      clear_threshold: rule?.clear_threshold,
+      clear_duration_seconds: rule?.clear_duration_seconds,
+      grace_seconds: rule?.grace_seconds || 0,
+      // Event-driven rules: no cooldown (notify every time)
+      // Metric-driven rules: 5 min cooldown (prevent spam from sustained high values)
+      cooldown_seconds: rule?.cooldown_seconds ?? (isMetricDriven ? 300 : 0),
+      // Selectors
+      host_selector_all: parseSelector(rule?.host_selector_json).all,
+      host_selector_ids: parseSelector(rule?.host_selector_json).selected,
+      container_selector_all: parseSelector(rule?.container_selector_json).all,
+      container_selector_names: parseSelector(rule?.container_selector_json).selected,
+      notify_channels: rule?.notify_channels_json ? JSON.parse(rule.notify_channels_json) : [],
+      custom_template: rule?.custom_template !== undefined ? rule.custom_template : null,
+    }
   })
 
   const [error, setError] = useState<string | null>(null)
@@ -264,8 +274,6 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
         requestData.metric = formData.metric
         requestData.threshold = formData.threshold
         requestData.operator = formData.operator
-        requestData.duration_seconds = formData.duration_seconds
-        requestData.occurrences = formData.occurrences
         if (formData.clear_threshold !== undefined) {
           requestData.clear_threshold = formData.clear_threshold
         }
@@ -273,6 +281,10 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
           requestData.clear_duration_seconds = formData.clear_duration_seconds
         }
       }
+
+      // Duration and occurrences apply to ALL rule types (for rate-limiting)
+      requestData.duration_seconds = formData.duration_seconds
+      requestData.occurrences = formData.occurrences
 
       // Add selectors
       if (formData.host_selector_all) {
@@ -290,6 +302,11 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       // Add notification channels
       if (formData.notify_channels.length > 0) {
         requestData.notify_channels_json = JSON.stringify(formData.notify_channels)
+      }
+
+      // Add custom template (null/empty string means use category default)
+      if (formData.custom_template !== undefined) {
+        requestData.custom_template = formData.custom_template
       }
 
       // Add group tags (labels_json) for group scope
@@ -978,6 +995,47 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                 })}
               </div>
             )}
+          </div>
+
+          {/* Custom Template (Optional) */}
+          <div className="space-y-4 rounded-lg border border-gray-700 bg-gray-800/30 p-4">
+            <div>
+              <h3 className="text-sm font-semibold text-white">Custom Message Template (Optional)</h3>
+              <p className="text-xs text-gray-400">Override the default template for this specific rule</p>
+            </div>
+
+            <div>
+              <label className="flex items-center gap-2 text-sm text-gray-300 mb-2">
+                <input
+                  type="checkbox"
+                  checked={!!formData.custom_template}
+                  onChange={(e) => {
+                    if (e.target.checked) {
+                      handleChange('custom_template', '')
+                    } else {
+                      handleChange('custom_template', null)
+                    }
+                  }}
+                  className="h-4 w-4 rounded border-gray-600 bg-gray-800 text-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-0"
+                />
+                Use custom template for this rule
+              </label>
+
+              {formData.custom_template !== null && formData.custom_template !== undefined && (
+                <textarea
+                  value={formData.custom_template}
+                  onChange={(e) => handleChange('custom_template', e.target.value)}
+                  rows={6}
+                  placeholder="Enter custom template or leave empty to use category default..."
+                  className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white font-mono text-sm placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              )}
+              {formData.custom_template !== null && formData.custom_template !== undefined && (
+                <p className="mt-2 text-xs text-gray-400">
+                  Leave empty to use the category-specific template from Settings. Use variables like {'{CONTAINER_NAME}'}.
+                </p>
+              )}
+            </div>
           </div>
 
           {/* Enable/Disable */}

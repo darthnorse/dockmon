@@ -10,7 +10,6 @@ services:
     ports:
       - "8001:443"   # HTTPS only - backend access through nginx proxy
     environment:
-      - TZ=UTC
       - PYTHONPATH=/app/backend
       - PYTHONUNBUFFERED=1
     volumes:

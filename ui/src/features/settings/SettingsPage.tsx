@@ -4,13 +4,30 @@
  */
 
 import { useState } from 'react'
+import { LayoutDashboard, Bell, AlertTriangle, Settings, LucideIcon } from 'lucide-react'
 import { DashboardSettings } from './components/DashboardSettings'
-import { AlertNotificationSettings } from './components/AlertNotificationSettings'
+import { NotificationChannelsSection } from './components/NotificationChannelsSection'
+import { AlertTemplateSettings } from './components/AlertTemplateSettings'
+import { BlackoutWindowsSection } from './components/BlackoutWindowsSection'
+import { SystemSettings } from './components/SystemSettings'
 
-type Tab = 'dashboard' | 'alerts'
+type TabId = 'dashboard' | 'alerts' | 'notifications' | 'system'
+
+interface Tab {
+  id: TabId
+  label: string
+  icon: LucideIcon
+}
+
+const TABS: Tab[] = [
+  { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { id: 'alerts', label: 'Alerts', icon: AlertTriangle },
+  { id: 'notifications', label: 'Notifications', icon: Bell },
+  { id: 'system', label: 'System', icon: Settings },
+]
 
 export function SettingsPage() {
-  const [activeTab, setActiveTab] = useState<Tab>('dashboard')
+  const [activeTab, setActiveTab] = useState<TabId>('dashboard')
 
   return (
     <div className="flex h-full flex-col bg-[#0a0e14]">
@@ -21,42 +38,47 @@ export function SettingsPage() {
       </div>
 
       {/* Tabs */}
-      <div className="border-b border-gray-800 bg-[#0d1117] px-6">
-        <div className="flex gap-6">
-          <button
-            onClick={() => setActiveTab('dashboard')}
-            className={`relative py-3 text-sm font-medium transition-colors ${
-              activeTab === 'dashboard'
-                ? 'text-blue-400'
-                : 'text-gray-400 hover:text-gray-300'
-            }`}
-          >
-            Dashboard
-            {activeTab === 'dashboard' && (
-              <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-400" />
-            )}
-          </button>
-          <button
-            onClick={() => setActiveTab('alerts')}
-            className={`relative py-3 text-sm font-medium transition-colors ${
-              activeTab === 'alerts'
-                ? 'text-blue-400'
-                : 'text-gray-400 hover:text-gray-300'
-            }`}
-          >
-            Alerts & Notifications
-            {activeTab === 'alerts' && (
-              <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-400" />
-            )}
-          </button>
+      <div className="border-b border-gray-800 bg-[#0d1117]">
+        <div className="flex gap-1 px-6">
+          {TABS.map((tab) => {
+            const Icon = tab.icon
+            const isActive = activeTab === tab.id
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-medium transition-colors ${
+                  isActive
+                    ? 'border-blue-500 text-blue-500'
+                    : 'border-transparent text-gray-400 hover:text-gray-300'
+                }`}
+              >
+                <Icon className="h-4 w-4" />
+                {tab.label}
+              </button>
+            )
+          })}
         </div>
       </div>
 
       {/* Content */}
       <div className="flex-1 overflow-auto">
-        <div className="container mx-auto px-6 py-6 max-w-4xl">
+        <div className="container mx-auto max-w-4xl px-6 py-6">
           {activeTab === 'dashboard' && <DashboardSettings />}
-          {activeTab === 'alerts' && <AlertNotificationSettings />}
+          {activeTab === 'alerts' && (
+            <div className="space-y-8">
+              <div>
+                <h2 className="mb-4 text-lg font-semibold text-white">Alert Message Templates</h2>
+                <AlertTemplateSettings />
+              </div>
+              <div>
+                <h2 className="mb-4 text-lg font-semibold text-white">Blackout Windows</h2>
+                <BlackoutWindowsSection />
+              </div>
+            </div>
+          )}
+          {activeTab === 'notifications' && <NotificationChannelsSection />}
+          {activeTab === 'system' && <SystemSettings />}
         </div>
       </div>
     </div>

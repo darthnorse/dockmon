@@ -31,15 +31,14 @@ export function DashboardSettings() {
 
   return (
     <div className="space-y-6">
-      {/* Dashboard Summary Section */}
-      <div className="bg-surface border border-border rounded-lg p-6">
+      {/* Dashboard Summary */}
+      <div>
         <div className="mb-4">
-          <h2 className="text-lg font-semibold">Dashboard Summary</h2>
-          <p className="text-sm text-muted-foreground mt-1">
+          <h3 className="text-sm font-semibold text-white">Dashboard Summary</h3>
+          <p className="text-xs text-gray-400 mt-1">
             Control which elements appear on your dashboard
           </p>
         </div>
-
         <div className="divide-y divide-border">
           <ToggleSwitch
             id="show-kpi-bar"
@@ -48,7 +47,6 @@ export function DashboardSettings() {
             checked={showKpiBar}
             onChange={handleToggleKpiBar}
           />
-
           <ToggleSwitch
             id="show-stats-widgets"
             label="Show stats widgets"
@@ -59,15 +57,14 @@ export function DashboardSettings() {
         </div>
       </div>
 
-      {/* Performance Section */}
-      <div className="bg-surface border border-border rounded-lg p-6">
+      {/* Performance */}
+      <div>
         <div className="mb-4">
-          <h2 className="text-lg font-semibold">Performance</h2>
-          <p className="text-sm text-muted-foreground mt-1">
+          <h3 className="text-sm font-semibold text-white">Performance</h3>
+          <p className="text-xs text-gray-400 mt-1">
             Optimize dashboard performance for better battery life and responsiveness
           </p>
         </div>
-
         <div className="divide-y divide-border">
           <ToggleSwitch
             id="optimized-loading"

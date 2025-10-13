@@ -1,6 +1,6 @@
 """
-Cleanup Jobs Module for DockMon
-Handles periodic cleanup of old data and sessions
+Periodic Jobs Module for DockMon
+Manages background tasks that run at regular intervals
 """
 
 import asyncio
@@ -13,21 +13,21 @@ from auth.session_manager import session_manager
 logger = logging.getLogger(__name__)
 
 
-class CleanupManager:
-    """Handles periodic cleanup tasks"""
+class PeriodicJobsManager:
+    """Manages periodic background tasks (cleanup, updates, maintenance)"""
 
     def __init__(self, db: DatabaseManager, event_logger: EventLogger):
         self.db = db
         self.event_logger = event_logger
 
-    async def cleanup_old_data(self):
+    async def daily_maintenance(self):
         """
-        Periodic cleanup of old data.
-        Runs every 24 hours to clean up:
-        - Old events (if auto-cleanup is enabled)
-        - Expired sessions
+        Daily maintenance tasks.
+        Runs every 24 hours to perform:
+        - Data cleanup (old events, expired sessions, orphaned tags)
+        - Host information updates (can be moved to separate job with different interval)
         """
-        logger.info("Starting periodic data cleanup...")
+        logger.info("Starting daily maintenance tasks...")
 
         while True:
             try:
@@ -58,6 +58,9 @@ class CleanupManager:
                         EventSeverity.INFO,
                         EventType.STARTUP
                     )
+
+                # Note: Timezone offset is auto-synced from the browser, not from server
+                # This ensures DST changes are handled automatically on the client side
 
                 # Sleep for 24 hours before next cleanup
                 await asyncio.sleep(24 * 60 * 60)  # 24 hours

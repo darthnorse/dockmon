@@ -164,7 +164,10 @@ class GlobalSettings(Base):
     event_retention_days = Column(Integer, default=30)  # Keep events for 30 days
     enable_notifications = Column(Boolean, default=True)
     auto_cleanup_events = Column(Boolean, default=True)  # Auto cleanup old events
-    alert_template = Column(Text, nullable=True)  # Global notification template
+    alert_template = Column(Text, nullable=True)  # Global notification template (default)
+    alert_template_metric = Column(Text, nullable=True)  # Metric-based alert template
+    alert_template_state_change = Column(Text, nullable=True)  # State change alert template
+    alert_template_health = Column(Text, nullable=True)  # Health check alert template
     blackout_windows = Column(JSON, nullable=True)  # Array of blackout time windows
     first_run_complete = Column(Boolean, default=False)  # Track if first run setup is complete
     polling_interval_migrated = Column(Boolean, default=False)  # Track if polling interval has been migrated to 2s
@@ -260,6 +263,7 @@ class AlertRuleV2(Base):
 
     # Notifications
     notify_channels_json = Column(Text, nullable=True)  # JSON: ["slack", "telegram"]
+    custom_template = Column(Text, nullable=True)  # Custom message template for this rule
 
     # Lifecycle
     created_at = Column(DateTime, default=datetime.now, nullable=False)
@@ -305,6 +309,7 @@ class AlertV2(Base):
     labels_json = Column(Text, nullable=True)  # {"env": "prod", "tier": "web"}
     host_name = Column(String, nullable=True)  # Friendly name for display
     container_name = Column(String, nullable=True)  # Friendly name for display
+    event_context_json = Column(Text, nullable=True)  # Event-specific data for template variables (old_state, new_state, exit_code, image, etc.)
 
     # Notification tracking
     notified_at = Column(DateTime, nullable=True)
@@ -625,6 +630,22 @@ class DatabaseManager:
                     session.commit()
                     print("Added show_container_stats column to global_settings table")
 
+                # Migration: Add alert template category columns to global_settings table
+                if 'alert_template_metric' not in settings_column_names:
+                    session.execute(text("ALTER TABLE global_settings ADD COLUMN alert_template_metric TEXT"))
+                    session.commit()
+                    print("Added alert_template_metric column to global_settings table")
+
+                if 'alert_template_state_change' not in settings_column_names:
+                    session.execute(text("ALTER TABLE global_settings ADD COLUMN alert_template_state_change TEXT"))
+                    session.commit()
+                    print("Added alert_template_state_change column to global_settings table")
+
+                if 'alert_template_health' not in settings_column_names:
+                    session.execute(text("ALTER TABLE global_settings ADD COLUMN alert_template_health TEXT"))
+                    session.commit()
+                    print("Added alert_template_health column to global_settings table")
+
                 # Migration: Drop deprecated container_history table
                 # This table has been replaced by the EventLog table
                 inspector_result = session.connection().engine.dialect.get_table_names(session.connection())
@@ -652,6 +673,15 @@ class DatabaseManager:
                         # User has already customized to something < 5, just mark as migrated
                         settings.polling_interval_migrated = True
                         session.commit()
+
+                # Migration: Add custom_template column to alert_rules_v2 table
+                alert_rules_inspector = session.connection().engine.dialect.get_columns(session.connection(), 'alert_rules_v2')
+                alert_rules_column_names = [col['name'] for col in alert_rules_inspector]
+
+                if 'custom_template' not in alert_rules_column_names:
+                    session.execute(text("ALTER TABLE alert_rules_v2 ADD COLUMN custom_template TEXT"))
+                    session.commit()
+                    print("Added custom_template column to alert_rules_v2 table")
 
                 # Migration: Clear old tag data (starting fresh with normalized schema)
                 # The new tag system uses 'tags' and 'tag_assignments' tables
@@ -1414,9 +1444,13 @@ class DatabaseManager:
                 for key, value in updates.items():
                     if hasattr(settings, key):
                         setattr(settings, key, value)
+                    else:
+                        logger.warning(f"Ignoring unknown setting: {key}")
                 settings.updated_at = datetime.now()
                 session.commit()
                 session.refresh(settings)
+                # Expunge the object so it's not tied to the session
+                session.expunge(settings)
                 logger.info("Changed global settings")
                 return settings
             except Exception as e:

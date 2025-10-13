@@ -88,6 +88,7 @@ class EventLogger:
         self._processing_task: Optional[asyncio.Task] = None
         self._active_correlations: Dict[str, List[str]] = {}
         self._dropped_events_count = 0  # Track dropped events for monitoring
+        self._recent_events: Dict[str, float] = {}  # Cache for event deduplication: {dedup_key: timestamp}
 
     async def start(self):
         """Start the event processing task"""
@@ -149,6 +150,27 @@ class EventLogger:
             'duration_ms': duration_ms,
             'timestamp': datetime.now(timezone.utc)
         }
+
+        # Deduplicate rapid-fire events (e.g., Docker kill/die/stop events within 3 seconds)
+        # Create a deduplication key based on container, category, event type, and state change
+        if context.container_id and category == EventCategory.CONTAINER:
+            dedup_key = f"{context.host_id}:{context.container_id}:{category.value}:{event_type.value}:{old_state}:{new_state}"
+            current_time = time.time()
+
+            # Check if we've seen this event recently (within 3 seconds)
+            if dedup_key in self._recent_events:
+                time_since_last = current_time - self._recent_events[dedup_key]
+                if time_since_last < 3.0:
+                    logger.debug(f"Skipping duplicate event: {title} (last logged {time_since_last:.1f}s ago)")
+                    return
+
+            # Record this event
+            self._recent_events[dedup_key] = current_time
+
+            # Clean up old entries periodically (keep only last 5 minutes)
+            if len(self._recent_events) > 1000:  # Arbitrary threshold to trigger cleanup
+                cutoff_time = current_time - 300  # 5 minutes ago
+                self._recent_events = {k: v for k, v in self._recent_events.items() if v > cutoff_time}
 
         # Add to queue for async processing
         try:

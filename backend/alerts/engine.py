@@ -84,7 +84,8 @@ class AlertEngine:
         dedup_key: str,
         rule: AlertRuleV2,
         context: EvaluationContext,
-        current_value: Optional[float] = None
+        current_value: Optional[float] = None,
+        event_data: Optional[Dict[str, Any]] = None
     ) -> Tuple[AlertV2, bool]:
         """
         Get existing alert by dedup_key or create new one
@@ -121,6 +122,7 @@ class AlertEngine:
                 labels_json=json.dumps(context.labels) if context.labels else None,
                 host_name=context.host_name,
                 container_name=context.container_name,
+                event_context_json=json.dumps(event_data) if event_data else None,
             )
 
             session.add(alert)
@@ -134,7 +136,8 @@ class AlertEngine:
         self,
         alert: AlertV2,
         current_value: Optional[float] = None,
-        increment_occurrences: bool = True
+        increment_occurrences: bool = True,
+        event_data: Optional[Dict[str, Any]] = None
     ) -> AlertV2:
         """Update existing alert with new occurrence"""
         with self.db.get_session() as session:
@@ -144,6 +147,8 @@ class AlertEngine:
                 alert.occurrences += 1
             if current_value is not None:
                 alert.current_value = current_value
+            if event_data is not None:
+                alert.event_context_json = json.dumps(event_data)
 
             session.commit()
             session.refresh(alert)
@@ -234,38 +239,54 @@ class AlertEngine:
                 AlertRuleV2.scope == context.scope_type
             ).all()
 
+            logger.info(f"Engine: Found {len(rules)} event-driven rules for scope={context.scope_type}")
+
             for rule in rules:
+                logger.info(f"Engine: Checking rule '{rule.name}' (kind={rule.kind}) against event_type={event_type}")
+
                 # Check if rule matches this event type
-                if not self._rule_matches_event(rule, event_type, context, event_data):
+                matches_event = self._rule_matches_event(rule, event_type, context, event_data)
+                logger.info(f"Engine: Rule '{rule.name}' matches event: {matches_event}")
+                if not matches_event:
                     continue
 
                 # Check selectors
-                if not self._check_selectors(rule, context):
+                matches_selectors = self._check_selectors(rule, context)
+                logger.info(f"Engine: Rule '{rule.name}' matches selectors: {matches_selectors}")
+                if not matches_selectors:
                     continue
+
+                logger.info(f"Engine: Rule '{rule.name}' MATCHED! Creating/updating alert...")
 
                 # Generate dedup key
                 dedup_key = self._make_dedup_key(rule.kind, context.scope_type, context.scope_id)
+                logger.info(f"Engine: Dedup key: {dedup_key}")
 
-                # Get or create alert
-                alert, is_new = self._get_or_create_alert(dedup_key, rule, context)
+                # Get or create alert (pass event_data for template variables)
+                alert, is_new = self._get_or_create_alert(dedup_key, rule, context, event_data=event_data)
+                logger.info(f"Engine: Alert {alert.id} - is_new={is_new}")
 
                 # Check cooldown
                 if not is_new and self._check_cooldown(alert, rule.cooldown_seconds):
-                    logger.debug(f"Alert {alert.id} in cooldown, skipping")
+                    logger.info(f"Engine: Alert {alert.id} in cooldown (cooldown_seconds={rule.cooldown_seconds}), skipping")
                     continue
 
                 # Update alert
                 if not is_new:
-                    alert = self._update_alert(alert)
+                    alert = self._update_alert(alert, event_data=event_data)
+                    logger.info(f"Engine: Updated existing alert {alert.id}")
 
                 alerts_changed.append(alert)
+                logger.info(f"Engine: Added alert {alert.id} to alerts_changed list (count={len(alerts_changed)})")
 
                 # Check grace period before notifying
                 in_grace = self._check_grace_period(alert, rule.grace_seconds, is_new)
+                logger.info(f"Engine: Grace period check - in_grace={in_grace}, grace_seconds={rule.grace_seconds}")
                 if not in_grace:
                     # TODO: Trigger notification
-                    logger.info(f"Alert {alert.id} ready for notification")
+                    logger.info(f"Engine: Alert {alert.id} ready for notification")
 
+        logger.info(f"Engine: evaluate_event returning {len(alerts_changed)} alerts")
         return alerts_changed
 
     def _rule_matches_event(

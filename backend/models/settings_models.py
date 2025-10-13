@@ -19,7 +19,10 @@ class GlobalSettings(BaseModel):
     default_auto_restart: bool = False
     polling_interval: int = Field(2, ge=1, le=300)  # 1 second to 5 minutes
     connection_timeout: int = Field(10, ge=1, le=60)  # 1-60 seconds
-    alert_template: Optional[str] = Field(None, max_length=2000)  # Global notification template
+    alert_template: Optional[str] = Field(None, max_length=2000)  # Global notification template (default)
+    alert_template_metric: Optional[str] = Field(None, max_length=2000)  # Metric-based alert template
+    alert_template_state_change: Optional[str] = Field(None, max_length=2000)  # State change alert template
+    alert_template_health: Optional[str] = Field(None, max_length=2000)  # Health check alert template
     blackout_windows: Optional[List[dict]] = None  # Blackout windows configuration
     timezone_offset: int = Field(0, ge=-720, le=720)  # Timezone offset in minutes from UTC (-12h to +12h)
     show_host_stats: bool = Field(True)  # Show host statistics graphs on dashboard
@@ -113,6 +116,7 @@ class AlertRuleV2Create(BaseModel):
     container_selector_json: Optional[str] = None
     labels_json: Optional[str] = None
     notify_channels_json: Optional[str] = None
+    custom_template: Optional[str] = Field(None, max_length=2000)  # Custom template for this rule
 
 
 class AlertRuleV2Update(BaseModel):
@@ -134,8 +138,10 @@ class AlertRuleV2Update(BaseModel):
 
     grace_seconds: Optional[int] = Field(None, ge=0)
     cooldown_seconds: Optional[int] = Field(None, ge=0)
+    depends_on_json: Optional[str] = None  # JSON array of condition dependencies
 
     host_selector_json: Optional[str] = None
     container_selector_json: Optional[str] = None
     labels_json: Optional[str] = None
     notify_channels_json: Optional[str] = None
+    custom_template: Optional[str] = Field(None, max_length=2000)  # Custom template for this rule

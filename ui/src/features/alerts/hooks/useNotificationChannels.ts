@@ -37,7 +37,8 @@ export function useNotificationChannels() {
       const data = await apiClient.get<NotificationChannel[]>(API_BASE)
       return { channels: data }
     },
-    staleTime: 5 * 60 * 1000, // 5 minutes (notification channels don't change often)
+    staleTime: 60 * 1000, // 1 minute
+    refetchOnMount: true, // Always refetch when component mounts to ensure fresh data
   })
 }
 

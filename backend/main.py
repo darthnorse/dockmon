@@ -82,13 +82,16 @@ async def lifespan(app: FastAPI):
     # Ensure default user exists
     monitor.db.get_or_create_default_user()
 
+    # Note: Timezone offset is auto-synced from the browser when the UI loads
+    # This ensures timestamps are always displayed in the user's local timezone
+
     await monitor.event_logger.start()
     monitor.event_logger.log_system_event("DockMon Backend Starting", "DockMon backend is initializing", EventSeverity.INFO, EventType.STARTUP)
 
     # Connect security audit logger to event logger
     security_audit.set_event_logger(monitor.event_logger)
     monitor.monitoring_task = asyncio.create_task(monitor.monitor_containers())
-    monitor.cleanup_task = asyncio.create_task(monitor.cleanup_old_data())
+    monitor.maintenance_task = asyncio.create_task(monitor.run_daily_maintenance())
 
     # Start blackout window monitoring with WebSocket support
     await monitor.notification_service.blackout_manager.start_monitoring(
@@ -108,10 +111,14 @@ async def lifespan(app: FastAPI):
     global alert_evaluation_service
     alert_evaluation_service = AlertEvaluationService(
         db=monitor.db,
+        monitor=monitor,  # Pass monitor for container lookups
         stats_client=get_stats_client(),
         event_logger=monitor.event_logger,
+        notification_service=monitor.notification_service,
         evaluation_interval=10  # Evaluate every 10 seconds
     )
+    # Attach to monitor for event handling
+    monitor.alert_evaluation_service = alert_evaluation_service
     await alert_evaluation_service.start()
     logger.info("Alert evaluation service started")
 
@@ -121,8 +128,8 @@ async def lifespan(app: FastAPI):
     monitor.event_logger.log_system_event("DockMon Backend Shutting Down", "DockMon backend is shutting down", EventSeverity.INFO, EventType.SHUTDOWN)
     if monitor.monitoring_task:
         monitor.monitoring_task.cancel()
-    if monitor.cleanup_task:
-        monitor.cleanup_task.cancel()
+    if monitor.maintenance_task:
+        monitor.maintenance_task.cancel()
     # Stop blackout monitoring
     monitor.notification_service.blackout_manager.stop_monitoring()
     # Stop alert evaluation service
@@ -818,6 +825,9 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
         "log_retention_days": settings.log_retention_days,
         "enable_notifications": settings.enable_notifications,
         "alert_template": getattr(settings, 'alert_template', None),
+        "alert_template_metric": getattr(settings, 'alert_template_metric', None),
+        "alert_template_state_change": getattr(settings, 'alert_template_state_change', None),
+        "alert_template_health": getattr(settings, 'alert_template_health', None),
         "blackout_windows": getattr(settings, 'blackout_windows', None),
         "timezone_offset": getattr(settings, 'timezone_offset', 0),
         "show_host_stats": getattr(settings, 'show_host_stats', True),
@@ -825,19 +835,20 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
     }
 
 @app.post("/api/settings")
-async def update_settings(settings: GlobalSettings, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_default):
-    """Update global settings"""
+@app.put("/api/settings")
+async def update_settings(settings: dict, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_default):
+    """Update global settings (partial updates supported)"""
     # Check if stats settings changed
     old_show_host_stats = monitor.settings.show_host_stats
     old_show_container_stats = monitor.settings.show_container_stats
 
-    updated = monitor.db.update_settings(settings.dict())
+    updated = monitor.db.update_settings(settings)
     monitor.settings = updated  # Update in-memory settings
 
     # Log stats collection changes
-    if old_show_host_stats != updated.show_host_stats:
+    if 'show_host_stats' in settings and old_show_host_stats != updated.show_host_stats:
         logger.info(f"Host stats collection {'enabled' if updated.show_host_stats else 'disabled'}")
-    if old_show_container_stats != updated.show_container_stats:
+    if 'show_container_stats' in settings and old_show_container_stats != updated.show_container_stats:
         logger.info(f"Container stats collection {'enabled' if updated.show_container_stats else 'disabled'}")
 
     # Broadcast blackout status change to all clients
@@ -850,7 +861,24 @@ async def update_settings(settings: GlobalSettings, current_user: dict = Depends
         }
     })
 
-    return settings
+    # Return the updated settings from database (not the input dict)
+    return {
+        "max_retries": updated.max_retries,
+        "retry_delay": updated.retry_delay,
+        "default_auto_restart": updated.default_auto_restart,
+        "polling_interval": updated.polling_interval,
+        "connection_timeout": updated.connection_timeout,
+        "log_retention_days": updated.log_retention_days,
+        "enable_notifications": updated.enable_notifications,
+        "alert_template": getattr(updated, 'alert_template', None),
+        "alert_template_metric": getattr(updated, 'alert_template_metric', None),
+        "alert_template_state_change": getattr(updated, 'alert_template_state_change', None),
+        "alert_template_health": getattr(updated, 'alert_template_health', None),
+        "blackout_windows": getattr(updated, 'blackout_windows', None),
+        "timezone_offset": getattr(updated, 'timezone_offset', 0),
+        "show_host_stats": getattr(updated, 'show_host_stats', True),
+        "show_container_stats": getattr(updated, 'show_container_stats', True)
+    }
 
 
 # ==================== Alert Rules V2 Routes ====================
@@ -971,15 +999,14 @@ async def update_alert_rule_v2(
 
     try:
         # Build update dict with only provided fields
-        update_data = {}
-        for field, value in updates.dict(exclude_unset=True).items():
-            if value is not None:
-                update_data[field] = value
+        # exclude_unset=True means only fields explicitly set are included
+        # We don't filter out None/0/False because those are valid values (e.g., cooldown_seconds=0)
+        update_data = updates.dict(exclude_unset=True)
 
         # Track who updated the rule
         update_data['updated_by'] = current_user.get("username", "unknown")
 
-        updated_rule = monitor.db.update_alert_rule_v2(rule_id, update_data)
+        updated_rule = monitor.db.update_alert_rule_v2(rule_id, **update_data)
 
         if not updated_rule:
             raise HTTPException(status_code=404, detail="Alert rule not found")

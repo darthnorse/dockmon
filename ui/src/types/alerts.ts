@@ -92,6 +92,7 @@ export interface AlertRule {
   container_selector_json?: string | null
   labels_json?: string | null
   notify_channels_json?: string | null
+  custom_template?: string | null
   created_at: string
   updated_at: string
   version: number
@@ -117,4 +118,5 @@ export interface AlertRuleRequest {
   container_selector_json?: string
   labels_json?: string
   notify_channels_json?: string
+  custom_template?: string
 }

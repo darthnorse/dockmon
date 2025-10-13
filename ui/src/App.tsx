@@ -21,6 +21,8 @@ import { DashboardPage } from '@/features/dashboard/DashboardPage'
 import { ContainersPage } from '@/features/containers/ContainersPage'
 import { HostsPage } from '@/features/hosts/HostsPage'
 import { EventsPage } from '@/features/events/EventsPage'
+import { AlertsPage } from '@/features/alerts/AlertsPage'
+import { AlertRulesPage } from '@/features/alerts/AlertRulesPage'
 import { SettingsPage } from '@/features/settings/SettingsPage'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { LoadingSkeleton } from '@/components/layout/LoadingSkeleton'
@@ -79,9 +81,9 @@ function AppRoutes() {
         <Route path="/containers" element={<ContainersPage />} />
         <Route path="/hosts" element={<HostsPage />} />
         <Route path="/events" element={<EventsPage />} />
+        <Route path="/alerts" element={<AlertsPage />} />
+        <Route path="/alerts/rules" element={<AlertRulesPage />} />
         <Route path="/settings" element={<SettingsPage />} />
-        {/* Future routes */}
-        {/* <Route path="/alerts" element={<AlertsPage />} /> */}
       </Route>
 
       {/* Catch-all redirect */}

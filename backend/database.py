@@ -5,7 +5,7 @@ Uses SQLite for persistent storage of configuration and settings
 
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
-from sqlalchemy import create_engine, Column, String, Integer, BigInteger, Boolean, DateTime, JSON, ForeignKey, Text, UniqueConstraint, text
+from sqlalchemy import create_engine, Column, String, Integer, BigInteger, Boolean, DateTime, JSON, ForeignKey, Text, UniqueConstraint, text, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from sqlalchemy.pool import StaticPool
@@ -222,6 +222,148 @@ class AlertRuleContainer(Base):
         UniqueConstraint('alert_rule_id', 'host_id', 'container_name', name='_alert_container_uc'),
     )
 
+
+# ==================== Alerts v2 Tables ====================
+
+class AlertRuleV2(Base):
+    """Alert rules v2 - supports metric-driven and event-driven rules"""
+    __tablename__ = "alert_rules_v2"
+
+    id = Column(String, primary_key=True)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    scope = Column(String, nullable=False)  # 'host' | 'container' | 'group'
+    kind = Column(String, nullable=False)  # 'cpu_high', 'unhealthy', 'churn', etc.
+    enabled = Column(Boolean, default=True)
+
+    # Matching/Selectors
+    host_selector_json = Column(Text, nullable=True)  # JSON: {"include_all": true, "exclude": [...]}
+    container_selector_json = Column(Text, nullable=True)
+    labels_json = Column(Text, nullable=True)
+
+    # Conditions (metric-driven rules)
+    metric = Column(String, nullable=True)  # 'docker_cpu_workload_pct', etc.
+    operator = Column(String, nullable=True)  # '>=', '<=', '=='
+    threshold = Column(Float, nullable=True)
+    duration_seconds = Column(Integer, nullable=True)  # 300 for 'for 5m'
+    occurrences = Column(Integer, nullable=True)  # 3 for '3/5m'
+
+    # Clearing
+    clear_threshold = Column(Float, nullable=True)
+    clear_duration_seconds = Column(Integer, nullable=True)
+
+    # Behavior
+    severity = Column(String, nullable=False)  # 'info' | 'warning' | 'critical'
+    grace_seconds = Column(Integer, default=300)
+    cooldown_seconds = Column(Integer, default=300)
+    depends_on_json = Column(Text, nullable=True)  # JSON: ["host_missing", ...]
+
+    # Notifications
+    notify_channels_json = Column(Text, nullable=True)  # JSON: ["slack", "telegram"]
+
+    # Lifecycle
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
+    created_by = Column(String, nullable=True)
+    updated_by = Column(String, nullable=True)
+    version = Column(Integer, default=1)  # Incremented on each update
+
+    # Indexes
+    __table_args__ = (
+        {"sqlite_autoincrement": True},
+    )
+
+
+class AlertV2(Base):
+    """Alert instances v2 - stateful, deduplicated alerts"""
+    __tablename__ = "alerts_v2"
+
+    id = Column(String, primary_key=True)
+    dedup_key = Column(String, nullable=False, unique=True)  # {kind}|{scope_type}:{scope_id}
+    scope_type = Column(String, nullable=False)  # 'host' | 'container' | 'group'
+    scope_id = Column(String, nullable=False)
+    kind = Column(String, nullable=False)  # 'cpu_high', 'unhealthy', etc.
+    severity = Column(String, nullable=False)  # 'info' | 'warning' | 'critical'
+    state = Column(String, nullable=False)  # 'open' | 'snoozed' | 'resolved'
+    title = Column(String, nullable=False)
+    message = Column(Text, nullable=False)
+
+    # Timestamps
+    first_seen = Column(DateTime, nullable=False)
+    last_seen = Column(DateTime, nullable=False)
+    occurrences = Column(Integer, default=1, nullable=False)
+    snoozed_until = Column(DateTime, nullable=True)
+    resolved_at = Column(DateTime, nullable=True)
+    resolved_reason = Column(String, nullable=True)  # 'auto_clear' | 'entity_gone' | 'expired' | 'manual'
+
+    # Context & traceability
+    rule_id = Column(String, ForeignKey("alert_rules_v2.id", ondelete="SET NULL"), nullable=True)
+    rule_version = Column(Integer, nullable=True)
+    current_value = Column(Float, nullable=True)
+    threshold = Column(Float, nullable=True)
+    rule_snapshot = Column(Text, nullable=True)  # JSON of rule at opening
+    labels_json = Column(Text, nullable=True)  # {"env": "prod", "tier": "web"}
+    host_name = Column(String, nullable=True)  # Friendly name for display
+    container_name = Column(String, nullable=True)  # Friendly name for display
+
+    # Notification tracking
+    notified_at = Column(DateTime, nullable=True)
+    notification_count = Column(Integer, default=0)
+
+    # Relationships
+    rule = relationship("AlertRuleV2", foreign_keys=[rule_id])
+    annotations = relationship("AlertAnnotation", back_populates="alert", cascade="all, delete-orphan")
+
+    # Composite indexes for common queries
+    __table_args__ = (
+        {"sqlite_autoincrement": True},
+    )
+
+
+class AlertAnnotation(Base):
+    """User annotations on alerts"""
+    __tablename__ = "alert_annotations"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    alert_id = Column(String, ForeignKey("alerts_v2.id", ondelete="CASCADE"), nullable=False)
+    timestamp = Column(DateTime, default=datetime.now, nullable=False)
+    user = Column(String, nullable=True)
+    text = Column(Text, nullable=False)
+
+    # Relationship
+    alert = relationship("AlertV2", back_populates="annotations")
+
+
+class RuleRuntime(Base):
+    """Rule evaluation runtime state - sliding windows, breach tracking"""
+    __tablename__ = "rule_runtime"
+
+    dedup_key = Column(String, primary_key=True)
+    rule_id = Column(String, ForeignKey("alert_rules_v2.id", ondelete="CASCADE"), nullable=False)
+    state_json = Column(Text, nullable=False)  # JSON state (see docs for format)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
+
+    # Relationship
+    rule = relationship("AlertRuleV2", foreign_keys=[rule_id])
+
+
+class RuleEvaluation(Base):
+    """Rule evaluation history for debugging (24h retention)"""
+    __tablename__ = "rule_evaluations"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    rule_id = Column(String, nullable=False)
+    timestamp = Column(DateTime, default=datetime.now, nullable=False)
+    scope_id = Column(String, nullable=False)
+    value = Column(Float, nullable=False)
+    breached = Column(Boolean, nullable=False)
+    action = Column(String, nullable=True)  # 'opened' | 'updated' | 'cleared' | 'skipped_cooldown'
+
+    __table_args__ = (
+        {"sqlite_autoincrement": True},
+    )
+
+
 class EventLog(Base):
     """Comprehensive event logging for all DockMon activities"""
     __tablename__ = "event_logs"
@@ -343,6 +485,9 @@ class DatabaseManager:
 
         # Create indexes for tag_assignments
         self._create_tag_indexes()
+
+        # Create indexes for alerts v2
+        self._create_alert_v2_indexes()
 
         # Set secure permissions on database file (rw for owner only)
         self._secure_database_file()
@@ -561,6 +706,53 @@ class DatabaseManager:
 
         except Exception as e:
             logger.warning(f"Failed to create tag indexes: {e}")
+            # Don't fail startup on index creation errors
+
+    def _create_alert_v2_indexes(self):
+        """Create composite indexes for alerts v2 tables for optimal query performance"""
+        try:
+            with self.get_session() as session:
+                # Composite index for "show me open/snoozed alerts for this host/container"
+                session.execute(text(
+                    "CREATE INDEX IF NOT EXISTS idx_alerts_v2_scope_state "
+                    "ON alerts_v2(scope_type, scope_id, state, last_seen DESC)"
+                ))
+
+                # Index for dashboard KPI counting
+                session.execute(text(
+                    "CREATE INDEX IF NOT EXISTS idx_alerts_v2_state_last_seen "
+                    "ON alerts_v2(state, last_seen DESC)"
+                ))
+
+                # Index for rule lookups
+                session.execute(text(
+                    "CREATE INDEX IF NOT EXISTS idx_alerts_v2_rule_id "
+                    "ON alerts_v2(rule_id)"
+                ))
+
+                # Index for enabled rule lookups
+                session.execute(text(
+                    "CREATE INDEX IF NOT EXISTS idx_alert_rules_v2_enabled "
+                    "ON alert_rules_v2(enabled)"
+                ))
+
+                # Index for rule evaluation history queries
+                session.execute(text(
+                    "CREATE INDEX IF NOT EXISTS idx_rule_evaluations_rule_time "
+                    "ON rule_evaluations(rule_id, timestamp DESC)"
+                ))
+
+                # Index for evaluation history scope queries
+                session.execute(text(
+                    "CREATE INDEX IF NOT EXISTS idx_rule_evaluations_scope_time "
+                    "ON rule_evaluations(scope_id, timestamp DESC)"
+                ))
+
+                session.commit()
+                logger.info("Created alert v2 composite indexes for optimal query performance")
+
+        except Exception as e:
+            logger.warning(f"Failed to create alert v2 indexes: {e}")
             # Don't fail startup on index creation errors
 
     def _secure_database_file(self):
@@ -1430,6 +1622,116 @@ class DatabaseManager:
                 return False
             except Exception as e:
                 logger.error(f"Failed to delete alert rule {rule_id}: {e}")
+                raise
+
+    # ==================== Alert Rules V2 Methods ====================
+
+    def get_alert_rules_v2(self, enabled_only: bool = False) -> List[AlertRuleV2]:
+        """Get all alert rules v2"""
+        with self.get_session() as session:
+            query = session.query(AlertRuleV2)
+            if enabled_only:
+                query = query.filter(AlertRuleV2.enabled == True)
+            return query.all()
+
+    def get_alert_rule_v2(self, rule_id: str) -> Optional[AlertRuleV2]:
+        """Get a single alert rule v2 by ID"""
+        with self.get_session() as session:
+            return session.query(AlertRuleV2).filter(AlertRuleV2.id == rule_id).first()
+
+    def create_alert_rule_v2(
+        self,
+        name: str,
+        description: Optional[str],
+        scope: str,
+        kind: str,
+        enabled: bool,
+        severity: str,
+        metric: Optional[str] = None,
+        threshold: Optional[float] = None,
+        operator: Optional[str] = None,
+        duration_seconds: Optional[int] = None,
+        occurrences: Optional[int] = None,
+        clear_threshold: Optional[float] = None,
+        clear_duration_seconds: Optional[int] = None,
+        grace_seconds: int = 0,
+        cooldown_seconds: int = 300,
+        host_selector_json: Optional[str] = None,
+        container_selector_json: Optional[str] = None,
+        labels_json: Optional[str] = None,
+        notify_channels_json: Optional[str] = None,
+        created_by: Optional[str] = None,
+    ) -> AlertRuleV2:
+        """Create a new alert rule v2"""
+        import uuid
+
+        with self.get_session() as session:
+            rule = AlertRuleV2(
+                id=str(uuid.uuid4()),
+                name=name,
+                description=description,
+                scope=scope,
+                kind=kind,
+                enabled=enabled,
+                severity=severity,
+                metric=metric,
+                threshold=threshold,
+                operator=operator,
+                duration_seconds=duration_seconds,
+                occurrences=occurrences,
+                clear_threshold=clear_threshold,
+                clear_duration_seconds=clear_duration_seconds,
+                grace_seconds=grace_seconds,
+                cooldown_seconds=cooldown_seconds,
+                host_selector_json=host_selector_json,
+                container_selector_json=container_selector_json,
+                labels_json=labels_json,
+                notify_channels_json=notify_channels_json,
+                created_by=created_by,
+            )
+            session.add(rule)
+            session.commit()
+            session.refresh(rule)
+            logger.info(f"Created alert rule v2: {name} (ID: {rule.id})")
+            return rule
+
+    def update_alert_rule_v2(self, rule_id: str, **updates) -> Optional[AlertRuleV2]:
+        """Update an alert rule v2"""
+        with self.get_session() as session:
+            rule = session.query(AlertRuleV2).filter(AlertRuleV2.id == rule_id).first()
+            if not rule:
+                logger.warning(f"Attempted to update non-existent alert rule v2 {rule_id}")
+                return None
+
+            # Update fields
+            for key, value in updates.items():
+                if hasattr(rule, key) and key not in ['id', 'created_at', 'created_by']:
+                    setattr(rule, key, value)
+
+            # Increment version
+            rule.version += 1
+            rule.updated_at = datetime.now()
+
+            session.commit()
+            session.refresh(rule)
+            logger.info(f"Updated alert rule v2: {rule.name} (ID: {rule_id}, version: {rule.version})")
+            return rule
+
+    def delete_alert_rule_v2(self, rule_id: str) -> bool:
+        """Delete an alert rule v2"""
+        with self.get_session() as session:
+            try:
+                rule = session.query(AlertRuleV2).filter(AlertRuleV2.id == rule_id).first()
+                if rule:
+                    rule_name = rule.name
+                    session.delete(rule)
+                    session.commit()
+                    logger.info(f"Deleted alert rule v2: {rule_name} (ID: {rule_id})")
+                    return True
+                logger.warning(f"Attempted to delete non-existent alert rule v2 {rule_id}")
+                return False
+            except Exception as e:
+                logger.error(f"Failed to delete alert rule v2 {rule_id}: {e}")
                 raise
 
     def get_alerts_dependent_on_channel(self, channel_id: int) -> List[dict]:

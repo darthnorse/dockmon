@@ -79,6 +79,31 @@ class RateLimiter:
                 _get_int_env('DOCKMON_RATE_BURST_NOTIFICATIONS', 10),
                 _get_int_env('DOCKMON_RATE_VIOLATIONS_NOTIFICATIONS', 5)
             ),
+            "alerts": (
+                _get_int_env('DOCKMON_RATE_LIMIT_ALERTS', 100),  # Read operations
+                _get_int_env('DOCKMON_RATE_BURST_ALERTS', 20),
+                _get_int_env('DOCKMON_RATE_VIOLATIONS_ALERTS', 8)
+            ),
+            "alerts_write": (
+                _get_int_env('DOCKMON_RATE_LIMIT_ALERTS_WRITE', 30),  # Write operations (resolve/snooze)
+                _get_int_env('DOCKMON_RATE_BURST_ALERTS_WRITE', 10),
+                _get_int_env('DOCKMON_RATE_VIOLATIONS_ALERTS_WRITE', 5)
+            ),
+            "rules": (
+                _get_int_env('DOCKMON_RATE_LIMIT_RULES', 50),  # Rule read operations
+                _get_int_env('DOCKMON_RATE_BURST_RULES', 10),
+                _get_int_env('DOCKMON_RATE_VIOLATIONS_RULES', 8)
+            ),
+            "rules_write": (
+                _get_int_env('DOCKMON_RATE_LIMIT_RULES_WRITE', 10),  # Rule create/update/delete
+                _get_int_env('DOCKMON_RATE_BURST_RULES_WRITE', 3),
+                _get_int_env('DOCKMON_RATE_VIOLATIONS_RULES_WRITE', 5)
+            ),
+            "rules_test": (
+                _get_int_env('DOCKMON_RATE_LIMIT_RULES_TEST', 5),  # Expensive test operation
+                _get_int_env('DOCKMON_RATE_BURST_RULES_TEST', 2),
+                _get_int_env('DOCKMON_RATE_VIOLATIONS_RULES_TEST', 3)
+            ),
         }
 
         logger.info(f"Rate limiting configured: Default={self.limits['default'][0]}/min, "

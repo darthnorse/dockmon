@@ -83,3 +83,59 @@ class NotificationSettings(BaseModel):
     discord_webhook: Optional[str] = None
     pushover_app_token: Optional[str] = None
     pushover_user_key: Optional[str] = None
+
+
+# Alert System v2 Models
+class AlertRuleV2Create(BaseModel):
+    """Create alert rule v2"""
+    name: str = Field(..., min_length=1, max_length=200)
+    description: Optional[str] = Field(None, max_length=1000)
+    scope: str = Field(..., pattern="^(host|container|group)$")
+    kind: str = Field(..., min_length=1)
+    enabled: bool = True
+    severity: str = Field(..., pattern="^(info|warning|error|critical)$")
+
+    # Metric-based rule fields
+    metric: Optional[str] = None
+    threshold: Optional[float] = None
+    operator: Optional[str] = Field(None, pattern="^(>=|<=|>|<|==|!=)$")
+    duration_seconds: Optional[int] = Field(None, ge=0)
+    occurrences: Optional[int] = Field(None, ge=1)
+    clear_threshold: Optional[float] = None
+    clear_duration_seconds: Optional[int] = Field(None, ge=0)
+
+    # Timing configuration
+    grace_seconds: int = Field(0, ge=0)
+    cooldown_seconds: int = Field(300, ge=0)
+
+    # Selectors (JSON strings)
+    host_selector_json: Optional[str] = None
+    container_selector_json: Optional[str] = None
+    labels_json: Optional[str] = None
+    notify_channels_json: Optional[str] = None
+
+
+class AlertRuleV2Update(BaseModel):
+    """Update alert rule v2 (all fields optional)"""
+    name: Optional[str] = Field(None, min_length=1, max_length=200)
+    description: Optional[str] = Field(None, max_length=1000)
+    scope: Optional[str] = Field(None, pattern="^(host|container|group)$")
+    kind: Optional[str] = None
+    enabled: Optional[bool] = None
+    severity: Optional[str] = Field(None, pattern="^(info|warning|error|critical)$")
+
+    metric: Optional[str] = None
+    threshold: Optional[float] = None
+    operator: Optional[str] = Field(None, pattern="^(>=|<=|>|<|==|!=)$")
+    duration_seconds: Optional[int] = Field(None, ge=0)
+    occurrences: Optional[int] = Field(None, ge=1)
+    clear_threshold: Optional[float] = None
+    clear_duration_seconds: Optional[int] = Field(None, ge=0)
+
+    grace_seconds: Optional[int] = Field(None, ge=0)
+    cooldown_seconds: Optional[int] = Field(None, ge=0)
+
+    host_selector_json: Optional[str] = None
+    container_selector_json: Optional[str] = None
+    labels_json: Optional[str] = None
+    notify_channels_json: Optional[str] = None

@@ -36,7 +36,7 @@ from event_logger import EventLogger, EventContext, EventCategory, EventType, Ev
 # Import extracted modules
 from config.settings import AppConfig, get_cors_origins, setup_logging
 from models.docker_models import DockerHostConfig, DockerHost
-from models.settings_models import GlobalSettings, AlertRule
+from models.settings_models import GlobalSettings, AlertRule, AlertRuleV2Create, AlertRuleV2Update
 from models.request_models import (
     AutoRestartRequest, DesiredStateRequest, AlertRuleCreate, AlertRuleUpdate,
     NotificationChannelCreate, NotificationChannelUpdate, EventLogFilter, BatchJobCreate, ContainerTagUpdate, HostTagUpdate
@@ -102,6 +102,19 @@ async def lifespan(app: FastAPI):
     batch_manager = BatchJobManager(monitor.db, monitor, monitor.manager)
     logger.info("Batch job manager initialized")
 
+    # Initialize alert evaluation service
+    from alerts.evaluation_service import AlertEvaluationService
+    from stats_client import get_stats_client
+    global alert_evaluation_service
+    alert_evaluation_service = AlertEvaluationService(
+        db=monitor.db,
+        stats_client=get_stats_client(),
+        event_logger=monitor.event_logger,
+        evaluation_interval=10  # Evaluate every 10 seconds
+    )
+    await alert_evaluation_service.start()
+    logger.info("Alert evaluation service started")
+
     yield
     # Shutdown
     logger.info("Shutting down DockMon backend...")
@@ -112,6 +125,10 @@ async def lifespan(app: FastAPI):
         monitor.cleanup_task.cancel()
     # Stop blackout monitoring
     monitor.notification_service.blackout_manager.stop_monitoring()
+    # Stop alert evaluation service
+    if 'alert_evaluation_service' in globals():
+        await alert_evaluation_service.stop()
+        logger.info("Alert evaluation service stopped")
     # Close stats client (HTTP session and WebSocket)
     from stats_client import get_stats_client
     await get_stats_client().close()
@@ -148,9 +165,11 @@ app.include_router(auth_router)  # v1 auth (existing)
 # Register v2 API routers
 from auth.v2_routes import router as auth_v2_router
 from api.v2.user import router as user_v2_router
+from alerts.api import router as alerts_router
 
 app.include_router(auth_v2_router)  # v2 cookie-based auth
 app.include_router(user_v2_router)  # v2 user preferences
+app.include_router(alerts_router)  # v2 alerts system (instances, not rules - rules are in main.py)
 
 @app.get("/")
 async def root(current_user: dict = Depends(get_current_user)):
@@ -1023,6 +1042,213 @@ async def get_orphaned_alerts(current_user: dict = Depends(get_current_user)):
     except Exception as e:
         logger.error(f"Failed to check orphaned alerts: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== Alert Rules V2 Routes ====================
+
+@app.get("/api/alerts/rules")
+async def get_alert_rules_v2(current_user: dict = Depends(get_current_user)):
+    """Get all alert rules (v2)"""
+    from models.settings_models import AlertRuleV2Create
+
+    rules = monitor.db.get_alert_rules_v2()
+    return {
+        "rules": [{
+            "id": rule.id,
+            "name": rule.name,
+            "description": rule.description,
+            "scope": rule.scope,
+            "kind": rule.kind,
+            "enabled": rule.enabled,
+            "severity": rule.severity,
+            "metric": rule.metric,
+            "threshold": rule.threshold,
+            "operator": rule.operator,
+            "duration_seconds": rule.duration_seconds,
+            "occurrences": rule.occurrences,
+            "clear_threshold": rule.clear_threshold,
+            "clear_duration_seconds": rule.clear_duration_seconds,
+            "grace_seconds": rule.grace_seconds,
+            "cooldown_seconds": rule.cooldown_seconds,
+            "host_selector_json": rule.host_selector_json,
+            "container_selector_json": rule.container_selector_json,
+            "labels_json": rule.labels_json,
+            "notify_channels_json": rule.notify_channels_json,
+            "created_at": rule.created_at.isoformat() + 'Z',
+            "updated_at": rule.updated_at.isoformat() + 'Z',
+            "version": rule.version,
+        } for rule in rules],
+        "total": len(rules)
+    }
+
+
+@app.post("/api/alerts/rules")
+async def create_alert_rule_v2(
+    rule: AlertRuleV2Create,
+    current_user: dict = Depends(get_current_user),
+    rate_limit_check: bool = rate_limit_default
+):
+    """Create a new alert rule (v2)"""
+    from models.settings_models import AlertRuleV2Create
+
+    try:
+        new_rule = monitor.db.create_alert_rule_v2(
+            name=rule.name,
+            description=rule.description,
+            scope=rule.scope,
+            kind=rule.kind,
+            enabled=rule.enabled,
+            severity=rule.severity,
+            metric=rule.metric,
+            threshold=rule.threshold,
+            operator=rule.operator,
+            duration_seconds=rule.duration_seconds,
+            occurrences=rule.occurrences,
+            clear_threshold=rule.clear_threshold,
+            clear_duration_seconds=rule.clear_duration_seconds,
+            grace_seconds=rule.grace_seconds,
+            cooldown_seconds=rule.cooldown_seconds,
+            host_selector_json=rule.host_selector_json,
+            container_selector_json=rule.container_selector_json,
+            labels_json=rule.labels_json,
+            notify_channels_json=rule.notify_channels_json,
+            created_by=current_user.get("username", "unknown"),
+        )
+
+        logger.info(f"Created alert rule v2: {new_rule.name} (ID: {new_rule.id})")
+
+        # Log event
+        channels = []
+        if new_rule.notify_channels_json:
+            try:
+                import json
+                channels = json.loads(new_rule.notify_channels_json)
+            except:
+                channels = []
+
+        monitor.event_logger.log_alert_rule_created(
+            rule_name=new_rule.name,
+            rule_id=new_rule.id,
+            container_count=0,  # v2 rules use selectors, not direct container count
+            channels=channels if isinstance(channels, list) else [],
+            triggered_by=current_user.get("username", "user")
+        )
+
+        return {
+            "id": new_rule.id,
+            "name": new_rule.name,
+            "description": new_rule.description,
+            "scope": new_rule.scope,
+            "kind": new_rule.kind,
+            "enabled": new_rule.enabled,
+            "severity": new_rule.severity,
+            "created_at": new_rule.created_at.isoformat() + 'Z',
+        }
+    except Exception as e:
+        logger.error(f"Failed to create alert rule v2: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.put("/api/alerts/rules/{rule_id}")
+async def update_alert_rule_v2(
+    rule_id: str,
+    updates: AlertRuleV2Update,
+    current_user: dict = Depends(get_current_user)
+):
+    """Update an alert rule (v2)"""
+    from models.settings_models import AlertRuleV2Update
+
+    try:
+        # Build update dict with only provided fields
+        update_data = {}
+        for field, value in updates.dict(exclude_unset=True).items():
+            if value is not None:
+                update_data[field] = value
+
+        # Track who updated the rule
+        update_data['updated_by'] = current_user.get("username", "unknown")
+
+        updated_rule = monitor.db.update_alert_rule_v2(rule_id, update_data)
+
+        if not updated_rule:
+            raise HTTPException(status_code=404, detail="Alert rule not found")
+
+        logger.info(f"Updated alert rule v2: {rule_id}")
+
+        return {
+            "id": updated_rule.id,
+            "name": updated_rule.name,
+            "updated_at": updated_rule.updated_at.isoformat() + 'Z',
+            "version": updated_rule.version,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update alert rule v2: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/alerts/rules/{rule_id}")
+async def delete_alert_rule_v2(
+    rule_id: str,
+    current_user: dict = Depends(get_current_user),
+    rate_limit_check: bool = rate_limit_default
+):
+    """Delete an alert rule (v2)"""
+    try:
+        # Get rule info before deleting for event logging
+        rule = monitor.db.get_alert_rule_v2(rule_id)
+
+        success = monitor.db.delete_alert_rule_v2(rule_id)
+
+        if not success:
+            raise HTTPException(status_code=404, detail="Alert rule not found")
+
+        logger.info(f"Deleted alert rule v2: {rule_id}")
+
+        # Log event
+        if rule:
+            monitor.event_logger.log_alert_rule_deleted(
+                rule_name=rule.name,
+                rule_id=rule.id,
+                triggered_by=current_user.get("username", "user")
+            )
+
+        return {"success": True, "message": "Alert rule deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete alert rule v2: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.patch("/api/alerts/rules/{rule_id}/toggle")
+async def toggle_alert_rule_v2(
+    rule_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Toggle an alert rule enabled/disabled state (v2)"""
+    try:
+        rule = monitor.db.get_alert_rule_v2(rule_id)
+
+        if not rule:
+            raise HTTPException(status_code=404, detail="Alert rule not found")
+
+        new_enabled = not rule.enabled
+        updated_rule = monitor.db.update_alert_rule_v2(rule_id, {"enabled": new_enabled})
+
+        logger.info(f"Toggled alert rule v2: {rule_id} to {new_enabled}")
+
+        return {
+            "id": updated_rule.id,
+            "enabled": updated_rule.enabled,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to toggle alert rule v2: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
 
 # ==================== Blackout Window Routes ====================
 

@@ -11,6 +11,7 @@ Handles both event-driven and metric-driven alert rule evaluation with:
 
 import json
 import logging
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any, Tuple
@@ -283,7 +284,7 @@ class AlertEngine:
                 in_grace = self._check_grace_period(alert, rule.grace_seconds, is_new)
                 logger.info(f"Engine: Grace period check - in_grace={in_grace}, grace_seconds={rule.grace_seconds}")
                 if not in_grace:
-                    # TODO: Trigger notification
+                    # Alert ready for notification (handled by evaluation_service)
                     logger.info(f"Engine: Alert {alert.id} ready for notification")
 
         logger.info(f"Engine: evaluate_event returning {len(alerts_changed)} alerts")
@@ -321,24 +322,55 @@ class AlertEngine:
 
         Selectors are optional filters on host/container attributes
         """
-        # Host selector
+        # Host selector - filter by host properties
         if rule.host_selector_json:
             try:
                 host_selector = json.loads(rule.host_selector_json)
-                # TODO: Implement selector matching logic
-                # For now, match all
-            except json.JSONDecodeError:
-                logger.warning(f"Invalid host_selector_json in rule {rule.id}")
+                # Supported keys: host_name (exact or regex), host_id (exact)
+                if 'host_name' in host_selector:
+                    pattern = host_selector['host_name']
+                    if pattern.startswith('regex:'):
+                        # Regex matching
+                        regex_pattern = pattern[6:]  # Remove 'regex:' prefix
+                        if not re.match(regex_pattern, context.host_name or ''):
+                            return False
+                    else:
+                        # Exact matching
+                        if context.host_name != pattern:
+                            return False
+
+                if 'host_id' in host_selector:
+                    if context.host_id != host_selector['host_id']:
+                        return False
+            except (json.JSONDecodeError, Exception) as e:
+                logger.warning(f"Invalid host_selector_json in rule {rule.id}: {e}")
                 return False
 
-        # Container selector
+        # Container selector - filter by container properties
         if rule.container_selector_json:
             try:
                 container_selector = json.loads(rule.container_selector_json)
-                # TODO: Implement selector matching logic
-                # For now, match all
-            except json.JSONDecodeError:
-                logger.warning(f"Invalid container_selector_json in rule {rule.id}")
+                # Supported keys: container_name (exact or regex), container_id (exact), image (exact or regex)
+                if 'container_name' in container_selector:
+                    pattern = container_selector['container_name']
+                    if pattern.startswith('regex:'):
+                        # Regex matching
+                        regex_pattern = pattern[6:]  # Remove 'regex:' prefix
+                        if not re.match(regex_pattern, context.container_name or ''):
+                            return False
+                    else:
+                        # Exact matching
+                        if context.container_name != pattern:
+                            return False
+
+                if 'container_id' in container_selector:
+                    if context.container_id != container_selector['container_id']:
+                        return False
+
+                # Note: Image matching would require passing image info in context
+                # Currently not available in EvaluationContext
+            except (json.JSONDecodeError, Exception) as e:
+                logger.warning(f"Invalid container_selector_json in rule {rule.id}: {e}")
                 return False
 
         # Labels selector
@@ -481,7 +513,7 @@ class AlertEngine:
                         # Check grace period before notifying
                         in_grace = self._check_grace_period(alert, rule.grace_seconds, is_new)
                         if not in_grace:
-                            # TODO: Trigger notification
+                            # Alert ready for notification (handled by evaluation_service)
                             logger.info(f"Alert {alert.id} ready for notification")
 
                 else:

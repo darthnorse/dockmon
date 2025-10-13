@@ -125,6 +125,10 @@ class StatsHistoryBuffer:
 
         history = list(self._history[host_id])
 
+        # Guard against invalid num_points
+        if num_points <= 0:
+            num_points = 30  # Use default
+
         # If we have fewer points than requested, return what we have
         if len(history) <= num_points:
             return {
@@ -272,6 +276,10 @@ class ContainerStatsHistoryBuffer:
             }
 
         history = list(self._history[container_key])
+
+        # Guard against invalid num_points
+        if num_points <= 0:
+            num_points = 30  # Use default
 
         # If we have fewer points than requested, return what we have
         if len(history) <= num_points:

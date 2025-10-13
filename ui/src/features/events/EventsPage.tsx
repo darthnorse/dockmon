@@ -54,14 +54,18 @@ export function EventsPage() {
 
   // Fetch user's sort order preference on mount
   useEffect(() => {
-    fetch('/api/user/event-sort-order')
-      .then((res) => res.json())
-      .then((data) => {
+    const fetchSortOrder = async () => {
+      try {
+        const res = await fetch('/api/user/event-sort-order')
+        const data = await res.json()
         if (data.sort_order) {
           setSortOrder(data.sort_order)
         }
-      })
-      .catch((err) => console.error('Failed to fetch sort order:', err))
+      } catch (err) {
+        // Silently fail - will use default sort order
+      }
+    }
+    fetchSortOrder()
   }, [])
 
   const events = eventsData?.events ?? []
@@ -315,6 +319,9 @@ export function EventsPage() {
     document.body.appendChild(link)
     link.click()
     document.body.removeChild(link)
+
+    // Clean up object URL to prevent memory leak
+    URL.revokeObjectURL(url)
   }
 
   return (

@@ -14,6 +14,7 @@ import os
 import logging
 import secrets
 import bcrypt
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -258,6 +259,50 @@ class EventLog(Base):
         {"sqlite_autoincrement": True},
     )
 
+
+class Tag(Base):
+    """Tag definitions - reusable tags with metadata"""
+    __tablename__ = "tags"
+
+    id = Column(String, primary_key=True)  # UUID
+    name = Column(String, nullable=False, unique=True)
+    color = Column(String, nullable=True)  # Hex color code (e.g., "#3b82f6")
+    kind = Column(String, nullable=False, default='user')  # 'user' | 'system'
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+
+    # Relationships
+    assignments = relationship("TagAssignment", back_populates="tag", cascade="all, delete-orphan")
+
+
+class TagAssignment(Base):
+    """Tag assignments - links tags to entities (hosts, containers, groups)"""
+    __tablename__ = "tag_assignments"
+
+    tag_id = Column(String, ForeignKey("tags.id", ondelete="CASCADE"), nullable=False, primary_key=True)
+    subject_type = Column(String, nullable=False, primary_key=True)  # 'host' | 'container' | 'group'
+    subject_id = Column(String, nullable=False, primary_key=True)  # FK to hosts/containers
+
+    # Logical identity fields for sticky behavior (container rebuilds)
+    compose_project = Column(String, nullable=True)
+    compose_service = Column(String, nullable=True)
+    host_id_at_attach = Column(String, nullable=True)
+    container_name_at_attach = Column(String, nullable=True)
+
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    last_seen_at = Column(DateTime, nullable=True)
+
+    # Relationships
+    tag = relationship("Tag", back_populates="assignments")
+
+    # Indexes for efficient lookups
+    __table_args__ = (
+        # Index for looking up assignments by subject (host/container)
+        # Index for sticky tag matching (compose project + service + host)
+        {"sqlite_autoincrement": False},
+    )
+
+
 class DatabaseManager:
     """Database management and operations"""
 
@@ -295,6 +340,9 @@ class DatabaseManager:
 
         # Run database migrations
         self._run_migrations()
+
+        # Create indexes for tag_assignments
+        self._create_tag_indexes()
 
         # Set secure permissions on database file (rw for owner only)
         self._secure_database_file()
@@ -460,9 +508,60 @@ class DatabaseManager:
                         settings.polling_interval_migrated = True
                         session.commit()
 
+                # Migration: Clear old tag data (starting fresh with normalized schema)
+                # The new tag system uses 'tags' and 'tag_assignments' tables
+                table_names = session.connection().engine.dialect.get_table_names(session.connection())
+                if 'tags' in table_names and 'tag_assignments' in table_names:
+                    # Clear old host tags (JSON array format - deprecated)
+                    session.execute(text("UPDATE docker_hosts SET tags = NULL WHERE tags IS NOT NULL"))
+
+                    # Clear old container tags (CSV format - deprecated)
+                    session.execute(text("UPDATE container_desired_states SET custom_tags = NULL WHERE custom_tags IS NOT NULL"))
+
+                    session.commit()
+                    print("Cleared legacy tag data - starting fresh with normalized schema")
+
         except Exception as e:
             print(f"Migration warning: {e}")
             # Don't fail startup on migration errors
+
+    def _create_tag_indexes(self):
+        """Create indexes for tag_assignments table for efficient queries"""
+        try:
+            with self.get_session() as session:
+                # Check if indexes already exist
+                inspector = session.connection().engine.dialect.get_indexes(session.connection(), 'tag_assignments')
+                existing_indexes = [idx['name'] for idx in inspector]
+
+                # Create index for subject lookups (find all tags for a host/container)
+                if 'idx_tag_assignments_subject' not in existing_indexes:
+                    session.execute(text(
+                        "CREATE INDEX IF NOT EXISTS idx_tag_assignments_subject "
+                        "ON tag_assignments(subject_type, subject_id)"
+                    ))
+                    print("Created index idx_tag_assignments_subject")
+
+                # Create index for compose/logical identity matching (sticky tags)
+                if 'idx_tag_assignments_compose' not in existing_indexes:
+                    session.execute(text(
+                        "CREATE INDEX IF NOT EXISTS idx_tag_assignments_compose "
+                        "ON tag_assignments(compose_project, compose_service, host_id_at_attach)"
+                    ))
+                    print("Created index idx_tag_assignments_compose")
+
+                # Create index for tag_id lookups (find all entities with a specific tag)
+                if 'idx_tag_assignments_tag_id' not in existing_indexes:
+                    session.execute(text(
+                        "CREATE INDEX IF NOT EXISTS idx_tag_assignments_tag_id "
+                        "ON tag_assignments(tag_id)"
+                    ))
+                    print("Created index idx_tag_assignments_tag_id")
+
+                session.commit()
+
+        except Exception as e:
+            logger.warning(f"Failed to create tag indexes: {e}")
+            # Don't fail startup on index creation errors
 
     def _secure_database_file(self):
         """Set secure file permissions on the SQLite database file"""
@@ -710,124 +809,404 @@ class DatabaseManager:
                 logger.error(f"Failed to set desired state for {container_id[:12]}: {e}")
                 raise
 
-    def update_container_tags(self, host_id: str, container_id: str, container_name: str, tags_to_add: list[str], tags_to_remove: list[str]) -> list[str]:
-        """Update custom tags for a container"""
+    # ===========================
+    # TAG OPERATIONS (Normalized Schema)
+    # ===========================
+
+    @staticmethod
+    def _validate_tag_name(tag_name: str) -> str:
+        """Validate and sanitize tag name"""
+        if not tag_name or not isinstance(tag_name, str):
+            raise ValueError("Tag name must be a non-empty string")
+
+        tag_name = tag_name.strip().lower()
+
+        if len(tag_name) == 0:
+            raise ValueError("Tag name cannot be empty")
+        if len(tag_name) > 100:
+            raise ValueError("Tag name too long (max 100 characters)")
+        if not tag_name.replace('-', '').replace('_', '').replace(':', '').isalnum():
+            raise ValueError("Tag name can only contain alphanumeric characters, hyphens, underscores, and colons")
+
+        return tag_name
+
+    @staticmethod
+    def _validate_color(color: str = None) -> str:
+        """Validate hex color format"""
+        if color is None:
+            return None
+
+        if not isinstance(color, str):
+            raise ValueError("Color must be a string")
+
+        color = color.strip()
+
+        # Allow both #RRGGBB and RRGGBB formats
+        if color.startswith('#'):
+            color = color[1:]
+
+        if len(color) != 6:
+            raise ValueError("Color must be 6-character hex code")
+
+        try:
+            int(color, 16)
+        except ValueError:
+            raise ValueError("Color must be valid hex code")
+
+        return f"#{color}"
+
+    @staticmethod
+    def _validate_subject_type(subject_type: str) -> str:
+        """Validate subject type"""
+        valid_types = ['host', 'container', 'group']
+        if subject_type not in valid_types:
+            raise ValueError(f"Subject type must be one of: {', '.join(valid_types)}")
+        return subject_type
+
+    def get_or_create_tag(self, tag_name: str, kind: str = 'user', color: str = None) -> Tag:
+        """Get existing tag or create new one"""
+        tag_name = self._validate_tag_name(tag_name)
+        color = self._validate_color(color)
+
         with self.get_session() as session:
-            try:
-                config = session.query(ContainerDesiredState).filter(
-                    ContainerDesiredState.host_id == host_id,
-                    ContainerDesiredState.container_id == container_id
-                ).first()
+            tag = session.query(Tag).filter(Tag.name == tag_name).first()
 
-                # Get current custom tags
-                current_tags = []
-                if config and config.custom_tags:
-                    current_tags = [t.strip() for t in config.custom_tags.split(',') if t.strip()]
-
-                # Convert to set for manipulation
-                tag_set = set(current_tags)
-
-                # Add new tags
-                for tag in tags_to_add:
-                    tag_set.add(tag.strip().lower())
-
-                # Remove tags
-                for tag in tags_to_remove:
-                    tag_set.discard(tag.strip().lower())
-
-                # Convert back to sorted list
-                new_tags = sorted(list(tag_set))
-                new_tags_str = ','.join(new_tags) if new_tags else None
-
-                if config:
-                    config.custom_tags = new_tags_str
-                    config.updated_at = datetime.now()
-                    logger.info(f"Updated tags for {container_name} ({container_id[:12]}): {new_tags}")
-                else:
-                    config = ContainerDesiredState(
-                        host_id=host_id,
-                        container_id=container_id,
-                        container_name=container_name,
-                        custom_tags=new_tags_str
-                    )
-                    session.add(config)
-                    logger.info(f"Created tag config for {container_name} ({container_id[:12]}): {new_tags}")
-
+            if not tag:
+                tag = Tag(
+                    id=str(uuid.uuid4()),
+                    name=tag_name,
+                    kind=kind,
+                    color=color
+                )
+                session.add(tag)
                 session.commit()
-                return new_tags
-            except Exception as e:
-                logger.error(f"Failed to update tags for {container_id[:12]}: {e}")
-                raise
+                session.refresh(tag)
+                logger.info(f"Created new tag: {tag_name}")
 
-    def get_container_tags(self, host_id: str, container_id: str) -> list[str]:
-        """Get custom tags for a container"""
+            return tag
+
+    def assign_tag_to_subject(
+        self,
+        tag_name: str,
+        subject_type: str,
+        subject_id: str,
+        compose_project: str = None,
+        compose_service: str = None,
+        host_id_at_attach: str = None,
+        container_name_at_attach: str = None
+    ) -> TagAssignment:
+        """Assign a tag to a subject (host, container, group)"""
+        subject_type = self._validate_subject_type(subject_type)
+
         with self.get_session() as session:
-            config = session.query(ContainerDesiredState).filter(
-                ContainerDesiredState.host_id == host_id,
-                ContainerDesiredState.container_id == container_id
+            # Get or create tag (validates tag_name internally)
+            tag = self.get_or_create_tag(tag_name)
+
+            # Check if assignment already exists
+            existing = session.query(TagAssignment).filter(
+                TagAssignment.tag_id == tag.id,
+                TagAssignment.subject_type == subject_type,
+                TagAssignment.subject_id == subject_id
             ).first()
 
-            if config and config.custom_tags:
-                return [t.strip() for t in config.custom_tags.split(',') if t.strip()]
-            return []
+            if existing:
+                # Update last_seen_at
+                existing.last_seen_at = datetime.now()
+                session.commit()
+                return existing
 
-    def get_all_tags(self, query: str = "", limit: int = 20) -> list[str]:
-        """Get all unique custom tags across all containers, optionally filtered by query"""
+            # Create new assignment
+            assignment = TagAssignment(
+                tag_id=tag.id,
+                subject_type=subject_type,
+                subject_id=subject_id,
+                compose_project=compose_project,
+                compose_service=compose_service,
+                host_id_at_attach=host_id_at_attach,
+                container_name_at_attach=container_name_at_attach,
+                last_seen_at=datetime.now()
+            )
+            session.add(assignment)
+            session.commit()
+            logger.info(f"Assigned tag '{tag_name}' to {subject_type}:{subject_id}")
+            return assignment
+
+    def remove_tag_from_subject(self, tag_name: str, subject_type: str, subject_id: str) -> bool:
+        """Remove a tag assignment from a subject"""
+        tag_name = self._validate_tag_name(tag_name)
+        subject_type = self._validate_subject_type(subject_type)
+
         with self.get_session() as session:
-            # Get all container configs with custom tags
-            configs = session.query(ContainerDesiredState).filter(
-                ContainerDesiredState.custom_tags.isnot(None)
+            tag = session.query(Tag).filter(Tag.name == tag_name).first()
+
+            if not tag:
+                return False
+
+            assignment = session.query(TagAssignment).filter(
+                TagAssignment.tag_id == tag.id,
+                TagAssignment.subject_type == subject_type,
+                TagAssignment.subject_id == subject_id
+            ).first()
+
+            if assignment:
+                session.delete(assignment)
+                session.commit()
+                logger.info(f"Removed tag '{tag_name}' from {subject_type}:{subject_id}")
+                return True
+
+            return False
+
+    def get_tags_for_subject(self, subject_type: str, subject_id: str) -> list[str]:
+        """Get all tag names for a subject"""
+        subject_type = self._validate_subject_type(subject_type)
+
+        with self.get_session() as session:
+            assignments = session.query(TagAssignment).filter(
+                TagAssignment.subject_type == subject_type,
+                TagAssignment.subject_id == subject_id
             ).all()
 
-            # Collect all unique tags
-            tags_set = set()
-            for config in configs:
-                if config.custom_tags:
-                    tags = [t.strip() for t in config.custom_tags.split(',') if t.strip()]
-                    tags_set.update(tags)
+            tag_names = []
+            for assignment in assignments:
+                tag = session.query(Tag).filter(Tag.id == assignment.tag_id).first()
+                if tag:
+                    tag_names.append(tag.name)
 
-            # Filter by query if provided
-            if query:
-                query_lower = query.lower()
-                tags_list = [tag for tag in tags_set if query_lower in tag.lower()]
-            else:
-                tags_list = list(tags_set)
+            return sorted(tag_names)
 
-            # Sort by frequency (most used first) then alphabetically
-            # For now, just sort alphabetically
-            tags_list.sort()
-
-            return tags_list[:limit]
-
-    def get_all_host_tags(self, query: str = "", limit: int = 20) -> list[str]:
-        """Get all unique tags across all hosts, optionally filtered by query"""
+    def get_subjects_with_tag(self, tag_name: str, subject_type: str = None) -> list[dict]:
+        """Get all subjects that have a specific tag"""
         with self.get_session() as session:
-            # Get all hosts with tags
-            hosts = session.query(DockerHostDB).filter(
-                DockerHostDB.tags.isnot(None)
-            ).all()
+            tag_name = tag_name.strip().lower()
+            tag = session.query(Tag).filter(Tag.name == tag_name).first()
 
-            # Collect all unique tags
-            tags_set = set()
-            for host in hosts:
-                if host.tags:
-                    try:
-                        host_tags = json.loads(host.tags) if isinstance(host.tags, str) else host.tags
-                        if isinstance(host_tags, list):
-                            tags_set.update(host_tags)
-                    except (json.JSONDecodeError, TypeError):
-                        continue
+            if not tag:
+                return []
 
-            # Filter by query if provided
+            query = session.query(TagAssignment).filter(TagAssignment.tag_id == tag.id)
+
+            if subject_type:
+                query = query.filter(TagAssignment.subject_type == subject_type)
+
+            assignments = query.all()
+
+            return [
+                {
+                    'subject_type': a.subject_type,
+                    'subject_id': a.subject_id,
+                    'created_at': a.created_at.isoformat() if a.created_at else None,
+                    'last_seen_at': a.last_seen_at.isoformat() if a.last_seen_at else None
+                }
+                for a in assignments
+            ]
+
+    def update_subject_tags(
+        self,
+        subject_type: str,
+        subject_id: str,
+        tags_to_add: list[str],
+        tags_to_remove: list[str],
+        **identity_fields
+    ) -> list[str]:
+        """Update tags for a subject (add and/or remove)"""
+        subject_type = self._validate_subject_type(subject_type)
+
+        # Limit number of tags per operation to prevent abuse
+        MAX_TAGS_PER_OPERATION = 50
+        if len(tags_to_add) > MAX_TAGS_PER_OPERATION:
+            raise ValueError(f"Cannot add more than {MAX_TAGS_PER_OPERATION} tags at once")
+        if len(tags_to_remove) > MAX_TAGS_PER_OPERATION:
+            raise ValueError(f"Cannot remove more than {MAX_TAGS_PER_OPERATION} tags at once")
+
+        with self.get_session() as session:
+            try:
+                # Remove tags
+                for tag_name in tags_to_remove:
+                    self.remove_tag_from_subject(tag_name, subject_type, subject_id)
+
+                # Add tags
+                for tag_name in tags_to_add:
+                    self.assign_tag_to_subject(
+                        tag_name,
+                        subject_type,
+                        subject_id,
+                        **identity_fields
+                    )
+
+                # Return current tags
+                current_tags = self.get_tags_for_subject(subject_type, subject_id)
+
+                # Enforce maximum total tags per subject
+                MAX_TAGS_PER_SUBJECT = 100
+                if len(current_tags) > MAX_TAGS_PER_SUBJECT:
+                    logger.warning(f"Subject {subject_type}:{subject_id} has {len(current_tags)} tags (max {MAX_TAGS_PER_SUBJECT})")
+
+                return current_tags
+
+            except Exception as e:
+                logger.error(f"Failed to update tags for {subject_type}:{subject_id}: {e}")
+                raise
+
+    def get_all_tags_v2(self, query: str = "", limit: int = 100) -> list[dict]:
+        """Get all tag definitions with metadata"""
+        with self.get_session() as session:
+            tags_query = session.query(Tag)
+
             if query:
                 query_lower = query.lower()
-                tags_list = [tag for tag in tags_set if query_lower in tag.lower()]
-            else:
-                tags_list = list(tags_set)
+                # Escape LIKE wildcards to prevent unintended pattern matching
+                escaped_query = query_lower.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+                tags_query = tags_query.filter(Tag.name.like(f'%{escaped_query}%', escape='\\'))
 
-            # Sort alphabetically
-            tags_list.sort()
-            return tags_list[:limit]
+            tags = tags_query.order_by(Tag.name).limit(limit).all()
+
+            return [
+                {
+                    'id': tag.id,
+                    'name': tag.name,
+                    'color': tag.color,
+                    'kind': tag.kind,
+                    'created_at': tag.created_at.isoformat() if tag.created_at else None
+                }
+                for tag in tags
+            ]
+
+    def reattach_tags_for_container(
+        self,
+        host_id: str,
+        container_id: str,
+        container_name: str,
+        compose_project: str = None,
+        compose_service: str = None
+    ) -> list[str]:
+        """
+        Reattach tags to a rebuilt container based on logical identity.
+        This implements the "sticky tags" feature.
+        """
+        with self.get_session() as session:
+            reattached_tags = []
+
+            # Try to find previous assignments by compose identity
+            if compose_project and compose_service:
+                prev_assignments = session.query(TagAssignment).filter(
+                    TagAssignment.subject_type == 'container',
+                    TagAssignment.compose_project == compose_project,
+                    TagAssignment.compose_service == compose_service,
+                    TagAssignment.host_id_at_attach == host_id
+                ).all()
+
+                for prev_assignment in prev_assignments:
+                    tag = session.query(Tag).filter(Tag.id == prev_assignment.tag_id).first()
+                    if tag:
+                        # Create new assignment for the new container ID
+                        container_key = f"{host_id}:{container_id}"
+
+                        # Check if already assigned
+                        existing = session.query(TagAssignment).filter(
+                            TagAssignment.tag_id == tag.id,
+                            TagAssignment.subject_type == 'container',
+                            TagAssignment.subject_id == container_key
+                        ).first()
+
+                        if not existing:
+                            new_assignment = TagAssignment(
+                                tag_id=tag.id,
+                                subject_type='container',
+                                subject_id=container_key,
+                                compose_project=compose_project,
+                                compose_service=compose_service,
+                                host_id_at_attach=host_id,
+                                container_name_at_attach=container_name,
+                                last_seen_at=datetime.now()
+                            )
+                            session.add(new_assignment)
+                            reattached_tags.append(tag.name)
+                            logger.info(f"Reattached tag '{tag.name}' to container {container_name} via compose identity")
+
+            # Fallback: try to match by container name + host
+            if not reattached_tags:
+                prev_assignments = session.query(TagAssignment).filter(
+                    TagAssignment.subject_type == 'container',
+                    TagAssignment.container_name_at_attach == container_name,
+                    TagAssignment.host_id_at_attach == host_id
+                ).all()
+
+                for prev_assignment in prev_assignments:
+                    tag = session.query(Tag).filter(Tag.id == prev_assignment.tag_id).first()
+                    if tag:
+                        container_key = f"{host_id}:{container_id}"
+
+                        existing = session.query(TagAssignment).filter(
+                            TagAssignment.tag_id == tag.id,
+                            TagAssignment.subject_type == 'container',
+                            TagAssignment.subject_id == container_key
+                        ).first()
+
+                        if not existing:
+                            new_assignment = TagAssignment(
+                                tag_id=tag.id,
+                                subject_type='container',
+                                subject_id=container_key,
+                                host_id_at_attach=host_id,
+                                container_name_at_attach=container_name,
+                                last_seen_at=datetime.now()
+                            )
+                            session.add(new_assignment)
+                            reattached_tags.append(tag.name)
+                            logger.info(f"Reattached tag '{tag.name}' to container {container_name} via name match")
+
+            if reattached_tags:
+                session.commit()
+                logger.info(f"Reattached {len(reattached_tags)} tags to {container_name}")
+
+            return reattached_tags
+
+    def cleanup_orphaned_tag_assignments(self, days_old: int = 30, batch_size: int = 1000) -> int:
+        """
+        Clean up tag assignments for containers/hosts that no longer exist.
+
+        Args:
+            days_old: Remove assignments not seen in this many days
+            batch_size: Maximum number of assignments to delete in one batch
+
+        Returns:
+            Number of assignments removed
+        """
+        with self.get_session() as session:
+            from datetime import timedelta
+            cutoff_date = datetime.now() - timedelta(days=days_old)
+
+            # Find orphaned container assignments (last_seen_at > cutoff)
+            # Process in batches to avoid locking the database for too long
+            total_deleted = 0
+            while True:
+                # Get batch of orphaned assignments
+                assignments_to_delete = session.query(TagAssignment).filter(
+                    TagAssignment.subject_type == 'container',
+                    TagAssignment.last_seen_at < cutoff_date
+                ).limit(batch_size).all()
+
+                if not assignments_to_delete:
+                    break
+
+                # Delete this batch
+                for assignment in assignments_to_delete:
+                    session.delete(assignment)
+
+                session.commit()
+                batch_count = len(assignments_to_delete)
+                total_deleted += batch_count
+
+                logger.debug(f"Deleted batch of {batch_count} orphaned tag assignments")
+
+                # If we deleted fewer than batch_size, we're done
+                if batch_count < batch_size:
+                    break
+
+            if total_deleted > 0:
+                logger.info(f"Cleaned up {total_deleted} orphaned tag assignments")
+
+            return total_deleted
 
     # Global Settings
     def get_settings(self) -> GlobalSettings:
@@ -1086,7 +1465,7 @@ class DatabaseManager:
                    event_type: Optional[str] = None,
                    severity: Optional[List[str]] = None,
                    host_id: Optional[List[str]] = None,
-                   container_id: Optional[str] = None,
+                   container_id: Optional[List[str]] = None,
                    container_name: Optional[str] = None,
                    start_date: Optional[datetime] = None,
                    end_date: Optional[datetime] = None,
@@ -1097,7 +1476,7 @@ class DatabaseManager:
                    sort_order: str = 'desc') -> tuple[List[EventLog], int]:
         """Get events with filtering and pagination - returns (events, total_count)
 
-        Multi-select filters (category, severity, host_id) accept lists for OR filtering.
+        Multi-select filters (category, severity, host_id, container_id) accept lists for OR filtering.
         """
         with self.get_session() as session:
             query = session.query(EventLog)
@@ -1121,9 +1500,14 @@ class DatabaseManager:
                 elif isinstance(host_id, str):
                     query = query.filter(EventLog.host_id == host_id)
             if container_id:
-                query = query.filter(EventLog.container_id == container_id)
+                if isinstance(container_id, list) and container_id:
+                    query = query.filter(EventLog.container_id.in_(container_id))
+                elif isinstance(container_id, str):
+                    query = query.filter(EventLog.container_id == container_id)
             if container_name:
-                query = query.filter(EventLog.container_name.like(f'%{container_name}%'))
+                # Escape LIKE wildcards to prevent unintended pattern matching
+                escaped_name = container_name.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+                query = query.filter(EventLog.container_name.like(f'%{escaped_name}%', escape='\\'))
             if start_date:
                 query = query.filter(EventLog.timestamp >= start_date)
             if end_date:
@@ -1131,11 +1515,13 @@ class DatabaseManager:
             if correlation_id:
                 query = query.filter(EventLog.correlation_id == correlation_id)
             if search:
-                search_term = f'%{search}%'
+                # Escape LIKE wildcards to prevent unintended pattern matching
+                escaped_search = search.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+                search_term = f'%{escaped_search}%'
                 query = query.filter(
-                    (EventLog.title.like(search_term)) |
-                    (EventLog.message.like(search_term)) |
-                    (EventLog.container_name.like(search_term))
+                    (EventLog.title.like(search_term, escape='\\')) |
+                    (EventLog.message.like(search_term, escape='\\')) |
+                    (EventLog.container_name.like(search_term, escape='\\'))
                 )
 
             # Get total count for pagination

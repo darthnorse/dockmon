@@ -28,6 +28,10 @@ from event_logger import EventLogger, EventSeverity, EventType
 from stats_client import get_stats_client
 from docker_monitor.stats_manager import StatsManager
 from docker_monitor.stats_history import StatsHistoryBuffer, ContainerStatsHistoryBuffer
+from docker_monitor.container_discovery import ContainerDiscovery
+from docker_monitor.state_manager import StateManager
+from docker_monitor.operations import ContainerOperations
+from docker_monitor.cleanup import CleanupManager
 from auth.session_manager import session_manager
 
 
@@ -221,6 +225,21 @@ class DockerMonitor:
 
         # Track previous network stats for rate calculation (Phase 4c)
         self._last_net_stats: Dict[str, float] = {}  # host_id -> cumulative bytes
+
+        # Initialize specialized modules
+        self.discovery = ContainerDiscovery(self.db, self.settings, self.hosts, self.clients)
+        # Share reconnection tracking with discovery module
+        self.discovery.reconnect_attempts = self.reconnect_attempts
+        self.discovery.last_reconnect_attempt = self.last_reconnect_attempt
+
+        self.state_manager = StateManager(self.db, self.hosts, self.clients)
+        # Share state dictionaries with state_manager
+        self.state_manager.auto_restart_status = self.auto_restart_status
+        self.state_manager.restart_attempts = self.restart_attempts
+        self.state_manager.restarting_containers = self.restarting_containers
+
+        self.operations = ContainerOperations(self.hosts, self.clients, self.event_logger, self._recent_user_actions)
+        self.cleanup_manager = CleanupManager(self.db, self.event_logger)
 
         self._load_persistent_config()  # Load saved hosts and configs
 
@@ -910,7 +929,6 @@ class DockerMonitor:
     async def get_containers(self, host_id: Optional[str] = None) -> List[Container]:
         """Get containers from one or all hosts"""
         containers = []
-
         hosts_to_check = [host_id] if host_id else list(self.hosts.keys())
 
         for hid in hosts_to_check:
@@ -920,420 +938,43 @@ class DockerMonitor:
 
             # Try to reconnect if host exists but has no client (offline)
             if hid not in self.clients:
-                # Exponential backoff: 5s, 10s, 20s, 40s, 80s, max 5 minutes
-                now = time.time()
-                attempts = self.reconnect_attempts.get(hid, 0)
-                last_attempt = self.last_reconnect_attempt.get(hid, 0)
-                backoff_seconds = min(5 * (2 ** attempts), 300)
-
-                # Skip reconnection if we're in backoff period
-                if now - last_attempt < backoff_seconds:
-                    time_remaining = backoff_seconds - (now - last_attempt)
-                    logger.debug(f"Skipping reconnection for {host.name} - backoff active (attempt {attempts}, {time_remaining:.1f}s remaining)")
-                    host.status = "offline"
+                reconnected = await self.discovery.attempt_reconnection(hid)
+                if not reconnected:
                     continue
 
-                # Record this reconnection attempt
-                self.last_reconnect_attempt[hid] = now
-                logger.info(f"Attempting to reconnect to offline host {host.name} (attempt {attempts + 1})")
+            # Discover containers for this host
+            host_containers = self.discovery.discover_containers_for_host(hid, self._get_auto_restart_status)
 
-                # Attempt to reconnect offline hosts
-                try:
-                    # Fetch TLS certs from database for reconnection
-                    with self.db.get_session() as session:
-                        db_host = session.query(DockerHostDB).filter_by(id=hid).first()
+            # Populate restart_attempts from monitor's state
+            for container in host_containers:
+                container.restart_attempts = self.restart_attempts.get(container.short_id, 0)
 
-                    if host.url.startswith("unix://"):
-                        client = docker.DockerClient(base_url=host.url)
-                    elif db_host and db_host.tls_cert and db_host.tls_key and db_host.tls_ca:
-                        # Reconnect with TLS using certs from database
-                        logger.debug(f"Reconnecting to {host.name} with TLS")
+            containers.extend(host_containers)
 
-                        # Write certs to temporary files for TLS config
-                        cert_dir = os.path.join(CERTS_DIR, hid)
-                        os.makedirs(cert_dir, exist_ok=True)
-
-                        cert_file = os.path.join(cert_dir, 'cert.pem')
-                        key_file = os.path.join(cert_dir, 'key.pem')
-                        ca_file = os.path.join(cert_dir, 'ca.pem') if db_host.tls_ca else None
-
-                        with open(cert_file, 'w') as f:
-                            f.write(db_host.tls_cert)
-                        with open(key_file, 'w') as f:
-                            f.write(db_host.tls_key)
-                        if ca_file:
-                            with open(ca_file, 'w') as f:
-                                f.write(db_host.tls_ca)
-
-                        # Set secure permissions
-                        os.chmod(cert_file, 0o600)
-                        os.chmod(key_file, 0o600)
-                        if ca_file:
-                            os.chmod(ca_file, 0o600)
-
-                        tls_config = docker.tls.TLSConfig(
-                            client_cert=(cert_file, key_file),
-                            ca_cert=ca_file,
-                            verify=bool(db_host.tls_ca)
-                        )
-
-                        client = docker.DockerClient(
-                            base_url=host.url,
-                            tls=tls_config,
-                            timeout=self.settings.connection_timeout
-                        )
-                    else:
-                        # Reconnect without TLS
-                        client = docker.DockerClient(
-                            base_url=host.url,
-                            timeout=self.settings.connection_timeout
-                        )
-
-                    # Test the connection
-                    client.ping()
-                    # Connection successful - add to clients
-                    self.clients[hid] = client
-
-                    # Reset reconnection attempts on success
-                    self.reconnect_attempts[hid] = 0
-                    logger.info(f"Reconnected to offline host: {host.name}")
-
-                    # Re-register with stats and events service
-                    try:
-                        stats_client = get_stats_client()
-                        tls_ca = db_host.tls_ca if db_host else None
-                        tls_cert = db_host.tls_cert if db_host else None
-                        tls_key = db_host.tls_key if db_host else None
-
-                        await stats_client.add_docker_host(hid, host.url, tls_ca, tls_cert, tls_key)
-                        await stats_client.add_event_host(hid, host.url, tls_ca, tls_cert, tls_key)
-                        logger.info(f"Re-registered {host.name} ({hid[:8]}) with stats/events service after reconnection")
-                    except Exception as e:
-                        logger.warning(f"Failed to re-register {host.name} with Go services after reconnection: {e}")
-
-                except Exception as e:
-                    # Increment reconnection attempts on failure
-                    self.reconnect_attempts[hid] = attempts + 1
-
-                    # Still offline - update status and continue
-                    host.status = "offline"
-                    host.error = f"Connection failed: {str(e)}"
-                    host.last_checked = datetime.now()
-
-                    # Log with backoff info to help debugging
-                    next_attempt_in = min(5 * (2 ** (attempts + 1)), 300)
-                    logger.debug(f"Host {host.name} still offline (attempt {attempts + 1}). Next retry in {next_attempt_in}s")
-                    continue
-
-            client = self.clients[hid]
-
-            try:
-                docker_containers = client.containers.list(all=True)
-                host.status = "online"
-                host.container_count = len(docker_containers)
-                host.error = None
-
-                for dc in docker_containers:
-                    try:
-                        container_id = dc.id[:12]
-
-                        # Try to get image info, but handle missing images gracefully
-                        # Access dc.image first to trigger any errors before accessing its properties
-                        try:
-                            container_image = dc.image
-                            image_name = container_image.tags[0] if container_image.tags else container_image.short_id
-                        except Exception as img_error:
-                            # Image may have been deleted - use image ID from container attrs
-                            # This is common when containers reference deleted images
-                            image_name = dc.attrs.get('Config', {}).get('Image', 'unknown')
-                            if image_name == 'unknown':
-                                # Try to get from ImageID in attrs
-                                image_id = dc.attrs.get('Image', '')
-                                if image_id.startswith('sha256:'):
-                                    image_name = image_id[:19]  # sha256: + first 12 chars
-                                else:
-                                    image_name = image_id[:12] if image_id else 'unknown'
-
-                        # Extract labels from Docker container (Phase 3d)
-                        labels = dc.attrs.get('Config', {}).get('Labels', {}) or {}
-
-                        # Derive tags from labels (Phase 3d)
-                        from models.docker_models import derive_container_tags
-                        derived_tags = derive_container_tags(labels)
-
-                        # Get custom tags from database (use full ID for lookup)
-                        custom_tags = self.db.get_container_tags(hid, dc.id)
-
-                        # Combine tags: custom tags first, then derived tags (remove duplicates)
-                        # This ensures custom tags appear before derived tags in the UI
-                        tags = []
-                        seen = set()
-                        for tag in custom_tags + derived_tags:
-                            if tag not in seen:
-                                tags.append(tag)
-                                seen.add(tag)
-
-                        # Get desired state from database
-                        desired_state = self.db.get_desired_state(hid, container_id)
-
-                        # Extract ports from NetworkSettings
-                        port_bindings = dc.attrs.get('NetworkSettings', {}).get('Ports', {})
-                        ports = parse_container_ports(port_bindings)
-
-                        # Extract restart policy from HostConfig
-                        host_config = dc.attrs.get('HostConfig', {})
-                        restart_policy = parse_restart_policy(host_config)
-
-                        # Extract volumes from Mounts
-                        mounts = dc.attrs.get('Mounts', [])
-                        volumes = parse_container_volumes(mounts)
-
-                        # Extract environment variables from Config
-                        env_list = dc.attrs.get('Config', {}).get('Env', [])
-                        env = parse_container_env(env_list)
-
-                        container = Container(
-                            id=dc.id,
-                            short_id=container_id,
-                            name=dc.name,
-                            state=dc.status,
-                            status=dc.attrs['State']['Status'],
-                            host_id=hid,
-                            host_name=host.name,
-                            image=image_name,
-                            created=dc.attrs['Created'],
-                            auto_restart=self._get_auto_restart_status(hid, container_id),
-                            restart_attempts=self.restart_attempts.get(container_id, 0),
-                            desired_state=desired_state,
-                            ports=ports,
-                            restart_policy=restart_policy,
-                            volumes=volumes,
-                            env=env,
-                            labels=labels,
-                            tags=tags
-                        )
-                        containers.append(container)
-                    except Exception as container_error:
-                        # Log but don't fail the whole host for one bad container
-                        logger.warning(f"Skipping container {dc.name if hasattr(dc, 'name') else 'unknown'} on {host.name} due to error: {container_error}")
-                        continue
-
-            except Exception as e:
-                logger.error(f"Error getting containers from {host.name}: {e}")
-                host.status = "offline"
-                host.error = str(e)
-
-            host.last_checked = datetime.now()
-
-        # Fetch stats from Go stats service and populate container stats
-        try:
-            from stats_client import get_stats_client
-            stats_client = get_stats_client()
-            container_stats = await stats_client.get_container_stats()
-
-            # Populate stats for each container using composite key (host_id:container_id)
-            for container in containers:
-                # Use composite key to support containers with duplicate IDs on different hosts
-                composite_key = f"{container.host_id}:{container.id}"
-                stats = container_stats.get(composite_key, {})
-                if stats:
-                    container.cpu_percent = stats.get('cpu_percent')
-                    container.memory_usage = stats.get('memory_usage')
-                    container.memory_limit = stats.get('memory_limit')
-                    container.memory_percent = stats.get('memory_percent')
-                    container.network_rx = stats.get('network_rx')
-                    container.network_tx = stats.get('network_tx')
-                    container.net_bytes_per_sec = stats.get('net_bytes_per_sec')
-                    container.disk_read = stats.get('disk_read')
-                    container.disk_write = stats.get('disk_write')
-                    logger.debug(f"Populated stats for {container.name} ({container.short_id}) on {container.host_name}: CPU {container.cpu_percent}%")
-        except Exception as e:
-            logger.warning(f"Failed to fetch container stats from stats service: {e}")
+        # Populate stats for all containers
+        await self.discovery.populate_container_stats(containers)
 
         return containers
 
     def restart_container(self, host_id: str, container_id: str) -> bool:
         """Restart a specific container"""
-        if host_id not in self.clients:
-            raise HTTPException(status_code=404, detail="Host not found")
-
-        host = self.hosts.get(host_id)
-        host_name = host.name if host else 'Unknown Host'
-
-        start_time = time.time()
-        try:
-            client = self.clients[host_id]
-            container = client.containers.get(container_id)
-            container_name = container.name
-
-            container.restart(timeout=10)
-            duration_ms = int((time.time() - start_time) * 1000)
-
-            logger.info(f"Restarted container '{container_name}' on host '{host_name}'")
-
-            # Log the successful restart
-            self.event_logger.log_container_action(
-                action="restart",
-                container_name=container_name,
-                container_id=container_id,
-                host_name=host_name,
-                host_id=host_id,
-                success=True,
-                triggered_by="user",
-                duration_ms=duration_ms
-            )
-            return True
-        except Exception as e:
-            duration_ms = int((time.time() - start_time) * 1000)
-            logger.error(f"Failed to restart container '{container_name}' on host '{host_name}': {e}")
-
-            # Log the failed restart
-            self.event_logger.log_container_action(
-                action="restart",
-                container_name=container_id,  # Use ID if name unavailable
-                container_id=container_id,
-                host_name=host_name,
-                host_id=host_id,
-                success=False,
-                triggered_by="user",
-                error_message=str(e),
-                duration_ms=duration_ms
-            )
-            raise HTTPException(status_code=500, detail=str(e))
+        return self.operations.restart_container(host_id, container_id)
 
     def stop_container(self, host_id: str, container_id: str) -> bool:
         """Stop a specific container"""
-        if host_id not in self.clients:
-            raise HTTPException(status_code=404, detail="Host not found")
-
-        host = self.hosts.get(host_id)
-        host_name = host.name if host else 'Unknown Host'
-
-        start_time = time.time()
-        try:
-            client = self.clients[host_id]
-            container = client.containers.get(container_id)
-            container_name = container.name
-
-            container.stop(timeout=10)
-            duration_ms = int((time.time() - start_time) * 1000)
-
-            logger.info(f"Stopped container '{container_name}' on host '{host_name}'")
-
-            # Track this user action to suppress critical severity on expected state change
-            container_key = f"{host_id}:{container_id}"
-            self._recent_user_actions[container_key] = time.time()
-            logger.info(f"Tracked user stop action for {container_key}")
-
-            # Log the successful stop
-            self.event_logger.log_container_action(
-                action="stop",
-                container_name=container_name,
-                container_id=container_id,
-                host_name=host_name,
-                host_id=host_id,
-                success=True,
-                triggered_by="user",
-                duration_ms=duration_ms
-            )
-            return True
-        except Exception as e:
-            duration_ms = int((time.time() - start_time) * 1000)
-            logger.error(f"Failed to stop container '{container_name}' on host '{host_name}': {e}")
-
-            # Log the failed stop
-            self.event_logger.log_container_action(
-                action="stop",
-                container_name=container_id,
-                container_id=container_id,
-                host_name=host_name,
-                host_id=host_id,
-                success=False,
-                triggered_by="user",
-                error_message=str(e),
-                duration_ms=duration_ms
-            )
-            raise HTTPException(status_code=500, detail=str(e))
+        return self.operations.stop_container(host_id, container_id)
 
     def start_container(self, host_id: str, container_id: str) -> bool:
         """Start a specific container"""
-        if host_id not in self.clients:
-            raise HTTPException(status_code=404, detail="Host not found")
-
-        host = self.hosts.get(host_id)
-        host_name = host.name if host else 'Unknown Host'
-
-        start_time = time.time()
-        try:
-            client = self.clients[host_id]
-            container = client.containers.get(container_id)
-            container_name = container.name
-
-            container.start()
-            duration_ms = int((time.time() - start_time) * 1000)
-
-            logger.info(f"Started container '{container_name}' on host '{host_name}'")
-
-            # Track this user action to suppress critical severity on expected state change
-            container_key = f"{host_id}:{container_id}"
-            self._recent_user_actions[container_key] = time.time()
-            logger.info(f"Tracked user start action for {container_key}")
-
-            # Log the successful start
-            self.event_logger.log_container_action(
-                action="start",
-                container_name=container_name,
-                container_id=container_id,
-                host_name=host_name,
-                host_id=host_id,
-                success=True,
-                triggered_by="user",
-                duration_ms=duration_ms
-            )
-            return True
-        except Exception as e:
-            duration_ms = int((time.time() - start_time) * 1000)
-            logger.error(f"Failed to start container '{container_name}' on host '{host_name}': {e}")
-
-            # Log the failed start
-            self.event_logger.log_container_action(
-                action="start",
-                container_name=container_id,
-                container_id=container_id,
-                host_name=host_name,
-                host_id=host_id,
-                success=False,
-                triggered_by="user",
-                error_message=str(e),
-                duration_ms=duration_ms
-            )
-            raise HTTPException(status_code=500, detail=str(e))
+        return self.operations.start_container(host_id, container_id)
 
     def toggle_auto_restart(self, host_id: str, container_id: str, container_name: str, enabled: bool):
         """Toggle auto-restart for a container"""
-        # Get host name for logging
-        host = self.hosts.get(host_id)
-        host_name = host.name if host else 'Unknown Host'
-
-        # Use host_id:container_id as key to prevent collisions between hosts
-        container_key = f"{host_id}:{container_id}"
-        self.auto_restart_status[container_key] = enabled
-        if not enabled:
-            self.restart_attempts[container_key] = 0
-            self.restarting_containers[container_key] = False
-        # Save to database
-        self.db.set_auto_restart(host_id, container_id, container_name, enabled)
-        logger.info(f"Auto-restart {'enabled' if enabled else 'disabled'} for container '{container_name}' on host '{host_name}'")
+        return self.state_manager.toggle_auto_restart(host_id, container_id, container_name, enabled)
 
     def set_container_desired_state(self, host_id: str, container_id: str, container_name: str, desired_state: str):
         """Set desired state for a container"""
-        # Get host name for logging
-        host = self.hosts.get(host_id)
-        host_name = host.name if host else 'Unknown Host'
-
-        # Save to database
-        self.db.set_desired_state(host_id, container_id, container_name, desired_state)
-        logger.info(f"Desired state set to '{desired_state}' for container '{container_name}' on host '{host_name}'")
+        return self.state_manager.set_container_desired_state(host_id, container_id, container_name, desired_state)
 
     # Alias methods for batch operations (consistent naming)
     def update_container_auto_restart(self, host_id: str, container_id: str, container_name: str, enabled: bool):
@@ -1345,54 +986,8 @@ class DockerMonitor:
         return self.set_container_desired_state(host_id, container_id, container_name, desired_state)
 
     def update_container_tags(self, host_id: str, container_id: str, container_name: str, tags_to_add: list[str], tags_to_remove: list[str]) -> dict:
-        """
-        Update container custom tags in database
-
-        Args:
-            host_id: Docker host ID
-            container_id: Container ID
-            container_name: Container name
-            tags_to_add: List of tags to add
-            tags_to_remove: List of tags to remove
-
-        Returns:
-            dict with updated tags list
-        """
-        if host_id not in self.clients:
-            raise HTTPException(status_code=404, detail="Host not found")
-
-        try:
-            # Verify container exists
-            client = self.clients[host_id]
-            container = client.containers.get(container_id)
-
-            # Get labels to derive compose/swarm tags
-            labels = container.labels if container.labels else {}
-
-            # Update custom tags in database
-            custom_tags = self.db.update_container_tags(host_id, container_id, container_name, tags_to_add, tags_to_remove)
-
-            # Get all tags (compose, swarm, custom)
-            from models.docker_models import derive_container_tags
-            derived_tags = derive_container_tags(labels)
-
-            # Combine derived tags with custom tags (remove duplicates)
-            all_tags_set = set(derived_tags + custom_tags)
-            all_tags = sorted(list(all_tags_set))
-
-            logger.info(f"Updated tags for container {container_name} on host {host_id}: +{tags_to_add}, -{tags_to_remove}")
-
-            return {
-                "success": True,
-                "tags": all_tags,
-                "custom_tags": custom_tags
-            }
-
-        except docker.errors.NotFound:
-            raise HTTPException(status_code=404, detail="Container not found")
-        except Exception as e:
-            logger.error(f"Failed to update tags for container {container_id}: {str(e)}")
-            raise HTTPException(status_code=500, detail=str(e))
+        """Update container custom tags in database"""
+        return self.state_manager.update_container_tags(host_id, container_id, container_name, tags_to_add, tags_to_remove)
 
     async def check_orphaned_alerts(self):
         """Check for alert rules that reference non-existent containers
@@ -1882,14 +1477,8 @@ class DockerMonitor:
 
             for db_host in db_hosts:
                 try:
-                    # Deserialize tags from JSON
-                    tags = None
-                    if db_host.tags:
-                        try:
-                            tags = json.loads(db_host.tags)
-                        except (json.JSONDecodeError, TypeError):
-                            logger.warning(f"Failed to parse tags for host {db_host.name}, ignoring")
-                            tags = None
+                    # Load tags from normalized schema
+                    tags = self.db.get_tags_for_subject('host', db_host.id)
 
                     config = DockerHostConfig(
                         name=db_host.name,
@@ -1912,13 +1501,8 @@ class DockerMonitor:
                         logger.error(f"Failed to reconnect to saved host {db_host.name}: {e}")
                     # Add host to UI even if connection failed, mark as offline
                     # This prevents "disappearing hosts" bug after restart
-                    # Deserialize tags for offline host
-                    tags = None
-                    if db_host.tags:
-                        try:
-                            tags = json.loads(db_host.tags)
-                        except (json.JSONDecodeError, TypeError):
-                            tags = None
+                    # Load tags from normalized schema for offline host
+                    tags = self.db.get_tags_for_subject('host', db_host.id)
 
                     host = DockerHost(
                         id=db_host.id,
@@ -1951,49 +1535,8 @@ class DockerMonitor:
 
     def _get_auto_restart_status(self, host_id: str, container_id: str) -> bool:
         """Get auto-restart status for a container"""
-        # Use host_id:container_id as key to prevent collisions between hosts
-        container_key = f"{host_id}:{container_id}"
-
-        # Check in-memory cache first
-        if container_key in self.auto_restart_status:
-            return self.auto_restart_status[container_key]
-
-        # Check database
-        config = self.db.get_auto_restart_config(host_id, container_id)
-        if config:
-            self.auto_restart_status[container_key] = config.enabled
-            return config.enabled
-
-        return False
+        return self.state_manager.get_auto_restart_status(host_id, container_id)
 
     async def cleanup_old_data(self):
         """Periodic cleanup of old data"""
-        logger.info("Starting periodic data cleanup...")
-
-        while True:
-            try:
-                settings = self.db.get_settings()
-
-                if settings.auto_cleanup_events:
-                    # Clean up old events
-                    event_deleted = self.db.cleanup_old_events(settings.event_retention_days)
-                    if event_deleted > 0:
-                        self.event_logger.log_system_event(
-                            "Automatic Event Cleanup",
-                            f"Cleaned up {event_deleted} events older than {settings.event_retention_days} days",
-                            EventSeverity.INFO,
-                            EventType.STARTUP
-                        )
-
-                # Clean up expired sessions (runs daily regardless of event cleanup setting)
-                expired_count = session_manager.cleanup_expired_sessions()
-                if expired_count > 0:
-                    logger.info(f"Cleaned up {expired_count} expired sessions")
-
-                # Sleep for 24 hours before next cleanup
-                await asyncio.sleep(24 * 60 * 60)  # 24 hours
-
-            except Exception as e:
-                logger.error(f"Error in cleanup task: {e}")
-                # Wait 1 hour before retrying
-                await asyncio.sleep(60 * 60)  # 1 hour
+        await self.cleanup_manager.cleanup_old_data()

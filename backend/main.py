@@ -402,35 +402,22 @@ async def update_host_tags(
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
 
-    # Get current tags from database
-    with monitor.db.get_session() as session:
-        from database import DockerHostDB
-        db_host = session.query(DockerHostDB).filter(DockerHostDB.id == host_id).first()
+    # Update tags using normalized schema
+    updated_tags = monitor.db.update_subject_tags(
+        'host',
+        host_id,
+        request.tags_to_add,
+        request.tags_to_remove,
+        host_id_at_attach=host_id,
+        container_name_at_attach=host.name  # Use host name for logging
+    )
 
-        if not db_host:
-            raise HTTPException(status_code=404, detail="Host not found in database")
+    # Update in-memory host object so changes are immediately visible
+    host.tags = updated_tags
 
-        # Parse existing tags
-        try:
-            current_tags = set(json.loads(db_host.tags) if db_host.tags else [])
-        except (json.JSONDecodeError, TypeError):
-            current_tags = set()
+    logger.info(f"User {current_user.get('username')} updated tags for host {host.name}")
 
-        # Apply changes
-        new_tags = current_tags.copy()
-        new_tags.update(request.tags_to_add)
-        new_tags.difference_update(request.tags_to_remove)
-
-        # Update database
-        db_host.tags = json.dumps(sorted(list(new_tags)))
-        session.commit()
-
-        # Update in-memory host object so changes are immediately visible
-        host.tags = sorted(list(new_tags))
-
-        logger.info(f"User {current_user.get('username')} updated tags for host {host.name}")
-
-        return {"tags": sorted(list(new_tags))}
+    return {"tags": updated_tags}
 
 @app.get("/api/hosts/{host_id}/metrics")
 async def get_host_metrics(host_id: str, current_user: dict = Depends(get_current_user)):
@@ -719,7 +706,7 @@ async def suggest_tags(
     Returns a list of existing container tags that match the query string.
     Used by the bulk tag management UI for containers.
     """
-    tags = monitor.db.get_all_tags(query=q, limit=limit)
+    tags = monitor.db.get_all_tags_v2(query=q, limit=limit)
     return {"tags": tags}
 
 @app.get("/api/hosts/tags/suggest")
@@ -731,11 +718,10 @@ async def suggest_host_tags(
     """
     Get host tag suggestions for autocomplete
 
-    Returns a list of existing host tags that match the query string.
-    Host tags are separate from container tags (e.g., 'prod', 'dev', 'us-west-1').
+    Returns a list of existing tags that match the query string.
+    In the normalized schema, tags are universal and can be used for both hosts and containers.
     """
-    # Use optimized database method - filters at SQL level for better performance
-    tags = monitor.db.get_all_host_tags(query=q, limit=limit)
+    tags = monitor.db.get_all_tags_v2(query=q, limit=limit)
     return {"tags": tags}
 
 
@@ -1261,7 +1247,7 @@ async def get_events(
     event_type: Optional[str] = None,
     severity: Optional[List[str]] = Query(None),
     host_id: Optional[List[str]] = Query(None),
-    container_id: Optional[str] = None,
+    container_id: Optional[List[str]] = Query(None),
     container_name: Optional[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,

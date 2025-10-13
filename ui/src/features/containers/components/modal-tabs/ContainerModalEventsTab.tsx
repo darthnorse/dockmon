@@ -149,6 +149,9 @@ export function ContainerModalEventsTab({ hostId, containerId }: ContainerModalE
     document.body.appendChild(link)
     link.click()
     document.body.removeChild(link)
+
+    // Clean up object URL to prevent memory leak
+    URL.revokeObjectURL(url)
   }
 
   if (isLoading) {

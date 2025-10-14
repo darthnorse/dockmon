@@ -3,13 +3,10 @@ Authentication Routes for DockMon
 Handles login, logout, API key access, and session management endpoints
 """
 
-import os
-import secrets
 import logging
 from typing import Optional
 
 from fastapi import APIRouter, Request, Response, HTTPException, Depends
-from fastapi.responses import JSONResponse
 
 from models.auth_models import LoginRequest, ChangePasswordRequest
 from security.rate_limiting import rate_limit_auth

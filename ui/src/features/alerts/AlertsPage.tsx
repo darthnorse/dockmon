@@ -259,7 +259,7 @@ export function AlertsPage() {
       </div>
 
       {/* Alerts List */}
-      <div className="flex-1 overflow-auto">
+      <div className={`flex-1 overflow-auto ${selectedAlertIds.size > 0 ? 'pb-24' : ''}`}>
         {isLoading ? (
           <div className="flex h-full items-center justify-center text-gray-400">
             Loading alerts...

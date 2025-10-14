@@ -583,7 +583,7 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
   }
 
   return (
-    <div className="rounded-md border">
+    <div className={`rounded-md border ${selectedHostIds.size > 0 ? 'pb-24' : ''}`}>
       <table className="w-full">
         <thead className="bg-muted/50 sticky top-0 z-10">
           {table.getHeaderGroups().map((headerGroup) => (

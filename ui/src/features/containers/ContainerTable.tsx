@@ -1040,7 +1040,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   }
 
   return (
-    <div className="space-y-4">
+    <div className={`space-y-4 ${selectedContainerIds.size > 0 ? 'pb-24' : ''}`}>
       {/* Search */}
       <div className="flex items-center gap-4">
         <Input

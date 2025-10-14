@@ -39,6 +39,7 @@ const SCOPE_OPTIONS: { value: AlertScope; label: string }[] = [
 
 export function AlertsPage() {
   const [filters, setFilters] = useState<AlertFilters>({
+    state: 'open', // Default to showing only open alerts
     page: 1,
     page_size: 20,
   })
@@ -284,21 +285,25 @@ export function AlertsPage() {
 
             {/* Table Body */}
             <div className="divide-y divide-gray-800">
-              {alerts.map((alert) => (
-                <div
-                  key={alert.id}
-                  className="flex items-start border-l-4 px-6 py-4 transition-colors hover:bg-gray-900/50"
-                  style={{
-                    borderLeftColor:
-                      alert.severity === 'critical'
-                        ? '#dc2626'
-                        : alert.severity === 'error'
-                          ? '#ea580c'
-                          : alert.severity === 'warning'
-                            ? '#ca8a04'
-                            : '#2563eb',
-                  }}
-                >
+              {alerts.map((alert) => {
+                const isDimmed = alert.state === 'resolved' || alert.state === 'snoozed'
+                return (
+                  <div
+                    key={alert.id}
+                    className={`flex items-start border-l-4 px-6 py-4 transition-colors hover:bg-gray-900/50 ${
+                      isDimmed ? 'opacity-60' : ''
+                    }`}
+                    style={{
+                      borderLeftColor:
+                        alert.severity === 'critical'
+                          ? '#dc2626'
+                          : alert.severity === 'error'
+                            ? '#ea580c'
+                            : alert.severity === 'warning'
+                              ? '#ca8a04'
+                              : '#2563eb',
+                    }}
+                  >
                   {/* Checkbox */}
                   <div className="flex items-start">
                     <input
@@ -341,7 +346,8 @@ export function AlertsPage() {
                     </div>
                   </button>
                 </div>
-              ))}
+                )
+              })}
             </div>
           </>
         )}

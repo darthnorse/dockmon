@@ -9,6 +9,31 @@ from logging.handlers import RotatingFileHandler
 from typing import List
 
 
+class HealthCheckFilter(logging.Filter):
+    """Filter out health check and routine polling requests to reduce log noise"""
+    def filter(self, record: logging.LogRecord) -> bool:
+        # Filter out successful requests to these endpoints
+        # Check both the formatted message and the raw args
+        message = record.getMessage()
+
+        # For uvicorn access logs, the message format is:
+        # 'IP:PORT - "METHOD /path HTTP/1.1" STATUS'
+        if '200 OK' in message or '200' in str(getattr(record, 'args', '')):
+            # Health checks
+            if '/health' in message:
+                return False
+            # Container polling (happens every 2 seconds)
+            if '/api/containers' in message:
+                return False
+            # Host polling
+            if '/api/hosts' in message:
+                return False
+            # Alert counts polling (happens every 30 seconds)
+            if '/api/alerts/' in message and 'state=open' in message:
+                return False
+        return True
+
+
 def setup_logging():
     """Configure application logging with rotation"""
     from .paths import DATA_DIR
@@ -48,6 +73,10 @@ def setup_logging():
     # Add handlers to root logger
     root_logger.addHandler(console_handler)
     root_logger.addHandler(file_handler)
+
+    # Suppress noisy Uvicorn access logs for health checks and polling
+    uvicorn_access = logging.getLogger("uvicorn.access")
+    uvicorn_access.addFilter(HealthCheckFilter())
 
 
 def _is_docker_container_id(hostname: str) -> bool:

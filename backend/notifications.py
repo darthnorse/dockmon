@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 import requests
 import httpx
-from database import DatabaseManager, NotificationChannel, AlertRuleDB
+from database import DatabaseManager, NotificationChannel, AlertRuleDB, AlertV2
 from event_logger import EventSeverity, EventCategory, EventType
 
 logger = logging.getLogger(__name__)
@@ -1188,7 +1188,7 @@ Rule: {RULE_NAME}
             if rule.metric and settings.alert_template_metric:
                 return settings.alert_template_metric
             # Check if it's a state change alert
-            elif rule.kind in ['container_stopped', 'container_died', 'container_restarted'] and settings.alert_template_state_change:
+            elif rule.kind in ['container_stopped', 'container_restarted'] and settings.alert_template_state_change:
                 return settings.alert_template_state_change
             # Check if it's a health alert
             elif rule.kind in ['container_unhealthy', 'host_unhealthy'] and settings.alert_template_health:
@@ -1216,6 +1216,35 @@ Rule: {RULE_NAME}
 - Occurrences: {OCCURRENCES}
 
 🤖 DockMon Alert System"""
+
+    def _format_exit_code(self, exit_code: int) -> str:
+        """Format exit code to human-readable string"""
+        try:
+            code = int(exit_code)
+            if code == 0:
+                return "0 (Clean exit)"
+            elif code == 137:
+                return "137 (SIGKILL - Force killed / OOM)"
+            elif code == 143:
+                return "143 (SIGTERM - Graceful stop)"
+            elif code == 130:
+                return "130 (SIGINT - Interrupted)"
+            elif code == 126:
+                return "126 (Command cannot execute)"
+            elif code == 127:
+                return "127 (Command not found)"
+            elif code == 128:
+                return "128 (Invalid exit code)"
+            elif 129 <= code <= 255:
+                # Signal = code - 128
+                signal = code - 128
+                return f"{code} (Signal {signal})"
+            elif 1 <= code <= 127:
+                return f"{code} (Application error)"
+            else:
+                return str(code)
+        except (ValueError, TypeError):
+            return str(exit_code) if exit_code is not None else ''
 
     def _format_message_v2(self, alert, rule, template):
         """Format message for v2 alert with variable substitution"""
@@ -1294,7 +1323,15 @@ Rule: {RULE_NAME}
                 # State transition info
                 variables['{OLD_STATE}'] = event_context.get('old_state', '') or ''
                 variables['{NEW_STATE}'] = event_context.get('new_state', '') or ''
-                variables['{EXIT_CODE}'] = str(event_context.get('exit_code', '')) if event_context.get('exit_code') is not None else ''
+
+                # Translate exit code to human-readable format
+                exit_code = event_context.get('exit_code')
+                if exit_code is not None:
+                    exit_code_display = self._format_exit_code(exit_code)
+                    variables['{EXIT_CODE}'] = exit_code_display
+                else:
+                    variables['{EXIT_CODE}'] = ''
+
                 variables['{IMAGE}'] = event_context.get('image', '') or ''
                 variables['{EVENT_TYPE}'] = event_context.get('event_type', '') or ''
                 variables['{TRIGGERED_BY}'] = event_context.get('triggered_by', 'system') or 'system'

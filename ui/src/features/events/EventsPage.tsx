@@ -11,6 +11,7 @@ import { useHosts } from '@/features/hosts/hooks/useHosts'
 import type { EventFilters, EventSeverity, EventCategory } from '@/types/events'
 import { formatSeverity, getSeverityColor } from '@/lib/utils/eventUtils'
 import { ChevronLeft, ChevronRight, Search, MoreHorizontal, ArrowUpDown, X, Check, Download } from 'lucide-react'
+import { useDynamicPageSize } from '@/hooks/useDynamicPageSize'
 
 const SEVERITY_OPTIONS: EventSeverity[] = ['critical', 'error', 'warning', 'info', 'debug']
 const CATEGORY_OPTIONS: EventCategory[] = ['container', 'host', 'system', 'alert', 'notification', 'user']
@@ -27,8 +28,17 @@ const TIME_RANGE_OPTIONS = [
 
 export function EventsPage() {
   const queryClient = useQueryClient()
+
+  // Dynamic page size based on viewport height
+  const { pageSize, containerRef } = useDynamicPageSize({
+    rowHeight: 35, // Height of each event row in table (34 + 1px padding)
+    minRows: 15,
+    maxRows: 35, // Conservative max to prevent overflow
+    reservedSpace: 280, // Space for header, filters, table header, pagination
+  })
+
   const [filters, setFilters] = useState<EventFilters>({
-    limit: 20,
+    limit: pageSize,
     offset: 0,
     hours: 24,
   })
@@ -42,6 +52,11 @@ export function EventsPage() {
   const [selectedContainerIds, setSelectedContainerIds] = useState<string[]>([])
   const [showContainerDropdown, setShowContainerDropdown] = useState(false)
   const containerDropdownRef = useRef<HTMLDivElement>(null)
+
+  // Update filters.limit when pageSize changes
+  useEffect(() => {
+    setFilters((prev) => ({ ...prev, limit: pageSize }))
+  }, [pageSize])
 
   const { data: hosts = [] } = useHosts()
   const { data: containers = [] } = useQuery<any[]>({
@@ -325,7 +340,7 @@ export function EventsPage() {
   }
 
   return (
-    <div className="flex-1 flex flex-col h-full overflow-hidden">
+    <div ref={containerRef} className="flex-1 flex flex-col h-full overflow-hidden">
       {/* Header */}
       <div className="border-b border-border bg-surface px-6 py-4">
         <div className="flex items-center justify-between mb-4">

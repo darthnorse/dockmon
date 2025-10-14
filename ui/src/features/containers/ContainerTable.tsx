@@ -68,6 +68,8 @@ import { Input } from '@/components/ui/input'
 import { TagChip } from '@/components/TagChip'
 import { MiniChart } from '@/lib/charts/MiniChart'
 import { useStatsHistory } from '@/lib/hooks/useStatsHistory'
+import { useAlertCounts, type AlertSeverityCounts } from '@/features/alerts/hooks/useAlerts'
+import { AlertDetailsDrawer } from '@/features/alerts/components/AlertDetailsDrawer'
 import { ContainerDrawer } from './components/ContainerDrawer'
 import { ContainerDetailsModal } from './components/ContainerDetailsModal'
 import { BulkActionBar } from './components/BulkActionBar'
@@ -156,54 +158,102 @@ function StatusIcon({ state }: { state: Container['state'] }) {
   )
 }
 
+
 /**
- * Image:Tag display with tooltip (Phase 3d UX spec)
- * Shows short version, tooltip reveals full image string
+ * Alert severity counts with color coding and click-to-open-drawer
  */
-function ImageTag({ image }: { image: string }) {
-  // Extract image:tag from full string
-  const parseImage = (fullImage: string) => {
-    // Remove registry prefix if present (e.g., docker.io/library/)
-    const parts = fullImage.split('/')
-    const imageTag = parts[parts.length - 1] || fullImage
+function ContainerAlertSeverityCounts({
+  containerId,
+  alertCounts,
+  onAlertClick
+}: {
+  containerId: string
+  alertCounts: Map<string, AlertSeverityCounts> | undefined
+  onAlertClick: (alertId: string) => void
+}) {
+  const counts = alertCounts?.get(containerId)
 
-    // Split by @ to remove digest if present
-    const withoutDigest = imageTag.split('@')[0]
-
-    return withoutDigest || fullImage
+  if (!counts || counts.total === 0) {
+    return <span className="text-xs text-muted-foreground">-</span>
   }
 
-  const shortImage = parseImage(image)
+  // Get first alert of each severity for click targets
+  const getFirstAlertBySeverity = (severity: string) => {
+    return counts.alerts.find(a => a.severity.toLowerCase() === severity)?.id
+  }
 
   return (
-    <div className="max-w-md truncate text-sm text-muted-foreground" title={image}>
-      {shortImage}
+    <div className="flex items-center gap-1.5 text-xs">
+      {counts.critical > 0 && (
+        <button
+          onClick={() => {
+            const alertId = getFirstAlertBySeverity('critical')
+            if (alertId) onAlertClick(alertId)
+          }}
+          className="text-red-500 hover:underline cursor-pointer font-medium"
+        >
+          {counts.critical}
+        </button>
+      )}
+      {counts.error > 0 && (
+        <>
+          {counts.critical > 0 && <span className="text-muted-foreground">/</span>}
+          <button
+            onClick={() => {
+              const alertId = getFirstAlertBySeverity('error')
+              if (alertId) onAlertClick(alertId)
+            }}
+            className="text-red-400 hover:underline cursor-pointer font-medium"
+          >
+            {counts.error}
+          </button>
+        </>
+      )}
+      {counts.warning > 0 && (
+        <>
+          {(counts.critical > 0 || counts.error > 0) && <span className="text-muted-foreground">/</span>}
+          <button
+            onClick={() => {
+              const alertId = getFirstAlertBySeverity('warning')
+              if (alertId) onAlertClick(alertId)
+            }}
+            className="text-yellow-500 hover:underline cursor-pointer font-medium"
+          >
+            {counts.warning}
+          </button>
+        </>
+      )}
+      {counts.info > 0 && (
+        <>
+          {(counts.critical > 0 || counts.error > 0 || counts.warning > 0) && <span className="text-muted-foreground">/</span>}
+          <button
+            onClick={() => {
+              const alertId = getFirstAlertBySeverity('info')
+              if (alertId) onAlertClick(alertId)
+            }}
+            className="text-blue-400 hover:underline cursor-pointer font-medium"
+          >
+            {counts.info}
+          </button>
+        </>
+      )}
     </div>
   )
 }
 
 /**
- * Network I/O display (Phase 3d UX spec)
- * Shows real-time network rate (RX+TX) in KB/s or MB/s with green text
- * Rate is calculated by the backend stats service
+ * Updates badge for containers
  */
-function NetworkIO({ rate }: { rate?: number }) {
-  if (rate === undefined || rate === null) {
+function ContainerUpdatesBadge({ hasUpdates }: { hasUpdates: boolean }) {
+  if (!hasUpdates) {
     return <span className="text-xs text-muted-foreground">-</span>
   }
 
-  const formatRate = (bytesPerSec: number) => {
-    if (bytesPerSec < 1024) return `${bytesPerSec.toFixed(0)} B/s`
-    const kb = bytesPerSec / 1024
-    if (kb < 1024) return `${kb.toFixed(1)} KB/s`
-    const mb = kb / 1024
-    return `${mb.toFixed(1)} MB/s`
-  }
-
   return (
-    <span className="text-xs text-green-500">
-      {formatRate(rate)}
-    </span>
+    <div className="flex items-center gap-1">
+      <div className="h-2 w-2 rounded-full bg-info animate-pulse" />
+      <span className="text-xs text-info">Available</span>
+    </div>
   )
 }
 
@@ -257,13 +307,20 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   const [sorting, setSorting] = useState<SortingState>([])
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
   const [globalFilter, setGlobalFilter] = useState('')
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [modalOpen, setModalOpen] = useState(false)
   const [selectedContainerId, setSelectedContainerId] = useState<string | null>(null)
   const [selectedContainerIds, setSelectedContainerIds] = useState<Set<string>>(new Set())
   const [confirmModalOpen, setConfirmModalOpen] = useState(false)
   const [pendingAction, setPendingAction] = useState<'start' | 'stop' | 'restart' | null>(null)
+
+  // Fetch all alert counts in one batched request
+  const { data: alertCounts } = useAlertCounts('container')
+
+  // Alert drawer state
+  const [selectedAlertId, setSelectedAlertId] = useState<string | null>(null)
+
   const [batchJobId, setBatchJobId] = useState<string | null>(null)
   const [expandedTagsContainerId, setExpandedTagsContainerId] = useState<string | null>(null)
 
@@ -409,6 +466,21 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
     queryFn: () => apiClient.get('/containers'),
     refetchInterval: POLLING_CONFIG.CONTAINER_DATA,
   })
+
+  // Handle URL param for opening specific container
+  useEffect(() => {
+    const containerId = searchParams.get('containerId')
+    if (containerId && data) {
+      const container = data.find(c => c.id === containerId)
+      if (container) {
+        setSelectedContainerId(containerId)
+        setModalOpen(true)
+        // Clear the URL param after opening
+        searchParams.delete('containerId')
+        setSearchParams(searchParams, { replace: true })
+      }
+    }
+  }, [searchParams, data, setSearchParams])
 
   // Container action mutation
   const actionMutation = useMutation({
@@ -633,13 +705,25 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         size: 100,
         enableSorting: false,
       },
-      // 4. Image:Tag (tooltip)
+      // 4. Alerts
       {
-        accessorKey: 'image',
-        header: 'Image:Tag',
-        cell: ({ row }) => <ImageTag image={row.original.image} />,
+        id: 'alerts',
+        header: 'Alerts',
+        cell: ({ row }) => (
+          <ContainerAlertSeverityCounts
+            containerId={row.original.id}
+            alertCounts={alertCounts}
+            onAlertClick={setSelectedAlertId}
+          />
+        ),
       },
-      // 5. Host
+      // 5. Updates
+      {
+        id: 'updates',
+        header: 'Updates',
+        cell: () => <ContainerUpdatesBadge hasUpdates={false} />, // TODO: Check for container updates
+      },
+      // 6. Host
       {
         accessorKey: 'host_name',
         id: 'host_id',
@@ -664,7 +748,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
           <div className="text-sm">{row.original.host_name || 'localhost'}</div>
         ),
       },
-      // 5. Uptime (duration)
+      // 7. Uptime (duration)
       {
         accessorKey: 'created',
         header: 'Uptime',
@@ -706,10 +790,10 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
           )
         },
       },
-      // 6. CPU (sparkline)
+      // 8. CPU% (sparkline)
       {
         id: 'cpu',
-        header: 'CPU',
+        header: 'CPU%',
         cell: ({ row }) => {
           const container = row.original
           // If we have real-time stats, show sparkline
@@ -727,10 +811,10 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
           return <span className="text-xs text-muted-foreground">-</span>
         },
       },
-      // 7. Memory (sparkline/bar)
+      // 9. RAM% (sparkline/bar)
       {
         id: 'memory',
-        header: 'Memory',
+        header: 'RAM%',
         cell: ({ row }) => {
           const container = row.original
 
@@ -757,19 +841,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
           )
         },
       },
-      // 8. Network I/O (optional)
-      {
-        id: 'network',
-        header: 'Network',
-        cell: ({ row }) => {
-          const { net_bytes_per_sec } = row.original
-          if (net_bytes_per_sec !== null && net_bytes_per_sec !== undefined) {
-            return <NetworkIO rate={net_bytes_per_sec} />
-          }
-          return <NetworkIO />
-        },
-      },
-      // 9. Actions (Start/Stop/Restart/Logs/View details)
+      // 10. Actions (Start/Stop/Restart/Logs/View details)
       {
         id: 'actions',
         header: 'Actions',
@@ -900,7 +972,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         },
       },
     ],
-    [actionMutation, selectedContainerIds, data, toggleContainerSelection, toggleSelectAll]
+    [actionMutation, selectedContainerIds, data, toggleContainerSelection, toggleSelectAll, alertCounts]
   )
 
   const table = useReactTable({
@@ -1098,6 +1170,11 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         onClose={() => setBatchJobId(null)}
         bulkActionBarOpen={selectedContainerIds.size > 0}
       />
+
+      {/* Alert Details Drawer */}
+      {selectedAlertId && (
+        <AlertDetailsDrawer alertId={selectedAlertId} onClose={() => setSelectedAlertId(null)} />
+      )}
     </div>
   )
 }

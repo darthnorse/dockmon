@@ -63,7 +63,7 @@ export function useContainerTagEditor({
   useEffect(() => {
     const fetchSuggestions = async () => {
       try {
-        const response = await apiClient.get<{ tags: string[] }>('/containers/tags/suggest', {
+        const response = await apiClient.get<{ tags: string[] }>('/tags/suggest', {
           params: { q: '', limit: 50 }
         })
         setTagSuggestions(response.tags)

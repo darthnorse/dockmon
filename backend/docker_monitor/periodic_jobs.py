@@ -19,6 +19,85 @@ class PeriodicJobsManager:
     def __init__(self, db: DatabaseManager, event_logger: EventLogger):
         self.db = db
         self.event_logger = event_logger
+        self.monitor = None  # Will be set by monitor.py after initialization
+
+    def auto_resolve_stale_alerts(self):
+        """
+        Auto-resolve alerts for entities that no longer exist or are stale.
+
+        Resolves alerts for:
+        1. Deleted containers (entity_gone)
+        2. Offline hosts (entity_gone)
+        3. Stale alerts with no updates in 24h (expired)
+
+        Prevents alerts table from filling with orphaned alerts.
+        """
+        from datetime import datetime, timezone, timedelta
+        from database import AlertV2
+
+        resolved_count = 0
+
+        with self.db.get_session() as session:
+            # Get all open/snoozed alerts
+            open_alerts = session.query(AlertV2).filter(
+                AlertV2.state.in_(['open', 'snoozed'])
+            ).all()
+
+            for alert in open_alerts:
+                should_resolve = False
+                resolve_reason = None
+
+                # Check if entity still exists
+                if alert.scope_type == 'container':
+                    # Check if container actually exists in Docker (any state - running, stopped, etc.)
+                    if self.monitor:
+                        container_exists = False
+
+                        # Check all connected hosts for this container
+                        for host_id, client in self.monitor.clients.items():
+                            try:
+                                # Try to get container by ID (works for any state)
+                                client.containers.get(alert.scope_id)
+                                container_exists = True
+                                break
+                            except Exception:
+                                # Container not found on this host, try next
+                                continue
+
+                        if not container_exists:
+                            should_resolve = True
+                            resolve_reason = 'entity_gone'
+                            logger.info(f"Container {alert.scope_id[:12]} no longer exists on any host, auto-resolving alert {alert.id}")
+
+                elif alert.scope_type == 'host':
+                    # Check if host exists and is connected
+                    if self.monitor and alert.scope_id not in self.monitor.hosts:
+                        should_resolve = True
+                        resolve_reason = 'entity_gone'
+                        logger.info(f"Host {alert.scope_id[:12]} no longer exists, auto-resolving alert {alert.id}")
+
+                # Check for stale alerts (no updates in 24h)
+                if not should_resolve and alert.last_seen:
+                    last_seen_aware = alert.last_seen if alert.last_seen.tzinfo else alert.last_seen.replace(tzinfo=timezone.utc)
+                    time_since_update = datetime.now(timezone.utc) - last_seen_aware
+
+                    if time_since_update > timedelta(hours=24):
+                        should_resolve = True
+                        resolve_reason = 'expired'
+                        logger.info(f"Alert {alert.id} stale for {time_since_update.total_seconds()/3600:.1f}h, auto-resolving")
+
+                # Resolve the alert
+                if should_resolve:
+                    alert.state = 'resolved'
+                    alert.resolved_at = datetime.now(timezone.utc)
+                    alert.resolved_reason = resolve_reason
+                    resolved_count += 1
+
+            if resolved_count > 0:
+                session.commit()
+                logger.info(f"Auto-resolved {resolved_count} stale alerts")
+
+        return resolved_count
 
     async def daily_maintenance(self):
         """
@@ -55,6 +134,16 @@ class PeriodicJobsManager:
                     self.event_logger.log_system_event(
                         "Tag Cleanup",
                         f"Removed {orphaned_tags} orphaned tag assignments",
+                        EventSeverity.INFO,
+                        EventType.STARTUP
+                    )
+
+                # Auto-resolve stale alerts (deleted entities, expired)
+                resolved_alerts = self.auto_resolve_stale_alerts()
+                if resolved_alerts > 0:
+                    self.event_logger.log_system_event(
+                        "Alert Auto-Resolve",
+                        f"Auto-resolved {resolved_alerts} stale alerts",
                         EventSeverity.INFO,
                         EventType.STARTUP
                     )

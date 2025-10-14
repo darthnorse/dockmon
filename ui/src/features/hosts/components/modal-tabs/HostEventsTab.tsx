@@ -7,7 +7,7 @@
 
 import { useState, useRef, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Calendar, AlertCircle, X, ArrowUpDown, Search, Check, Download } from 'lucide-react'
+import { Calendar, AlertCircle, X, ArrowUpDown, Search, Check, Download, Bell } from 'lucide-react'
 import { useHostEvents } from '@/hooks/useEvents'
 import { EventRow } from '@/features/events/components/EventRow'
 
@@ -111,6 +111,9 @@ export function HostEventsTab({ hostId }: HostEventsTabProps) {
       const bTime = new Date(b.timestamp).getTime()
       return sortOrder === 'desc' ? bTime - aTime : aTime - bTime
     })
+
+  // Count alert events in all (unfiltered) events
+  const alertEventCount = allEvents.filter(e => e.category === 'alert').length
 
   const updateFilter = (key: keyof typeof filters, value: any) => {
     setFilters((prev) => ({ ...prev, [key]: value }))
@@ -217,6 +220,18 @@ export function HostEventsTab({ hostId }: HostEventsTabProps) {
 
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden">
+      {/* Alert indicator banner */}
+      {alertEventCount > 0 && (
+        <div className="border-b border-border bg-surface px-6 py-3 shrink-0">
+          <div className="flex items-center gap-2 text-sm">
+            <Bell className="h-4 w-4 text-yellow-500" />
+            <span className="text-foreground">
+              <span className="font-semibold text-yellow-500">{alertEventCount}</span> alert event{alertEventCount !== 1 ? 's' : ''} logged for this host
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* Filters */}
       <div className="border-b border-border bg-surface px-6 py-4 shrink-0">
         <div className="flex items-center justify-between mb-4">
@@ -379,11 +394,18 @@ export function HostEventsTab({ hostId }: HostEventsTabProps) {
             <div>EVENT DETAILS</div>
           </div>
 
-          {/* Table Rows */}
+          {/* Table Rows - scrollable */}
           <div className="flex-1 overflow-y-auto divide-y divide-border">
             {filteredEvents.map((event) => (
               <EventRow key={event.id} event={event} showMetadata={true} compact={false} />
             ))}
+          </div>
+
+          {/* Event Count Footer */}
+          <div className="border-t border-border px-6 py-3 shrink-0">
+            <div className="text-sm text-muted-foreground">
+              Showing {filteredEvents.length} event{filteredEvents.length !== 1 ? 's' : ''}
+            </div>
           </div>
         </>
       )}

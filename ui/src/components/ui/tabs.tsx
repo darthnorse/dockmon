@@ -38,7 +38,7 @@ export interface TabsProps {
 
 export function Tabs({ tabs, activeTab, onTabChange, className }: TabsProps) {
   return (
-    <div className={cn('w-full flex flex-col', className)}>
+    <div className={cn('w-full flex flex-col flex-1 overflow-hidden', className)}>
       {/* Tab Navigation */}
       <div className="border-b border-border shrink-0">
         <nav className="flex gap-6 px-6 pt-4" aria-label="Tabs">
@@ -71,7 +71,7 @@ export function Tabs({ tabs, activeTab, onTabChange, className }: TabsProps) {
       </div>
 
       {/* Tab Content */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-hidden">
         {tabs.find((tab) => tab.id === activeTab)?.content}
       </div>
     </div>

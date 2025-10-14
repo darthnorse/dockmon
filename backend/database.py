@@ -257,7 +257,6 @@ class AlertRuleV2(Base):
 
     # Behavior
     severity = Column(String, nullable=False)  # 'info' | 'warning' | 'critical'
-    grace_seconds = Column(Integer, default=300)
     cooldown_seconds = Column(Integer, default=300)
     depends_on_json = Column(Text, nullable=True)  # JSON: ["host_missing", ...]
 
@@ -1688,7 +1687,6 @@ class DatabaseManager:
         occurrences: Optional[int] = None,
         clear_threshold: Optional[float] = None,
         clear_duration_seconds: Optional[int] = None,
-        grace_seconds: int = 0,
         cooldown_seconds: int = 300,
         host_selector_json: Optional[str] = None,
         container_selector_json: Optional[str] = None,
@@ -1715,7 +1713,6 @@ class DatabaseManager:
                 occurrences=occurrences,
                 clear_threshold=clear_threshold,
                 clear_duration_seconds=clear_duration_seconds,
-                grace_seconds=grace_seconds,
                 cooldown_seconds=cooldown_seconds,
                 host_selector_json=host_selector_json,
                 container_selector_json=container_selector_json,
@@ -1830,12 +1827,38 @@ class DatabaseManager:
                     query = query.filter(EventLog.severity.in_(severity))
                 elif isinstance(severity, str):
                     query = query.filter(EventLog.severity == severity)
-            if host_id:
+            # Special handling for host_id + container_id combination
+            # When filtering by container_id, include events even if host_id is NULL
+            # (v2 alerts don't have host_id set)
+            if host_id and container_id:
+                from sqlalchemy import or_
+                if isinstance(container_id, list) and container_id:
+                    container_filter = EventLog.container_id.in_(container_id)
+                elif isinstance(container_id, str):
+                    container_filter = EventLog.container_id == container_id
+                else:
+                    container_filter = None
+
+                if isinstance(host_id, list) and host_id:
+                    host_filter = EventLog.host_id.in_(host_id)
+                elif isinstance(host_id, str):
+                    host_filter = EventLog.host_id == host_id
+                else:
+                    host_filter = None
+
+                if container_filter is not None and host_filter is not None:
+                    # Include events that match container_id AND (host_id matches OR host_id is NULL)
+                    query = query.filter(container_filter & (host_filter | (EventLog.host_id == None)))
+                elif container_filter is not None:
+                    query = query.filter(container_filter)
+                elif host_filter is not None:
+                    query = query.filter(host_filter)
+            elif host_id:
                 if isinstance(host_id, list) and host_id:
                     query = query.filter(EventLog.host_id.in_(host_id))
                 elif isinstance(host_id, str):
                     query = query.filter(EventLog.host_id == host_id)
-            if container_id:
+            elif container_id:
                 if isinstance(container_id, list) and container_id:
                     query = query.filter(EventLog.container_id.in_(container_id))
                 elif isinstance(container_id, str):

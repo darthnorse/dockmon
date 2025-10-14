@@ -6,7 +6,7 @@
  */
 
 import { useState } from 'react'
-import { Calendar, AlertCircle, X, ArrowUpDown, Download } from 'lucide-react'
+import { Calendar, AlertCircle, X, ArrowUpDown, Download, Bell } from 'lucide-react'
 import { useContainerEvents } from '@/hooks/useEvents'
 import { EventRow } from '@/features/events/components/EventRow'
 
@@ -45,8 +45,11 @@ export function ContainerModalEventsTab({ hostId, containerId }: ContainerModalE
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc')
 
   // TODO: Update useContainerEvents to support filtering parameters
-  const { data: eventsData, isLoading, error } = useContainerEvents(hostId, containerId, 100)
+  const { data: eventsData, isLoading, error } = useContainerEvents(hostId, containerId, 200)
   const allEvents = eventsData?.events ?? []
+
+  // Count alert events in all (unfiltered) events
+  const alertEventCount = allEvents.filter(e => e?.category === 'alert').length
 
   // Client-side filtering (TODO: move to backend)
   const filteredEvents = allEvents
@@ -175,6 +178,18 @@ export function ContainerModalEventsTab({ hostId, containerId }: ContainerModalE
 
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden">
+      {/* Alert indicator banner */}
+      {alertEventCount > 0 && (
+        <div className="border-b border-border bg-surface px-6 py-3 shrink-0">
+          <div className="flex items-center gap-2 text-sm">
+            <Bell className="h-4 w-4 text-yellow-500" />
+            <span className="text-foreground">
+              <span className="font-semibold text-yellow-500">{alertEventCount}</span> alert event{alertEventCount !== 1 ? 's' : ''} logged for this container
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* Filters */}
       <div className="border-b border-border bg-surface px-6 py-4 shrink-0">
         <div className="flex items-center justify-between mb-4">
@@ -288,11 +303,18 @@ export function ContainerModalEventsTab({ hostId, containerId }: ContainerModalE
             <div>EVENT DETAILS</div>
           </div>
 
-          {/* Table Rows */}
+          {/* Table Rows - scrollable */}
           <div className="flex-1 overflow-y-auto divide-y divide-border">
             {filteredEvents.map((event) => (
               <EventRow key={event.id} event={event} showMetadata={false} compact={false} />
             ))}
+          </div>
+
+          {/* Event Count Footer */}
+          <div className="border-t border-border px-6 py-3 shrink-0">
+            <div className="text-sm text-muted-foreground">
+              Showing {filteredEvents.length} event{filteredEvents.length !== 1 ? 's' : ''}
+            </div>
           </div>
         </>
       )}

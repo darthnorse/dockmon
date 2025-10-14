@@ -4,13 +4,15 @@
  * Manage alert rules with CRUD operations
  */
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useAlertRules, useDeleteAlertRule, useToggleAlertRule } from './hooks/useAlertRules'
 import type { AlertRule } from '@/types/alerts'
 import { Plus, Settings, Trash2, Power, PowerOff, Edit, AlertTriangle } from 'lucide-react'
 import { AlertRuleFormModal } from './components/AlertRuleFormModal'
 
 export function AlertRulesPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
   const { data: rulesData, isLoading } = useAlertRules()
   const deleteRule = useDeleteAlertRule()
   const toggleRule = useToggleAlertRule()
@@ -20,6 +22,20 @@ export function AlertRulesPage() {
   const [deletingRuleId, setDeletingRuleId] = useState<string | null>(null)
 
   const rules = rulesData?.rules ?? []
+
+  // Handle URL param for opening specific rule for editing
+  useEffect(() => {
+    const ruleId = searchParams.get('ruleId')
+    if (ruleId && rules.length > 0) {
+      const rule = rules.find(r => r.id === ruleId)
+      if (rule) {
+        setEditingRule(rule)
+        // Clear the URL param after opening
+        searchParams.delete('ruleId')
+        setSearchParams(searchParams, { replace: true })
+      }
+    }
+  }, [searchParams, rules, setSearchParams])
 
   const handleToggleEnabled = async (rule: AlertRule) => {
     await toggleRule.mutateAsync({ ruleId: rule.id, enabled: !rule.enabled })

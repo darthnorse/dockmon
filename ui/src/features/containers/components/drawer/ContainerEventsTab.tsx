@@ -1,20 +1,34 @@
 /**
  * ContainerEventsTab Component
  *
- * Events tab for container drawer - Shows events for specific container
+ * Events tab for container drawer - Shows events for specific container with pagination
  */
 
-import { Calendar, AlertCircle, ArrowRight } from 'lucide-react'
+import { useState } from 'react'
+import { Calendar, AlertCircle, ChevronLeft, ChevronRight, Bell } from 'lucide-react'
 import { useContainerEvents } from '@/hooks/useEvents'
+import { EventRow } from '@/features/events/components/EventRow'
 
 interface ContainerEventsTabProps {
   hostId: string
   containerId: string
 }
 
+const EVENTS_PER_PAGE = 20
+
 export function ContainerEventsTab({ hostId, containerId }: ContainerEventsTabProps) {
-  const { data: eventsData, isLoading, error } = useContainerEvents(hostId, containerId, 50)
-  const events = eventsData?.events ?? []
+  const [currentPage, setCurrentPage] = useState(1)
+  const { data: eventsData, isLoading, error } = useContainerEvents(hostId, containerId, 200)
+  const allEvents = eventsData?.events ?? []
+
+  // Count alert events
+  const alertEventCount = allEvents.filter(e => e?.category === 'alert').length
+
+  // Pagination
+  const totalPages = allEvents.length > 0 ? Math.ceil(allEvents.length / EVENTS_PER_PAGE) : 1
+  const startIndex = (currentPage - 1) * EVENTS_PER_PAGE
+  const endIndex = startIndex + EVENTS_PER_PAGE
+  const events = allEvents.slice(startIndex, endIndex)
 
   if (isLoading) {
     return (
@@ -39,7 +53,19 @@ export function ContainerEventsTab({ hostId, containerId }: ContainerEventsTabPr
 
   return (
     <div className="flex flex-col h-full">
-      {events.length === 0 ? (
+      {/* Header with alert indicator */}
+      {alertEventCount > 0 && (
+        <div className="border-b border-border bg-surface px-4 py-3 shrink-0">
+          <div className="flex items-center gap-2 text-sm">
+            <Bell className="h-4 w-4 text-yellow-500" />
+            <span className="text-foreground">
+              <span className="font-semibold text-yellow-500">{alertEventCount}</span> alert event{alertEventCount !== 1 ? 's' : ''} logged
+            </span>
+          </div>
+        </div>
+      )}
+
+      {allEvents.length === 0 ? (
         <div className="flex items-center justify-center flex-1">
           <div className="text-center py-8 text-muted-foreground">
             <Calendar className="h-12 w-12 mx-auto mb-3 opacity-50" />
@@ -48,60 +74,45 @@ export function ContainerEventsTab({ hostId, containerId }: ContainerEventsTabPr
         </div>
       ) : (
         <>
-          {/* Compact event list - no table header for drawer */}
+          {/* Event list using EventRow component */}
           <div className="flex-1 overflow-y-auto p-3 space-y-2">
-            {events.map((event) => {
-              const severityColors = {
-                critical: 'text-red-500',
-                error: 'text-red-400',
-                warning: 'text-yellow-500',
-                info: 'text-blue-400',
-              }[event.severity.toLowerCase()] || 'text-gray-400'
+            {events.map((event) => (
+              <EventRow key={event.id} event={event} showMetadata={false} compact={true} />
+            ))}
+          </div>
 
-              return (
-                <div
-                  key={event.id}
-                  className="p-3 rounded-lg border border-border bg-surface-1 hover:bg-surface-2 transition-colors"
+          {/* Pagination Footer */}
+          {totalPages > 1 && (
+            <div className="border-t border-border px-4 py-3 flex items-center justify-between shrink-0">
+              <div className="text-sm text-muted-foreground">
+                Showing {startIndex + 1}-{Math.min(endIndex, allEvents.length)} of {allEvents.length} events
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                  disabled={currentPage === 1}
+                  className="flex items-center gap-1 px-2 py-1 rounded-lg border border-border hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed text-sm"
                 >
-                  <div className="flex items-start justify-between gap-2 mb-1">
-                    <span className={`text-xs font-medium ${severityColors}`}>
-                      {event.severity.charAt(0).toUpperCase() + event.severity.slice(1)}
-                    </span>
-                    <span className="text-xs text-muted-foreground whitespace-nowrap font-mono">
-                      {new Date(event.timestamp).toLocaleString('en-US', {
-                        month: 'numeric',
-                        day: 'numeric',
-                        year: 'numeric',
-                        hour: 'numeric',
-                        minute: '2-digit',
-                        hour12: true,
-                      })}
-                    </span>
-                  </div>
-                  <div className="text-sm">{event.title}</div>
-                  {event.message && (
-                    <div className="text-xs text-muted-foreground mt-1 line-clamp-3">
-                      {event.message}
-                    </div>
-                  )}
-                </div>
-              )
-            })}
-          </div>
+                  <ChevronLeft className="h-3.5 w-3.5" />
+                  Prev
+                </button>
 
-          {/* View in Modal Link */}
-          <div className="border-t border-border p-3">
-            <button
-              onClick={() => {
-                // TODO: Open container modal to Events tab
-                console.log('Open container modal events tab')
-              }}
-              className="w-full flex items-center justify-center gap-2 p-2 rounded-lg border border-border hover:bg-muted transition-colors text-sm text-muted-foreground hover:text-foreground"
-            >
-              <span>View all in container modal</span>
-              <ArrowRight className="h-4 w-4" />
-            </button>
-          </div>
+                <div className="text-sm text-muted-foreground">
+                  Page {currentPage} of {totalPages}
+                </div>
+
+                <button
+                  onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                  disabled={currentPage === totalPages}
+                  className="flex items-center gap-1 px-2 py-1 rounded-lg border border-border hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                >
+                  Next
+                  <ChevronRight className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
+          )}
         </>
       )}
     </div>

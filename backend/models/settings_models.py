@@ -27,6 +27,7 @@ class GlobalSettings(BaseModel):
     timezone_offset: int = Field(0, ge=-720, le=720)  # Timezone offset in minutes from UTC (-12h to +12h)
     show_host_stats: bool = Field(True)  # Show host statistics graphs on dashboard
     show_container_stats: bool = Field(True)  # Show container statistics on dashboard
+    show_container_alerts_on_hosts: bool = Field(False)  # Show container alerts aggregated on host page
 
     @validator('max_retries')
     def validate_max_retries(cls, v):
@@ -108,7 +109,6 @@ class AlertRuleV2Create(BaseModel):
     clear_duration_seconds: Optional[int] = Field(None, ge=0)
 
     # Timing configuration
-    grace_seconds: int = Field(0, ge=0)
     cooldown_seconds: int = Field(300, ge=0)
 
     # Selectors (JSON strings)
@@ -136,7 +136,6 @@ class AlertRuleV2Update(BaseModel):
     clear_threshold: Optional[float] = None
     clear_duration_seconds: Optional[int] = Field(None, ge=0)
 
-    grace_seconds: Optional[int] = Field(None, ge=0)
     cooldown_seconds: Optional[int] = Field(None, ge=0)
     depends_on_json: Optional[str] = None  # JSON array of condition dependencies
 

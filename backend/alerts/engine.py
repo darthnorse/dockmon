@@ -31,6 +31,7 @@ class EvaluationContext:
     host_name: Optional[str] = None
     container_id: Optional[str] = None
     container_name: Optional[str] = None
+    desired_state: Optional[str] = None  # Container desired state: 'should_run', 'on_demand', 'unspecified'
     labels: Optional[Dict[str, str]] = None
 
 
@@ -59,16 +60,19 @@ class AlertEngine:
 
     # ==================== Deduplication ====================
 
-    def _make_dedup_key(self, kind: str, scope_type: str, scope_id: str) -> str:
+    def _make_dedup_key(self, rule_id: str, kind: str, scope_type: str, scope_id: str) -> str:
         """
-        Generate deduplication key: {kind}|{scope_type}:{scope_id}
+        Generate deduplication key: {rule_id}|{kind}|{scope_type}:{scope_id}
+
+        Includes rule_id to allow multiple rules to create separate alerts for the same condition.
+        For example: A "Warning" rule and a "Critical" rule for container stops can coexist.
 
         Examples:
-        - cpu_high|container:abc123
-        - unhealthy|container:xyz789
-        - disk_full|host:host-001
+        - rule-123|cpu_high|container:abc123
+        - rule-456|unhealthy|container:xyz789
+        - rule-789|disk_full|host:host-001
         """
-        return f"{kind}|{scope_type}:{scope_id}"
+        return f"{rule_id}|{kind}|{scope_type}:{scope_id}"
 
     def _make_runtime_key(self, rule_id: str, scope_type: str, scope_id: str) -> str:
         """
@@ -143,13 +147,34 @@ class AlertEngine:
         """Update existing alert with new occurrence"""
         with self.db.get_session() as session:
             alert = session.merge(alert)
+
+            # If alert was previously resolved, reopen it
+            if alert.state == "resolved":
+                alert.state = "open"
+                alert.resolved_at = None
+                alert.resolved_reason = None
+                logger.info(f"Reopened previously resolved alert {alert.id}")
+
             alert.last_seen = datetime.now(timezone.utc)
             if increment_occurrences:
                 alert.occurrences += 1
             if current_value is not None:
                 alert.current_value = current_value
             if event_data is not None:
-                alert.event_context_json = json.dumps(event_data)
+                # Merge new event_data with existing, preserving important fields like exit_code
+                existing_context = {}
+                if alert.event_context_json:
+                    try:
+                        existing_context = json.loads(alert.event_context_json)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+                # Merge: new data takes precedence, but preserve exit_code if new one is null
+                merged_context = {**existing_context, **event_data}
+                if event_data.get('exit_code') is None and existing_context.get('exit_code') is not None:
+                    merged_context['exit_code'] = existing_context['exit_code']
+
+                alert.event_context_json = json.dumps(merged_context)
 
             session.commit()
             session.refresh(alert)
@@ -189,27 +214,6 @@ class AlertEngine:
         time_since_last = (datetime.now(timezone.utc) - last_seen).total_seconds()
         return time_since_last < cooldown_seconds
 
-    def _check_grace_period(
-        self,
-        alert: AlertV2,
-        grace_seconds: int,
-        is_new: bool
-    ) -> bool:
-        """
-        Check if alert is in grace period
-
-        Returns: True if in grace period (should skip notification), False otherwise
-        """
-        if not is_new:
-            return False
-
-        if grace_seconds <= 0:
-            return False
-
-        # Handle both naive and aware datetimes
-        first_seen = alert.first_seen if alert.first_seen.tzinfo else alert.first_seen.replace(tzinfo=timezone.utc)
-        time_since_first = (datetime.now(timezone.utc) - first_seen).total_seconds()
-        return time_since_first < grace_seconds
 
     # ==================== Event-Driven Evaluation ====================
 
@@ -259,8 +263,8 @@ class AlertEngine:
 
                 logger.info(f"Engine: Rule '{rule.name}' MATCHED! Creating/updating alert...")
 
-                # Generate dedup key
-                dedup_key = self._make_dedup_key(rule.kind, context.scope_type, context.scope_id)
+                # Generate dedup key (includes rule_id to allow multiple rules for same condition)
+                dedup_key = self._make_dedup_key(rule.id, rule.kind, context.scope_type, context.scope_id)
                 logger.info(f"Engine: Dedup key: {dedup_key}")
 
                 # Get or create alert (pass event_data for template variables)
@@ -269,7 +273,9 @@ class AlertEngine:
 
                 # Check cooldown
                 if not is_new and self._check_cooldown(alert, rule.cooldown_seconds):
-                    logger.info(f"Engine: Alert {alert.id} in cooldown (cooldown_seconds={rule.cooldown_seconds}), skipping")
+                    logger.info(f"Engine: Alert {alert.id} in cooldown (cooldown_seconds={rule.cooldown_seconds}), skipping notification but updating context")
+                    # Still update event_context to preserve important data like exit_code
+                    alert = self._update_alert(alert, event_data=event_data, increment_occurrences=False)
                     continue
 
                 # Update alert
@@ -279,13 +285,7 @@ class AlertEngine:
 
                 alerts_changed.append(alert)
                 logger.info(f"Engine: Added alert {alert.id} to alerts_changed list (count={len(alerts_changed)})")
-
-                # Check grace period before notifying
-                in_grace = self._check_grace_period(alert, rule.grace_seconds, is_new)
-                logger.info(f"Engine: Grace period check - in_grace={in_grace}, grace_seconds={rule.grace_seconds}")
-                if not in_grace:
-                    # Alert ready for notification (handled by evaluation_service)
-                    logger.info(f"Engine: Alert {alert.id} ready for notification")
+                logger.info(f"Engine: Alert {alert.id} ready for notification")
 
         logger.info(f"Engine: evaluate_event returning {len(alerts_changed)} alerts")
         return alerts_changed
@@ -326,6 +326,20 @@ class AlertEngine:
         if rule.host_selector_json:
             try:
                 host_selector = json.loads(rule.host_selector_json)
+
+                # Check include/include_all (host ID filtering)
+                if 'include_all' in host_selector and host_selector['include_all']:
+                    # include_all: true means match all hosts (no ID filtering)
+                    pass
+                elif 'include' in host_selector:
+                    # include: ["id1", "id2"] means only match these specific hosts
+                    allowed_ids = host_selector['include']
+                    if context.host_id not in allowed_ids:
+                        return False
+                else:
+                    # No include_all or include means no hosts match
+                    return False
+
                 # Supported keys: host_name (exact or regex), host_id (exact)
                 if 'host_name' in host_selector:
                     pattern = host_selector['host_name']
@@ -350,6 +364,32 @@ class AlertEngine:
         if rule.container_selector_json:
             try:
                 container_selector = json.loads(rule.container_selector_json)
+
+                # Check include/include_all (container name filtering)
+                if 'include_all' in container_selector and container_selector['include_all']:
+                    # include_all: true means match all containers (no name filtering)
+                    pass
+                elif 'include' in container_selector:
+                    # include: ["name1", "name2"] means only match these specific containers
+                    allowed_names = container_selector['include']
+                    if context.container_name not in allowed_names:
+                        return False
+                else:
+                    # No include_all or include means no containers match
+                    return False
+
+                # Check should_run filter (for container run mode filtering)
+                # should_run: true means desired_state == 'should_run'
+                # should_run: false means desired_state == 'on_demand'
+                if 'should_run' in container_selector:
+                    required_should_run = container_selector['should_run']
+                    if required_should_run is True:
+                        if context.desired_state != 'should_run':
+                            return False
+                    elif required_should_run is False:
+                        if context.desired_state != 'on_demand':
+                            return False
+
                 # Supported keys: container_name (exact or regex), container_id (exact), image (exact or regex)
                 if 'container_name' in container_selector:
                     pattern = container_selector['container_name']
@@ -494,8 +534,8 @@ class AlertEngine:
                     if state["breach_started_at"] is None:
                         state["breach_started_at"] = now.isoformat()
 
-                    # Generate dedup key
-                    dedup_key = self._make_dedup_key(rule.kind, context.scope_type, context.scope_id)
+                    # Generate dedup key (includes rule_id to allow multiple rules for same condition)
+                    dedup_key = self._make_dedup_key(rule.id, rule.kind, context.scope_type, context.scope_id)
 
                     # Get or create alert
                     alert, is_new = self._get_or_create_alert(dedup_key, rule, context, metric_value)
@@ -511,10 +551,8 @@ class AlertEngine:
                         alerts_changed.append(alert)
 
                         # Check grace period before notifying
-                        in_grace = self._check_grace_period(alert, rule.grace_seconds, is_new)
-                        if not in_grace:
-                            # Alert ready for notification (handled by evaluation_service)
-                            logger.info(f"Alert {alert.id} ready for notification")
+                        # Alert ready for notification (handled by evaluation_service)
+                        logger.info(f"Alert {alert.id} ready for notification")
 
                 else:
                     # Not breaching - check if we should clear
@@ -534,7 +572,7 @@ class AlertEngine:
 
                                 if time_clearing >= clear_duration:
                                     # Clear the alert
-                                    dedup_key = self._make_dedup_key(rule.kind, context.scope_type, context.scope_id)
+                                    dedup_key = self._make_dedup_key(rule.id, rule.kind, context.scope_type, context.scope_id)
                                     existing = session.query(AlertV2).filter(
                                         AlertV2.dedup_key == dedup_key,
                                         AlertV2.state == "open"

@@ -5,8 +5,9 @@
  */
 
 import { useState } from 'react'
-import { X, CheckCircle2, Clock, MessageSquare, AlertCircle, Server, Container, Settings, MoreVertical, Activity, FileText, ChevronDown } from 'lucide-react'
-import { useAlert, useAlertAnnotations, useResolveAlert, useSnoozeAlert, useUnsnoozeAlert, useAddAnnotation } from '../hooks/useAlerts'
+import { useNavigate } from 'react-router-dom'
+import { X, CheckCircle2, Clock, MessageSquare, AlertCircle, Server, Container, Settings, MoreVertical, Activity, ChevronDown } from 'lucide-react'
+import { useAlert, useAlertAnnotations, useResolveAlert, useSnoozeAlert, useUnsnoozeAlert, useAddAnnotation, useAlertEvents } from '../hooks/useAlerts'
 import type { AlertSeverity, AlertState } from '@/types/alerts'
 
 interface AlertDetailsDrawerProps {
@@ -23,8 +24,10 @@ const SNOOZE_DURATIONS = [
 ]
 
 export function AlertDetailsDrawer({ alertId, onClose }: AlertDetailsDrawerProps) {
+  const navigate = useNavigate()
   const { data: alert, isLoading } = useAlert(alertId)
   const { data: annotationsData } = useAlertAnnotations(alertId)
+  const { data: eventsData } = useAlertEvents(alert)
   const resolveAlert = useResolveAlert()
   const snoozeAlert = useSnoozeAlert()
   const unsnoozeAlert = useUnsnoozeAlert()
@@ -37,6 +40,7 @@ export function AlertDetailsDrawer({ alertId, onClose }: AlertDetailsDrawerProps
   const [showResolveConfirm, setShowResolveConfirm] = useState(false)
 
   const annotations = annotationsData?.annotations ?? []
+  const events = eventsData?.events ?? []
 
   const handleResolve = () => {
     if (!alert) return
@@ -95,6 +99,36 @@ export function AlertDetailsDrawer({ alertId, onClose }: AlertDetailsDrawerProps
     return date.toLocaleString()
   }
 
+  const getEventSeverityColor = (severity: string) => {
+    switch (severity.toLowerCase()) {
+      case 'critical':
+        return 'text-red-500'
+      case 'error':
+        return 'text-red-400'
+      case 'warning':
+        return 'text-yellow-500'
+      case 'info':
+        return 'text-blue-400'
+      default:
+        return 'text-gray-400'
+    }
+  }
+
+  const getEventCategoryColor = (category: string) => {
+    switch (category.toLowerCase()) {
+      case 'state_change':
+        return 'bg-blue-500/10 text-blue-400 border-blue-500/20'
+      case 'resource_alert':
+        return 'bg-red-500/10 text-red-400 border-red-500/20'
+      case 'update_available':
+        return 'bg-purple-500/10 text-purple-400 border-purple-500/20'
+      case 'health_change':
+        return 'bg-orange-500/10 text-orange-400 border-orange-500/20'
+      default:
+        return 'bg-gray-500/10 text-gray-400 border-gray-500/20'
+    }
+  }
+
   if (isLoading || !alert) {
     return (
       <div className="fixed inset-y-0 right-0 z-50 w-[600px] bg-[#0d1117] shadow-2xl">
@@ -132,31 +166,20 @@ export function AlertDetailsDrawer({ alertId, onClose }: AlertDetailsDrawerProps
                       <button
                         onClick={() => {
                           setShowKebabMenu(false)
-                          // TODO: Navigate to events filtered by this scope
-                          window.location.href = `/events?scope_id=${alert.scope_id}`
+                          navigate(`/events?scope_id=${alert.scope_id}`)
+                          onClose()
                         }}
                         className="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-gray-700 flex items-center gap-3"
                       >
                         <Activity className="h-4 w-4" />
                         View Events
                       </button>
-                      <button
-                        onClick={() => {
-                          setShowKebabMenu(false)
-                          // TODO: Navigate to logs
-                          console.log('View logs for', alert.scope_id)
-                        }}
-                        className="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-gray-700 flex items-center gap-3"
-                      >
-                        <FileText className="h-4 w-4" />
-                        View Logs
-                      </button>
                       {alert.rule_id && (
                         <button
                           onClick={() => {
                             setShowKebabMenu(false)
-                            // TODO: Navigate to rule editor
-                            console.log('Edit rule', alert.rule_id)
+                            navigate(`/alerts/rules?ruleId=${alert.rule_id}`)
+                            onClose()
                           }}
                           className="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-gray-700 flex items-center gap-3"
                         >
@@ -201,8 +224,9 @@ export function AlertDetailsDrawer({ alertId, onClose }: AlertDetailsDrawerProps
               {alert.scope_type === 'host' && alert.host_name && (
                 <button
                   onClick={() => {
-                    // TODO: Open host drawer
-                    console.log('Open host:', alert.scope_id)
+                    // For host-scoped alerts, scope_id IS the host_id
+                    navigate(`/hosts?hostId=${alert.scope_id}`)
+                    onClose()
                   }}
                   className="flex items-center gap-1.5 rounded-md bg-gray-800 px-2.5 py-1 text-xs text-gray-300 hover:bg-gray-700 transition-colors"
                 >
@@ -215,8 +239,9 @@ export function AlertDetailsDrawer({ alertId, onClose }: AlertDetailsDrawerProps
               {alert.scope_type === 'container' && alert.host_name && (
                 <button
                   onClick={() => {
-                    // TODO: Open host drawer
-                    console.log('Open host for container alert')
+                    // Navigate to hosts page - user can search for this host
+                    navigate(`/hosts`)
+                    onClose()
                   }}
                   className="flex items-center gap-1.5 rounded-md bg-gray-800 px-2.5 py-1 text-xs text-gray-300 hover:bg-gray-700 transition-colors"
                 >
@@ -226,11 +251,11 @@ export function AlertDetailsDrawer({ alertId, onClose }: AlertDetailsDrawerProps
               )}
 
               {/* For container-scoped alerts, also show container pill */}
-              {alert.scope_type === 'container' && alert.container_name && (
+              {alert.scope_type === 'container' && alert.container_name && alert.scope_id && (
                 <button
                   onClick={() => {
-                    // TODO: Open container drawer
-                    console.log('Open container:', alert.scope_id)
+                    navigate(`/containers?containerId=${alert.scope_id}`)
+                    onClose()
                   }}
                   className="flex items-center gap-1.5 rounded-md bg-gray-800 px-2.5 py-1 text-xs text-gray-300 hover:bg-gray-700 transition-colors"
                 >
@@ -243,8 +268,8 @@ export function AlertDetailsDrawer({ alertId, onClose }: AlertDetailsDrawerProps
               {alert.rule_id && (
                 <button
                   onClick={() => {
-                    // TODO: Open rule editor
-                    console.log('Edit rule:', alert.rule_id)
+                    navigate(`/alerts/rules?ruleId=${alert.rule_id}`)
+                    onClose()
                   }}
                   className="flex items-center gap-1.5 rounded-md bg-gray-800 px-2.5 py-1 text-xs text-gray-300 hover:bg-gray-700 transition-colors"
                 >
@@ -302,6 +327,56 @@ export function AlertDetailsDrawer({ alertId, onClose }: AlertDetailsDrawerProps
                   )}
                 </>
               )}
+            </div>
+
+            {/* Events Section */}
+            <div className="mb-6">
+              <h4 className="mb-3 flex items-center gap-2 text-sm font-semibold text-white">
+                <Activity className="h-4 w-4" />
+                Related Events ({events.length})
+              </h4>
+
+              <div className="space-y-2 max-h-64 overflow-y-auto">
+                {events.length === 0 ? (
+                  <div className="rounded-lg bg-gray-900/30 px-4 py-3 text-center text-sm text-gray-500">
+                    No events found
+                  </div>
+                ) : (
+                  events.map((event) => (
+                    <div
+                      key={event.id}
+                      className="rounded-lg bg-gray-900/50 p-3 hover:bg-gray-900/70 transition-colors"
+                    >
+                      <div className="mb-2 flex items-start justify-between gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span
+                            className={`rounded-full border px-2 py-0.5 text-xs font-medium ${getEventCategoryColor(event.category)}`}
+                          >
+                            {event.category}
+                          </span>
+                          <span className={`text-xs font-medium ${getEventSeverityColor(event.severity)}`}>
+                            {event.severity}
+                          </span>
+                        </div>
+                        <span className="text-xs text-gray-500 whitespace-nowrap">
+                          {formatDateTime(event.timestamp)}
+                        </span>
+                      </div>
+                      <div className="mb-1 text-sm font-medium text-white">{event.title}</div>
+                      {event.message && (
+                        <p className="text-xs text-gray-400">{event.message}</p>
+                      )}
+                      {event.old_state && event.new_state && (
+                        <div className="mt-2 text-xs text-gray-500">
+                          State: <span className="text-gray-400">{event.old_state}</span>
+                          {' → '}
+                          <span className="text-gray-300">{event.new_state}</span>
+                        </div>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
             </div>
 
             {/* Annotations Section */}

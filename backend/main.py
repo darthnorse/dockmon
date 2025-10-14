@@ -907,7 +907,6 @@ async def get_alert_rules_v2(current_user: dict = Depends(get_current_user)):
             "occurrences": rule.occurrences,
             "clear_threshold": rule.clear_threshold,
             "clear_duration_seconds": rule.clear_duration_seconds,
-            "grace_seconds": rule.grace_seconds,
             "cooldown_seconds": rule.cooldown_seconds,
             "host_selector_json": rule.host_selector_json,
             "container_selector_json": rule.container_selector_json,
@@ -945,7 +944,6 @@ async def create_alert_rule_v2(
             occurrences=rule.occurrences,
             clear_threshold=rule.clear_threshold,
             clear_duration_seconds=rule.clear_duration_seconds,
-            grace_seconds=rule.grace_seconds,
             cooldown_seconds=rule.cooldown_seconds,
             host_selector_json=rule.host_selector_json,
             container_selector_json=rule.container_selector_json,
@@ -1073,7 +1071,7 @@ async def toggle_alert_rule_v2(
             raise HTTPException(status_code=404, detail="Alert rule not found")
 
         new_enabled = not rule.enabled
-        updated_rule = monitor.db.update_alert_rule_v2(rule_id, {"enabled": new_enabled})
+        updated_rule = monitor.db.update_alert_rule_v2(rule_id, enabled=new_enabled)
 
         logger.info(f"Toggled alert rule v2: {rule_id} to {new_enabled}")
 

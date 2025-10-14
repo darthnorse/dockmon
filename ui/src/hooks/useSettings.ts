@@ -25,6 +25,7 @@ export interface GlobalSettings {
   timezone_offset: number
   show_host_stats: boolean
   show_container_stats: boolean
+  show_container_alerts_on_hosts: boolean
 }
 
 export interface TemplateVariable {

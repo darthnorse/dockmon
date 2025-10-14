@@ -240,6 +240,7 @@ class DockerMonitor:
 
         self.operations = ContainerOperations(self.hosts, self.clients, self.event_logger, self._recent_user_actions)
         self.periodic_jobs = PeriodicJobsManager(self.db, self.event_logger)
+        self.periodic_jobs.monitor = self  # Set monitor reference for auto-resolve
 
         self._load_persistent_config()  # Load saved hosts and configs
 
@@ -1072,11 +1073,16 @@ class DockerMonitor:
                 if action in ['die', 'stop', 'kill']:
                     new_state = "exited"
                     if action == 'die':
-                        exit_code_str = attributes.get('exitCode', '0')
-                        try:
-                            exit_code = int(exit_code_str)
-                        except (ValueError, TypeError):
-                            exit_code = None
+                        # Docker sends exitCode in attributes
+                        exit_code_str = attributes.get('exitCode')
+                        if exit_code_str is not None:
+                            try:
+                                exit_code = int(exit_code_str)
+                            except (ValueError, TypeError):
+                                logger.warning(f"Invalid exit code format: {exit_code_str}")
+                                exit_code = None
+                        else:
+                            exit_code = 0  # Default to 0 if not provided
                 elif action == 'start':
                     new_state = "running"
                 elif action == 'health_status':
@@ -1200,7 +1206,7 @@ class DockerMonitor:
 
                 # Centralized stats collection decision using StatsManager
                 has_viewers = self.manager.has_active_connections()
-                logger.info(f"Monitor loop: has_viewers={has_viewers}, active_connections={len(self.manager.active_connections)}")
+                logger.debug(f"Monitor loop: has_viewers={has_viewers}, active_connections={len(self.manager.active_connections)}")
 
                 if has_viewers:
                     # Determine which containers need stats (centralized logic)
@@ -1364,7 +1370,7 @@ class DockerMonitor:
 
                         broadcast_data["host_metrics"] = host_metrics
                         broadcast_data["host_sparklines"] = host_sparklines
-                        logger.info(f"Aggregated metrics for {len(host_metrics)} hosts from {len(containers)} containers")
+                        logger.debug(f"Aggregated metrics for {len(host_metrics)} hosts from {len(containers)} containers")
 
                     # Collect container sparklines for all containers
                     container_sparklines = {}

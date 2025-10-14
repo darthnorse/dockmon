@@ -21,7 +21,8 @@
  * 10. Actions - Details/Restart/Logs
  */
 
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useEffect } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
   useReactTable,
   getCoreRowModel,
@@ -49,9 +50,11 @@ import type { Host } from '@/types/api'
 import { HostDrawer } from './drawer/HostDrawer'
 import { HostDetailsModal } from './HostDetailsModal'
 import { HostBulkActionBar } from './HostBulkActionBar'
-import { useHostMetrics, useHostSparklines, useContainerCounts } from '@/lib/stats/StatsProvider'
+import { AlertDetailsDrawer } from '@/features/alerts/components/AlertDetailsDrawer'
+import { useHostMetrics, useContainerCounts } from '@/lib/stats/StatsProvider'
+import { useHostAlertCounts, type AlertSeverityCounts } from '@/features/alerts/hooks/useAlerts'
+import { useGlobalSettings } from '@/hooks/useSettings'
 import { useQueryClient } from '@tanstack/react-query'
-import { MiniChart } from '@/lib/charts/MiniChart'
 import { debug } from '@/lib/debug'
 
 // Status icon component
@@ -140,69 +143,102 @@ function ContainerCount({ hostId }: { hostId: string }) {
   )
 }
 
-// CPU/Memory sparkline with real-time data
-function HostSparkline({ hostId, metric }: { hostId: string; metric: 'cpu' | 'memory' }) {
+// CPU/Memory percentage (no sparkline) - match container page styling
+function HostMetricPercentage({ hostId, metric }: { hostId: string; metric: 'cpu' | 'memory' }) {
   const metrics = useHostMetrics(hostId)
-  const sparklines = useHostSparklines(hostId)
+  const currentValue = metric === 'cpu' ? metrics?.cpu_percent : metrics?.mem_percent
 
-  // Show placeholder if no data yet
-  if (!sparklines) {
-    return (
-      <div className="flex items-center gap-2">
-        <div className="h-8 w-16 rounded bg-muted-foreground/10" />
-        <span className="text-xs text-muted-foreground">-</span>
-      </div>
-    )
+  if (currentValue === undefined) {
+    return <span className="text-xs text-muted-foreground">-</span>
   }
 
-  const data = metric === 'cpu' ? sparklines.cpu : sparklines.mem
-  const currentValue = metric === 'cpu' ? metrics?.cpu_percent : metrics?.mem_percent
-  const color = metric === 'cpu' ? 'cpu' : 'memory'
+  return (
+    <span className="text-xs text-muted-foreground">
+      {currentValue.toFixed(1)}%
+    </span>
+  )
+}
+
+// Alert severity counts with color coding and click-to-open-drawer
+function AlertSeverityCountsComponent({
+  hostname,
+  alertCounts,
+  onAlertClick
+}: {
+  hostname: string
+  alertCounts: Map<string, AlertSeverityCounts> | undefined
+  onAlertClick: (alertId: string) => void
+}) {
+  const counts = alertCounts?.get(hostname)
+
+  if (!counts || counts.total === 0) {
+    return <span className="text-xs text-muted-foreground">-</span>
+  }
+
+  // Get first alert of each severity for click targets
+  const getFirstAlertBySeverity = (severity: string) => {
+    return counts.alerts.find(a => a.severity.toLowerCase() === severity)?.id
+  }
 
   return (
-    <div className="flex items-center gap-2">
-      <MiniChart
-        data={data}
-        color={color}
-        width={60}
-        height={24}
-        label={`${metric.toUpperCase()} usage`}
-      />
-      {currentValue !== undefined && (
-        <span className="text-xs text-muted-foreground font-mono w-12 text-right">
-          {currentValue.toFixed(1)}%
-        </span>
+    <div className="flex items-center gap-1.5 text-xs">
+      {counts.critical > 0 && (
+        <button
+          onClick={() => {
+            const alertId = getFirstAlertBySeverity('critical')
+            if (alertId) onAlertClick(alertId)
+          }}
+          className="text-red-500 hover:underline cursor-pointer font-medium"
+        >
+          {counts.critical}
+        </button>
+      )}
+      {counts.error > 0 && (
+        <>
+          {counts.critical > 0 && <span className="text-muted-foreground">/</span>}
+          <button
+            onClick={() => {
+              const alertId = getFirstAlertBySeverity('error')
+              if (alertId) onAlertClick(alertId)
+            }}
+            className="text-red-400 hover:underline cursor-pointer font-medium"
+          >
+            {counts.error}
+          </button>
+        </>
+      )}
+      {counts.warning > 0 && (
+        <>
+          {(counts.critical > 0 || counts.error > 0) && <span className="text-muted-foreground">/</span>}
+          <button
+            onClick={() => {
+              const alertId = getFirstAlertBySeverity('warning')
+              if (alertId) onAlertClick(alertId)
+            }}
+            className="text-yellow-500 hover:underline cursor-pointer font-medium"
+          >
+            {counts.warning}
+          </button>
+        </>
+      )}
+      {counts.info > 0 && (
+        <>
+          {(counts.critical > 0 || counts.error > 0 || counts.warning > 0) && <span className="text-muted-foreground">/</span>}
+          <button
+            onClick={() => {
+              const alertId = getFirstAlertBySeverity('info')
+              if (alertId) onAlertClick(alertId)
+            }}
+            className="text-blue-400 hover:underline cursor-pointer font-medium"
+          >
+            {counts.info}
+          </button>
+        </>
       )}
     </div>
   )
 }
 
-// Alerts badge
-function AlertsBadge({ count }: { count: number }) {
-  if (count === 0) {
-    return <span className="text-xs text-muted-foreground">-</span>
-  }
-
-  return (
-    <span className="inline-flex items-center rounded-full bg-destructive px-2 py-1 text-xs font-medium text-destructive-foreground">
-      {count}
-    </span>
-  )
-}
-
-// Updates badge
-function UpdatesBadge({ hasUpdates }: { hasUpdates: boolean }) {
-  if (!hasUpdates) {
-    return <span className="text-xs text-muted-foreground">-</span>
-  }
-
-  return (
-    <div className="flex items-center gap-1">
-      <div className="h-2 w-2 rounded-full bg-info animate-pulse" />
-      <span className="text-xs text-info">Available</span>
-    </div>
-  )
-}
 
 // Uptime component - Shows time since Docker daemon started
 function Uptime({ daemonStartedAt }: { daemonStartedAt?: string | null | undefined }) {
@@ -241,8 +277,14 @@ interface HostTableProps {
 export function HostTable({ onEditHost }: HostTableProps = {}) {
   const { data: hosts = [], isLoading, error } = useHosts()
   const queryClient = useQueryClient()
+  const { data: settings } = useGlobalSettings()
   const [sorting, setSorting] = useState<SortingState>([])
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
+  const [searchParams, setSearchParams] = useSearchParams()
+
+  // Fetch alert counts (optionally including container alerts aggregated by host)
+  const showContainerAlerts = settings?.show_container_alerts_on_hosts ?? false
+  const { data: alertCounts } = useHostAlertCounts(showContainerAlerts)
 
   // Drawer state
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -250,6 +292,24 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
 
   // Modal state
   const [modalOpen, setModalOpen] = useState(false)
+
+  // Handle URL param for opening specific host details modal
+  useEffect(() => {
+    const hostId = searchParams.get('hostId')
+    if (hostId && hosts) {
+      const host = hosts.find(h => h.id === hostId)
+      if (host) {
+        setSelectedHostId(hostId)
+        setModalOpen(true)
+        // Clear the URL param after opening
+        searchParams.delete('hostId')
+        setSearchParams(searchParams, { replace: true })
+      }
+    }
+  }, [searchParams, hosts, setSearchParams])
+
+  // Alert drawer state
+  const [selectedAlertId, setSelectedAlertId] = useState<string | null>(null)
 
   // Selection state for bulk operations
   const [selectedHostIds, setSelectedHostIds] = useState<Set<string>>(new Set())
@@ -390,14 +450,7 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
         },
       },
 
-      // 3. OS/Version
-      {
-        accessorKey: 'os_version',
-        header: 'OS / Version',
-        cell: ({ row }) => <OSVersion osVersion={row.original.os_version} dockerVersion={row.original.docker_version} />,
-      },
-
-      // 4. Containers
+      // 3. Containers
       {
         accessorKey: 'container_count',
         header: ({ column }) => (
@@ -413,42 +466,48 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
         cell: ({ row }) => <ContainerCount hostId={row.original.id} />,
       },
 
-      // 5. CPU
-      {
-        accessorKey: 'cpu',
-        header: 'CPU',
-        cell: ({ row }) => <HostSparkline hostId={row.original.id} metric="cpu" />,
-      },
-
-      // 6. Memory
-      {
-        accessorKey: 'memory',
-        header: 'Memory',
-        cell: ({ row }) => <HostSparkline hostId={row.original.id} metric="memory" />,
-      },
-
-      // 7. Alerts
+      // 4. Alerts
       {
         accessorKey: 'alerts',
         header: 'Alerts',
-        cell: () => <AlertsBadge count={0} />, // TODO: Get real alert count
+        cell: ({ row }) => (
+          <AlertSeverityCountsComponent
+            hostname={row.original.name}
+            alertCounts={alertCounts}
+            onAlertClick={setSelectedAlertId}
+          />
+        ),
       },
 
-      // 8. Updates
-      {
-        accessorKey: 'updates',
-        header: 'Updates',
-        cell: () => <UpdatesBadge hasUpdates={false} />, // TODO: Check for updates
-      },
-
-      // 9. Uptime
+      // 5. Uptime
       {
         accessorKey: 'daemon_started_at',
         header: 'Uptime',
         cell: ({ row }) => <Uptime daemonStartedAt={row.original.daemon_started_at} />,
       },
 
-      // 10. Actions
+      // 6. CPU%
+      {
+        accessorKey: 'cpu',
+        header: 'CPU%',
+        cell: ({ row }) => <HostMetricPercentage hostId={row.original.id} metric="cpu" />,
+      },
+
+      // 7. RAM%
+      {
+        accessorKey: 'memory',
+        header: 'RAM%',
+        cell: ({ row }) => <HostMetricPercentage hostId={row.original.id} metric="memory" />,
+      },
+
+      // 8. OS/Version
+      {
+        accessorKey: 'os_version',
+        header: 'OS / Version',
+        cell: ({ row }) => <OSVersion osVersion={row.original.os_version} dockerVersion={row.original.docker_version} />,
+      },
+
+      // 9. Actions
       {
         id: 'actions',
         header: 'Actions',
@@ -479,7 +538,7 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
         ),
       },
     ],
-    [selectedHostIds, toggleHostSelection, toggleSelectAll, onEditHost]
+    [selectedHostIds, toggleHostSelection, toggleSelectAll, onEditHost, alertCounts]
   )
 
   const table = useReactTable({
@@ -603,6 +662,11 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
             queryClient.invalidateQueries({ queryKey: ['hosts'] })
           }}
         />
+      )}
+
+      {/* Alert Details Drawer */}
+      {selectedAlertId && (
+        <AlertDetailsDrawer alertId={selectedAlertId} onClose={() => setSelectedAlertId(null)} />
       )}
     </div>
   )

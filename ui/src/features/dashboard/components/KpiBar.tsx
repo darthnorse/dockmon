@@ -10,6 +10,7 @@
 import { useNavigate } from 'react-router-dom'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
 import { useStatsContext } from '@/lib/stats/StatsProvider'
+import { useAlertStats } from '@/features/alerts/hooks/useAlerts'
 import { Server, Box, Play, AlertTriangle, RefreshCw } from 'lucide-react'
 
 interface KpiCardProps {
@@ -53,6 +54,7 @@ export function KpiBar() {
   const navigate = useNavigate()
   const { data: hosts } = useHosts()
   const { containerStats } = useStatsContext()
+  const { data: alertStats } = useAlertStats()
 
   // Calculate metrics
   const totalHosts = hosts?.length || 0
@@ -70,8 +72,8 @@ export function KpiBar() {
   })
   const stoppedContainers = totalContainers - runningContainers
 
-  // TODO: Get real alerts count from backend
-  const activeAlerts = 0
+  // Get open alerts count (snoozed will become open when they wake up)
+  const activeAlerts = alertStats?.by_state.open || 0
 
   // TODO: Get real updates count from backend
   const pendingUpdates = 0
@@ -113,6 +115,7 @@ export function KpiBar() {
         label="Alerts"
         value={activeAlerts}
         subtitle={activeAlerts > 0 ? 'Requires attention' : 'All clear'}
+        onClick={() => navigate('/alerts')}
         variant={activeAlerts > 0 ? 'warning' : 'success'}
       />
 

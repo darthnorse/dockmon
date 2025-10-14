@@ -59,16 +59,9 @@ const RULE_KINDS = [
     scopes: ['container']
   },
   {
-    value: 'container_died',
-    label: 'Container Died/Crashed',
-    description: 'Alert when container exits unexpectedly (non-zero exit code, OOM, crash)',
-    requiresMetric: false,
-    scopes: ['container']
-  },
-  {
     value: 'container_stopped',
-    label: 'Container Stopped',
-    description: 'Alert when container is stopped (exit code 0 - normal shutdown)',
+    label: 'Container Stopped/Died',
+    description: 'Alert when container stops or crashes (any exit code). Use clear duration to avoid false positives during restarts.',
     requiresMetric: false,
     scopes: ['container']
   },
@@ -142,6 +135,34 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
     const kindConfig = RULE_KINDS.find((k) => k.value === ruleKind)
     const isMetricDriven = kindConfig?.requiresMetric ?? true
 
+    // Parse container selector to extract should_run filter and include list
+    const parseContainerSelector = (json: string | null | undefined) => {
+      if (!json) return { all: true, included: [], should_run: null }
+      try {
+        const parsed = JSON.parse(json)
+        if (parsed.include_all) {
+          return {
+            all: true,
+            included: [],
+            should_run: parsed.should_run || null
+          }
+        }
+        if (parsed.include) {
+          // Explicit include list for manual selection
+          return {
+            all: false,
+            included: parsed.include,
+            should_run: parsed.should_run || null
+          }
+        }
+        return { all: true, included: [], should_run: null }
+      } catch {
+        return { all: true, included: [], should_run: null }
+      }
+    }
+
+    const containerSelector = parseContainerSelector(rule?.container_selector_json)
+
     return {
       name: rule?.name || '',
       description: rule?.description || '',
@@ -152,21 +173,19 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       metric: rule?.metric || 'cpu_percent',
       threshold: rule?.threshold || 90,
       operator: rule?.operator || '>=',
-      // Event-driven rules: fire immediately (0s, 1 occurrence)
-      // Metric-driven rules: require sustained breach (300s, 3 occurrences)
+      // Event-driven rules: fire immediately (0s, 1 occurrence), auto-resolve after 30s, cooldown 15s
+      // Metric-driven rules: require sustained breach (300s, 3 occurrences), cooldown 5 min
       duration_seconds: rule?.duration_seconds ?? (isMetricDriven ? 300 : 0),
       occurrences: rule?.occurrences ?? (isMetricDriven ? 3 : 1),
       clear_threshold: rule?.clear_threshold,
-      clear_duration_seconds: rule?.clear_duration_seconds,
-      grace_seconds: rule?.grace_seconds || 0,
-      // Event-driven rules: no cooldown (notify every time)
-      // Metric-driven rules: 5 min cooldown (prevent spam from sustained high values)
-      cooldown_seconds: rule?.cooldown_seconds ?? (isMetricDriven ? 300 : 0),
+      clear_duration_seconds: rule?.clear_duration_seconds ?? (isMetricDriven ? undefined : 30),
+      cooldown_seconds: rule?.cooldown_seconds ?? (isMetricDriven ? 300 : 15),
       // Selectors
       host_selector_all: parseSelector(rule?.host_selector_json).all,
       host_selector_ids: parseSelector(rule?.host_selector_json).selected,
-      container_selector_all: parseSelector(rule?.container_selector_json).all,
-      container_selector_names: parseSelector(rule?.container_selector_json).selected,
+      container_selector_all: containerSelector.all,
+      container_selector_included: containerSelector.included,
+      container_run_mode: containerSelector.should_run === null ? 'all' : containerSelector.should_run ? 'should_run' : 'on_demand',
       notify_channels: rule?.notify_channels_json ? JSON.parse(rule.notify_channels_json) : [],
       custom_template: rule?.custom_template !== undefined ? rule.custom_template : null,
     }
@@ -232,10 +251,18 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       (h.url && h.url.toLowerCase().includes(hostSearchInput.toLowerCase()))
   )
 
-  const filteredContainers = containers.filter((c) =>
-    c.name.toLowerCase().includes(containerSearchInput.toLowerCase()) ||
-    (c.host_name && c.host_name.toLowerCase().includes(containerSearchInput.toLowerCase()))
-  )
+  const filteredContainers = containers
+    .filter((c) => {
+      // Apply run mode filter
+      if (formData.container_run_mode === 'should_run' && c.desired_state !== 'should_run') return false
+      if (formData.container_run_mode === 'on_demand' && c.desired_state !== 'on_demand') return false
+
+      // Apply search filter
+      return (
+        c.name.toLowerCase().includes(containerSearchInput.toLowerCase()) ||
+        (c.host_name && c.host_name.toLowerCase().includes(containerSearchInput.toLowerCase()))
+      )
+    })
 
   // Close dropdowns when clicking outside
   useEffect(() => {
@@ -265,7 +292,6 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
         kind: formData.kind,
         enabled: formData.enabled,
         severity: formData.severity,
-        grace_seconds: formData.grace_seconds,
         cooldown_seconds: formData.cooldown_seconds,
       }
 
@@ -277,6 +303,11 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
         if (formData.clear_threshold !== undefined) {
           requestData.clear_threshold = formData.clear_threshold
         }
+        if (formData.clear_duration_seconds !== undefined) {
+          requestData.clear_duration_seconds = formData.clear_duration_seconds
+        }
+      } else {
+        // For non-metric (event-driven) rules, add clear_duration_seconds
         if (formData.clear_duration_seconds !== undefined) {
           requestData.clear_duration_seconds = formData.clear_duration_seconds
         }
@@ -294,9 +325,25 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       }
 
       if (formData.container_selector_all) {
-        requestData.container_selector_json = JSON.stringify({ include_all: true })
-      } else if (formData.container_selector_names.length > 0) {
-        requestData.container_selector_json = JSON.stringify({ include: formData.container_selector_names })
+        const containerSelector: any = { include_all: true }
+        // Add should_run filter if specified
+        if (formData.container_run_mode === 'should_run') {
+          containerSelector.should_run = true
+        } else if (formData.container_run_mode === 'on_demand') {
+          containerSelector.should_run = false
+        }
+        // Note: When run mode filter is active, no manual selection is allowed
+        // All containers with that run mode are included automatically
+        requestData.container_selector_json = JSON.stringify(containerSelector)
+      } else if (formData.container_selector_included.length > 0) {
+        const containerSelector: any = { include: formData.container_selector_included }
+        // Add should_run filter if specified
+        if (formData.container_run_mode === 'should_run') {
+          containerSelector.should_run = true
+        } else if (formData.container_run_mode === 'on_demand') {
+          containerSelector.should_run = false
+        }
+        requestData.container_selector_json = JSON.stringify(containerSelector)
       }
 
       // Add notification channels
@@ -338,21 +385,43 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
           if (firstValidKind) {
             updated.kind = firstValidKind.value
             if (firstValidKind.requiresMetric) {
+              // Metric-driven rule defaults
               updated.metric = firstValidKind.metric
               updated.operator = firstValidKind.defaultOperator
               updated.threshold = firstValidKind.defaultThreshold
+              updated.duration_seconds = 300
+              updated.occurrences = 3
+              updated.cooldown_seconds = 300
+              updated.clear_duration_seconds = undefined
+            } else {
+              // Event-driven rule defaults
+              updated.duration_seconds = 0
+              updated.occurrences = 1
+              updated.cooldown_seconds = 15
+              updated.clear_duration_seconds = 30
             }
           }
         }
       }
 
-      // Auto-set metric, operator, and threshold when rule kind changes
+      // Auto-set metric, operator, threshold, and timing when rule kind changes
       if (field === 'kind') {
         const kind = RULE_KINDS.find((k) => k.value === value)
         if (kind?.requiresMetric) {
+          // Metric-driven rule defaults
           updated.metric = kind.metric
           updated.operator = kind.defaultOperator
           updated.threshold = kind.defaultThreshold
+          updated.duration_seconds = 300
+          updated.occurrences = 3
+          updated.cooldown_seconds = 300
+          updated.clear_duration_seconds = undefined
+        } else {
+          // Event-driven rule defaults
+          updated.duration_seconds = 0
+          updated.occurrences = 1
+          updated.cooldown_seconds = 15
+          updated.clear_duration_seconds = 30
         }
       }
 
@@ -383,10 +452,20 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
         parts.push(`Scope: ${formData.host_selector_ids.length} selected host${formData.host_selector_ids.length > 1 ? 's' : ''}`)
       }
     } else if (formData.scope === 'container') {
+      let scopeText = ''
       if (formData.container_selector_all) {
-        parts.push('Scope: All containers')
+        scopeText = 'All containers'
       } else if (formData.container_selector_names.length > 0) {
-        parts.push(`Scope: ${formData.container_selector_names.length} selected container${formData.container_selector_names.length > 1 ? 's' : ''}`)
+        scopeText = `${formData.container_selector_names.length} selected container${formData.container_selector_names.length > 1 ? 's' : ''}`
+      }
+      // Add run mode filter
+      if (formData.container_run_mode === 'should_run') {
+        scopeText += ' (Should Run only)'
+      } else if (formData.container_run_mode === 'on_demand') {
+        scopeText += ' (On-Demand only)'
+      }
+      if (scopeText) {
+        parts.push(`Scope: ${scopeText}`)
       }
     } else if (formData.scope === 'group') {
       if (selectedTags.length > 0) {
@@ -400,6 +479,29 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
 
     // Severity
     parts.push(`Severity: ${formData.severity}`)
+
+    // Timing Configuration
+    if (!requiresMetric) {
+      // For event-driven rules, show duration/occurrences if non-default
+      if (formData.duration_seconds > 0 || formData.occurrences > 1) {
+        parts.push(`Duration: ${formData.duration_seconds}s (${formData.occurrences} occurrence${formData.occurrences > 1 ? 's' : ''})`)
+      }
+      // Show clear duration for event-driven rules
+      if (formData.clear_duration_seconds !== undefined && formData.clear_duration_seconds > 0) {
+        parts.push(`Clear Duration: ${formData.clear_duration_seconds}s`)
+      }
+    } else {
+      // For metric-driven rules, show clear threshold/duration if set
+      if (formData.clear_threshold !== undefined) {
+        parts.push(`Clear Threshold: ${formData.clear_threshold}%`)
+      }
+      if (formData.clear_duration_seconds !== undefined && formData.clear_duration_seconds > 0) {
+        parts.push(`Clear Duration: ${formData.clear_duration_seconds}s`)
+      }
+    }
+
+    // Cooldown
+    parts.push(`Cooldown: ${formData.cooldown_seconds}s`)
 
     // Notifications
     if (formData.notify_channels.length > 0) {
@@ -664,7 +766,10 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                     className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                     placeholder="Optional"
                   />
-                  <p className="mt-1 text-xs text-gray-500">How long below threshold before auto-resolve</p>
+                  <p className="mt-1 text-xs text-gray-400">
+                    Time window for transient issues. If the condition clears within this period, the alert will auto-resolve
+                    without sending notifications. Useful for brief threshold spikes.
+                  </p>
                 </div>
               </div>
             </div>
@@ -704,19 +809,25 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
             </div>
 
             <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Grace Period (seconds)</label>
-                <input
-                  type="number"
-                  value={formData.grace_seconds}
-                  onChange={(e) => handleChange('grace_seconds', parseInt(e.target.value))}
-                  min={0}
-                  className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
-                <p className="mt-1 text-xs text-gray-500">Wait time before evaluating rule</p>
-              </div>
+              {!requiresMetric && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-1">Clear Duration (seconds)</label>
+                  <input
+                    type="number"
+                    value={formData.clear_duration_seconds || ''}
+                    onChange={(e) => handleChange('clear_duration_seconds', e.target.value ? parseInt(e.target.value) : undefined)}
+                    min={0}
+                    placeholder="30"
+                    className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                  <p className="mt-1 text-xs text-gray-400">
+                    Time window for transient issues. If the condition clears within this period, the alert will auto-resolve
+                    without sending notifications. Useful for brief outages like container restarts. Default: 30 seconds.
+                  </p>
+                </div>
+              )}
 
-              <div>
+              <div className={!requiresMetric ? '' : 'col-span-2'}>
                 <label className="block text-sm font-medium text-gray-300 mb-1">Cooldown (seconds) *</label>
                 <input
                   type="number"
@@ -844,7 +955,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                   <button
                     type="button"
                     onClick={() => {
-                      handleChange('container_selector_names', [])
+                      handleChange('container_selector_included', [])
                       handleChange('container_selector_all', true)
                     }}
                     className="text-xs text-blue-400 hover:text-blue-300 underline"
@@ -855,7 +966,8 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                   <button
                     type="button"
                     onClick={() => {
-                      handleChange('container_selector_names', [])
+                      // Deselect all: switch to manual include mode with empty list
+                      handleChange('container_selector_included', [])
                       handleChange('container_selector_all', false)
                     }}
                     className="text-xs text-blue-400 hover:text-blue-300 underline"
@@ -865,16 +977,61 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                 </div>
               </div>
 
-              <div ref={containerDropdownRef} className="relative">
-                <label className="block text-sm font-medium text-gray-300 mb-2">
-                  Select Containers
-                  {formData.container_selector_all && containers.length > 0 && (
-                    <span className="ml-2 text-xs text-blue-400">({containers.length} containers - all selected)</span>
-                  )}
-                  {!formData.container_selector_all && formData.container_selector_names.length > 0 && (
-                    <span className="ml-2 text-xs text-blue-400">({formData.container_selector_names.length} selected)</span>
-                  )}
-                </label>
+              {/* Container Run Mode Selector */}
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Container Run Mode</label>
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleChange('container_run_mode', 'all')}
+                    className={`px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                      formData.container_run_mode === 'all'
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                    }`}
+                  >
+                    All Containers
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleChange('container_run_mode', 'should_run')}
+                    className={`px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                      formData.container_run_mode === 'should_run'
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                    }`}
+                  >
+                    Should Run Only
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleChange('container_run_mode', 'on_demand')}
+                    className={`px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                      formData.container_run_mode === 'on_demand'
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                    }`}
+                  >
+                    On-Demand Only
+                  </button>
+                </div>
+                <p className="mt-2 text-xs text-gray-400">
+                  Filter containers by run mode to create separate rules for different severity levels
+                </p>
+              </div>
+
+              {/* Show container selector only when "All Containers" is selected */}
+              {formData.container_run_mode === 'all' ? (
+                <div ref={containerDropdownRef} className="relative">
+                  <label className="block text-sm font-medium text-gray-300 mb-2">
+                    Select Containers
+                    {formData.container_selector_all && filteredContainers.length > 0 && (
+                      <span className="ml-2 text-xs text-blue-400">({filteredContainers.length} containers - all selected)</span>
+                    )}
+                    {!formData.container_selector_all && formData.container_selector_included.length > 0 && (
+                      <span className="ml-2 text-xs text-blue-400">({formData.container_selector_included.length} selected)</span>
+                    )}
+                  </label>
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
                   <input
@@ -894,22 +1051,23 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                       <div className="px-3 py-2 text-sm text-gray-400">No containers found</div>
                     ) : (
                       filteredContainers.map((container: Container) => {
-                        const isSelected = formData.container_selector_all || formData.container_selector_names.includes(container.name)
+                        const isSelected = formData.container_selector_all || formData.container_selector_included.includes(container.name)
                         return (
                           <button
                             key={container.id}
                             type="button"
                             onClick={() => {
                               if (formData.container_selector_all) {
-                                // When "all" is selected, clicking means exclude this one
-                                const allExcept = containers.filter(c => c.name !== container.name).map(c => c.name)
-                                handleChange('container_selector_names', allExcept)
+                                // When "all" is selected, clicking switches to include mode with all except this one
+                                const allExcept = filteredContainers.filter(c => c.name !== container.name).map(c => c.name)
+                                handleChange('container_selector_included', allExcept)
                                 handleChange('container_selector_all', false)
                               } else {
+                                // Manual include mode - toggle this container
                                 const newNames = isSelected
-                                  ? formData.container_selector_names.filter((n: string) => n !== container.name)
-                                  : [...formData.container_selector_names, container.name]
-                                handleChange('container_selector_names', newNames)
+                                  ? formData.container_selector_included.filter((n: string) => n !== container.name)
+                                  : [...formData.container_selector_included, container.name]
+                                handleChange('container_selector_included', newNames)
                               }
                             }}
                             className="w-full px-3 py-2 text-left text-sm flex items-center gap-2 hover:bg-gray-700 transition-colors"
@@ -936,6 +1094,21 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                   </div>
                 )}
               </div>
+            ) : (
+              /* Show read-only info when a specific run mode is selected */
+              <div className="space-y-2">
+                <div className="text-sm text-gray-300">
+                  <span className="font-medium">Matching Containers:</span>
+                  <span className="ml-2 text-xs text-blue-400">{filteredContainers.length} container{filteredContainers.length !== 1 ? 's' : ''}</span>
+                </div>
+                <div className="rounded-lg border border-blue-500/30 bg-blue-500/10 p-3">
+                  <p className="text-xs text-blue-300">
+                    All containers with run mode "{formData.container_run_mode === 'should_run' ? 'Should Run' : 'On-Demand'}" will be monitored automatically.
+                    To exclude specific containers from this rule, change their run mode in the container settings.
+                  </p>
+                </div>
+              </div>
+            )}
             </div>
           )}
 

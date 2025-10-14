@@ -51,6 +51,7 @@ class AlertEvaluationService:
 
         self._running = False
         self._task: Optional[asyncio.Task] = None
+        self._notification_task: Optional[asyncio.Task] = None
         self._recent_notifications: Dict[str, float] = {}  # {alert_id: timestamp} for deduplication
 
     async def start(self):
@@ -61,6 +62,7 @@ class AlertEvaluationService:
 
         self._running = True
         self._task = asyncio.create_task(self._evaluation_loop())
+        self._notification_task = asyncio.create_task(self._pending_notifications_loop())
         logger.info(f"Alert evaluation service started (interval: {self.evaluation_interval}s)")
 
     async def stop(self):
@@ -71,6 +73,13 @@ class AlertEvaluationService:
             self._task.cancel()
             try:
                 await self._task
+            except asyncio.CancelledError:
+                pass
+
+        if self._notification_task:
+            self._notification_task.cancel()
+            try:
+                await self._notification_task
             except asyncio.CancelledError:
                 pass
 
@@ -87,6 +96,142 @@ class AlertEvaluationService:
             except Exception as e:
                 logger.error(f"Error in alert evaluation loop: {e}", exc_info=True)
                 await asyncio.sleep(self.evaluation_interval)
+
+    async def _pending_notifications_loop(self):
+        """
+        Background task to check for alerts that need delayed notifications.
+
+        Checks every 5 seconds for:
+        1. Open alerts that haven't been notified yet (notified_at is NULL)
+        2. Alert age >= rule.clear_duration_seconds
+        3. Sends notification and marks notified_at
+        """
+        check_interval = 5  # Check every 5 seconds
+
+        while self._running:
+            try:
+                await self._check_pending_notifications()
+                await asyncio.sleep(check_interval)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in pending notifications loop: {e}", exc_info=True)
+                await asyncio.sleep(check_interval)
+
+    async def _check_pending_notifications(self):
+        """Check for alerts that have exceeded their clear_duration and need notifications"""
+        try:
+            with self.db.get_session() as session:
+                # Get all open alerts that haven't been notified yet
+                pending_alerts = session.query(AlertV2).filter(
+                    AlertV2.state == "open",
+                    AlertV2.notified_at == None
+                ).all()
+
+                now = datetime.now(timezone.utc)
+
+                for alert in pending_alerts:
+                    # Get the rule to check clear_duration_seconds
+                    rule = session.query(AlertRuleV2).filter(AlertRuleV2.id == alert.rule_id).first()
+
+                    if not rule:
+                        continue
+
+                    # Get clear_duration (default to 0 if not set)
+                    clear_duration = rule.clear_duration_seconds or 0
+
+                    # Calculate alert age from last_seen (when alert was most recently triggered)
+                    # This ensures clear_duration applies to each re-trigger, not just the first occurrence
+                    last_seen = alert.last_seen if alert.last_seen.tzinfo else alert.last_seen.replace(tzinfo=timezone.utc)
+                    alert_age = (now - last_seen).total_seconds()
+
+                    # Check if alert has exceeded clear_duration
+                    if alert_age >= clear_duration:
+                        logger.info(
+                            f"Alert {alert.id} ({alert.title}) exceeded clear_duration "
+                            f"({alert_age:.1f}s >= {clear_duration}s) - sending notification"
+                        )
+
+                        # Send notification (send_alert_v2 will update notified_at and notification_count)
+                        await self._send_notification(alert)
+
+        except Exception as e:
+            logger.error(f"Error checking pending notifications: {e}", exc_info=True)
+
+    async def _send_notification(self, alert: AlertV2):
+        """
+        Send notification for an alert.
+
+        This is a separate method to centralize notification sending logic.
+        """
+        try:
+            # Get the rule for this alert
+            rule = self.engine.db.get_alert_rule_v2(alert.rule_id) if alert.rule_id else None
+
+            if not rule:
+                logger.warning(f"Cannot send notification - rule not found for alert {alert.id}")
+                return
+
+            # Log event to event log system
+            if self.event_logger:
+                try:
+                    from event_logger import EventContext, EventCategory, EventType, EventSeverity
+
+                    event_type = EventType.RULE_TRIGGERED
+                    event_message = f"Alert triggered: {alert.message}"
+
+                    # Create event context
+                    event_context = EventContext(
+                        host_id=alert.scope_id if alert.scope_type == "host" else None,
+                        host_name=alert.host_name,
+                        container_id=alert.scope_id if alert.scope_type == "container" else None,
+                        container_name=alert.container_name,
+                    )
+
+                    # Map alert severity to event severity
+                    severity_map = {
+                        "info": EventSeverity.INFO,
+                        "warning": EventSeverity.WARNING,
+                        "error": EventSeverity.ERROR,
+                        "critical": EventSeverity.CRITICAL,
+                    }
+                    event_severity = severity_map.get(alert.severity, EventSeverity.INFO)
+
+                    # Log the event
+                    self.event_logger.log_event(
+                        category=EventCategory.ALERT,
+                        event_type=event_type,
+                        severity=event_severity,
+                        title=alert.title,
+                        message=event_message,
+                        context=event_context,
+                        details={
+                            "alert_id": alert.id,
+                            "dedup_key": alert.dedup_key,
+                            "rule_id": alert.rule_id,
+                            "scope_type": alert.scope_type,
+                            "scope_id": alert.scope_id,
+                            "kind": alert.kind,
+                            "state": alert.state,
+                            "current_value": alert.current_value,
+                            "threshold": alert.threshold,
+                        }
+                    )
+
+                except Exception as e:
+                    logger.error(f"Failed to log alert event: {e}", exc_info=True)
+
+            # Send notification via notification service
+            if hasattr(self, 'notification_service') and self.notification_service:
+                try:
+                    await self.notification_service.send_alert_v2(alert, rule)
+                except Exception as e:
+                    logger.error(f"Failed to send notification for alert {alert.id}: {e}", exc_info=True)
+            else:
+                logger.warning(f"No notification service available for alert {alert.id}")
+
+        except Exception as e:
+            logger.error(f"Error in _send_notification: {e}", exc_info=True)
 
     async def _evaluate_all_rules(self):
         """Evaluate all enabled metric-driven rules"""
@@ -142,6 +287,7 @@ class AlertEvaluationService:
                     host_name=container_info.get("host_name"),
                     container_id=container_id,
                     container_name=container_info.get("name"),
+                    desired_state=container_info.get("desired_state"),
                     labels=container_info.get("labels", {})
                 )
 
@@ -204,7 +350,7 @@ class AlertEvaluationService:
 
     async def _get_container_info(self, container_id: str, host_id: str) -> Optional[Dict[str, Any]]:
         """
-        Get container metadata (name, host, labels) from database
+        Get container metadata (name, host, labels, desired_state) from database
         """
         # Query the database for container info
         with self.db.get_session() as session:
@@ -212,7 +358,7 @@ class AlertEvaluationService:
 
             # Query containers table for this container
             query = text("""
-                SELECT name, image, labels
+                SELECT name, image, labels, desired_state
                 FROM containers
                 WHERE container_id LIKE :container_id_pattern
                 LIMIT 1
@@ -233,7 +379,8 @@ class AlertEvaluationService:
                     'host_id': host_id,
                     'labels': {},  # Labels are JSON, would need parsing
                     'state': 'unknown',  # State is tracked in real-time, not in DB
-                    'image': row[1]
+                    'image': row[1],
+                    'desired_state': row[3] if len(row) > 3 else 'unspecified'
                 }
 
         return None
@@ -247,32 +394,35 @@ class AlertEvaluationService:
         Handle alert notification
 
         This is called when an alert is created or updated.
-        Should check notification settings and send notifications.
-        Also logs alert events to the event log.
+
+        For alerts with clear_duration:
+        - Clear notified_at and defer notification to background task
+        - Background task will send notification after clear_duration expires (if still open)
+        - This applies to both new and re-triggered alerts
+
+        For alerts without clear_duration:
+        - Send notification immediately
         """
-        # Deduplicate rapid-fire notifications (Docker kill/die/stop events happen within milliseconds)
-        current_time = time.time()
+        # Check if alert should be deferred based on clear_duration
+        if alert.state == "open":
+            # Get the rule to check clear_duration
+            rule = self.engine.db.get_alert_rule_v2(alert.rule_id) if alert.rule_id else None
 
-        if alert.id in self._recent_notifications:
-            time_since_last = current_time - self._recent_notifications[alert.id]
-            if time_since_last < 5.0:  # 5 second deduplication window
-                logger.debug(
-                    f"Skipping duplicate notification for alert {alert.id} "
-                    f"(last notified {time_since_last:.1f}s ago)"
-                )
-                return
+            if rule and rule.clear_duration_seconds and rule.clear_duration_seconds > 0:
+                # Clear notified_at so the background task will pick it up
+                # This applies to both new alerts and re-triggered alerts
+                with self.engine.db.get_session() as session:
+                    alert_to_update = session.query(AlertV2).filter(AlertV2.id == alert.id).first()
+                    if alert_to_update:
+                        alert_to_update.notified_at = None
+                        session.commit()
+                        logger.info(
+                            f"Deferring notification for alert {alert.id} - "
+                            f"will notify after {rule.clear_duration_seconds}s if still open"
+                        )
+                        return
 
-        # Record this notification
-        self._recent_notifications[alert.id] = current_time
-
-        # Clean up old entries periodically (keep only last 5 minutes)
-        if len(self._recent_notifications) > 100:
-            cutoff_time = current_time - 300  # 5 minutes ago
-            self._recent_notifications = {
-                k: v for k, v in self._recent_notifications.items()
-                if v > cutoff_time
-            }
-
+        # For alerts without clear_duration, send immediately
         logger.info(
             f"Alert notification: {alert.title} "
             f"(severity={alert.severity}, state={alert.state})"
@@ -376,6 +526,10 @@ class AlertEvaluationService:
         """
         logger.info(f"V2: Processing {event_type} for {container_name} on {host_name}")
         try:
+            # Get container info to retrieve desired_state
+            container_info = await self._get_container_info(container_id, host_id)
+            desired_state = container_info.get("desired_state") if container_info else 'unspecified'
+
             # Create evaluation context with the data passed in
             context = EvaluationContext(
                 scope_type="container",
@@ -384,6 +538,7 @@ class AlertEvaluationService:
                 host_name=host_name,
                 container_id=container_id,
                 container_name=container_name,
+                desired_state=desired_state,
                 labels={}  # Labels not needed for basic event-driven rules
             )
 

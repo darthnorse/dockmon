@@ -18,6 +18,7 @@ import { toast } from 'sonner'
 import { apiClient } from '@/lib/api/client'
 import { debug } from '@/lib/debug'
 import { validateTag, normalizeTag, isDerivedTag, validateTagSuggestionsResponse } from '@/lib/validation/tags'
+import { TagChip } from '@/components/TagChip'
 import type { Container } from '../../types'
 
 interface TagEditorProps {
@@ -47,11 +48,13 @@ export function TagEditor({ tags, containerId, hostId }: TagEditorProps) {
       setError(null)
       inputRef.current?.focus()
     }
-  }, [isEditing, userTags])
+    // Only reset when isEditing changes, not when userTags changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEditing])
 
   // Fetch tag suggestions from API
   useEffect(() => {
-    if (!showSuggestions || !inputValue.trim()) {
+    if (!showSuggestions) {
       setSuggestions([])
       return
     }
@@ -278,21 +281,19 @@ export function TagEditor({ tags, containerId, hostId }: TagEditorProps) {
                   ref={suggestionsRef}
                   id="tag-suggestions"
                   role="listbox"
-                  className="absolute top-full left-0 mt-1 w-full bg-surface-1 border border-border rounded-lg shadow-xl max-h-[150px] overflow-y-auto z-10"
+                  className="absolute top-full left-0 mt-1 w-full bg-popover border border-border rounded-md shadow-md max-h-60 overflow-y-auto z-50 p-1"
                 >
-                  <div className="p-1">
-                    {suggestions.map((suggestion) => (
-                      <button
-                        key={suggestion}
-                        onClick={() => addTag(suggestion)}
-                        className="w-full text-left px-3 py-2 text-sm hover:bg-muted rounded transition-colors"
-                        role="option"
-                        aria-selected="false"
-                      >
-                        {suggestion}
-                      </button>
-                    ))}
-                  </div>
+                  {suggestions.map((suggestion) => (
+                    <button
+                      key={suggestion}
+                      onClick={() => addTag(suggestion)}
+                      className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-left hover:bg-accent hover:text-accent-foreground transition-colors"
+                      role="option"
+                      aria-selected="false"
+                    >
+                      <TagChip tag={suggestion} size="sm" />
+                    </button>
+                  ))}
                 </div>
               )}
             </div>

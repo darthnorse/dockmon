@@ -17,6 +17,9 @@ export function SystemSettings() {
   const [maxRetries, setMaxRetries] = useState(settings?.max_retries ?? 3)
   const [retryDelay, setRetryDelay] = useState(settings?.retry_delay ?? 30)
   const [defaultAutoRestart, setDefaultAutoRestart] = useState(settings?.default_auto_restart ?? false)
+  const [unusedTagRetentionDays, setUnusedTagRetentionDays] = useState(settings?.unused_tag_retention_days ?? 30)
+  const [eventRetentionDays, setEventRetentionDays] = useState(settings?.event_retention_days ?? 60)
+  const [autoCleanupEvents, setAutoCleanupEvents] = useState(settings?.auto_cleanup_events ?? true)
 
   const handleSave = async () => {
     try {
@@ -26,6 +29,9 @@ export function SystemSettings() {
         max_retries: maxRetries,
         retry_delay: retryDelay,
         default_auto_restart: defaultAutoRestart,
+        unused_tag_retention_days: unusedTagRetentionDays,
+        event_retention_days: eventRetentionDays,
+        auto_cleanup_events: autoCleanupEvents,
       })
       toast.success('System settings saved')
     } catch (error) {
@@ -38,14 +44,17 @@ export function SystemSettings() {
     connectionTimeout !== settings?.connection_timeout ||
     maxRetries !== settings?.max_retries ||
     retryDelay !== settings?.retry_delay ||
-    defaultAutoRestart !== settings?.default_auto_restart
+    defaultAutoRestart !== settings?.default_auto_restart ||
+    unusedTagRetentionDays !== settings?.unused_tag_retention_days ||
+    eventRetentionDays !== settings?.event_retention_days ||
+    autoCleanupEvents !== settings?.auto_cleanup_events
 
   return (
     <div className="space-y-6">
       {/* Monitoring */}
       <div>
         <div className="mb-4">
-          <h3 className="text-sm font-semibold text-white">Monitoring</h3>
+          <h3 className="text-lg font-semibold text-white">Monitoring</h3>
           <p className="text-xs text-gray-400 mt-1">Configure how frequently DockMon checks your Docker hosts</p>
         </div>
         <div className="space-y-4">
@@ -70,7 +79,7 @@ export function SystemSettings() {
       {/* Connection */}
       <div>
         <div className="mb-4">
-          <h3 className="text-sm font-semibold text-white">Connection</h3>
+          <h3 className="text-lg font-semibold text-white">Connection</h3>
           <p className="text-xs text-gray-400 mt-1">Connection timeout and retry settings</p>
         </div>
         <div className="space-y-4">
@@ -127,7 +136,7 @@ export function SystemSettings() {
       {/* Container Behavior */}
       <div>
         <div className="mb-4">
-          <h3 className="text-sm font-semibold text-white">Container Behavior</h3>
+          <h3 className="text-lg font-semibold text-white">Container Behavior</h3>
           <p className="text-xs text-gray-400 mt-1">Default behavior for containers</p>
         </div>
         <div className="divide-y divide-border">
@@ -138,6 +147,61 @@ export function SystemSettings() {
             checked={defaultAutoRestart}
             onChange={setDefaultAutoRestart}
           />
+        </div>
+      </div>
+
+      {/* Data Retention */}
+      <div>
+        <div className="mb-4">
+          <h3 className="text-lg font-semibold text-white">Data Retention</h3>
+          <p className="text-xs text-gray-400 mt-1">Configure how long DockMon keeps historical data</p>
+        </div>
+        <div className="space-y-4">
+          <div>
+            <label htmlFor="event-retention" className="block text-sm font-medium text-gray-300 mb-2">
+              Event Retention (days)
+            </label>
+            <input
+              id="event-retention"
+              type="number"
+              min="1"
+              max="365"
+              value={eventRetentionDays}
+              onChange={(e) => setEventRetentionDays(Number(e.target.value))}
+              className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            <p className="mt-1 text-xs text-gray-400">
+              How long to keep event logs and history (1-365 days). Older events are automatically deleted during nightly maintenance.
+            </p>
+          </div>
+
+          <div className="divide-y divide-border">
+            <ToggleSwitch
+              id="auto-cleanup-events"
+              label="Automatically cleanup old events"
+              description="Run nightly cleanup to delete events older than the retention period"
+              checked={autoCleanupEvents}
+              onChange={setAutoCleanupEvents}
+            />
+          </div>
+
+          <div>
+            <label htmlFor="unused-tag-retention" className="block text-sm font-medium text-gray-300 mb-2">
+              Unused Tag Retention (days)
+            </label>
+            <input
+              id="unused-tag-retention"
+              type="number"
+              min="0"
+              max="365"
+              value={unusedTagRetentionDays}
+              onChange={(e) => setUnusedTagRetentionDays(Number(e.target.value))}
+              className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            <p className="mt-1 text-xs text-gray-400">
+              Automatically delete tags that haven't been assigned to anything for this many days. Set to 0 to keep unused tags forever. (0-365 days)
+            </p>
+          </div>
         </div>
       </div>
 

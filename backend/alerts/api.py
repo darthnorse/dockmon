@@ -60,6 +60,7 @@ class AlertResponse(BaseModel):
     labels: Optional[Dict[str, str]] = None
     notification_count: int = 0
     host_name: Optional[str] = None
+    host_id: Optional[str] = None
     container_name: Optional[str] = None
 
     class Config:
@@ -94,7 +95,7 @@ class AlertRuleRequest(BaseModel):
     """Request to create/update alert rule"""
     name: str = Field(min_length=1, max_length=200)
     description: Optional[str] = None
-    scope: str = Field(pattern="^(host|container|group)$")
+    scope: str = Field(pattern="^(host|container)$")
     kind: str = Field(min_length=1, max_length=100)
     enabled: bool = True
 
@@ -175,7 +176,7 @@ def get_rule_validator() -> AlertRuleValidator:
 async def list_alerts(
     state: Optional[str] = Query(None, pattern="^(open|snoozed|resolved)$"),
     severity: Optional[str] = Query(None, pattern="^(info|warning|error|critical)$"),
-    scope_type: Optional[str] = Query(None, pattern="^(host|container|group)$"),
+    scope_type: Optional[str] = Query(None, pattern="^(host|container)$"),
     scope_id: Optional[str] = None,
     rule_id: Optional[str] = None,
     page: int = Query(1, ge=1),
@@ -396,7 +397,7 @@ async def get_annotations(
 @router.get("/rules/", dependencies=[Depends(get_rate_limit_dependency("rules"))])
 async def list_rules(
     enabled: Optional[bool] = None,
-    scope: Optional[str] = Query(None, pattern="^(host|container|group)$"),
+    scope: Optional[str] = Query(None, pattern="^(host|container)$"),
     db: DatabaseManager = Depends(get_db)
 ):
     """List all alert rules"""

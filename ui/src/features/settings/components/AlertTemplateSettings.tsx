@@ -125,7 +125,7 @@ export function AlertTemplateSettings() {
       {/* Template Category Tabs */}
       <div>
         <div className="mb-4">
-          <h3 className="text-sm font-semibold text-white">Template Categories</h3>
+          <h3 className="text-lg font-semibold text-white">Template Categories</h3>
           <p className="text-xs text-gray-400 mt-1">
             Customize message format for different alert types. Rules without a custom template use these.
           </p>
@@ -197,7 +197,7 @@ export function AlertTemplateSettings() {
       {/* Available Variables */}
       <div>
         <div className="mb-4">
-          <h3 className="text-sm font-semibold text-white">Available Variables</h3>
+          <h3 className="text-lg font-semibold text-white">Available Variables</h3>
           <p className="text-xs text-gray-400 mt-1">
             Click to copy a variable to your clipboard
           </p>

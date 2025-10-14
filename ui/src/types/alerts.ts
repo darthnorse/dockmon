@@ -4,7 +4,7 @@
 
 export type AlertState = 'open' | 'snoozed' | 'resolved'
 export type AlertSeverity = 'info' | 'warning' | 'error' | 'critical'
-export type AlertScope = 'host' | 'container' | 'group'
+export type AlertScope = 'host' | 'container'
 
 export interface Alert {
   id: string
@@ -29,6 +29,7 @@ export interface Alert {
   labels?: Record<string, string> | null
   notification_count: number
   host_name?: string | null
+  host_id?: string | null
   container_name?: string | null
 }
 

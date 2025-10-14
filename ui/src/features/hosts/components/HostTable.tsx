@@ -52,6 +52,7 @@ import { HostDetailsModal } from './HostDetailsModal'
 import { HostBulkActionBar } from './HostBulkActionBar'
 import { AlertDetailsDrawer } from '@/features/alerts/components/AlertDetailsDrawer'
 import { useHostMetrics, useContainerCounts } from '@/lib/stats/StatsProvider'
+import { useSimplifiedWorkflow, useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
 import { useHostAlertCounts, type AlertSeverityCounts } from '@/features/alerts/hooks/useAlerts'
 import { useGlobalSettings } from '@/hooks/useSettings'
 import { useQueryClient } from '@tanstack/react-query'
@@ -278,9 +279,32 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
   const { data: hosts = [], isLoading, error } = useHosts()
   const queryClient = useQueryClient()
   const { data: settings } = useGlobalSettings()
-  const [sorting, setSorting] = useState<SortingState>([])
+  const { data: preferences } = useUserPreferences()
+  const updatePreferences = useUpdatePreferences()
+  const [sorting, setSorting] = useState<SortingState>(preferences?.host_table_sort || [])
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
   const [searchParams, setSearchParams] = useSearchParams()
+  const { enabled: simplifiedWorkflow } = useSimplifiedWorkflow()
+
+  // Initialize sorting from preferences when loaded
+  useEffect(() => {
+    if (preferences?.host_table_sort) {
+      setSorting(preferences.host_table_sort as SortingState)
+    }
+  }, [preferences?.host_table_sort])
+
+  // Save sorting changes to preferences
+  useEffect(() => {
+    // Don't save on initial load (empty array)
+    if (sorting.length === 0 && !preferences?.host_table_sort) return
+
+    // Debounce to avoid too many updates
+    const timer = setTimeout(() => {
+      updatePreferences.mutate({ host_table_sort: sorting })
+    }, 500)
+
+    return () => clearTimeout(timer)
+  }, [sorting])
 
   // Fetch alert counts (optionally including container alerts aggregated by host)
   const showContainerAlerts = settings?.show_container_alerts_on_hosts ?? false
@@ -426,7 +450,11 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
                   title={`URL: ${host.url}`}
                   onClick={() => {
                     setSelectedHostId(row.original.id)
-                    setDrawerOpen(true)
+                    if (simplifiedWorkflow) {
+                      setModalOpen(true)
+                    } else {
+                      setDrawerOpen(true)
+                    }
                   }}
                 >
                   {host.name}

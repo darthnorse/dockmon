@@ -733,7 +733,7 @@ async def suggest_tags(
     Returns a list of existing container tags that match the query string.
     Used by the bulk tag management UI for containers.
     """
-    tags = monitor.db.get_all_tags_v2(query=q, limit=limit)
+    tags = monitor.db.get_all_tags_v2(query=q, limit=limit, subject_type="container")
     return {"tags": tags}
 
 @app.get("/api/hosts/tags/suggest")
@@ -745,10 +745,9 @@ async def suggest_host_tags(
     """
     Get host tag suggestions for autocomplete
 
-    Returns a list of existing tags that match the query string.
-    In the normalized schema, tags are universal and can be used for both hosts and containers.
+    Returns a list of existing host tags that match the query string.
     """
-    tags = monitor.db.get_all_tags_v2(query=q, limit=limit)
+    tags = monitor.db.get_all_tags_v2(query=q, limit=limit, subject_type="host")
     return {"tags": tags}
 
 
@@ -822,7 +821,6 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
         "default_auto_restart": settings.default_auto_restart,
         "polling_interval": settings.polling_interval,
         "connection_timeout": settings.connection_timeout,
-        "log_retention_days": settings.log_retention_days,
         "enable_notifications": settings.enable_notifications,
         "alert_template": getattr(settings, 'alert_template', None),
         "alert_template_metric": getattr(settings, 'alert_template_metric', None),
@@ -868,7 +866,6 @@ async def update_settings(settings: dict, current_user: dict = Depends(get_curre
         "default_auto_restart": updated.default_auto_restart,
         "polling_interval": updated.polling_interval,
         "connection_timeout": updated.connection_timeout,
-        "log_retention_days": updated.log_retention_days,
         "enable_notifications": updated.enable_notifications,
         "alert_template": getattr(updated, 'alert_template', None),
         "alert_template_metric": getattr(updated, 'alert_template_metric', None),
@@ -2106,7 +2103,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
             "default_auto_restart": monitor.settings.default_auto_restart,
             "polling_interval": monitor.settings.polling_interval,
             "connection_timeout": monitor.settings.connection_timeout,
-            "log_retention_days": monitor.settings.log_retention_days,
             "enable_notifications": monitor.settings.enable_notifications,
             "alert_template": getattr(monitor.settings, 'alert_template', None),
             "blackout_windows": getattr(monitor.settings, 'blackout_windows', None),

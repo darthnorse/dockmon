@@ -126,6 +126,7 @@ class AlertEngine:
                 rule_snapshot=self._snapshot_rule(rule),
                 labels_json=json.dumps(context.labels) if context.labels else None,
                 host_name=context.host_name,
+                host_id=context.host_id,
                 container_name=context.container_name,
                 event_context_json=json.dumps(event_data) if event_data else None,
             )

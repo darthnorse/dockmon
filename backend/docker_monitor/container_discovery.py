@@ -325,21 +325,24 @@ class ContainerDiscovery:
                     compose_service = labels.get('com.docker.compose.service')
 
                     # Reattach tags from previous containers with same logical identity (sticky tags)
+                    # Only do this for NEW containers that don't have existing tag assignments
                     container_key = f"{host_id}:{dc.id}"
-                    try:
-                        reattached_tags = self.db.reattach_tags_for_container(
-                            host_id=host_id,
-                            container_id=dc.id,
-                            container_name=dc.name,
-                            compose_project=compose_project,
-                            compose_service=compose_service
-                        )
-                        if reattached_tags:
-                            # Log tag count only to avoid excessive logging
-                            logger.debug(f"Reattached {len(reattached_tags)} tags to container {dc.name}")
-                    except Exception as e:
-                        # Don't fail container discovery if tag reattachment fails
-                        logger.warning(f"Failed to reattach tags for container {dc.name}: {e}")
+                    existing_tags = self.db.get_tags_for_subject('container', container_key)
+                    if not existing_tags:  # Only reattach if no tags exist yet (new container)
+                        try:
+                            reattached_tags = self.db.reattach_tags_for_container(
+                                host_id=host_id,
+                                container_id=dc.id,
+                                container_name=dc.name,
+                                compose_project=compose_project,
+                                compose_service=compose_service
+                            )
+                            if reattached_tags:
+                                # Log tag count only to avoid excessive logging
+                                logger.debug(f"Reattached {len(reattached_tags)} tags to container {dc.name}")
+                        except Exception as e:
+                            # Don't fail container discovery if tag reattachment fails
+                            logger.warning(f"Failed to reattach tags for container {dc.name}: {e}")
 
                     # Derive tags from labels
                     derived_tags = derive_container_tags(labels)

@@ -53,6 +53,11 @@ class UserPreferences(BaseModel):
     sidebar_collapsed: bool = Field(default=False)
     dashboard_layout_v2: Optional[Dict[str, Any]] = Field(default=None)  # react-grid-layout format
     dashboard: DashboardPreferences = Field(default_factory=DashboardPreferences)
+    simplified_workflow: bool = Field(default=False)  # Skip drawer, open modal directly
+
+    # Table sorting preferences (TanStack Table format: [{ id: 'column', desc: bool }])
+    host_table_sort: Optional[list[Dict[str, Any]]] = Field(default=None)
+    container_table_sort: Optional[list[Dict[str, Any]]] = Field(default=None)
 
 
 class PreferencesUpdate(BaseModel):
@@ -67,6 +72,11 @@ class PreferencesUpdate(BaseModel):
     sidebar_collapsed: Optional[bool] = None
     dashboard_layout_v2: Optional[Dict[str, Any]] = None
     dashboard: Optional[DashboardPreferences] = None
+    simplified_workflow: Optional[bool] = None
+
+    # Table sorting preferences
+    host_table_sort: Optional[list[Dict[str, Any]]] = None
+    container_table_sort: Optional[list[Dict[str, Any]]] = None
 
 
 @router.get("/preferences", response_model=UserPreferences)
@@ -93,7 +103,7 @@ async def get_user_preferences(
         ).fetchone()
 
         user_result = session.execute(
-            text("SELECT sidebar_collapsed, dashboard_layout_v2, prefs, view_mode, container_sort_order FROM users WHERE id = :user_id"),
+            text("SELECT sidebar_collapsed, dashboard_layout_v2, prefs, view_mode, container_sort_order, simplified_workflow FROM users WHERE id = :user_id"),
             {"user_id": user_id}
         ).fetchone()
 
@@ -170,7 +180,10 @@ async def get_user_preferences(
             filter_defaults=defaults_json.get("filter_defaults", {}),
             sidebar_collapsed=user_result.sidebar_collapsed if user_result else False,
             dashboard_layout_v2=dashboard_layout_v2,
-            dashboard=dashboard
+            dashboard=dashboard,
+            simplified_workflow=user_result.simplified_workflow if user_result and hasattr(user_result, 'simplified_workflow') else False,
+            host_table_sort=prefs_data.get("host_table_sort"),
+            container_table_sort=prefs_data.get("container_table_sort")
         )
 
 
@@ -273,8 +286,18 @@ async def update_user_preferences(
             update_parts.append("dashboard_layout_v2 = :dashboard_layout_v2")
             update_params["dashboard_layout_v2"] = dashboard_json
 
+        if updates.simplified_workflow is not None:
+            update_parts.append("simplified_workflow = :simplified_workflow")
+            update_params["simplified_workflow"] = updates.simplified_workflow
+
         # Handle prefs column (new JSONB-style preferences)
-        if updates.dashboard is not None:
+        needs_prefs_update = (
+            updates.dashboard is not None or
+            updates.host_table_sort is not None or
+            updates.container_table_sort is not None
+        )
+
+        if needs_prefs_update:
             # Get existing prefs
             user_result = session.execute(
                 text("SELECT prefs FROM users WHERE id = :user_id"),
@@ -289,9 +312,17 @@ async def update_user_preferences(
                     existing_prefs = {}
 
             # Merge dashboard preferences (don't overwrite, merge with existing)
-            if "dashboard" not in existing_prefs:
-                existing_prefs["dashboard"] = {}
-            existing_prefs["dashboard"].update(updates.dashboard.model_dump(exclude_unset=True))
+            if updates.dashboard is not None:
+                if "dashboard" not in existing_prefs:
+                    existing_prefs["dashboard"] = {}
+                existing_prefs["dashboard"].update(updates.dashboard.model_dump(exclude_unset=True))
+
+            # Update table sorting preferences
+            if updates.host_table_sort is not None:
+                existing_prefs["host_table_sort"] = updates.host_table_sort
+
+            if updates.container_table_sort is not None:
+                existing_prefs["container_table_sort"] = updates.container_table_sort
 
             prefs_json = json.dumps(existing_prefs)
             # DOS PROTECTION: Limit JSON size to 100KB

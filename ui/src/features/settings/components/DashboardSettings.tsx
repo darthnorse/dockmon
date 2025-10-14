@@ -5,6 +5,7 @@
 
 import { useDashboardPrefs } from '@/hooks/useUserPrefs'
 import { useGlobalSettings, useUpdateGlobalSettings } from '@/hooks/useSettings'
+import { useSimplifiedWorkflow } from '@/lib/hooks/useUserPreferences'
 import { ToggleSwitch } from './ToggleSwitch'
 import { toast } from 'sonner'
 
@@ -12,6 +13,7 @@ export function DashboardSettings() {
   const { dashboardPrefs, updateDashboardPrefs } = useDashboardPrefs()
   const { data: settings } = useGlobalSettings()
   const updateSettings = useUpdateGlobalSettings()
+  const { enabled: simplifiedWorkflow, setEnabled: setSimplifiedWorkflow } = useSimplifiedWorkflow()
 
   const showKpiBar = dashboardPrefs?.showKpiBar ?? true
   const showStatsWidgets = dashboardPrefs?.showStatsWidgets ?? false
@@ -42,12 +44,17 @@ export function DashboardSettings() {
     }
   }
 
+  const handleToggleSimplifiedWorkflow = (checked: boolean) => {
+    setSimplifiedWorkflow(checked)
+    toast.success(checked ? 'Simplified workflow enabled - drawers skipped' : 'Simplified workflow disabled - drawers shown')
+  }
+
   return (
     <div className="space-y-6">
       {/* Dashboard Summary */}
       <div>
         <div className="mb-4">
-          <h3 className="text-sm font-semibold text-white">Dashboard Summary</h3>
+          <h3 className="text-lg font-semibold text-white">Dashboard Summary</h3>
           <p className="text-xs text-gray-400 mt-1">
             Control which elements appear on your dashboard
           </p>
@@ -73,7 +80,7 @@ export function DashboardSettings() {
       {/* Alerts Display */}
       <div>
         <div className="mb-4">
-          <h3 className="text-sm font-semibold text-white">Alerts Display</h3>
+          <h3 className="text-lg font-semibold text-white">Alerts Display</h3>
           <p className="text-xs text-gray-400 mt-1">
             Configure how alerts are displayed on different pages
           </p>
@@ -89,10 +96,29 @@ export function DashboardSettings() {
         </div>
       </div>
 
+      {/* Workflow */}
+      <div>
+        <div className="mb-4">
+          <h3 className="text-lg font-semibold text-white">Workflow</h3>
+          <p className="text-xs text-gray-400 mt-1">
+            Customize how you interact with hosts and containers
+          </p>
+        </div>
+        <div className="divide-y divide-border">
+          <ToggleSwitch
+            id="simplified-workflow"
+            label="Simplified workflow"
+            description="Skip the drawer view and open full details modal directly when clicking on hosts or containers. Ideal for users who prefer immediate access to all information."
+            checked={simplifiedWorkflow}
+            onChange={handleToggleSimplifiedWorkflow}
+          />
+        </div>
+      </div>
+
       {/* Performance */}
       <div>
         <div className="mb-4">
-          <h3 className="text-sm font-semibold text-white">Performance</h3>
+          <h3 className="text-lg font-semibold text-white">Performance</h3>
           <p className="text-xs text-gray-400 mt-1">
             Optimize dashboard performance for better battery life and responsiveness
           </p>

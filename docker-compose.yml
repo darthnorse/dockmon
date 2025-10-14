@@ -16,6 +16,12 @@ services:
     volumes:
       - dockmon_data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock  # For local Docker monitoring (auto-configured on first run)
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"      # Maximum size of each log file
+        max-file: "3"        # Keep 3 log files (30MB total max)
+        compress: "true"     # Compress rotated logs
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s

@@ -236,11 +236,11 @@ export function AlertDetailsDrawer({ alertId, onClose }: AlertDetailsDrawerProps
               )}
 
               {/* For container-scoped alerts, show host pill (container always has a host) */}
-              {alert.scope_type === 'container' && alert.host_name && (
+              {alert.scope_type === 'container' && alert.host_name && alert.host_id && (
                 <button
                   onClick={() => {
-                    // Navigate to hosts page - user can search for this host
-                    navigate(`/hosts`)
+                    // For container-scoped alerts, navigate to host modal using host_id
+                    navigate(`/hosts?hostId=${alert.host_id}`)
                     onClose()
                   }}
                   className="flex items-center gap-1.5 rounded-md bg-gray-800 px-2.5 py-1 text-xs text-gray-300 hover:bg-gray-700 transition-colors"

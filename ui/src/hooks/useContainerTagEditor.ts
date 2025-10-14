@@ -32,7 +32,6 @@ import { apiClient } from '@/lib/api/client'
 interface UseContainerTagEditorOptions {
   hostId: string
   containerId: string
-  containerName: string
   currentTags: string[]
 }
 
@@ -50,7 +49,6 @@ interface UseContainerTagEditorReturn {
 export function useContainerTagEditor({
   hostId,
   containerId,
-  containerName,
   currentTags,
 }: UseContainerTagEditorOptions): UseContainerTagEditorReturn {
   const queryClient = useQueryClient()
@@ -63,10 +61,12 @@ export function useContainerTagEditor({
   useEffect(() => {
     const fetchSuggestions = async () => {
       try {
-        const response = await apiClient.get<{ tags: string[] }>('/tags/suggest', {
+        const response = await apiClient.get<{ tags: Array<{name: string} | string> }>('/tags/suggest', {
           params: { q: '', limit: 50 }
         })
-        setTagSuggestions(response.tags)
+        // Tags API returns objects like {id, name, color, kind}, extract just the names
+        const tagNames = response.tags.map(t => typeof t === 'string' ? t : t.name)
+        setTagSuggestions(tagNames)
       } catch (error) {
         console.error('Failed to fetch tag suggestions:', error)
       }
@@ -100,8 +100,7 @@ export function useContainerTagEditor({
 
       await apiClient.patch(`/hosts/${hostId}/containers/${containerId}/tags`, {
         tags_to_add: tagsToAdd,
-        tags_to_remove: tagsToRemove,
-        container_name: containerName
+        tags_to_remove: tagsToRemove
       })
 
       toast.success('Container tags updated successfully')

@@ -53,7 +53,6 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
   } = useContainerTagEditor({
     hostId: container.host_id || '',
     containerId: container.id,
-    containerName: container.name,
     currentTags
   })
 

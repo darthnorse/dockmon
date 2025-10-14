@@ -34,7 +34,6 @@ const SEVERITY_OPTIONS: { value: AlertSeverity; label: string; color: string }[]
 const SCOPE_OPTIONS: { value: AlertScope; label: string }[] = [
   { value: 'host', label: 'Host' },
   { value: 'container', label: 'Container' },
-  { value: 'group', label: 'Group' },
 ]
 
 export function AlertsPage() {

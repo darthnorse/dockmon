@@ -138,6 +138,16 @@ class PeriodicJobsManager:
                         EventType.STARTUP
                     )
 
+                # Clean up unused tags (tags with no assignments for N days)
+                unused_tags = self.db.cleanup_unused_tags(days_unused=settings.unused_tag_retention_days)
+                if unused_tags > 0:
+                    self.event_logger.log_system_event(
+                        "Unused Tag Cleanup",
+                        f"Removed {unused_tags} unused tags not used in {settings.unused_tag_retention_days} days",
+                        EventSeverity.INFO,
+                        EventType.STARTUP
+                    )
+
                 # Auto-resolve stale alerts (deleted entities, expired)
                 resolved_alerts = self.auto_resolve_stale_alerts()
                 if resolved_alerts > 0:

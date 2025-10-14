@@ -5,7 +5,7 @@ Uses SQLite for persistent storage of configuration and settings
 
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
-from sqlalchemy import create_engine, Column, String, Integer, BigInteger, Boolean, DateTime, JSON, ForeignKey, Text, UniqueConstraint, text, Float
+from sqlalchemy import create_engine, Column, String, Integer, BigInteger, Boolean, DateTime, JSON, ForeignKey, Text, UniqueConstraint, text, Float, func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from sqlalchemy.pool import StaticPool
@@ -160,10 +160,10 @@ class GlobalSettings(Base):
     default_auto_restart = Column(Boolean, default=False)
     polling_interval = Column(Integer, default=2)
     connection_timeout = Column(Integer, default=10)
-    log_retention_days = Column(Integer, default=7)
-    event_retention_days = Column(Integer, default=30)  # Keep events for 30 days
+    event_retention_days = Column(Integer, default=60)  # Keep events for 60 days (max 365)
     enable_notifications = Column(Boolean, default=True)
     auto_cleanup_events = Column(Boolean, default=True)  # Auto cleanup old events
+    unused_tag_retention_days = Column(Integer, default=30)  # Delete unused tags after N days (0 = never)
     alert_template = Column(Text, nullable=True)  # Global notification template (default)
     alert_template_metric = Column(Text, nullable=True)  # Metric-based alert template
     alert_template_state_change = Column(Text, nullable=True)  # State change alert template
@@ -307,6 +307,7 @@ class AlertV2(Base):
     rule_snapshot = Column(Text, nullable=True)  # JSON of rule at opening
     labels_json = Column(Text, nullable=True)  # {"env": "prod", "tier": "web"}
     host_name = Column(String, nullable=True)  # Friendly name for display
+    host_id = Column(String, nullable=True)  # Host ID for linking
     container_name = Column(String, nullable=True)  # Friendly name for display
     event_context_json = Column(Text, nullable=True)  # Event-specific data for template variables (old_state, new_state, exit_code, image, etc.)
 
@@ -415,6 +416,7 @@ class Tag(Base):
     color = Column(String, nullable=True)  # Hex color code (e.g., "#3b82f6")
     kind = Column(String, nullable=False, default='user')  # 'user' | 'system'
     created_at = Column(DateTime, default=datetime.now, nullable=False)
+    last_used_at = Column(DateTime, nullable=True)  # Last time tag was assigned to something
 
     # Relationships
     assignments = relationship("TagAssignment", back_populates="tag", cascade="all, delete-orphan")
@@ -1205,6 +1207,11 @@ class DatabaseManager:
             # Get or create tag (validates tag_name internally)
             tag = self.get_or_create_tag(tag_name)
 
+            # Update tag's last_used_at timestamp
+            tag_obj = session.query(Tag).filter(Tag.id == tag.id).first()
+            if tag_obj:
+                tag_obj.last_used_at = datetime.now()
+
             # Check if assignment already exists
             existing = session.query(TagAssignment).filter(
                 TagAssignment.tag_id == tag.id,
@@ -1350,10 +1357,15 @@ class DatabaseManager:
                 logger.error(f"Failed to update tags for {subject_type}:{subject_id}: {e}")
                 raise
 
-    def get_all_tags_v2(self, query: str = "", limit: int = 100) -> list[dict]:
-        """Get all tag definitions with metadata"""
+    def get_all_tags_v2(self, query: str = "", limit: int = 100, subject_type: Optional[str] = None) -> list[dict]:
+        """Get all tag definitions with metadata, optionally filtered by subject_type (host/container)"""
         with self.get_session() as session:
             tags_query = session.query(Tag)
+
+            # Filter by subject_type if specified (get tags that are used on that type of subject)
+            if subject_type:
+                tags_query = tags_query.join(TagAssignment).filter(TagAssignment.subject_type == subject_type)
+                tags_query = tags_query.distinct()
 
             if query:
                 query_lower = query.lower()
@@ -1510,6 +1522,46 @@ class DatabaseManager:
                 logger.info(f"Cleaned up {total_deleted} orphaned tag assignments")
 
             return total_deleted
+
+    def cleanup_unused_tags(self, days_unused: int = 30) -> int:
+        """
+        Clean up tags that have not been used (assigned to anything) for N days.
+
+        A tag is considered unused if:
+        1. It has no current assignments (assignment count = 0)
+        2. Its last_used_at timestamp is older than days_unused
+
+        Args:
+            days_unused: Remove tags not used in this many days (0 = never delete)
+
+        Returns:
+            Number of tags removed
+        """
+        if days_unused <= 0:
+            return 0  # If set to 0, never delete unused tags
+
+        with self.get_session() as session:
+            from datetime import timedelta
+            cutoff_date = datetime.now() - timedelta(days=days_unused)
+
+            # Find tags with no assignments and not used recently
+            tags_to_delete = session.query(Tag).outerjoin(TagAssignment).group_by(Tag.id).having(
+                func.count(TagAssignment.id) == 0
+            ).filter(
+                Tag.last_used_at < cutoff_date
+            ).all()
+
+            deleted_count = 0
+            for tag in tags_to_delete:
+                session.delete(tag)
+                deleted_count += 1
+                logger.info(f"Deleted unused tag '{tag.name}' (last used: {tag.last_used_at})")
+
+            if deleted_count > 0:
+                session.commit()
+                logger.info(f"Cleaned up {deleted_count} unused tags not used in {days_unused} days")
+
+            return deleted_count
 
     # Global Settings
     def get_settings(self) -> GlobalSettings:

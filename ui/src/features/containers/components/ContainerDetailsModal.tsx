@@ -20,12 +20,14 @@ import { apiClient } from '@/lib/api/client'
 // Import tab content components
 import { ContainerInfoTab } from './modal-tabs/ContainerInfoTab'
 import { ContainerModalEventsTab } from './modal-tabs/ContainerModalEventsTab'
+import { ContainerModalLogsTab } from './modal-tabs/ContainerModalLogsTab'
 
 export interface ContainerDetailsModalProps {
   containerId: string | null
   container: Container | null | undefined
   open: boolean
   onClose: () => void
+  initialTab?: string // Optional initial tab (defaults to 'info')
 }
 
 export function ContainerDetailsModal({
@@ -33,10 +35,18 @@ export function ContainerDetailsModal({
   container,
   open,
   onClose,
+  initialTab = 'info',
 }: ContainerDetailsModalProps) {
-  const [activeTab, setActiveTab] = useState('info')
+  const [activeTab, setActiveTab] = useState(initialTab)
   const [uptime, setUptime] = useState<string>('')
   const [isPerformingAction, setIsPerformingAction] = useState(false)
+
+  // Update active tab when initialTab changes
+  useEffect(() => {
+    if (open) {
+      setActiveTab(initialTab)
+    }
+  }, [open, initialTab])
 
   // Calculate uptime
   useEffect(() => {
@@ -167,7 +177,7 @@ export function ContainerDetailsModal({
     {
       id: 'logs',
       label: 'Logs',
-      content: <div className="p-6 text-muted-foreground">Logs coming soon...</div>,
+      content: <ContainerModalLogsTab hostId={container.host_id!} containerId={container.id} containerName={container.name} />,
     },
     {
       id: 'events',

@@ -65,6 +65,7 @@ export function isDerivedTag(tag: string): boolean {
 
 /**
  * Validate tag suggestions response from API
+ * Handles both string arrays and object arrays with {name: string}
  */
 export function validateTagSuggestionsResponse(data: unknown): string[] {
   if (!data || typeof data !== 'object') {
@@ -76,8 +77,15 @@ export function validateTagSuggestionsResponse(data: unknown): string[] {
     return []
   }
 
-  // Filter out non-string values and empty strings
-  return response.tags.filter(
-    (tag): tag is string => typeof tag === 'string' && tag.trim().length > 0
-  )
+  // Handle both strings and objects like {id, name, color, kind}
+  return response.tags
+    .map((tag) => {
+      if (typeof tag === 'string') {
+        return tag.trim()
+      } else if (tag && typeof tag === 'object' && 'name' in tag && typeof tag.name === 'string') {
+        return tag.name.trim()
+      }
+      return ''
+    })
+    .filter((tag) => tag.length > 0)
 }

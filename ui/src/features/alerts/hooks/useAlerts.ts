@@ -318,15 +318,22 @@ export function useAlertEvents(alert: Alert | null | undefined) {
         queryParams.append('host_id', alert.scope_id)
       }
 
-      // Get events from the past 24 hours or since alert first seen (whichever is longer, minimum 2 hours)
-      // Add 1 hour buffer to account for timing differences and ensure we catch all related events
-      const alertAge = Date.now() - new Date(alert.first_seen).getTime()
-      const alertAgeHours = Math.ceil(alertAge / (1000 * 60 * 60))
-      const hoursToFetch = Math.max(2, Math.min(alertAgeHours + 1, 24)) // Between 2-24 hours with +1hr buffer
-      queryParams.append('hours', hoursToFetch.toString())
+      // Fetch events from alert timerange + buffer
+      // Use alert first_seen - 1 hour to last_seen + 1 hour as the window
+      // This ensures we capture events that triggered the alert and related events
+      const firstSeenTime = new Date(alert.first_seen)
+      const lastSeenTime = new Date(alert.last_seen)
 
-      // Limit to recent events
-      queryParams.append('limit', '20')
+      // Add 1 hour buffer before first_seen and after last_seen
+      const startTime = new Date(firstSeenTime.getTime() - (60 * 60 * 1000)) // -1 hour
+      const endTime = new Date(lastSeenTime.getTime() + (60 * 60 * 1000))   // +1 hour
+
+      queryParams.append('start_time', startTime.toISOString())
+      queryParams.append('end_time', endTime.toISOString())
+
+      // Limit to most recent 50 events in this window
+      queryParams.append('limit', '50')
+      queryParams.append('sort_order', 'desc')
 
       const res = await fetch(`/api/events?${queryParams}`)
       if (!res.ok) {

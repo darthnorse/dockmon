@@ -60,10 +60,12 @@ export function useHostTagEditor({
   useEffect(() => {
     const fetchSuggestions = async () => {
       try {
-        const response = await apiClient.get<{ tags: string[] }>('/hosts/tags/suggest', {
+        const response = await apiClient.get<{ tags: Array<{name: string} | string> }>('/hosts/tags/suggest', {
           params: { q: '', limit: 50 }
         })
-        setTagSuggestions(response.tags)
+        // Tags API returns objects like {id, name, color, kind}, extract just the names
+        const tagNames = response.tags.map(t => typeof t === 'string' ? t : t.name)
+        setTagSuggestions(tagNames)
       } catch (error) {
         console.error('Failed to fetch tag suggestions:', error)
       }

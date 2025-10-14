@@ -11,6 +11,7 @@ import { Drawer } from '@/components/ui/drawer'
 import { Tabs } from '@/components/ui/tabs'
 import { ContainerOverviewTab } from './drawer/ContainerOverviewTab'
 import { ContainerEventsTab } from './drawer/ContainerEventsTab'
+import { ContainerLogsTab } from './drawer/ContainerLogsTab'
 import { DropdownMenu, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
 import { useContainer } from '@/lib/stats/StatsProvider'
 import { Button } from '@/components/ui/button'
@@ -108,11 +109,7 @@ export function ContainerDrawer({ isOpen, onClose, containerId, onExpand }: Cont
     {
       id: 'logs',
       label: 'Logs',
-      content: (
-        <div className="p-4 text-muted-foreground text-sm">
-          Logs - Coming soon
-        </div>
-      ),
+      content: <ContainerLogsTab containerId={containerId} />,
     },
   ]
 

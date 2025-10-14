@@ -76,6 +76,7 @@ import { BulkActionBar } from './components/BulkActionBar'
 import { BulkActionConfirmModal } from './components/BulkActionConfirmModal'
 import { BatchJobPanel } from './components/BatchJobPanel'
 import type { Container, ContainerAction} from './types'
+import { useSimplifiedWorkflow, useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
 
 /**
  * Policy icons component showing auto-restart and desired state
@@ -304,16 +305,40 @@ interface ContainerTableProps {
 }
 
 export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {}) {
-  const [sorting, setSorting] = useState<SortingState>([])
+  const { data: preferences } = useUserPreferences()
+  const updatePreferences = useUpdatePreferences()
+  const [sorting, setSorting] = useState<SortingState>(preferences?.container_table_sort || [])
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
   const [globalFilter, setGlobalFilter] = useState('')
   const [searchParams, setSearchParams] = useSearchParams()
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [modalOpen, setModalOpen] = useState(false)
+  const [modalInitialTab, setModalInitialTab] = useState<string>('info')
   const [selectedContainerId, setSelectedContainerId] = useState<string | null>(null)
   const [selectedContainerIds, setSelectedContainerIds] = useState<Set<string>>(new Set())
   const [confirmModalOpen, setConfirmModalOpen] = useState(false)
   const [pendingAction, setPendingAction] = useState<'start' | 'stop' | 'restart' | null>(null)
+  const { enabled: simplifiedWorkflow } = useSimplifiedWorkflow()
+
+  // Initialize sorting from preferences when loaded
+  useEffect(() => {
+    if (preferences?.container_table_sort) {
+      setSorting(preferences.container_table_sort as SortingState)
+    }
+  }, [preferences?.container_table_sort])
+
+  // Save sorting changes to preferences
+  useEffect(() => {
+    // Don't save on initial load (empty array)
+    if (sorting.length === 0 && !preferences?.container_table_sort) return
+
+    // Debounce to avoid too many updates
+    const timer = setTimeout(() => {
+      updatePreferences.mutate({ container_table_sort: sorting })
+    }, 500)
+
+    return () => clearTimeout(timer)
+  }, [sorting])
 
   // Fetch all alert counts in one batched request
   const { data: alertCounts } = useAlertCounts('container')
@@ -620,7 +645,12 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
                 className="font-medium text-foreground hover:text-primary transition-colors text-left"
                 onClick={() => {
                   setSelectedContainerId(row.original.id)
-                  setDrawerOpen(true)
+                  setModalInitialTab('info') // Default to info tab
+                  if (simplifiedWorkflow) {
+                    setModalOpen(true)
+                  } else {
+                    setDrawerOpen(true)
+                  }
                 }}
               >
                 {row.original.name || 'Unknown'}
@@ -934,6 +964,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
                 className="h-8 w-8"
                 onClick={() => {
                   setSelectedContainerId(container.id)
+                  setModalInitialTab('info') // Default to info tab
                   setModalOpen(true)
                 }}
                 title="View full details"
@@ -947,11 +978,9 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
                 size="icon"
                 className="h-8 w-8"
                 onClick={() => {
-                  // Future feature: Logs viewer modal/drawer
-                  // For now, show informational toast
-                  toast.info('Logs', {
-                    description: `View logs for ${container.name}`,
-                  })
+                  setSelectedContainerId(container.id)
+                  setModalInitialTab('logs')
+                  setModalOpen(true)
                 }}
                 title="View logs"
               >
@@ -1124,6 +1153,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         containerId={selectedContainerId}
         onExpand={() => {
           setDrawerOpen(false)
+          setModalInitialTab('info') // Default to info tab when expanding from drawer
           setModalOpen(true)
         }}
       />
@@ -1134,9 +1164,11 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         onClose={() => {
           setModalOpen(false)
           setSelectedContainerId(null)
+          setModalInitialTab('info') // Reset to default tab on close
         }}
         containerId={selectedContainerId}
         container={data?.find((c) => c.id === selectedContainerId)}
+        initialTab={modalInitialTab}
       />
 
       {/* Bulk Action Bar */}

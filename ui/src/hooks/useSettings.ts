@@ -26,6 +26,9 @@ export interface GlobalSettings {
   show_host_stats: boolean
   show_container_stats: boolean
   show_container_alerts_on_hosts: boolean
+  unused_tag_retention_days: number
+  event_retention_days: number
+  auto_cleanup_events: boolean
 }
 
 export interface TemplateVariable {

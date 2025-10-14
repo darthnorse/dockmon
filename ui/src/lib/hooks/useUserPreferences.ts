@@ -20,6 +20,11 @@ export interface UserPreferences {
   // React v2 preferences
   sidebar_collapsed: boolean
   dashboard_layout_v2: DashboardLayout | null
+  simplified_workflow: boolean
+
+  // Table sorting preferences (TanStack Table format)
+  host_table_sort: Array<{ id: string; desc: boolean }> | null
+  container_table_sort: Array<{ id: string; desc: boolean }> | null
 }
 
 // Re-export for convenience
@@ -136,6 +141,24 @@ export function useDashboardLayout() {
   return {
     layout: preferences?.dashboard_layout_v2,
     setLayout: setDashboardLayout,
+    isLoading: updatePreferences.isPending,
+  }
+}
+
+/**
+ * Convenience hook for simplified workflow setting
+ */
+export function useSimplifiedWorkflow() {
+  const { data: preferences } = useUserPreferences()
+  const updatePreferences = useUpdatePreferences()
+
+  const setSimplifiedWorkflow = (enabled: boolean) => {
+    updatePreferences.mutate({ simplified_workflow: enabled })
+  }
+
+  return {
+    enabled: preferences?.simplified_workflow ?? false,
+    setEnabled: setSimplifiedWorkflow,
     isLoading: updatePreferences.isPending,
   }
 }

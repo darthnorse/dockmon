@@ -29,7 +29,7 @@ const RULE_KINDS = [
     metric: 'cpu_percent',
     defaultOperator: '>=',
     defaultThreshold: 90,
-    scopes: ['host', 'container', 'group']
+    scopes: ['host', 'container']
   },
   {
     value: 'memory_high',
@@ -39,7 +39,7 @@ const RULE_KINDS = [
     metric: 'memory_percent',
     defaultOperator: '>=',
     defaultThreshold: 90,
-    scopes: ['host', 'container', 'group']
+    scopes: ['host', 'container']
   },
   {
     value: 'disk_low',
@@ -201,27 +201,39 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
   const [showContainerDropdown, setShowContainerDropdown] = useState(false)
   const containerDropdownRef = useRef<HTMLDivElement>(null)
 
-  // Tag selector state for group scope
+  // Tag selector state (always available, not scope-dependent)
   const [tagSearchInput, setTagSearchInput] = useState('')
   const [availableTags, setAvailableTags] = useState<string[]>([])
   const [selectedTags, setSelectedTags] = useState<string[]>(() => {
-    // Initialize with existing tags if editing
-    if (rule?.labels_json) {
+    // Initialize with existing tags if editing - check selectors not labels_json
+    if (rule) {
       try {
-        const parsed = JSON.parse(rule.labels_json)
-        return parsed.tags || []
+        // Check host_selector for tags
+        if (rule.host_selector_json) {
+          const parsed = JSON.parse(rule.host_selector_json)
+          if (parsed.tags && Array.isArray(parsed.tags)) return parsed.tags
+        }
+        // Check container_selector for tags
+        if (rule.container_selector_json) {
+          const parsed = JSON.parse(rule.container_selector_json)
+          if (parsed.tags && Array.isArray(parsed.tags)) return parsed.tags
+        }
       } catch {
-        return []
+        // Parsing failed, fall through
       }
     }
     return []
   })
 
-  // Fetch available tags for group scope
+  // Fetch available tags based on scope (host or container)
   useEffect(() => {
     const fetchTags = async () => {
       try {
-        const res = await fetch(`/api/tags/suggest?q=${tagSearchInput}&limit=50`)
+        // Use different endpoints based on scope to get only relevant tags
+        const endpoint = formData.scope === 'host'
+          ? `/api/hosts/tags/suggest?q=${tagSearchInput}&limit=50`
+          : `/api/tags/suggest?q=${tagSearchInput}&limit=50`
+        const res = await fetch(endpoint)
         const data = await res.json()
         // Tags API returns objects like {id, name, color, kind}, extract just the names
         const tagNames = Array.isArray(data.tags)
@@ -233,9 +245,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       }
     }
 
-    if (formData.scope === 'group') {
-      fetchTags()
-    }
+    fetchTags()
   }, [tagSearchInput, formData.scope])
 
   const selectedKind = RULE_KINDS.find((k) => k.value === formData.kind)
@@ -317,33 +327,48 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       requestData.duration_seconds = formData.duration_seconds
       requestData.occurrences = formData.occurrences
 
-      // Add selectors
-      if (formData.host_selector_all) {
-        requestData.host_selector_json = JSON.stringify({ include_all: true })
-      } else if (formData.host_selector_ids.length > 0) {
-        requestData.host_selector_json = JSON.stringify({ include: formData.host_selector_ids })
-      }
-
-      if (formData.container_selector_all) {
-        const containerSelector: any = { include_all: true }
-        // Add should_run filter if specified
-        if (formData.container_run_mode === 'should_run') {
-          containerSelector.should_run = true
-        } else if (formData.container_run_mode === 'on_demand') {
-          containerSelector.should_run = false
+      // Add selectors - Tag-based OR individual selection (mutually exclusive)
+      if (formData.scope === 'host') {
+        // Host scope selectors
+        if (selectedTags.length > 0) {
+          // Tag-based: hosts with ANY of these tags
+          requestData.host_selector_json = JSON.stringify({ tags: selectedTags })
+        } else if (formData.host_selector_all) {
+          requestData.host_selector_json = JSON.stringify({ include_all: true })
+        } else if (formData.host_selector_ids.length > 0) {
+          requestData.host_selector_json = JSON.stringify({ include: formData.host_selector_ids })
         }
-        // Note: When run mode filter is active, no manual selection is allowed
-        // All containers with that run mode are included automatically
-        requestData.container_selector_json = JSON.stringify(containerSelector)
-      } else if (formData.container_selector_included.length > 0) {
-        const containerSelector: any = { include: formData.container_selector_included }
-        // Add should_run filter if specified
-        if (formData.container_run_mode === 'should_run') {
-          containerSelector.should_run = true
-        } else if (formData.container_run_mode === 'on_demand') {
-          containerSelector.should_run = false
+      } else if (formData.scope === 'container') {
+        // Container scope selectors
+        if (selectedTags.length > 0) {
+          // Tag-based: containers with ANY of these tags
+          const containerSelector: any = { tags: selectedTags }
+          // Add should_run filter if specified
+          if (formData.container_run_mode === 'should_run') {
+            containerSelector.should_run = true
+          } else if (formData.container_run_mode === 'on_demand') {
+            containerSelector.should_run = false
+          }
+          requestData.container_selector_json = JSON.stringify(containerSelector)
+        } else if (formData.container_selector_all) {
+          const containerSelector: any = { include_all: true }
+          // Add should_run filter if specified
+          if (formData.container_run_mode === 'should_run') {
+            containerSelector.should_run = true
+          } else if (formData.container_run_mode === 'on_demand') {
+            containerSelector.should_run = false
+          }
+          requestData.container_selector_json = JSON.stringify(containerSelector)
+        } else if (formData.container_selector_included.length > 0) {
+          const containerSelector: any = { include: formData.container_selector_included }
+          // Add should_run filter if specified
+          if (formData.container_run_mode === 'should_run') {
+            containerSelector.should_run = true
+          } else if (formData.container_run_mode === 'on_demand') {
+            containerSelector.should_run = false
+          }
+          requestData.container_selector_json = JSON.stringify(containerSelector)
         }
-        requestData.container_selector_json = JSON.stringify(containerSelector)
       }
 
       // Add notification channels
@@ -354,11 +379,6 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       // Add custom template (null/empty string means use category default)
       if (formData.custom_template !== undefined) {
         requestData.custom_template = formData.custom_template
-      }
-
-      // Add group tags (labels_json) for group scope
-      if (formData.scope === 'group' && selectedTags.length > 0) {
-        requestData.labels_json = JSON.stringify({ tags: selectedTags })
       }
 
       if (isEditing && rule) {
@@ -377,7 +397,9 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       const updated = { ...prev, [field]: value }
 
       // When scope changes, reset rule kind if current selection is invalid for new scope
+      // Also clear selected tags since they're scope-specific
       if (field === 'scope') {
+        setSelectedTags([])
         const currentKind = RULE_KINDS.find((k) => k.value === prev.kind)
         if (currentKind && !currentKind.scopes.includes(value)) {
           // Find first valid rule kind for new scope
@@ -446,14 +468,18 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
 
     // Scope
     if (formData.scope === 'host') {
-      if (formData.host_selector_all) {
+      if (selectedTags.length > 0) {
+        parts.push(`Scope: All hosts with tags [${selectedTags.join(', ')}]`)
+      } else if (formData.host_selector_all) {
         parts.push('Scope: All hosts')
       } else if (formData.host_selector_ids.length > 0) {
         parts.push(`Scope: ${formData.host_selector_ids.length} selected host${formData.host_selector_ids.length > 1 ? 's' : ''}`)
       }
     } else if (formData.scope === 'container') {
       let scopeText = ''
-      if (formData.container_selector_all) {
+      if (selectedTags.length > 0) {
+        scopeText = `All containers with tags [${selectedTags.join(', ')}]`
+      } else if (formData.container_selector_all) {
         scopeText = 'All containers'
       } else if (formData.container_selector_names.length > 0) {
         scopeText = `${formData.container_selector_names.length} selected container${formData.container_selector_names.length > 1 ? 's' : ''}`
@@ -466,12 +492,6 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       }
       if (scopeText) {
         parts.push(`Scope: ${scopeText}`)
-      }
-    } else if (formData.scope === 'group') {
-      if (selectedTags.length > 0) {
-        parts.push(`Scope: Group with tags [${selectedTags.join(', ')}]`)
-      } else {
-        parts.push('Scope: Group (no tags selected)')
       }
     } else {
       parts.push(`Scope: ${formData.scope}`)
@@ -576,7 +596,6 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                 >
                   <option value="host">Host</option>
                   <option value="container">Container</option>
-                  <option value="group">Group</option>
                 </select>
               </div>
 
@@ -616,11 +635,13 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
             </div>
           </div>
 
-          {/* Tag Selector (for group scope) */}
-          {formData.scope === 'group' && (
-            <div className="space-y-4 rounded-lg border border-gray-700 bg-gray-800/30 p-4">
-              <h3 className="text-sm font-semibold text-white">Group Selection</h3>
-              <p className="text-xs text-gray-400">Select which tags define this group (hosts/containers matching ANY of these tags)</p>
+          {/* Tag Filter (Optional) - Always available */}
+          <div className="space-y-4 rounded-lg border border-gray-700 bg-gray-800/30 p-4">
+            <h3 className="text-sm font-semibold text-white">Tag-Based Filter (Optional)</h3>
+            <p className="text-xs text-gray-400">
+              Select tags to apply this rule to all {formData.scope === 'host' ? 'hosts' : 'containers'} with ANY of these tags.
+              When tags are selected, individual selection below is disabled.
+            </p>
 
               <div>
                 <label className="block text-sm font-medium text-gray-300 mb-2">Search and Select Tags</label>
@@ -694,8 +715,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                   </div>
                 )}
               </div>
-            </div>
-          )}
+          </div>
 
           {/* Metric Conditions (only for metric-based rules) */}
           {requiresMetric && (
@@ -842,57 +862,67 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
             </div>
           </div>
 
-          {/* Host Selector (for host/group scope) */}
-          {(formData.scope === 'host' || formData.scope === 'group') && (
+          {/* Host Selector */}
+          {formData.scope === 'host' && (
             <div className="space-y-4 rounded-lg border border-gray-700 bg-gray-800/30 p-4">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-white">Host Selection</h3>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      handleChange('host_selector_ids', [])
-                      handleChange('host_selector_all', true)
-                    }}
-                    className="text-xs text-blue-400 hover:text-blue-300 underline"
-                  >
-                    Select All
-                  </button>
-                  <span className="text-gray-600">|</span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      handleChange('host_selector_ids', [])
-                      handleChange('host_selector_all', false)
-                    }}
-                    className="text-xs text-blue-400 hover:text-blue-300 underline"
-                  >
-                    Deselect All
-                  </button>
-                </div>
+                {selectedTags.length === 0 && (
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleChange('host_selector_ids', [])
+                        handleChange('host_selector_all', true)
+                      }}
+                      className="text-xs text-blue-400 hover:text-blue-300 underline"
+                    >
+                      Select All
+                    </button>
+                    <span className="text-gray-600">|</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleChange('host_selector_ids', [])
+                        handleChange('host_selector_all', false)
+                      }}
+                      className="text-xs text-blue-400 hover:text-blue-300 underline"
+                    >
+                      Deselect All
+                    </button>
+                  </div>
+                )}
               </div>
 
-              <div ref={hostDropdownRef} className="relative">
-                <label className="block text-sm font-medium text-gray-300 mb-2">
-                  Select Hosts
-                  {formData.host_selector_all && hosts.length > 0 && (
-                    <span className="ml-2 text-xs text-blue-400">({hosts.length} hosts - all selected)</span>
-                  )}
-                  {!formData.host_selector_all && formData.host_selector_ids.length > 0 && (
-                    <span className="ml-2 text-xs text-blue-400">({formData.host_selector_ids.length} selected)</span>
-                  )}
-                </label>
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
-                  <input
-                    type="text"
-                    value={hostSearchInput}
-                    onChange={(e) => setHostSearchInput(e.target.value)}
-                    onFocus={() => setShowHostDropdown(true)}
-                    placeholder="Search hosts..."
-                    className="w-full pl-9 pr-3 py-2 rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  />
+              {selectedTags.length > 0 ? (
+                <div className="rounded-md bg-gray-900/50 border border-gray-700 p-4 text-center">
+                  <p className="text-sm text-gray-400">
+                    Individual host selection is disabled. This rule applies to all hosts with the selected tags above.
+                    Remove tags to manually select hosts.
+                  </p>
                 </div>
+              ) : (
+                <div ref={hostDropdownRef} className="relative">
+                  <label className="block text-sm font-medium text-gray-300 mb-2">
+                    Select Hosts
+                    {formData.host_selector_all && hosts.length > 0 && (
+                      <span className="ml-2 text-xs text-blue-400">({hosts.length} hosts - all selected)</span>
+                    )}
+                    {!formData.host_selector_all && formData.host_selector_ids.length > 0 && (
+                      <span className="ml-2 text-xs text-blue-400">({formData.host_selector_ids.length} selected)</span>
+                    )}
+                  </label>
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
+                    <input
+                      type="text"
+                      value={hostSearchInput}
+                      onChange={(e) => setHostSearchInput(e.target.value)}
+                      onFocus={() => setShowHostDropdown(true)}
+                      placeholder="Search hosts..."
+                      className="w-full pl-9 pr-3 py-2 rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                  </div>
 
                 {/* Host Dropdown */}
                 {showHostDropdown && (
@@ -942,7 +972,8 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                     )}
                   </div>
                 )}
-              </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -951,78 +982,89 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
             <div className="space-y-4 rounded-lg border border-gray-700 bg-gray-800/30 p-4">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-white">Container Selection</h3>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      handleChange('container_selector_included', [])
-                      handleChange('container_selector_all', true)
-                    }}
-                    className="text-xs text-blue-400 hover:text-blue-300 underline"
-                  >
-                    Select All
-                  </button>
-                  <span className="text-gray-600">|</span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      // Deselect all: switch to manual include mode with empty list
-                      handleChange('container_selector_included', [])
-                      handleChange('container_selector_all', false)
-                    }}
-                    className="text-xs text-blue-400 hover:text-blue-300 underline"
-                  >
-                    Deselect All
-                  </button>
-                </div>
+                {selectedTags.length === 0 && (
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleChange('container_selector_included', [])
+                        handleChange('container_selector_all', true)
+                      }}
+                      className="text-xs text-blue-400 hover:text-blue-300 underline"
+                    >
+                      Select All
+                    </button>
+                    <span className="text-gray-600">|</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        // Deselect all: switch to manual include mode with empty list
+                        handleChange('container_selector_included', [])
+                        handleChange('container_selector_all', false)
+                      }}
+                      className="text-xs text-blue-400 hover:text-blue-300 underline"
+                    >
+                      Deselect All
+                    </button>
+                  </div>
+                )}
               </div>
 
-              {/* Container Run Mode Selector */}
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-2">Container Run Mode</label>
-                <div className="grid grid-cols-3 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => handleChange('container_run_mode', 'all')}
-                    className={`px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-                      formData.container_run_mode === 'all'
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
-                    }`}
-                  >
-                    All Containers
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleChange('container_run_mode', 'should_run')}
-                    className={`px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-                      formData.container_run_mode === 'should_run'
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
-                    }`}
-                  >
-                    Should Run Only
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleChange('container_run_mode', 'on_demand')}
-                    className={`px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-                      formData.container_run_mode === 'on_demand'
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
-                    }`}
-                  >
-                    On-Demand Only
-                  </button>
+              {selectedTags.length > 0 ? (
+                <div className="rounded-md bg-gray-900/50 border border-gray-700 p-4 text-center">
+                  <p className="text-sm text-gray-400">
+                    Individual container selection is disabled. This rule applies to all containers with the selected tags above.
+                    Remove tags to manually select containers.
+                  </p>
                 </div>
-                <p className="mt-2 text-xs text-gray-400">
-                  Filter containers by run mode to create separate rules for different severity levels
-                </p>
-              </div>
+              ) : (
+                <>
+                  {/* Container Run Mode Selector */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-2">Container Run Mode</label>
+                    <div className="grid grid-cols-3 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleChange('container_run_mode', 'all')}
+                        className={`px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                          formData.container_run_mode === 'all'
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                        }`}
+                      >
+                        All Containers
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleChange('container_run_mode', 'should_run')}
+                        className={`px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                          formData.container_run_mode === 'should_run'
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                        }`}
+                      >
+                        Should Run Only
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleChange('container_run_mode', 'on_demand')}
+                        className={`px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                          formData.container_run_mode === 'on_demand'
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                        }`}
+                      >
+                        On-Demand Only
+                      </button>
+                    </div>
+                    <p className="mt-2 text-xs text-gray-400">
+                      Filter containers by run mode to create separate rules for different severity levels
+                    </p>
+                  </div>
 
-              {/* Show container selector only when "All Containers" is selected */}
-              {formData.container_run_mode === 'all' ? (
-                <div ref={containerDropdownRef} className="relative">
+                  {/* Show container selector only when "All Containers" is selected */}
+                  {formData.container_run_mode === 'all' ? (
+                    <div ref={containerDropdownRef} className="relative">
                   <label className="block text-sm font-medium text-gray-300 mb-2">
                     Select Containers
                     {formData.container_selector_all && filteredContainers.length > 0 && (
@@ -1109,6 +1151,8 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                 </div>
               </div>
             )}
+                </>
+              )}
             </div>
           )}
 

@@ -54,10 +54,12 @@ export function ContainerModalEventsTab({ hostId, containerId }: ContainerModalE
   // Client-side filtering (TODO: move to backend)
   const filteredEvents = allEvents
     .filter((event) => {
-      // Time range filter
-      const eventTime = new Date(event.timestamp).getTime()
-      const cutoff = Date.now() - filters.hours * 60 * 60 * 1000
-      if (eventTime < cutoff) return false
+      // Time range filter (skip if hours = 0 for "All time")
+      if (filters.hours > 0) {
+        const eventTime = new Date(event.timestamp).getTime()
+        const cutoff = Date.now() - filters.hours * 60 * 60 * 1000
+        if (eventTime < cutoff) return false
+      }
 
       // Severity filter
       if (filters.severity && event.severity.toLowerCase() !== filters.severity.toLowerCase()) {

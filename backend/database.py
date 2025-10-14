@@ -916,14 +916,14 @@ class DatabaseManager:
         # 3. Resolve/close all active AlertV2 instances for this host
         # Active alerts for a deleted host should be auto-resolved
         # AlertV2 doesn't have host_id - it has scope_type and scope_id
+        # AlertV2 also doesn't have updated_at - only first_seen, last_seen
         alerts_updated = session.query(AlertV2).filter(
             AlertV2.scope_type == 'host',
             AlertV2.scope_id == host_id,
             AlertV2.state == 'open'
         ).update({
             'state': 'resolved',
-            'resolved_at': datetime.now(),
-            'updated_at': datetime.now()
+            'resolved_at': datetime.now()
         }, synchronize_session=False)
         cleanup_stats['alerts_resolved'] = alerts_updated
         if alerts_updated > 0:

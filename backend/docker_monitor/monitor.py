@@ -742,8 +742,7 @@ class DockerMonitor:
                 logger.debug(f"Cleaned up {len(containers_to_remove)} container state entries for removed host {host_id[:8]}")
             if notification_states_to_remove:
                 logger.debug(f"Cleaned up {len(notification_states_to_remove)} notification state entries for removed host {host_id[:8]}")
-            if alert_processor_states_to_remove:
-                logger.debug(f"Cleaned up {len(alert_processor_states_to_remove)} alert processor state entries for removed host {host_id[:8]}")
+            # V1 alert processor cleanup removed - v2 uses event-driven architecture
             if alert_cooldowns_to_remove:
                 logger.debug(f"Cleaned up {len(alert_cooldowns_to_remove)} alert cooldown entries for removed host {host_id[:8]}")
             if auto_restart_to_remove:

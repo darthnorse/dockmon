@@ -10,6 +10,7 @@ services:
     ports:
       - "8001:443"   # HTTPS only - backend access through nginx proxy
     environment:
+      - TZ=America/New_York  # Change to your local timezone (e.g., Europe/London, Asia/Tokyo, etc.)
       - PYTHONPATH=/app/backend
       - PYTHONUNBUFFERED=1
     volumes:

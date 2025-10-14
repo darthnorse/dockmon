@@ -873,8 +873,108 @@ class DatabaseManager:
                 logger.error(f"Failed to update host {host_id[:8]} in database: {e}")
                 raise
 
+    def cleanup_host_data(self, session, host_id: str, host_name: str) -> dict:
+        """
+        Central cleanup function for all host-related data.
+        Called when deleting a host to ensure all foreign key constraints are satisfied.
+
+        Returns a dict with counts of what was cleaned up for logging.
+
+        Design Philosophy:
+        - DELETE: Host-specific settings (AutoRestartConfig, ContainerDesiredState)
+        - CLOSE: Active alerts (resolve AlertV2 instances)
+        - UPDATE: Alert rules (remove containers from this host)
+        - KEEP: Audit logs (EventLog records preserve history)
+
+        When adding new tables with host_id foreign keys:
+        1. Add cleanup logic here
+        2. Add to the returned counts dict
+        3. Add appropriate logging
+        """
+        cleanup_stats = {}
+
+        logger.info(f"Starting cleanup for host {host_name} ({host_id[:8]})...")
+
+        # 1. Delete AutoRestartConfig records for this host
+        # These are host-specific settings that don't make sense without the host
+        auto_restart_count = session.query(AutoRestartConfig).filter(
+            AutoRestartConfig.host_id == host_id
+        ).delete(synchronize_session=False)
+        cleanup_stats['auto_restart_configs'] = auto_restart_count
+        if auto_restart_count > 0:
+            logger.info(f"  ✓ Deleted {auto_restart_count} auto-restart config(s)")
+
+        # 2. Delete ContainerDesiredState records for this host
+        # These are host-specific settings that don't make sense without the host
+        desired_state_count = session.query(ContainerDesiredState).filter(
+            ContainerDesiredState.host_id == host_id
+        ).delete(synchronize_session=False)
+        cleanup_stats['desired_states'] = desired_state_count
+        if desired_state_count > 0:
+            logger.info(f"  ✓ Deleted {desired_state_count} container desired state(s)")
+
+        # 3. Resolve/close all active AlertV2 instances for this host
+        # Active alerts for a deleted host should be auto-resolved
+        # AlertV2 doesn't have host_id - it has scope_type and scope_id
+        alerts_updated = session.query(AlertV2).filter(
+            AlertV2.scope_type == 'host',
+            AlertV2.scope_id == host_id,
+            AlertV2.state == 'open'
+        ).update({
+            'state': 'resolved',
+            'resolved_at': datetime.now(),
+            'updated_at': datetime.now()
+        }, synchronize_session=False)
+        cleanup_stats['alerts_resolved'] = alerts_updated
+        if alerts_updated > 0:
+            logger.info(f"  ✓ Resolved {alerts_updated} open alert(s)")
+
+        # 4. Process AlertRuleDB (v1 rules) - remove containers from the deleted host
+        # Alert rules that monitor containers on this host need to be updated
+        rules_deleted = 0
+        rules_updated = 0
+        all_rules = session.query(AlertRuleDB).all()
+        for rule in all_rules:
+            if not rule.containers:
+                continue
+
+            # Filter out containers from the deleted host
+            remaining_containers = [
+                c for c in rule.containers
+                if c.host_id != host_id
+            ]
+
+            if not remaining_containers:
+                # No containers left, delete the entire alert rule
+                session.delete(rule)
+                rules_deleted += 1
+                logger.info(f"  ✓ Deleted alert rule '{rule.name}' (all containers were on this host)")
+            elif len(remaining_containers) < len(rule.containers):
+                # Some containers remain, update the alert rule
+                rule.containers = remaining_containers
+                rule.updated_at = datetime.now()
+                rules_updated += 1
+                logger.info(f"  ✓ Updated alert rule '{rule.name}' (removed containers from this host)")
+
+        cleanup_stats['alert_rules_deleted'] = rules_deleted
+        cleanup_stats['alert_rules_updated'] = rules_updated
+
+        # 5. Keep EventLog records (for audit trail)
+        # Events preserve historical data and show the original host_name
+        event_count = session.query(EventLog).filter(EventLog.host_id == host_id).count()
+        cleanup_stats['events_kept'] = event_count
+        if event_count > 0:
+            logger.info(f"  ✓ Keeping {event_count} event log entries for audit trail")
+
+        # TODO: Add cleanup for any new tables with host_id foreign keys here
+        # Example:
+        # new_table_count = session.query(NewTable).filter(NewTable.host_id == host_id).delete()
+        # cleanup_stats['new_table_records'] = new_table_count
+
+        return cleanup_stats
+
     def delete_host(self, host_id: str) -> bool:
-        """Delete a Docker host and clean up related alert rules"""
+        """Delete a Docker host and clean up all related data"""
         with self.get_session() as session:
             try:
                 host = session.query(DockerHostDB).filter(DockerHostDB.id == host_id).first()
@@ -883,38 +983,20 @@ class DatabaseManager:
                     return False
 
                 host_name = host.name
+                logger.info(f"Deleting host {host_name} ({host_id[:8]})...")
 
-                # Get all alert rules
-                all_rules = session.query(AlertRuleDB).all()
+                # Run centralized cleanup
+                cleanup_stats = self.cleanup_host_data(session, host_id, host_name)
 
-                # Process each alert rule to remove containers from the deleted host
-                for rule in all_rules:
-                    if not rule.containers:
-                        continue
-
-                    # Filter out containers from the deleted host
-                    # rule.containers is a list of AlertRuleContainer objects
-                    remaining_containers = [
-                        c for c in rule.containers
-                        if c.host_id != host_id
-                    ]
-
-                    if not remaining_containers:
-                        # No containers left, delete the entire alert
-                        session.delete(rule)
-                        logger.info(f"Deleted alert rule '{rule.name}' (all containers were on deleted host {host_id})")
-                    elif len(remaining_containers) < len(rule.containers):
-                        # Some containers remain, update the alert
-                        rule.containers = remaining_containers
-                        rule.updated_at = datetime.now()
-                        logger.info(f"Updated alert rule '{rule.name}' (removed containers from host {host_id})")
-
-                # Delete the host
+                # Delete the host itself
                 session.delete(host)
                 session.commit()
-                logger.info(f"Deleted host {host_name} ({host_id[:8]}) from database")
+
+                logger.info(f"Successfully deleted host {host_name} ({host_id[:8]})")
+                logger.info(f"Cleanup summary: {cleanup_stats}")
                 return True
             except Exception as e:
+                session.rollback()
                 logger.error(f"Failed to delete host {host_id[:8]} from database: {e}")
                 raise
 

@@ -15,6 +15,9 @@ import { HostPerformanceSection } from './HostPerformanceSection'
 import { HostContainersSection } from './HostContainersSection'
 import { HostEventsSection } from './HostEventsSection'
 import { useDeleteHost } from '../../hooks/useHosts'
+import { useAllContainers } from '@/lib/stats/StatsProvider'
+import { useQuery } from '@tanstack/react-query'
+import { apiClient } from '@/lib/api/client'
 
 export interface HostDrawerProps {
   /**
@@ -64,6 +67,23 @@ export function HostDrawer({
 }: HostDrawerProps) {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const deleteMutation = useDeleteHost()
+
+  // Get containers for this host
+  const containers = useAllContainers(hostId || undefined)
+
+  // Get open alerts for this host
+  const { data: alertsData } = useQuery({
+    queryKey: ['alerts', 'host', hostId],
+    queryFn: async () => {
+      const response = await apiClient.get<{ alerts: any[]; total: number }>(
+        `/alerts/?state=open&scope_type=host&page_size=500`
+      )
+      return response.alerts.filter((alert: any) => alert.host_id === hostId)
+    },
+    enabled: showDeleteConfirm, // Only fetch when delete dialog is open
+  })
+
+  const openAlerts = alertsData || []
 
   if (!hostId || !host) return null
 
@@ -155,9 +175,32 @@ export function HostDrawer({
             </div>
             <div className="flex-1">
               <h3 className="text-lg font-semibold mb-2">Delete Host</h3>
-              <p className="text-sm text-muted-foreground">
+              <p className="text-sm text-muted-foreground mb-3">
                 Are you sure you want to delete <span className="font-semibold text-foreground">{host.name}</span>? This action cannot be undone.
               </p>
+
+              {/* Show what will be affected */}
+              <div className="rounded-lg border border-border bg-muted/20 p-3 space-y-2 text-sm">
+                <p className="font-medium text-foreground mb-2">This will affect:</p>
+                <div className="space-y-1.5 text-muted-foreground">
+                  <div className="flex items-center justify-between">
+                    <span>Containers monitored:</span>
+                    <span className="font-semibold text-foreground">{containers.length}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span>Open alerts:</span>
+                    <span className="font-semibold text-foreground">{openAlerts.length} will be resolved</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span>Container settings:</span>
+                    <span className="font-semibold text-foreground">Will be deleted</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span>Event history:</span>
+                    <span className="font-semibold text-green-500">Preserved</span>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
           <div className="flex items-center justify-end gap-2">

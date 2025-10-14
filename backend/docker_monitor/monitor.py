@@ -248,6 +248,15 @@ class DockerMonitor:
         """Add a new Docker host to monitor"""
         client = None  # Track client for cleanup on error
         try:
+            # Check if host URL already exists (prevent duplicates)
+            if not skip_db_save:  # Only check for new hosts, not when loading from DB
+                for existing_host in self.hosts.values():
+                    if existing_host.url == config.url:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Host with URL '{config.url}' already exists as '{existing_host.name}'"
+                        )
+
             # Validate certificates if provided (before trying to use them)
             if config.tls_cert or config.tls_key or config.tls_ca:
                 self._validate_certificates(config)

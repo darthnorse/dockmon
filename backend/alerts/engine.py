@@ -330,6 +330,11 @@ class AlertEngine:
                 host_selector = json.loads(rule.host_selector_json)
 
                 # Check include/include_all (host ID filtering)
+                # If include or include_all is specified, filter by host IDs
+                # If neither is specified but other selectors exist (tags, host_name, etc.), skip ID filtering
+                has_id_selector = 'include_all' in host_selector or 'include' in host_selector
+                has_other_selectors = any(key in host_selector for key in ['tags', 'host_name', 'host_id'])
+
                 if 'include_all' in host_selector and host_selector['include_all']:
                     # include_all: true means match all hosts (no ID filtering)
                     pass
@@ -338,9 +343,10 @@ class AlertEngine:
                     allowed_ids = host_selector['include']
                     if context.host_id not in allowed_ids:
                         return False
-                else:
-                    # No include_all or include means no hosts match
+                elif has_id_selector and not has_other_selectors:
+                    # Has ID selector but it's not set properly and no other selectors - don't match
                     return False
+                # If no ID selector but has other selectors (like tags), continue to check those
 
                 # Supported keys: host_name (exact or regex), host_id (exact)
                 if 'host_name' in host_selector:
@@ -368,6 +374,11 @@ class AlertEngine:
                 container_selector = json.loads(rule.container_selector_json)
 
                 # Check include/include_all (container name filtering)
+                # If include or include_all is specified, filter by container names
+                # If neither is specified but other selectors exist (tags, should_run, etc.), skip name filtering
+                has_name_selector = 'include_all' in container_selector or 'include' in container_selector
+                has_other_selectors = any(key in container_selector for key in ['tags', 'should_run', 'container_name', 'container_id'])
+
                 if 'include_all' in container_selector and container_selector['include_all']:
                     # include_all: true means match all containers (no name filtering)
                     pass
@@ -376,9 +387,10 @@ class AlertEngine:
                     allowed_names = container_selector['include']
                     if context.container_name not in allowed_names:
                         return False
-                else:
-                    # No include_all or include means no containers match
+                elif has_name_selector and not has_other_selectors:
+                    # Has name selector but it's not set properly and no other selectors - don't match
                     return False
+                # If no name selector but has other selectors (like tags), continue to check those
 
                 # Check should_run filter (for container run mode filtering)
                 # should_run: true means desired_state == 'should_run'

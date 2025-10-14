@@ -326,13 +326,14 @@ class ContainerDiscovery:
 
                     # Reattach tags from previous containers with same logical identity (sticky tags)
                     # Only do this for NEW containers that don't have existing tag assignments
-                    container_key = f"{host_id}:{dc.id}"
+                    # Use SHORT ID (12 chars) for consistency with database storage
+                    container_key = f"{host_id}:{dc.id[:12]}"
                     existing_tags = self.db.get_tags_for_subject('container', container_key)
                     if not existing_tags:  # Only reattach if no tags exist yet (new container)
                         try:
                             reattached_tags = self.db.reattach_tags_for_container(
                                 host_id=host_id,
-                                container_id=dc.id,
+                                container_id=dc.id[:12],
                                 container_name=dc.name,
                                 compose_project=compose_project,
                                 compose_service=compose_service
@@ -347,7 +348,7 @@ class ContainerDiscovery:
                     # Derive tags from labels
                     derived_tags = derive_container_tags(labels)
 
-                    # Get custom tags from database (use full ID for lookup)
+                    # Get custom tags from database (use SHORT ID for lookup)
                     custom_tags = self.db.get_tags_for_subject('container', container_key)
 
                     # Combine tags: custom tags first, then derived tags (remove duplicates)
@@ -375,7 +376,7 @@ class ContainerDiscovery:
                     env = parse_container_env(env_list)
 
                     container = Container(
-                        id=dc.id,
+                        id=dc.id[:12],  # Use SHORT ID consistently (12 chars)
                         short_id=container_id,
                         name=dc.name,
                         state=dc.status,
@@ -421,7 +422,8 @@ class ContainerDiscovery:
 
             # Populate stats for each container using composite key (host_id:container_id)
             for container in containers:
-                composite_key = f"{container.host_id}:{container.id}"
+                # Use short_id for consistency with all other container operations
+                composite_key = f"{container.host_id}:{container.short_id}"
                 stats = container_stats.get(composite_key, {})
                 if stats:
                     container.cpu_percent = stats.get('cpu_percent')

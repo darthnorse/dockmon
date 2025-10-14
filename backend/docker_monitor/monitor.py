@@ -952,9 +952,10 @@ class DockerMonitor:
             # Discover containers for this host
             host_containers = self.discovery.discover_containers_for_host(hid, self._get_auto_restart_status)
 
-            # Populate restart_attempts from monitor's state
+            # Populate restart_attempts from monitor's state using composite key to prevent collisions
             for container in host_containers:
-                container.restart_attempts = self.restart_attempts.get(container.short_id, 0)
+                container_key = f"{container.host_id}:{container.short_id}"
+                container.restart_attempts = self.restart_attempts.get(container_key, 0)
 
             containers.extend(host_containers)
 
@@ -1069,8 +1070,12 @@ class DockerMonitor:
                 logger.info(f"Docker event: {action} - {container_name} ({container_id[:12]}) on host {host_id[:8]}")
 
             # Process event for v2 alerts
+            # Only process final/definitive events to avoid duplicate evaluations:
+            # - die (not kill/stop) for container stopped
+            # - start for container started
+            # - oom, health_status for their respective conditions
             logger.info(f"V2 alert check: alert_evaluation_service={self.alert_evaluation_service is not None}, action={action}")
-            if self.alert_evaluation_service and action in ['die', 'oom', 'kill', 'health_status', 'restart', 'stop', 'start']:
+            if self.alert_evaluation_service and action in ['die', 'oom', 'health_status', 'start']:
                 logger.info(f"V2: Processing {action} event for {container_name}")
 
                 # Parse timestamp
@@ -1087,19 +1092,18 @@ class DockerMonitor:
                 new_state = None
                 exit_code = None
 
-                if action in ['die', 'stop', 'kill']:
+                if action == 'die':
                     new_state = "exited"
-                    if action == 'die':
-                        # Docker sends exitCode in attributes
-                        exit_code_str = attributes.get('exitCode')
-                        if exit_code_str is not None:
-                            try:
-                                exit_code = int(exit_code_str)
-                            except (ValueError, TypeError):
-                                logger.warning(f"Invalid exit code format: {exit_code_str}")
-                                exit_code = None
-                        else:
-                            exit_code = 0  # Default to 0 if not provided
+                    # Docker sends exitCode in attributes
+                    exit_code_str = attributes.get('exitCode')
+                    if exit_code_str is not None:
+                        try:
+                            exit_code = int(exit_code_str)
+                        except (ValueError, TypeError):
+                            logger.warning(f"Invalid exit code format: {exit_code_str}")
+                            exit_code = None
+                    else:
+                        exit_code = 0  # Default to 0 if not provided
                 elif action == 'start':
                     new_state = "running"
                 elif action == 'health_status':
@@ -1112,6 +1116,10 @@ class DockerMonitor:
                 # Get old state from container state tracking
                 container_key = f"{host_id}:{container_id}"
                 old_state = self._container_states.get(container_key)
+
+                # Update state tracking immediately so polling loop doesn't think there's drift
+                if new_state:
+                    self._container_states[container_key] = new_state
 
                 # Build event data with new_state that engine expects
                 event_data = {
@@ -1132,7 +1140,7 @@ class DockerMonitor:
                 task = asyncio.create_task(
                     self.alert_evaluation_service.handle_container_event(
                         event_type=event_type,
-                        container_id=container_id,
+                        container_id=container_id,  # Short ID (12 chars) - standardized format
                         container_name=container_name,
                         host_id=host_id,
                         host_name=host_name,
@@ -1141,40 +1149,42 @@ class DockerMonitor:
                 )
                 task.add_done_callback(_handle_task_exception)
 
-            # Keep v1 for comparison (temporarily)
-            if self.notification_service and action in ['die', 'oom', 'kill', 'health_status', 'restart']:
-                # Parse timestamp
-                from datetime import datetime
-                try:
-                    timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-                except (ValueError, AttributeError, TypeError) as e:
-                    logger.warning(f"Failed to parse timestamp '{timestamp_str}': {e}, using current time")
-                    timestamp = datetime.now()
+            # Event-driven auto-restart: Check if container needs auto-restart on 'die' events
+            if action == 'die':
+                # Get container from cache to check auto-restart status
+                auto_restart_enabled = self._get_auto_restart_status(host_id, container_id)
 
-                # Get exit code for die events
-                exit_code = None
-                if action == 'die':
-                    exit_code_str = attributes.get('exitCode', '0')
-                    try:
-                        exit_code = int(exit_code_str)
-                    except (ValueError, TypeError):
-                        exit_code = None
+                if auto_restart_enabled:
+                    # Find container in cache
+                    # Note: Events use short_id (12 chars), containers have both id (64 chars) and short_id
+                    container = None
+                    for c in self._last_containers:
+                        # Match against both full ID and short ID
+                        if (c.id == container_id or c.short_id == container_id) and c.host_id == host_id:
+                            container = c
+                            break
 
-                # Create alert event
-                from notifications import DockerEventAlert
-                alert_event = DockerEventAlert(
-                    container_id=container_id,
-                    container_name=container_name,
-                    host_id=host_id,
-                    event_type=action,
-                    timestamp=timestamp,
-                    attributes=attributes,
-                    exit_code=exit_code
-                )
+                    if container:
+                        # 'die' event means container just died - don't wait for cache to update
+                        # Restart immediately for instant response
+                        container_key = f"{host_id}:{container_id}"
 
-                # Process in background to not block event monitoring
-                task = asyncio.create_task(self.notification_service.process_docker_event(alert_event))
-                task.add_done_callback(_handle_task_exception)
+                        # Atomically check and set the restarting flag to prevent duplicate restarts
+                        is_restarting = self.restarting_containers.get(container_key, False)
+                        if not is_restarting:
+                            attempts = self.restart_attempts.get(container_key, 0)
+                            if attempts < self.settings.max_retries:
+                                # Set restarting flag BEFORE spawning task to prevent race condition
+                                self.restarting_containers[container_key] = True
+
+                                # Restart immediately (event-driven - instant response)
+                                logger.info(f"Auto-restart triggered by 'die' event for {container_name} (attempt {attempts + 1}/{self.settings.max_retries})")
+                                task = asyncio.create_task(
+                                    self.auto_restart_container(container)
+                                )
+                                task.add_done_callback(_handle_task_exception)
+                    else:
+                        logger.warning(f"Container {container_name} not found in cache for event-driven auto-restart")
 
         except Exception as e:
             logger.error(f"Error handling Docker event from Go service: {e}")
@@ -1224,67 +1234,39 @@ class DockerMonitor:
                 # Cache containers for alert evaluation (avoid redundant Docker API queries)
                 self._last_containers = containers
 
-                # Centralized stats collection decision using StatsManager
+                # Check if we have active viewers (for adaptive polling interval)
                 has_viewers = self.manager.has_active_connections()
                 logger.debug(f"Monitor loop: has_viewers={has_viewers}, active_connections={len(self.manager.active_connections)}")
 
-                if has_viewers:
-                    # Determine which containers need stats (centralized logic)
-                    containers_needing_stats = self.stats_manager.determine_containers_needing_stats(
-                        containers,
-                        self.settings
-                    )
+                # Stats streams are now managed by WebSocket connect/disconnect events (event-driven)
+                # This provides instant start/stop instead of waiting for next poll cycle
 
-                    # Sync streams with what's needed (start new, stop old)
-                    await self.stats_manager.sync_container_streams(
-                        containers,
-                        containers_needing_stats,
-                        stats_client,
-                        _handle_task_exception
-                    )
-                else:
-                    # No active viewers - stop all streams
-                    await self.stats_manager.stop_all_streams(stats_client, _handle_task_exception)
-
-                # Track container state changes and log them
+                # Reconcile container states (silent sync - events handle logging)
+                # This acts as a safety net to catch any states that events might have missed
                 for container in containers:
-                    container_key = f"{container.host_id}:{container.id}"
+                    # Use short_id to match event handler's key format
+                    container_key = f"{container.host_id}:{container.short_id}"
                     current_state = container.status
 
                     # Hold lock during entire read-process-write to prevent race conditions
                     async with self._state_lock:
                         previous_state = self._container_states.get(container_key)
 
-                        # Log state changes
+                        # Detect state drift (state changed but we didn't get an event)
                         if previous_state is not None and previous_state != current_state:
-                            # Check if this state change was expected (recent user action)
-                            async with self._actions_lock:
-                                last_user_action = self._recent_user_actions.get(container_key, 0)
-                            time_since_action = time.time() - last_user_action
-                            is_user_initiated = time_since_action < 30  # Within 30 seconds
-
-                            logger.info(f"State change for {container_key}: {previous_state} → {current_state}, "
-                                      f"time_since_action={time_since_action:.1f}s, user_initiated={is_user_initiated}")
-
-                            # Clean up old tracking entries (5 minutes or older)
-                            if time_since_action >= 300:
-                                async with self._actions_lock:
-                                    self._recent_user_actions.pop(container_key, None)
-
-                            self.event_logger.log_container_state_change(
-                                container_name=container.name,
-                                container_id=container.short_id,
-                                host_name=container.host_name,
-                                host_id=container.host_id,
-                                old_state=previous_state,
-                                new_state=current_state,
-                                triggered_by="user" if is_user_initiated else "system"
+                            # This should be rare - events should have caught this
+                            logger.warning(
+                                f"State drift detected for {container.name}: {previous_state} → {current_state}. "
+                                f"Event may have been missed. Reconciling internal state."
                             )
+                            # Don't log to event_logger - events already handle state change logging
+                            # This is just to keep our internal state tracking in sync
 
-                        # Update tracked state (still inside lock)
+                        # Always update tracked state to stay in sync with Docker reality
                         self._container_states[container_key] = current_state
 
-                # Check for containers that need auto-restart
+                # Auto-restart reconciliation (safety net - events handle primary auto-restart)
+                # This catches containers that need restart if 'die' event was missed
                 for container in containers:
                     if (container.status == "exited" and
                         self._get_auto_restart_status(container.host_id, container.short_id)):
@@ -1295,6 +1277,8 @@ class DockerMonitor:
                         is_restarting = self.restarting_containers.get(container_key, False)
 
                         if attempts < self.settings.max_retries and not is_restarting:
+                            # This should be rare - events should trigger auto-restart immediately
+                            logger.info(f"Auto-restart reconciliation triggered for {container.name} (polling safety net)")
                             self.restarting_containers[container_key] = True
                             task = asyncio.create_task(
                                 self.auto_restart_container(container)
@@ -1395,8 +1379,8 @@ class DockerMonitor:
                     # Collect container sparklines for all containers
                     container_sparklines = {}
                     for container in containers:
-                        # Use composite key: host_id:container_id
-                        container_key = f"{container.host_id}:{container.id}"
+                        # Use composite key with SHORT ID: host_id:container_id (12 chars)
+                        container_key = f"{container.host_id}:{container.short_id}"
 
                         # Collect sparklines for ALL containers (running or not)
                         # This ensures we always send sparkline data in every broadcast
@@ -1428,7 +1412,9 @@ class DockerMonitor:
             except Exception as e:
                 logger.error(f"Error in monitoring loop: {e}")
 
-            await asyncio.sleep(self.settings.polling_interval)
+            # Adaptive polling: respect user's polling_interval when viewers present, 10s when idle for efficiency
+            interval = self.settings.polling_interval if has_viewers else 10
+            await asyncio.sleep(interval)
 
     async def auto_restart_container(self, container: Container):
         """Attempt to auto-restart a container"""
@@ -1446,11 +1432,15 @@ class DockerMonitor:
             f"for container '{container.name}' on host '{container.host_name}'"
         )
 
-        # Wait before attempting restart
-        await asyncio.sleep(self.settings.retry_delay)
+        # Wait before attempting restart (skip delay for first attempt for instant response)
+        if attempt > 1:
+            await asyncio.sleep(self.settings.retry_delay)
 
         try:
-            success = self.restart_container(container.host_id, container.id)
+            # Use start instead of restart since we know the container is stopped (from 'die' event)
+            # This avoids unnecessary kill/die events that restart would generate
+            # Docker API accepts short IDs
+            success = self.start_container(container.host_id, container.short_id)
             if success:
                 self.restart_attempts[container_key] = 0
 

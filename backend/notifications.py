@@ -1377,7 +1377,8 @@ class AlertProcessor:
     async def process_container_update(self, containers: List[Any], hosts: Dict[str, Any]):
         """Process container updates and trigger alerts for state changes"""
         for container in containers:
-            container_key = f"{container.host_id}:{container.id}"
+            # Use short_id for consistency
+            container_key = f"{container.host_id}:{container.short_id}"
             current_state = container.status
             previous_state = self._container_states.get(container_key)
 
@@ -1402,7 +1403,7 @@ class AlertProcessor:
             host_name = host.name if host else 'Unknown Host'
 
             alert_event = AlertEvent(
-                container_id=container.id,
+                container_id=container.short_id,  # Use short_id for consistency
                 container_name=container.name,
                 host_id=container.host_id,
                 host_name=host_name,

@@ -76,7 +76,7 @@ class BatchJobManager:
 
                 item = BatchJobItem(
                     job_id=job_id,
-                    container_id=container.id,
+                    container_id=container.short_id,  # Use short_id for consistency
                     container_name=container.name,
                     host_id=container.host_id,
                     host_name=container.host_name,

@@ -2104,6 +2104,34 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
         await monitor.manager.connect(websocket)
         await monitor.realtime.subscribe_to_events(websocket)
 
+        # Event-driven stats control: Start stats streams when first viewer connects
+        if len(monitor.manager.active_connections) == 1:
+            # This is the first viewer - start stats streams immediately
+            from stats_client import get_stats_client
+            stats_client = get_stats_client()
+
+            # Define exception handler for background tasks
+            def _handle_task_exception(task):
+                try:
+                    task.result()
+                except Exception as e:
+                    logger.error(f"Task exception: {e}", exc_info=True)
+
+            # Get current containers and determine which need stats
+            containers = monitor.get_last_containers()
+            if containers:
+                containers_needing_stats = monitor.stats_manager.determine_containers_needing_stats(
+                    containers,
+                    monitor.settings
+                )
+                await monitor.stats_manager.sync_container_streams(
+                    containers,
+                    containers_needing_stats,
+                    stats_client,
+                    _handle_task_exception
+                )
+                logger.info(f"Started stats streams for {len(containers_needing_stats)} containers (first viewer connected)")
+
         # Send initial state
         settings_dict = {
             "max_retries": monitor.settings.max_retries,
@@ -2128,6 +2156,30 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
             }
         }
         await websocket.send_text(json.dumps(initial_state, cls=DateTimeEncoder))
+
+        # Send immediate containers_update with stats/sparklines so frontend doesn't wait for next poll
+        # This eliminates the 5-10 second delay when opening container drawers on page load
+        containers = await monitor.get_containers()
+        broadcast_data = {
+            "timestamp": datetime.now().isoformat(),
+            "containers": [c.dict() for c in containers]
+        }
+
+        # Include sparklines if available
+        if hasattr(monitor, 'container_stats_history'):
+            container_sparklines = {}
+            for container in containers:
+                # Use composite key with SHORT ID: host_id:container_id (12 chars)
+                container_key = f"{container.host_id}:{container.short_id}"
+                sparklines = monitor.container_stats_history.get_sparklines(container_key, num_points=30)
+                container_sparklines[container_key] = sparklines
+            broadcast_data["container_sparklines"] = container_sparklines
+
+        containers_update = {
+            "type": "containers_update",
+            "data": broadcast_data
+        }
+        await websocket.send_text(json.dumps(containers_update, cls=DateTimeEncoder))
 
         while True:
             # Keep connection alive and handle incoming messages
@@ -2209,6 +2261,22 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
             await monitor.realtime.unsubscribe_from_stats(websocket, container_id)
         # Clear modal containers (user disconnected, modals are closed)
         monitor.stats_manager.clear_modal_containers()
+
+        # Event-driven stats control: Stop stats streams when last viewer disconnects
+        if len(monitor.manager.active_connections) == 0:
+            # No more viewers - stop all stats streams immediately
+            from stats_client import get_stats_client
+            stats_client = get_stats_client()
+
+            def _handle_task_exception(task):
+                try:
+                    task.result()
+                except Exception as e:
+                    logger.error(f"Task exception: {e}", exc_info=True)
+
+            await monitor.stats_manager.stop_all_streams(stats_client, _handle_task_exception)
+            logger.info("Stopped all stats streams (last viewer disconnected)")
+
         # Clean up rate limiter tracking
         ws_rate_limiter.cleanup_connection(connection_id)
         logger.debug(f"WebSocket cleanup completed for {connection_id}")

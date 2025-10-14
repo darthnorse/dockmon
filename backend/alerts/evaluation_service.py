@@ -278,27 +278,30 @@ class AlertEvaluationService:
                 logger.debug("Container cache empty, querying Docker directly")
                 containers = await self.monitor.get_containers()
 
-            # Build lookup map for O(1) container lookups
-            container_map = {c.id: c for c in containers}
+            # Build lookup map for O(1) container lookups using composite key
+            # Stats dict uses composite keys (host_id:container_id), so map must match
+            container_map = {f"{c.host_id}:{c.short_id}": c for c in containers}
 
             # Evaluate each container's metrics
-            for container_id, container_stats in stats.items():
-                container = container_map.get(container_id)
+            # Note: container_id here is actually the composite key (host_id:container_id)
+            for composite_key, container_stats in stats.items():
+                container = container_map.get(composite_key)
 
                 if not container:
-                    logger.debug(f"Container {container_id} not found in cache")
+                    logger.debug(f"Container {composite_key} not found in cache")
                     continue
 
                 # Fetch container tags for tag-based selector matching
-                container_tags = self.db.get_tags_for_subject('container', container_id)
+                # Tags are stored with composite key: host_id:container_id
+                container_tags = self.db.get_tags_for_subject('container', composite_key)
 
                 # Create evaluation context
                 context = EvaluationContext(
                     scope_type="container",
-                    scope_id=container_id,
+                    scope_id=container.short_id,
                     host_id=container.host_id,
                     host_name=container.host_name,
-                    container_id=container_id,
+                    container_id=container.short_id,
                     container_name=container.name,
                     desired_state=container.desired_state or 'unspecified',
                     labels=container.labels or {},
@@ -479,6 +482,49 @@ class AlertEvaluationService:
             except Exception as e:
                 logger.error(f"Failed to send alert notification: {e}", exc_info=True)
 
+    async def _auto_clear_alerts_by_kind(
+        self,
+        scope_type: str,
+        scope_id: str,
+        kinds_to_clear: List[str],
+        reason: str
+    ):
+        """
+        Auto-clear open alerts of specific kinds for a scope.
+
+        This is used for auto-resolving alerts when opposite conditions occur:
+        - Container starts → clear container_stopped alerts
+        - Container becomes healthy → clear unhealthy alerts
+
+        Args:
+            scope_type: "container" or "host"
+            scope_id: Container ID or host ID
+            kinds_to_clear: List of alert kinds to clear (e.g., ["container_stopped"])
+            reason: Reason for clearing (e.g., "Container started")
+        """
+        try:
+            with self.db.get_session() as session:
+                # Find open alerts matching the scope and kinds
+                alerts_to_clear = session.query(AlertV2).filter(
+                    AlertV2.scope_type == scope_type,
+                    AlertV2.scope_id == scope_id,
+                    AlertV2.state == "open",
+                    AlertV2.kind.in_(kinds_to_clear)
+                ).all()
+
+                if alerts_to_clear:
+                    logger.info(
+                        f"Auto-clearing {len(alerts_to_clear)} alert(s) for {scope_type}:{scope_id} - {reason}"
+                    )
+
+                    for alert in alerts_to_clear:
+                        # Use engine's resolve method to properly mark as resolved
+                        self.engine._resolve_alert(alert, reason)
+                        logger.info(f"Auto-cleared alert {alert.id}: {alert.title}")
+
+        except Exception as e:
+            logger.error(f"Error auto-clearing alerts: {e}", exc_info=True)
+
     # ==================== Event-Driven Rule Evaluation ====================
 
     async def handle_container_event(
@@ -503,13 +549,13 @@ class AlertEvaluationService:
         """
         logger.info(f"V2: Processing {event_type} for {container_name} on {host_name}")
         try:
-            # Get container info to retrieve desired_state
-            container_info = await self._get_container_info(container_id, host_id)
-            desired_state = container_info.get("desired_state") if container_info else 'unspecified'
+            # Get desired_state from database
+            desired_state = self.db.get_desired_state(host_id, container_id) or 'unspecified'
 
             # Fetch container tags for tag-based selector matching
-            container_tags = self.db.get_tags_for_subject('container', container_id)
-            logger.debug(f"Container {container_name} has tags: {container_tags}")
+            # Tags are stored with composite key: host_id:container_id
+            composite_key = f"{host_id}:{container_id}"
+            container_tags = self.db.get_tags_for_subject('container', composite_key)
 
             # Create evaluation context with the data passed in
             context = EvaluationContext(
@@ -523,6 +569,30 @@ class AlertEvaluationService:
                 labels={},  # Labels not needed for basic event-driven rules
                 tags=container_tags  # Container tags for tag-based filtering
             )
+
+            # Auto-clear opposite-state alerts before evaluating new rules
+            # If container started, clear any container_stopped alerts
+            # If container stopped, clear any container_started alerts (if we add those)
+            if event_type == "state_change" and event_data:
+                new_state = event_data.get("new_state")
+
+                # Container started → clear container_stopped alerts
+                if new_state in ["running", "restarting"]:
+                    await self._auto_clear_alerts_by_kind(
+                        scope_type="container",
+                        scope_id=container_id,
+                        kinds_to_clear=["container_stopped"],
+                        reason="Container started"
+                    )
+
+                # Container became healthy → clear unhealthy alerts
+                elif new_state == "healthy":
+                    await self._auto_clear_alerts_by_kind(
+                        scope_type="container",
+                        scope_id=container_id,
+                        kinds_to_clear=["unhealthy"],
+                        reason="Container became healthy"
+                    )
 
             # Evaluate event-driven rules
             alerts = self.engine.evaluate_event(event_type, context, event_data)

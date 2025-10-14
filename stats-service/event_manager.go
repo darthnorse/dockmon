@@ -285,7 +285,9 @@ func (em *EventManager) streamEvents(stream *eventStream) {
 // processEvent converts Docker event to our format and broadcasts it
 func (em *EventManager) processEvent(hostID string, event events.Message) {
 	// Extract container info
-	containerID := event.Actor.ID
+	// IMPORTANT: Use short ID (12 chars) to match database and polling loop format
+	// Docker events contain full ID (64 chars), but we standardize on short ID
+	containerID := truncateID(event.Actor.ID, 12)
 
 	// Safely extract attributes with defensive access pattern
 	containerName := ""
@@ -316,7 +318,7 @@ func (em *EventManager) processEvent(hostID string, event events.Message) {
 		log.Printf("Event: %s - container %s (%s) on host %s",
 			dockerEvent.Action,
 			dockerEvent.ContainerName,
-			truncateID(dockerEvent.ContainerID, 12),
+			dockerEvent.ContainerID, // Already short ID (12 chars)
 			truncateID(hostID, 8))
 	}
 

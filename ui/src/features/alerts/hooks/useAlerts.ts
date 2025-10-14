@@ -318,18 +318,18 @@ export function useAlertEvents(alert: Alert | null | undefined) {
         queryParams.append('host_id', alert.scope_id)
       }
 
-      // Fetch events from alert timerange + buffer
-      // Use alert first_seen - 1 hour to last_seen + 1 hour as the window
-      // This ensures we capture events that triggered the alert and related events
+      // Fetch events from alert timerange with 15-minute buffer
+      // This captures events that led up to the alert and related events after
       const firstSeenTime = new Date(alert.first_seen)
       const lastSeenTime = new Date(alert.last_seen)
 
-      // Add 1 hour buffer before first_seen and after last_seen
-      const startTime = new Date(firstSeenTime.getTime() - (60 * 60 * 1000)) // -1 hour
-      const endTime = new Date(lastSeenTime.getTime() + (60 * 60 * 1000))   // +1 hour
+      // Add 15-minute buffer before first_seen and after last_seen
+      const bufferMs = 15 * 60 * 1000 // 15 minutes in milliseconds
+      const startTime = new Date(firstSeenTime.getTime() - bufferMs)
+      const endTime = new Date(lastSeenTime.getTime() + bufferMs)
 
-      queryParams.append('start_time', startTime.toISOString())
-      queryParams.append('end_time', endTime.toISOString())
+      queryParams.append('start_date', startTime.toISOString())
+      queryParams.append('end_date', endTime.toISOString())
 
       // Limit to most recent 50 events in this window
       queryParams.append('limit', '50')

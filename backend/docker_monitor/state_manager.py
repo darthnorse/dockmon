@@ -56,6 +56,7 @@ class StateManager:
             return config.enabled
 
         # No explicit configuration - use global default setting
+        self.auto_restart_status[container_key] = self.settings.default_auto_restart
         return self.settings.default_auto_restart
 
     def toggle_auto_restart(self, host_id: str, container_id: str, container_name: str, enabled: bool) -> None:

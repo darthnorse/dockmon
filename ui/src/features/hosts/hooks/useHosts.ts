@@ -19,13 +19,12 @@ import { toast } from 'sonner'
 import { apiClient } from '@/lib/api/client'
 import type { Host } from '@/types/api'
 
-// Type for API errors from axios/fetch responses
+// Type for API errors from our ApiClient
 interface ApiError extends Error {
-  response?: {
-    data?: {
-      detail?: string
-    }
-  }
+  status?: number
+  data?: {
+    detail?: string
+  } | string
 }
 
 export interface HostConfig {
@@ -93,7 +92,11 @@ export function useAddHost() {
     },
     onError: (error: unknown) => {
       const apiError = error as ApiError
-      const message = apiError.response?.data?.detail || apiError.message || 'Failed to add host'
+      // ApiClient stores error data in error.data, not error.response.data
+      const detail = typeof apiError.data === 'object' && apiError.data?.detail
+        ? apiError.data.detail
+        : null
+      const message = detail || apiError.message || 'Failed to add host'
       toast.error(message)
     },
   })
@@ -114,7 +117,11 @@ export function useUpdateHost() {
     },
     onError: (error: unknown) => {
       const apiError = error as ApiError
-      const message = apiError.response?.data?.detail || apiError.message || 'Failed to update host'
+      // ApiClient stores error data in error.data, not error.response.data
+      const detail = typeof apiError.data === 'object' && apiError.data?.detail
+        ? apiError.data.detail
+        : null
+      const message = detail || apiError.message || 'Failed to update host'
       toast.error(message)
     },
   })
@@ -135,7 +142,11 @@ export function useDeleteHost() {
     },
     onError: (error: unknown) => {
       const apiError = error as ApiError
-      const message = apiError.response?.data?.detail || apiError.message || 'Failed to delete host'
+      // ApiClient stores error data in error.data, not error.response.data
+      const detail = typeof apiError.data === 'object' && apiError.data?.detail
+        ? apiError.data.detail
+        : null
+      const message = detail || apiError.message || 'Failed to delete host'
       toast.error(message)
     },
   })

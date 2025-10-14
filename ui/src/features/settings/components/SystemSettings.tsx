@@ -3,7 +3,7 @@
  * Polling, retries, timeouts, and connection settings
  */
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useGlobalSettings, useUpdateGlobalSettings } from '@/hooks/useSettings'
 import { toast } from 'sonner'
 import { ToggleSwitch } from './ToggleSwitch'
@@ -19,35 +19,98 @@ export function SystemSettings() {
   const [defaultAutoRestart, setDefaultAutoRestart] = useState(settings?.default_auto_restart ?? false)
   const [unusedTagRetentionDays, setUnusedTagRetentionDays] = useState(settings?.unused_tag_retention_days ?? 30)
   const [eventRetentionDays, setEventRetentionDays] = useState(settings?.event_retention_days ?? 60)
-  const [autoCleanupEvents, setAutoCleanupEvents] = useState(settings?.auto_cleanup_events ?? true)
 
-  const handleSave = async () => {
-    try {
-      await updateSettings.mutateAsync({
-        polling_interval: pollingInterval,
-        connection_timeout: connectionTimeout,
-        max_retries: maxRetries,
-        retry_delay: retryDelay,
-        default_auto_restart: defaultAutoRestart,
-        unused_tag_retention_days: unusedTagRetentionDays,
-        event_retention_days: eventRetentionDays,
-        auto_cleanup_events: autoCleanupEvents,
-      })
-      toast.success('System settings saved')
-    } catch (error) {
-      toast.error('Failed to save system settings')
+  // Sync state when settings load from API
+  useEffect(() => {
+    if (settings) {
+      setPollingInterval(settings.polling_interval ?? 2)
+      setConnectionTimeout(settings.connection_timeout ?? 10)
+      setMaxRetries(settings.max_retries ?? 3)
+      setRetryDelay(settings.retry_delay ?? 30)
+      setDefaultAutoRestart(settings.default_auto_restart ?? false)
+      setUnusedTagRetentionDays(settings.unused_tag_retention_days ?? 30)
+      setEventRetentionDays(settings.event_retention_days ?? 60)
+    }
+  }, [settings])
+
+  // Auto-save handlers for number inputs (save on blur)
+  const handlePollingIntervalBlur = async () => {
+    if (pollingInterval !== settings?.polling_interval) {
+      try {
+        await updateSettings.mutateAsync({ polling_interval: pollingInterval })
+        toast.success('Polling interval updated')
+      } catch (error) {
+        toast.error('Failed to update polling interval')
+      }
     }
   }
 
-  const hasChanges =
-    pollingInterval !== settings?.polling_interval ||
-    connectionTimeout !== settings?.connection_timeout ||
-    maxRetries !== settings?.max_retries ||
-    retryDelay !== settings?.retry_delay ||
-    defaultAutoRestart !== settings?.default_auto_restart ||
-    unusedTagRetentionDays !== settings?.unused_tag_retention_days ||
-    eventRetentionDays !== settings?.event_retention_days ||
-    autoCleanupEvents !== settings?.auto_cleanup_events
+  const handleConnectionTimeoutBlur = async () => {
+    if (connectionTimeout !== settings?.connection_timeout) {
+      try {
+        await updateSettings.mutateAsync({ connection_timeout: connectionTimeout })
+        toast.success('Connection timeout updated')
+      } catch (error) {
+        toast.error('Failed to update connection timeout')
+      }
+    }
+  }
+
+  const handleMaxRetriesBlur = async () => {
+    if (maxRetries !== settings?.max_retries) {
+      try {
+        await updateSettings.mutateAsync({ max_retries: maxRetries })
+        toast.success('Max retries updated')
+      } catch (error) {
+        toast.error('Failed to update max retries')
+      }
+    }
+  }
+
+  const handleRetryDelayBlur = async () => {
+    if (retryDelay !== settings?.retry_delay) {
+      try {
+        await updateSettings.mutateAsync({ retry_delay: retryDelay })
+        toast.success('Retry delay updated')
+      } catch (error) {
+        toast.error('Failed to update retry delay')
+      }
+    }
+  }
+
+  const handleUnusedTagRetentionBlur = async () => {
+    if (unusedTagRetentionDays !== settings?.unused_tag_retention_days) {
+      try {
+        await updateSettings.mutateAsync({ unused_tag_retention_days: unusedTagRetentionDays })
+        toast.success('Tag retention updated')
+      } catch (error) {
+        toast.error('Failed to update tag retention')
+      }
+    }
+  }
+
+  const handleEventRetentionBlur = async () => {
+    if (eventRetentionDays !== settings?.event_retention_days) {
+      try {
+        await updateSettings.mutateAsync({ event_retention_days: eventRetentionDays })
+        toast.success('Event retention updated')
+      } catch (error) {
+        toast.error('Failed to update event retention')
+      }
+    }
+  }
+
+  // Auto-save handler for toggle
+  const handleDefaultAutoRestartToggle = async (checked: boolean) => {
+    setDefaultAutoRestart(checked)
+    try {
+      await updateSettings.mutateAsync({ default_auto_restart: checked })
+      toast.success(checked ? 'Auto-restart enabled by default' : 'Auto-restart disabled by default')
+    } catch (error) {
+      toast.error('Failed to update auto-restart setting')
+      setDefaultAutoRestart(!checked) // Revert on error
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -69,6 +132,7 @@ export function SystemSettings() {
               max="300"
               value={pollingInterval}
               onChange={(e) => setPollingInterval(Number(e.target.value))}
+              onBlur={handlePollingIntervalBlur}
               className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
             <p className="mt-1 text-xs text-gray-400">How often to check Docker hosts (1-300 seconds)</p>
@@ -94,6 +158,7 @@ export function SystemSettings() {
               max="60"
               value={connectionTimeout}
               onChange={(e) => setConnectionTimeout(Number(e.target.value))}
+              onBlur={handleConnectionTimeoutBlur}
               className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
             <p className="mt-1 text-xs text-gray-400">Timeout for Docker API connections (1-60 seconds)</p>
@@ -110,6 +175,7 @@ export function SystemSettings() {
               max="10"
               value={maxRetries}
               onChange={(e) => setMaxRetries(Number(e.target.value))}
+              onBlur={handleMaxRetriesBlur}
               className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
             <p className="mt-1 text-xs text-gray-400">Number of retry attempts for failed connections (0-10)</p>
@@ -126,6 +192,7 @@ export function SystemSettings() {
               max="300"
               value={retryDelay}
               onChange={(e) => setRetryDelay(Number(e.target.value))}
+              onBlur={handleRetryDelayBlur}
               className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
             <p className="mt-1 text-xs text-gray-400">Delay between retry attempts (5-300 seconds)</p>
@@ -145,7 +212,7 @@ export function SystemSettings() {
             label="Auto-restart containers by default"
             description="Automatically restart containers that stop unexpectedly (can be overridden per container)"
             checked={defaultAutoRestart}
-            onChange={setDefaultAutoRestart}
+            onChange={handleDefaultAutoRestartToggle}
           />
         </div>
       </div>
@@ -164,25 +231,16 @@ export function SystemSettings() {
             <input
               id="event-retention"
               type="number"
-              min="1"
+              min="0"
               max="365"
               value={eventRetentionDays}
               onChange={(e) => setEventRetentionDays(Number(e.target.value))}
+              onBlur={handleEventRetentionBlur}
               className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
             <p className="mt-1 text-xs text-gray-400">
-              How long to keep event logs and history (1-365 days). Older events are automatically deleted during nightly maintenance.
+              How long to keep event logs and history. Events older than this are automatically deleted during nightly maintenance. Set to 0 to keep events forever. (0-365 days)
             </p>
-          </div>
-
-          <div className="divide-y divide-border">
-            <ToggleSwitch
-              id="auto-cleanup-events"
-              label="Automatically cleanup old events"
-              description="Run nightly cleanup to delete events older than the retention period"
-              checked={autoCleanupEvents}
-              onChange={setAutoCleanupEvents}
-            />
           </div>
 
           <div>
@@ -196,6 +254,7 @@ export function SystemSettings() {
               max="365"
               value={unusedTagRetentionDays}
               onChange={(e) => setUnusedTagRetentionDays(Number(e.target.value))}
+              onBlur={handleUnusedTagRetentionBlur}
               className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
             <p className="mt-1 text-xs text-gray-400">
@@ -204,20 +263,6 @@ export function SystemSettings() {
           </div>
         </div>
       </div>
-
-      {/* Save Button */}
-      {hasChanges && (
-        <div className="flex items-center justify-end gap-3 rounded-lg border border-blue-500/20 bg-blue-500/10 px-4 py-3">
-          <span className="text-sm text-gray-300">You have unsaved changes</span>
-          <button
-            onClick={handleSave}
-            disabled={updateSettings.isPending}
-            className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
-          >
-            {updateSettings.isPending ? 'Saving...' : 'Save Changes'}
-          </button>
-        </div>
-      )}
     </div>
   )
 }

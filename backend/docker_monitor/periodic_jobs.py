@@ -112,8 +112,8 @@ class PeriodicJobsManager:
             try:
                 settings = self.db.get_settings()
 
-                if settings.auto_cleanup_events:
-                    # Clean up old events
+                # Clean up old events if retention period is set
+                if settings.event_retention_days > 0:
                     event_deleted = self.db.cleanup_old_events(settings.event_retention_days)
                     if event_deleted > 0:
                         self.event_logger.log_system_event(

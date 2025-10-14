@@ -68,12 +68,12 @@ export function SettingsPage() {
           {activeTab === 'alerts' && (
             <div className="space-y-8">
               <div>
-                <h2 className="mb-4 text-lg font-semibold text-white">Alert Message Templates</h2>
-                <AlertTemplateSettings />
-              </div>
-              <div>
                 <h2 className="mb-4 text-lg font-semibold text-white">Blackout Windows</h2>
                 <BlackoutWindowsSection />
+              </div>
+              <div>
+                <h2 className="mb-4 text-lg font-semibold text-white">Alert Message Templates</h2>
+                <AlertTemplateSettings />
               </div>
             </div>
           )}

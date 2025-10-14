@@ -584,36 +584,32 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                 placeholder="Optional description of what this rule monitors"
               />
             </div>
+          </div>
 
-            <div className="grid grid-cols-3 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Scope *</label>
-                <select
-                  value={formData.scope}
-                  onChange={(e) => handleChange('scope', e.target.value as AlertScope)}
-                  required
-                  className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                >
-                  <option value="host">Host</option>
-                  <option value="container">Container</option>
-                </select>
-              </div>
+          {/* Scope Selection */}
+          <div className="space-y-4 rounded-lg border border-gray-700 bg-gray-800/30 p-4">
+            <h3 className="text-sm font-semibold text-white">Alert Scope</h3>
+            <p className="text-xs text-gray-400">
+              Choose whether this rule applies to hosts or containers
+            </p>
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">Scope *</label>
+              <select
+                value={formData.scope}
+                onChange={(e) => handleChange('scope', e.target.value as AlertScope)}
+                required
+                className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              >
+                <option value="host">Host</option>
+                <option value="container">Container</option>
+              </select>
+            </div>
+          </div>
 
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Severity *</label>
-                <select
-                  value={formData.severity}
-                  onChange={(e) => handleChange('severity', e.target.value as AlertSeverity)}
-                  required
-                  className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                >
-                  <option value="info">Info</option>
-                  <option value="warning">Warning</option>
-                  <option value="error">Error</option>
-                  <option value="critical">Critical</option>
-                </select>
-              </div>
-
+          {/* Rule Configuration */}
+          <div className="space-y-4 rounded-lg border border-gray-700 bg-gray-800/30 p-4">
+            <h3 className="text-sm font-semibold text-white">Rule Configuration</h3>
+            <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-300 mb-1">Rule Type *</label>
                 <select
@@ -631,6 +627,21 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                 {selectedKind?.description && (
                   <p className="mt-1 text-xs text-gray-400">{selectedKind.description}</p>
                 )}
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Severity *</label>
+                <select
+                  value={formData.severity}
+                  onChange={(e) => handleChange('severity', e.target.value as AlertSeverity)}
+                  required
+                  className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                >
+                  <option value="info">Info</option>
+                  <option value="warning">Warning</option>
+                  <option value="error">Error</option>
+                  <option value="critical">Critical</option>
+                </select>
               </div>
             </div>
           </div>
@@ -794,73 +805,6 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
               </div>
             </div>
           )}
-
-          {/* Timing Configuration */}
-          <div className="space-y-4 rounded-lg border border-gray-700 bg-gray-800/30 p-4">
-            <h3 className="text-sm font-semibold text-white">Timing Configuration</h3>
-
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Duration (seconds) *</label>
-                <input
-                  type="number"
-                  value={formData.duration_seconds}
-                  onChange={(e) => handleChange('duration_seconds', parseInt(e.target.value))}
-                  required
-                  min={1}
-                  className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
-                <p className="mt-1 text-xs text-gray-500">How long condition must be true</p>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Occurrences *</label>
-                <input
-                  type="number"
-                  value={formData.occurrences}
-                  onChange={(e) => handleChange('occurrences', parseInt(e.target.value))}
-                  required
-                  min={1}
-                  max={100}
-                  className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
-                <p className="mt-1 text-xs text-gray-500">Breaches needed to trigger alert</p>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              {!requiresMetric && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">Clear Duration (seconds)</label>
-                  <input
-                    type="number"
-                    value={formData.clear_duration_seconds || ''}
-                    onChange={(e) => handleChange('clear_duration_seconds', e.target.value ? parseInt(e.target.value) : undefined)}
-                    min={0}
-                    placeholder="30"
-                    className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  />
-                  <p className="mt-1 text-xs text-gray-400">
-                    Time window for transient issues. If the condition clears within this period, the alert will auto-resolve
-                    without sending notifications. Useful for brief outages like container restarts. Default: 30 seconds.
-                  </p>
-                </div>
-              )}
-
-              <div className={!requiresMetric ? '' : 'col-span-2'}>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Cooldown (seconds) *</label>
-                <input
-                  type="number"
-                  value={formData.cooldown_seconds}
-                  onChange={(e) => handleChange('cooldown_seconds', parseInt(e.target.value))}
-                  required
-                  min={0}
-                  className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
-                <p className="mt-1 text-xs text-gray-500">Min time between alert notifications</p>
-              </div>
-            </div>
-          </div>
 
           {/* Host Selector */}
           {formData.scope === 'host' && (
@@ -1155,6 +1099,73 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
               )}
             </div>
           )}
+
+          {/* Timing Configuration */}
+          <div className="space-y-4 rounded-lg border border-gray-700 bg-gray-800/30 p-4">
+            <h3 className="text-sm font-semibold text-white">Timing Configuration</h3>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Duration (seconds) *</label>
+                <input
+                  type="number"
+                  value={formData.duration_seconds}
+                  onChange={(e) => handleChange('duration_seconds', parseInt(e.target.value))}
+                  required
+                  min={1}
+                  className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+                <p className="mt-1 text-xs text-gray-500">How long condition must be true</p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Occurrences *</label>
+                <input
+                  type="number"
+                  value={formData.occurrences}
+                  onChange={(e) => handleChange('occurrences', parseInt(e.target.value))}
+                  required
+                  min={1}
+                  max={100}
+                  className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+                <p className="mt-1 text-xs text-gray-500">Breaches needed to trigger alert</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              {!requiresMetric && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-1">Clear Duration (seconds)</label>
+                  <input
+                    type="number"
+                    value={formData.clear_duration_seconds || ''}
+                    onChange={(e) => handleChange('clear_duration_seconds', e.target.value ? parseInt(e.target.value) : undefined)}
+                    min={0}
+                    placeholder="30"
+                    className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                  <p className="mt-1 text-xs text-gray-400">
+                    Time window for transient issues. If the condition clears within this period, the alert will auto-resolve
+                    without sending notifications. Useful for brief outages like container restarts. Default: 30 seconds.
+                  </p>
+                </div>
+              )}
+
+              <div className={!requiresMetric ? '' : 'col-span-2'}>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Cooldown (seconds) *</label>
+                <input
+                  type="number"
+                  value={formData.cooldown_seconds}
+                  onChange={(e) => handleChange('cooldown_seconds', parseInt(e.target.value))}
+                  required
+                  min={0}
+                  className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+                <p className="mt-1 text-xs text-gray-500">Min time between alert notifications</p>
+              </div>
+            </div>
+          </div>
 
           {/* Notification Channels */}
           <div className="space-y-4 rounded-lg border border-gray-700 bg-gray-800/30 p-4">

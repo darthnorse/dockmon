@@ -270,25 +270,39 @@ class AlertEvaluationService:
                 logger.debug("No container stats available")
                 return
 
+            # Get containers from monitor's cache (avoids redundant Docker API queries)
+            containers = self.monitor.get_last_containers()
+
+            if not containers:
+                # Fallback: Cache might be empty during startup
+                logger.debug("Container cache empty, querying Docker directly")
+                containers = await self.monitor.get_containers()
+
+            # Build lookup map for O(1) container lookups
+            container_map = {c.id: c for c in containers}
+
             # Evaluate each container's metrics
             for container_id, container_stats in stats.items():
-                # Get container metadata
-                container_info = await self._get_container_info(container_id)
+                container = container_map.get(container_id)
 
-                if not container_info:
-                    logger.debug(f"No metadata for container {container_id}")
+                if not container:
+                    logger.debug(f"Container {container_id} not found in cache")
                     continue
+
+                # Fetch container tags for tag-based selector matching
+                container_tags = self.db.get_tags_for_subject('container', container_id)
 
                 # Create evaluation context
                 context = EvaluationContext(
                     scope_type="container",
                     scope_id=container_id,
-                    host_id=container_info.get("host_id"),
-                    host_name=container_info.get("host_name"),
+                    host_id=container.host_id,
+                    host_name=container.host_name,
                     container_id=container_id,
-                    container_name=container_info.get("name"),
-                    desired_state=container_info.get("desired_state"),
-                    labels=container_info.get("labels", {})
+                    container_name=container.name,
+                    desired_state=container.desired_state or 'unspecified',
+                    labels=container.labels or {},
+                    tags=container_tags  # Container tags for tag-based filtering
                 )
 
                 # Evaluate metrics
@@ -347,43 +361,6 @@ class AlertEvaluationService:
                     f"Error evaluating {metric_name} for {context.container_name}: {e}",
                     exc_info=True
                 )
-
-    async def _get_container_info(self, container_id: str, host_id: str) -> Optional[Dict[str, Any]]:
-        """
-        Get container metadata (name, host, labels, desired_state) from database
-        """
-        # Query the database for container info
-        with self.db.get_session() as session:
-            from sqlalchemy import text
-
-            # Query containers table for this container
-            query = text("""
-                SELECT name, image, labels, desired_state
-                FROM containers
-                WHERE container_id LIKE :container_id_pattern
-                LIMIT 1
-            """)
-            result = session.execute(query, {"container_id_pattern": f"{container_id}%"})
-            row = result.fetchone()
-
-            if row:
-                # Get host name from hosts table
-                host_query = text("SELECT name FROM docker_hosts WHERE id = :host_id")
-                host_result = session.execute(host_query, {"host_id": host_id})
-                host_row = host_result.fetchone()
-                host_name = host_row[0] if host_row else host_id
-
-                return {
-                    'name': row[0],
-                    'host_name': host_name,
-                    'host_id': host_id,
-                    'labels': {},  # Labels are JSON, would need parsing
-                    'state': 'unknown',  # State is tracked in real-time, not in DB
-                    'image': row[1],
-                    'desired_state': row[3] if len(row) > 3 else 'unspecified'
-                }
-
-        return None
 
     def update_container_cache(self, container_id: str, info: Dict[str, Any]):
         """Update container metadata cache"""
@@ -530,6 +507,10 @@ class AlertEvaluationService:
             container_info = await self._get_container_info(container_id, host_id)
             desired_state = container_info.get("desired_state") if container_info else 'unspecified'
 
+            # Fetch container tags for tag-based selector matching
+            container_tags = self.db.get_tags_for_subject('container', container_id)
+            logger.debug(f"Container {container_name} has tags: {container_tags}")
+
             # Create evaluation context with the data passed in
             context = EvaluationContext(
                 scope_type="container",
@@ -539,7 +520,8 @@ class AlertEvaluationService:
                 container_id=container_id,
                 container_name=container_name,
                 desired_state=desired_state,
-                labels={}  # Labels not needed for basic event-driven rules
+                labels={},  # Labels not needed for basic event-driven rules
+                tags=container_tags  # Container tags for tag-based filtering
             )
 
             # Evaluate event-driven rules
@@ -572,12 +554,17 @@ class AlertEvaluationService:
             # Get host info from event data
             host_name = event_data.get("host_name", host_id)
 
+            # Fetch host tags for tag-based selector matching
+            host_tags = self.db.get_tags_for_subject('host', host_id)
+            logger.debug(f"Host {host_name} has tags: {host_tags}")
+
             # Create evaluation context
             context = EvaluationContext(
                 scope_type="host",
                 scope_id=host_id,
                 host_id=host_id,
-                host_name=host_name
+                host_name=host_name,
+                tags=host_tags  # Host tags for tag-based filtering
             )
 
             # Evaluate event-driven rules

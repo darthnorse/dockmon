@@ -34,7 +34,7 @@ from notifications import NotificationService, AlertProcessor
 from event_logger import EventLogger, EventContext, EventCategory, EventType, EventSeverity, PerformanceTimer
 
 # Import extracted modules
-from config.settings import AppConfig, get_cors_origins, setup_logging
+from config.settings import AppConfig, get_cors_origins, setup_logging, HealthCheckFilter
 from models.docker_models import DockerHostConfig, DockerHost
 from models.settings_models import GlobalSettings, AlertRule, AlertRuleV2Create, AlertRuleV2Update
 from models.request_models import (
@@ -78,6 +78,10 @@ async def lifespan(app: FastAPI):
     """Manage application lifecycle"""
     # Startup
     logger.info("Starting DockMon backend...")
+
+    # Reapply health check filter to uvicorn access logger (must be done after uvicorn starts)
+    uvicorn_access = logging.getLogger("uvicorn.access")
+    uvicorn_access.addFilter(HealthCheckFilter())
 
     # Ensure default user exists
     monitor.db.get_or_create_default_user()
@@ -829,7 +833,9 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
         "blackout_windows": getattr(settings, 'blackout_windows', None),
         "timezone_offset": getattr(settings, 'timezone_offset', 0),
         "show_host_stats": getattr(settings, 'show_host_stats', True),
-        "show_container_stats": getattr(settings, 'show_container_stats', True)
+        "show_container_stats": getattr(settings, 'show_container_stats', True),
+        "unused_tag_retention_days": getattr(settings, 'unused_tag_retention_days', 30),
+        "event_retention_days": getattr(settings, 'event_retention_days', 60)
     }
 
 @app.post("/api/settings")
@@ -874,7 +880,9 @@ async def update_settings(settings: dict, current_user: dict = Depends(get_curre
         "blackout_windows": getattr(updated, 'blackout_windows', None),
         "timezone_offset": getattr(updated, 'timezone_offset', 0),
         "show_host_stats": getattr(updated, 'show_host_stats', True),
-        "show_container_stats": getattr(updated, 'show_container_stats', True)
+        "show_container_stats": getattr(updated, 'show_container_stats', True),
+        "unused_tag_retention_days": getattr(updated, 'unused_tag_retention_days', 30),
+        "event_retention_days": getattr(updated, 'event_retention_days', 60)
     }
 
 

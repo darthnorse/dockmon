@@ -33,6 +33,7 @@ class EvaluationContext:
     container_name: Optional[str] = None
     desired_state: Optional[str] = None  # Container desired state: 'should_run', 'on_demand', 'unspecified'
     labels: Optional[Dict[str, str]] = None
+    tags: Optional[List[str]] = None  # Container or host tags for tag-based filtering
 
 
 @dataclass
@@ -408,10 +409,36 @@ class AlertEngine:
                     if context.container_id != container_selector['container_id']:
                         return False
 
+                # Check tags in container selector (match if container has ANY of the required tags)
+                if 'tags' in container_selector and container_selector['tags']:
+                    required_tags = container_selector['tags']
+                    if not context.tags:
+                        # Rule requires tags but context has none
+                        return False
+                    # Match if container has ANY of the required tags
+                    if not any(tag in context.tags for tag in required_tags):
+                        return False
+
                 # Note: Image matching would require passing image info in context
                 # Currently not available in EvaluationContext
             except (json.JSONDecodeError, Exception) as e:
                 logger.warning(f"Invalid container_selector_json in rule {rule.id}: {e}")
+                return False
+
+        # Check tags in host selector (match if host has ANY of the required tags)
+        if rule.host_selector_json:
+            try:
+                host_selector = json.loads(rule.host_selector_json)
+                if 'tags' in host_selector and host_selector['tags']:
+                    required_tags = host_selector['tags']
+                    if not context.tags:
+                        # Rule requires tags but context has none
+                        return False
+                    # Match if host has ANY of the required tags
+                    if not any(tag in context.tags for tag in required_tags):
+                        return False
+            except (json.JSONDecodeError, Exception) as e:
+                logger.warning(f"Invalid host_selector_json for tags in rule {rule.id}: {e}")
                 return False
 
         # Labels selector

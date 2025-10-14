@@ -207,6 +207,7 @@ class DockerMonitor:
         self.event_logger = EventLogger(self.db, self.manager)  # Event logging service with WebSocket support
         self.notification_service = NotificationService(self.db, self.event_logger)  # Notification service (v1 - for channels only)
         self._container_states: Dict[str, str] = {}  # Track container states for change detection
+        self._last_containers: List = []  # Cache of containers from last monitor cycle (for alert evaluation)
         self._recent_user_actions: Dict[str, float] = {}  # Track recent user actions: {container_key: timestamp}
         self.alert_evaluation_service = None  # Will be set by main.py after initialization
         self.maintenance_task: Optional[asyncio.Task] = None  # Background maintenance task (daily cleanup, updates, etc.)
@@ -962,6 +963,14 @@ class DockerMonitor:
 
         return containers
 
+    def get_last_containers(self) -> List:
+        """
+        Get cached container list from last monitor cycle.
+        Data is max 2 seconds old (refreshed by monitor loop).
+        Used by alert evaluation to avoid redundant Docker API queries.
+        """
+        return self._last_containers
+
     def restart_container(self, host_id: str, container_id: str) -> bool:
         """Restart a specific container"""
         return self.operations.restart_container(host_id, container_id)
@@ -1211,6 +1220,9 @@ class DockerMonitor:
         while True:
             try:
                 containers = await self.get_containers()
+
+                # Cache containers for alert evaluation (avoid redundant Docker API queries)
+                self._last_containers = containers
 
                 # Centralized stats collection decision using StatsManager
                 has_viewers = self.manager.has_active_connections()

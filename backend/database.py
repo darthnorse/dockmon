@@ -36,9 +36,21 @@ class User(Base):
     event_sort_order = Column(String, default='desc')  # 'desc' (newest first) or 'asc' (oldest first)
     container_sort_order = Column(String, default='name-asc')  # Container sort preference on dashboard
     modal_preferences = Column(Text, nullable=True)  # JSON string of modal size/position preferences
+    prefs = Column(Text, nullable=True)  # JSON string of user preferences (dashboard, table sorts, etc.)
+    simplified_workflow = Column(Boolean, default=False)  # Skip drawer, open modal directly
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
     last_login = Column(DateTime, nullable=True)
+
+class UserPrefs(Base):
+    """User preferences table (theme and defaults)"""
+    __tablename__ = "user_prefs"
+
+    user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
+    theme = Column(String, default="dark")
+    defaults_json = Column(Text, nullable=True)  # JSON string of default preferences
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 class DockerHostDB(Base):
     """Docker host configuration"""

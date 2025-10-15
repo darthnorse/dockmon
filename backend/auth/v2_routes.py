@@ -246,3 +246,60 @@ async def get_current_user_v2(
                 "is_first_login": user.is_first_login if user else False
             }
         }
+
+
+@router.post("/change-password")
+async def change_password_v2(
+    password_data: dict,
+    current_user: dict = Depends(get_current_user_dependency)
+):
+    """
+    Change user password (v2 cookie-based auth).
+
+    SECURITY:
+    - Requires valid session cookie
+    - Verifies current password before changing
+    - Sets is_first_login=False after successful change
+
+    Request body:
+        {
+            "current_password": "old_password",
+            "new_password": "new_password"
+        }
+    """
+    from auth.routes import db
+    from database import User
+
+    current_password = password_data.get("current_password")
+    new_password = password_data.get("new_password")
+
+    if not current_password or not new_password:
+        raise HTTPException(
+            status_code=400,
+            detail="Both current_password and new_password are required"
+        )
+
+    username = current_user["username"]
+
+    # Verify current password
+    user_info = db.verify_user_credentials(username, current_password)
+    if not user_info:
+        raise HTTPException(
+            status_code=401,
+            detail="Current password is incorrect"
+        )
+
+    # Change password (also sets is_first_login=False)
+    success = db.change_user_password(username, new_password)
+    if not success:
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to change password"
+        )
+
+    logger.info(f"Password changed successfully for user: {username}")
+
+    return {
+        "success": True,
+        "message": "Password changed successfully"
+    }

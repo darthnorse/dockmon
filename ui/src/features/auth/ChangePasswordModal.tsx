@@ -77,8 +77,8 @@ export function ChangePasswordModal({
     setIsSubmitting(true)
 
     try {
-      // Call password change API
-      await apiClient.post('/auth/change-password', {
+      // Call password change API (v2 endpoint with cookie auth)
+      await apiClient.post('/v2/auth/change-password', {
         current_password: currentPassword,
         new_password: newPassword,
       })

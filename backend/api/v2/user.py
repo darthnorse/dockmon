@@ -152,6 +152,9 @@ async def get_user_preferences(
         if not dashboard_prefs and user_result:
             # Map old container_sort_order values to new containerSortKey
             old_sort_order = user_result.container_sort_order or "state"
+            # Strip -asc/-desc suffix from old format (e.g., "name-asc" -> "name")
+            if "-" in old_sort_order:
+                old_sort_order = old_sort_order.split("-")[0]
             # Migrate old "status" to new "state"
             if old_sort_order == "status":
                 old_sort_order = "state"
@@ -164,6 +167,9 @@ async def get_user_preferences(
 
         # Get containerSortKey with migration for old "status" value
         container_sort_key = dashboard_prefs.get("containerSortKey", "state")
+        # Strip -asc/-desc suffix if present
+        if "-" in container_sort_key:
+            container_sort_key = container_sort_key.split("-")[0]
         if container_sort_key == "status":
             container_sort_key = "state"
 

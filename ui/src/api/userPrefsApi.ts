@@ -8,10 +8,15 @@ import type { Layout } from 'react-grid-layout'
 export interface DashboardPreferences {
   enableCustomLayout: boolean
   hostOrder: string[]
+  compactHostOrder?: string[]  // Host order for compact view (non-grouped)
   containerSortKey: 'name' | 'state' | 'cpu' | 'memory' | 'start_time'
   hostContainerSorts?: Record<string, 'name' | 'state' | 'cpu' | 'memory' | 'start_time'>  // Per-host container sort
-  hostCardLayout?: Layout[]  // Expanded mode host card layout
-  hostCardLayoutStandard?: Layout[]  // Standard mode host card layout
+  hostCardLayout?: Layout[]  // Expanded mode host card layout (ungrouped)
+  hostCardLayoutStandard?: Layout[]  // Standard mode host card layout (ungrouped)
+  hostCardLayoutGroupedStandard?: Layout[]  // Standard mode host card layout (grouped by tags)
+  hostCardLayoutGroupedExpanded?: Layout[]  // Expanded mode host card layout (grouped by tags)
+  tagGroupOrder?: string[]  // User-defined order of tag groups
+  groupLayouts?: Record<string, any>  // Dynamic group layouts/orders: supports both Layout[] and string[]
   showKpiBar?: boolean
   showStatsWidgets?: boolean
   optimizedLoading?: boolean

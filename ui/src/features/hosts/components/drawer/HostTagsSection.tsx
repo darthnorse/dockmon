@@ -57,6 +57,7 @@ export function HostTagsSection({ host }: HostTagsSectionProps) {
               suggestions={tagSuggestions}
               placeholder="Add host tags (prod, dev, us-west-1...)"
               maxTags={20}
+              showPrimaryIndicator={true}
             />
             <div className="flex gap-2">
               <Button

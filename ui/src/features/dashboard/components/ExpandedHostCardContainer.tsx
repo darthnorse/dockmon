@@ -29,9 +29,11 @@ interface Host {
 interface ExpandedHostCardContainerProps {
   host: Host
   onHostClick?: (hostId: string) => void
+  onViewDetails?: (hostId: string) => void
+  onEditHost?: (hostId: string) => void
 }
 
-export function ExpandedHostCardContainer({ host, onHostClick }: ExpandedHostCardContainerProps) {
+export function ExpandedHostCardContainer({ host, onHostClick, onViewDetails, onEditHost }: ExpandedHostCardContainerProps) {
   const { prefs } = useUserPrefs()
   const optimizedLoadingEnabled = prefs?.dashboard?.optimizedLoading ?? true
 
@@ -126,5 +128,13 @@ export function ExpandedHostCardContainer({ host, onHostClick }: ExpandedHostCar
     }
   }, [host, metrics, sparklines, isVisible, containerCounts, containers])
 
-  return <ExpandedHostCard host={hostCardData} cardRef={cardRef} {...(onHostClick && { onHostClick })} />
+  return (
+    <ExpandedHostCard
+      host={hostCardData}
+      cardRef={cardRef}
+      {...(onHostClick && { onHostClick })}
+      {...(onViewDetails && { onViewDetails })}
+      {...(onEditHost && { onEditHost })}
+    />
+  )
 }

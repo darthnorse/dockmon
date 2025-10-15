@@ -14,7 +14,7 @@
  */
 
 import { useState, useEffect } from 'react'
-import { Circle, MoreVertical, Container, ChevronDown } from 'lucide-react'
+import { Circle, MoreVertical, Container, ChevronDown, Info, Edit, ChevronsUp } from 'lucide-react'
 import { ResponsiveMiniChart } from '@/lib/charts/ResponsiveMiniChart'
 import { TagChip } from '@/components/TagChip'
 import { DropdownMenu, DropdownMenuItem } from '@/components/ui/dropdown-menu'
@@ -68,6 +68,8 @@ export interface HostCardData {
 interface HostCardProps {
   host: HostCardData
   onHostClick?: (hostId: string) => void
+  onViewDetails?: (hostId: string) => void
+  onEditHost?: (hostId: string) => void
 }
 
 /**
@@ -116,8 +118,9 @@ function getStateColor(state: string): string {
 
 type ContainerSortKey = 'name' | 'state' | 'cpu' | 'memory'
 
-export function HostCard({ host, onHostClick }: HostCardProps) {
+export function HostCard({ host, onHostClick, onViewDetails, onEditHost }: HostCardProps) {
   const { dashboardPrefs, updateDashboardPrefs } = useDashboardPrefs()
+  const [collapsed, setCollapsed] = useState(false)
 
   // Initialize sort key from preferences, fallback to 'cpu'
   const [sortKey, setSortKey] = useState<ContainerSortKey>(() => {
@@ -211,16 +214,33 @@ export function HostCard({ host, onHostClick }: HostCardProps) {
           <Circle className={`w-3 h-3 ${getStatusColor(host.status)}`} />
           <h3 className="text-base font-semibold text-foreground truncate">{host.name}</h3>
         </div>
-        <button
-          className="text-muted-foreground hover:text-foreground p-1 -mr-1"
-          onClick={(e) => {
-            e.stopPropagation()
-            // TODO: Open actions menu (Phase 4 - Host Actions dropdown)
-          }}
-          aria-label="Host actions"
-        >
-          <MoreVertical className="w-4 h-4" />
-        </button>
+        <div className="relative z-20" onClick={(e) => e.stopPropagation()}>
+          <DropdownMenu
+            trigger={
+              <button
+                className="text-muted-foreground hover:text-foreground p-1 -mr-1"
+                aria-label="Host actions"
+              >
+                <MoreVertical className="w-4 h-4" />
+              </button>
+            }
+            align="end"
+          >
+          {onViewDetails && (
+            <DropdownMenuItem onClick={() => onViewDetails(host.id)} icon={<Info className="h-3.5 w-3.5" />}>
+              View Host Details
+            </DropdownMenuItem>
+          )}
+          {onEditHost && (
+            <DropdownMenuItem onClick={() => onEditHost(host.id)} icon={<Edit className="h-3.5 w-3.5" />}>
+              Edit Host
+            </DropdownMenuItem>
+          )}
+          <DropdownMenuItem onClick={() => setCollapsed(!collapsed)} icon={<ChevronsUp className="h-3.5 w-3.5" />}>
+            {collapsed ? 'Expand' : 'Collapse'} Containers
+          </DropdownMenuItem>
+        </DropdownMenu>
+        </div>
       </div>
 
       {/* Tags */}
@@ -297,7 +317,7 @@ export function HostCard({ host, onHostClick }: HostCardProps) {
       )}
 
       {/* Top Containers */}
-      {topContainers.length > 0 && (
+      {!collapsed && topContainers.length > 0 && (
         <div className="border-t border-border pt-3 mb-3">
           <div className="flex items-center justify-between mb-2">
             <div className="text-xs text-muted-foreground">Top Containers:</div>

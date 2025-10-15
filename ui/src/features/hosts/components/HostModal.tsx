@@ -477,6 +477,7 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
               onChange={(tags) => setValue('tags', tags)}
               suggestions={allTags}
               placeholder="Add tags for organization..."
+              showPrimaryIndicator={true}
             />
             {errors.tags && (
               <p className="text-xs text-destructive mt-1">{errors.tags.message}</p>

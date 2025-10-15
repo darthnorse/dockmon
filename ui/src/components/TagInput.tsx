@@ -1,13 +1,15 @@
 /**
- * TagInput - Multi-select tag input with autocomplete
+ * TagInput - Multi-select tag input with autocomplete and drag-to-reorder
  * Phase 3d Sub-Phase 5
  *
  * FEATURES:
  * - Multi-select chip input for tags
  * - Autocomplete from existing tags
+ * - Drag-to-reorder tags (first tag = primary tag for grouping)
  * - Keyboard navigation (Enter to add, Backspace to delete last)
  * - Max 50 tags per host (enforced in Pydantic)
  * - Tag validation (lowercase, alphanumeric + hyphens/underscores)
+ * - Visual indicator for primary tag
  *
  * USAGE:
  * <TagInput
@@ -15,11 +17,12 @@
  *   onChange={setTags}
  *   suggestions={allTags}
  *   placeholder="Add tags..."
+ *   showPrimaryIndicator={true}  // Show "Primary" badge on first tag
  * />
  */
 
 import { useState, useRef, useEffect } from 'react'
-import { X } from 'lucide-react'
+import { X, GripVertical, Star } from 'lucide-react'
 import { TagChip } from '@/components/TagChip'
 
 export interface TagInputProps {
@@ -30,6 +33,7 @@ export interface TagInputProps {
   maxTags?: number
   disabled?: boolean
   error?: string
+  showPrimaryIndicator?: boolean  // Show visual indicator for primary (first) tag
 }
 
 export function TagInput({
@@ -40,10 +44,13 @@ export function TagInput({
   maxTags = 50,
   disabled = false,
   error,
+  showPrimaryIndicator = false,
 }: TagInputProps) {
   const [inputValue, setInputValue] = useState('')
   const [showSuggestions, setShowSuggestions] = useState(false)
   const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(-1)
+  const [draggedIndex, setDraggedIndex] = useState<number | null>(null)
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -98,6 +105,39 @@ export function TagInput({
   // Remove tag
   const removeTag = (tagToRemove: string) => {
     onChange(value.filter((tag) => tag !== tagToRemove))
+  }
+
+  // Drag and drop handlers for reordering tags
+  const handleDragStart = (e: React.DragEvent, index: number) => {
+    setDraggedIndex(index)
+    e.dataTransfer.effectAllowed = 'move'
+  }
+
+  const handleDragOver = (e: React.DragEvent, index: number) => {
+    e.preventDefault()
+    if (draggedIndex === null || draggedIndex === index) return
+    setDragOverIndex(index)
+  }
+
+  const handleDragEnd = () => {
+    if (draggedIndex === null || dragOverIndex === null || draggedIndex === dragOverIndex) {
+      setDraggedIndex(null)
+      setDragOverIndex(null)
+      return
+    }
+
+    // Reorder the tags
+    const newTags = [...value]
+    const [draggedTag] = newTags.splice(draggedIndex, 1)
+    newTags.splice(dragOverIndex, 0, draggedTag!)
+
+    onChange(newTags)
+    setDraggedIndex(null)
+    setDragOverIndex(null)
+  }
+
+  const handleDragLeave = () => {
+    setDragOverIndex(null)
   }
 
   // Handle input key down
@@ -178,25 +218,60 @@ export function TagInput({
         `}
         onClick={() => inputRef.current?.focus()}
       >
-        {/* Render existing tags */}
-        {value.map((tag) => (
-          <div key={tag} className="flex items-center">
-            <TagChip tag={tag} size="sm" />
-            {!disabled && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  removeTag(tag)
-                }}
-                className="ml-1 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100"
-              >
-                <X className="h-3 w-3" />
-                <span className="sr-only">Remove {tag}</span>
-              </button>
-            )}
-          </div>
-        ))}
+        {/* Render existing tags with drag-to-reorder */}
+        {value.map((tag, index) => {
+          const isPrimary = showPrimaryIndicator && index === 0 && value.length > 1
+          const isDragging = draggedIndex === index
+          const isDragOver = dragOverIndex === index
+
+          return (
+            <div
+              key={tag}
+              draggable={!disabled && value.length > 1}
+              onDragStart={(e) => handleDragStart(e, index)}
+              onDragOver={(e) => handleDragOver(e, index)}
+              onDragEnd={handleDragEnd}
+              onDragLeave={handleDragLeave}
+              className={`
+                flex items-center gap-1 rounded-md px-2 py-1 transition-all
+                ${!disabled && value.length > 1 ? 'cursor-move' : ''}
+                ${isDragging ? 'opacity-50' : ''}
+                ${isDragOver ? 'ring-2 ring-primary' : ''}
+                ${isPrimary ? 'bg-primary/10 border border-primary/20' : ''}
+              `}
+            >
+              {/* Drag handle (only show if multiple tags) */}
+              {!disabled && value.length > 1 && (
+                <GripVertical className="h-3 w-3 text-muted-foreground" />
+              )}
+
+              {/* Primary indicator */}
+              {isPrimary && (
+                <div className="flex items-center gap-1">
+                  <Star className="h-3 w-3 text-primary fill-primary" />
+                  <span className="text-xs font-medium text-primary">Primary</span>
+                </div>
+              )}
+
+              <TagChip tag={tag} size="sm" />
+
+              {/* Remove button */}
+              {!disabled && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    removeTag(tag)
+                  }}
+                  className="ml-1 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100"
+                >
+                  <X className="h-3 w-3" />
+                  <span className="sr-only">Remove {tag}</span>
+                </button>
+              )}
+            </div>
+          )
+        })}
 
         {/* Input field */}
         {!disabled && value.length < maxTags && (
@@ -252,6 +327,7 @@ export function TagInput({
       {!error && (
         <p className="mt-1 text-xs text-muted-foreground">
           {value.length}/{maxTags} tags • Press Enter to add • Backspace to remove
+          {value.length > 1 && showPrimaryIndicator && ' • Drag to reorder (first tag = primary)'}
         </p>
       )}
     </div>

@@ -29,6 +29,8 @@ interface Host {
 interface HostCardsGridProps {
   hosts: Host[]
   onHostClick?: (hostId: string) => void
+  onViewDetails?: (hostId: string) => void
+  onEditHost?: (hostId: string) => void
   mode?: 'standard' | 'expanded'
 }
 
@@ -64,7 +66,7 @@ function generateDefaultLayout(hosts: Host[], mode: 'standard' | 'expanded'): La
   }
 }
 
-export function HostCardsGrid({ hosts, onHostClick, mode = 'expanded' }: HostCardsGridProps) {
+export function HostCardsGrid({ hosts, onHostClick, onViewDetails, onEditHost, mode = 'expanded' }: HostCardsGridProps) {
   const { dashboardPrefs, updateDashboardPrefs, isLoading } = useDashboardPrefs()
   const hasLoadedPrefs = useRef(false)
 
@@ -162,6 +164,8 @@ export function HostCardsGrid({ hosts, onHostClick, mode = 'expanded' }: HostCar
                     ...(host.tags && { tags: host.tags }),
                   }}
                   {...(onHostClick && { onHostClick })}
+                  {...(onViewDetails && { onViewDetails })}
+                  {...(onEditHost && { onEditHost })}
                 />
               ) : (
                 <ExpandedHostCardContainer
@@ -173,6 +177,8 @@ export function HostCardsGrid({ hosts, onHostClick, mode = 'expanded' }: HostCar
                     ...(host.tags && { tags: host.tags }),
                   }}
                   {...(onHostClick && { onHostClick })}
+                  {...(onViewDetails && { onViewDetails })}
+                  {...(onEditHost && { onEditHost })}
                 />
               )}
             </div>
@@ -182,7 +188,7 @@ export function HostCardsGrid({ hosts, onHostClick, mode = 'expanded' }: HostCar
             <div
               className="host-card-drag-handle absolute left-0 top-0 cursor-move pointer-events-auto"
               style={{
-                width: 'calc(100% - 50px)',
+                width: 'calc(100% - 60px)',
                 height: '48px',
                 zIndex: 10
               }}

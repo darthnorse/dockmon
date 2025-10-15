@@ -19,16 +19,16 @@ import {
   Container,
   Info,
   Edit,
-  ScrollText,
-  EyeOff,
-  Pin,
-  RotateCw,
+  ChevronsUp,
   ChevronDown,
   ArrowUpDown,
   Play,
   Square,
   RotateCcw,
+  ScrollText,
   BellOff,
+  EyeOff,
+  Pin,
 } from 'lucide-react'
 import { ResponsiveMiniChart } from '@/lib/charts/ResponsiveMiniChart'
 import { TagChip } from '@/components/TagChip'
@@ -90,6 +90,8 @@ interface ExpandedHostCardProps {
   host: ExpandedHostData
   cardRef?: React.RefObject<HTMLDivElement>
   onHostClick?: (hostId: string) => void
+  onViewDetails?: (hostId: string) => void
+  onEditHost?: (hostId: string) => void
 }
 
 /**
@@ -139,7 +141,7 @@ function getStateColor(state: string): string {
 
 type ContainerSortKey = 'name' | 'state' | 'cpu' | 'memory' | 'start_time'
 
-export function ExpandedHostCard({ host, cardRef, onHostClick }: ExpandedHostCardProps) {
+export function ExpandedHostCard({ host, cardRef, onHostClick, onViewDetails, onEditHost }: ExpandedHostCardProps) {
   const { dashboardPrefs, updateDashboardPrefs } = useDashboardPrefs()
   const [isCollapsed, setIsCollapsed] = useState(false)
 
@@ -194,11 +196,6 @@ export function ExpandedHostCard({ host, cardRef, onHostClick }: ExpandedHostCar
     debug.log('ExpandedHostCard', 'Open container drawer:', containerId)
   }
 
-  const handleHostAction = (action: string) => {
-    // Future feature: Implement host actions
-    debug.log('ExpandedHostCard', `${action} host:`, host.id)
-  }
-
   const handleContainerAction = (containerId: string, action: string) => {
     // Future feature: Implement container actions
     debug.log('ExpandedHostCard', `${action} container:`, containerId)
@@ -249,7 +246,7 @@ export function ExpandedHostCard({ host, cardRef, onHostClick }: ExpandedHostCar
             {host.name}
           </h3>
         </div>
-        <div onClick={(e) => e.stopPropagation()}>
+        <div onClick={(e) => e.stopPropagation()} className="relative z-20">
           <DropdownMenu
             trigger={
               <button
@@ -259,33 +256,23 @@ export function ExpandedHostCard({ host, cardRef, onHostClick }: ExpandedHostCar
                 <MoreVertical className="w-4 h-4" />
               </button>
             }
+            align="end"
           >
-            <DropdownMenuItem onClick={() => handleHostAction('view-details')} icon={<Info />}>
-              View host details
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => handleHostAction('edit')} icon={<Edit />}>
-              Edit host
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => handleHostAction('logs')} icon={<ScrollText />}>
-              View host logs
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => handleHostAction('restart')} icon={<RotateCw />}>
-              Restart Docker service
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => handleHostAction('hide')} icon={<EyeOff />}>
-              Hide from dashboard
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => handleHostAction('pin')} icon={<Pin />}>
-              Pin host
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
+            {onViewDetails && (
+              <DropdownMenuItem onClick={() => onViewDetails(host.id)} icon={<Info className="h-3.5 w-3.5" />}>
+                View Host Details
+              </DropdownMenuItem>
+            )}
+            {onEditHost && (
+              <DropdownMenuItem onClick={() => onEditHost(host.id)} icon={<Edit className="h-3.5 w-3.5" />}>
+                Edit Host
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem
               onClick={() => setIsCollapsed(!isCollapsed)}
-              icon={<ChevronDown />}
+              icon={<ChevronsUp className="h-3.5 w-3.5" />}
             >
-              {isCollapsed ? 'Expand containers' : 'Collapse containers'}
+              {isCollapsed ? 'Expand' : 'Collapse'} Containers
             </DropdownMenuItem>
           </DropdownMenu>
         </div>

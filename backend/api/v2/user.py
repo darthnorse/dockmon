@@ -29,10 +29,15 @@ class DashboardPreferences(BaseModel):
     """Dashboard-specific preferences"""
     enableCustomLayout: bool = Field(default=True)
     hostOrder: list[str] = Field(default_factory=list)
+    compactHostOrder: Optional[list[str]] = Field(default=None)  # Host order for compact view (non-grouped)
     containerSortKey: str = Field(default="state", pattern="^(name|state|cpu|memory|start_time)$")
     hostContainerSorts: Dict[str, str] = Field(default_factory=dict)  # Per-host container sort preferences
-    hostCardLayout: Optional[list[Dict[str, Any]]] = Field(default=None)  # Expanded mode layout
-    hostCardLayoutStandard: Optional[list[Dict[str, Any]]] = Field(default=None)  # Standard mode layout
+    hostCardLayout: Optional[list[Dict[str, Any]]] = Field(default=None)  # Expanded mode layout (ungrouped)
+    hostCardLayoutStandard: Optional[list[Dict[str, Any]]] = Field(default=None)  # Standard mode layout (ungrouped)
+    hostCardLayoutGroupedStandard: Optional[list[Dict[str, Any]]] = Field(default=None)  # Standard mode layout (grouped by tags)
+    hostCardLayoutGroupedExpanded: Optional[list[Dict[str, Any]]] = Field(default=None)  # Expanded mode layout (grouped by tags)
+    tagGroupOrder: Optional[list[str]] = Field(default=None)  # User-defined order of tag groups
+    groupLayouts: Dict[str, Any] = Field(default_factory=dict)  # Dynamic group layouts/orders: supports both Layout[] and string[]
     showKpiBar: bool = Field(default=True)
     showStatsWidgets: bool = Field(default=False)
     optimizedLoading: bool = Field(default=True)
@@ -45,7 +50,7 @@ class UserPreferences(BaseModel):
     Replaces localStorage from v1 frontend.
     """
     theme: str = Field(default="dark", pattern="^(dark|light)$")
-    group_by: Optional[str] = Field(default="env", pattern="^(env|region|compose|none)?$")
+    group_by: Optional[str] = Field(default="none", pattern="^(env|region|compose|tags|none)?$")
     compact_view: bool = Field(default=False)
     collapsed_groups: list[str] = Field(default_factory=list)
     filter_defaults: Dict[str, Any] = Field(default_factory=dict)
@@ -64,7 +69,7 @@ class UserPreferences(BaseModel):
 class PreferencesUpdate(BaseModel):
     """Partial update to preferences"""
     theme: Optional[str] = Field(None, pattern="^(dark|light)$")
-    group_by: Optional[str] = Field(None, pattern="^(env|region|compose|none)?$")
+    group_by: Optional[str] = Field(None, pattern="^(env|region|compose|tags|none)?$")
     compact_view: Optional[bool] = None
     collapsed_groups: Optional[list[str]] = None
     filter_defaults: Optional[Dict[str, Any]] = None
@@ -165,10 +170,15 @@ async def get_user_preferences(
         dashboard = DashboardPreferences(
             enableCustomLayout=dashboard_prefs.get("enableCustomLayout", True),
             hostOrder=dashboard_prefs.get("hostOrder", []),
+            compactHostOrder=dashboard_prefs.get("compactHostOrder"),
             containerSortKey=container_sort_key,
             hostContainerSorts=dashboard_prefs.get("hostContainerSorts", {}),
             hostCardLayout=dashboard_prefs.get("hostCardLayout"),
             hostCardLayoutStandard=dashboard_prefs.get("hostCardLayoutStandard"),
+            hostCardLayoutGroupedStandard=dashboard_prefs.get("hostCardLayoutGroupedStandard"),
+            hostCardLayoutGroupedExpanded=dashboard_prefs.get("hostCardLayoutGroupedExpanded"),
+            tagGroupOrder=dashboard_prefs.get("tagGroupOrder"),
+            groupLayouts=dashboard_prefs.get("groupLayouts", {}),
             showKpiBar=dashboard_prefs.get("showKpiBar", True),
             showStatsWidgets=dashboard_prefs.get("showStatsWidgets", False),
             optimizedLoading=dashboard_prefs.get("optimizedLoading", True)
@@ -176,7 +186,7 @@ async def get_user_preferences(
 
         return UserPreferences(
             theme=prefs_result.theme if prefs_result else "dark",
-            group_by=defaults_json.get("group_by", "env"),
+            group_by=defaults_json.get("group_by", "none"),
             compact_view=defaults_json.get("compact_view", False),
             collapsed_groups=defaults_json.get("collapsed_groups", []),
             filter_defaults=defaults_json.get("filter_defaults", {}),

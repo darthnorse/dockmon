@@ -109,6 +109,7 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
                     suggestions={tagSuggestions}
                     placeholder="Add tags..."
                     maxTags={20}
+                    showPrimaryIndicator={true}
                   />
                   <div className="flex gap-2">
                     <Button

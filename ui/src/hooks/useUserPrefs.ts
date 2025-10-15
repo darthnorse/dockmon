@@ -40,8 +40,13 @@ export function useDashboardPrefs() {
   const { prefs, updatePrefs, isUpdating, isLoading } = useUserPrefs()
 
   const updateDashboardPrefs = (updates: Partial<UserPreferences['dashboard']>) => {
+    // Merge updates with existing dashboard preferences to avoid losing other properties
+    const merged = {
+      ...prefs?.dashboard,
+      ...updates,
+    }
     updatePrefs({
-      dashboard: updates,
+      dashboard: merged,
     })
   }
 

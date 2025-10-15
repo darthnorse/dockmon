@@ -95,13 +95,6 @@ export function ContainerDetailsModal({
     }
   }, [open, onClose])
 
-  // Reset to Info tab when modal opens
-  useEffect(() => {
-    if (open) {
-      setActiveTab('info')
-    }
-  }, [open])
-
   if (!open || !containerId || !container) return null
 
   const isRunning = container.state === 'running'

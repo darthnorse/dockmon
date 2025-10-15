@@ -10,7 +10,8 @@ export interface DashboardPreferences {
   hostOrder: string[]
   containerSortKey: 'name' | 'state' | 'cpu' | 'memory' | 'start_time'
   hostContainerSorts?: Record<string, 'name' | 'state' | 'cpu' | 'memory' | 'start_time'>  // Per-host container sort
-  hostCardLayout?: Layout[]
+  hostCardLayout?: Layout[]  // Expanded mode host card layout
+  hostCardLayoutStandard?: Layout[]  // Standard mode host card layout
   showKpiBar?: boolean
   showStatsWidgets?: boolean
   optimizedLoading?: boolean

@@ -20,6 +20,7 @@
  * - container_stats: Real-time container statistics
  * - new_event: New Docker event logged
  * - host_added/host_removed: Host management
+ * - host_status_changed: Host online/offline status changed
  * - auto_restart_success/auto_restart_failed: Auto-restart events
  * - blackout_status_changed: Notification blackout toggled
  * - pong: Heartbeat response
@@ -40,6 +41,7 @@ export type WebSocketMessage =
   | { type: 'new_event'; data: unknown }
   | { type: 'host_added'; data: unknown }
   | { type: 'host_removed'; data: unknown }
+  | { type: 'host_status_changed'; data: { host_id: string; status: 'online' | 'offline' } }
   | { type: 'auto_restart_success'; data: unknown }
   | { type: 'auto_restart_failed'; data: unknown }
   | { type: 'blackout_status_changed'; data: unknown }

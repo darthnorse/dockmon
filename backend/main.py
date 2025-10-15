@@ -123,6 +123,8 @@ async def lifespan(app: FastAPI):
     )
     # Attach to monitor for event handling
     monitor.alert_evaluation_service = alert_evaluation_service
+    # Also pass to discovery module for host disconnection alerts
+    monitor.discovery.alert_evaluation_service = alert_evaluation_service
     await alert_evaluation_service.start()
     logger.info("Alert evaluation service started")
 

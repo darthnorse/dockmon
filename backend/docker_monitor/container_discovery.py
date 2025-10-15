@@ -145,15 +145,19 @@ def parse_container_env(env_list: list) -> dict[str, str]:
 class ContainerDiscovery:
     """Handles container discovery and reconnection logic"""
 
-    def __init__(self, db: DatabaseManager, settings, hosts: Dict[str, DockerHost], clients: Dict[str, DockerClient]):
+    def __init__(self, db: DatabaseManager, settings, hosts: Dict[str, DockerHost], clients: Dict[str, DockerClient], event_logger=None, alert_evaluation_service=None, websocket_manager=None):
         self.db = db
         self.settings = settings
         self.hosts = hosts
         self.clients = clients
+        self.event_logger = event_logger
+        self.alert_evaluation_service = alert_evaluation_service
+        self.websocket_manager = websocket_manager
 
         # Reconnection tracking with exponential backoff
         self.reconnect_attempts: Dict[str, int] = {}  # Track reconnect attempts per host
         self.last_reconnect_attempt: Dict[str, float] = {}  # Track last attempt time per host
+        self.host_previous_status: Dict[str, str] = {}  # Track previous host status to detect transitions
 
     async def attempt_reconnection(self, host_id: str) -> bool:
         """
@@ -167,10 +171,14 @@ class ContainerDiscovery:
             return False
 
         # Exponential backoff: 5s, 10s, 20s, 40s, 80s, max 5 minutes
+        # attempts represents number of failures so far
+        # First retry (after 1 failure, attempts=1) should wait 5s
+        # Second retry (after 2 failures, attempts=2) should wait 10s, etc.
         now = time.time()
         attempts = self.reconnect_attempts.get(host_id, 0)
         last_attempt = self.last_reconnect_attempt.get(host_id, 0)
-        backoff_seconds = min(5 * (2 ** attempts), 300)
+        # Subtract 1 from attempts to get correct backoff sequence: 5s, 10s, 20s, 40s...
+        backoff_seconds = min(5 * (2 ** max(0, attempts - 1)), 300) if attempts > 0 else 0
 
         # Skip reconnection if we're in backoff period
         if now - last_attempt < backoff_seconds:
@@ -243,6 +251,25 @@ class ContainerDiscovery:
             self.reconnect_attempts[host_id] = 0
             logger.info(f"Reconnected to offline host: {host.name}")
 
+            # Log host reconnection event
+            if self.event_logger:
+                self.event_logger.log_host_connection(
+                    host_name=host.name,
+                    host_id=host_id,
+                    host_url=host.url,
+                    connected=True
+                )
+
+            # Broadcast host status change via WebSocket for real-time UI updates
+            if self.websocket_manager:
+                await self.websocket_manager.broadcast({
+                    "type": "host_status_changed",
+                    "data": {
+                        "host_id": host_id,
+                        "status": "online"
+                    }
+                })
+
             # Re-register with stats and events service
             try:
                 stats_client = get_stats_client()
@@ -268,7 +295,8 @@ class ContainerDiscovery:
             host.last_checked = datetime.now()
 
             # Log with backoff info to help debugging
-            next_attempt_in = min(5 * (2 ** (attempts + 1)), 300)
+            # Next backoff will be based on new attempt count (attempts + 1)
+            next_attempt_in = min(5 * (2 ** max(0, attempts)), 300)
             logger.debug(f"Host {host.name} still offline (attempt {attempts + 1}). Next retry in {next_attempt_in}s")
             return False
 
@@ -294,9 +322,15 @@ class ContainerDiscovery:
 
         try:
             docker_containers = client.containers.list(all=True)
+
+            # Track status transition to detect when host comes back online
+            previous_status = self.host_previous_status.get(host_id, "unknown")
             host.status = "online"
             host.container_count = len(docker_containers)
             host.error = None
+
+            # Update previous status
+            self.host_previous_status[host_id] = "online"
 
             for dc in docker_containers:
                 try:
@@ -403,8 +437,63 @@ class ContainerDiscovery:
 
         except Exception as e:
             logger.error(f"Error getting containers from {host.name}: {e}")
+
+            # Track status transition to detect when host goes offline
+            previous_status = self.host_previous_status.get(host_id, "unknown")
             host.status = "offline"
             host.error = str(e)
+
+            # If host just went from online to offline, log event and trigger alert
+            if previous_status != "offline":
+                logger.warning(f"Host {host.name} transitioned from {previous_status} to offline")
+
+                # Log host disconnection event
+                if self.event_logger:
+                    self.event_logger.log_host_connection(
+                        host_name=host.name,
+                        host_id=host_id,
+                        host_url=host.url,
+                        connected=False,
+                        error_message=str(e)
+                    )
+
+                # Broadcast host status change via WebSocket for real-time UI updates
+                if self.websocket_manager:
+                    import asyncio
+                    try:
+                        asyncio.create_task(
+                            self.websocket_manager.broadcast({
+                                "type": "host_status_changed",
+                                "data": {
+                                    "host_id": host_id,
+                                    "status": "offline"
+                                }
+                            })
+                        )
+                    except Exception as ws_error:
+                        logger.error(f"Failed to broadcast host status change: {ws_error}")
+
+                # Trigger alert evaluation for host disconnection
+                if self.alert_evaluation_service:
+                    import asyncio
+                    # Run async alert evaluation in background
+                    try:
+                        asyncio.create_task(
+                            self.alert_evaluation_service.handle_host_event(
+                                event_type="disconnection",
+                                host_id=host_id,
+                                event_data={
+                                    "host_name": host.name,
+                                    "error": str(e),
+                                    "url": host.url
+                                }
+                            )
+                        )
+                    except Exception as alert_error:
+                        logger.error(f"Failed to trigger host disconnection alert: {alert_error}")
+
+            # Update previous status
+            self.host_previous_status[host_id] = "offline"
 
         host.last_checked = datetime.now()
         return containers

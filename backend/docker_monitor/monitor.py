@@ -228,7 +228,15 @@ class DockerMonitor:
         self._last_net_stats: Dict[str, float] = {}  # host_id -> cumulative bytes
 
         # Initialize specialized modules
-        self.discovery = ContainerDiscovery(self.db, self.settings, self.hosts, self.clients)
+        self.discovery = ContainerDiscovery(
+            self.db,
+            self.settings,
+            self.hosts,
+            self.clients,
+            event_logger=self.event_logger,
+            alert_evaluation_service=None,  # Will be set after alert_evaluation_service is initialized
+            websocket_manager=self.manager  # Pass ConnectionManager for real-time host status updates
+        )
         # Share reconnection tracking with discovery module
         self.discovery.reconnect_attempts = self.reconnect_attempts
         self.discovery.last_reconnect_attempt = self.last_reconnect_attempt

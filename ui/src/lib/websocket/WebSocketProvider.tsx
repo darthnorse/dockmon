@@ -118,6 +118,12 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
           queryClient.invalidateQueries({ queryKey: ['containers'] })
           break
 
+        // Host status change (online/offline) - Real-time dashboard updates
+        case 'host_status_changed':
+          queryClient.invalidateQueries({ queryKey: ['hosts'] })
+          queryClient.invalidateQueries({ queryKey: ['dashboard', 'hosts'] })
+          break
+
         // Auto-restart events
         case 'auto_restart_success':
         case 'auto_restart_failed':

@@ -311,8 +311,8 @@ class AlertEngine:
             # Container stopped/exited
             return event_type == "state_change" and event_data and event_data.get("new_state") in ["exited", "dead"]
 
-        if rule.kind == "host_disconnected":
-            # Host disconnected
+        if rule.kind in ["host_disconnected", "host_down"]:
+            # Host disconnected/offline
             return event_type == "disconnection" and context.scope_type == "host"
 
         # Add more mappings as needed

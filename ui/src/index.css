@@ -222,6 +222,7 @@
     bottom: 0;
     right: 0;
     cursor: se-resize;
+    z-index: 50; /* Ensure resize handles are above drag handles and content */
   }
 
   .react-grid-item > .react-resizable-handle::after {
@@ -233,5 +234,17 @@
     height: 5px;
     border-right: 2px solid var(--border);
     border-bottom: 2px solid var(--border);
+  }
+
+  /* Make all resize handle types visible */
+  .react-grid-item > .react-resizable-handle.react-resizable-handle-se,
+  .react-grid-item > .react-resizable-handle.react-resizable-handle-sw,
+  .react-grid-item > .react-resizable-handle.react-resizable-handle-ne,
+  .react-grid-item > .react-resizable-handle.react-resizable-handle-nw,
+  .react-grid-item > .react-resizable-handle.react-resizable-handle-n,
+  .react-grid-item > .react-resizable-handle.react-resizable-handle-s,
+  .react-grid-item > .react-resizable-handle.react-resizable-handle-e,
+  .react-grid-item > .react-resizable-handle.react-resizable-handle-w {
+    z-index: 50;
   }
 }

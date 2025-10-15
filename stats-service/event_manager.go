@@ -248,13 +248,10 @@ func (em *EventManager) streamEvents(stream *eventStream) {
 				if err != nil {
 					log.Printf("Event stream error for host %s: %v (retrying in %v)", truncateID(stream.hostID, 8), err, backoff)
 					time.Sleep(backoff)
-					// Only increase backoff if we never got a successful event
-					if !receivedSuccessfulEvent {
-						backoff = min(backoff*2, maxBackoff)
-					} else {
-						// We had a successful connection before, reset backoff
-						backoff = time.Second
-					}
+					// Increase backoff exponentially up to max
+					backoff = min(backoff*2, maxBackoff)
+					// Mark that we need to reconnect (will reset backoff on successful event)
+					receivedSuccessfulEvent = false
 					goto reconnect
 				}
 

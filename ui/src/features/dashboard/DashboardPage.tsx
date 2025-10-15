@@ -14,7 +14,6 @@
 import { useState } from 'react'
 import { GridDashboard } from './GridDashboard'
 import { ViewModeSelector } from './components/ViewModeSelector'
-import { HostCardContainer } from './components/HostCardContainer'
 import { HostCardsGrid } from './HostCardsGrid'
 import { KpiBar } from './components/KpiBar'
 import { CompactHostCard } from './components/CompactHostCard'
@@ -96,37 +95,24 @@ export function DashboardPage() {
         </div>
       )}
 
-      {viewMode === 'standard' && (
-        <div className="mt-4">
-          <h2 className="text-lg font-semibold mb-4">Hosts</h2>
-          {isHostsLoading ? (
-            <div className="text-muted-foreground">Loading hosts...</div>
-          ) : hosts && hosts.length > 0 ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-              {hosts.map((host) => (
-                <HostCardContainer
-                  key={host.id}
-                  host={{
-                    id: host.id,
-                    name: host.name,
-                    url: host.url,
-                    status: host.status as 'online' | 'offline' | 'error',
-                    ...(host.tags && { tags: host.tags }),
-                  }}
-                  onHostClick={handleHostClick}
-                />
-              ))}
-            </div>
-          ) : (
-            <div className="p-8 border border-dashed border-border rounded-lg text-center text-muted-foreground">
-              No hosts configured. Add a host to get started.
-            </div>
-          )}
-        </div>
+      {viewMode === 'standard' && hosts && (
+        <HostCardsGrid
+          key="standard"
+          hosts={hosts.map(h => ({
+            id: h.id,
+            name: h.name,
+            url: h.url,
+            status: h.status as 'online' | 'offline' | 'error',
+            ...(h.tags && { tags: h.tags }),
+          }))}
+          onHostClick={handleHostClick}
+          mode="standard"
+        />
       )}
 
       {viewMode === 'expanded' && hosts && (
         <HostCardsGrid
+          key="expanded"
           hosts={hosts.map(h => ({
             id: h.id,
             name: h.name,

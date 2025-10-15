@@ -22,8 +22,8 @@ pre-refactor*.log
 post-refactor*.log
 
 # Node.js Dependencies (from test setup)
-node_modules/
-package-lock.json
+#node_modules/
+#package-lock.json
 npm-debug.log*
 
 # SSL Certificates

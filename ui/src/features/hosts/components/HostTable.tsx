@@ -37,7 +37,6 @@ import {
 import {
   Circle,
   ArrowUpDown,
-  FileText,
   Settings,
   ShieldCheck,
   Shield,
@@ -54,7 +53,6 @@ import { AlertDetailsDrawer } from '@/features/alerts/components/AlertDetailsDra
 import { useHostMetrics, useContainerCounts } from '@/lib/stats/StatsProvider'
 import { useSimplifiedWorkflow, useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
 import { useHostAlertCounts, type AlertSeverityCounts } from '@/features/alerts/hooks/useAlerts'
-import { useGlobalSettings } from '@/hooks/useSettings'
 import { useQueryClient } from '@tanstack/react-query'
 import { debug } from '@/lib/debug'
 
@@ -162,15 +160,15 @@ function HostMetricPercentage({ hostId, metric }: { hostId: string; metric: 'cpu
 
 // Alert severity counts with color coding and click-to-open-drawer
 function AlertSeverityCountsComponent({
-  hostname,
+  hostId,
   alertCounts,
   onAlertClick
 }: {
-  hostname: string
+  hostId: string
   alertCounts: Map<string, AlertSeverityCounts> | undefined
   onAlertClick: (alertId: string) => void
 }) {
-  const counts = alertCounts?.get(hostname)
+  const counts = alertCounts?.get(hostId)
 
   if (!counts || counts.total === 0) {
     return <span className="text-xs text-muted-foreground">-</span>
@@ -278,7 +276,6 @@ interface HostTableProps {
 export function HostTable({ onEditHost }: HostTableProps = {}) {
   const { data: hosts = [], isLoading, error } = useHosts()
   const queryClient = useQueryClient()
-  const { data: settings } = useGlobalSettings()
   const { data: preferences } = useUserPreferences()
   const updatePreferences = useUpdatePreferences()
   const [sorting, setSorting] = useState<SortingState>(preferences?.host_table_sort || [])
@@ -306,9 +303,8 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
     return () => clearTimeout(timer)
   }, [sorting])
 
-  // Fetch alert counts (optionally including container alerts aggregated by host)
-  const showContainerAlerts = settings?.show_container_alerts_on_hosts ?? false
-  const { data: alertCounts } = useHostAlertCounts(showContainerAlerts)
+  // Fetch alert counts (host-level alerts only)
+  const { data: alertCounts } = useHostAlertCounts()
 
   // Drawer state
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -500,7 +496,7 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
         header: 'Alerts',
         cell: ({ row }) => (
           <AlertSeverityCountsComponent
-            hostname={row.original.name}
+            hostId={row.original.id}
             alertCounts={alertCounts}
             onAlertClick={setSelectedAlertId}
           />
@@ -550,17 +546,6 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
               }}
             >
               <Settings className="h-4 w-4" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              title="View Logs"
-              onClick={() => {
-                // TODO: View Docker logs
-                debug.log('HostTable', 'View logs:', row.original.id)
-              }}
-            >
-              <FileText className="h-4 w-4" />
             </Button>
           </div>
         ),

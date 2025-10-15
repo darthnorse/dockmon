@@ -8,7 +8,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { User, LogOut } from 'lucide-react'
 import { useAuth } from '@/features/auth/AuthContext'
-import { UserSettingsModal } from '@/features/settings/UserSettingsModal'
+import { UserAccountModal } from '@/features/settings/UserAccountModal'
 import { cn } from '@/lib/utils'
 
 interface UserMenuProps {
@@ -53,7 +53,7 @@ export function UserMenu({ isCollapsed }: UserMenuProps) {
         <button
           onClick={() => setShowMenu(!showMenu)}
           className={cn(
-            'flex w-full items-center gap-3 rounded-lg p-2 transition-colors hover:bg-surface-2',
+            'flex w-full items-start gap-3 rounded-lg p-2 transition-colors hover:bg-surface-2',
             isCollapsed && 'justify-center',
             showMenu && 'bg-surface-2'
           )}
@@ -65,7 +65,10 @@ export function UserMenu({ isCollapsed }: UserMenuProps) {
           {!isCollapsed && (
             <div className="flex-1 overflow-hidden text-left">
               <p className="truncate text-sm font-medium">{user?.username || 'User'}</p>
-              <p className="truncate text-xs text-muted-foreground">DockMon v2.0.0</p>
+              {user?.display_name && (
+                <p className="truncate text-xs text-muted-foreground">{user.display_name}</p>
+              )}
+              <p className="truncate text-[10px] text-muted-foreground/70 mt-5">DockMon v2.0.0</p>
             </div>
           )}
         </button>
@@ -102,7 +105,7 @@ export function UserMenu({ isCollapsed }: UserMenuProps) {
       </div>
 
       {/* Account Settings Modal */}
-      <UserSettingsModal isOpen={showSettings} onClose={() => setShowSettings(false)} />
+      <UserAccountModal isOpen={showSettings} onClose={() => setShowSettings(false)} />
     </>
   )
 }

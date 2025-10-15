@@ -224,88 +224,10 @@ export function useAddAnnotation() {
   })
 }
 
-// Fetch host alert counts, optionally including container alerts aggregated by host
-// Returns a Map keyed by both hostId and hostname for flexible lookups
-export function useHostAlertCounts(includeContainerAlerts: boolean = false) {
-  const hostAlertsQuery = useAlertCounts('host')
-  const containerAlertsQuery = useAlertCounts('container')
-
-  return useQuery<Map<string, AlertSeverityCounts>>({
-    queryKey: ['host-alert-counts', includeContainerAlerts],
-    queryFn: () => {
-      const hostCounts = hostAlertsQuery.data || new Map()
-
-      if (!includeContainerAlerts) {
-        return hostCounts
-      }
-
-      // Build a map by hostname first, then we'll need to look up by hostId in the component
-      const containerCounts = containerAlertsQuery.data || new Map()
-      const aggregatedByHostname = new Map<string, AlertSeverityCounts>()
-
-      // First, copy host alerts by hostname
-      hostCounts.forEach((counts, _hostId) => {
-        counts.alerts.forEach((alert: Alert) => {
-          if (!alert.host_name) return
-
-          if (!aggregatedByHostname.has(alert.host_name)) {
-            aggregatedByHostname.set(alert.host_name, {
-              critical: 0,
-              error: 0,
-              warning: 0,
-              info: 0,
-              total: 0,
-              alerts: []
-            })
-          }
-
-          const hostnameCounts = aggregatedByHostname.get(alert.host_name)!
-          hostnameCounts.total++
-          hostnameCounts.alerts.push(alert)
-
-          switch (alert.severity.toLowerCase()) {
-            case 'critical': hostnameCounts.critical++; break
-            case 'error': hostnameCounts.error++; break
-            case 'warning': hostnameCounts.warning++; break
-            case 'info': hostnameCounts.info++; break
-          }
-        })
-      })
-
-      // Then add container alerts by hostname
-      containerCounts.forEach((counts, _containerId) => {
-        counts.alerts.forEach((alert: Alert) => {
-          if (!alert.host_name) return
-
-          if (!aggregatedByHostname.has(alert.host_name)) {
-            aggregatedByHostname.set(alert.host_name, {
-              critical: 0,
-              error: 0,
-              warning: 0,
-              info: 0,
-              total: 0,
-              alerts: []
-            })
-          }
-
-          const hostnameCounts = aggregatedByHostname.get(alert.host_name)!
-          hostnameCounts.total++
-          hostnameCounts.alerts.push(alert)
-
-          switch (alert.severity.toLowerCase()) {
-            case 'critical': hostnameCounts.critical++; break
-            case 'error': hostnameCounts.error++; break
-            case 'warning': hostnameCounts.warning++; break
-            case 'info': hostnameCounts.info++; break
-          }
-        })
-      })
-
-      return aggregatedByHostname
-    },
-    enabled: hostAlertsQuery.isSuccess && (!includeContainerAlerts || containerAlertsQuery.isSuccess),
-    refetchInterval: 30000,
-  })
+// Fetch host alert counts (host-level alerts only)
+// Returns a Map keyed by host ID
+export function useHostAlertCounts() {
+  return useAlertCounts('host')
 }
 
 // Fetch events related to an alert based on its scope

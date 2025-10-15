@@ -1,26 +1,73 @@
 /**
- * User Settings Modal
+ * User Account Modal
  *
  * Allows users to:
+ * - Change their display name
+ * - Change their username
  * - Change their password
- * - Change their username (future)
- * - View account info
  */
 
-import { useState } from 'react'
+import { useState, type FormEvent } from 'react'
 import { X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { ChangePasswordModal } from '@/features/auth/ChangePasswordModal'
 import { useAuth } from '@/features/auth/AuthContext'
+import { apiClient, ApiError } from '@/lib/api/client'
+import { useQueryClient } from '@tanstack/react-query'
 
-interface UserSettingsModalProps {
+interface UserAccountModalProps {
   isOpen: boolean
   onClose: () => void
 }
 
-export function UserSettingsModal({ isOpen, onClose }: UserSettingsModalProps) {
+export function UserAccountModal({ isOpen, onClose }: UserAccountModalProps) {
   const { user } = useAuth()
+  const queryClient = useQueryClient()
   const [showPasswordModal, setShowPasswordModal] = useState(false)
+  const [username, setUsername] = useState(user?.username || '')
+  const [displayName, setDisplayName] = useState(user?.display_name || '')
+  const [error, setError] = useState<string | null>(null)
+  const [success, setSuccess] = useState<string | null>(null)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault()
+    setError(null)
+    setSuccess(null)
+
+    if (!username.trim()) {
+      setError('Username is required')
+      return
+    }
+
+    setIsSubmitting(true)
+
+    try {
+      // Update profile
+      await apiClient.post('/v2/auth/update-profile', {
+        username: username.trim(),
+        display_name: displayName.trim() || null,
+      })
+
+      // Refetch user data
+      await queryClient.invalidateQueries({ queryKey: ['auth', 'currentUser'] })
+
+      setSuccess('Profile updated successfully!')
+    } catch (err) {
+      if (err instanceof ApiError) {
+        if (err.status === 400) {
+          setError(err.message || 'Username already taken')
+        } else {
+          setError('Failed to update profile. Please try again.')
+        }
+      } else {
+        setError('Connection error. Please check if the backend is running.')
+      }
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
 
   if (!isOpen) return null
 
@@ -37,9 +84,9 @@ export function UserSettingsModal({ isOpen, onClose }: UserSettingsModalProps) {
           {/* Header */}
           <div className="flex items-center justify-between mb-4">
             <div>
-              <h2 className="text-xl font-semibold">User Settings</h2>
+              <h2 className="text-xl font-semibold">Account Settings</h2>
               <p className="text-sm text-muted-foreground mt-1">
-                Manage your account preferences
+                Manage your account information
               </p>
             </div>
             <button
@@ -52,35 +99,88 @@ export function UserSettingsModal({ isOpen, onClose }: UserSettingsModalProps) {
           </div>
 
           {/* Content */}
-          <div className="space-y-4">
-            {/* Account Info */}
-            <div className="rounded-lg border border-border p-4">
-              <div className="flex items-center gap-3 mb-3">
-                <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-primary/10 text-base font-semibold text-primary">
-                  {user?.username?.charAt(0).toUpperCase() || 'U'}
-                </div>
-                <div>
-                  <p className="text-sm font-medium">{user?.username || 'User'}</p>
-                  <p className="text-xs text-muted-foreground">Administrator</p>
-                </div>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            {/* Success/Error Messages */}
+            {error && (
+              <div className="rounded-lg border-l-4 border-danger bg-danger/10 p-3 text-sm text-danger">
+                {error}
               </div>
-            </div>
+            )}
+            {success && (
+              <div className="rounded-lg border-l-4 border-success bg-success/10 p-3 text-sm text-success">
+                {success}
+              </div>
+            )}
 
-            {/* Actions */}
-            <div className="space-y-2">
-              <Button
-                variant="outline"
-                className="w-full justify-start"
-                onClick={() => {
-                  setShowPasswordModal(true)
+            {/* Display Name */}
+            <div>
+              <label htmlFor="displayName" className="block text-sm font-medium mb-1">
+                Display Name
+              </label>
+              <Input
+                id="displayName"
+                type="text"
+                value={displayName}
+                onChange={(e) => {
+                  setDisplayName(e.target.value)
+                  if (error || success) {
+                    setError(null)
+                    setSuccess(null)
+                  }
                 }}
-              >
-                Change Password
-              </Button>
-
-              {/* Future: Add Change Username button here */}
+                disabled={isSubmitting}
+                placeholder="Optional friendly name"
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                This is how your name will be displayed
+              </p>
             </div>
-          </div>
+
+            {/* Username */}
+            <div>
+              <label htmlFor="username" className="block text-sm font-medium mb-1">
+                Username <span className="text-destructive">*</span>
+              </label>
+              <Input
+                id="username"
+                type="text"
+                value={username}
+                onChange={(e) => {
+                  setUsername(e.target.value)
+                  if (error || success) {
+                    setError(null)
+                    setSuccess(null)
+                  }
+                }}
+                disabled={isSubmitting}
+                required
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                Used for logging in
+              </p>
+            </div>
+
+            {/* Save Button */}
+            <Button
+              type="submit"
+              disabled={isSubmitting}
+              className="w-full"
+            >
+              {isSubmitting ? 'Saving...' : 'Save Changes'}
+            </Button>
+          </form>
+
+          {/* Divider */}
+          <div className="my-4 border-t border-border" />
+
+          {/* Password Change Button */}
+          <Button
+            variant="outline"
+            className="w-full"
+            onClick={() => setShowPasswordModal(true)}
+          >
+            Change Password
+          </Button>
         </div>
       </div>
 

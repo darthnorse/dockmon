@@ -4,21 +4,17 @@
  */
 
 import { useDashboardPrefs } from '@/hooks/useUserPrefs'
-import { useGlobalSettings, useUpdateGlobalSettings } from '@/hooks/useSettings'
 import { useSimplifiedWorkflow } from '@/lib/hooks/useUserPreferences'
 import { ToggleSwitch } from './ToggleSwitch'
 import { toast } from 'sonner'
 
 export function DashboardSettings() {
   const { dashboardPrefs, updateDashboardPrefs } = useDashboardPrefs()
-  const { data: settings } = useGlobalSettings()
-  const updateSettings = useUpdateGlobalSettings()
   const { enabled: simplifiedWorkflow, setEnabled: setSimplifiedWorkflow } = useSimplifiedWorkflow()
 
   const showKpiBar = dashboardPrefs?.showKpiBar ?? true
   const showStatsWidgets = dashboardPrefs?.showStatsWidgets ?? false
   const optimizedLoading = dashboardPrefs?.optimizedLoading ?? true
-  const showContainerAlertsOnHosts = settings?.show_container_alerts_on_hosts ?? false
 
   const handleToggleKpiBar = (checked: boolean) => {
     updateDashboardPrefs({ showKpiBar: checked })
@@ -33,15 +29,6 @@ export function DashboardSettings() {
   const handleToggleOptimizedLoading = (checked: boolean) => {
     updateDashboardPrefs({ optimizedLoading: checked })
     toast.success(checked ? 'Optimized loading enabled' : 'Optimized loading disabled')
-  }
-
-  const handleToggleContainerAlertsOnHosts = async (checked: boolean) => {
-    try {
-      await updateSettings.mutateAsync({ show_container_alerts_on_hosts: checked })
-      toast.success(checked ? 'Container alerts will show on host page' : 'Only host alerts will show on host page')
-    } catch (error) {
-      toast.error('Failed to update setting')
-    }
   }
 
   const handleToggleSimplifiedWorkflow = (checked: boolean) => {
@@ -73,25 +60,6 @@ export function DashboardSettings() {
             description="Display detailed statistics widgets on the dashboard"
             checked={showStatsWidgets}
             onChange={handleToggleStatsWidgets}
-          />
-        </div>
-      </div>
-
-      {/* Alerts Display */}
-      <div>
-        <div className="mb-4">
-          <h3 className="text-lg font-semibold text-white">Alerts Display</h3>
-          <p className="text-xs text-gray-400 mt-1">
-            Configure how alerts are displayed on different pages
-          </p>
-        </div>
-        <div className="divide-y divide-border">
-          <ToggleSwitch
-            id="show-container-alerts-on-hosts"
-            label="Show container alerts on host page"
-            description="Display alerts from containers in addition to host-level alerts on the host page. When disabled, only host-scoped alerts are shown."
-            checked={showContainerAlertsOnHosts}
-            onChange={handleToggleContainerAlertsOnHosts}
           />
         </div>
       </div>

@@ -18,7 +18,7 @@ import { authApi } from './api'
 import type { LoginRequest } from '@/types/api'
 
 interface AuthContextValue {
-  user: { id: number; username: string; is_first_login?: boolean } | null
+  user: { id: number; username: string; display_name?: string | null; is_first_login?: boolean } | null
   isLoading: boolean
   isAuthenticated: boolean
   isFirstLogin: boolean

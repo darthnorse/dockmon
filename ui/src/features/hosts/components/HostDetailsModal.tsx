@@ -23,7 +23,6 @@ import type { Host } from '@/types/api'
 import { HostOverviewTab } from './modal-tabs/HostOverviewTab'
 import { HostContainersTab } from './modal-tabs/HostContainersTab'
 import { HostEventsTab } from './modal-tabs/HostEventsTab'
-import { HostLogsTab } from './modal-tabs/HostLogsTab'
 
 export interface HostDetailsModalProps {
   /**
@@ -100,11 +99,6 @@ export function HostDetailsModal({
       id: 'events',
       label: 'Events',
       content: <HostEventsTab hostId={hostId} />,
-    },
-    {
-      id: 'logs',
-      label: 'Logs',
-      content: <HostLogsTab hostId={hostId} />,
     },
   ]
 

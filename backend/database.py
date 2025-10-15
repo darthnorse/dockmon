@@ -27,6 +27,7 @@ class User(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     username = Column(String, nullable=False, unique=True)
     password_hash = Column(String, nullable=False)
+    display_name = Column(String, nullable=True)  # Optional friendly display name
     is_first_login = Column(Boolean, default=True)
     must_change_password = Column(Boolean, default=False)
     dashboard_layout = Column(Text, nullable=True)  # JSON string of GridStack layout (v1 - deprecated)
@@ -2205,6 +2206,18 @@ class DatabaseManager:
                 user.updated_at = datetime.now()
                 session.commit()
                 logger.info(f"Username changed from {old_username} to {new_username}")
+                return True
+            return False
+
+    def update_display_name(self, username: str, display_name: str) -> bool:
+        """Update user's display name"""
+        with self.get_session() as session:
+            user = session.query(User).filter(User.username == username).first()
+            if user:
+                user.display_name = display_name if display_name.strip() else None
+                user.updated_at = datetime.now()
+                session.commit()
+                logger.info(f"Display name updated for user {username}: {display_name}")
                 return True
             return False
 

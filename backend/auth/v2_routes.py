@@ -243,6 +243,7 @@ async def get_current_user_v2(
             "user": {
                 "id": current_user["user_id"],
                 "username": current_user["username"],
+                "display_name": user.display_name if user and hasattr(user, 'display_name') else None,
                 "is_first_login": user.is_first_login if user else False
             }
         }
@@ -303,3 +304,57 @@ async def change_password_v2(
         "success": True,
         "message": "Password changed successfully"
     }
+
+
+@router.post("/update-profile")
+async def update_profile_v2(
+    profile_data: dict,
+    current_user: dict = Depends(get_current_user_dependency)
+):
+    """
+    Update user profile (display name, username).
+
+    SECURITY:
+    - Requires valid session cookie
+    - Username must be unique
+    """
+    from auth.routes import db
+
+    username = current_user["username"]
+    new_display_name = profile_data.get("display_name")
+    new_username = profile_data.get("username")
+
+    try:
+        # Update display name if provided
+        if new_display_name is not None:
+            db.update_display_name(username, new_display_name)
+
+        # Update username if provided and different
+        if new_username and new_username != username:
+            # Check if new username already exists
+            if db.username_exists(new_username):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Username already taken"
+                )
+
+            if not db.change_username(username, new_username):
+                raise HTTPException(
+                    status_code=500,
+                    detail="Failed to update username"
+                )
+
+        logger.info(f"Profile updated for user: {username}")
+
+        return {
+            "success": True,
+            "message": "Profile updated successfully"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update profile: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to update profile"
+        )

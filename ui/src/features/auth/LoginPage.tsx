@@ -151,18 +151,6 @@ export function LoginPage() {
               )}
             </Button>
           </form>
-
-          {/* Footer - Default Credentials */}
-          <p className="mt-6 text-center text-xs text-muted-foreground">
-            Default credentials:{' '}
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-foreground">
-              admin
-            </code>{' '}
-            /{' '}
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-foreground">
-              test1234
-            </code>
-          </p>
         </CardContent>
       </Card>
     </div>

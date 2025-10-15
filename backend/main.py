@@ -1730,7 +1730,7 @@ async def get_view_mode(request: Request, current_user: dict = Depends(get_curre
     username = current_user.get('username')
 
     if not username:
-        return {"view_mode": "compact"}  # Default if no username
+        return {"view_mode": "standard"}  # Default if no username
 
     try:
         session = monitor.db.get_session()
@@ -1738,8 +1738,8 @@ async def get_view_mode(request: Request, current_user: dict = Depends(get_curre
             from database import User
             user = session.query(User).filter(User.username == username).first()
             if user:
-                return {"view_mode": user.view_mode or "compact"}  # Default to compact
-            return {"view_mode": "compact"}
+                return {"view_mode": user.view_mode or "standard"}  # Default to standard
+            return {"view_mode": "standard"}
         finally:
             session.close()
     except Exception as e:

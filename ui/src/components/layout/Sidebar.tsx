@@ -34,6 +34,7 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
 import { useSidebarCollapsed } from '@/lib/hooks/useUserPreferences'
+import { UserMenu } from './UserMenu'
 
 interface NavItem {
   label: string
@@ -172,25 +173,8 @@ export function Sidebar() {
           )}
         </div>
 
-        {/* User Info */}
-        <div
-          className={cn(
-            'flex items-center gap-3 rounded-lg p-2 hover:bg-surface-2',
-            isCollapsed && 'justify-center'
-          )}
-        >
-          <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary">
-            A
-          </div>
-          {!isCollapsed && (
-            <div className="flex-1 overflow-hidden">
-              <p className="truncate text-sm font-medium">admin</p>
-              <p className="truncate text-xs text-muted-foreground">
-                Administrator
-              </p>
-            </div>
-          )}
-        </div>
+        {/* User Menu */}
+        <UserMenu isCollapsed={isCollapsed} />
       </div>
     </aside>
   )

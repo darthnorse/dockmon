@@ -63,7 +63,7 @@ export function useViewMode() {
   })
 
   return {
-    viewMode: viewMode || 'compact',
+    viewMode: viewMode || 'standard',
     isLoading,
     setViewMode: mutation.mutate,
     isUpdating: mutation.isPending,

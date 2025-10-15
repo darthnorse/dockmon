@@ -232,9 +232,17 @@ async def get_current_user_v2(
 
     Requires valid session cookie.
     """
-    return {
-        "user": {
-            "id": current_user["user_id"],
-            "username": current_user["username"]
+    # Get user from database to include is_first_login status
+    from auth.routes import db
+    from database import User
+
+    with db.get_session() as session:
+        user = session.query(User).filter(User.id == current_user["user_id"]).first()
+
+        return {
+            "user": {
+                "id": current_user["user_id"],
+                "username": current_user["username"],
+                "is_first_login": user.is_first_login if user else False
+            }
         }
-    }

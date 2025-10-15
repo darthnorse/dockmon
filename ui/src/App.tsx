@@ -25,8 +25,10 @@ import { AlertsPage } from '@/features/alerts/AlertsPage'
 import { AlertRulesPage } from '@/features/alerts/AlertRulesPage'
 import { ContainerLogsPage } from '@/features/logs/ContainerLogsPage'
 import { SettingsPage } from '@/features/settings/SettingsPage'
+import { ChangePasswordModal } from '@/features/auth/ChangePasswordModal'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { LoadingSkeleton } from '@/components/layout/LoadingSkeleton'
+import { useState, useEffect } from 'react'
 
 // Create query client with sensible defaults
 const queryClient = new QueryClient({
@@ -56,10 +58,27 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
 // App routes
 function AppRoutes() {
-  const { isAuthenticated } = useAuth()
+  const { isAuthenticated, isFirstLogin } = useAuth()
+  const [showPasswordDialog, setShowPasswordDialog] = useState(false)
+
+  // Show password change dialog when first login is detected
+  // This fires whenever isFirstLogin changes from false to true
+  useEffect(() => {
+    if (isFirstLogin) {
+      setShowPasswordDialog(true)
+    }
+  }, [isFirstLogin])
 
   return (
-    <Routes>
+    <>
+      {/* First-run password change modal (cannot be dismissed) */}
+      <ChangePasswordModal
+        isOpen={showPasswordDialog}
+        isRequired={isFirstLogin}
+        onClose={() => setShowPasswordDialog(false)}
+      />
+
+      <Routes>
       {/* Public route - Login */}
       <Route
         path="/login"
@@ -91,6 +110,7 @@ function AppRoutes() {
       {/* Catch-all redirect */}
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
+    </>
   )
 }
 

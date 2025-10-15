@@ -25,6 +25,7 @@ export interface CurrentUserResponse {
   user: {
     id: number
     username: string
+    is_first_login?: boolean
   }
 }
 

@@ -18,9 +18,10 @@ import { authApi } from './api'
 import type { LoginRequest } from '@/types/api'
 
 interface AuthContextValue {
-  user: { id: number; username: string } | null
+  user: { id: number; username: string; is_first_login?: boolean } | null
   isLoading: boolean
   isAuthenticated: boolean
+  isFirstLogin: boolean
   login: (credentials: LoginRequest) => Promise<void>
   logout: () => Promise<void>
 }
@@ -60,6 +61,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     user: data?.user ?? null,
     isLoading: isLoading || loginMutation.isPending || logoutMutation.isPending,
     isAuthenticated: !isError && data?.user != null,
+    isFirstLogin: data?.user?.is_first_login ?? false,
     login: async (credentials) => {
       await loginMutation.mutateAsync(credentials)
     },

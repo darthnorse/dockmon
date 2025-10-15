@@ -836,6 +836,7 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
         "timezone_offset": getattr(settings, 'timezone_offset', 0),
         "show_host_stats": getattr(settings, 'show_host_stats', True),
         "show_container_stats": getattr(settings, 'show_container_stats', True),
+        "show_container_alerts_on_hosts": getattr(settings, 'show_container_alerts_on_hosts', False),
         "unused_tag_retention_days": getattr(settings, 'unused_tag_retention_days', 30),
         "event_retention_days": getattr(settings, 'event_retention_days', 60)
     }
@@ -883,6 +884,7 @@ async def update_settings(settings: dict, current_user: dict = Depends(get_curre
         "timezone_offset": getattr(updated, 'timezone_offset', 0),
         "show_host_stats": getattr(updated, 'show_host_stats', True),
         "show_container_stats": getattr(updated, 'show_container_stats', True),
+        "show_container_alerts_on_hosts": getattr(updated, 'show_container_alerts_on_hosts', False),
         "unused_tag_retention_days": getattr(updated, 'unused_tag_retention_days', 30),
         "event_retention_days": getattr(updated, 'event_retention_days', 60)
     }

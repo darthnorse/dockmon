@@ -154,6 +154,8 @@ export function useResolveAlert() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['alerts'] })
       queryClient.invalidateQueries({ queryKey: ['alert-stats'] })
+      queryClient.invalidateQueries({ queryKey: ['alert-counts'] })
+      queryClient.invalidateQueries({ queryKey: ['host-alert-counts'] })
     },
   })
 }
@@ -175,6 +177,8 @@ export function useSnoozeAlert() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['alerts'] })
       queryClient.invalidateQueries({ queryKey: ['alert-stats'] })
+      queryClient.invalidateQueries({ queryKey: ['alert-counts'] })
+      queryClient.invalidateQueries({ queryKey: ['host-alert-counts'] })
     },
   })
 }
@@ -194,6 +198,8 @@ export function useUnsnoozeAlert() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['alerts'] })
       queryClient.invalidateQueries({ queryKey: ['alert-stats'] })
+      queryClient.invalidateQueries({ queryKey: ['alert-counts'] })
+      queryClient.invalidateQueries({ queryKey: ['host-alert-counts'] })
     },
   })
 }

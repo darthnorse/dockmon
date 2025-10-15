@@ -71,11 +71,17 @@ export function useUpdateGlobalSettings() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: (updates: Partial<GlobalSettings>) => {
-      return apiClient.put('/settings', updates)
+    mutationFn: async (updates: Partial<GlobalSettings>) => {
+      console.log('Calling PUT /api/settings with:', updates)
+      const result = await apiClient.put<GlobalSettings>('/settings', updates)
+      console.log('Received response from PUT /api/settings:', result)
+      return result
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['global-settings'] })
+    onSuccess: (updatedSettings) => {
+      console.log('onSuccess called with:', updatedSettings)
+      // Update cache with the returned settings from the server
+      queryClient.setQueryData<GlobalSettings>(['global-settings'], updatedSettings)
+      console.log('Cache updated')
     },
   })
 }

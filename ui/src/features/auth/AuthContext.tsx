@@ -42,7 +42,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Login mutation
   const loginMutation = useMutation({
     mutationFn: authApi.login,
-    onSuccess: () => {
+    onSuccess: (response, variables) => {
+      // If first login, temporarily store password for password change modal
+      if (response.user.is_first_login) {
+        sessionStorage.setItem('_tmp_pwd', variables.password)
+      }
       // Invalidate current user query to refetch
       void queryClient.invalidateQueries({ queryKey: ['auth', 'currentUser'] })
     },

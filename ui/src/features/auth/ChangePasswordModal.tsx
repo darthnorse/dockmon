@@ -12,7 +12,7 @@
  * - WCAG 2.1 AA accessible
  */
 
-import { useState, type FormEvent } from 'react'
+import { useState, useEffect, type FormEvent } from 'react'
 import { Lock, X } from 'lucide-react'
 import { apiClient, ApiError } from '@/lib/api/client'
 import { Button } from '@/components/ui/button'
@@ -36,6 +36,18 @@ export function ChangePasswordModal({
   const [confirmPassword, setConfirmPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
+
+  // If this is first login (isRequired), pre-populate current password from sessionStorage
+  useEffect(() => {
+    if (isOpen && isRequired) {
+      const tmpPwd = sessionStorage.getItem('_tmp_pwd')
+      if (tmpPwd) {
+        setCurrentPassword(tmpPwd)
+        // Clear it immediately for security
+        sessionStorage.removeItem('_tmp_pwd')
+      }
+    }
+  }, [isOpen, isRequired])
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()

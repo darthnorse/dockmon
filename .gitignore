@@ -69,9 +69,11 @@ build/
 .DS_Store
 Thumbs.db
 
-# Logs
+# Log files (not log source directories in ui/src)
 *.log
-logs/
+/logs/
+backend/logs/
+docker/logs/
 
 # Temporary files
 *.tmp

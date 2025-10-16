@@ -45,8 +45,9 @@ class BlackoutManager:
                     continue
 
                 days = window.get('days', [])
-                start_str = window.get('start', '00:00')
-                end_str = window.get('end', '00:00')
+                # Support both 'start'/'end' (old format) and 'start_time'/'end_time' (new format)
+                start_str = window.get('start_time') or window.get('start', '00:00')
+                end_str = window.get('end_time') or window.get('end', '00:00')
 
                 start_time = datetime.strptime(start_str, '%H:%M').time()
                 end_time = datetime.strptime(end_str, '%H:%M').time()

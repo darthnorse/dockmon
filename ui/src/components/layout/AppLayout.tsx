@@ -10,6 +10,7 @@
 import { useState, useEffect } from 'react'
 import { Outlet } from 'react-router-dom'
 import { Sidebar } from './Sidebar'
+import { BlackoutBanner } from './BlackoutBanner'
 import { cn } from '@/lib/utils'
 import { useSidebarCollapsed } from '@/lib/hooks/useUserPreferences'
 
@@ -40,6 +41,9 @@ export function AppLayout() {
 
   return (
     <div className="min-h-screen bg-background">
+      {/* Blackout window notification banner */}
+      <BlackoutBanner />
+
       <Sidebar />
 
       {/* Main Content Area */}

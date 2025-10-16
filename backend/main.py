@@ -2399,12 +2399,19 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
             "show_container_stats": getattr(monitor.settings, 'show_container_stats', True)
         }
 
+        # Get current blackout window status
+        is_blackout, window_name = monitor.notification_service.blackout_manager.is_in_blackout_window()
+
         initial_state = {
             "type": "initial_state",
             "data": {
                 "hosts": [h.dict() for h in monitor.hosts.values()],
                 "containers": [c.dict() for c in await monitor.get_containers()],
-                "settings": settings_dict
+                "settings": settings_dict,
+                "blackout": {
+                    "is_active": is_blackout,
+                    "window_name": window_name
+                }
             }
         }
         await websocket.send_text(json.dumps(initial_state, cls=DateTimeEncoder))

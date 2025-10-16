@@ -749,6 +749,16 @@ class DockerMonitor:
             for container_key in containers_to_remove:
                 self.stats_manager.streaming_containers.discard(container_key)
 
+            # Clean up network stats tracking for this host (prevent memory leak)
+            if host_id in self._last_net_stats:
+                del self._last_net_stats[host_id]
+
+            # Clean up stats history buffers for this host (prevent memory leak)
+            self.stats_history.remove_host(host_id)
+            # Clean up container stats history for each container on this host
+            for container_key in containers_to_remove:
+                self.container_stats_history.remove_container(container_key)
+
             if containers_to_remove:
                 logger.debug(f"Cleaned up {len(containers_to_remove)} container state entries for removed host {host_id[:8]}")
             if notification_states_to_remove:

@@ -61,7 +61,7 @@ class NotificationService:
 
     def _cleanup_old_cooldowns(self) -> None:
         """Clean up old cooldown entries to prevent memory leak"""
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         max_age = timedelta(days=self.COOLDOWN_MAX_AGE_DAYS)
 
         # Remove entries older than max age
@@ -173,7 +173,7 @@ class NotificationService:
 
                 # Check cooldown
                 if cooldown_key in self._last_alerts:
-                    time_since = datetime.now() - self._last_alerts[cooldown_key]
+                    time_since = datetime.now(timezone.utc) - self._last_alerts[cooldown_key]
                     if time_since.total_seconds() < rule.cooldown_minutes * 60:
                         logger.info(f"Skipping Docker event alert for container '{event.container_name}' on host '{host_name}' (rule: {rule.name}) due to cooldown")
                         continue
@@ -189,11 +189,11 @@ class NotificationService:
                 logger.info(f"Sending Docker event notification for rule '{rule.name}'")
                 if await self._send_event_notification(rule, event):
                     success_count += 1
-                    self._last_alerts[cooldown_key] = datetime.now()
+                    self._last_alerts[cooldown_key] = datetime.now(timezone.utc)
 
                     # Update rule's last triggered time
                     self.db.update_alert_rule(rule.id, {
-                        'last_triggered': datetime.now()
+                        'last_triggered': datetime.now(timezone.utc)
                     })
 
             return success_count > 0
@@ -368,11 +368,11 @@ class NotificationService:
                         # Update last triggered time for this container + rule combination
                         container_key = f"{event.host_id}:{event.container_id}"
                         cooldown_key = f"{rule.id}:{container_key}"
-                        self._last_alerts[cooldown_key] = datetime.now()
+                        self._last_alerts[cooldown_key] = datetime.now(timezone.utc)
 
                         # Also update the rule's global last_triggered for backward compatibility
                         self.db.update_alert_rule(rule.id, {
-                            'last_triggered': datetime.now()
+                            'last_triggered': datetime.now(timezone.utc)
                         })
 
             # Log the event to new event system
@@ -480,7 +480,7 @@ class NotificationService:
             return True
 
         # Check cooldown period
-        time_since_last = datetime.now() - self._last_alerts[cooldown_key]
+        time_since_last = datetime.now(timezone.utc) - self._last_alerts[cooldown_key]
         cooldown_minutes = rule.cooldown_minutes or 15
         cooldown_seconds = cooldown_minutes * 60
 
@@ -994,7 +994,7 @@ Rule: {RULE_NAME}
                 host_name='Test Host',
                 old_state='running',
                 new_state='stopped',
-                timestamp=datetime.now(),
+                timestamp=datetime.now(timezone.utc),
                 image='nginx:latest',
                 triggered_by='test'
             )
@@ -1412,7 +1412,7 @@ class AlertProcessor:
                 host_name=host_name,
                 old_state=previous_state,
                 new_state=current_state,
-                timestamp=datetime.now(),
+                timestamp=datetime.now(timezone.utc),
                 image=container.image,
                 triggered_by='monitor'
             )

@@ -12,7 +12,7 @@ Handles the execution of container updates:
 import asyncio
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Optional, List, Any
 import docker
 from docker.errors import DockerException, APIError
@@ -219,8 +219,8 @@ class UpdateExecutor:
                     record.update_available = False
                     record.current_image = update_record.latest_image
                     record.current_digest = update_record.latest_digest
-                    record.last_updated_at = datetime.now()
-                    record.updated_at = datetime.now()
+                    record.last_updated_at = datetime.now(timezone.utc)
+                    record.updated_at = datetime.now(timezone.utc)
                     session.commit()
 
             # Step 8: Emit update completion event via EventBus (which handles database logging)
@@ -523,7 +523,7 @@ class UpdateExecutor:
 
             # Trigger state change event evaluation to check container state
             event_data = {
-                'timestamp': datetime.now().isoformat(),
+                'timestamp': datetime.now(timezone.utc).isoformat(),
                 'event_type': 'state_change',
                 'new_state': container_info.get('state', 'unknown'),
                 'old_state': 'updating',

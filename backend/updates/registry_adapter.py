@@ -15,7 +15,7 @@ import hashlib
 import json
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Tuple
 from urllib.parse import urlparse
 
@@ -33,7 +33,7 @@ class RegistryCache:
         """Get cached value if not expired"""
         if key in self._cache:
             value, timestamp = self._cache[key]
-            if datetime.now() - timestamp < self._ttl:
+            if datetime.now(timezone.utc) - timestamp < self._ttl:
                 return value
             else:
                 del self._cache[key]
@@ -41,7 +41,7 @@ class RegistryCache:
 
     def set(self, key: str, value: any):
         """Set cache value with current timestamp"""
-        self._cache[key] = (value, datetime.now())
+        self._cache[key] = (value, datetime.now(timezone.utc))
 
     def clear(self):
         """Clear all cached values"""
@@ -196,7 +196,7 @@ class RegistryAdapter:
             cached_token = self._auth_cache[cache_key]
             # Check if token is still valid (expires_at field)
             if cached_token.get("expires_at"):
-                if datetime.now() < cached_token["expires_at"]:
+                if datetime.now(timezone.utc) < cached_token["expires_at"]:
                     return cached_token["token"]
                 else:
                     # Token expired - delete it to prevent memory leak
@@ -261,7 +261,7 @@ class RegistryAdapter:
                             cache_key = f"docker.io:{repository}"
                             self._auth_cache[cache_key] = {
                                 "token": f"Bearer {token}",
-                                "expires_at": datetime.now() + timedelta(minutes=4)
+                                "expires_at": datetime.now(timezone.utc) + timedelta(minutes=4)
                             }
                             return f"Bearer {token}"
         except Exception as e:
@@ -303,7 +303,7 @@ class RegistryAdapter:
                             cache_key = f"ghcr.io:{repository}"
                             self._auth_cache[cache_key] = {
                                 "token": f"Bearer {token}",
-                                "expires_at": datetime.now() + timedelta(minutes=4)
+                                "expires_at": datetime.now(timezone.utc) + timedelta(minutes=4)
                             }
                             logger.debug(f"Got GHCR token for {repository}")
                             return f"Bearer {token}"
@@ -350,7 +350,7 @@ class RegistryAdapter:
                             cache_key = f"lscr.io:{repository}"
                             self._auth_cache[cache_key] = {
                                 "token": f"Bearer {token}",
-                                "expires_at": datetime.now() + timedelta(minutes=4)
+                                "expires_at": datetime.now(timezone.utc) + timedelta(minutes=4)
                             }
                             logger.debug(f"Got LSCR token for {repository}")
                             return f"Bearer {token}"
@@ -398,7 +398,7 @@ class RegistryAdapter:
                             cache_key = f"quay.io:{repository}"
                             self._auth_cache[cache_key] = {
                                 "token": f"Bearer {token}",
-                                "expires_at": datetime.now() + timedelta(minutes=4)
+                                "expires_at": datetime.now(timezone.utc) + timedelta(minutes=4)
                             }
                             logger.debug(f"Got Quay token for {repository}")
                             return f"Bearer {token}"

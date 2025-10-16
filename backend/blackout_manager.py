@@ -181,7 +181,7 @@ class BlackoutManager:
                         old_state='unknown_during_blackout',
                         new_state=container_info['state'],
                         exit_code=container_info.get('exit_code'),
-                        timestamp=datetime.now(),
+                        timestamp=datetime.now(timezone.utc),
                         image=container_info['image'],
                         triggered_by='post_blackout_check'
                     )

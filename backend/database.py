@@ -3,7 +3,7 @@ Database models and operations for DockMon
 Uses SQLite for persistent storage of configuration and settings
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
 from sqlalchemy import create_engine, Column, String, Integer, BigInteger, Boolean, DateTime, JSON, ForeignKey, Text, UniqueConstraint, text, Float, func, Index
 from sqlalchemy.ext.declarative import declarative_base
@@ -17,6 +17,12 @@ import bcrypt
 import uuid
 
 logger = logging.getLogger(__name__)
+
+
+def utcnow():
+    """Helper to get timezone-aware UTC datetime for database defaults"""
+    return datetime.now(timezone.utc)
+
 
 Base = declarative_base()
 
@@ -37,8 +43,8 @@ class User(Base):
     modal_preferences = Column(Text, nullable=True)  # JSON string of modal size/position preferences
     prefs = Column(Text, nullable=True)  # JSON string of user preferences (dashboard, table sorts, etc.)
     simplified_workflow = Column(Boolean, default=False)  # Skip drawer, open modal directly
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
     last_login = Column(DateTime, nullable=True)
 
 class UserPrefs(Base):
@@ -48,8 +54,8 @@ class UserPrefs(Base):
     user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
     theme = Column(String, default="dark")
     defaults_json = Column(Text, nullable=True)  # JSON string of default preferences
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
 class DockerHostDB(Base):
     """Docker host configuration"""
@@ -63,8 +69,8 @@ class DockerHostDB(Base):
     tls_ca = Column(Text, nullable=True)
     security_status = Column(String, nullable=True)  # 'secure', 'insecure', 'unknown'
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
     # Phase 3d - Host organization
     tags = Column(Text, nullable=True)  # JSON array of tags
     description = Column(Text, nullable=True)  # Optional host description
@@ -94,8 +100,8 @@ class AutoRestartConfig(Base):
     retry_delay = Column(Integer, default=30)
     restart_count = Column(Integer, default=0)
     last_restart = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
     # Relationships
     host = relationship("DockerHostDB", back_populates="auto_restart_configs")
@@ -111,8 +117,8 @@ class ContainerDesiredState(Base):
     container_name = Column(String, nullable=False)
     desired_state = Column(String, default='unspecified')  # 'should_run', 'on_demand', 'unspecified'
     custom_tags = Column(Text, nullable=True)  # Comma-separated custom tags
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
     # Relationships
     host = relationship("DockerHostDB")
@@ -133,7 +139,7 @@ class BatchJob(Base):
     success_items = Column(Integer, default=0)
     error_items = Column(Integer, default=0)
     skipped_items = Column(Integer, default=0)
-    created_at = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime, default=utcnow)
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
 
@@ -194,7 +200,7 @@ class GlobalSettings(Base):
     skip_compose_containers = Column(Boolean, default=True)  # Skip Docker Compose-managed containers
     health_check_timeout_seconds = Column(Integer, default=120)  # Health check timeout (seconds)
 
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
 class ContainerUpdate(Base):
     """Container update tracking"""
@@ -225,8 +231,8 @@ class ContainerUpdate(Base):
     registry_url = Column(Text, nullable=True)
     platform = Column(Text, nullable=True)
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
 class NotificationChannel(Base):
     """Notification channel configuration"""
@@ -237,8 +243,8 @@ class NotificationChannel(Base):
     type = Column(String, nullable=False)  # telegram, discord, slack, pushover
     config = Column(JSON, nullable=False)  # Channel-specific configuration
     enabled = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
 class AlertRuleDB(Base):
     """Alert rules for container state changes"""
@@ -252,8 +258,8 @@ class AlertRuleDB(Base):
     cooldown_minutes = Column(Integer, default=15)  # prevent spam
     enabled = Column(Boolean, default=True)
     last_triggered = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
     # Relationships
     containers = relationship("AlertRuleContainer", back_populates="alert_rule", cascade="all, delete-orphan")
@@ -266,7 +272,7 @@ class AlertRuleContainer(Base):
     alert_rule_id = Column(String, ForeignKey("alert_rules.id", ondelete="CASCADE"), nullable=False)
     host_id = Column(String, ForeignKey("docker_hosts.id", ondelete="CASCADE"), nullable=False)
     container_name = Column(String, nullable=False)
-    created_at = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime, default=utcnow)
 
     # Relationships
     alert_rule = relationship("AlertRuleDB", back_populates="containers")
@@ -319,8 +325,8 @@ class AlertRuleV2(Base):
     custom_template = Column(Text, nullable=True)  # Custom message template for this rule
 
     # Lifecycle
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
     created_by = Column(String, nullable=True)
     updated_by = Column(String, nullable=True)
     version = Column(Integer, default=1)  # Incremented on each update
@@ -391,7 +397,7 @@ class AlertAnnotation(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     alert_id = Column(String, ForeignKey("alerts_v2.id", ondelete="CASCADE"), nullable=False)
-    timestamp = Column(DateTime, default=datetime.now, nullable=False)
+    timestamp = Column(DateTime, default=utcnow, nullable=False)
     user = Column(String, nullable=True)
     text = Column(Text, nullable=False)
 
@@ -406,7 +412,7 @@ class RuleRuntime(Base):
     dedup_key = Column(String, primary_key=True)
     rule_id = Column(String, ForeignKey("alert_rules_v2.id", ondelete="CASCADE"), nullable=False)
     state_json = Column(Text, nullable=False)  # JSON state (see docs for format)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
 
     # Relationship
     rule = relationship("AlertRuleV2", foreign_keys=[rule_id])
@@ -418,7 +424,7 @@ class RuleEvaluation(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     rule_id = Column(String, nullable=False)
-    timestamp = Column(DateTime, default=datetime.now, nullable=False)
+    timestamp = Column(DateTime, default=utcnow, nullable=False)
     scope_id = Column(String, nullable=False)
     value = Column(Float, nullable=False)
     breached = Column(Boolean, nullable=False)
@@ -459,7 +465,7 @@ class EventLog(Base):
     duration_ms = Column(Integer, nullable=True)  # For performance tracking
 
     # Timestamps
-    timestamp = Column(DateTime, default=datetime.now, nullable=False)
+    timestamp = Column(DateTime, default=utcnow, nullable=False)
 
     # Indexes for efficient queries
     __table_args__ = (
@@ -481,7 +487,7 @@ class Tag(Base):
     name = Column(String, nullable=False, unique=True)
     color = Column(String, nullable=True)  # Hex color code (e.g., "#3b82f6")
     kind = Column(String, nullable=False, default='user')  # 'user' | 'system'
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    created_at = Column(DateTime, default=utcnow, nullable=False)
     last_used_at = Column(DateTime, nullable=True)  # Last time tag was assigned to something
 
     # Relationships
@@ -503,7 +509,7 @@ class TagAssignment(Base):
     container_name_at_attach = Column(String, nullable=True)
 
     # Timestamps
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    created_at = Column(DateTime, default=utcnow, nullable=False)
     last_seen_at = Column(DateTime, nullable=True)
 
     # Relationships
@@ -932,7 +938,7 @@ class DatabaseManager:
                 if host:
                     for key, value in updates.items():
                         setattr(host, key, value)
-                    host.updated_at = datetime.now()
+                    host.updated_at = datetime.now(timezone.utc)
                     session.commit()
                     session.refresh(host)
                     logger.info(f"Updated host {host.name} ({host_id[:8]}) in database")
@@ -991,7 +997,7 @@ class DatabaseManager:
             AlertV2.state == 'open'
         ).update({
             'state': 'resolved',
-            'resolved_at': datetime.now()
+            'resolved_at': datetime.now(timezone.utc)
         }, synchronize_session=False)
         cleanup_stats['alerts_resolved'] = alerts_updated
         if alerts_updated > 0:
@@ -1020,7 +1026,7 @@ class DatabaseManager:
             elif len(remaining_containers) < len(rule.containers):
                 # Some containers remain, update the alert rule
                 rule.containers = remaining_containers
-                rule.updated_at = datetime.now()
+                rule.updated_at = datetime.now(timezone.utc)
                 rules_updated += 1
                 logger.info(f"  ✓ Updated alert rule '{rule.name}' (removed containers from this host)")
 
@@ -1088,7 +1094,7 @@ class DatabaseManager:
 
                 if config:
                     config.enabled = enabled
-                    config.updated_at = datetime.now()
+                    config.updated_at = datetime.now(timezone.utc)
                     if not enabled:
                         config.restart_count = 0
                     logger.info(f"Updated auto-restart for {container_name} ({container_id[:12]}): enabled={enabled}")
@@ -1118,7 +1124,7 @@ class DatabaseManager:
 
                 if config:
                     config.restart_count += 1
-                    config.last_restart = datetime.now()
+                    config.last_restart = datetime.now(timezone.utc)
                     session.commit()
                     logger.debug(f"Incremented restart count for {container_id[:12]} to {config.restart_count}")
             except Exception as e:
@@ -1163,7 +1169,7 @@ class DatabaseManager:
 
                 if config:
                     config.desired_state = desired_state
-                    config.updated_at = datetime.now()
+                    config.updated_at = datetime.now(timezone.utc)
                     logger.info(f"Updated desired state for {container_name} ({container_id[:12]}): {desired_state}")
                 else:
                     config = ContainerDesiredState(
@@ -1198,7 +1204,7 @@ class DatabaseManager:
                 if config:
                     config.auto_update_enabled = enabled
                     config.floating_tag_mode = floating_tag_mode
-                    config.updated_at = datetime.now()
+                    config.updated_at = datetime.now(timezone.utc)
                     logger.info(f"Updated auto-update for {container_key}: enabled={enabled}, mode={floating_tag_mode}")
                 else:
                     # Create new ContainerUpdate record if it doesn't exist
@@ -1317,7 +1323,7 @@ class DatabaseManager:
             # Update tag's last_used_at timestamp
             tag_obj = session.query(Tag).filter(Tag.id == tag.id).first()
             if tag_obj:
-                tag_obj.last_used_at = datetime.now()
+                tag_obj.last_used_at = datetime.now(timezone.utc)
 
             # Check if assignment already exists
             existing = session.query(TagAssignment).filter(
@@ -1328,7 +1334,7 @@ class DatabaseManager:
 
             if existing:
                 # Update last_seen_at
-                existing.last_seen_at = datetime.now()
+                existing.last_seen_at = datetime.now(timezone.utc)
                 session.commit()
                 return existing
 
@@ -1341,7 +1347,7 @@ class DatabaseManager:
                 compose_service=compose_service,
                 host_id_at_attach=host_id_at_attach,
                 container_name_at_attach=container_name_at_attach,
-                last_seen_at=datetime.now()
+                last_seen_at=datetime.now(timezone.utc)
             )
             session.add(assignment)
             session.commit()
@@ -1537,7 +1543,7 @@ class DatabaseManager:
                                 compose_service=compose_service,
                                 host_id_at_attach=host_id,
                                 container_name_at_attach=container_name,
-                                last_seen_at=datetime.now()
+                                last_seen_at=datetime.now(timezone.utc)
                             )
                             session.add(new_assignment)
                             reattached_tags.append(tag.name)
@@ -1569,7 +1575,7 @@ class DatabaseManager:
                                 subject_id=container_key,
                                 host_id_at_attach=host_id,
                                 container_name_at_attach=container_name,
-                                last_seen_at=datetime.now()
+                                last_seen_at=datetime.now(timezone.utc)
                             )
                             session.add(new_assignment)
                             reattached_tags.append(tag.name)
@@ -1594,7 +1600,7 @@ class DatabaseManager:
         """
         with self.get_session() as session:
             from datetime import timedelta
-            cutoff_date = datetime.now() - timedelta(days=days_old)
+            cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_old)
 
             # Find orphaned container assignments (last_seen_at > cutoff)
             # Process in batches to avoid locking the database for too long
@@ -1647,7 +1653,7 @@ class DatabaseManager:
 
         with self.get_session() as session:
             from datetime import timedelta
-            cutoff_date = datetime.now() - timedelta(days=days_unused)
+            cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_unused)
 
             # Find tags with no assignments and not used recently
             tags_to_delete = session.query(Tag).outerjoin(TagAssignment).group_by(Tag.id).having(
@@ -1686,7 +1692,7 @@ class DatabaseManager:
                         setattr(settings, key, value)
                     else:
                         logger.warning(f"Ignoring unknown setting: {key}")
-                settings.updated_at = datetime.now()
+                settings.updated_at = datetime.now(timezone.utc)
                 session.commit()
                 session.refresh(settings)
                 # Expunge the object so it's not tied to the session
@@ -1740,7 +1746,7 @@ class DatabaseManager:
                 if channel:
                     for key, value in updates.items():
                         setattr(channel, key, value)
-                    channel.updated_at = datetime.now()
+                    channel.updated_at = datetime.now(timezone.utc)
                     session.commit()
                     session.refresh(channel)
                     logger.info(f"Updated notification channel: {channel.name} (ID: {channel_id})")
@@ -1850,7 +1856,7 @@ class DatabaseManager:
                     # Update rule fields
                     for key, value in updates.items():
                         setattr(rule, key, value)
-                    rule.updated_at = datetime.now()
+                    rule.updated_at = datetime.now(timezone.utc)
 
                     # Update container+host pairs if containers field was explicitly provided
                     # (could be None for "all containers", empty list, or list with specific containers)
@@ -1986,7 +1992,7 @@ class DatabaseManager:
 
             # Increment version
             rule.version += 1
-            rule.updated_at = datetime.now()
+            rule.updated_at = datetime.now(timezone.utc)
 
             session.commit()
             session.refresh(rule)
@@ -2154,7 +2160,7 @@ class DatabaseManager:
     def cleanup_old_events(self, days: int = 30):
         """Clean up old event logs"""
         with self.get_session() as session:
-            cutoff_date = datetime.now() - timedelta(days=days)
+            cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
             deleted_count = session.query(EventLog).filter(
                 EventLog.timestamp < cutoff_date
             ).delete()
@@ -2264,7 +2270,7 @@ class DatabaseManager:
 
             if user and is_valid:
                 # Update last login
-                user.last_login = datetime.now()
+                user.last_login = datetime.now(timezone.utc)
                 session.commit()
                 return {
                     "username": user.username,
@@ -2281,7 +2287,7 @@ class DatabaseManager:
                 user.password_hash = self._hash_password(new_password)
                 user.is_first_login = False
                 user.must_change_password = False
-                user.updated_at = datetime.now()
+                user.updated_at = datetime.now(timezone.utc)
                 session.commit()
                 logger.info(f"Password changed for user: {username}")
                 return True
@@ -2299,7 +2305,7 @@ class DatabaseManager:
             user = session.query(User).filter(User.username == old_username).first()
             if user:
                 user.username = new_username
-                user.updated_at = datetime.now()
+                user.updated_at = datetime.now(timezone.utc)
                 session.commit()
                 logger.info(f"Username changed from {old_username} to {new_username}")
                 return True
@@ -2311,7 +2317,7 @@ class DatabaseManager:
             user = session.query(User).filter(User.username == username).first()
             if user:
                 user.display_name = display_name if display_name.strip() else None
-                user.updated_at = datetime.now()
+                user.updated_at = datetime.now(timezone.utc)
                 session.commit()
                 logger.info(f"Display name updated for user {username}: {display_name}")
                 return True
@@ -2330,7 +2336,7 @@ class DatabaseManager:
 
             user.password_hash = self._hash_password(new_password)
             user.must_change_password = True
-            user.updated_at = datetime.now()
+            user.updated_at = datetime.now(timezone.utc)
             session.commit()
             logger.info(f"Password reset for user: {username}")
             return new_password
@@ -2355,7 +2361,7 @@ class DatabaseManager:
             user = session.query(User).filter(User.username == username).first()
             if user:
                 user.dashboard_layout = layout
-                user.updated_at = datetime.now()
+                user.updated_at = datetime.now(timezone.utc)
                 session.commit()
                 return True
             return False
@@ -2374,7 +2380,7 @@ class DatabaseManager:
             user = session.query(User).filter(User.username == username).first()
             if user:
                 user.modal_preferences = preferences
-                user.updated_at = datetime.now()
+                user.updated_at = datetime.now(timezone.utc)
                 session.commit()
                 return True
             return False
@@ -2396,7 +2402,7 @@ class DatabaseManager:
                 if sort_order not in ['asc', 'desc']:
                     return False
                 user.event_sort_order = sort_order
-                user.updated_at = datetime.now()
+                user.updated_at = datetime.now(timezone.utc)
                 session.commit()
                 return True
             return False
@@ -2419,7 +2425,7 @@ class DatabaseManager:
                 if sort_order not in valid_sorts:
                     return False
                 user.container_sort_order = sort_order
-                user.updated_at = datetime.now()
+                user.updated_at = datetime.now(timezone.utc)
                 session.commit()
                 return True
             return False

@@ -63,7 +63,7 @@ class Event:
         self.host_id = host_id
         self.host_name = host_name
         self.data = data or {}
-        self.timestamp = timestamp or datetime.now()
+        self.timestamp = timestamp or datetime.now(timezone.utc)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert event to dictionary for logging/processing"""

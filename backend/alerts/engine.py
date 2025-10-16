@@ -241,7 +241,7 @@ class AlertEngine:
             # Find all enabled event-driven rules that match this event
             # Event-driven rules have metric=None
             rules = session.query(AlertRuleV2).filter(
-                AlertRuleV2.enabled == True,
+                AlertRuleV2.enabled.is_(True),
                 AlertRuleV2.metric == None,
                 AlertRuleV2.scope == context.scope_type
             ).all()
@@ -528,7 +528,7 @@ class AlertEngine:
         with self.db.get_session() as session:
             # Find all enabled metric-driven rules for this metric
             rules = session.query(AlertRuleV2).filter(
-                AlertRuleV2.enabled == True,
+                AlertRuleV2.enabled.is_(True),
                 AlertRuleV2.metric == metric_name,
                 AlertRuleV2.scope == context.scope_type
             ).all()
@@ -679,7 +679,9 @@ class AlertEngine:
         elif operator == "<=":
             return value <= threshold
         elif operator == "==":
-            return value == threshold
+            # Use epsilon comparison for floating point equality (tolerance: 0.001%)
+            epsilon = abs(threshold) * 0.00001 if threshold != 0 else 0.00001
+            return abs(value - threshold) < epsilon
         elif operator == ">":
             return value > threshold
         elif operator == "<":

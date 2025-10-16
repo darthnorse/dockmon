@@ -7,7 +7,7 @@ Runs daily by default, configurable via global settings.
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
 
 from database import DatabaseManager, ContainerUpdate, GlobalSettings
@@ -330,8 +330,8 @@ class UpdateChecker:
                 record.update_available = update_info["update_available"]
                 record.registry_url = update_info["registry_url"]
                 record.platform = update_info["platform"]
-                record.last_checked_at = datetime.now()
-                record.updated_at = datetime.now()
+                record.last_checked_at = datetime.now(timezone.utc)
+                record.updated_at = datetime.now(timezone.utc)
             else:
                 # Create new record
                 record = ContainerUpdate(
@@ -345,7 +345,7 @@ class UpdateChecker:
                     floating_tag_mode=update_info["floating_tag_mode"],
                     registry_url=update_info["registry_url"],
                     platform=update_info["platform"],
-                    last_checked_at=datetime.now(),
+                    last_checked_at=datetime.now(timezone.utc),
                 )
                 session.add(record)
 

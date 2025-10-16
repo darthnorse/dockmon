@@ -5,7 +5,7 @@ Manages background tasks that run at regular intervals
 
 import asyncio
 import logging
-from datetime import datetime, time as dt_time
+from datetime import datetime, time as dt_time, timezone
 
 from database import DatabaseManager
 from event_logger import EventLogger, EventSeverity, EventType
@@ -190,7 +190,7 @@ class PeriodicJobsManager:
             # Parse configured time
             hour, minute = map(int, check_time_str.split(":"))
             target_time = dt_time(hour, minute)
-            now = datetime.now()
+            now = datetime.now(timezone.utc)
             current_time = now.time()
 
             # Check if we're past the target time and haven't run today
@@ -264,7 +264,7 @@ class PeriodicJobsManager:
             )
 
             # Update last check time
-            self._last_update_check = datetime.now()
+            self._last_update_check = datetime.now(timezone.utc)
             logger.info(f"Manual update check complete: {stats}")
             return stats
 

@@ -7,7 +7,7 @@ import asyncio
 import json
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Optional, Callable
 from collections import defaultdict
 
@@ -104,7 +104,7 @@ class BatchJobManager:
                     return
 
                 job.status = 'running'
-                job.started_at = datetime.now()
+                job.started_at = datetime.now(timezone.utc)
                 session.commit()
 
                 # Get all items for this job
@@ -133,7 +133,7 @@ class BatchJobManager:
             with self.db.get_session() as session:
                 job = session.query(BatchJob).filter_by(id=job_id).first()
                 if job:
-                    job.completed_at = datetime.now()
+                    job.completed_at = datetime.now(timezone.utc)
 
                     # Determine final status
                     if job.error_items > 0 and job.success_items > 0:
@@ -155,7 +155,7 @@ class BatchJobManager:
                 job = session.query(BatchJob).filter_by(id=job_id).first()
                 if job:
                     job.status = 'failed'
-                    job.completed_at = datetime.now()
+                    job.completed_at = datetime.now(timezone.utc)
                     session.commit()
         finally:
             # Clean up
@@ -179,7 +179,7 @@ class BatchJobManager:
                     item = session.query(BatchJobItem).filter_by(id=item_id).first()
                     if item:
                         item.status = 'running'
-                        item.started_at = datetime.now()
+                        item.started_at = datetime.now(timezone.utc)
                         session.commit()
 
                 # Broadcast item update
@@ -205,7 +205,7 @@ class BatchJobManager:
                     if item and job:
                         item.status = result['status']
                         item.message = result['message']
-                        item.completed_at = datetime.now()
+                        item.completed_at = datetime.now(timezone.utc)
 
                         # Update job counters
                         job.completed_items += 1
@@ -232,7 +232,7 @@ class BatchJobManager:
                     if item and job:
                         item.status = 'error'
                         item.message = str(e)
-                        item.completed_at = datetime.now()
+                        item.completed_at = datetime.now(timezone.utc)
                         job.completed_items += 1
                         job.error_items += 1
                         session.commit()

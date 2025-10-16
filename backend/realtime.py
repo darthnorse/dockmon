@@ -7,7 +7,7 @@ Note: Docker event monitoring is now handled by the Go service
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Set, Optional, Any
 from dataclasses import dataclass, asdict
 import docker
@@ -178,7 +178,7 @@ class RealtimeMonitor:
                 block_read_mb=round(io_read / (1024 * 1024), 2),
                 block_write_mb=round(io_write / (1024 * 1024), 2),
                 pids=pids,
-                timestamp=datetime.now().isoformat()
+                timestamp=datetime.now(timezone.utc).isoformat()
             )
         except Exception as e:
             logger.error(f"Error calculating stats: {e}")
@@ -193,7 +193,7 @@ class RealtimeMonitor:
                 block_read_mb=0,
                 block_write_mb=0,
                 pids=0,
-                timestamp=datetime.now().isoformat()
+                timestamp=datetime.now(timezone.utc).isoformat()
             )
 
     def stop_all_monitoring(self):

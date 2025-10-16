@@ -10,7 +10,7 @@ import logging
 from collections import deque
 from typing import Dict, List, Optional
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +88,7 @@ class StatsHistoryBuffer:
 
         # Store raw value for next EMA calculation
         self._last_raw[host_id] = HostStatsPoint(
-            timestamp=datetime.now(),
+            timestamp=datetime.now(timezone.utc),
             cpu_percent=cpu,
             mem_percent=mem,
             net_bytes_per_sec=net
@@ -96,7 +96,7 @@ class StatsHistoryBuffer:
 
         # Add smoothed point to history
         point = HostStatsPoint(
-            timestamp=datetime.now(),
+            timestamp=datetime.now(timezone.utc),
             cpu_percent=smoothed_cpu,
             mem_percent=smoothed_mem,
             net_bytes_per_sec=smoothed_net
@@ -156,7 +156,7 @@ class StatsHistoryBuffer:
         Args:
             max_age_seconds: Max age in seconds (default 5 minutes)
         """
-        cutoff_time = datetime.now() - timedelta(seconds=max_age_seconds)
+        cutoff_time = datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)
 
         for host_id in list(self._history.keys()):
             history = self._history[host_id]
@@ -240,7 +240,7 @@ class ContainerStatsHistoryBuffer:
 
         # Store raw value for next EMA calculation
         self._last_raw[container_key] = ContainerStatsPoint(
-            timestamp=datetime.now(),
+            timestamp=datetime.now(timezone.utc),
             cpu_percent=cpu,
             mem_percent=mem,
             net_bytes_per_sec=net
@@ -248,7 +248,7 @@ class ContainerStatsHistoryBuffer:
 
         # Add smoothed point to history
         point = ContainerStatsPoint(
-            timestamp=datetime.now(),
+            timestamp=datetime.now(timezone.utc),
             cpu_percent=smoothed_cpu,
             mem_percent=smoothed_mem,
             net_bytes_per_sec=smoothed_net
@@ -307,7 +307,7 @@ class ContainerStatsHistoryBuffer:
         Args:
             max_age_seconds: Max age in seconds (default 5 minutes)
         """
-        cutoff_time = datetime.now() - timedelta(seconds=max_age_seconds)
+        cutoff_time = datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)
 
         for container_key in list(self._history.keys()):
             history = self._history[container_key]

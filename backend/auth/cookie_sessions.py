@@ -19,7 +19,7 @@ import logging
 import secrets
 import threading
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
 
@@ -39,7 +39,7 @@ def _load_or_generate_secret() -> str:
         Session secret key
     """
     import json
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
 
     secret_file = os.getenv('SESSION_SECRET_FILE', '/app/data/.session_secret')
     rotation_days = int(os.getenv('SESSION_SECRET_ROTATION_DAYS', '90'))
@@ -60,7 +60,7 @@ def _load_or_generate_secret() -> str:
                         # SECURITY FIX: Check if secret needs rotation
                         if created_at_str:
                             created_at = datetime.fromisoformat(created_at_str)
-                            age_days = (datetime.now() - created_at).days
+                            age_days = (datetime.now(timezone.utc) - created_at).days
 
                             if age_days > rotation_days:
                                 logger.warning(
@@ -88,7 +88,7 @@ def _load_or_generate_secret() -> str:
     secret = secrets.token_urlsafe(32)
     secret_data = {
         'secret': secret,
-        'created_at': datetime.now().isoformat(),
+        'created_at': datetime.now(timezone.utc).isoformat(),
         'rotation_days': rotation_days
     }
 

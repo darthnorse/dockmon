@@ -16,7 +16,7 @@ import asyncio
 import json
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any
 from contextlib import asynccontextmanager
 
@@ -926,7 +926,7 @@ async def update_auto_update_config(
             # Update existing record
             record.auto_update_enabled = auto_update_enabled
             record.floating_tag_mode = floating_tag_mode
-            record.updated_at = datetime.now()
+            record.updated_at = datetime.now(timezone.utc)
         else:
             # Create new record - we need at least minimal info
             # Get container to populate image info
@@ -1637,7 +1637,7 @@ async def get_events(
 
         # If hours parameter is provided, calculate start_date
         if hours is not None:
-            start_datetime = datetime.now() - timedelta(hours=hours)
+            start_datetime = datetime.now(timezone.utc) - timedelta(hours=hours)
         elif start_date:
             try:
                 start_datetime = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
@@ -1957,7 +1957,7 @@ async def save_view_mode(request: Request, current_user: dict = Depends(get_curr
             user = session.query(User).filter(User.username == username).first()
             if user:
                 user.view_mode = view_mode
-                user.updated_at = datetime.now()
+                user.updated_at = datetime.now(timezone.utc)
                 session.commit()
                 return {"success": True}
 
@@ -2358,7 +2358,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
         # This eliminates the 5-10 second delay when opening container drawers on page load
         containers = await monitor.get_containers()
         broadcast_data = {
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "containers": [c.dict() for c in containers]
         }
 

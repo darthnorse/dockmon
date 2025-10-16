@@ -6,7 +6,7 @@ Handles container scanning, reconnection logic, and stats population
 import logging
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 import docker
@@ -308,7 +308,7 @@ class ContainerDiscovery:
             # Still offline - update status
             host.status = "offline"
             host.error = f"Connection failed: {str(e)}"
-            host.last_checked = datetime.now()
+            host.last_checked = datetime.now(timezone.utc)
 
             # Log with backoff info to help debugging
             # Next backoff will be based on new attempt count (attempts + 1)
@@ -538,7 +538,7 @@ class ContainerDiscovery:
             # Update previous status
             self.host_previous_status[host_id] = "offline"
 
-        host.last_checked = datetime.now()
+        host.last_checked = datetime.now(timezone.utc)
         return containers
 
     async def populate_container_stats(self, containers: List[Container]) -> None:

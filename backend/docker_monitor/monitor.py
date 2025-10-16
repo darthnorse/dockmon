@@ -10,7 +10,7 @@ import os
 import shutil
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 import docker
@@ -1094,12 +1094,12 @@ class DockerMonitor:
                 logger.info(f"V2: Processing {action} event for {container_name}")
 
                 # Parse timestamp
-                from datetime import datetime
+                from datetime import datetime, timezone
                 try:
                     timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
                 except (ValueError, AttributeError, TypeError) as e:
                     logger.warning(f"Failed to parse timestamp '{timestamp_str}': {e}, using current time")
-                    timestamp = datetime.now()
+                    timestamp = datetime.now(timezone.utc)
 
                 # Map Docker events to EventBus event types
                 bus_event_type = None
@@ -1131,13 +1131,13 @@ class DockerMonitor:
                     bus_event_type = BusEventType.CONTAINER_DIED
                     new_state = "oom"
 
-                # Get old state from container state tracking
+                # Get old state from container state tracking (with lock to prevent race with polling loop)
                 container_key = f"{host_id}:{container_id}"
-                old_state = self._container_states.get(container_key)
-
-                # Update state tracking immediately so polling loop doesn't think there's drift
-                if new_state:
-                    self._container_states[container_key] = new_state
+                async with self._state_lock:
+                    old_state = self._container_states.get(container_key)
+                    # Update state tracking immediately so polling loop doesn't think there's drift
+                    if new_state:
+                        self._container_states[container_key] = new_state
 
                 # Get host name
                 host_name = self.hosts.get(host_id).name if host_id in self.hosts else host_id
@@ -1199,20 +1199,27 @@ class DockerMonitor:
                         # Restart immediately for instant response
                         container_key = f"{host_id}:{container_id}"
 
-                        # Atomically check and set the restarting flag to prevent duplicate restarts
-                        is_restarting = self.restarting_containers.get(container_key, False)
-                        if not is_restarting:
-                            attempts = self.restart_attempts.get(container_key, 0)
-                            if attempts < self.settings.max_retries:
-                                # Set restarting flag BEFORE spawning task to prevent race condition
-                                self.restarting_containers[container_key] = True
+                        # Atomically check and set the restarting flag to prevent duplicate restarts (with lock)
+                        async with self._state_lock:
+                            is_restarting = self.restarting_containers.get(container_key, False)
+                            if not is_restarting:
+                                attempts = self.restart_attempts.get(container_key, 0)
+                                if attempts < self.settings.max_retries:
+                                    # Set restarting flag BEFORE spawning task to prevent race condition
+                                    self.restarting_containers[container_key] = True
+                                    should_restart = True
+                                else:
+                                    should_restart = False
+                            else:
+                                should_restart = False
 
-                                # Restart immediately (event-driven - instant response)
-                                logger.info(f"Auto-restart triggered by 'die' event for {container_name} (attempt {attempts + 1}/{self.settings.max_retries})")
-                                task = asyncio.create_task(
-                                    self.auto_restart_container(container)
-                                )
-                                task.add_done_callback(_handle_task_exception)
+                        # Spawn restart task outside lock (IO operations shouldn't hold locks)
+                        if should_restart:
+                            logger.info(f"Auto-restart triggered by 'die' event for {container_name} (attempt {attempts + 1}/{self.settings.max_retries})")
+                            task = asyncio.create_task(
+                                self.auto_restart_container(container)
+                            )
+                            task.add_done_callback(_handle_task_exception)
                     else:
                         logger.warning(f"Container {container_name} not found in cache for event-driven auto-restart")
 
@@ -1323,13 +1330,22 @@ class DockerMonitor:
 
                         # Use host_id:container_id as key to prevent collisions between hosts
                         container_key = f"{container.host_id}:{container.short_id}"
-                        attempts = self.restart_attempts.get(container_key, 0)
-                        is_restarting = self.restarting_containers.get(container_key, False)
 
-                        if attempts < self.settings.max_retries and not is_restarting:
+                        # Atomically check and set restart flag (with lock)
+                        async with self._state_lock:
+                            attempts = self.restart_attempts.get(container_key, 0)
+                            is_restarting = self.restarting_containers.get(container_key, False)
+
+                            if attempts < self.settings.max_retries and not is_restarting:
+                                self.restarting_containers[container_key] = True
+                                should_restart = True
+                            else:
+                                should_restart = False
+
+                        # Spawn restart task outside lock
+                        if should_restart:
                             # This should be rare - events should trigger auto-restart immediately
                             logger.info(f"Auto-restart reconciliation triggered for {container.name} (polling safety net)")
-                            self.restarting_containers[container_key] = True
                             task = asyncio.create_task(
                                 self.auto_restart_container(container)
                             )
@@ -1344,7 +1360,7 @@ class DockerMonitor:
                     broadcast_data = {
                         "containers": [c.dict() for c in containers],
                         "hosts": [h.dict() for h in self.hosts.values()],
-                        "timestamp": datetime.now().isoformat()
+                        "timestamp": datetime.now(timezone.utc).isoformat()
                     }
 
                     # Only include host metrics if host stats are enabled

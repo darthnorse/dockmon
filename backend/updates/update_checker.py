@@ -12,6 +12,7 @@ from typing import List, Dict, Optional
 
 from database import DatabaseManager, ContainerUpdate, GlobalSettings
 from updates.registry_adapter import get_registry_adapter
+from event_bus import Event, EventType, get_event_bus
 
 logger = logging.getLogger(__name__)
 
@@ -352,9 +353,9 @@ class UpdateChecker:
 
     async def _create_update_event(self, container: Dict, update_info: Dict):
         """
-        Create an event and trigger alerts for newly available update.
+        Emit update_available event via EventBus.
 
-        Only creates event if this is a NEW update (not already in DB).
+        Only emits if this is a NEW update (not already in DB).
 
         Args:
             container: Container dict
@@ -375,56 +376,30 @@ class UpdateChecker:
                 try:
                     logger.info(f"New update available for {container['name']}: {update_info['latest_image']}")
 
-                    # Create event in database
-                    if self.monitor and hasattr(self.monitor, 'event_logger'):
-                        from event_logger import EventCategory, EventType, EventSeverity, EventContext
+                    # Get host name
+                    host_name = self.monitor.hosts.get(container["host_id"]).name if container["host_id"] in self.monitor.hosts else container["host_id"]
 
-                        context = EventContext(
-                            host_id=container["host_id"],
-                            container_id=container["id"],
-                            container_name=container["name"]
-                        )
-
-                        self.monitor.event_logger.log_event(
-                            category=EventCategory.CONTAINER,
-                            event_type=EventType.INFO,
-                            severity=EventSeverity.INFO,
-                            title=f"Update Available: {container['name']}",
-                            message=f"Update available: {update_info['current_image']} → {update_info['latest_image']}",
-                            context=context
-                        )
-
-                    # Trigger alert evaluation for update_available alerts
-                    if self.monitor and hasattr(self.monitor, 'alert_evaluation_service'):
-                        # Get host name
-                        host_name = self.monitor.hosts.get(container["host_id"]).name if container["host_id"] in self.monitor.hosts else container["host_id"]
-
-                        # Create event data
-                        event_data = {
-                            'timestamp': datetime.now().isoformat(),
-                            'event_type': 'info',
+                    # Emit event via EventBus - it handles database logging and alert triggering
+                    event_bus = get_event_bus(self.monitor)
+                    await event_bus.emit(Event(
+                        event_type=EventType.UPDATE_AVAILABLE,
+                        scope_type='container',
+                        scope_id=container["id"],
+                        scope_name=container["name"],
+                        host_id=container["host_id"],
+                        host_name=host_name,
+                        data={
                             'current_image': update_info['current_image'],
                             'latest_image': update_info['latest_image'],
                             'current_digest': update_info['current_digest'],
                             'latest_digest': update_info['latest_digest'],
-                            'update_detected': True,  # Special flag for alert matching
-                            'triggered_by': 'update_checker',
                         }
+                    ))
 
-                        # Call alert evaluation - now properly awaited
-                        await self.monitor.alert_evaluation_service.handle_container_event(
-                            event_type='info',
-                            container_id=container["id"],
-                            container_name=container["name"],
-                            host_id=container["host_id"],
-                            host_name=host_name,
-                            event_data=event_data
-                        )
-
-                        logger.info(f"Triggered update_available alerts for {container['name']}")
+                    logger.debug(f"Emitted UPDATE_AVAILABLE event for {container['name']}")
 
                 except Exception as e:
-                    logger.error(f"Could not create update event or trigger alerts: {e}", exc_info=True)
+                    logger.error(f"Could not emit update event: {e}", exc_info=True)
 
     def _is_compose_container(self, container: Dict) -> bool:
         """

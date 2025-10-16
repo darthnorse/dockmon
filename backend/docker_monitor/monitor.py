@@ -25,6 +25,7 @@ from websocket.connection import ConnectionManager
 from realtime import RealtimeMonitor
 from notifications import NotificationService, AlertProcessor
 from event_logger import EventLogger, EventSeverity, EventType
+from event_bus import Event, EventType as BusEventType, get_event_bus
 from stats_client import get_stats_client
 from docker_monitor.stats_manager import StatsManager
 from docker_monitor.stats_history import StatsHistoryBuffer, ContainerStatsHistoryBuffer
@@ -235,7 +236,8 @@ class DockerMonitor:
             self.clients,
             event_logger=self.event_logger,
             alert_evaluation_service=None,  # Will be set after alert_evaluation_service is initialized
-            websocket_manager=self.manager  # Pass ConnectionManager for real-time host status updates
+            websocket_manager=self.manager,  # Pass ConnectionManager for real-time host status updates
+            monitor=self  # Pass self for EventBus access
         )
         # Share reconnection tracking with discovery module
         self.discovery.reconnect_attempts = self.reconnect_attempts
@@ -1082,7 +1084,7 @@ class DockerMonitor:
             if action in important_events:
                 logger.info(f"Docker event: {action} - {container_name} ({container_id[:12]}) on host {host_id[:8]}")
 
-            # Process event for v2 alerts
+            # Process event using EventBus
             # Only process final/definitive events to avoid duplicate evaluations:
             # - die (not kill/stop) for container stopped
             # - start for container started
@@ -1099,13 +1101,13 @@ class DockerMonitor:
                     logger.warning(f"Failed to parse timestamp '{timestamp_str}': {e}, using current time")
                     timestamp = datetime.now()
 
-                # Map Docker events to v2 alert engine format
-                # Engine expects "state_change" with new_state in event_data
-                event_type = "state_change"
+                # Map Docker events to EventBus event types
+                bus_event_type = None
                 new_state = None
                 exit_code = None
 
                 if action == 'die':
+                    bus_event_type = BusEventType.CONTAINER_DIED
                     new_state = "exited"
                     # Docker sends exitCode in attributes
                     exit_code_str = attributes.get('exitCode')
@@ -1118,12 +1120,15 @@ class DockerMonitor:
                     else:
                         exit_code = 0  # Default to 0 if not provided
                 elif action == 'start':
+                    bus_event_type = BusEventType.CONTAINER_STARTED
                     new_state = "running"
                 elif action == 'health_status':
                     # Health status change
                     health_status = attributes.get('health_status', attributes.get('health', 'unhealthy'))
+                    bus_event_type = BusEventType.CONTAINER_HEALTH_CHANGED
                     new_state = health_status
                 elif action == 'oom':
+                    bus_event_type = BusEventType.CONTAINER_DIED
                     new_state = "oom"
 
                 # Get old state from container state tracking
@@ -1134,33 +1139,30 @@ class DockerMonitor:
                 if new_state:
                     self._container_states[container_key] = new_state
 
-                # Build event data with new_state that engine expects
-                event_data = {
-                    'timestamp': timestamp.isoformat(),
-                    'event_type': event_type,
-                    'new_state': new_state,
-                    'old_state': old_state,
-                    'exit_code': exit_code,
-                    'image': attributes.get('image', ''),
-                    'triggered_by': 'system',  # Docker events are system-triggered
-                    'attributes': attributes
-                }
-
                 # Get host name
                 host_name = self.hosts.get(host_id).name if host_id in self.hosts else host_id
 
-                # Process in background to not block event monitoring
-                task = asyncio.create_task(
-                    self.alert_evaluation_service.handle_container_event(
-                        event_type=event_type,
-                        container_id=container_id,  # Short ID (12 chars) - standardized format
-                        container_name=container_name,
-                        host_id=host_id,
-                        host_name=host_name,
-                        event_data=event_data
+                # Emit event via EventBus (in background to not block event monitoring)
+                if bus_event_type:
+                    task = asyncio.create_task(
+                        get_event_bus(self).emit(Event(
+                            event_type=bus_event_type,
+                            scope_type='container',
+                            scope_id=container_id,  # Short ID (12 chars)
+                            scope_name=container_name,
+                            host_id=host_id,
+                            host_name=host_name,
+                            timestamp=timestamp,
+                            data={
+                                'new_state': new_state,
+                                'old_state': old_state,
+                                'exit_code': exit_code,
+                                'image': attributes.get('image', ''),
+                                'attributes': attributes
+                            }
+                        ))
                     )
-                )
-                task.add_done_callback(_handle_task_exception)
+                    task.add_done_callback(_handle_task_exception)
 
             # Event-driven auto-restart: Check if container needs auto-restart on 'die' events
             if action == 'die':

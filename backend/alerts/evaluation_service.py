@@ -53,7 +53,6 @@ class AlertEvaluationService:
         self._running = False
         self._task: Optional[asyncio.Task] = None
         self._notification_task: Optional[asyncio.Task] = None
-        self._recent_notifications: Dict[str, float] = {}  # {alert_id: timestamp} for deduplication
 
     async def start(self):
         """Start the alert evaluation service"""
@@ -368,10 +367,6 @@ class AlertEvaluationService:
                     f"Error evaluating {metric_name} for {context.container_name}: {e}",
                     exc_info=True
                 )
-
-    def update_container_cache(self, container_id: str, info: Dict[str, Any]):
-        """Update container metadata cache"""
-        self._container_cache[container_id] = info
 
     async def _handle_alert_notification(self, alert: AlertV2):
         """

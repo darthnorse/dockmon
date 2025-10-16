@@ -15,9 +15,18 @@ from docker import DockerClient
 from config.paths import CERTS_DIR
 from database import DatabaseManager, DockerHostDB
 from models.docker_models import DockerHost, Container, derive_container_tags
+from event_bus import Event, EventType as BusEventType, get_event_bus
 from stats_client import get_stats_client
 
 logger = logging.getLogger(__name__)
+
+
+def _handle_task_exception(task):
+    """Handle exceptions from fire-and-forget async tasks"""
+    try:
+        task.result()
+    except Exception as e:
+        logger.error(f"Unhandled exception in background task: {e}", exc_info=True)
 
 
 def parse_container_ports(port_bindings: dict) -> list[str]:
@@ -145,7 +154,7 @@ def parse_container_env(env_list: list) -> dict[str, str]:
 class ContainerDiscovery:
     """Handles container discovery and reconnection logic"""
 
-    def __init__(self, db: DatabaseManager, settings, hosts: Dict[str, DockerHost], clients: Dict[str, DockerClient], event_logger=None, alert_evaluation_service=None, websocket_manager=None):
+    def __init__(self, db: DatabaseManager, settings, hosts: Dict[str, DockerHost], clients: Dict[str, DockerClient], event_logger=None, alert_evaluation_service=None, websocket_manager=None, monitor=None):
         self.db = db
         self.settings = settings
         self.hosts = hosts
@@ -153,6 +162,7 @@ class ContainerDiscovery:
         self.event_logger = event_logger
         self.alert_evaluation_service = alert_evaluation_service
         self.websocket_manager = websocket_manager
+        self.monitor = monitor
 
         # Reconnection tracking with exponential backoff
         self.reconnect_attempts: Dict[str, int] = {}  # Track reconnect attempts per host
@@ -335,6 +345,29 @@ class ContainerDiscovery:
             host.container_count = len(docker_containers)
             host.error = None
 
+            # If host just came back online from offline, emit reconnection event
+            if previous_status == "offline":
+                logger.info(f"Host {host.name} reconnected (transitioned from offline to online)")
+
+                # Emit host connected event via EventBus
+                if self.alert_evaluation_service:
+                    import asyncio
+                    try:
+                        task = asyncio.create_task(
+                            get_event_bus(self.monitor).emit(Event(
+                                event_type=BusEventType.HOST_CONNECTED,
+                                scope_type='host',
+                                scope_id=host_id,
+                                scope_name=host.name,
+                                host_id=host_id,
+                                host_name=host.name,
+                                data={"url": host.url}
+                            ))
+                        )
+                        task.add_done_callback(_handle_task_exception)
+                    except Exception as e:
+                        logger.error(f"Failed to emit host connected event: {e}")
+
             # Update previous status
             self.host_previous_status[host_id] = "online"
 
@@ -479,24 +512,28 @@ class ContainerDiscovery:
                     except Exception as ws_error:
                         logger.error(f"Failed to broadcast host status change: {ws_error}")
 
-                # Trigger alert evaluation for host disconnection
+                # Emit host disconnection event via EventBus
                 if self.alert_evaluation_service:
                     import asyncio
-                    # Run async alert evaluation in background
+                    # Run async event emission in background
                     try:
-                        asyncio.create_task(
-                            self.alert_evaluation_service.handle_host_event(
-                                event_type="disconnection",
+                        task = asyncio.create_task(
+                            get_event_bus(self.monitor).emit(Event(
+                                event_type=BusEventType.HOST_DISCONNECTED,
+                                scope_type='host',
+                                scope_id=host_id,
+                                scope_name=host.name,
                                 host_id=host_id,
-                                event_data={
-                                    "host_name": host.name,
+                                host_name=host.name,
+                                data={
                                     "error": str(e),
                                     "url": host.url
                                 }
-                            )
+                            ))
                         )
+                        task.add_done_callback(_handle_task_exception)
                     except Exception as alert_error:
-                        logger.error(f"Failed to trigger host disconnection alert: {alert_error}")
+                        logger.error(f"Failed to emit host disconnection event: {alert_error}")
 
             # Update previous status
             self.host_previous_status[host_id] = "offline"

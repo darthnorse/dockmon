@@ -19,6 +19,7 @@ from docker.errors import DockerException, APIError
 
 from database import DatabaseManager, ContainerUpdate
 from event_logger import EventLogger, EventCategory, EventType, EventSeverity
+from event_bus import Event, EventType as BusEventType, get_event_bus
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +171,8 @@ class UpdateExecutor:
                 update_record.latest_image,
                 container_config
             )
+            # Capture SHORT ID (12 chars) for event emission
+            new_container_id = new_container.short_id
 
             # Step 5: Start new container
             logger.info(f"Starting new container {container_name}")
@@ -196,15 +199,8 @@ class UpdateExecutor:
                 logger.error(f"Health check failed for {container_name}")
                 # TODO: Implement rollback - restore old container
                 error_message = f"Container update failed: health check timeout after {health_check_timeout}s"
-                await self._create_event(
-                    host_id,
-                    container_id,
-                    container_name,
-                    "update_failed",
-                    error_message
-                )
-                # Trigger alert evaluation for update failure
-                await self._trigger_update_failure_alerts(
+                # Emit update failure event via EventBus (which handles database logging)
+                await self._emit_update_failed_event(
                     host_id,
                     container_id,
                     container_name,
@@ -227,17 +223,8 @@ class UpdateExecutor:
                     record.updated_at = datetime.now()
                     session.commit()
 
-            # Step 8: Create success event
-            await self._create_event(
-                host_id,
-                container_id,
-                container_name,
-                "update_success",
-                f"Container successfully updated from {update_record.current_image} to {update_record.latest_image}"
-            )
-
-            # Step 9: Trigger alert evaluation for update completion
-            await self._trigger_update_completion_alerts(
+            # Step 8: Emit update completion event via EventBus (which handles database logging)
+            await self._emit_update_completed_event(
                 host_id,
                 new_container_id,
                 container_name,
@@ -247,24 +234,14 @@ class UpdateExecutor:
 
             logger.info(f"Successfully updated container {container_name}")
             await self._broadcast_progress(host_id, container_id, "completed", 100, "Update completed successfully")
-
-            # Store new container ID for post-update alert re-evaluation
-            new_container_id = new_container.id[:12]
             return True
 
         except Exception as e:
             logger.error(f"Error executing update for {container_name if 'container_name' in locals() else container_id}: {e}")
             if 'container_name' in locals():
                 error_message = f"Container update failed: {str(e)}"
-                await self._create_event(
-                    host_id,
-                    container_id,
-                    container_name,
-                    "update_failed",
-                    error_message
-                )
-                # Trigger alert evaluation for update failure
-                await self._trigger_update_failure_alerts(
+                # Emit update failure event via EventBus (which handles database logging)
+                await self._emit_update_failed_event(
                     host_id,
                     container_id,
                     container_name,
@@ -517,46 +494,6 @@ class UpdateExecutor:
         logger.error(f"Health check timeout after {timeout}s for container {container_id}")
         return False
 
-    async def _create_event(
-        self,
-        host_id: str,
-        container_id: str,
-        container_name: str,
-        event_type: str,
-        message: str
-    ):
-        """Create an event for the update"""
-        try:
-            if not self.monitor or not hasattr(self.monitor, 'event_logger'):
-                logger.warning("Event logger not available")
-                return
-
-            event_logger = self.monitor.event_logger
-
-            # Determine severity based on event type
-            severity = EventSeverity.INFO if event_type == "update_success" else EventSeverity.ERROR
-
-            # Create EventContext
-            from event_logger import EventContext
-            context = EventContext(
-                host_id=host_id,
-                container_id=container_id,
-                container_name=container_name
-            )
-
-            # Create event
-            event_logger.log_event(
-                category=EventCategory.CONTAINER,
-                event_type=EventType.ACTION_TAKEN if event_type == "update_success" else EventType.ERROR,
-                severity=severity,
-                title=f"Container Update: {container_name}",
-                message=message,
-                context=context
-            )
-
-        except Exception as e:
-            logger.error(f"Error creating event: {e}")
-
     async def _re_evaluate_alerts_after_update(
         self,
         host_id: str,
@@ -608,7 +545,7 @@ class UpdateExecutor:
         except Exception as e:
             logger.error(f"Error re-evaluating alerts after update: {e}", exc_info=True)
 
-    async def _trigger_update_completion_alerts(
+    async def _emit_update_completed_event(
         self,
         host_id: str,
         container_id: str,
@@ -617,44 +554,36 @@ class UpdateExecutor:
         new_image: str
     ):
         """
-        Trigger alert evaluation for successful container update.
-        This allows alert rules with kind=update_completed to fire.
+        Emit UPDATE_COMPLETED event via EventBus.
+        EventBus handles database logging and alert triggering.
         """
         try:
-            if not self.monitor or not hasattr(self.monitor, 'alert_evaluation_service'):
-                logger.debug("Alert evaluation service not available for update completion alerts")
-                return
-
-            logger.info(f"Triggering update completion alerts for {container_name}")
+            logger.info(f"Emitting UPDATE_COMPLETED event for {container_name}")
 
             # Get host name
             host_name = self.monitor.hosts.get(host_id).name if host_id in self.monitor.hosts else host_id
 
-            # Create event data for the update completion
-            event_data = {
-                'timestamp': datetime.now().isoformat(),
-                'event_type': 'action_taken',
-                'previous_image': previous_image,
-                'new_image': new_image,
-                'triggered_by': 'container_update',
-            }
-
-            # Call alert evaluation service with action_taken event type
-            await self.monitor.alert_evaluation_service.handle_container_event(
-                event_type='action_taken',
-                container_id=container_id,
-                container_name=container_name,
+            # Emit event via EventBus
+            event_bus = get_event_bus(self.monitor)
+            await event_bus.emit(Event(
+                event_type=BusEventType.UPDATE_COMPLETED,
+                scope_type='container',
+                scope_id=container_id,
+                scope_name=container_name,
                 host_id=host_id,
                 host_name=host_name,
-                event_data=event_data
-            )
+                data={
+                    'previous_image': previous_image,
+                    'new_image': new_image,
+                }
+            ))
 
-            logger.info(f"Update completion alert evaluation completed for {container_name}")
+            logger.debug(f"Emitted UPDATE_COMPLETED event for {container_name}")
 
         except Exception as e:
-            logger.error(f"Error triggering update completion alerts: {e}", exc_info=True)
+            logger.error(f"Error emitting update completion event: {e}", exc_info=True)
 
-    async def _trigger_update_failure_alerts(
+    async def _emit_update_failed_event(
         self,
         host_id: str,
         container_id: str,
@@ -662,42 +591,33 @@ class UpdateExecutor:
         error_message: str
     ):
         """
-        Trigger alert evaluation for failed container update.
-        This allows alert rules with kind=update_failed to fire.
+        Emit UPDATE_FAILED event via EventBus.
+        EventBus handles database logging and alert triggering.
         """
         try:
-            if not self.monitor or not hasattr(self.monitor, 'alert_evaluation_service'):
-                logger.debug("Alert evaluation service not available for update failure alerts")
-                return
-
-            logger.info(f"Triggering update failure alerts for {container_name}")
+            logger.info(f"Emitting UPDATE_FAILED event for {container_name}")
 
             # Get host name
             host_name = self.monitor.hosts.get(host_id).name if host_id in self.monitor.hosts else host_id
 
-            # Create event data for the update failure
-            event_data = {
-                'timestamp': datetime.now().isoformat(),
-                'event_type': 'error',
-                'error_message': error_message,
-                'update_failure': True,  # Special flag for alert matching
-                'triggered_by': 'container_update',
-            }
-
-            # Call alert evaluation service with error event type
-            await self.monitor.alert_evaluation_service.handle_container_event(
-                event_type='error',
-                container_id=container_id,
-                container_name=container_name,
+            # Emit event via EventBus
+            event_bus = get_event_bus(self.monitor)
+            await event_bus.emit(Event(
+                event_type=BusEventType.UPDATE_FAILED,
+                scope_type='container',
+                scope_id=container_id,
+                scope_name=container_name,
                 host_id=host_id,
                 host_name=host_name,
-                event_data=event_data
-            )
+                data={
+                    'error_message': error_message,
+                }
+            ))
 
-            logger.info(f"Update failure alert evaluation completed for {container_name}")
+            logger.debug(f"Emitted UPDATE_FAILED event for {container_name}")
 
         except Exception as e:
-            logger.error(f"Error triggering update failure alerts: {e}", exc_info=True)
+            logger.error(f"Error emitting update failure event: {e}", exc_info=True)
 
 
 # Global singleton instance

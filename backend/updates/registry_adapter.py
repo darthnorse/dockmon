@@ -198,6 +198,9 @@ class RegistryAdapter:
             if cached_token.get("expires_at"):
                 if datetime.now() < cached_token["expires_at"]:
                     return cached_token["token"]
+                else:
+                    # Token expired - delete it to prevent memory leak
+                    del self._auth_cache[cache_key]
 
         # For Docker Hub, get token from auth service
         if "docker.io" in registry or "registry.hub.docker.com" in registry:

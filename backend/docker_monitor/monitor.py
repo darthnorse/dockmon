@@ -1159,6 +1159,21 @@ class DockerMonitor:
 
             # Event-driven auto-restart: Check if container needs auto-restart on 'die' events
             if action == 'die':
+                # Check if container is being updated - skip auto-restart to avoid conflicts
+                is_updating = False
+                try:
+                    from updates.update_executor import get_update_executor
+                    update_executor = get_update_executor()
+                    is_updating = update_executor.is_container_updating(host_id, container_id)
+                    if is_updating:
+                        logger.info(f"Skipping auto-restart for {container_name} - container is being updated")
+                except Exception as e:
+                    logger.warning(f"Could not check update status: {e}")
+
+                # Skip auto-restart if container is being updated
+                if is_updating:
+                    return
+
                 # Get container from cache to check auto-restart status
                 auto_restart_enabled = self._get_auto_restart_status(host_id, container_id)
 
@@ -1246,8 +1261,28 @@ class DockerMonitor:
                 has_viewers = self.manager.has_active_connections()
                 logger.debug(f"Monitor loop: has_viewers={has_viewers}, active_connections={len(self.manager.active_connections)}")
 
+                # Periodic stats stream reconciliation (safety net for cleanup)
+                # This ensures stale streams (e.g., from recreated containers with new IDs) are stopped
+                # and new containers get streams started even if no WebSocket reconnect happens
+                if has_viewers and containers:
+                    try:
+                        containers_needing_stats = self.stats_manager.determine_containers_needing_stats(
+                            containers,
+                            self.settings
+                        )
+                        await self.stats_manager.sync_container_streams(
+                            containers,
+                            containers_needing_stats,
+                            stats_client,
+                            _handle_task_exception
+                        )
+                        logger.debug(f"Periodic stream sync: {len(self.stats_manager.streaming_containers)} active streams")
+                    except Exception as e:
+                        logger.error(f"Error syncing container streams: {e}")
+
                 # Stats streams are now managed by WebSocket connect/disconnect events (event-driven)
                 # This provides instant start/stop instead of waiting for next poll cycle
+                # Periodic sync above acts as a safety net for cleanup
 
                 # Reconcile container states (silent sync - events handle logging)
                 # This acts as a safety net to catch any states that events might have missed

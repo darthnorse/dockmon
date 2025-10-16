@@ -263,6 +263,13 @@ class AlertEngine:
                 if not matches_selectors:
                     continue
 
+                # Check if we should suppress this alert during container update
+                if rule.suppress_during_updates and context.scope_type == "container":
+                    is_updating = self._is_container_updating(context.host_id, context.scope_id)
+                    if is_updating:
+                        logger.info(f"Engine: Rule '{rule.name}' suppressed - container is being updated")
+                        continue
+
                 logger.info(f"Engine: Rule '{rule.name}' MATCHED! Creating/updating alert...")
 
                 # Generate dedup key (includes rule_id to allow multiple rules for same condition)
@@ -470,6 +477,17 @@ class AlertEngine:
                 return False
 
         return True
+
+    def _is_container_updating(self, host_id: str, container_id: str) -> bool:
+        """Check if a container is currently being updated"""
+        try:
+            from updates.update_executor import get_update_executor
+            update_executor = get_update_executor()
+            if update_executor:
+                return update_executor.is_container_updating(host_id, container_id)
+        except Exception as e:
+            logger.warning(f"Could not check if container is updating: {e}")
+        return False
 
     # ==================== Metric-Driven Evaluation ====================
 

@@ -40,6 +40,7 @@ import {
   Settings,
   ShieldCheck,
   Shield,
+  Maximize2,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -537,9 +538,26 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
         header: 'Actions',
         cell: ({ row }) => (
           <div className="flex items-center gap-1">
+            {/* Maximize button - opens full details modal (hidden in simplified workflow) */}
+            {!simplifiedWorkflow && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() => {
+                  setSelectedHostId(row.original.id)
+                  setModalOpen(true)
+                }}
+                title="View full details"
+              >
+                <Maximize2 className="h-4 w-4" />
+              </Button>
+            )}
+
             <Button
               variant="ghost"
-              size="sm"
+              size="icon"
+              className="h-8 w-8"
               title="Edit Host"
               onClick={() => {
                 onEditHost?.(row.original)
@@ -551,7 +569,7 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
         ),
       },
     ],
-    [selectedHostIds, toggleHostSelection, toggleSelectAll, onEditHost, alertCounts]
+    [selectedHostIds, toggleHostSelection, toggleSelectAll, onEditHost, alertCounts, simplifiedWorkflow, setSelectedHostId, setModalOpen]
   )
 
   const table = useReactTable({

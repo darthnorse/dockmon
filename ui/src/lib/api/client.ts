@@ -67,15 +67,23 @@ class ApiClient {
     if (!response.ok) {
       const contentType = response.headers.get('content-type')
       let errorData: unknown
+      let errorMessage = response.statusText
 
       if (contentType?.includes('application/json')) {
         errorData = await response.json() as unknown
+        // Extract FastAPI error detail if available
+        if (errorData && typeof errorData === 'object' && 'detail' in errorData) {
+          errorMessage = String(errorData.detail)
+        }
       } else {
         errorData = await response.text()
+        if (typeof errorData === 'string' && errorData) {
+          errorMessage = errorData
+        }
       }
 
       throw new ApiError(
-        `API Error: ${response.statusText}`,
+        errorMessage,
         response.status,
         errorData
       )

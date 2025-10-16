@@ -25,6 +25,7 @@ const RULE_KINDS = [
     value: 'cpu_high',
     label: 'High CPU Usage',
     description: 'Alert when CPU usage exceeds threshold',
+    category: 'Performance',
     requiresMetric: true,
     metric: 'cpu_percent',
     defaultOperator: '>=',
@@ -35,6 +36,7 @@ const RULE_KINDS = [
     value: 'memory_high',
     label: 'High Memory Usage',
     description: 'Alert when memory usage exceeds threshold',
+    category: 'Performance',
     requiresMetric: true,
     metric: 'memory_percent',
     defaultOperator: '>=',
@@ -45,6 +47,7 @@ const RULE_KINDS = [
     value: 'disk_low',
     label: 'Low Disk Space',
     description: 'Alert when disk usage exceeds threshold',
+    category: 'Performance',
     requiresMetric: true,
     metric: 'disk_percent',
     defaultOperator: '>=',
@@ -55,6 +58,7 @@ const RULE_KINDS = [
     value: 'container_unhealthy',
     label: 'Container Health Check Failing',
     description: 'Alert when container health check fails (requires health check configured)',
+    category: 'Container State',
     requiresMetric: false,
     scopes: ['container']
   },
@@ -62,6 +66,7 @@ const RULE_KINDS = [
     value: 'container_stopped',
     label: 'Container Stopped/Died',
     description: 'Alert when container stops or crashes (any exit code). Use clear duration to avoid false positives during restarts.',
+    category: 'Container State',
     requiresMetric: false,
     scopes: ['container']
   },
@@ -69,6 +74,7 @@ const RULE_KINDS = [
     value: 'container_restart',
     label: 'Container Restarted',
     description: 'Alert when container restarts (any restart, expected or unexpected)',
+    category: 'Container State',
     requiresMetric: false,
     scopes: ['container']
   },
@@ -76,8 +82,33 @@ const RULE_KINDS = [
     value: 'host_down',
     label: 'Host Offline',
     description: 'Alert when host becomes unreachable',
+    category: 'Host State',
     requiresMetric: false,
     scopes: ['host']
+  },
+  {
+    value: 'update_available',
+    label: 'Update Available',
+    description: 'Alert when a container image update is available',
+    category: 'Updates',
+    requiresMetric: false,
+    scopes: ['container']
+  },
+  {
+    value: 'update_completed',
+    label: 'Update Completed',
+    description: 'Alert when a container update completes successfully',
+    category: 'Updates',
+    requiresMetric: false,
+    scopes: ['container']
+  },
+  {
+    value: 'update_failed',
+    label: 'Update Failed',
+    description: 'Alert when a container update fails or rollback occurs',
+    category: 'Updates',
+    requiresMetric: false,
+    scopes: ['container']
   },
 ]
 
@@ -188,6 +219,8 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       container_run_mode: containerSelector.should_run === null ? 'all' : containerSelector.should_run ? 'should_run' : 'on_demand',
       notify_channels: rule?.notify_channels_json ? JSON.parse(rule.notify_channels_json) : [],
       custom_template: rule?.custom_template !== undefined ? rule.custom_template : null,
+      auto_resolve_updates: rule?.auto_resolve ?? false,
+      suppress_during_updates: rule?.suppress_during_updates ?? false,
     }
   })
 
@@ -379,6 +412,16 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       // Add custom template (null/empty string means use category default)
       if (formData.custom_template !== undefined) {
         requestData.custom_template = formData.custom_template
+      }
+
+      // Add auto_resolve flag for update rules
+      if (['update_available', 'update_completed'].includes(formData.kind)) {
+        requestData.auto_resolve = formData.auto_resolve_updates || false
+      }
+
+      // Add suppress_during_updates flag for container-scoped rules
+      if (formData.scope === 'container') {
+        requestData.suppress_during_updates = formData.suppress_during_updates || false
       }
 
       if (isEditing && rule) {
@@ -618,10 +661,22 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                   required
                   className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 >
-                  {availableRuleKinds.map((kind) => (
-                    <option key={kind.value} value={kind.value}>
-                      {kind.label}
-                    </option>
+                  {/* Group rule kinds by category */}
+                  {Object.entries(
+                    availableRuleKinds.reduce((groups: Record<string, typeof availableRuleKinds>, kind) => {
+                      const category = kind.category || 'Other'
+                      if (!groups[category]) groups[category] = []
+                      groups[category].push(kind)
+                      return groups
+                    }, {})
+                  ).map(([category, kinds]) => (
+                    <optgroup key={category} label={category}>
+                      {kinds.map((kind) => (
+                        <option key={kind.value} value={kind.value}>
+                          {kind.label}
+                        </option>
+                      ))}
+                    </optgroup>
                   ))}
                 </select>
                 {selectedKind?.description && (
@@ -1100,7 +1155,8 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
             </div>
           )}
 
-          {/* Timing Configuration */}
+          {/* Timing Configuration - Hide for update rules */}
+          {!['update_available', 'update_completed', 'update_failed'].includes(formData.kind) && (
           <div className="space-y-4 rounded-lg border border-gray-700 bg-gray-800/30 p-4">
             <h3 className="text-sm font-semibold text-white">Timing Configuration</h3>
 
@@ -1166,6 +1222,57 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
               </div>
             </div>
           </div>
+          )}
+
+          {/* Auto-Resolve Option - Only for update_available and update_completed */}
+          {['update_available', 'update_completed'].includes(formData.kind) && (
+          <div className="space-y-4 rounded-lg border border-gray-700 bg-gray-800/30 p-4">
+            <h3 className="text-sm font-semibold text-white">Auto-Resolve Behavior</h3>
+            <div className="flex items-start gap-3">
+              <input
+                type="checkbox"
+                id="auto_resolve_updates"
+                checked={formData.auto_resolve_updates || false}
+                onChange={(e) => handleChange('auto_resolve_updates', e.target.checked)}
+                className="mt-1 h-4 w-4 rounded border-gray-600 bg-gray-800 text-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-gray-900"
+              />
+              <div className="flex-1">
+                <label htmlFor="auto_resolve_updates" className="block text-sm font-medium text-gray-300 cursor-pointer">
+                  Automatically resolve alert after notification
+                </label>
+                <p className="mt-1 text-xs text-gray-400">
+                  {formData.kind === 'update_available'
+                    ? 'Alert will be auto-resolved immediately after notifying. Useful to just get informed about updates without keeping the alert open.'
+                    : 'Alert will be auto-resolved immediately after notifying. Useful to get confirmation of successful updates without cluttering the alert list.'}
+                </p>
+              </div>
+            </div>
+          </div>
+          )}
+
+          {/* Suppress During Updates - Only for container-scoped rules */}
+          {formData.scope === 'container' && !['update_available', 'update_completed', 'update_failed'].includes(formData.kind) && (
+          <div className="space-y-4 rounded-lg border border-gray-700 bg-gray-800/30 p-4">
+            <h3 className="text-sm font-semibold text-white">Update Suppression</h3>
+            <div className="flex items-start gap-3">
+              <input
+                type="checkbox"
+                id="suppress_during_updates"
+                checked={formData.suppress_during_updates || false}
+                onChange={(e) => handleChange('suppress_during_updates', e.target.checked)}
+                className="mt-1 h-4 w-4 rounded border-gray-600 bg-gray-800 text-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-gray-900"
+              />
+              <div className="flex-1">
+                <label htmlFor="suppress_during_updates" className="block text-sm font-medium text-gray-300 cursor-pointer">
+                  Suppress alert during container updates
+                </label>
+                <p className="mt-1 text-xs text-gray-400">
+                  Don't trigger this alert while a container is being updated. The alert will be re-evaluated after the update completes - only firing if the issue persists (e.g., container still stopped after update).
+                </p>
+              </div>
+            </div>
+          </div>
+          )}
 
           {/* Notification Channels */}
           <div className="space-y-4 rounded-lg border border-gray-700 bg-gray-800/30 p-4">

@@ -15,6 +15,7 @@ export interface GlobalSettings {
   alert_template_metric?: string | null
   alert_template_state_change?: string | null
   alert_template_health?: string | null
+  alert_template_update?: string | null
   blackout_windows?: Array<{
     name: string
     enabled: boolean
@@ -28,6 +29,9 @@ export interface GlobalSettings {
   show_container_alerts_on_hosts: boolean
   unused_tag_retention_days: number
   event_retention_days: number
+  update_check_time: string
+  skip_compose_containers: boolean
+  health_check_timeout_seconds: number
 }
 
 export interface TemplateVariable {

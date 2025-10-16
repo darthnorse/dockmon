@@ -1,0 +1,156 @@
+/**
+ * Container Updates Hook
+ *
+ * Provides hooks for checking and managing container updates
+ */
+
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { apiClient } from '@/lib/api/client'
+import type { ContainerUpdateStatus } from '../types'
+
+/**
+ * Hook to get update status for a container
+ */
+export function useContainerUpdateStatus(hostId: string | undefined, containerId: string | undefined) {
+  return useQuery({
+    queryKey: ['container-update-status', hostId, containerId],
+    queryFn: async () => {
+      if (!hostId || !containerId) {
+        return null
+      }
+
+      try {
+        return await apiClient.get<ContainerUpdateStatus>(
+          `/hosts/${hostId}/containers/${containerId}/update-status`
+        )
+      } catch (error) {
+        // If no update status exists yet, return a default "no data" state instead of erroring
+        console.warn('No update status found for container:', containerId, error)
+        return {
+          update_available: false,
+          current_image: null,
+          current_digest: null,
+          latest_image: null,
+          latest_digest: null,
+          floating_tag_mode: 'exact' as const,
+          last_checked_at: null,
+        }
+      }
+    },
+    enabled: !!hostId && !!containerId,
+    // Completely disable automatic refetching - only manual via "Check Now" button
+    refetchInterval: false,
+    staleTime: Infinity,
+    gcTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
+    refetchOnReconnect: false,
+    retry: false, // Don't retry on error
+  })
+}
+
+/**
+ * Hook to manually trigger update check for a container
+ */
+export function useCheckContainerUpdate() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({ hostId, containerId }: { hostId: string; containerId: string }) => {
+      return await apiClient.post<ContainerUpdateStatus>(
+        `/hosts/${hostId}/containers/${containerId}/check-update`
+      )
+    },
+    onSuccess: (_data, variables) => {
+      // Invalidate the update status query to refetch
+      queryClient.invalidateQueries({
+        queryKey: ['container-update-status', variables.hostId, variables.containerId],
+      })
+    },
+  })
+}
+
+/**
+ * Hook to trigger global update check for all containers
+ */
+export function useCheckAllUpdates() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async () => {
+      return await apiClient.post<{
+        total: number
+        checked: number
+        updates_found: number
+        errors: number
+      }>('/updates/check-all')
+    },
+    onSuccess: () => {
+      // Invalidate all update status queries
+      queryClient.invalidateQueries({
+        queryKey: ['container-update-status'],
+      })
+    },
+  })
+}
+
+/**
+ * Hook to update auto-update configuration for a container
+ */
+export function useUpdateAutoUpdateConfig() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({
+      hostId,
+      containerId,
+      autoUpdateEnabled,
+      floatingTagMode,
+    }: {
+      hostId: string
+      containerId: string
+      autoUpdateEnabled: boolean
+      floatingTagMode: 'exact' | 'minor' | 'major' | 'latest'
+    }) => {
+      return await apiClient.put<ContainerUpdateStatus>(
+        `/hosts/${hostId}/containers/${containerId}/auto-update-config`,
+        {
+          auto_update_enabled: autoUpdateEnabled,
+          floating_tag_mode: floatingTagMode,
+        }
+      )
+    },
+    onSuccess: (_data, variables) => {
+      // Invalidate the update status query to refetch
+      queryClient.invalidateQueries({
+        queryKey: ['container-update-status', variables.hostId, variables.containerId],
+      })
+    },
+  })
+}
+
+/**
+ * Hook to manually execute an update for a container
+ */
+export function useExecuteUpdate() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({ hostId, containerId }: { hostId: string; containerId: string }) => {
+      return await apiClient.post<{
+        status: string
+        message: string
+        previous_image: string
+        new_image: string
+      }>(`/hosts/${hostId}/containers/${containerId}/execute-update`)
+    },
+    onSuccess: (_data, variables) => {
+      // Invalidate update status query to refetch new status
+      queryClient.invalidateQueries({
+        queryKey: ['container-update-status', variables.hostId, variables.containerId],
+      })
+      // Don't invalidate containers list - it will update automatically via WebSocket events
+      // Invalidating here causes the modal to close during the update
+    },
+  })
+}

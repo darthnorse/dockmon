@@ -58,6 +58,7 @@ import {
   Clock,
   AlertTriangle,
   Maximize2,
+  Package,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { apiClient } from '@/lib/api/client'
@@ -77,15 +78,47 @@ import { BulkActionConfirmModal } from './components/BulkActionConfirmModal'
 import { BatchJobPanel } from './components/BatchJobPanel'
 import type { Container, ContainerAction} from './types'
 import { useSimplifiedWorkflow, useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
+import { useContainerUpdateStatus } from './hooks/useContainerUpdates'
 
 /**
- * Policy icons component showing auto-restart and desired state
+ * Update badge component showing if updates are available
+ */
+function UpdateBadge({ container, onClick }: { container: Container; onClick?: () => void }) {
+  const { data: updateStatus } = useContainerUpdateStatus(container.host_id, container.id)
+
+  if (!updateStatus?.update_available) {
+    return null
+  }
+
+  return (
+    <button
+      onClick={(e) => {
+        e.stopPropagation()
+        onClick?.()
+      }}
+      className="relative group p-1 rounded hover:bg-surface-2 transition-colors"
+      title="Update available - click to view"
+    >
+      <Package className="h-4 w-4 text-amber-500" />
+      <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 px-2 py-1 bg-popover text-popover-foreground text-xs rounded shadow-lg opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 border">
+        Update available - click to view
+      </div>
+    </button>
+  )
+}
+
+/**
+ * Policy icons component showing auto-restart, desired state, and auto-update
  */
 function PolicyIcons({ container }: { container: Container }) {
   const isRunning = container.state === 'running'
   const isExited = container.status === 'exited'
   const desiredState = container.desired_state
   const autoRestart = container.auto_restart
+
+  // Get auto-update status
+  const { data: updateStatus } = useContainerUpdateStatus(container.host_id, container.id)
+  const autoUpdateEnabled = updateStatus?.auto_update_enabled ?? false
 
   // Determine if we should show warning (desired state is "should_run" but container is exited)
   const showWarning = desiredState === 'should_run' && isExited
@@ -127,6 +160,17 @@ function PolicyIcons({ container }: { container: Container }) {
           </div>
         )}
       </div>
+
+      {/* Auto-update icon */}
+      {autoUpdateEnabled && (
+        <div className="relative group">
+          <Package className="h-4 w-4 text-amber-500" />
+          {/* Tooltip */}
+          <div className="invisible group-hover:visible absolute left-1/2 -translate-x-1/2 bottom-full mb-2 z-10 px-2 py-1 text-xs bg-surface-1 border border-border rounded shadow-lg whitespace-nowrap">
+            Auto-update: Enabled
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -315,6 +359,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   const [modalOpen, setModalOpen] = useState(false)
   const [modalInitialTab, setModalInitialTab] = useState<string>('info')
   const [selectedContainerId, setSelectedContainerId] = useState<string | null>(null)
+  const [selectedContainerKey, setSelectedContainerKey] = useState<{ name: string; hostId: string } | null>(null)
   const [selectedContainerIds, setSelectedContainerIds] = useState<Set<string>>(new Set())
   const [confirmModalOpen, setConfirmModalOpen] = useState(false)
   const [pendingAction, setPendingAction] = useState<'start' | 'stop' | 'restart' | null>(null)
@@ -492,13 +537,26 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
     refetchInterval: POLLING_CONFIG.CONTAINER_DATA,
   })
 
+  // Memoize selected container to prevent unnecessary re-renders of modal
+  // Use container name + host ID as stable key (survives container recreation during updates)
+  const selectedContainer = useMemo(
+    () => {
+      if (selectedContainerKey) {
+        return data?.find((c) => c.name === selectedContainerKey.name && c.host_id === selectedContainerKey.hostId)
+      }
+      return data?.find((c) => c.id === selectedContainerId)
+    },
+    [data, selectedContainerId, selectedContainerKey]
+  )
+
   // Handle URL param for opening specific container
   useEffect(() => {
     const containerId = searchParams.get('containerId')
     if (containerId && data) {
       const container = data.find(c => c.id === containerId)
-      if (container) {
+      if (container && container.host_id) {
         setSelectedContainerId(containerId)
+        setSelectedContainerKey({ name: container.name, hostId: container.host_id })
         setModalOpen(true)
         // Clear the URL param after opening
         searchParams.delete('containerId')
@@ -645,6 +703,9 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
                 className="font-medium text-foreground hover:text-primary transition-colors text-left"
                 onClick={() => {
                   setSelectedContainerId(row.original.id)
+                  if (row.original.host_id) {
+                    setSelectedContainerKey({ name: row.original.name, hostId: row.original.host_id })
+                  }
                   setModalInitialTab('info') // Default to info tab
                   if (simplifiedWorkflow) {
                     setModalOpen(true)
@@ -957,20 +1018,25 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
                 <RotateCw className={`h-4 w-4 ${canRestart ? 'text-info' : 'text-muted-foreground'}`} />
               </Button>
 
-              {/* Maximize button - opens full details modal */}
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8"
-                onClick={() => {
-                  setSelectedContainerId(container.id)
-                  setModalInitialTab('info') // Default to info tab
-                  setModalOpen(true)
-                }}
-                title="View full details"
-              >
-                <Maximize2 className="h-4 w-4" />
-              </Button>
+              {/* Maximize button - opens full details modal (hidden in simplified workflow) */}
+              {!simplifiedWorkflow && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={() => {
+                    setSelectedContainerId(container.id)
+                    if (container.host_id) {
+                      setSelectedContainerKey({ name: container.name, hostId: container.host_id })
+                    }
+                    setModalInitialTab('info') // Default to info tab
+                    setModalOpen(true)
+                  }}
+                  title="View full details"
+                >
+                  <Maximize2 className="h-8 w-8" />
+                </Button>
+              )}
 
               {/* Logs button - always enabled */}
               <Button
@@ -979,6 +1045,9 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
                 className="h-8 w-8"
                 onClick={() => {
                   setSelectedContainerId(container.id)
+                  if (container.host_id) {
+                    setSelectedContainerKey({ name: container.name, hostId: container.host_id })
+                  }
                   setModalInitialTab('logs')
                   setModalOpen(true)
                 }}
@@ -986,6 +1055,19 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
               >
                 <FileText className="h-4 w-4" />
               </Button>
+
+              {/* Update badge - shows if update available */}
+              <UpdateBadge
+                container={container}
+                onClick={() => {
+                  setSelectedContainerId(container.id)
+                  if (container.host_id) {
+                    setSelectedContainerKey({ name: container.name, hostId: container.host_id })
+                  }
+                  setModalInitialTab('updates')
+                  setModalOpen(true)
+                }}
+              />
 
               {/* More actions menu */}
               <Button
@@ -1164,10 +1246,11 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         onClose={() => {
           setModalOpen(false)
           setSelectedContainerId(null)
+          setSelectedContainerKey(null)
           setModalInitialTab('info') // Reset to default tab on close
         }}
         containerId={selectedContainerId}
-        container={data?.find((c) => c.id === selectedContainerId)}
+        container={selectedContainer}
         initialTab={modalInitialTab}
       />
 

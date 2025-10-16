@@ -727,6 +727,251 @@ async def update_container_tags(
 
     return result
 
+
+# ==================== Container Updates ====================
+
+@app.get("/api/hosts/{host_id}/containers/{container_id}/update-status")
+async def get_container_update_status(
+    host_id: str,
+    container_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get update status for a container.
+
+    Returns:
+        - update_available: bool
+        - current_image: str
+        - current_digest: str (first 12 chars)
+        - latest_image: str
+        - latest_digest: str (first 12 chars)
+        - floating_tag_mode: str (exact|minor|major|latest)
+        - last_checked_at: datetime
+    """
+    from database import ContainerUpdate
+
+    # Normalize to short ID
+    short_id = container_id[:12] if len(container_id) > 12 else container_id
+    composite_key = f"{host_id}:{short_id}"
+
+    with monitor.db.get_session() as session:
+        record = session.query(ContainerUpdate).filter_by(
+            container_id=composite_key
+        ).first()
+
+        if not record:
+            # No update check performed yet
+            return {
+                "update_available": False,
+                "current_image": None,
+                "current_digest": None,
+                "latest_image": None,
+                "latest_digest": None,
+                "floating_tag_mode": "exact",
+                "last_checked_at": None,
+            }
+
+        return {
+            "update_available": record.update_available,
+            "current_image": record.current_image,
+            "current_digest": record.current_digest[:12] if record.current_digest else None,
+            "latest_image": record.latest_image,
+            "latest_digest": record.latest_digest[:12] if record.latest_digest else None,
+            "floating_tag_mode": record.floating_tag_mode,
+            "last_checked_at": record.last_checked_at.isoformat() if record.last_checked_at else None,
+            "auto_update_enabled": record.auto_update_enabled,
+        }
+
+
+@app.post("/api/hosts/{host_id}/containers/{container_id}/check-update")
+async def check_container_update(
+    host_id: str,
+    container_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Manually trigger an update check for a specific container.
+
+    Returns the same format as get_container_update_status.
+    """
+    from updates.update_checker import get_update_checker
+
+    # Normalize to short ID
+    short_id = container_id[:12] if len(container_id) > 12 else container_id
+
+    logger.info(f"User {current_user.get('username')} triggered update check for container {short_id} on host {host_id}")
+
+    checker = get_update_checker(monitor.db, monitor)
+    result = await checker.check_single_container(host_id, short_id)
+
+    if not result:
+        # Check failed (e.g., registry auth error, network issue)
+        # Return a safe response indicating we couldn't check
+        raise HTTPException(
+            status_code=503,
+            detail="Unable to check for updates. This may be due to registry authentication requirements or network issues."
+        )
+
+    return {
+        "update_available": result["update_available"],
+        "current_image": result["current_image"],
+        "current_digest": result["current_digest"][:12] if result["current_digest"] else None,
+        "latest_image": result["latest_image"],
+        "latest_digest": result["latest_digest"][:12] if result["latest_digest"] else None,
+        "floating_tag_mode": result["floating_tag_mode"],
+    }
+
+
+@app.post("/api/hosts/{host_id}/containers/{container_id}/execute-update")
+async def execute_container_update(
+    host_id: str,
+    container_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Manually execute an update for a specific container.
+
+    This endpoint:
+    1. Verifies an update is available
+    2. Pulls the new image
+    3. Recreates the container with the new image
+    4. Waits for health check
+    5. Creates events for success/failure
+
+    Returns success status and details.
+    """
+    from updates.update_executor import get_update_executor
+    from database import ContainerUpdate
+
+    # Normalize to short ID
+    short_id = container_id[:12] if len(container_id) > 12 else container_id
+
+    logger.info(f"User {current_user.get('username')} triggered manual update for container {short_id} on host {host_id}")
+
+    # Get update record from database
+    with monitor.db.get_session() as session:
+        composite_key = f"{host_id}:{short_id}"
+        update_record = session.query(ContainerUpdate).filter_by(
+            container_id=composite_key
+        ).first()
+
+        if not update_record:
+            raise HTTPException(
+                status_code=404,
+                detail="No update information found for this container. Run a check first."
+            )
+
+        if not update_record.update_available:
+            raise HTTPException(
+                status_code=400,
+                detail="No update available for this container"
+            )
+
+    # Execute the update
+    executor = get_update_executor(monitor.db, monitor)
+    success = await executor.update_container(host_id, short_id, update_record)
+
+    if success:
+        return {
+            "status": "success",
+            "message": f"Container successfully updated to {update_record.latest_image}",
+            "previous_image": update_record.current_image,
+            "new_image": update_record.latest_image,
+        }
+    else:
+        raise HTTPException(
+            status_code=500,
+            detail="Container update failed. Check events for details."
+        )
+
+
+@app.put("/api/hosts/{host_id}/containers/{container_id}/auto-update-config")
+async def update_auto_update_config(
+    host_id: str,
+    container_id: str,
+    config: dict,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Update auto-update configuration for a container.
+
+    Body should contain:
+    - auto_update_enabled: bool
+    - floating_tag_mode: str (exact|minor|major|latest)
+    """
+    from database import ContainerUpdate
+
+    # Normalize to short ID
+    short_id = container_id[:12] if len(container_id) > 12 else container_id
+    composite_key = f"{host_id}:{short_id}"
+
+    logger.info(f"User {current_user.get('username')} updating auto-update config for {composite_key}: {config}")
+
+    auto_update_enabled = config.get("auto_update_enabled", False)
+    floating_tag_mode = config.get("floating_tag_mode", "exact")
+
+    # Validate floating_tag_mode
+    if floating_tag_mode not in ["exact", "minor", "major", "latest"]:
+        raise HTTPException(status_code=400, detail=f"Invalid floating_tag_mode: {floating_tag_mode}")
+
+    # Update or create container_update record
+    with monitor.db.get_session() as session:
+        record = session.query(ContainerUpdate).filter_by(
+            container_id=composite_key
+        ).first()
+
+        if record:
+            # Update existing record
+            record.auto_update_enabled = auto_update_enabled
+            record.floating_tag_mode = floating_tag_mode
+            record.updated_at = datetime.now()
+        else:
+            # Create new record - we need at least minimal info
+            # Get container to populate image info
+            containers = await monitor.get_containers()
+            container = next((c for c in containers if c.id == short_id and c.host_id == host_id), None)
+
+            if not container:
+                raise HTTPException(status_code=404, detail="Container not found")
+
+            record = ContainerUpdate(
+                container_id=composite_key,
+                host_id=host_id,
+                current_image=container.image,
+                current_digest="",  # Will be populated on first check
+                auto_update_enabled=auto_update_enabled,
+                floating_tag_mode=floating_tag_mode,
+            )
+            session.add(record)
+
+        session.commit()
+
+        # Return the updated config
+        return {
+            "update_available": record.update_available,
+            "current_image": record.current_image,
+            "current_digest": record.current_digest,
+            "latest_image": record.latest_image,
+            "latest_digest": record.latest_digest,
+            "floating_tag_mode": record.floating_tag_mode,
+            "last_checked_at": record.last_checked_at.isoformat() if record.last_checked_at else None,
+            "auto_update_enabled": record.auto_update_enabled,
+        }
+
+
+@app.post("/api/updates/check-all")
+async def check_all_updates(current_user: dict = Depends(get_current_user)):
+    """
+    Manually trigger an update check for all containers.
+
+    Returns stats about the check.
+    """
+    logger.info(f"User {current_user.get('username')} triggered global update check")
+
+    stats = await monitor.periodic_jobs.check_updates_now()
+    return stats
+
+
 @app.get("/api/tags/suggest")
 async def suggest_tags(
     q: str = "",
@@ -916,6 +1161,8 @@ async def get_alert_rules_v2(current_user: dict = Depends(get_current_user)):
             "clear_threshold": rule.clear_threshold,
             "clear_duration_seconds": rule.clear_duration_seconds,
             "cooldown_seconds": rule.cooldown_seconds,
+            "auto_resolve": rule.auto_resolve,
+            "suppress_during_updates": rule.suppress_during_updates,
             "host_selector_json": rule.host_selector_json,
             "container_selector_json": rule.container_selector_json,
             "labels_json": rule.labels_json,
@@ -953,6 +1200,8 @@ async def create_alert_rule_v2(
             clear_threshold=rule.clear_threshold,
             clear_duration_seconds=rule.clear_duration_seconds,
             cooldown_seconds=rule.cooldown_seconds,
+            auto_resolve=rule.auto_resolve or False,
+            suppress_during_updates=rule.suppress_during_updates or False,
             host_selector_json=rule.host_selector_json,
             container_selector_json=rule.container_selector_json,
             labels_json=rule.labels_json,

@@ -1,0 +1,424 @@
+/**
+ * Container Updates Tab
+ *
+ * Shows update status and allows manual update checks
+ */
+
+import { memo, useState, useEffect, useCallback } from 'react'
+import { Package, RefreshCw, Check, Clock, AlertCircle, Download } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Switch } from '@/components/ui/switch'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { toast } from 'sonner'
+import { useContainerUpdateStatus, useCheckContainerUpdate, useUpdateAutoUpdateConfig, useExecuteUpdate } from '../../hooks/useContainerUpdates'
+import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
+import type { Container } from '../../types'
+
+interface UpdateProgress {
+  stage: string
+  progress: number
+  message: string
+}
+
+export interface ContainerUpdatesTabProps {
+  container: Container
+}
+
+function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
+  const { data: updateStatus, isLoading, error } = useContainerUpdateStatus(
+    container.host_id,
+    container.id
+  )
+  const checkUpdate = useCheckContainerUpdate()
+  const updateAutoUpdateConfig = useUpdateAutoUpdateConfig()
+  const executeUpdate = useExecuteUpdate()
+  const { addMessageHandler } = useWebSocketContext()
+
+  // Local state for settings
+  const [autoUpdateEnabled, setAutoUpdateEnabled] = useState(updateStatus?.auto_update_enabled ?? false)
+  const [trackingMode, setTrackingMode] = useState<string>(updateStatus?.floating_tag_mode || 'exact')
+
+  // Update progress state
+  const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null)
+
+  // Sync local state when server data changes
+  useEffect(() => {
+    if (updateStatus) {
+      setAutoUpdateEnabled(updateStatus.auto_update_enabled ?? false)
+      setTrackingMode(updateStatus.floating_tag_mode || 'exact')
+    }
+  }, [updateStatus])
+
+  // Listen for update progress messages via WebSocket
+  const handleProgressMessage = useCallback(
+    (message: any) => {
+      if (
+        message.type === 'container_update_progress' &&
+        message.data?.host_id === container.host_id &&
+        message.data?.container_id === container.id
+      ) {
+        setUpdateProgress({
+          stage: message.data.stage,
+          progress: message.data.progress,
+          message: message.data.message,
+        })
+
+        // Clear progress when update completes
+        if (message.data.stage === 'completed') {
+          setTimeout(() => setUpdateProgress(null), 3000)
+        }
+      }
+    },
+    [container.host_id, container.id]
+  )
+
+  useEffect(() => {
+    const cleanup = addMessageHandler(handleProgressMessage)
+    return cleanup
+  }, [addMessageHandler, handleProgressMessage])
+
+  // Log any errors for debugging
+  if (error) {
+    console.error('Error fetching update status:', error)
+  }
+
+  const handleCheckNow = async () => {
+    if (!container.host_id) {
+      toast.error('Cannot check for updates', {
+        description: 'Container missing host information',
+      })
+      return
+    }
+
+    try {
+      await checkUpdate.mutateAsync({
+        hostId: container.host_id,
+        containerId: container.id,
+      })
+      toast.success('Update check complete')
+      // Query will auto-invalidate via the mutation's onSuccess
+    } catch (error) {
+      toast.error('Failed to check for updates', {
+        description: error instanceof Error ? error.message : 'Unknown error',
+      })
+    }
+  }
+
+  const handleUpdateNow = async () => {
+    if (!container.host_id) {
+      toast.error('Cannot execute update', {
+        description: 'Container missing host information',
+      })
+      return
+    }
+
+    // Reset progress state before starting
+    setUpdateProgress({ stage: 'starting', progress: 0, message: 'Initializing update...' })
+
+    try {
+      const result = await executeUpdate.mutateAsync({
+        hostId: container.host_id,
+        containerId: container.id,
+      })
+      toast.success('Container updated successfully', {
+        description: result.message,
+      })
+      // Query will auto-invalidate via the mutation's onSuccess
+    } catch (error) {
+      setUpdateProgress(null) // Clear progress on error
+      toast.error('Failed to update container', {
+        description: error instanceof Error ? error.message : 'Unknown error',
+      })
+    }
+  }
+
+  const handleAutoUpdateToggle = async (enabled: boolean) => {
+    if (!container.host_id) {
+      toast.error('Cannot configure auto-update', {
+        description: 'Container missing host information',
+      })
+      return
+    }
+
+    try {
+      setAutoUpdateEnabled(enabled)
+      await updateAutoUpdateConfig.mutateAsync({
+        hostId: container.host_id,
+        containerId: container.id,
+        autoUpdateEnabled: enabled,
+        floatingTagMode: trackingMode as 'exact' | 'minor' | 'major' | 'latest',
+      })
+      toast.success(enabled ? 'Auto-update enabled' : 'Auto-update disabled')
+    } catch (error) {
+      // Revert on error
+      setAutoUpdateEnabled(!enabled)
+      toast.error('Failed to update configuration', {
+        description: error instanceof Error ? error.message : 'Unknown error',
+      })
+    }
+  }
+
+  const handleTrackingModeChange = async (mode: string) => {
+    if (!container.host_id) {
+      toast.error('Cannot configure tracking mode', {
+        description: 'Container missing host information',
+      })
+      return
+    }
+
+    const previousMode = trackingMode
+
+    try {
+      setTrackingMode(mode)
+      await updateAutoUpdateConfig.mutateAsync({
+        hostId: container.host_id,
+        containerId: container.id,
+        autoUpdateEnabled,
+        floatingTagMode: mode as 'exact' | 'minor' | 'major' | 'latest',
+      })
+      toast.success('Tracking mode updated')
+    } catch (error) {
+      // Revert on error
+      setTrackingMode(previousMode)
+      toast.error('Failed to update tracking mode', {
+        description: error instanceof Error ? error.message : 'Unknown error',
+      })
+    }
+  }
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <RefreshCw className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    )
+  }
+
+  const hasUpdate = updateStatus?.update_available
+  const lastChecked = updateStatus?.last_checked_at
+    ? new Date(updateStatus.last_checked_at).toLocaleString()
+    : 'Never'
+
+  return (
+    <div className="p-6 space-y-6">
+      {/* Header with status */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          {hasUpdate ? (
+            <>
+              <Package className="h-8 w-8 text-amber-500" />
+              <div>
+                <h3 className="text-lg font-semibold text-amber-500">Update Available</h3>
+                <p className="text-sm text-muted-foreground">
+                  A newer version of this container image is available
+                </p>
+              </div>
+            </>
+          ) : (
+            <>
+              <Check className="h-8 w-8 text-success" />
+              <div>
+                <h3 className="text-lg font-semibold">Up to Date</h3>
+                <p className="text-sm text-muted-foreground">
+                  This container is running the latest available image
+                </p>
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="flex gap-2">
+          {hasUpdate && (
+            <Button
+              onClick={handleUpdateNow}
+              disabled={executeUpdate.isPending}
+              variant="default"
+            >
+              {executeUpdate.isPending ? (
+                <>
+                  <Download className="mr-2 h-4 w-4 animate-spin" />
+                  Updating...
+                </>
+              ) : (
+                <>
+                  <Download className="mr-2 h-4 w-4" />
+                  Update Now
+                </>
+              )}
+            </Button>
+          )}
+          <Button
+            onClick={handleCheckNow}
+            disabled={checkUpdate.isPending}
+            variant="outline"
+          >
+            {checkUpdate.isPending ? (
+              <>
+                <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                Checking...
+              </>
+            ) : (
+              <>
+                <RefreshCw className="mr-2 h-4 w-4" />
+                Check Now
+              </>
+            )}
+          </Button>
+        </div>
+      </div>
+
+      {/* Update Progress */}
+      {updateProgress && (
+        <div className="space-y-3 rounded-lg border border-blue-500/50 bg-blue-500/10 p-4">
+          <div className="flex items-center justify-between text-sm">
+            <span className="font-medium text-blue-400">{updateProgress.message}</span>
+            <span className="text-blue-400">{updateProgress.progress}%</span>
+          </div>
+          <div className="relative h-2 w-full overflow-hidden rounded-full bg-blue-950">
+            <div
+              className="h-full bg-blue-500 transition-all duration-500 ease-out"
+              style={{ width: `${updateProgress.progress}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Update details */}
+      <div className="grid grid-cols-2 gap-6">
+        {/* Current Image */}
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="h-4 w-4 text-muted-foreground" />
+            <h4 className="text-sm font-medium text-muted-foreground">Current Image</h4>
+          </div>
+          <div className="bg-muted rounded-lg p-4 space-y-2">
+            <div>
+              <p className="text-xs text-muted-foreground">Image</p>
+              <p className="text-sm font-mono break-all">
+                {updateStatus?.current_image || container.image}
+              </p>
+            </div>
+            {updateStatus?.current_digest && (
+              <div>
+                <p className="text-xs text-muted-foreground">Digest</p>
+                <p className="text-sm font-mono">{updateStatus.current_digest}</p>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Latest Image */}
+        {hasUpdate && updateStatus && (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <Package className="h-4 w-4 text-amber-500" />
+              <h4 className="text-sm font-medium text-amber-500">Latest Available</h4>
+            </div>
+            <div className="bg-muted rounded-lg p-4 space-y-2">
+              <div>
+                <p className="text-xs text-muted-foreground">Image</p>
+                <p className="text-sm font-mono break-all">{updateStatus.latest_image}</p>
+              </div>
+              {updateStatus.latest_digest && (
+                <div>
+                  <p className="text-xs text-muted-foreground">Digest</p>
+                  <p className="text-sm font-mono">{updateStatus.latest_digest}</p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Settings */}
+      <div className="space-y-4 border-t pt-6">
+        <h4 className="text-base font-medium text-foreground mb-3">Update Settings</h4>
+
+        <div className="space-y-4">
+          {/* Auto-update toggle */}
+          <div className="flex items-start justify-between py-4">
+            <div className="flex-1 mr-4">
+              <label htmlFor="auto-update" className="text-sm font-medium cursor-pointer">
+                Auto-update
+              </label>
+              <p className="text-sm text-muted-foreground mt-1">
+                Automatically update this container when new versions are available
+              </p>
+            </div>
+            <Switch
+              id="auto-update"
+              checked={autoUpdateEnabled}
+              onCheckedChange={handleAutoUpdateToggle}
+              disabled={updateAutoUpdateConfig.isPending}
+            />
+          </div>
+
+          {/* Tracking mode selector */}
+          <div className="flex items-start justify-between py-4">
+            <div className="flex-1 mr-4">
+              <label htmlFor="tracking-mode" className="text-sm font-medium">
+                Tracking Mode
+              </label>
+              <p className="text-sm text-muted-foreground mt-1">
+                How to track updates for this container
+              </p>
+            </div>
+            <Select
+              value={trackingMode}
+              onValueChange={handleTrackingModeChange}
+              disabled={updateAutoUpdateConfig.isPending}
+            >
+              <SelectTrigger id="tracking-mode" className="w-[140px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="exact">Exact Tag</SelectItem>
+                <SelectItem value="minor">Minor (x.Y.z)</SelectItem>
+                <SelectItem value="major">Major (X.y.z)</SelectItem>
+                <SelectItem value="latest">Latest</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Last checked info */}
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-muted-foreground">Last Checked</span>
+            <div className="flex items-center gap-2 text-muted-foreground">
+              <Clock className="h-4 w-4" />
+              {lastChecked}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Help text */}
+      <div className="bg-muted/50 rounded-lg p-4 text-sm text-muted-foreground space-y-2">
+        <p className="font-medium">About Container Updates</p>
+        <ul className="list-disc list-inside space-y-1 text-xs">
+          <li>DockMon checks for updates daily at the configured time</li>
+          <li>Click "Check Now" to manually check for updates immediately</li>
+          <li>Tracking modes: exact (specific tag), minor (e.g., 1.25.x), major (e.g., 1.x), latest</li>
+          <li>Auto-update will automatically pull and recreate containers when updates are available</li>
+          <li>Container health is verified after updates to ensure successful deployment</li>
+        </ul>
+      </div>
+    </div>
+  )
+}
+
+// Memoize component to prevent unnecessary re-renders
+// Return true if props are equal (should NOT re-render)
+export const ContainerUpdatesTab = memo(ContainerUpdatesTabInternal, (prevProps, nextProps) => {
+  // Only re-render if container ID or host ID changes
+  const areEqual = (
+    prevProps.container.id === nextProps.container.id &&
+    prevProps.container.host_id === nextProps.container.host_id
+  )
+  return areEqual
+})

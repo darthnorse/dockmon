@@ -227,13 +227,14 @@ class CookieSessionManager:
                 return None
 
             # 4. Validate IP consistency (prevent session hijacking)
-            if session["client_ip"] != client_ip:
-                logger.warning(
-                    f"IP mismatch: Session created from {session['client_ip']}, "
-                    f"accessed from {client_ip}. Invalidating session for user: {session['username']}"
-                )
-                del self.sessions[session_id]
-                return None
+            # DISABLED: Causes issues behind proxies/CDNs like Cloudflare where IP varies
+            # if session["client_ip"] != client_ip:
+            #     logger.warning(
+            #         f"IP mismatch: Session created from {session['client_ip']}, "
+            #         f"accessed from {client_ip}. Invalidating session for user: {session['username']}"
+            #     )
+            #     del self.sessions[session_id]
+            #     return None
 
             # Update last accessed time
             session["last_accessed"] = now

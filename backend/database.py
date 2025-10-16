@@ -181,12 +181,53 @@ class GlobalSettings(Base):
     alert_template_metric = Column(Text, nullable=True)  # Metric-based alert template
     alert_template_state_change = Column(Text, nullable=True)  # State change alert template
     alert_template_health = Column(Text, nullable=True)  # Health check alert template
+    alert_template_update = Column(Text, nullable=True)  # Container update alert template
     blackout_windows = Column(JSON, nullable=True)  # Array of blackout time windows
     first_run_complete = Column(Boolean, default=False)  # Track if first run setup is complete
     polling_interval_migrated = Column(Boolean, default=False)  # Track if polling interval has been migrated to 2s
     timezone_offset = Column(Integer, default=0)  # Timezone offset in minutes from UTC
     show_host_stats = Column(Boolean, default=True)  # Show host statistics graphs on dashboard
     show_container_stats = Column(Boolean, default=True)  # Show container statistics on dashboard
+
+    # Container update settings
+    auto_update_enabled_default = Column(Boolean, default=False)  # Enable auto-updates by default for new containers
+    update_check_interval_hours = Column(Integer, default=24)  # How often to check for updates (hours)
+    update_check_time = Column(Text, default="02:00")  # Time of day to run checks (HH:MM format, 24-hour)
+    skip_compose_containers = Column(Boolean, default=True)  # Skip Docker Compose-managed containers
+    health_check_timeout_seconds = Column(Integer, default=120)  # Health check timeout (seconds)
+
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+class ContainerUpdate(Base):
+    """Container update tracking"""
+    __tablename__ = "container_updates"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    container_id = Column(Text, nullable=False, unique=True)  # Composite: host_id:short_container_id
+    host_id = Column(Text, nullable=False)
+
+    # Current state
+    current_image = Column(Text, nullable=False)
+    current_digest = Column(Text, nullable=False)
+
+    # Latest available
+    latest_image = Column(Text, nullable=True)
+    latest_digest = Column(Text, nullable=True)
+    update_available = Column(Boolean, default=False, nullable=False)
+
+    # Tracking settings
+    floating_tag_mode = Column(Text, default='exact', nullable=False)  # exact|minor|major|latest
+    auto_update_enabled = Column(Boolean, default=False, nullable=False)
+    health_check_strategy = Column(Text, default='docker', nullable=False)  # docker|warmup|http
+    health_check_url = Column(Text, nullable=True)
+
+    # Metadata
+    last_checked_at = Column(DateTime, nullable=True)
+    last_updated_at = Column(DateTime, nullable=True)
+    registry_url = Column(Text, nullable=True)
+    platform = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 class NotificationChannel(Base):
@@ -272,6 +313,8 @@ class AlertRuleV2(Base):
     severity = Column(String, nullable=False)  # 'info' | 'warning' | 'critical'
     cooldown_seconds = Column(Integer, default=300)
     depends_on_json = Column(Text, nullable=True)  # JSON: ["host_missing", ...]
+    auto_resolve = Column(Boolean, default=False)  # Auto-resolve alert immediately after notification (for update alerts)
+    suppress_during_updates = Column(Boolean, default=False)  # Suppress this alert during container updates, re-evaluate after update completes
 
     # Notifications
     notify_channels_json = Column(Text, nullable=True)  # JSON: ["slack", "telegram"]
@@ -1837,6 +1880,8 @@ class DatabaseManager:
         clear_threshold: Optional[float] = None,
         clear_duration_seconds: Optional[int] = None,
         cooldown_seconds: int = 300,
+        auto_resolve: bool = False,
+        suppress_during_updates: bool = False,
         host_selector_json: Optional[str] = None,
         container_selector_json: Optional[str] = None,
         labels_json: Optional[str] = None,
@@ -1863,6 +1908,8 @@ class DatabaseManager:
                 clear_threshold=clear_threshold,
                 clear_duration_seconds=clear_duration_seconds,
                 cooldown_seconds=cooldown_seconds,
+                auto_resolve=auto_resolve,
+                suppress_during_updates=suppress_during_updates,
                 host_selector_json=host_selector_json,
                 container_selector_json=container_selector_json,
                 labels_json=labels_json,

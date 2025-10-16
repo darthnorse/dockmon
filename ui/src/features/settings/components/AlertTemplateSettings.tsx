@@ -47,10 +47,20 @@ const DEFAULT_TEMPLATES = {
 **State:** {NEW_STATE}
 **Severity:** {SEVERITY}
 **Time:** {TIMESTAMP}
+**Rule:** {RULE_NAME}`,
+
+  update: `🔄 **Container Update Available**
+
+**Container:** \`{CONTAINER_NAME}\`
+**Host:** {HOST_NAME}
+**Current:** {CURRENT_IMAGE}
+**Latest:** {LATEST_IMAGE}
+**Digest:** {LATEST_DIGEST}
+**Time:** {TIMESTAMP}
 **Rule:** {RULE_NAME}`
 }
 
-type TemplateType = 'default' | 'metric' | 'state_change' | 'health'
+type TemplateType = 'default' | 'metric' | 'state_change' | 'health' | 'update'
 
 export function AlertTemplateSettings() {
   const { data: settings } = useGlobalSettings()
@@ -70,6 +80,7 @@ export function AlertTemplateSettings() {
         metric: settings.alert_template_metric || DEFAULT_TEMPLATES.metric,
         state_change: settings.alert_template_state_change || DEFAULT_TEMPLATES.state_change,
         health: settings.alert_template_health || DEFAULT_TEMPLATES.health,
+        update: settings.alert_template_update || DEFAULT_TEMPLATES.update,
       })
     }
   }, [settings])
@@ -86,6 +97,7 @@ export function AlertTemplateSettings() {
         alert_template_metric: templates.metric,
         alert_template_state_change: templates.state_change,
         alert_template_health: templates.health,
+        alert_template_update: templates.update,
       })
       setHasChanges(false)
       toast.success('Alert templates saved successfully')
@@ -118,6 +130,7 @@ export function AlertTemplateSettings() {
     { id: 'metric' as TemplateType, label: 'Metric Alerts', description: 'CPU, Memory, Disk usage' },
     { id: 'state_change' as TemplateType, label: 'State Changes', description: 'Stopped, Died, Restarted' },
     { id: 'health' as TemplateType, label: 'Health Checks', description: 'Unhealthy status' },
+    { id: 'update' as TemplateType, label: 'Container Updates', description: 'Update available' },
   ]
 
   return (

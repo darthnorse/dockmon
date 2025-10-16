@@ -5,6 +5,7 @@ Manages background tasks that run at regular intervals
 
 import asyncio
 import logging
+from datetime import datetime, time as dt_time
 
 from database import DatabaseManager
 from event_logger import EventLogger, EventSeverity, EventType
@@ -20,6 +21,7 @@ class PeriodicJobsManager:
         self.db = db
         self.event_logger = event_logger
         self.monitor = None  # Will be set by monitor.py after initialization
+        self._last_update_check = None  # Track when we last ran update check
 
     def auto_resolve_stale_alerts(self):
         """
@@ -161,6 +163,9 @@ class PeriodicJobsManager:
                 # Note: Timezone offset is auto-synced from the browser, not from server
                 # This ensures DST changes are handled automatically on the client side
 
+                # Check if we should run update checker (based on configured time)
+                await self._check_and_run_updates()
+
                 # Sleep for 24 hours before next cleanup
                 await asyncio.sleep(24 * 60 * 60)  # 24 hours
 
@@ -168,3 +173,101 @@ class PeriodicJobsManager:
                 logger.error(f"Error in cleanup task: {e}")
                 # Wait 1 hour before retrying
                 await asyncio.sleep(60 * 60)  # 1 hour
+
+    async def _check_and_run_updates(self):
+        """
+        Check if it's time to run update checker based on configured schedule.
+
+        Runs once per day at the configured time (default: 02:00).
+        Uses _last_update_check to ensure we don't run multiple times.
+        """
+        from updates.update_checker import get_update_checker
+
+        try:
+            settings = self.db.get_settings()
+            check_time_str = settings.update_check_time if hasattr(settings, 'update_check_time') and settings.update_check_time else "02:00"
+
+            # Parse configured time
+            hour, minute = map(int, check_time_str.split(":"))
+            target_time = dt_time(hour, minute)
+            now = datetime.now()
+            current_time = now.time()
+
+            # Check if we're past the target time and haven't run today
+            should_run = False
+            if self._last_update_check is None:
+                # First run - run immediately
+                should_run = True
+                logger.info("First update check - running immediately")
+            elif self._last_update_check.date() < now.date() and current_time >= target_time:
+                # Haven't run today and we're past the target time
+                should_run = True
+                logger.info(f"Running scheduled update check (target time: {check_time_str})")
+
+            if should_run:
+                # Step 1: Check for updates
+                checker = get_update_checker(self.db, self.monitor)
+                stats = await checker.check_all_containers()
+
+                # Log completion event
+                self.event_logger.log_system_event(
+                    "Container Update Check",
+                    f"Checked {stats['checked']} containers, found {stats['updates_found']} updates available",
+                    EventSeverity.INFO,
+                    EventType.STARTUP
+                )
+
+                logger.info(f"Update check complete: {stats}")
+
+                # Step 2: Execute auto-updates for containers with auto_update_enabled
+                if stats['updates_found'] > 0:
+                    from updates.update_executor import get_update_executor
+                    executor = get_update_executor(self.db, self.monitor)
+                    update_stats = await executor.execute_auto_updates()
+
+                    # Log execution results
+                    if update_stats['attempted'] > 0:
+                        self.event_logger.log_system_event(
+                            "Container Auto-Update",
+                            f"Attempted {update_stats['attempted']} auto-updates, {update_stats['successful']} successful, {update_stats['failed']} failed",
+                            EventSeverity.INFO if update_stats['failed'] == 0 else EventSeverity.WARNING,
+                            EventType.STARTUP
+                        )
+                        logger.info(f"Auto-update execution complete: {update_stats}")
+
+                # Update last check time
+                self._last_update_check = now
+
+        except Exception as e:
+            logger.error(f"Error in update checker: {e}", exc_info=True)
+
+    async def check_updates_now(self):
+        """
+        Manually trigger an immediate update check (called from API endpoint).
+
+        Returns:
+            Dict with stats (total, checked, updates_found, errors)
+        """
+        from updates.update_checker import get_update_checker
+
+        try:
+            logger.info("Manual update check triggered")
+            checker = get_update_checker(self.db, self.monitor)
+            stats = await checker.check_all_containers()
+
+            # Log completion event
+            self.event_logger.log_system_event(
+                "Manual Update Check",
+                f"Checked {stats['checked']} containers, found {stats['updates_found']} updates available",
+                EventSeverity.INFO,
+                EventType.STARTUP
+            )
+
+            # Update last check time
+            self._last_update_check = datetime.now()
+            logger.info(f"Manual update check complete: {stats}")
+            return stats
+
+        except Exception as e:
+            logger.error(f"Error in manual update check: {e}", exc_info=True)
+            return {"total": 0, "checked": 0, "updates_found": 0, "errors": 1}

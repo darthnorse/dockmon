@@ -5,7 +5,7 @@
  * - Header with container name, icon, uptime, update status
  * - Action buttons (Start/Stop/Restart/Shell)
  * - Auto-restart toggle and desired state controls
- * - Tabbed interface: Info, Live Stats, Logs, Events, Alerts, Updates
+ * - Tabbed interface: Info, Logs, Events, Alerts, Updates
  * - Info tab: 2-column layout with status, image, labels, ports, volumes, env vars
  */
 
@@ -21,6 +21,8 @@ import { apiClient } from '@/lib/api/client'
 import { ContainerInfoTab } from './modal-tabs/ContainerInfoTab'
 import { ContainerModalEventsTab } from './modal-tabs/ContainerModalEventsTab'
 import { ContainerModalLogsTab } from './modal-tabs/ContainerModalLogsTab'
+import { ContainerModalAlertsTab } from './modal-tabs/ContainerModalAlertsTab'
+import { ContainerUpdatesTab } from './modal-tabs/ContainerUpdatesTab'
 
 export interface ContainerDetailsModalProps {
   containerId: string | null
@@ -163,11 +165,6 @@ export function ContainerDetailsModal({
       content: <ContainerInfoTab container={container} />,
     },
     {
-      id: 'stats',
-      label: 'Live Stats',
-      content: <div className="p-6 text-muted-foreground">Live Stats coming soon...</div>,
-    },
-    {
       id: 'logs',
       label: 'Logs',
       content: <ContainerModalLogsTab hostId={container.host_id!} containerId={container.id} containerName={container.name} />,
@@ -180,12 +177,12 @@ export function ContainerDetailsModal({
     {
       id: 'alerts',
       label: 'Alerts',
-      content: <div className="p-6 text-muted-foreground">Alerts coming soon...</div>,
+      content: <ContainerModalAlertsTab containerId={container.id} />,
     },
     {
       id: 'updates',
       label: 'Updates',
-      content: <div className="p-6 text-muted-foreground">Updates coming soon...</div>,
+      content: <ContainerUpdatesTab container={container} />,
     },
   ]
 

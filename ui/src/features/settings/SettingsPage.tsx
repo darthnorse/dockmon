@@ -4,14 +4,15 @@
  */
 
 import { useState } from 'react'
-import { LayoutDashboard, Bell, AlertTriangle, Settings, LucideIcon } from 'lucide-react'
+import { LayoutDashboard, Bell, AlertTriangle, Settings, Package, LucideIcon } from 'lucide-react'
 import { DashboardSettings } from './components/DashboardSettings'
 import { NotificationChannelsSection } from './components/NotificationChannelsSection'
 import { AlertTemplateSettings } from './components/AlertTemplateSettings'
 import { BlackoutWindowsSection } from './components/BlackoutWindowsSection'
 import { SystemSettings } from './components/SystemSettings'
+import { ContainerUpdatesSettings } from './components/ContainerUpdatesSettings'
 
-type TabId = 'dashboard' | 'alerts' | 'notifications' | 'system'
+type TabId = 'dashboard' | 'alerts' | 'notifications' | 'updates' | 'system'
 
 interface Tab {
   id: TabId
@@ -23,6 +24,7 @@ const TABS: Tab[] = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'alerts', label: 'Alerts', icon: AlertTriangle },
   { id: 'notifications', label: 'Notifications', icon: Bell },
+  { id: 'updates', label: 'Container Updates', icon: Package },
   { id: 'system', label: 'System', icon: Settings },
 ]
 
@@ -78,6 +80,7 @@ export function SettingsPage() {
             </div>
           )}
           {activeTab === 'notifications' && <NotificationChannelsSection />}
+          {activeTab === 'updates' && <ContainerUpdatesSettings />}
           {activeTab === 'system' && <SystemSettings />}
         </div>
       </div>

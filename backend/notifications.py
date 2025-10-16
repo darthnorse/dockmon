@@ -1193,15 +1193,18 @@ Rule: {RULE_NAME}
             # Check if it's a health alert
             elif rule.kind in ['container_unhealthy', 'host_unhealthy'] and settings.alert_template_health:
                 return settings.alert_template_health
+            # Check if it's an update alert
+            elif rule.kind in ['update_completed', 'update_available', 'update_failed'] and settings.alert_template_update:
+                return settings.alert_template_update
             # Priority 3: Global default template
             elif settings.alert_template:
                 return settings.alert_template
 
-        # Fallback: Built-in default template
-        return self._get_default_template_v2()
+        # Fallback: Built-in default template (kind-specific)
+        return self._get_default_template_v2(rule.kind)
 
-    def _get_default_template_v2(self):
-        """Get built-in default template for v2 alerts"""
+    def _get_default_template_v2(self, kind=None):
+        """Get built-in default template for v2 alerts - generic fallback only"""
         return """🚨 **{SEVERITY} Alert: {KIND}**
 
 **{TITLE}**

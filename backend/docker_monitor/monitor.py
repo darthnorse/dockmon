@@ -1005,6 +1005,11 @@ class DockerMonitor:
         """Alias for toggle_auto_restart - used by batch operations"""
         return self.toggle_auto_restart(host_id, container_id, container_name, enabled)
 
+    def update_container_auto_update(self, host_id: str, container_id: str, container_name: str, enabled: bool, floating_tag_mode: str = 'exact'):
+        """Enable/disable auto-update for a container with specified tracking mode"""
+        container_key = f"{host_id}:{container_id}"
+        return self.db.set_container_auto_update(container_key, enabled, floating_tag_mode)
+
     def update_container_desired_state(self, host_id: str, container_id: str, container_name: str, desired_state: str):
         """Alias for set_container_desired_state - used by batch operations"""
         return self.set_container_desired_state(host_id, container_id, container_name, desired_state)

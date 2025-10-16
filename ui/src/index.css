@@ -48,8 +48,6 @@
 
     /* Accent Colors */
     --accent: #3B82F6;
-    --accent-2: #06B6D4;
-    --accent-3: #6366F1;
 
     /* Semantic Colors */
     --success: #22C55E;
@@ -75,9 +73,6 @@
 
     --muted: #151827;
     --muted-foreground: #9CA3AF;
-
-    --accent-color: #3B82F6;
-    --accent-foreground: #0B1020;
 
     --destructive: #EF4444;
     --destructive-foreground: #0B0F1A;

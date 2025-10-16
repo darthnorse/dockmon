@@ -58,7 +58,7 @@ class UpdateChecker:
             skip_compose = settings.skip_compose_containers if settings else True
 
         # Get all containers
-        containers = self._get_all_containers()
+        containers = await self._get_all_containers()
         stats["total"] = len(containers)
 
         logger.info(f"Found {len(containers)} containers to check")
@@ -84,7 +84,7 @@ class UpdateChecker:
                         logger.info(f"Update available for {container['name']}: {update_info['current_digest'][:12]} → {update_info['latest_digest'][:12]}")
 
                         # Create event for new update
-                        self._create_update_event(container, update_info)
+                        await self._create_update_event(container, update_info)
 
             except Exception as e:
                 logger.error(f"Error checking container {container.get('name', 'unknown')}: {e}")
@@ -122,7 +122,7 @@ class UpdateChecker:
             if update_info["update_available"]:
                 logger.info(f"Update available for {container['name']}")
                 # Create event
-                self._create_update_event(container, update_info)
+                await self._create_update_event(container, update_info)
             else:
                 logger.info(f"No update available for {container['name']}")
 
@@ -205,56 +205,23 @@ class UpdateChecker:
             return None
 
         try:
-            # Get Docker client for this host
+            # Get Docker client for this host from the monitor's client pool
             host_id = container.get("host_id")
             if not host_id:
                 return None
 
-            # Get the host's Docker client from monitor
-            from database import DockerHostDB
-            with self.db.get_session() as session:
-                host = session.query(DockerHostDB).filter_by(id=host_id).first()
-                if not host:
-                    return None
+            if not self.monitor:
+                return None
 
-            # Get docker client
-            import docker
-            if host.url.startswith("unix://"):
-                client = docker.DockerClient(base_url=host.url)
-            elif host.tls_cert and host.tls_key:
-                # TLS connection - write certs to temp files
-                import tempfile
-                import os
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    cert_path = os.path.join(tmpdir, "cert.pem")
-                    key_path = os.path.join(tmpdir, "key.pem")
-                    ca_path = os.path.join(tmpdir, "ca.pem") if host.tls_ca else None
+            # Use the monitor's existing Docker client - it manages TLS certs properly
+            client = self.monitor.clients.get(host_id)
+            if not client:
+                logger.debug(f"No Docker client found for host {host_id}")
+                return None
 
-                    with open(cert_path, "w") as f:
-                        f.write(host.tls_cert)
-                    with open(key_path, "w") as f:
-                        f.write(host.tls_key)
-                    if ca_path and host.tls_ca:
-                        with open(ca_path, "w") as f:
-                            f.write(host.tls_ca)
-
-                    tls_config = docker.tls.TLSConfig(
-                        client_cert=(cert_path, key_path),
-                        ca_cert=ca_path,
-                        verify=bool(ca_path)
-                    )
-                    client = docker.DockerClient(base_url=host.url, tls=tls_config)
-            else:
-                # Plain TCP
-                client = docker.DockerClient(base_url=host.url)
-
-            # Get container
+            # Get container and extract digest
             dc = client.containers.get(container["id"])
-
-            # Get image
             image = dc.image
-
-            # Get RepoDigests - this contains the actual sha256 the image was pulled with
             repo_digests = image.attrs.get("RepoDigests", [])
 
             if repo_digests:
@@ -273,7 +240,7 @@ class UpdateChecker:
             logger.warning(f"Error getting container image digest: {e}")
             return None
 
-    def _get_all_containers(self) -> List[Dict]:
+    async def _get_all_containers(self) -> List[Dict]:
         """
         Get all containers from all hosts via monitor.
 
@@ -285,18 +252,12 @@ class UpdateChecker:
             return []
 
         try:
-            # Get containers from monitor (this is sync in the current implementation)
-            import asyncio
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                containers = loop.run_until_complete(self.monitor.get_containers())
-                # Convert to dict format
-                return [c.dict() for c in containers]
-            finally:
-                loop.close()
+            # Get containers from monitor (async)
+            containers = await self.monitor.get_containers()
+            # Convert to dict format
+            return [c.dict() for c in containers]
         except Exception as e:
-            logger.error(f"Error fetching containers: {e}")
+            logger.error(f"Error fetching containers: {e}", exc_info=True)
             return []
 
     async def _get_container_async(self, host_id: str, container_id: str) -> Optional[Dict]:
@@ -389,9 +350,9 @@ class UpdateChecker:
 
             session.commit()
 
-    def _create_update_event(self, container: Dict, update_info: Dict):
+    async def _create_update_event(self, container: Dict, update_info: Dict):
         """
-        Create an event for newly available update.
+        Create an event and trigger alerts for newly available update.
 
         Only creates event if this is a NEW update (not already in DB).
 
@@ -411,14 +372,59 @@ class UpdateChecker:
             # 1. No record exists (first time seeing update), OR
             # 2. Record exists but digest changed (new update available)
             if not record or record.latest_digest != update_info["latest_digest"]:
-                # Use event_logger if available (from monitor instance)
                 try:
-                    from event_logger import EventLogger, EventCategory, EventType, EventSeverity
-                    # This will be set by the monitor when it creates the periodic_jobs instance
-                    # For now, just log - events will be created when alerts system handles updates
                     logger.info(f"New update available for {container['name']}: {update_info['latest_image']}")
+
+                    # Create event in database
+                    if self.monitor and hasattr(self.monitor, 'event_logger'):
+                        from event_logger import EventCategory, EventType, EventSeverity, EventContext
+
+                        context = EventContext(
+                            host_id=container["host_id"],
+                            container_id=container["id"],
+                            container_name=container["name"]
+                        )
+
+                        self.monitor.event_logger.log_event(
+                            category=EventCategory.CONTAINER,
+                            event_type=EventType.INFO,
+                            severity=EventSeverity.INFO,
+                            title=f"Update Available: {container['name']}",
+                            message=f"Update available: {update_info['current_image']} → {update_info['latest_image']}",
+                            context=context
+                        )
+
+                    # Trigger alert evaluation for update_available alerts
+                    if self.monitor and hasattr(self.monitor, 'alert_evaluation_service'):
+                        # Get host name
+                        host_name = self.monitor.hosts.get(container["host_id"]).name if container["host_id"] in self.monitor.hosts else container["host_id"]
+
+                        # Create event data
+                        event_data = {
+                            'timestamp': datetime.now().isoformat(),
+                            'event_type': 'info',
+                            'current_image': update_info['current_image'],
+                            'latest_image': update_info['latest_image'],
+                            'current_digest': update_info['current_digest'],
+                            'latest_digest': update_info['latest_digest'],
+                            'update_detected': True,  # Special flag for alert matching
+                            'triggered_by': 'update_checker',
+                        }
+
+                        # Call alert evaluation - now properly awaited
+                        await self.monitor.alert_evaluation_service.handle_container_event(
+                            event_type='info',
+                            container_id=container["id"],
+                            container_name=container["name"],
+                            host_id=container["host_id"],
+                            host_name=host_name,
+                            event_data=event_data
+                        )
+
+                        logger.info(f"Triggered update_available alerts for {container['name']}")
+
                 except Exception as e:
-                    logger.warning(f"Could not create update event: {e}")
+                    logger.error(f"Could not create update event or trigger alerts: {e}", exc_info=True)
 
     def _is_compose_container(self, container: Dict) -> bool:
         """

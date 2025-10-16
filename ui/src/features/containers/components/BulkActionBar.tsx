@@ -4,7 +4,7 @@
  * Sticky bottom bar that appears when containers are selected
  * Features three collapsible sections side by side:
  * - Run Actions: Start, Stop, Restart
- * - Manage State: Auto-Restart (Enable/Disable), Desired State (Should Run/On-Demand)
+ * - Manage Policy: Auto-Restart, Auto-Update, Desired State
  * - Tags: Add/Remove tags
  */
 
@@ -23,11 +23,14 @@ interface BulkActionBarProps {
   onAction: (action: 'start' | 'stop' | 'restart') => void
   onTagUpdate: (mode: 'add' | 'remove', tags: string[]) => Promise<void>
   onAutoRestartUpdate?: (enabled: boolean) => Promise<void>
+  onAutoUpdateUpdate?: (enabled: boolean, floatingTagMode: string) => Promise<void>
   onDesiredStateUpdate?: (state: 'should_run' | 'on_demand') => Promise<void>
 }
 
 type TagMode = 'add' | 'remove'
 type AutoRestartMode = 'enable' | 'disable'
+type AutoUpdateMode = 'enable' | 'disable'
+type FloatingTagMode = 'exact' | 'minor' | 'major' | 'latest'
 type DesiredStateMode = 'should_run' | 'on_demand'
 
 export function BulkActionBar({
@@ -37,9 +40,10 @@ export function BulkActionBar({
   onAction,
   onTagUpdate,
   onAutoRestartUpdate,
+  onAutoUpdateUpdate,
   onDesiredStateUpdate
 }: BulkActionBarProps) {
-  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['run-actions', 'manage-state', 'tags']))
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['run-actions', 'manage-policy', 'tags']))
 
   // Tag state
   const [tagMode, setTagMode] = useState<TagMode>('add')
@@ -50,6 +54,10 @@ export function BulkActionBar({
 
   // Auto-Restart state
   const [autoRestartMode, setAutoRestartMode] = useState<AutoRestartMode>('enable')
+
+  // Auto-Update state
+  const [autoUpdateMode, setAutoUpdateMode] = useState<AutoUpdateMode>('enable')
+  const [floatingTagMode, setFloatingTagMode] = useState<FloatingTagMode>('exact')
 
   // Desired State state
   const [desiredStateMode, setDesiredStateMode] = useState<DesiredStateMode>('should_run')
@@ -199,6 +207,19 @@ export function BulkActionBar({
     }
   }
 
+  const handleApplyAutoUpdate = async () => {
+    if (!onAutoUpdateUpdate) return
+
+    setIsLoading(true)
+    try {
+      await onAutoUpdateUpdate(autoUpdateMode === 'enable', floatingTagMode)
+    } catch (error) {
+      debug.error('BulkActionBar', 'Failed to update auto-update:', error)
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
   const handleApplyDesiredState = async () => {
     if (!onDesiredStateUpdate) return
 
@@ -283,23 +304,23 @@ export function BulkActionBar({
               )}
             </div>
 
-            {/* Manage State */}
+            {/* Manage Policy */}
             <div className="border border-border rounded-lg bg-background">
               <button
-                onClick={() => toggleSection('manage-state')}
+                onClick={() => toggleSection('manage-policy')}
                 className="flex items-center gap-2 px-3 py-2 text-sm font-medium hover:bg-muted transition-colors rounded-t-lg w-full"
-                aria-expanded={expandedSections.has('manage-state')}
-                aria-label="Toggle manage state menu"
+                aria-expanded={expandedSections.has('manage-policy')}
+                aria-label="Toggle manage policy menu"
               >
-                <span>Manage State</span>
-                {expandedSections.has('manage-state') ? (
+                <span>Manage Policy</span>
+                {expandedSections.has('manage-policy') ? (
                   <ChevronUp className="h-3.5 w-3.5" />
                 ) : (
                   <ChevronDown className="h-3.5 w-3.5" />
                 )}
               </button>
 
-              {expandedSections.has('manage-state') && (
+              {expandedSections.has('manage-policy') && (
                 <div className="p-3 border-t border-border space-y-3 min-w-[400px]">
                   {/* Auto-Restart */}
                   <div className="space-y-2">
@@ -340,6 +361,63 @@ export function BulkActionBar({
                         size="sm"
                         onClick={handleApplyAutoRestart}
                         disabled={isLoading || !onAutoRestartUpdate}
+                        className="ml-auto"
+                      >
+                        {isLoading ? 'Applying...' : 'Apply'}
+                      </Button>
+                    </div>
+                  </div>
+
+                  {/* Auto-Update */}
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs font-medium text-muted-foreground">Set Auto-Update</span>
+                      <div className="group relative">
+                        <Info className="h-3 w-3 text-muted-foreground cursor-help" />
+                        <div className="invisible group-hover:visible absolute left-0 bottom-full mb-2 z-10 w-64 p-2 text-xs bg-surface-1 border border-border rounded shadow-lg">
+                          DockMon will automatically check for and apply container updates when new images are available
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="autoUpdate"
+                          checked={autoUpdateMode === 'enable'}
+                          onChange={() => setAutoUpdateMode('enable')}
+                          className="h-3.5 w-3.5"
+                          disabled={isLoading}
+                        />
+                        <span className="text-sm">Enable</span>
+                      </label>
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="autoUpdate"
+                          checked={autoUpdateMode === 'disable'}
+                          onChange={() => setAutoUpdateMode('disable')}
+                          className="h-3.5 w-3.5"
+                          disabled={isLoading}
+                        />
+                        <span className="text-sm">Disable</span>
+                      </label>
+                      <select
+                        value={floatingTagMode}
+                        onChange={(e) => setFloatingTagMode(e.target.value as FloatingTagMode)}
+                        disabled={isLoading || autoUpdateMode === 'disable'}
+                        className="px-2 py-1 text-sm rounded border border-border bg-background disabled:opacity-50"
+                      >
+                        <option value="exact">Exact</option>
+                        <option value="minor">Minor</option>
+                        <option value="major">Major</option>
+                        <option value="latest">Latest</option>
+                      </select>
+                      <Button
+                        variant="default"
+                        size="sm"
+                        onClick={handleApplyAutoUpdate}
+                        disabled={isLoading || !onAutoUpdateUpdate}
                         className="ml-auto"
                       >
                         {isLoading ? 'Applying...' : 'Apply'}

@@ -331,6 +331,33 @@ class BatchJobManager:
                     enabled
                 )
                 message = f"Auto-restart {'enabled' if enabled else 'disabled'}"
+            elif action == 'set-auto-update':
+                # Auto-update requires params
+                if not params or 'enabled' not in params:
+                    return {
+                        'status': 'error',
+                        'message': 'Missing enabled parameter'
+                    }
+
+                enabled = params['enabled']
+                floating_tag_mode = params.get('floating_tag_mode', 'exact')
+
+                # Validate floating_tag_mode
+                if floating_tag_mode not in ['exact', 'minor', 'major', 'latest']:
+                    return {
+                        'status': 'error',
+                        'message': f'Invalid floating_tag_mode: {floating_tag_mode}'
+                    }
+
+                self.monitor.update_container_auto_update(
+                    host_id,
+                    short_id,
+                    container_name,
+                    enabled,
+                    floating_tag_mode
+                )
+                mode_text = f" ({floating_tag_mode} mode)" if enabled else ""
+                message = f"Auto-update {'enabled' if enabled else 'disabled'}{mode_text}"
             elif action == 'set-desired-state':
                 # Desired state requires params
                 if not params or 'desired_state' not in params:

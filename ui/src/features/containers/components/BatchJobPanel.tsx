@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { X, CheckCircle, XCircle, Clock, Loader2 } from 'lucide-react'
 import { apiClient } from '@/lib/api/client'
 import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
+import { useQueryClient } from '@tanstack/react-query'
 import { debug } from '@/lib/debug'
 import type { WebSocketMessage } from '@/lib/websocket/useWebSocket'
 
@@ -44,6 +45,7 @@ export function BatchJobPanel({ jobId, onClose, bulkActionBarOpen = false }: Bat
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const { addMessageHandler } = useWebSocketContext()
+  const queryClient = useQueryClient()
 
   // Fetch initial job status
   useEffect(() => {
@@ -76,7 +78,25 @@ export function BatchJobPanel({ jobId, onClose, bulkActionBarOpen = false }: Bat
     if (message.type === 'batch_job_update' && message.data && typeof message.data === 'object') {
       const data = message.data as Record<string, unknown>
       if (data.job_id === jobId) {
+        const prevStatus = job?.status
+        const newStatus = data.status as string
+
         setJob(prev => prev ? { ...prev, ...data } : null)
+
+        // Invalidate queries when job completes
+        if (prevStatus !== 'completed' && newStatus === 'completed') {
+          const action = job?.action || (data.action as string)
+
+          // Invalidate container list for all actions
+          queryClient.invalidateQueries({ queryKey: ['containers'] })
+
+          // For auto-update actions, also invalidate update-status queries
+          if (action === 'set-auto-update') {
+            queryClient.invalidateQueries({ queryKey: ['container-update-status'] })
+          }
+
+          debug.log('BatchJobPanel', `Job ${jobId} completed, invalidated queries for action: ${action}`)
+        }
       }
     }
 
@@ -97,7 +117,7 @@ export function BatchJobPanel({ jobId, onClose, bulkActionBarOpen = false }: Bat
         })
       }
     }
-  }, [jobId])
+  }, [jobId, job?.status, job?.action, queryClient])
 
   // Subscribe to WebSocket messages
   useEffect(() => {

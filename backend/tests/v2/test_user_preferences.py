@@ -360,7 +360,7 @@ class TestPreferencesDoSProtection:
     def test_json_size_limit(self, test_client):
         """DOS PROTECTION: Test preferences JSON size limit (100KB)"""
         from sqlalchemy import text
-        from auth.routes import db
+        from auth.shared import db
 
         # Create a test user
         with db.get_session() as session:

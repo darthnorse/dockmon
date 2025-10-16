@@ -66,15 +66,6 @@ export default {
         },
         accent: {
           DEFAULT: 'var(--accent)',
-          foreground: 'var(--accent-foreground)',
-          2: 'var(--accent-2)',
-          3: 'var(--accent-3)',
-        },
-        semantic: {
-          success: 'var(--success)',
-          warning: 'var(--warning)',
-          danger: 'var(--danger)',
-          info: 'var(--info)',
         },
         // Semantic color aliases for utility classes (text-success, fill-success, etc.)
         success: 'var(--success)',

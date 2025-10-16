@@ -13,6 +13,7 @@ import logging
 import time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
+from sqlalchemy.orm import joinedload
 
 from database import DatabaseManager, AlertRuleV2, AlertV2
 from alerts.engine import AlertEngine, EvaluationContext
@@ -123,7 +124,10 @@ class AlertEvaluationService:
         try:
             with self.db.get_session() as session:
                 # Get all open alerts that haven't been notified yet
-                pending_alerts = session.query(AlertV2).filter(
+                # Use joinedload to eagerly load rules (avoids N+1 query)
+                pending_alerts = session.query(AlertV2).options(
+                    joinedload(AlertV2.rule)
+                ).filter(
                     AlertV2.state == "open",
                     AlertV2.notified_at == None
                 ).all()
@@ -131,8 +135,8 @@ class AlertEvaluationService:
                 now = datetime.now(timezone.utc)
 
                 for alert in pending_alerts:
-                    # Get the rule to check clear_duration_seconds
-                    rule = session.query(AlertRuleV2).filter(AlertRuleV2.id == alert.rule_id).first()
+                    # Rule is already loaded via joinedload (no extra query)
+                    rule = alert.rule
 
                     if not rule:
                         continue

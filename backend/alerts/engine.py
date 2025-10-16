@@ -322,6 +322,21 @@ class AlertEngine:
             # Host disconnected/offline
             return event_type == "disconnection" and context.scope_type == "host"
 
+        if rule.kind == "update_completed":
+            # Container update completed successfully
+            # Update events are logged as ACTION_TAKEN
+            return event_type == "action_taken" and context.scope_type == "container"
+
+        if rule.kind == "update_available":
+            # New update detected for container
+            # Update availability is signaled via INFO events with specific metadata
+            return event_type == "info" and context.scope_type == "container" and event_data and event_data.get("update_detected") == True
+
+        if rule.kind == "update_failed":
+            # Container update failed
+            # Update failures are logged as ERROR events with specific metadata
+            return event_type == "error" and context.scope_type == "container" and event_data and event_data.get("update_failure") == True
+
         # Add more mappings as needed
         return False
 

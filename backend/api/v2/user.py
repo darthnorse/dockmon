@@ -48,8 +48,8 @@ def validate_json_depth(obj: Any, max_depth: int = 10) -> None:
             for item in current:
                 queue.append((item, depth + 1))
 
-# Import shared database instance from v1 (single connection pool)
-from auth.routes import db
+# Import shared database instance (single connection pool)
+from auth.shared import db
 
 
 class DashboardPreferences(BaseModel):

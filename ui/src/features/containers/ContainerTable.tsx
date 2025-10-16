@@ -499,6 +499,29 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
     }
   }
 
+  const handleBulkAutoUpdateUpdate = async (enabled: boolean, floatingTagMode: string) => {
+    if (!data) return
+
+    const count = selectedContainerIds.size
+
+    try {
+      // Create batch job for auto-update
+      const result = await apiClient.post<{ job_id: string }>('/batch', {
+        scope: 'container',
+        action: 'set-auto-update',
+        ids: Array.from(selectedContainerIds),
+        params: { enabled, floating_tag_mode: floatingTagMode },
+      })
+      setBatchJobId(result.job_id)
+
+      const modeText = enabled ? `with ${floatingTagMode} mode` : ''
+      toast.success(`${enabled ? 'Enabling' : 'Disabling'} auto-update ${modeText} for ${count} container${count !== 1 ? 's' : ''}...`)
+    } catch (error) {
+      toast.error(`Failed to update auto-update: ${error instanceof Error ? error.message : 'Unknown error'}`)
+      throw error
+    }
+  }
+
   const handleBulkDesiredStateUpdate = async (state: 'should_run' | 'on_demand') => {
     if (!data) return
 
@@ -1034,7 +1057,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
                   }}
                   title="View full details"
                 >
-                  <Maximize2 className="h-8 w-8" />
+                  <Maximize2 className="h-4 w-4" />
                 </Button>
               )}
 
@@ -1151,7 +1174,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   }
 
   return (
-    <div className={`space-y-4 ${selectedContainerIds.size > 0 ? 'pb-[200px]' : ''}`}>
+    <div className={`space-y-4 ${selectedContainerIds.size > 0 ? 'pb-[280px]' : ''}`}>
       {/* Search */}
       <div className="flex items-center gap-4">
         <Input
@@ -1262,6 +1285,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         onAction={handleBulkAction}
         onTagUpdate={handleBulkTagUpdate}
         onAutoRestartUpdate={handleBulkAutoRestartUpdate}
+        onAutoUpdateUpdate={handleBulkAutoUpdateUpdate}
         onDesiredStateUpdate={handleBulkDesiredStateUpdate}
       />
 

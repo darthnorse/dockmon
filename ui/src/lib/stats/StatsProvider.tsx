@@ -134,6 +134,7 @@ export function StatsProvider({ children }: StatsProviderProps) {
   }, [])
 
   // Subscribe to WebSocket messages
+  // PERFORMANCE: Run only once on mount since handleWebSocketMessage has stable reference
   useEffect(() => {
     debug.log('StatsProvider', 'Subscribing to WebSocket messages')
 
@@ -147,7 +148,8 @@ export function StatsProvider({ children }: StatsProviderProps) {
       debug.log('StatsProvider', 'Cleanup (unregistering WebSocket handler)')
       cleanup()
     }
-  }, [addMessageHandler, handleWebSocketMessage])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const value: StatsContextValue = {
     hostMetrics,

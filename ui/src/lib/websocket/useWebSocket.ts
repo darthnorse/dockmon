@@ -76,6 +76,8 @@ export function useWebSocket({
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const reconnectCountRef = useRef(0)
+  const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const pongTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Store callbacks in refs to avoid dependency changes
   const onMessageRef = useRef(onMessage)
@@ -104,11 +106,34 @@ export function useWebSocket({
         setStatus('connected')
         reconnectCountRef.current = 0
         onConnectRef.current?.()
+
+        // Start keepalive ping/pong mechanism
+        // Send ping every 30 seconds to keep connection alive
+        pingIntervalRef.current = setInterval(() => {
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            wsRef.current.send(JSON.stringify({ type: 'ping' }))
+
+            // Set timeout for pong response (5 seconds)
+            pongTimeoutRef.current = setTimeout(() => {
+              debug.warn('WebSocket', 'No pong received - connection may be dead, reconnecting...')
+              ws.close()
+            }, 5000)
+          }
+        }, 30000)
       }
 
       ws.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data) as WebSocketMessage
+
+          // Handle pong response
+          if (message.type === 'pong') {
+            if (pongTimeoutRef.current) {
+              clearTimeout(pongTimeoutRef.current)
+              pongTimeoutRef.current = null
+            }
+          }
+
           onMessageRef.current?.(message)
         } catch (error) {
           debug.error('WebSocket', 'Failed to parse message:', error)
@@ -123,6 +148,17 @@ export function useWebSocket({
       ws.onclose = () => {
         setStatus('disconnected')
         onDisconnectRef.current?.()
+
+        // Clear keepalive timers on close
+        if (pingIntervalRef.current) {
+          clearInterval(pingIntervalRef.current)
+          pingIntervalRef.current = null
+        }
+
+        if (pongTimeoutRef.current) {
+          clearTimeout(pongTimeoutRef.current)
+          pongTimeoutRef.current = null
+        }
 
         // Attempt reconnection
         if (reconnect && reconnectCountRef.current < reconnectAttempts) {
@@ -150,9 +186,20 @@ export function useWebSocket({
   }, [url, reconnect, reconnectInterval, reconnectAttempts])
 
   const disconnect = useCallback(() => {
+    // Clear all timers
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current)
       reconnectTimeoutRef.current = null
+    }
+
+    if (pingIntervalRef.current) {
+      clearInterval(pingIntervalRef.current)
+      pingIntervalRef.current = null
+    }
+
+    if (pongTimeoutRef.current) {
+      clearTimeout(pongTimeoutRef.current)
+      pongTimeoutRef.current = null
     }
 
     if (wsRef.current) {

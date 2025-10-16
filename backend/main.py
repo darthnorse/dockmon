@@ -213,14 +213,14 @@ def _is_localhost_or_internal(ip: str) -> bool:
 
 async def verify_session_auth(request: Request):
     """Verify authentication via session cookie only"""
-    from auth.routes import _get_session_from_cookie
+    from auth.shared import get_session_from_cookie
     from auth.session_manager import session_manager
 
     # Since backend only listens on 127.0.0.1, all requests must come through nginx
     # No need to check client IP - the backend binding ensures security
 
     # Check session authentication
-    session_id = _get_session_from_cookie(request)
+    session_id = get_session_from_cookie(request)
     if session_id and session_manager.validate_session(session_id, request):
         return True
 
@@ -1788,77 +1788,13 @@ async def get_events_by_correlation(
 
 # ==================== User Dashboard Routes ====================
 
-@app.get("/api/user/dashboard-layout")
-async def get_dashboard_layout(request: Request, current_user: dict = Depends(get_current_user)):
-    """Get dashboard layout for current user"""
-    from auth.routes import _get_session_from_cookie
-    from auth.session_manager import session_manager
-
-    session_id = _get_session_from_cookie(request)
-    username = session_manager.get_session_username(session_id)
-
-    layout = monitor.db.get_dashboard_layout(username)
-    return {"layout": layout}
-
-@app.post("/api/user/dashboard-layout")
-async def save_dashboard_layout(request: Request, current_user: dict = Depends(get_current_user)):
-    """Save dashboard layout for current user"""
-    from auth.routes import _get_session_from_cookie
-    from auth.session_manager import session_manager
-
-    session_id = _get_session_from_cookie(request)
-    username = session_manager.get_session_username(session_id)
-
-    try:
-        body = await request.json()
-        layout_json = body.get('layout')
-
-        if layout_json is None:
-            raise HTTPException(status_code=400, detail="Layout is required")
-
-        # Validate JSON structure
-        if layout_json:
-            try:
-                parsed_layout = json.loads(layout_json) if isinstance(layout_json, str) else layout_json
-
-                # Validate it's a list
-                if not isinstance(parsed_layout, list):
-                    raise HTTPException(status_code=400, detail="Layout must be an array of widget positions")
-
-                # Validate each widget has required fields
-                required_fields = ['x', 'y', 'w', 'h']
-                for widget in parsed_layout:
-                    if not isinstance(widget, dict):
-                        raise HTTPException(status_code=400, detail="Each widget must be an object")
-                    for field in required_fields:
-                        if field not in widget:
-                            raise HTTPException(status_code=400, detail=f"Widget missing required field: {field}")
-                        if not isinstance(widget[field], (int, float)):
-                            raise HTTPException(status_code=400, detail=f"Widget field '{field}' must be a number")
-
-                # Convert back to string for storage
-                layout_json = json.dumps(parsed_layout)
-            except json.JSONDecodeError:
-                raise HTTPException(status_code=400, detail="Invalid JSON format for layout")
-
-        success = monitor.db.save_dashboard_layout(username, layout_json)
-        if not success:
-            raise HTTPException(status_code=500, detail="Failed to save layout")
-
-        return {"success": True}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to save dashboard layout: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
 @app.get("/api/user/event-sort-order")
 async def get_event_sort_order(request: Request, current_user: dict = Depends(get_current_user)):
     """Get event sort order preference for current user"""
-    from auth.routes import _get_session_from_cookie
+    from auth.shared import get_session_from_cookie
     from auth.session_manager import session_manager
 
-    session_id = _get_session_from_cookie(request)
+    session_id = get_session_from_cookie(request)
     username = session_manager.get_session_username(session_id)
 
     sort_order = monitor.db.get_event_sort_order(username)
@@ -1895,10 +1831,10 @@ async def save_event_sort_order(request: Request, current_user: dict = Depends(g
 @app.get("/api/user/container-sort-order")
 async def get_container_sort_order(request: Request, current_user: dict = Depends(get_current_user)):
     """Get container sort order preference for current user"""
-    from auth.routes import _get_session_from_cookie
+    from auth.shared import get_session_from_cookie
     from auth.session_manager import session_manager
 
-    session_id = _get_session_from_cookie(request)
+    session_id = get_session_from_cookie(request)
     username = session_manager.get_session_username(session_id)
 
     sort_order = monitor.db.get_container_sort_order(username)
@@ -1907,10 +1843,10 @@ async def get_container_sort_order(request: Request, current_user: dict = Depend
 @app.post("/api/user/container-sort-order")
 async def save_container_sort_order(request: Request, current_user: dict = Depends(get_current_user)):
     """Save container sort order preference for current user"""
-    from auth.routes import _get_session_from_cookie
+    from auth.shared import get_session_from_cookie
     from auth.session_manager import session_manager
 
-    session_id = _get_session_from_cookie(request)
+    session_id = get_session_from_cookie(request)
     username = session_manager.get_session_username(session_id)
 
     try:
@@ -1935,10 +1871,10 @@ async def save_container_sort_order(request: Request, current_user: dict = Depen
 @app.get("/api/user/modal-preferences")
 async def get_modal_preferences(request: Request, current_user: dict = Depends(get_current_user)):
     """Get modal preferences for current user"""
-    from auth.routes import _get_session_from_cookie
+    from auth.shared import get_session_from_cookie
     from auth.session_manager import session_manager
 
-    session_id = _get_session_from_cookie(request)
+    session_id = get_session_from_cookie(request)
     username = session_manager.get_session_username(session_id)
 
     preferences = monitor.db.get_modal_preferences(username)
@@ -1947,10 +1883,10 @@ async def get_modal_preferences(request: Request, current_user: dict = Depends(g
 @app.post("/api/user/modal-preferences")
 async def save_modal_preferences(request: Request, current_user: dict = Depends(get_current_user)):
     """Save modal preferences for current user"""
-    from auth.routes import _get_session_from_cookie
+    from auth.shared import get_session_from_cookie
     from auth.session_manager import session_manager
 
-    session_id = _get_session_from_cookie(request)
+    session_id = get_session_from_cookie(request)
     username = session_manager.get_session_username(session_id)
 
     try:

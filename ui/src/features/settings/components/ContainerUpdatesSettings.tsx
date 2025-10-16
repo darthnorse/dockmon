@@ -6,6 +6,9 @@
 import { useState, useEffect } from 'react'
 import { useGlobalSettings, useUpdateGlobalSettings } from '@/hooks/useSettings'
 import { toast } from 'sonner'
+import { RefreshCw } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { apiClient } from '@/lib/api/client'
 import { ToggleSwitch } from './ToggleSwitch'
 
 export function ContainerUpdatesSettings() {
@@ -15,6 +18,7 @@ export function ContainerUpdatesSettings() {
   const [updateCheckTime, setUpdateCheckTime] = useState(settings?.update_check_time ?? '02:00')
   const [skipComposeContainers, setSkipComposeContainers] = useState(settings?.skip_compose_containers ?? true)
   const [healthCheckTimeout, setHealthCheckTimeout] = useState(settings?.health_check_timeout_seconds ?? 120)
+  const [isCheckingUpdates, setIsCheckingUpdates] = useState(false)
 
   // Sync state when settings load from API
   useEffect(() => {
@@ -72,6 +76,29 @@ export function ContainerUpdatesSettings() {
     }
   }
 
+  const handleCheckAllNow = async () => {
+    setIsCheckingUpdates(true)
+    try {
+      const stats = await apiClient.post<{ total: number; checked: number; updates_found: number; errors: number }>('/updates/check-all', {})
+
+      if (stats.errors > 0) {
+        toast.warning(
+          `Update check completed with errors. Checked ${stats.checked}/${stats.total} containers, found ${stats.updates_found} updates.`,
+          { duration: 5000 }
+        )
+      } else {
+        toast.success(
+          `Update check complete! Checked ${stats.checked} containers, found ${stats.updates_found} updates.`,
+          { duration: 5000 }
+        )
+      }
+    } catch (error) {
+      toast.error(`Failed to check for updates: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    } finally {
+      setIsCheckingUpdates(false)
+    }
+  }
+
   return (
     <div className="space-y-6">
       {/* Update Check Schedule */}
@@ -85,14 +112,25 @@ export function ContainerUpdatesSettings() {
             <label htmlFor="update-check-time" className="block text-sm font-medium text-gray-300 mb-2">
               Daily Update Check Time
             </label>
-            <input
-              id="update-check-time"
-              type="time"
-              value={updateCheckTime}
-              onChange={(e) => setUpdateCheckTime(e.target.value)}
-              onBlur={handleUpdateCheckTimeBlur}
-              className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            />
+            <div className="flex gap-3">
+              <input
+                id="update-check-time"
+                type="time"
+                value={updateCheckTime}
+                onChange={(e) => setUpdateCheckTime(e.target.value)}
+                onBlur={handleUpdateCheckTimeBlur}
+                className="flex-1 rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+              <Button
+                onClick={handleCheckAllNow}
+                disabled={isCheckingUpdates}
+                variant="outline"
+                className="whitespace-nowrap"
+              >
+                <RefreshCw className={`h-4 w-4 mr-2 ${isCheckingUpdates ? 'animate-spin' : ''}`} />
+                Check All Now
+              </Button>
+            </div>
             <p className="mt-1 text-xs text-gray-400">
               Time of day to check for container updates (24-hour format). The system will check for updates once per day at this time.
             </p>

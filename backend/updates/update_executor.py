@@ -195,12 +195,20 @@ class UpdateExecutor:
             if not is_healthy:
                 logger.error(f"Health check failed for {container_name}")
                 # TODO: Implement rollback - restore old container
+                error_message = f"Container update failed: health check timeout after {health_check_timeout}s"
                 await self._create_event(
                     host_id,
                     container_id,
                     container_name,
                     "update_failed",
-                    f"Container update failed: health check timeout after {health_check_timeout}s"
+                    error_message
+                )
+                # Trigger alert evaluation for update failure
+                await self._trigger_update_failure_alerts(
+                    host_id,
+                    container_id,
+                    container_name,
+                    error_message
                 )
                 return False
 
@@ -228,6 +236,15 @@ class UpdateExecutor:
                 f"Container successfully updated from {update_record.current_image} to {update_record.latest_image}"
             )
 
+            # Step 9: Trigger alert evaluation for update completion
+            await self._trigger_update_completion_alerts(
+                host_id,
+                new_container_id,
+                container_name,
+                update_record.current_image,
+                update_record.latest_image
+            )
+
             logger.info(f"Successfully updated container {container_name}")
             await self._broadcast_progress(host_id, container_id, "completed", 100, "Update completed successfully")
 
@@ -238,12 +255,20 @@ class UpdateExecutor:
         except Exception as e:
             logger.error(f"Error executing update for {container_name if 'container_name' in locals() else container_id}: {e}")
             if 'container_name' in locals():
+                error_message = f"Container update failed: {str(e)}"
                 await self._create_event(
                     host_id,
                     container_id,
                     container_name,
                     "update_failed",
-                    f"Container update failed: {str(e)}"
+                    error_message
+                )
+                # Trigger alert evaluation for update failure
+                await self._trigger_update_failure_alerts(
+                    host_id,
+                    container_id,
+                    container_name,
+                    error_message
                 )
             return False
 
@@ -295,53 +320,22 @@ class UpdateExecutor:
             logger.error(f"Error broadcasting progress: {e}", exc_info=True)
 
     async def _get_docker_client(self, host_id: str) -> Optional[docker.DockerClient]:
-        """Get Docker client for a specific host"""
+        """Get Docker client for a specific host from the monitor's client pool"""
         if not self.monitor:
             return None
 
-        # Get host config from database
-        with self.db.get_session() as session:
-            from database import DockerHostDB
-            host = session.query(DockerHostDB).filter_by(id=host_id).first()
-            if not host:
+        try:
+            # Use the monitor's existing Docker client for this host
+            # The monitor manages clients properly with persistent TLS certs
+            client = self.monitor.clients.get(host_id)
+            if not client:
+                logger.warning(f"No Docker client found for host {host_id}")
                 return None
+            return client
 
-            try:
-                # Create Docker client based on host config
-                if host.url.startswith("unix://"):
-                    return docker.DockerClient(base_url=host.url)
-                elif host.tls_cert and host.tls_key:
-                    # TLS connection
-                    import tempfile
-                    import os
-
-                    # Write certs to temp files
-                    with tempfile.TemporaryDirectory() as tmpdir:
-                        cert_path = os.path.join(tmpdir, "cert.pem")
-                        key_path = os.path.join(tmpdir, "key.pem")
-                        ca_path = os.path.join(tmpdir, "ca.pem") if host.tls_ca else None
-
-                        with open(cert_path, "w") as f:
-                            f.write(host.tls_cert)
-                        with open(key_path, "w") as f:
-                            f.write(host.tls_key)
-                        if ca_path:
-                            with open(ca_path, "w") as f:
-                                f.write(host.tls_ca)
-
-                        tls_config = docker.tls.TLSConfig(
-                            client_cert=(cert_path, key_path),
-                            ca_cert=ca_path,
-                            verify=bool(ca_path)
-                        )
-                        return docker.DockerClient(base_url=host.url, tls=tls_config)
-                else:
-                    # Plain TCP connection
-                    return docker.DockerClient(base_url=host.url)
-
-            except Exception as e:
-                logger.error(f"Error creating Docker client for host {host_id}: {e}")
-                return None
+        except Exception as e:
+            logger.error(f"Error getting Docker client for host {host_id}: {e}")
+            return None
 
     async def _get_container_info(self, host_id: str, container_id: str) -> Optional[Dict]:
         """Get container info from monitor"""
@@ -613,6 +607,97 @@ class UpdateExecutor:
 
         except Exception as e:
             logger.error(f"Error re-evaluating alerts after update: {e}", exc_info=True)
+
+    async def _trigger_update_completion_alerts(
+        self,
+        host_id: str,
+        container_id: str,
+        container_name: str,
+        previous_image: str,
+        new_image: str
+    ):
+        """
+        Trigger alert evaluation for successful container update.
+        This allows alert rules with kind=update_completed to fire.
+        """
+        try:
+            if not self.monitor or not hasattr(self.monitor, 'alert_evaluation_service'):
+                logger.debug("Alert evaluation service not available for update completion alerts")
+                return
+
+            logger.info(f"Triggering update completion alerts for {container_name}")
+
+            # Get host name
+            host_name = self.monitor.hosts.get(host_id).name if host_id in self.monitor.hosts else host_id
+
+            # Create event data for the update completion
+            event_data = {
+                'timestamp': datetime.now().isoformat(),
+                'event_type': 'action_taken',
+                'previous_image': previous_image,
+                'new_image': new_image,
+                'triggered_by': 'container_update',
+            }
+
+            # Call alert evaluation service with action_taken event type
+            await self.monitor.alert_evaluation_service.handle_container_event(
+                event_type='action_taken',
+                container_id=container_id,
+                container_name=container_name,
+                host_id=host_id,
+                host_name=host_name,
+                event_data=event_data
+            )
+
+            logger.info(f"Update completion alert evaluation completed for {container_name}")
+
+        except Exception as e:
+            logger.error(f"Error triggering update completion alerts: {e}", exc_info=True)
+
+    async def _trigger_update_failure_alerts(
+        self,
+        host_id: str,
+        container_id: str,
+        container_name: str,
+        error_message: str
+    ):
+        """
+        Trigger alert evaluation for failed container update.
+        This allows alert rules with kind=update_failed to fire.
+        """
+        try:
+            if not self.monitor or not hasattr(self.monitor, 'alert_evaluation_service'):
+                logger.debug("Alert evaluation service not available for update failure alerts")
+                return
+
+            logger.info(f"Triggering update failure alerts for {container_name}")
+
+            # Get host name
+            host_name = self.monitor.hosts.get(host_id).name if host_id in self.monitor.hosts else host_id
+
+            # Create event data for the update failure
+            event_data = {
+                'timestamp': datetime.now().isoformat(),
+                'event_type': 'error',
+                'error_message': error_message,
+                'update_failure': True,  # Special flag for alert matching
+                'triggered_by': 'container_update',
+            }
+
+            # Call alert evaluation service with error event type
+            await self.monitor.alert_evaluation_service.handle_container_event(
+                event_type='error',
+                container_id=container_id,
+                container_name=container_name,
+                host_id=host_id,
+                host_name=host_name,
+                event_data=event_data
+            )
+
+            logger.info(f"Update failure alert evaluation completed for {container_name}")
+
+        except Exception as e:
+            logger.error(f"Error triggering update failure alerts: {e}", exc_info=True)
 
 
 # Global singleton instance

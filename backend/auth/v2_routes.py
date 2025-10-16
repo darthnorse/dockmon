@@ -22,8 +22,8 @@ from security.rate_limiting import rate_limit_auth
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v2/auth", tags=["auth-v2"])
 
-# Import shared database instance from v1 (single connection pool)
-from auth.routes import db
+# Import shared database instance (single connection pool)
+from auth.shared import db
 
 # Argon2 password hasher (more secure than bcrypt)
 # SECURITY: Argon2id is resistant to GPU attacks
@@ -245,7 +245,6 @@ async def get_current_user_v2(
     Requires valid session cookie.
     """
     # Get user from database to include is_first_login status
-    from auth.routes import db
     from database import User
 
     with db.get_session() as session:
@@ -281,7 +280,6 @@ async def change_password_v2(
             "new_password": "new_password"
         }
     """
-    from auth.routes import db
     from database import User
 
     # SECURITY FIX: Use validated Pydantic model fields instead of dict.get()
@@ -327,8 +325,6 @@ async def update_profile_v2(
     - Username must be unique
     - Input validation via Pydantic
     """
-    from auth.routes import db
-
     username = current_user["username"]
     # SECURITY FIX: Use validated Pydantic model fields instead of dict.get()
     new_display_name = profile_data.display_name

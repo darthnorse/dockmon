@@ -5,7 +5,7 @@ Uses SQLite for persistent storage of configuration and settings
 
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
-from sqlalchemy import create_engine, Column, String, Integer, BigInteger, Boolean, DateTime, JSON, ForeignKey, Text, UniqueConstraint, text, Float, func
+from sqlalchemy import create_engine, Column, String, Integer, BigInteger, Boolean, DateTime, JSON, ForeignKey, Text, UniqueConstraint, text, Float, func, Index
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from sqlalchemy.pool import StaticPool
@@ -30,12 +30,10 @@ class User(Base):
     display_name = Column(String, nullable=True)  # Optional friendly display name
     is_first_login = Column(Boolean, default=True)
     must_change_password = Column(Boolean, default=False)
-    dashboard_layout = Column(Text, nullable=True)  # JSON string of GridStack layout (v1 - deprecated)
     dashboard_layout_v2 = Column(Text, nullable=True)  # JSON string of react-grid-layout (v2)
     sidebar_collapsed = Column(Boolean, default=False)  # Sidebar collapse state (v2)
     view_mode = Column(String, nullable=True)  # Dashboard view mode: 'compact' | 'standard' | 'expanded' (Phase 4)
     event_sort_order = Column(String, default='desc')  # 'desc' (newest first) or 'asc' (oldest first)
-    container_sort_order = Column(String, default='name-asc')  # Container sort preference on dashboard
     modal_preferences = Column(Text, nullable=True)  # JSON string of modal size/position preferences
     prefs = Column(Text, nullable=True)  # JSON string of user preferences (dashboard, table sorts, etc.)
     simplified_workflow = Column(Boolean, default=False)  # Skip drawer, open modal directly
@@ -377,6 +375,12 @@ class AlertV2(Base):
 
     # Composite indexes for common queries
     __table_args__ = (
+        Index('idx_alertv2_state', 'state'),  # Filter by state (open/resolved)
+        Index('idx_alertv2_scope', 'scope_type', 'scope_id'),  # Filter by scope (host/container)
+        Index('idx_alertv2_severity', 'severity'),  # Filter by severity
+        Index('idx_alertv2_first_seen', 'first_seen'),  # Sort by first_seen
+        Index('idx_alertv2_host_id', 'host_id'),  # Filter by host
+        Index('idx_alertv2_rule_id', 'rule_id'),  # FK lookup performance
         {"sqlite_autoincrement": True},
     )
 
@@ -457,8 +461,14 @@ class EventLog(Base):
     # Timestamps
     timestamp = Column(DateTime, default=datetime.now, nullable=False)
 
-    # Index for efficient queries
+    # Indexes for efficient queries
     __table_args__ = (
+        Index('idx_event_timestamp', 'timestamp'),  # Sort/filter by time
+        Index('idx_event_category', 'category'),  # Filter by category
+        Index('idx_event_severity', 'severity'),  # Filter by severity
+        Index('idx_event_host_id', 'host_id'),  # Filter by host
+        Index('idx_event_container_id', 'container_id'),  # Filter by container
+        Index('idx_event_correlation', 'correlation_id'),  # Group related events
         {"sqlite_autoincrement": True},
     )
 
@@ -501,8 +511,8 @@ class TagAssignment(Base):
 
     # Indexes for efficient lookups
     __table_args__ = (
-        # Index for looking up assignments by subject (host/container)
-        # Index for sticky tag matching (compose project + service + host)
+        Index('idx_tag_assignment_subject', 'subject_type', 'subject_id'),  # Lookup tags for a host/container
+        Index('idx_tag_assignment_sticky', 'compose_project', 'compose_service', 'host_id_at_attach'),  # Sticky tag matching
         {"sqlite_autoincrement": False},
     )
 
@@ -1170,6 +1180,47 @@ class DatabaseManager:
                 logger.error(f"Failed to set desired state for {container_id[:12]}: {e}")
                 raise
 
+    # Container Auto-Update Operations
+    def set_container_auto_update(self, container_key: str, enabled: bool, floating_tag_mode: str = 'exact'):
+        """Enable/disable auto-update for a container with tracking mode
+
+        Args:
+            container_key: Composite key format "host_id:container_id"
+            enabled: Whether to enable auto-updates
+            floating_tag_mode: Update tracking mode (exact|minor|major|latest)
+        """
+        with self.get_session() as session:
+            try:
+                config = session.query(ContainerUpdate).filter(
+                    ContainerUpdate.container_id == container_key
+                ).first()
+
+                if config:
+                    config.auto_update_enabled = enabled
+                    config.floating_tag_mode = floating_tag_mode
+                    config.updated_at = datetime.now()
+                    logger.info(f"Updated auto-update for {container_key}: enabled={enabled}, mode={floating_tag_mode}")
+                else:
+                    # Create new ContainerUpdate record if it doesn't exist
+                    # Extract host_id from composite key
+                    host_id = container_key.split(':')[0] if ':' in container_key else ''
+
+                    config = ContainerUpdate(
+                        container_id=container_key,
+                        host_id=host_id,
+                        current_image='',  # Will be populated by update checker
+                        current_digest='',
+                        auto_update_enabled=enabled,
+                        floating_tag_mode=floating_tag_mode
+                    )
+                    session.add(config)
+                    logger.info(f"Created auto-update config for {container_key}: enabled={enabled}, mode={floating_tag_mode}")
+
+                session.commit()
+            except Exception as e:
+                logger.error(f"Failed to set auto-update for {container_key}: {e}")
+                raise
+
     # ===========================
     # TAG OPERATIONS (Normalized Schema)
     # ===========================
@@ -1323,22 +1374,20 @@ class DatabaseManager:
             return False
 
     def get_tags_for_subject(self, subject_type: str, subject_id: str) -> list[str]:
-        """Get all tag names for a subject"""
+        """Get all tag names for a subject (optimized with JOIN to avoid N+1)"""
         subject_type = self._validate_subject_type(subject_type)
 
         with self.get_session() as session:
-            assignments = session.query(TagAssignment).filter(
+            # Use JOIN to fetch tags in a single query (avoids N+1)
+            tag_names = session.query(Tag.name).join(
+                TagAssignment,
+                TagAssignment.tag_id == Tag.id
+            ).filter(
                 TagAssignment.subject_type == subject_type,
                 TagAssignment.subject_id == subject_id
             ).all()
 
-            tag_names = []
-            for assignment in assignments:
-                tag = session.query(Tag).filter(Tag.id == assignment.tag_id).first()
-                if tag:
-                    tag_names.append(tag.name)
-
-            return sorted(tag_names)
+            return sorted([name[0] for name in tag_names])
 
     def get_subjects_with_tag(self, tag_name: str, subject_type: str = None) -> list[dict]:
         """Get all subjects that have a specific tag"""
@@ -1602,7 +1651,7 @@ class DatabaseManager:
 
             # Find tags with no assignments and not used recently
             tags_to_delete = session.query(Tag).outerjoin(TagAssignment).group_by(Tag.id).having(
-                func.count(TagAssignment.id) == 0
+                func.count(TagAssignment.tag_id) == 0
             ).filter(
                 Tag.last_used_at < cutoff_date
             ).all()

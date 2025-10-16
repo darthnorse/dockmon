@@ -13,6 +13,7 @@ SECURITY:
 import json
 import logging
 from typing import Optional, Dict, Any
+from collections import deque
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 
@@ -20,6 +21,32 @@ from auth.v2_routes import get_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v2/user", tags=["user-v2"])
+
+
+def validate_json_depth(obj: Any, max_depth: int = 10) -> None:
+    """
+    Validate JSON structure depth to prevent DOS attacks.
+
+    SECURITY: Prevent deeply nested JSON from causing CPU exhaustion
+
+    Args:
+        obj: Object to validate
+        max_depth: Maximum allowed nesting depth
+
+    Raises:
+        ValueError: If depth exceeds max_depth
+    """
+    queue = deque([(obj, 0)])
+    while queue:
+        current, depth = queue.popleft()
+        if depth > max_depth:
+            raise ValueError(f"JSON depth exceeds maximum allowed depth of {max_depth}")
+        if isinstance(current, dict):
+            for v in current.values():
+                queue.append((v, depth + 1))
+        elif isinstance(current, (list, tuple)):
+            for item in current:
+                queue.append((item, depth + 1))
 
 # Import shared database instance from v1 (single connection pool)
 from auth.routes import db
@@ -256,6 +283,15 @@ async def update_user_preferences(
         if updates.filter_defaults is not None:
             existing_defaults["filter_defaults"] = updates.filter_defaults
 
+        # SECURITY FIX: Validate JSON depth before serialization to prevent DOS
+        try:
+            validate_json_depth(existing_defaults, max_depth=10)
+        except ValueError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=str(e)
+            )
+
         # Serialize and validate size
         defaults_json_str = json.dumps(existing_defaults)
 
@@ -293,6 +329,15 @@ async def update_user_preferences(
             update_params["sidebar_collapsed"] = updates.sidebar_collapsed
 
         if updates.dashboard_layout_v2 is not None:
+            # SECURITY FIX: Validate JSON depth before serialization
+            try:
+                validate_json_depth(updates.dashboard_layout_v2, max_depth=10)
+            except ValueError as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail=str(e)
+                )
+
             dashboard_json = json.dumps(updates.dashboard_layout_v2)
             # DOS PROTECTION: Limit JSON size to 500KB for layout
             MAX_LAYOUT_SIZE = 500 * 1024  # 500KB
@@ -342,6 +387,15 @@ async def update_user_preferences(
             if updates.container_table_sort is not None:
                 existing_prefs["container_table_sort"] = updates.container_table_sort
 
+            # SECURITY FIX: Validate JSON depth before serialization
+            try:
+                validate_json_depth(existing_prefs, max_depth=10)
+            except ValueError as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail=str(e)
+                )
+
             prefs_json = json.dumps(existing_prefs)
             # DOS PROTECTION: Limit JSON size to 100KB
             if len(prefs_json) > MAX_JSON_SIZE:
@@ -352,9 +406,26 @@ async def update_user_preferences(
             update_parts.append("prefs = :prefs")
             update_params["prefs"] = prefs_json
 
+        # SECURITY FIX: Use SQLAlchemy update() instead of dynamic query construction
+        # This prevents SQL injection even if field names are ever sourced from user input
         if update_parts:
-            query = f"UPDATE users SET {', '.join(update_parts)} WHERE id = :user_id"
-            session.execute(text(query), update_params)
+            from sqlalchemy import update
+            from database import User
+
+            # Build safe update values from validated parameters
+            update_values = {}
+            for part in update_parts:
+                # Extract field name from "field = :field" pattern
+                field = part.split(" = ")[0]
+                param_key = part.split(":")[1]
+                update_values[field] = update_params[param_key]
+
+            stmt = (
+                update(User)
+                .where(User.id == user_id)
+                .values(**update_values)
+            )
+            session.execute(stmt)
 
         session.commit()
 

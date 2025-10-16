@@ -34,13 +34,6 @@ export interface Container {
   net_bytes_per_sec?: number // Calculated network rate (bytes/sec)
 }
 
-export interface ContainerPort {
-  ip?: string
-  private_port: number
-  public_port?: number
-  type: 'tcp' | 'udp'
-}
-
 export interface ContainerAction {
   type: 'start' | 'stop' | 'restart' | 'pause' | 'unpause' | 'remove'
   container_id: string

@@ -81,3 +81,6 @@ docker/logs/
 .coverage
 htmlcov/
 .env.local
+
+# V1 Frontend (removed - use ui/ React app instead)
+/src/

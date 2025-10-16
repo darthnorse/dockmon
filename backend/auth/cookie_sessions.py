@@ -30,39 +30,81 @@ def _load_or_generate_secret() -> str:
     """
     Load existing session secret or generate new one.
 
-    SECURITY: Secret is persisted to survive server restarts.
-    Users stay logged in across deployments/restarts.
+    SECURITY:
+    - Secret is persisted to survive server restarts
+    - Users stay logged in across deployments/restarts
+    - Checks for secret rotation (90 days by default)
 
     Returns:
         Session secret key
     """
+    import json
+    from datetime import datetime, timedelta
+
     secret_file = os.getenv('SESSION_SECRET_FILE', '/app/data/.session_secret')
+    rotation_days = int(os.getenv('SESSION_SECRET_ROTATION_DAYS', '90'))
 
     if os.path.exists(secret_file):
         # Load existing secret
         try:
             with open(secret_file, 'r') as f:
-                secret = f.read().strip()
-                if len(secret) >= 32:  # Validate minimum length
-                    logger.info("Loaded existing session secret from file")
-                    return secret
-                else:
-                    logger.warning(f"Invalid secret in {secret_file}, regenerating")
+                content = f.read().strip()
+
+                # Try to parse as JSON (new format with metadata)
+                try:
+                    data = json.loads(content)
+                    secret = data.get('secret')
+                    created_at_str = data.get('created_at')
+
+                    if secret and len(secret) >= 32:
+                        # SECURITY FIX: Check if secret needs rotation
+                        if created_at_str:
+                            created_at = datetime.fromisoformat(created_at_str)
+                            age_days = (datetime.now() - created_at).days
+
+                            if age_days > rotation_days:
+                                logger.warning(
+                                    f"Session secret is {age_days} days old (limit: {rotation_days}), rotating..."
+                                )
+                                # Continue to generate new secret
+                            else:
+                                logger.info(f"Loaded existing session secret (age: {age_days} days)")
+                                return secret
+                        else:
+                            # No creation timestamp, consider it old
+                            logger.info("Loaded existing session secret from file")
+                            return secret
+                except json.JSONDecodeError:
+                    # Legacy format (plain secret string) - accept but will upgrade on next write
+                    if len(content) >= 32:
+                        logger.info("Loaded existing session secret from file (legacy format)")
+                        return content
+                    else:
+                        logger.warning(f"Invalid secret in {secret_file}, regenerating")
         except Exception as e:
             logger.error(f"Failed to load secret from {secret_file}: {e}")
 
-    # Generate new secret and save it
+    # Generate new secret and save it with metadata
     secret = secrets.token_urlsafe(32)
+    secret_data = {
+        'secret': secret,
+        'created_at': datetime.now().isoformat(),
+        'rotation_days': rotation_days
+    }
+
     try:
         # Ensure directory exists
         os.makedirs(os.path.dirname(secret_file), exist_ok=True)
 
-        # Write secret with secure permissions
-        with open(secret_file, 'w') as f:
-            f.write(secret)
-
-        # Set file permissions to 600 (owner read/write only)
-        os.chmod(secret_file, 0o600)
+        # Write secret with metadata and secure permissions
+        # SECURITY: Set restrictive umask before file creation
+        old_umask = os.umask(0o077)
+        try:
+            with open(secret_file, 'w') as f:
+                json.dump(secret_data, f, indent=2)
+            os.chmod(secret_file, 0o600)
+        finally:
+            os.umask(old_umask)
 
         logger.info(f"Generated new session secret and saved to {secret_file}")
     except Exception as e:

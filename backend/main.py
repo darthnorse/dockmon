@@ -16,7 +16,6 @@ import asyncio
 import json
 import logging
 import time
-import uuid
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from contextlib import asynccontextmanager
@@ -43,9 +42,7 @@ from models.request_models import (
 )
 from security.audit import security_audit
 from security.rate_limiting import rate_limiter, rate_limit_auth, rate_limit_hosts, rate_limit_containers, rate_limit_notifications, rate_limit_default
-from auth.routes import router as auth_router, verify_frontend_session
 from auth.v2_routes import get_current_user  # v2 cookie-based auth
-verify_session_auth = verify_frontend_session  # Keep v1 for backward compat
 from websocket.connection import ConnectionManager, DateTimeEncoder
 from websocket.rate_limiter import ws_rate_limiter
 from docker_monitor.monitor import DockerMonitor
@@ -172,10 +169,7 @@ logger.info(f"CORS configured for origins: {AppConfig.CORS_ORIGINS}")
 
 # ==================== API Routes ====================
 
-# Register authentication routers
-app.include_router(auth_router)  # v1 auth (existing)
-
-# Register v2 API routers
+# Register v2 authentication router
 from auth.v2_routes import router as auth_v2_router
 from api.v2.user import router as user_v2_router
 # NOTE: alerts_router is registered AFTER v2 rules routes are defined below (around line 1060)
@@ -322,25 +316,33 @@ async def test_host_connection(config: DockerHostConfig, current_user: dict = De
             tls_config = {}
 
             # Write certificates to temp files
-            if config.tls_ca:
-                ca_path = os.path.join(temp_dir, 'ca.pem')
-                with open(ca_path, 'w') as f:
-                    f.write(config.tls_ca)
-                tls_config['ca_cert'] = ca_path
+            # SECURITY FIX: Set restrictive umask before file creation to prevent world-readable permissions
+            old_umask = os.umask(0o077)
+            try:
+                if config.tls_ca:
+                    ca_path = os.path.join(temp_dir, 'ca.pem')
+                    with open(ca_path, 'w') as f:
+                        f.write(config.tls_ca)
+                    os.chmod(ca_path, 0o600)
+                    tls_config['ca_cert'] = ca_path
 
-            if config.tls_cert:
-                cert_path = os.path.join(temp_dir, 'cert.pem')
-                with open(cert_path, 'w') as f:
-                    f.write(config.tls_cert)
-                tls_config['client_cert'] = (cert_path,)
+                if config.tls_cert:
+                    cert_path = os.path.join(temp_dir, 'cert.pem')
+                    with open(cert_path, 'w') as f:
+                        f.write(config.tls_cert)
+                    os.chmod(cert_path, 0o600)
+                    tls_config['client_cert'] = (cert_path,)
 
-            if config.tls_key:
-                key_path = os.path.join(temp_dir, 'key.pem')
-                with open(key_path, 'w') as f:
-                    f.write(config.tls_key)
-                # Add key to cert tuple
-                if 'client_cert' in tls_config:
-                    tls_config['client_cert'] = (tls_config['client_cert'][0], key_path)
+                if config.tls_key:
+                    key_path = os.path.join(temp_dir, 'key.pem')
+                    with open(key_path, 'w') as f:
+                        f.write(config.tls_key)
+                    os.chmod(key_path, 0o600)
+                    # Add key to cert tuple
+                    if 'client_cert' in tls_config:
+                        tls_config['client_cert'] = (tls_config['client_cert'][0], key_path)
+            finally:
+                os.umask(old_umask)
 
             # Create TLS config
             tls = docker.tls.TLSConfig(

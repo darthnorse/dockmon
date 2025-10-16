@@ -48,6 +48,18 @@ class LoginResponse(BaseModel):
     message: str
 
 
+class ChangePasswordRequest(BaseModel):
+    """Change password request with validation"""
+    current_password: str
+    new_password: str
+
+
+class UpdateProfileRequest(BaseModel):
+    """Update profile request with validation"""
+    display_name: str | None = None
+    username: str | None = None
+
+
 @router.post("/login", response_model=LoginResponse)
 async def login_v2(
     credentials: LoginRequest,
@@ -251,7 +263,7 @@ async def get_current_user_v2(
 
 @router.post("/change-password")
 async def change_password_v2(
-    password_data: dict,
+    password_data: ChangePasswordRequest,
     current_user: dict = Depends(get_current_user_dependency)
 ):
     """
@@ -261,6 +273,7 @@ async def change_password_v2(
     - Requires valid session cookie
     - Verifies current password before changing
     - Sets is_first_login=False after successful change
+    - Input validation via Pydantic (prevents empty/missing fields)
 
     Request body:
         {
@@ -271,14 +284,9 @@ async def change_password_v2(
     from auth.routes import db
     from database import User
 
-    current_password = password_data.get("current_password")
-    new_password = password_data.get("new_password")
-
-    if not current_password or not new_password:
-        raise HTTPException(
-            status_code=400,
-            detail="Both current_password and new_password are required"
-        )
+    # SECURITY FIX: Use validated Pydantic model fields instead of dict.get()
+    current_password = password_data.current_password
+    new_password = password_data.new_password
 
     username = current_user["username"]
 
@@ -308,7 +316,7 @@ async def change_password_v2(
 
 @router.post("/update-profile")
 async def update_profile_v2(
-    profile_data: dict,
+    profile_data: UpdateProfileRequest,
     current_user: dict = Depends(get_current_user_dependency)
 ):
     """
@@ -317,12 +325,14 @@ async def update_profile_v2(
     SECURITY:
     - Requires valid session cookie
     - Username must be unique
+    - Input validation via Pydantic
     """
     from auth.routes import db
 
     username = current_user["username"]
-    new_display_name = profile_data.get("display_name")
-    new_username = profile_data.get("username")
+    # SECURITY FIX: Use validated Pydantic model fields instead of dict.get()
+    new_display_name = profile_data.display_name
+    new_username = profile_data.username
 
     try:
         # Update display name if provided

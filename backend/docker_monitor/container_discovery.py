@@ -203,8 +203,14 @@ class ContainerDiscovery:
                 logger.debug(f"Reconnecting to {host.name} with TLS")
 
                 # Write certs to temporary files for TLS config
+                # SECURITY: Protect against TOCTOU race conditions with exist_ok=False on first attempt
                 cert_dir = os.path.join(CERTS_DIR, host_id)
-                os.makedirs(cert_dir, exist_ok=True)
+                try:
+                    os.makedirs(cert_dir, exist_ok=False)
+                except FileExistsError:
+                    # Directory already exists, verify it's actually a directory
+                    if not os.path.isdir(cert_dir):
+                        raise ValueError(f"Certificate path exists but is not a directory: {cert_dir}")
 
                 cert_file = os.path.join(cert_dir, 'cert.pem')
                 key_file = os.path.join(cert_dir, 'key.pem')

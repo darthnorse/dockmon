@@ -91,13 +91,18 @@ def _is_docker_container_id(hostname: str) -> bool:
 
 
 def get_cors_origins() -> List[str]:
-    """Get CORS origins from environment or use defaults"""
-    # Check for custom origins from environment
+    """
+    Get CORS origins from environment or use defaults.
+
+    SECURITY FIX: Only auto-detect hostname-based origins in development mode
+    to prevent overly permissive CORS in production.
+    """
+    # Check for custom origins from environment (always takes precedence)
     custom_origins = os.getenv('DOCKMON_CORS_ORIGINS')
     if custom_origins:
         return [origin.strip() for origin in custom_origins.split(',')]
 
-    # Default origins for development and common deployment scenarios
+    # Default origins for development
     default_origins = [
         "http://localhost:3000",
         "http://localhost:8080",
@@ -107,15 +112,18 @@ def get_cors_origins() -> List[str]:
         "http://127.0.0.1:8081"
     ]
 
-    # Auto-detect common production patterns (but skip Docker container IDs)
-    hostname = os.getenv('HOSTNAME', 'localhost')
-    if hostname != 'localhost' and not _is_docker_container_id(hostname):
-        default_origins.extend([
-            f"http://{hostname}:3000",
-            f"http://{hostname}:8080",
-            f"https://{hostname}:3000",
-            f"https://{hostname}:8080"
-        ])
+    # SECURITY FIX: Only auto-detect hostname-based origins in development
+    # In production, require explicit DOCKMON_CORS_ORIGINS configuration
+    environment = os.getenv('ENVIRONMENT', 'development').lower()
+    if environment == 'development':
+        hostname = os.getenv('HOSTNAME', 'localhost')
+        if hostname != 'localhost' and not _is_docker_container_id(hostname):
+            default_origins.extend([
+                f"http://{hostname}:3000",
+                f"http://{hostname}:8080",
+                f"https://{hostname}:3000",
+                f"https://{hostname}:8080"
+            ])
 
     return default_origins
 

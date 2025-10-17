@@ -204,6 +204,11 @@ class GlobalSettings(Base):
     skip_compose_containers = Column(Boolean, default=True)  # Skip Docker Compose-managed containers
     health_check_timeout_seconds = Column(Integer, default=120)  # Health check timeout (seconds)
 
+    # Version tracking and upgrade notifications
+    app_version = Column(String, default="2.0.0")  # Current application version
+    upgrade_notice_dismissed = Column(Boolean, default=True)  # Whether user has seen v2 upgrade notice (False for v1→v2 upgrades set by migration)
+    last_viewed_release_notes = Column(String, nullable=True)  # Last version of release notes user viewed
+
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
 class ContainerUpdate(Base):

@@ -27,7 +27,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Requ
 from fastapi.middleware.cors import CORSMiddleware
 # Session-based auth - no longer need HTTPBearer
 from fastapi.responses import FileResponse
-from database import DatabaseManager
+from database import DatabaseManager, GlobalSettings as GlobalSettingsDB
 from realtime import RealtimeMonitor
 from notifications import NotificationService
 from event_logger import EventLogger, EventContext, EventCategory, EventType, EventSeverity, PerformanceTimer
@@ -1186,6 +1186,50 @@ async def update_settings(settings: dict, current_user: dict = Depends(get_curre
         "unused_tag_retention_days": getattr(updated, 'unused_tag_retention_days', 30),
         "event_retention_days": getattr(updated, 'event_retention_days', 60)
     }
+
+
+# ==================== Upgrade Notice Routes ====================
+
+@app.get("/api/upgrade-notice")
+@rate_limit_default
+async def get_upgrade_notice(current_user: dict = Depends(get_current_user)):
+    """Check if upgrade notice should be shown"""
+    try:
+        with monitor.db.get_session() as session:
+            settings = session.query(GlobalSettingsDB).first()
+            if not settings:
+                return {"show_notice": False, "version": "2.0.0"}
+
+            # Show notice if user hasn't dismissed it
+            show_notice = not settings.upgrade_notice_dismissed
+
+            return {
+                "show_notice": show_notice,
+                "from_version": "1.x" if show_notice else None,
+                "to_version": settings.app_version,
+                "version": settings.app_version
+            }
+    except Exception as e:
+        logger.error(f"Failed to get upgrade notice: {e}")
+        return {"show_notice": False, "version": "2.0.0"}
+
+
+@app.post("/api/upgrade-notice/dismiss")
+@rate_limit_default
+async def dismiss_upgrade_notice(current_user: dict = Depends(get_current_user)):
+    """Mark upgrade notice as dismissed"""
+    try:
+        with monitor.db.get_session() as session:
+            settings = session.query(GlobalSettingsDB).first()
+            if settings:
+                settings.upgrade_notice_dismissed = True
+                session.commit()
+                logger.info(f"User '{current_user.get('username')}' dismissed upgrade notice")
+                return {"success": True}
+            return {"success": False, "error": "Settings not found"}
+    except Exception as e:
+        logger.error(f"Failed to dismiss upgrade notice: {e}")
+        return {"success": False, "error": str(e)}
 
 
 # ==================== Alert Rules V2 Routes ====================

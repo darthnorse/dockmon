@@ -12,7 +12,12 @@ wiki-content
 tests
 test-results
 playwright-report
+
+# Node modules and build artifacts (exclude from all directories)
+**/node_modules
 node_modules
+ui/dist
+**/dist
 package.json
 package-lock.json
 
@@ -25,6 +30,7 @@ screenshots
 .idea
 
 # Python
+**/__pycache__
 __pycache__
 *.pyc
 *.pyo
@@ -37,6 +43,11 @@ dist
 build
 venv
 env
+.pytest_cache
+.mypy_cache
+
+# Backend data (dev database)
+backend/data
 
 # Docker
 docker-compose.yml

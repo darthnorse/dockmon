@@ -135,6 +135,16 @@ def upgrade() -> None:
             with op.batch_alter_table('users', schema=None) as batch_op:
                 batch_op.add_column(sa.Column('view_mode', sa.String(), server_default='grid'))
 
+        # v2 renamed dashboard_layout -> dashboard_layout_v2
+        if not _column_exists('users', 'dashboard_layout_v2'):
+            with op.batch_alter_table('users', schema=None) as batch_op:
+                batch_op.add_column(sa.Column('dashboard_layout_v2', sa.Text(), nullable=True))
+
+        # v2 added sidebar collapsed state
+        if not _column_exists('users', 'sidebar_collapsed'):
+            with op.batch_alter_table('users', schema=None) as batch_op:
+                batch_op.add_column(sa.Column('sidebar_collapsed', sa.Boolean(), server_default='0'))
+
 
     # ==================== user_prefs Table ====================
     # New table for database-backed user preferences (replaces localStorage)
@@ -227,6 +237,14 @@ def downgrade() -> None:
         op.drop_table('user_prefs')
 
     # Remove users columns
+    if _column_exists('users', 'sidebar_collapsed'):
+        with op.batch_alter_table('users', schema=None) as batch_op:
+            batch_op.drop_column('sidebar_collapsed')
+
+    if _column_exists('users', 'dashboard_layout_v2'):
+        with op.batch_alter_table('users', schema=None) as batch_op:
+            batch_op.drop_column('dashboard_layout_v2')
+
     if _column_exists('users', 'view_mode'):
         with op.batch_alter_table('users', schema=None) as batch_op:
             batch_op.drop_column('view_mode')

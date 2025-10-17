@@ -96,24 +96,16 @@ export function GridDashboard() {
 
   // Load layout from database on mount
   useEffect(() => {
-    console.log('🔄 GridDashboard: savedLayout changed:', savedLayout)
     if (savedLayout?.widgets) {
-      console.log('🔄 GridDashboard: Loading layout from database:', savedLayout.widgets)
       debug.log('GridDashboard', 'Loading layout from database')
       setWidgets(savedLayout.widgets)
-    } else {
-      console.log('🔄 GridDashboard: No saved layout found, using default')
     }
   }, [savedLayout])
 
   // Persist layout changes (debounced to avoid excessive API calls)
   const handleLayoutChange = useCallback((newLayout: Layout[]) => {
-    console.log('🔍 GridDashboard: handleLayoutChange called with:', newLayout)
-
     // Use functional update to avoid stale closure
     setWidgets((currentWidgets) => {
-      console.log('🔍 GridDashboard: Current widgets:', currentWidgets)
-
       const updatedWidgets = currentWidgets.map((widget) => {
         const layoutItem = newLayout.find((l) => l.i === widget.id)
         if (layoutItem) {
@@ -128,18 +120,14 @@ export function GridDashboard() {
         return widget
       })
 
-      console.log('🔍 GridDashboard: Updated widgets:', updatedWidgets)
-
       // Debounce save to database (1 second after last change)
       if (saveTimerRef.current) {
         clearTimeout(saveTimerRef.current)
       }
 
       saveTimerRef.current = setTimeout(() => {
-        console.log('💾 GridDashboard: Saving layout to database')
         debug.log('GridDashboard', 'Saving layout to database')
         const dashboardLayout: DashboardLayout = { widgets: updatedWidgets }
-        console.log('💾 GridDashboard: Dashboard layout to save:', dashboardLayout)
         setLayout(dashboardLayout)
       }, 1000)
 
@@ -204,15 +192,6 @@ export function GridDashboard() {
         cols={12}
         rowHeight={120}
         onLayoutChange={handleLayoutChange}
-        onDragStart={(_layout, oldItem, newItem) => {
-          console.log('🎯 GridDashboard: Drag started', { oldItem, newItem })
-        }}
-        onDrag={(_layout, oldItem, newItem) => {
-          console.log('🎯 GridDashboard: Dragging', { oldItem, newItem })
-        }}
-        onDragStop={(_layout, oldItem, newItem) => {
-          console.log('🎯 GridDashboard: Drag stopped', { oldItem, newItem })
-        }}
         draggableHandle=".widget-drag-handle"
         compactType="vertical"
         preventCollision={false}
@@ -223,10 +202,7 @@ export function GridDashboard() {
           return (
             <div key={widget.id} className="widget-container relative">
               {/* Drag handle (invisible but functional) */}
-              <div
-                className="widget-drag-handle absolute inset-x-0 top-0 z-10 h-12 cursor-move"
-                onMouseDown={() => console.log('🖱️ Mouse down on drag handle:', widget.id)}
-              />
+              <div className="widget-drag-handle absolute inset-x-0 top-0 z-10 h-12 cursor-move" />
 
               {/* Widget content */}
               <div className="h-full">

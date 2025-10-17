@@ -151,8 +151,6 @@ export function useDashboardLayout() {
   const updatePreferences = useUpdatePreferences()
 
   const setDashboardLayout = (layout: DashboardLayoutV2) => {
-    console.log('💾 useDashboardLayout: setDashboardLayout called with:', layout)
-    console.log('💾 useDashboardLayout: Calling updatePreferences.mutate...')
     updatePreferences.mutate({ dashboard_layout_v2: layout })
   }
 

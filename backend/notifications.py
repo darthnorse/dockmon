@@ -526,6 +526,13 @@ class NotificationService:
                     if alert_to_update:
                         alert_to_update.notified_at = datetime.now(timezone.utc)
                         alert_to_update.notification_count = (alert_to_update.notification_count or 0) + 1
+
+                        # Auto-resolve alert if rule has auto_resolve enabled
+                        if rule and rule.auto_resolve:
+                            alert_to_update.state = 'resolved'
+                            alert_to_update.resolved_at = datetime.now(timezone.utc)
+                            logger.info(f"Auto-resolved alert '{alert.title}' after notification (rule has auto_resolve=True)")
+
                         session.commit()
 
             logger.info(f"Alert '{alert.title}' sent to {success_count}/{total_channels} channels")

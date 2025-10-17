@@ -10,7 +10,7 @@
  */
 
 import { useState, useEffect } from 'react'
-import { X, Play, RotateCw, Terminal, Copy, Circle } from 'lucide-react'
+import { X, Play, RotateCw, Circle } from 'lucide-react'
 import { Tabs } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
 import type { Container } from '../types'
@@ -137,10 +137,6 @@ export function ContainerDetailsModal({
     }
   }
 
-  const handleCopyId = () => {
-    navigator.clipboard.writeText(container.id)
-    toast.success('Container ID copied to clipboard')
-  }
 
   const getStatusColor = () => {
     switch (container.state.toLowerCase()) {
@@ -266,22 +262,6 @@ export function ContainerDetailsModal({
             >
               <RotateCw className="w-4 h-4 mr-2" />
               Restart
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => toast.info('Shell access coming soon...')}
-            >
-              <Terminal className="w-4 h-4 mr-2" />
-              Shell
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={handleCopyId}
-            >
-              <Copy className="w-4 h-4 mr-2" />
-              Copy ID
             </Button>
             <Button
               variant="ghost"

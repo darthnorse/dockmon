@@ -148,22 +148,12 @@ export function AlertsPage() {
     <div className="flex h-full flex-col bg-[#0a0e14]">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-gray-800 bg-[#0d1117] px-6 py-4">
-        <div className="flex items-center gap-4">
-          <div>
-            <h1 className="text-xl font-semibold text-white">Alerts</h1>
-            <p className="text-sm text-gray-400">Monitor and manage system alerts</p>
-          </div>
-          <Link
-            to="/alerts/rules"
-            className="flex items-center gap-2 rounded-md bg-gray-800 px-3 py-1.5 text-sm text-gray-300 transition-colors hover:bg-gray-700"
-            data-testid="manage-rules-button"
-          >
-            <Settings className="h-4 w-4" />
-            Manage Rules
-          </Link>
+        <div>
+          <h1 className="text-xl font-semibold text-white">Alerts</h1>
+          <p className="text-sm text-gray-400">Monitor and manage system alerts</p>
         </div>
 
-        {/* Stats KPIs */}
+        {/* Stats KPIs - Centered */}
         {stats && (
           <div className="flex gap-6">
             <div className="flex items-center gap-2">
@@ -196,6 +186,16 @@ export function AlertsPage() {
             </div>
           </div>
         )}
+
+        {/* Manage Rules Button - Right */}
+        <Link
+          to="/alerts/rules"
+          className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground transition-colors hover:bg-primary/90"
+          data-testid="manage-rules-button"
+        >
+          <Settings className="h-4 w-4" />
+          Manage Rules
+        </Link>
       </div>
 
       {/* Filters */}

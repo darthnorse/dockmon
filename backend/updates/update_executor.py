@@ -176,7 +176,8 @@ class UpdateExecutor:
 
             # Step 5: Start new container
             logger.info(f"Starting new container {container_name}")
-            await self._broadcast_progress(host_id, container_id, "starting", 80, "Starting new container")
+            # Use new container ID for broadcasts now that container is recreated
+            await self._broadcast_progress(host_id, new_container_id, "starting", 80, "Starting new container")
             new_container.start()
 
             # Step 6: Wait for health check
@@ -188,7 +189,7 @@ class UpdateExecutor:
                     health_check_timeout = settings.health_check_timeout_seconds
 
             logger.info(f"Waiting for health check (timeout: {health_check_timeout}s)")
-            await self._broadcast_progress(host_id, container_id, "health_check", 90, "Waiting for health check")
+            await self._broadcast_progress(host_id, new_container_id, "health_check", 90, "Waiting for health check")
             is_healthy = await self._wait_for_health(
                 docker_client,
                 new_container.id,
@@ -235,7 +236,8 @@ class UpdateExecutor:
             )
 
             logger.info(f"Successfully updated container {container_name}")
-            await self._broadcast_progress(host_id, container_id, "completed", 100, "Update completed successfully")
+            # Use new container ID for final broadcast
+            await self._broadcast_progress(host_id, new_container_id, "completed", 100, "Update completed successfully")
             return True
 
         except Exception as e:

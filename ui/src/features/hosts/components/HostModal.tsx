@@ -32,16 +32,18 @@ interface ApiError extends Error {
     }
   }
 }
-import { X } from 'lucide-react'
+import { X, Trash2, AlertTriangle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { TagInput } from '@/components/TagInput'
 import { useTags } from '@/lib/hooks/useTags'
-import { useAddHost, useUpdateHost, type HostConfig } from '../hooks/useHosts'
+import { useAddHost, useUpdateHost, useDeleteHost, type HostConfig } from '../hooks/useHosts'
 import type { Host } from '@/types/api'
 import { toast } from 'sonner'
 import { apiClient } from '@/lib/api/client'
 import { debug } from '@/lib/debug'
+import { useAllContainers } from '@/lib/stats/StatsProvider'
+import { useQuery } from '@tanstack/react-query'
 
 // Zod schema for host form
 const hostSchema = z.object({
@@ -78,9 +80,28 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
   const [replaceCa, setReplaceCa] = useState(false)
   const [replaceCert, setReplaceCert] = useState(false)
   const [replaceKey, setReplaceKey] = useState(false)
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const { tags: allTags } = useTags()
   const addMutation = useAddHost()
   const updateMutation = useUpdateHost()
+  const deleteMutation = useDeleteHost()
+
+  // Get containers for this host (for delete confirmation)
+  const containers = useAllContainers(host?.id || undefined)
+
+  // Get open alerts for this host (for delete confirmation)
+  const { data: alertsData } = useQuery({
+    queryKey: ['alerts', 'host', host?.id],
+    queryFn: async () => {
+      const response = await apiClient.get<{ alerts: any[]; total: number }>(
+        `/alerts/?state=open&scope_type=host&page_size=500`
+      )
+      return response.alerts.filter((alert: any) => alert.host_id === host?.id)
+    },
+    enabled: showDeleteConfirm && !!host?.id, // Only fetch when delete dialog is open and host exists
+  })
+
+  const openAlerts = alertsData || []
 
   // Check if host has existing certificates (indicates mTLS is enabled)
   const hostHasCerts = host?.security_status === 'secure'
@@ -109,9 +130,10 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
   const watchTags = watch('tags')
   const watchUrl = watch('url')
 
-  // Update form when host prop changes
+  // Update form when host prop changes or modal opens
   useEffect(() => {
     if (host) {
+      // Edit mode - populate with host data
       const hasCerts = host.security_status === 'secure'
       setShowTlsFields(hasCerts)
       setReplaceCa(false)
@@ -129,12 +151,24 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
         description: host.description || '',
       })
     } else {
-      // New host - reset replace states
+      // Add mode - reset to empty form
+      setShowTlsFields(false)
       setReplaceCa(false)
       setReplaceCert(false)
       setReplaceKey(false)
+
+      reset({
+        name: '',
+        url: '',
+        enableTls: false,
+        tls_ca: '',
+        tls_cert: '',
+        tls_key: '',
+        tags: [],
+        description: '',
+      })
     }
-  }, [host, reset])
+  }, [host, isOpen, reset])
 
   const testConnection = async () => {
     const formData = watch()
@@ -235,6 +269,27 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
       // Error handled by mutation hooks (toast)
       debug.error('HostModal', 'Error saving host:', error)
     }
+  }
+
+  const handleDeleteClick = () => {
+    setShowDeleteConfirm(true)
+  }
+
+  const handleDeleteConfirm = async () => {
+    if (!host) return
+
+    try {
+      await deleteMutation.mutateAsync(host.id)
+      setShowDeleteConfirm(false)
+      onClose()
+    } catch (error) {
+      // Error is handled by the mutation's onError
+      setShowDeleteConfirm(false)
+    }
+  }
+
+  const handleDeleteCancel = () => {
+    setShowDeleteConfirm(false)
   }
 
   if (!isOpen) return null
@@ -510,20 +565,97 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
           </div>
 
           {/* Footer Actions */}
-          <div className="flex justify-end gap-2 pt-4 border-t">
-            <Button type="button" variant="outline" onClick={onClose} data-testid="host-modal-cancel">
-              Cancel
-            </Button>
-            <Button type="submit" disabled={isSubmitting} data-testid="host-modal-save">
-              {isSubmitting
-                ? 'Saving...'
-                : host
-                ? 'Update Host'
-                : 'Add Host'}
-            </Button>
+          <div className="flex justify-between gap-2 pt-4 border-t">
+            {/* Delete Button - Only show when editing */}
+            {host ? (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleDeleteClick}
+                disabled={deleteMutation.isPending}
+                className="text-red-500 hover:text-red-600 hover:bg-red-50"
+                data-testid="host-modal-delete"
+              >
+                <Trash2 className="h-4 w-4 mr-2" />
+                {deleteMutation.isPending ? 'Deleting...' : 'Delete'}
+              </Button>
+            ) : (
+              <div></div>
+            )}
+
+            <div className="flex gap-2">
+              <Button type="button" variant="outline" onClick={onClose} data-testid="host-modal-cancel">
+                Cancel
+              </Button>
+              <Button type="submit" disabled={isSubmitting} data-testid="host-modal-save">
+                {isSubmitting
+                  ? 'Saving...'
+                  : host
+                  ? 'Update Host'
+                  : 'Add Host'}
+              </Button>
+            </div>
           </div>
         </form>
       </div>
+
+      {/* Delete Confirmation Dialog */}
+      {showDeleteConfirm && host && (
+        <div className="fixed inset-0 bg-black/70 z-[60] flex items-center justify-center p-4">
+          <div className="bg-surface border border-border rounded-lg shadow-2xl max-w-md w-full p-6">
+            <div className="flex items-start gap-4 mb-4">
+              <div className="flex-shrink-0 w-12 h-12 rounded-full bg-red-500/10 flex items-center justify-center">
+                <AlertTriangle className="h-6 w-6 text-red-500" />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-lg font-semibold mb-2">Delete Host</h3>
+                <p className="text-sm text-muted-foreground mb-3">
+                  Are you sure you want to delete <span className="font-semibold text-foreground">{host.name}</span>? This action cannot be undone.
+                </p>
+
+                {/* Show what will be affected */}
+                <div className="rounded-lg border border-border bg-muted/20 p-3 space-y-2 text-sm">
+                  <p className="font-medium text-foreground mb-2">This will affect:</p>
+                  <div className="space-y-1.5 text-muted-foreground">
+                    <div className="flex items-center justify-between">
+                      <span>Containers monitored:</span>
+                      <span className="font-semibold text-foreground">{containers.length}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>Open alerts:</span>
+                      <span className="font-semibold text-foreground">{openAlerts.length} will be resolved</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>Container settings:</span>
+                      <span className="font-semibold text-foreground">Will be deleted</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>Event history:</span>
+                      <span className="font-semibold text-green-500">Preserved</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2">
+              <button
+                onClick={handleDeleteCancel}
+                disabled={deleteMutation.isPending}
+                className="px-4 py-2 rounded-lg border border-border bg-background hover:bg-muted transition-colors text-sm disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDeleteConfirm}
+                disabled={deleteMutation.isPending}
+                className="px-4 py-2 rounded-lg bg-red-500 hover:bg-red-600 text-white transition-colors text-sm disabled:opacity-50"
+              >
+                {deleteMutation.isPending ? 'Deleting...' : 'Delete Host'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

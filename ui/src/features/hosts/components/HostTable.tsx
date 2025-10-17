@@ -55,7 +55,6 @@ import { useHostMetrics, useContainerCounts } from '@/lib/stats/StatsProvider'
 import { useSimplifiedWorkflow, useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
 import { useHostAlertCounts, type AlertSeverityCounts } from '@/features/alerts/hooks/useAlerts'
 import { useQueryClient } from '@tanstack/react-query'
-import { debug } from '@/lib/debug'
 
 // Status icon component
 function StatusIcon({ status }: { status: string }) {
@@ -663,10 +662,6 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
             onEditHost?.(host)
           }
           setDrawerOpen(false)
-        }}
-        onDelete={(hostId) => {
-          // TODO: Implement delete dialog
-          debug.log('HostTable', 'Delete host:', hostId)
         }}
         onExpand={() => {
           setDrawerOpen(false)

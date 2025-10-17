@@ -974,6 +974,44 @@ async def check_all_updates(current_user: dict = Depends(get_current_user)):
     return stats
 
 
+@app.get("/api/updates/summary")
+async def get_updates_summary(current_user: dict = Depends(get_current_user)):
+    """
+    Get summary of available container updates.
+
+    Returns:
+        - total_updates: Number of containers with updates available
+        - containers_with_updates: List of container IDs that have updates
+    """
+    from database import ContainerUpdate
+
+    # Get current containers to validate against
+    containers = await monitor.get_containers()
+    current_container_keys = {f"{c.host_id}:{c.short_id}" for c in containers}
+
+    with monitor.db.get_session() as session:
+        # Get all containers marked as having updates
+        updates = session.query(ContainerUpdate).filter(
+            ContainerUpdate.update_available == True
+        ).all()
+
+        # Filter to only include containers that still exist
+        valid_updates = [u for u in updates if u.container_id in current_container_keys]
+
+        # Clean up stale entries (containers that no longer exist)
+        stale_updates = [u for u in updates if u.container_id not in current_container_keys]
+        if stale_updates:
+            for stale in stale_updates:
+                session.delete(stale)
+            session.commit()
+            logger.info(f"Cleaned up {len(stale_updates)} stale update entries")
+
+        return {
+            "total_updates": len(valid_updates),
+            "containers_with_updates": [u.container_id for u in valid_updates]
+        }
+
+
 @app.get("/api/tags/suggest")
 async def suggest_tags(
     q: str = "",

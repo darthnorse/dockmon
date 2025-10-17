@@ -166,6 +166,20 @@ class PeriodicJobsManager:
                     # Clean up notification cooldown dictionary
                     self.monitor.notification_service._cleanup_old_cooldowns()
 
+                # Clean up stale container update entries (for deleted containers)
+                from database import ContainerUpdate
+                containers = await self.monitor.get_containers()
+                current_container_keys = {f"{c.host_id}:{c.short_id}" for c in containers}
+
+                with self.db.get_session() as session:
+                    all_updates = session.query(ContainerUpdate).all()
+                    stale_updates = [u for u in all_updates if u.container_id not in current_container_keys]
+                    if stale_updates:
+                        for stale in stale_updates:
+                            session.delete(stale)
+                        session.commit()
+                        logger.info(f"Cleaned up {len(stale_updates)} stale container update entries")
+
                 # Note: Timezone offset is auto-synced from the browser, not from server
                 # This ensures DST changes are handled automatically on the client side
 

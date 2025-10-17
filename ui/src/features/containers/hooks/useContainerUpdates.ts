@@ -154,3 +154,20 @@ export function useExecuteUpdate() {
     },
   })
 }
+
+/**
+ * Hook to get updates summary (count of containers with updates available)
+ */
+export function useUpdatesSummary() {
+  return useQuery({
+    queryKey: ['updates-summary'],
+    queryFn: async () => {
+      return await apiClient.get<{
+        total_updates: number
+        containers_with_updates: string[]
+      }>('/updates/summary')
+    },
+    staleTime: 30000, // Cache for 30s
+    refetchInterval: 60000, // Refresh every minute
+  })
+}

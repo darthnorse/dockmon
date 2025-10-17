@@ -78,25 +78,29 @@ export function BatchJobPanel({ jobId, onClose, bulkActionBarOpen = false }: Bat
     if (message.type === 'batch_job_update' && message.data && typeof message.data === 'object') {
       const data = message.data as Record<string, unknown>
       if (data.job_id === jobId) {
-        const prevStatus = job?.status
         const newStatus = data.status as string
 
-        setJob(prev => prev ? { ...prev, ...data } : null)
+        setJob(prev => {
+          const prevStatus = prev?.status
+          const updatedJob = prev ? { ...prev, ...data } : null
 
-        // Invalidate queries when job completes
-        if (prevStatus !== 'completed' && newStatus === 'completed') {
-          const action = job?.action || (data.action as string)
+          // Invalidate queries when job completes
+          if (prevStatus !== 'completed' && newStatus === 'completed') {
+            const action = prev?.action || (data.action as string)
 
-          // Invalidate container list for all actions
-          queryClient.invalidateQueries({ queryKey: ['containers'] })
+            // Invalidate container list for all actions
+            queryClient.invalidateQueries({ queryKey: ['containers'] })
 
-          // For auto-update actions, also invalidate update-status queries
-          if (action === 'set-auto-update') {
-            queryClient.invalidateQueries({ queryKey: ['container-update-status'] })
+            // For auto-update actions, also invalidate update-status queries
+            if (action === 'set-auto-update') {
+              queryClient.invalidateQueries({ queryKey: ['container-update-status'] })
+            }
+
+            debug.log('BatchJobPanel', `Job ${jobId} completed, invalidated queries for action: ${action}`)
           }
 
-          debug.log('BatchJobPanel', `Job ${jobId} completed, invalidated queries for action: ${action}`)
-        }
+          return updatedJob
+        })
       }
     }
 
@@ -117,7 +121,7 @@ export function BatchJobPanel({ jobId, onClose, bulkActionBarOpen = false }: Bat
         })
       }
     }
-  }, [jobId, job?.status, job?.action, queryClient])
+  }, [jobId, queryClient])
 
   // Subscribe to WebSocket messages
   useEffect(() => {

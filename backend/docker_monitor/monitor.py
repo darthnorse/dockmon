@@ -395,27 +395,26 @@ class DockerMonitor:
             if skip_db_save and (os_type or os_version or kernel_version or docker_version or daemon_started_at or total_memory or num_cpus):
                 # Update existing host with OS info
                 try:
-                    session = self.db.get_session()
-                    from database import DockerHostDB
-                    db_host = session.query(DockerHostDB).filter(DockerHostDB.id == host.id).first()
-                    if db_host:
-                        if os_type:
-                            db_host.os_type = os_type
-                        if os_version:
-                            db_host.os_version = os_version
-                        if kernel_version:
-                            db_host.kernel_version = kernel_version
-                        if docker_version:
-                            db_host.docker_version = docker_version
-                        if daemon_started_at:
-                            db_host.daemon_started_at = daemon_started_at
-                        if total_memory:
-                            db_host.total_memory = total_memory
-                        if num_cpus:
-                            db_host.num_cpus = num_cpus
-                        session.commit()
-                        logger.info(f"Updated OS info for {host.name}: {os_version} / Docker {docker_version}")
-                    session.close()
+                    with self.db.get_session() as session:
+                        from database import DockerHostDB
+                        db_host = session.query(DockerHostDB).filter(DockerHostDB.id == host.id).first()
+                        if db_host:
+                            if os_type:
+                                db_host.os_type = os_type
+                            if os_version:
+                                db_host.os_version = os_version
+                            if kernel_version:
+                                db_host.kernel_version = kernel_version
+                            if docker_version:
+                                db_host.docker_version = docker_version
+                            if daemon_started_at:
+                                db_host.daemon_started_at = daemon_started_at
+                            if total_memory:
+                                db_host.total_memory = total_memory
+                            if num_cpus:
+                                db_host.num_cpus = num_cpus
+                            session.commit()
+                            logger.info(f"Updated OS info for {host.name}: {os_version} / Docker {docker_version}")
                 except Exception as e:
                     logger.warning(f"Failed to update OS info for {host.name}: {e}")
 
@@ -1248,14 +1247,11 @@ class DockerMonitor:
         for host_id, host in self.hosts.items():
             try:
                 # Get TLS certificates from database
-                session = self.db.get_session()
-                try:
+                with self.db.get_session() as session:
                     db_host = session.query(DockerHostDB).filter_by(id=host_id).first()
                     tls_ca = db_host.tls_ca if db_host else None
                     tls_cert = db_host.tls_cert if db_host else None
                     tls_key = db_host.tls_key if db_host else None
-                finally:
-                    session.close()
 
                 # Register with stats service
                 await stats_client.add_docker_host(host_id, host.url, tls_ca, tls_cert, tls_key)
@@ -1676,15 +1672,16 @@ class DockerMonitor:
 
             # Load auto-restart configurations
             for host_id in self.hosts:
-                configs = self.db.get_session().query(AutoRestartConfig).filter(
-                    AutoRestartConfig.host_id == host_id,
-                    AutoRestartConfig.enabled == True
-                ).all()
-                for config in configs:
-                    # Use host_id:container_id as key to prevent collisions between hosts
-                    container_key = f"{config.host_id}:{config.container_id}"
-                    self.auto_restart_status[container_key] = True
-                    self.restart_attempts[container_key] = config.restart_count
+                with self.db.get_session() as session:
+                    configs = session.query(AutoRestartConfig).filter(
+                        AutoRestartConfig.host_id == host_id,
+                        AutoRestartConfig.enabled == True
+                    ).all()
+                    for config in configs:
+                        # Use host_id:container_id as key to prevent collisions between hosts
+                        container_key = f"{config.host_id}:{config.container_id}"
+                        self.auto_restart_status[container_key] = True
+                        self.restart_attempts[container_key] = config.restart_count
 
             logger.info(f"Loaded {len(self.hosts)} hosts from database")
         except Exception as e:
@@ -1697,3 +1694,51 @@ class DockerMonitor:
     async def run_daily_maintenance(self):
         """Run daily maintenance tasks"""
         await self.periodic_jobs.daily_maintenance()
+
+    async def cleanup_stale_container_state(self):
+        """
+        Clean up state dictionaries for containers that no longer exist.
+        Called periodically to prevent unbounded memory growth.
+        """
+        try:
+            # Get current containers
+            containers = await self.get_containers()
+            current_container_keys = {
+                f"{c.host_id}:{c.short_id}" for c in containers
+            }
+
+            # Clean up _container_states
+            async with self._state_lock:
+                stale_keys = [k for k in self._container_states.keys() if k not in current_container_keys]
+                for key in stale_keys:
+                    del self._container_states[key]
+                if stale_keys:
+                    logger.info(f"Cleaned up {len(stale_keys)} stale entries from _container_states")
+
+            # Clean up auto-restart tracking
+            async with self._restart_lock:
+                stale_restart_keys = [k for k in self.auto_restart_status.keys() if k not in current_container_keys]
+                for key in stale_restart_keys:
+                    del self.auto_restart_status[key]
+                    if key in self.restart_attempts:
+                        del self.restart_attempts[key]
+                    if key in self.restarting_containers:
+                        del self.restarting_containers[key]
+                if stale_restart_keys:
+                    logger.info(f"Cleaned up {len(stale_restart_keys)} stale entries from auto-restart tracking")
+
+            # Clean up recent user actions (keep only last 24 hours)
+            async with self._actions_lock:
+                current_time = time.time()
+                cutoff_time = current_time - (24 * 60 * 60)  # 24 hours ago
+                stale_action_keys = [
+                    k for k, timestamp in self._recent_user_actions.items()
+                    if timestamp < cutoff_time or k not in current_container_keys
+                ]
+                for key in stale_action_keys:
+                    del self._recent_user_actions[key]
+                if stale_action_keys:
+                    logger.info(f"Cleaned up {len(stale_action_keys)} stale entries from _recent_user_actions")
+
+        except Exception as e:
+            logger.error(f"Error during container state cleanup: {e}")

@@ -27,6 +27,7 @@ export function useAlerts(filters: AlertFilters = {}, options = {}) {
       if (!res.ok) throw new Error('Failed to fetch alerts')
       return res.json()
     },
+    staleTime: 30000, // Cache for 30s
     ...options,
   })
 }
@@ -42,6 +43,7 @@ export function useAlert(alertId: string | null) {
       return res.json()
     },
     enabled: !!alertId,
+    staleTime: 30000, // Cache for 30s
   })
 }
 
@@ -54,6 +56,7 @@ export function useAlertStats() {
       if (!res.ok) throw new Error('Failed to fetch alert stats')
       return res.json()
     },
+    staleTime: 30000, // Cache for 30s
     refetchInterval: 30000, // Refresh every 30 seconds
   })
 }
@@ -119,6 +122,7 @@ export function useAlertCounts(scope_type: 'container' | 'host') {
 
       return counts
     },
+    staleTime: 30000, // Cache for 30s
     refetchInterval: 30000, // Refresh every 30 seconds
   })
 }
@@ -134,6 +138,7 @@ export function useAlertAnnotations(alertId: string | null) {
       return res.json()
     },
     enabled: !!alertId,
+    staleTime: 60000, // Cache for 60s (annotations rarely change)
   })
 }
 
@@ -271,5 +276,6 @@ export function useAlertEvents(alert: Alert | null | undefined) {
       return res.json()
     },
     enabled: !!alert && !!alert.scope_id,
+    staleTime: 60000, // Cache for 60s (historical events are stable)
   })
 }

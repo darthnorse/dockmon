@@ -22,7 +22,8 @@ export function RecentEventsWidget() {
   const { data, isLoading, error } = useQuery<{ events: DockerEvent[] }>({
     queryKey: ['events', 'recent'],
     queryFn: () => apiClient.get('/events?limit=5'),
-    refetchInterval: 3000, // Refresh every 3s for real-time feel
+    staleTime: 10000, // Cache for 10s
+    // No refetchInterval needed - WebSocket 'new_event' messages trigger invalidation
   })
 
   if (isLoading) {

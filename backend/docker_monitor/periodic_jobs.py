@@ -160,6 +160,12 @@ class PeriodicJobsManager:
                         EventType.STARTUP
                     )
 
+                # Clean up stale container state dictionaries (prevent memory leak)
+                if self.monitor:
+                    await self.monitor.cleanup_stale_container_state()
+                    # Clean up notification cooldown dictionary
+                    self.monitor.notification_service._cleanup_old_cooldowns()
+
                 # Note: Timezone offset is auto-synced from the browser, not from server
                 # This ensures DST changes are handled automatically on the client side
 

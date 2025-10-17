@@ -102,8 +102,8 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
         // Real-time container statistics
         case 'container_stats':
           // Stats are handled by individual widgets with refetchInterval
-          // This ensures dashboard widgets stay current
-          queryClient.invalidateQueries({ queryKey: ['containers'] })
+          // No need to invalidate queries here - prevents cascade of 60+ requests/min
+          // Individual components manage their own stat updates via StatsProvider
           break
 
         // New Docker event logged

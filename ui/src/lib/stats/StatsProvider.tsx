@@ -21,7 +21,7 @@
  * - 80% reduction in network usage vs HTTP polling
  */
 
-import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react'
+import { createContext, useContext, useState, useEffect, useCallback, useMemo, ReactNode } from 'react'
 import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
 import type { WebSocketMessage } from '@/lib/websocket/useWebSocket'
 import type { HostMetrics, Sparklines, ContainerStats, ContainersUpdateMessage } from './types'
@@ -252,28 +252,30 @@ export function useTopContainers(
 ): Array<{ id: string; name: string; state: string; cpu_percent: number; memory_percent: number }> {
   const { containerStats } = useStatsContext()
 
-  if (!hostId) return []
+  return useMemo(() => {
+    if (!hostId) return []
 
-  // Get all containers for this host
-  const hostContainers: Array<{ id: string; name: string; state: string; cpu_percent: number; memory_percent: number }> = []
+    // Get all containers for this host
+    const hostContainers: Array<{ id: string; name: string; state: string; cpu_percent: number; memory_percent: number }> = []
 
-  containerStats.forEach((container, compositeKey) => {
-    // Check if this container belongs to the specified host
-    if (compositeKey.startsWith(`${hostId}:`)) {
-      hostContainers.push({
-        id: container.id,
-        name: container.name,
-        state: container.state,
-        cpu_percent: container.cpu_percent || 0,
-        memory_percent: container.memory_percent || 0,
-      })
-    }
-  })
+    containerStats.forEach((container, compositeKey) => {
+      // Check if this container belongs to the specified host
+      if (compositeKey.startsWith(`${hostId}:`)) {
+        hostContainers.push({
+          id: container.id,
+          name: container.name,
+          state: container.state,
+          cpu_percent: container.cpu_percent || 0,
+          memory_percent: container.memory_percent || 0,
+        })
+      }
+    })
 
-  // Sort by CPU descending and return top N
-  return hostContainers
-    .sort((a, b) => b.cpu_percent - a.cpu_percent)
-    .slice(0, limit)
+    // Sort by CPU descending and return top N
+    return hostContainers
+      .sort((a, b) => b.cpu_percent - a.cpu_percent)
+      .slice(0, limit)
+  }, [containerStats, hostId, limit])
 }
 
 /**
@@ -367,17 +369,23 @@ export function useContainer(containerId: string | null | undefined): ContainerS
 export function useContainerSparklines(containerId: string | null | undefined): Sparklines | null {
   const { containerSparklines, containerStats } = useStatsContext()
 
+  // Build a memoized reverse lookup map: containerId -> compositeKey (O(1) lookups)
+  const idToCompositeKey = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const [compositeKey, container] of containerStats) {
+      map.set(container.id, compositeKey)
+    }
+    return map
+  }, [containerStats])
+
   if (!containerId) return null
 
-  // Find the container and return its sparklines using the composite key
-  for (const [compositeKey, container] of containerStats) {
-    if (container.id === containerId) {
-      // Return sparklines immediately using the composite key from the Map
-      return containerSparklines.get(compositeKey) || null
-    }
+  // O(1) lookup using the reverse map
+  const compositeKey = idToCompositeKey.get(containerId)
+  if (!compositeKey) {
+    debug.warn('useContainerSparklines', `Container ${containerId} not found in containerStats`)
+    return null
   }
 
-  // If container not found in stats, return null
-  debug.warn('useContainerSparklines', `Container ${containerId} not found in containerStats`)
-  return null
+  return containerSparklines.get(compositeKey) || null
 }

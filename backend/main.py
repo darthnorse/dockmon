@@ -1191,8 +1191,7 @@ async def update_settings(settings: dict, current_user: dict = Depends(get_curre
 # ==================== Upgrade Notice Routes ====================
 
 @app.get("/api/upgrade-notice")
-@rate_limit_default
-async def get_upgrade_notice(current_user: dict = Depends(get_current_user)):
+async def get_upgrade_notice(current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_default):
     """Check if upgrade notice should be shown"""
     try:
         with monitor.db.get_session() as session:
@@ -1215,8 +1214,7 @@ async def get_upgrade_notice(current_user: dict = Depends(get_current_user)):
 
 
 @app.post("/api/upgrade-notice/dismiss")
-@rate_limit_default
-async def dismiss_upgrade_notice(current_user: dict = Depends(get_current_user)):
+async def dismiss_upgrade_notice(current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_default):
     """Mark upgrade notice as dismissed"""
     try:
         with monitor.db.get_session() as session:

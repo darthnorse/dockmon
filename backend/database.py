@@ -627,7 +627,7 @@ class DatabaseManager:
 
                 if hosts_without_security_status:
                     session.commit()
-                    print(f"Migrated {len(hosts_without_security_status)} hosts with security status")
+                    logger.info(f"Migrated {len(hosts_without_security_status)} hosts with security status")
 
                 # Migration: Add event_sort_order column to users table if it doesn't exist
                 inspector = session.connection().engine.dialect.get_columns(session.connection(), 'users')
@@ -637,28 +637,28 @@ class DatabaseManager:
                     # Add the column using raw SQL
                     session.execute(text("ALTER TABLE users ADD COLUMN event_sort_order VARCHAR DEFAULT 'desc'"))
                     session.commit()
-                    print("Added event_sort_order column to users table")
+                    logger.info("Added event_sort_order column to users table")
 
                 # Migration: Add container_sort_order column to users table if it doesn't exist
                 if 'container_sort_order' not in column_names:
                     # Add the column using raw SQL
                     session.execute(text("ALTER TABLE users ADD COLUMN container_sort_order VARCHAR DEFAULT 'name-asc'"))
                     session.commit()
-                    print("Added container_sort_order column to users table")
+                    logger.info("Added container_sort_order column to users table")
 
                 # Migration: Add modal_preferences column to users table if it doesn't exist
                 if 'modal_preferences' not in column_names:
                     # Add the column using raw SQL
                     session.execute(text("ALTER TABLE users ADD COLUMN modal_preferences TEXT"))
                     session.commit()
-                    print("Added modal_preferences column to users table")
+                    logger.info("Added modal_preferences column to users table")
 
                 # Migration: Add view_mode column to users table if it doesn't exist (Phase 4)
                 if 'view_mode' not in column_names:
                     # Add the column using raw SQL
                     session.execute(text("ALTER TABLE users ADD COLUMN view_mode VARCHAR"))
                     session.commit()
-                    print("Added view_mode column to users table")
+                    logger.info("Added view_mode column to users table")
 
                 # Migration: Add OS info columns to docker_hosts table (Phase 5)
                 hosts_inspector = session.connection().engine.dialect.get_columns(session.connection(), 'docker_hosts')
@@ -667,27 +667,27 @@ class DatabaseManager:
                 if 'os_type' not in hosts_column_names:
                     session.execute(text("ALTER TABLE docker_hosts ADD COLUMN os_type TEXT"))
                     session.commit()
-                    print("Added os_type column to docker_hosts table")
+                    logger.info("Added os_type column to docker_hosts table")
 
                 if 'os_version' not in hosts_column_names:
                     session.execute(text("ALTER TABLE docker_hosts ADD COLUMN os_version TEXT"))
                     session.commit()
-                    print("Added os_version column to docker_hosts table")
+                    logger.info("Added os_version column to docker_hosts table")
 
                 if 'kernel_version' not in hosts_column_names:
                     session.execute(text("ALTER TABLE docker_hosts ADD COLUMN kernel_version TEXT"))
                     session.commit()
-                    print("Added kernel_version column to docker_hosts table")
+                    logger.info("Added kernel_version column to docker_hosts table")
 
                 if 'docker_version' not in hosts_column_names:
                     session.execute(text("ALTER TABLE docker_hosts ADD COLUMN docker_version TEXT"))
                     session.commit()
-                    print("Added docker_version column to docker_hosts table")
+                    logger.info("Added docker_version column to docker_hosts table")
 
                 if 'daemon_started_at' not in hosts_column_names:
                     session.execute(text("ALTER TABLE docker_hosts ADD COLUMN daemon_started_at TEXT"))
                     session.commit()
-                    print("Added daemon_started_at column to docker_hosts table")
+                    logger.info("Added daemon_started_at column to docker_hosts table")
 
                 # Migration: Add show_host_stats and show_container_stats columns to global_settings table
                 settings_inspector = session.connection().engine.dialect.get_columns(session.connection(), 'global_settings')
@@ -696,33 +696,33 @@ class DatabaseManager:
                 if 'show_host_stats' not in settings_column_names:
                     session.execute(text("ALTER TABLE global_settings ADD COLUMN show_host_stats BOOLEAN DEFAULT 1"))
                     session.commit()
-                    print("Added show_host_stats column to global_settings table")
+                    logger.info("Added show_host_stats column to global_settings table")
 
                 if 'show_container_stats' not in settings_column_names:
                     session.execute(text("ALTER TABLE global_settings ADD COLUMN show_container_stats BOOLEAN DEFAULT 1"))
                     session.commit()
-                    print("Added show_container_stats column to global_settings table")
+                    logger.info("Added show_container_stats column to global_settings table")
 
                 # Migration: Add alert template category columns to global_settings table
                 if 'alert_template_metric' not in settings_column_names:
                     session.execute(text("ALTER TABLE global_settings ADD COLUMN alert_template_metric TEXT"))
                     session.commit()
-                    print("Added alert_template_metric column to global_settings table")
+                    logger.info("Added alert_template_metric column to global_settings table")
 
                 if 'alert_template_state_change' not in settings_column_names:
                     session.execute(text("ALTER TABLE global_settings ADD COLUMN alert_template_state_change TEXT"))
                     session.commit()
-                    print("Added alert_template_state_change column to global_settings table")
+                    logger.info("Added alert_template_state_change column to global_settings table")
 
                 if 'alert_template_health' not in settings_column_names:
                     session.execute(text("ALTER TABLE global_settings ADD COLUMN alert_template_health TEXT"))
                     session.commit()
-                    print("Added alert_template_health column to global_settings table")
+                    logger.info("Added alert_template_health column to global_settings table")
 
                 if 'alert_template_update' not in settings_column_names:
                     session.execute(text("ALTER TABLE global_settings ADD COLUMN alert_template_update TEXT"))
                     session.commit()
-                    print("Added alert_template_update column to global_settings table")
+                    logger.info("Added alert_template_update column to global_settings table")
 
                 # Migration: Drop deprecated container_history table
                 # This table has been replaced by the EventLog table
@@ -730,13 +730,13 @@ class DatabaseManager:
                 if 'container_history' in inspector_result:
                     session.execute(text("DROP TABLE container_history"))
                     session.commit()
-                    print("Dropped deprecated container_history table (replaced by EventLog)")
+                    logger.info("Dropped deprecated container_history table (replaced by EventLog)")
 
                 # Migration: Add polling_interval_migrated column if it doesn't exist
                 if 'polling_interval_migrated' not in settings_column_names:
                     session.execute(text("ALTER TABLE global_settings ADD COLUMN polling_interval_migrated BOOLEAN DEFAULT 0"))
                     session.commit()
-                    print("Added polling_interval_migrated column to global_settings table")
+                    logger.info("Added polling_interval_migrated column to global_settings table")
 
                 # Migration: Update polling_interval to 2 seconds (only once, on first startup after this update)
                 settings = session.query(GlobalSettings).first()
@@ -746,7 +746,7 @@ class DatabaseManager:
                         settings.polling_interval = 2
                         settings.polling_interval_migrated = True
                         session.commit()
-                        print("Migrated polling_interval to 2 seconds (from previous default)")
+                        logger.info("Migrated polling_interval to 2 seconds (from previous default)")
                     else:
                         # User has already customized to something < 5, just mark as migrated
                         settings.polling_interval_migrated = True
@@ -759,7 +759,7 @@ class DatabaseManager:
                 if 'custom_template' not in alert_rules_column_names:
                     session.execute(text("ALTER TABLE alert_rules_v2 ADD COLUMN custom_template TEXT"))
                     session.commit()
-                    print("Added custom_template column to alert_rules_v2 table")
+                    logger.info("Added custom_template column to alert_rules_v2 table")
 
                 # Migration: Clear old tag data (starting fresh with normalized schema)
                 # The new tag system uses 'tags' and 'tag_assignments' tables
@@ -772,10 +772,10 @@ class DatabaseManager:
                     session.execute(text("UPDATE container_desired_states SET custom_tags = NULL WHERE custom_tags IS NOT NULL"))
 
                     session.commit()
-                    print("Cleared legacy tag data - starting fresh with normalized schema")
+                    logger.info("Cleared legacy tag data - starting fresh with normalized schema")
 
         except Exception as e:
-            print(f"Migration warning: {e}")
+            logger.info(f"Migration warning: {e}")
             # Don't fail startup on migration errors
 
     def _create_tag_indexes(self):
@@ -792,7 +792,7 @@ class DatabaseManager:
                         "CREATE INDEX IF NOT EXISTS idx_tag_assignments_subject "
                         "ON tag_assignments(subject_type, subject_id)"
                     ))
-                    print("Created index idx_tag_assignments_subject")
+                    logger.info("Created index idx_tag_assignments_subject")
 
                 # Create index for compose/logical identity matching (sticky tags)
                 if 'idx_tag_assignments_compose' not in existing_indexes:
@@ -800,7 +800,7 @@ class DatabaseManager:
                         "CREATE INDEX IF NOT EXISTS idx_tag_assignments_compose "
                         "ON tag_assignments(compose_project, compose_service, host_id_at_attach)"
                     ))
-                    print("Created index idx_tag_assignments_compose")
+                    logger.info("Created index idx_tag_assignments_compose")
 
                 # Create index for tag_id lookups (find all entities with a specific tag)
                 if 'idx_tag_assignments_tag_id' not in existing_indexes:
@@ -808,7 +808,7 @@ class DatabaseManager:
                         "CREATE INDEX IF NOT EXISTS idx_tag_assignments_tag_id "
                         "ON tag_assignments(tag_id)"
                     ))
-                    print("Created index idx_tag_assignments_tag_id")
+                    logger.info("Created index idx_tag_assignments_tag_id")
 
                 session.commit()
 
@@ -856,8 +856,26 @@ class DatabaseManager:
                     "ON rule_evaluations(scope_id, timestamp DESC)"
                 ))
 
+                # Index for event_logs timestamp queries (date range filtering)
+                session.execute(text(
+                    "CREATE INDEX IF NOT EXISTS idx_event_logs_timestamp "
+                    "ON event_logs(timestamp DESC)"
+                ))
+
+                # Index for event_logs correlation_id queries (event correlation)
+                session.execute(text(
+                    "CREATE INDEX IF NOT EXISTS idx_event_logs_correlation_id "
+                    "ON event_logs(correlation_id)"
+                ))
+
+                # Composite index for scope queries (host_id + container_id filtering)
+                session.execute(text(
+                    "CREATE INDEX IF NOT EXISTS idx_event_logs_scope "
+                    "ON event_logs(host_id, container_id, timestamp DESC)"
+                ))
+
                 session.commit()
-                logger.info("Created alert v2 composite indexes for optimal query performance")
+                logger.info("Created alert v2 and event_logs composite indexes for optimal query performance")
 
         except Exception as e:
             logger.warning(f"Failed to create alert v2 indexes: {e}")
@@ -1729,17 +1747,7 @@ class DatabaseManager:
                 query = query.filter(NotificationChannel.enabled == True)
             return query.all()
 
-    def get_notification_channels_by_ids(self, channel_ids: List[int]) -> List[NotificationChannel]:
-        """Get notification channels by their IDs"""
-        with self.get_session() as session:
-            channels = session.query(NotificationChannel).filter(
-                NotificationChannel.id.in_(channel_ids),
-                NotificationChannel.enabled == True
-            ).all()
-
-            # Detach from session to avoid lazy loading issues
-            session.expunge_all()
-            return channels
+    # V1 method get_notification_channels_by_ids() removed - unused by V2
 
     def update_notification_channel(self, channel_id: int, updates: dict) -> Optional[NotificationChannel]:
         """Update a notification channel"""
@@ -1775,137 +1783,9 @@ class DatabaseManager:
                 logger.error(f"Failed to delete notification channel {channel_id}: {e}")
                 raise
 
-    # Alert Rules
-    def add_alert_rule(self, rule_data: dict) -> AlertRuleDB:
-        """Add an alert rule with container+host pairs"""
-        with self.get_session() as session:
-            try:
-                # Extract containers list if present
-                containers_data = rule_data.pop('containers', None)
-
-                rule = AlertRuleDB(**rule_data)
-                session.add(rule)
-                session.flush()  # Flush to get the ID without committing
-
-                # Add container+host pairs if provided
-                if containers_data:
-                    for container in containers_data:
-                        container_pair = AlertRuleContainer(
-                            alert_rule_id=rule.id,
-                            host_id=container['host_id'],
-                            container_name=container['container_name']
-                        )
-                        session.add(container_pair)
-
-                session.commit()
-                logger.info(f"Added alert rule: {rule.name} (ID: {rule.id})")
-            except Exception as e:
-                logger.error(f"Failed to add alert rule: {e}")
-                raise
-
-            # Create a detached copy with all needed attributes
-            rule_dict = {
-                'id': rule.id,
-                'name': rule.name,
-                'trigger_events': rule.trigger_events,
-                'trigger_states': rule.trigger_states,
-                'notification_channels': rule.notification_channels,
-                'cooldown_minutes': rule.cooldown_minutes,
-                'enabled': rule.enabled,
-                'last_triggered': rule.last_triggered,
-                'created_at': rule.created_at,
-                'updated_at': rule.updated_at
-            }
-
-            # Return a new instance that's not attached to the session
-            detached_rule = AlertRuleDB(**rule_dict)
-            detached_rule.containers = []  # Initialize empty containers list
-
-            return detached_rule
-
-    def get_alert_rule(self, rule_id: str) -> Optional[AlertRuleDB]:
-        """Get a single alert rule by ID"""
-        with self.get_session() as session:
-            from sqlalchemy.orm import joinedload
-            rule = session.query(AlertRuleDB).options(joinedload(AlertRuleDB.containers)).filter(AlertRuleDB.id == rule_id).first()
-            if rule:
-                session.expunge(rule)
-            return rule
-
-    def get_alert_rules(self, enabled_only: bool = True) -> List[AlertRuleDB]:
-        """Get all alert rules"""
-        with self.get_session() as session:
-            from sqlalchemy.orm import joinedload
-            query = session.query(AlertRuleDB).options(joinedload(AlertRuleDB.containers))
-            if enabled_only:
-                query = query.filter(AlertRuleDB.enabled == True)
-            rules = query.all()
-            # Detach from session to avoid lazy loading issues
-            for rule in rules:
-                session.expunge(rule)
-            return rules
-
-    def update_alert_rule(self, rule_id: str, updates: dict) -> Optional[AlertRuleDB]:
-        """Update an alert rule and its container+host pairs"""
-        with self.get_session() as session:
-            try:
-                from sqlalchemy.orm import joinedload
-                rule = session.query(AlertRuleDB).options(joinedload(AlertRuleDB.containers)).filter(AlertRuleDB.id == rule_id).first()
-                if rule:
-                    # Check if containers field is present before extracting it
-                    has_containers_update = 'containers' in updates
-                    containers_data = updates.pop('containers', None)
-
-                    # Update rule fields
-                    for key, value in updates.items():
-                        setattr(rule, key, value)
-                    rule.updated_at = datetime.now(timezone.utc)
-
-                    # Update container+host pairs if containers field was explicitly provided
-                    # (could be None for "all containers", empty list, or list with specific containers)
-                    if has_containers_update:
-                        # Delete existing container pairs
-                        session.query(AlertRuleContainer).filter(
-                            AlertRuleContainer.alert_rule_id == rule_id
-                        ).delete()
-
-                        # Add new container pairs (if containers_data is None or empty, no new pairs are added)
-                        if containers_data:
-                            for container in containers_data:
-                                container_pair = AlertRuleContainer(
-                                    alert_rule_id=rule_id,
-                                    host_id=container['host_id'],
-                                    container_name=container['container_name']
-                                )
-                                session.add(container_pair)
-
-                    session.commit()
-                    session.refresh(rule)
-                    # Load containers relationship
-                    _ = rule.containers
-                    session.expunge(rule)
-                    logger.info(f"Updated alert rule: {rule.name} (ID: {rule_id})")
-                return rule
-            except Exception as e:
-                logger.error(f"Failed to update alert rule {rule_id}: {e}")
-                raise
-
-    def delete_alert_rule(self, rule_id: str) -> bool:
-        """Delete an alert rule"""
-        with self.get_session() as session:
-            try:
-                rule = session.query(AlertRuleDB).filter(AlertRuleDB.id == rule_id).first()
-                if rule:
-                    rule_name = rule.name
-                    session.delete(rule)
-                    session.commit()
-                    logger.info(f"Deleted alert rule: {rule_name} (ID: {rule_id})")
-                    return True
-                logger.warning(f"Attempted to delete non-existent alert rule {rule_id}")
-                return False
-            except Exception as e:
-                logger.error(f"Failed to delete alert rule {rule_id}: {e}")
-                raise
+    # V1 Alert Rules methods removed: add_alert_rule, get_alert_rule, get_alert_rules,
+    # update_alert_rule, delete_alert_rule
+    # V1 alert system has been removed - V2 uses AlertRuleV2 and AlertEngine
 
     # ==================== Alert Rules V2 Methods ====================
 
@@ -2019,23 +1899,7 @@ class DatabaseManager:
                 logger.error(f"Failed to delete alert rule v2 {rule_id}: {e}")
                 raise
 
-    def get_alerts_dependent_on_channel(self, channel_id: int) -> List[dict]:
-        """Find alerts that would be orphaned if this channel is deleted (only have this one channel)"""
-        with self.get_session() as session:
-            all_rules = session.query(AlertRuleDB).all()
-            dependent_alerts = []
-
-            for rule in all_rules:
-                # Parse notification_channels JSON
-                channels = rule.notification_channels if isinstance(rule.notification_channels, list) else []
-                # Check if this is the ONLY channel for this alert
-                if len(channels) == 1 and channel_id in channels:
-                    dependent_alerts.append({
-                        'id': rule.id,
-                        'name': rule.name
-                    })
-
-            return dependent_alerts
+    # V1 method get_alerts_dependent_on_channel() removed - V1 alert system removed
 
     # Event Logging Operations
     def add_event(self, event_data: dict) -> EventLog:

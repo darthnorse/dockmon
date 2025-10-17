@@ -18,7 +18,7 @@ import { Circle, MoreVertical, Container, ChevronDown, Info, Edit, ChevronsUp } 
 import { ResponsiveMiniChart } from '@/lib/charts/ResponsiveMiniChart'
 import { TagChip } from '@/components/TagChip'
 import { DropdownMenu, DropdownMenuItem } from '@/components/ui/dropdown-menu'
-import { useDashboardPrefs } from '@/hooks/useUserPrefs'
+import { useDashboardPrefs } from '@/lib/hooks/useUserPreferences'
 
 export interface HostCardData {
   id: string

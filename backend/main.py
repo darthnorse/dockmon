@@ -29,7 +29,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from database import DatabaseManager
 from realtime import RealtimeMonitor
-from notifications import NotificationService, AlertProcessor
+from notifications import NotificationService
 from event_logger import EventLogger, EventContext, EventCategory, EventType, EventSeverity, PerformanceTimer
 
 # Import extracted modules
@@ -1220,7 +1220,7 @@ async def create_alert_rule_v2(
             try:
                 import json
                 channels = json.loads(new_rule.notify_channels_json)
-            except:
+            except (json.JSONDecodeError, TypeError, AttributeError):
                 channels = []
 
         monitor.event_logger.log_alert_rule_created(
@@ -1523,67 +1523,27 @@ async def update_notification_channel(channel_id: int, updates: NotificationChan
 
 @app.get("/api/notifications/channels/{channel_id}/dependent-alerts")
 async def get_dependent_alerts(channel_id: int, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
-    """Get alerts that would be orphaned if this channel is deleted"""
-    try:
-        dependent_alerts = monitor.db.get_alerts_dependent_on_channel(channel_id)
-        return {"alerts": dependent_alerts}
-    except Exception as e:
-        logger.error(f"Failed to get dependent alerts: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+    """Get alerts that would be orphaned if this channel is deleted (V2 only)"""
+    # V1 alert system removed - this endpoint always returns empty list
+    # V2 alerts don't get orphaned when channels are deleted
+    return {"alerts": []}
 
 @app.delete("/api/notifications/channels/{channel_id}")
 async def delete_notification_channel(channel_id: int, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
-    """Delete a notification channel and cascade delete alerts that would become orphaned"""
+    """Delete a notification channel"""
     try:
-        # Find alerts that would be orphaned (only have this channel)
-        affected_alerts = monitor.db.get_alerts_dependent_on_channel(channel_id)
-
-        # Find all alerts that use this channel (for removal from multi-channel alerts)
-        all_alerts = monitor.db.get_alert_rules()
+        # V1 cleanup logic removed - V1 alert system has been removed
+        # V2 alerts don't get orphaned when channels are deleted
 
         # Delete the channel
         success = monitor.db.delete_notification_channel(channel_id)
         if not success:
             raise HTTPException(status_code=404, detail="Channel not found")
 
-        # Delete orphaned alerts
-        deleted_alerts = []
-        for alert in affected_alerts:
-            if monitor.db.delete_alert_rule(alert['id']):
-                deleted_alerts.append(alert['name'])
-
-        # Remove channel from multi-channel alerts
-        updated_alerts = []
-        for alert in all_alerts:
-            # Skip if already deleted
-            if alert.id in [a['id'] for a in affected_alerts]:
-                continue
-
-            # Check if this alert uses the deleted channel
-            channels = alert.notification_channels if isinstance(alert.notification_channels, list) else []
-            if channel_id in channels:
-                # Remove the channel
-                new_channels = [ch for ch in channels if ch != channel_id]
-                monitor.db.update_alert_rule(alert.id, {'notification_channels': new_channels})
-                updated_alerts.append(alert.name)
-
-        result = {
+        return {
             "status": "success",
             "message": f"Channel {channel_id} deleted"
         }
-
-        if deleted_alerts:
-            result["deleted_alerts"] = deleted_alerts
-            result["message"] += f" and {len(deleted_alerts)} orphaned alert(s) removed"
-
-        if updated_alerts:
-            result["updated_alerts"] = updated_alerts
-            if "deleted_alerts" in result:
-                result["message"] += f", {len(updated_alerts)} alert(s) updated"
-            else:
-                result["message"] += f" and {len(updated_alerts)} alert(s) updated"
-
-        return result
     except HTTPException:
         raise
     except Exception as e:

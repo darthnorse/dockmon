@@ -13,7 +13,7 @@ import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
 import GridLayout, { WidthProvider, type Layout } from 'react-grid-layout'
 import { ExpandedHostCardContainer } from './components/ExpandedHostCardContainer'
 import { HostCardContainer } from './components/HostCardContainer'
-import { useDashboardPrefs } from '@/hooks/useUserPrefs'
+import { useDashboardPrefs } from '@/lib/hooks/useUserPreferences'
 import 'react-grid-layout/css/styles.css'
 
 const ResponsiveGridLayout = WidthProvider(GridLayout)

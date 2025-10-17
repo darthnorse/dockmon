@@ -239,7 +239,7 @@ export function BlackoutWindowsSection() {
         <div className="space-y-3">
           {windows.map((window, index) => (
             <div
-              key={index}
+              key={window.name}
               className="flex items-center justify-between rounded-lg border border-gray-700 bg-gray-800/30 p-4 hover:bg-gray-800/50 transition-colors"
             >
               <div className="flex items-center gap-4 flex-1 min-w-0">

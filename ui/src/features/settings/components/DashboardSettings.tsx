@@ -3,7 +3,7 @@
  * Controls for dashboard appearance and performance
  */
 
-import { useDashboardPrefs } from '@/hooks/useUserPrefs'
+import { useDashboardPrefs } from '@/lib/hooks/useUserPreferences'
 import { useSimplifiedWorkflow } from '@/lib/hooks/useUserPreferences'
 import { ToggleSwitch } from './ToggleSwitch'
 import { toast } from 'sonner'

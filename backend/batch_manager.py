@@ -98,7 +98,8 @@ class BatchJobManager:
         try:
             # Update job status to running
             with self.db.get_session() as session:
-                job = session.query(BatchJob).filter_by(id=job_id).first()
+                from sqlalchemy.orm import joinedload
+                job = session.query(BatchJob).options(joinedload(BatchJob.items)).filter_by(id=job_id).first()
                 if not job:
                     logger.error(f"Job {job_id} not found")
                     return
@@ -107,10 +108,9 @@ class BatchJobManager:
                 job.started_at = datetime.now(timezone.utc)
                 session.commit()
 
-                # Get all items for this job
-                items = session.query(BatchJobItem).filter_by(job_id=job_id).all()
+                # Use the eagerly loaded items relationship (no N+1 query)
                 items_list = [(item.id, item.container_id, item.container_name, item.host_id, item.status)
-                             for item in items]
+                             for item in job.items]
 
             # Broadcast job started
             await self._broadcast_job_update(job_id, 'running', None)
@@ -453,11 +453,12 @@ class BatchJobManager:
     def get_job_status(self, job_id: str) -> Optional[Dict]:
         """Get current status of a batch job"""
         with self.db.get_session() as session:
-            job = session.query(BatchJob).filter_by(id=job_id).first()
+            from sqlalchemy.orm import joinedload
+            job = session.query(BatchJob).options(joinedload(BatchJob.items)).filter_by(id=job_id).first()
             if not job:
                 return None
 
-            items = session.query(BatchJobItem).filter_by(job_id=job_id).all()
+            items = job.items  # Use eagerly loaded relationship
 
             return {
                 'id': job.id,

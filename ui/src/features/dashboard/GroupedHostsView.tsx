@@ -32,7 +32,7 @@ import {
 import { CSS } from '@dnd-kit/utilities'
 import { ExpandedHostCardContainer } from './components/ExpandedHostCardContainer'
 import { HostCardContainer } from './components/HostCardContainer'
-import { useDashboardPrefs, useUserPrefs } from '@/hooks/useUserPrefs'
+import { useDashboardPrefs, useUserPrefs } from '@/lib/hooks/useUserPreferences'
 import 'react-grid-layout/css/styles.css'
 
 const ResponsiveGridLayout = WidthProvider(GridLayout)

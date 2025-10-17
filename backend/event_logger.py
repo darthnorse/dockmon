@@ -89,6 +89,8 @@ class EventLogger:
         self._active_correlations: Dict[str, List[str]] = {}
         self._dropped_events_count = 0  # Track dropped events for monitoring
         self._recent_events: Dict[str, float] = {}  # Cache for event deduplication: {dedup_key: timestamp}
+        self.MAX_RECENT_EVENTS = 5000  # Hard limit to prevent memory leak
+        self.RECENT_EVENTS_TTL = 300  # 5 minutes
 
     async def start(self):
         """Start the event processing task"""
@@ -167,10 +169,21 @@ class EventLogger:
             # Record this event
             self._recent_events[dedup_key] = current_time
 
-            # Clean up old entries periodically (keep only last 5 minutes)
-            if len(self._recent_events) > 1000:  # Arbitrary threshold to trigger cleanup
-                cutoff_time = current_time - 300  # 5 minutes ago
-                self._recent_events = {k: v for k, v in self._recent_events.items() if v > cutoff_time}
+            # Clean up old entries to prevent unbounded growth
+            # Trigger cleanup when approaching max size OR periodically based on oldest entry
+            if len(self._recent_events) > (self.MAX_RECENT_EVENTS * 0.8):  # 80% threshold
+                cutoff_time = current_time - self.RECENT_EVENTS_TTL
+                keys_to_remove = [k for k, v in self._recent_events.items() if v < cutoff_time]
+                for k in keys_to_remove:
+                    del self._recent_events[k]
+
+                # If still over limit after TTL cleanup, remove oldest entries
+                if len(self._recent_events) > self.MAX_RECENT_EVENTS:
+                    sorted_events = sorted(self._recent_events.items(), key=lambda x: x[1])
+                    keys_to_remove = [k for k, _ in sorted_events[:len(self._recent_events) - self.MAX_RECENT_EVENTS]]
+                    for k in keys_to_remove:
+                        del self._recent_events[k]
+                    logger.warning(f"Event deduplication cache exceeded limit, removed {len(keys_to_remove)} oldest entries")
 
         # Add to queue for async processing
         try:

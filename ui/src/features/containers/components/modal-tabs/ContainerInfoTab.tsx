@@ -246,8 +246,8 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
               <div>
                 <h4 className="text-base font-medium text-foreground mb-3">Ports</h4>
                 <div className="flex flex-wrap gap-2">
-                  {container.ports.map((port, idx) => (
-                    <div key={idx} className="text-sm font-mono bg-surface-1 px-3 py-1.5 rounded">
+                  {container.ports.map((port) => (
+                    <div key={port} className="text-sm font-mono bg-surface-1 px-3 py-1.5 rounded">
                       {port}
                     </div>
                   ))}
@@ -260,8 +260,8 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
               <div>
                 <h4 className="text-base font-medium text-foreground mb-3">Volumes</h4>
                 <div className="space-y-1">
-                  {container.volumes.map((volume, idx) => (
-                    <div key={idx} className="text-xs font-mono bg-surface-1 px-3 py-1.5 rounded break-all">
+                  {container.volumes.map((volume) => (
+                    <div key={volume} className="text-xs font-mono bg-surface-1 px-3 py-1.5 rounded break-all">
                       {volume}
                     </div>
                   ))}

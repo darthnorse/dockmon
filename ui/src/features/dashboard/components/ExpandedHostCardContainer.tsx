@@ -16,7 +16,7 @@ import { useHostMetrics, useHostSparklines, useContainerCounts } from '@/lib/sta
 import { ExpandedHostCard, type ExpandedHostData } from './ExpandedHostCard'
 import { useStatsContext } from '@/lib/stats/StatsProvider'
 import { useIntersectionObserver } from '@/lib/hooks/useIntersectionObserver'
-import { useUserPrefs } from '@/hooks/useUserPrefs'
+import { useUserPrefs } from '@/lib/hooks/useUserPreferences'
 
 interface Host {
   id: string

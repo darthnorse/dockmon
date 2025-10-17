@@ -25,6 +25,20 @@ export interface UserPreferences {
   // Table sorting preferences (TanStack Table format)
   host_table_sort: Array<{ id: string; desc: boolean }> | null
   container_table_sort: Array<{ id: string; desc: boolean }> | null
+
+  // Dashboard preferences
+  tagGroupOrder?: string[]
+  groupLayouts?: Record<string, any>
+  hostContainerSorts?: Record<string, any>
+  compactHostOrder?: string[]
+  showKpiBar?: boolean
+  showStatsWidgets?: boolean
+  optimizedLoading?: boolean
+  hostCardLayout?: string
+  hostCardLayoutStandard?: string
+
+  // Legacy compatibility
+  dashboard?: any
 }
 
 // Re-export for convenience
@@ -160,5 +174,42 @@ export function useSimplifiedWorkflow() {
     enabled: preferences?.simplified_workflow ?? false,
     setEnabled: setSimplifiedWorkflow,
     isLoading: updatePreferences.isPending,
+  }
+}
+
+/**
+ * Legacy hook for backwards compatibility with useUserPrefs
+ * @deprecated Use useUserPreferences and useUpdatePreferences directly
+ */
+export function useUserPrefs() {
+  const query = useUserPreferences()
+  const mutation = useUpdatePreferences()
+
+  return {
+    prefs: query.data,
+    isLoading: query.isLoading,
+    error: query.error,
+    updatePrefs: mutation.mutate,
+    isUpdating: mutation.isPending,
+  }
+}
+
+/**
+ * Legacy hook for backwards compatibility
+ * @deprecated Use useDashboardLayout instead
+ */
+export function useDashboardPrefs() {
+  const { data: prefs } = useUserPreferences()
+  const updatePreferences = useUpdatePreferences()
+
+  const updateDashboardPrefs = (updates: Partial<UserPreferences>) => {
+    updatePreferences.mutate(updates)
+  }
+
+  return {
+    dashboardPrefs: prefs,
+    updateDashboardPrefs,
+    isUpdating: updatePreferences.isPending,
+    isLoading: !prefs,
   }
 }

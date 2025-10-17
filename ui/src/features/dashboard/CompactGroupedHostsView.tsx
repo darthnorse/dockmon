@@ -31,7 +31,7 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { CompactHostCard } from './components/CompactHostCard'
-import { useDashboardPrefs, useUserPrefs } from '@/hooks/useUserPrefs'
+import { useDashboardPrefs, useUserPrefs } from '@/lib/hooks/useUserPreferences'
 
 interface Host {
   id: string

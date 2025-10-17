@@ -23,7 +23,7 @@ from models.docker_models import DockerHost, DockerHostConfig, Container
 from models.settings_models import AlertRule, NotificationSettings
 from websocket.connection import ConnectionManager
 from realtime import RealtimeMonitor
-from notifications import NotificationService, AlertProcessor
+from notifications import NotificationService
 from event_logger import EventLogger, EventSeverity, EventType
 from event_bus import Event, EventType as BusEventType, get_event_bus
 from stats_client import get_stats_client

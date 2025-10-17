@@ -10,7 +10,7 @@ import { useAllContainers } from '@/lib/stats/StatsProvider'
 import { Link } from 'react-router-dom'
 import { useState, useMemo, useEffect } from 'react'
 import { DropdownMenu, DropdownMenuItem } from '@/components/ui/dropdown-menu'
-import { useDashboardPrefs } from '@/hooks/useUserPrefs'
+import { useDashboardPrefs } from '@/lib/hooks/useUserPreferences'
 
 interface HostContainersSectionProps {
   hostId: string

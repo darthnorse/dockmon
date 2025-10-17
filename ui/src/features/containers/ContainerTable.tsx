@@ -23,7 +23,7 @@
  * - WebSocket for real-time stats
  */
 
-import { useMemo, useState, useRef, useEffect } from 'react'
+import { useMemo, useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 import {
@@ -67,8 +67,6 @@ import { POLLING_CONFIG } from '@/lib/config/polling'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { TagChip } from '@/components/TagChip'
-import { MiniChart } from '@/lib/charts/MiniChart'
-import { useStatsHistory } from '@/lib/hooks/useStatsHistory'
 import { useAlertCounts, type AlertSeverityCounts } from '@/features/alerts/hooks/useAlerts'
 import { AlertDetailsDrawer } from '@/features/alerts/components/AlertDetailsDrawer'
 import { ContainerDrawer } from './components/ContainerDrawer'
@@ -302,47 +300,6 @@ function ContainerUpdatesBadge({ hasUpdates }: { hasUpdates: boolean }) {
   )
 }
 
-/**
- * Container sparkline with stats history
- * Uses adaptive polling for bandwidth optimization
- */
-function ContainerSparkline({
-  containerId,
-  metric,
-  color,
-  currentValue
-}: {
-  containerId: string
-  metric: 'cpu' | 'memory'
-  color: 'cpu' | 'memory'
-  currentValue?: number
-}) {
-  const rowRef = useRef<HTMLDivElement>(null)
-  const { getHistory } = useStatsHistory(containerId)
-
-  // Stats are managed by StatsProvider via WebSocket
-  const history = getHistory(metric)
-  const latest = currentValue ?? (history.length > 0 ? history[history.length - 1] : null)
-
-  return (
-    <div ref={rowRef} className="flex items-center gap-2">
-      {history.length > 0 && (
-        <MiniChart
-          data={history}
-          color={color}
-          height={40}
-          width={80}
-          label={`${metric} usage`}
-        />
-      )}
-      {latest !== null && latest !== undefined && (
-        <span className="text-xs text-muted-foreground">
-          {latest.toFixed(1)}%
-        </span>
-      )}
-    </div>
-  )
-}
 
 interface ContainerTableProps {
   hostId?: string // Optional: filter by specific host
@@ -904,31 +861,26 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
           )
         },
       },
-      // 8. CPU% (sparkline)
+      // 8. CPU%
       {
         id: 'cpu',
         header: 'CPU%',
         cell: ({ row }) => {
           const container = row.original
-          // If we have real-time stats, show sparkline
-          if (container.cpu_percent !== undefined) {
+          if (container.cpu_percent !== undefined && container.cpu_percent !== null) {
             return (
-              <ContainerSparkline
-                containerId={container.id}
-                metric="cpu"
-                color="cpu"
-                currentValue={container.cpu_percent}
-              />
+              <span className="text-xs text-muted-foreground">
+                {container.cpu_percent.toFixed(1)}%
+              </span>
             )
           }
-          // Fallback: show dash
           return <span className="text-xs text-muted-foreground">-</span>
         },
       },
-      // 9. RAM% (sparkline/bar)
+      // 9. RAM (memory usage)
       {
         id: 'memory',
-        header: 'RAM%',
+        header: 'RAM',
         cell: ({ row }) => {
           const container = row.original
 

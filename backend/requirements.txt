@@ -3,7 +3,7 @@ uvicorn[standard]==0.34.0
 docker==7.1.0
 pydantic==2.10.6
 python-multipart==0.0.20
-aiohttp==3.11.12
+aiohttp==3.13.0
 httpx==0.28.1
 sqlalchemy==2.0.36
 alembic==1.13.1

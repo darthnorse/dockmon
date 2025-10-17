@@ -4,7 +4,6 @@
  * FEATURES:
  * - Add/Edit host modal with TLS support
  * - React Hook Form + Zod validation
- * - TagInput integration for host tags
  * - TLS certificate fields (expandable)
  * - Description textarea
  *
@@ -15,8 +14,9 @@
  * - CA Certificate (textarea, TLS only)
  * - Client Certificate (textarea, mTLS)
  * - Client Key (textarea, mTLS)
- * - Tags (TagInput multi-select)
  * - Description (textarea)
+ *
+ * NOTE: Tags are managed via the host drawer/modal, not in add/edit.
  */
 
 import { useState, useEffect } from 'react'
@@ -35,8 +35,6 @@ interface ApiError extends Error {
 import { X, Trash2, AlertTriangle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { TagInput } from '@/components/TagInput'
-import { useTags } from '@/lib/hooks/useTags'
 import { useAddHost, useUpdateHost, useDeleteHost, type HostConfig } from '../hooks/useHosts'
 import type { Host } from '@/types/api'
 import { toast } from 'sonner'
@@ -63,7 +61,6 @@ const hostSchema = z.object({
   tls_ca: z.string().optional(),
   tls_cert: z.string().optional(),
   tls_key: z.string().optional(),
-  tags: z.array(z.string()).max(50, 'Maximum 50 tags allowed').optional(),
   description: z.string().max(1000, 'Description must be less than 1000 characters').optional(),
 })
 
@@ -81,7 +78,6 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
   const [replaceCert, setReplaceCert] = useState(false)
   const [replaceKey, setReplaceKey] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
-  const { tags: allTags } = useTags()
   const addMutation = useAddHost()
   const updateMutation = useUpdateHost()
   const deleteMutation = useDeleteHost()
@@ -122,12 +118,10 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
       tls_ca: '',
       tls_cert: '',
       tls_key: '',
-      tags: host?.tags || [],
       description: host?.description || '',
     },
   })
 
-  const watchTags = watch('tags')
   const watchUrl = watch('url')
 
   // Update form when host prop changes or modal opens
@@ -147,7 +141,6 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
         tls_ca: '',
         tls_cert: '',
         tls_key: '',
-        tags: host.tags || [],
         description: host.description || '',
       })
     } else {
@@ -164,7 +157,6 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
         tls_ca: '',
         tls_cert: '',
         tls_key: '',
-        tags: [],
         description: '',
       })
     }
@@ -236,7 +228,7 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
     const config: HostConfig = {
       name: data.name,
       url: data.url,
-      tags: data.tags || [],
+      tags: [], // Tags are managed in the host drawer/modal only
       description: data.description || null,
     }
 
@@ -528,23 +520,6 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
               )}
             </>
           )}
-
-          {/* Tags */}
-          <div>
-            <label htmlFor="tags" className="block text-sm font-medium mb-1">
-              Tags / Groups
-            </label>
-            <TagInput
-              value={watchTags || []}
-              onChange={(tags) => setValue('tags', tags)}
-              suggestions={allTags}
-              placeholder="Add tags for organization..."
-              showPrimaryIndicator={true}
-            />
-            {errors.tags && (
-              <p className="text-xs text-destructive mt-1">{errors.tags.message}</p>
-            )}
-          </div>
 
           {/* Description */}
           <div>

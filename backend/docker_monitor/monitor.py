@@ -715,13 +715,6 @@ class DockerMonitor:
                 for container_key in actions_to_remove:
                     del self._recent_user_actions[container_key]
 
-            # Clean up notification service's container state tracking for this host
-            notification_states_to_remove = [key for key in self.notification_service._last_container_state.keys() if key.startswith(f"{host_id}:")]
-            for container_key in notification_states_to_remove:
-                del self.notification_service._last_container_state[container_key]
-
-            # V1 alert processor cleanup removed - v2 uses event-driven architecture
-
             # Clean up notification service's alert cooldown tracking for this host
             alert_cooldowns_to_remove = [key for key in self.notification_service._last_alerts.keys() if key.startswith(f"{host_id}:")]
             for container_key in alert_cooldowns_to_remove:

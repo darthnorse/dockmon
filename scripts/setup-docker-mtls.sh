@@ -246,9 +246,11 @@ print_info "Generating Certificate Authority (CA)..."
 # Generate CA private key
 openssl genrsa -out ca-key.pem 4096 2>/dev/null
 
-# Generate CA certificate
+# Generate CA certificate with proper X.509 v3 extensions for Alpine Linux compatibility
 openssl req -new -x509 -days $DAYS_VALID -key ca-key.pem -sha256 -out ca.pem \
-    -subj "/C=US/ST=State/L=City/O=DockMon/CN=DockMon CA" 2>/dev/null
+    -subj "/C=US/ST=State/L=City/O=DockMon/CN=DockMon CA" \
+    -addext "keyUsage = critical, keyCertSign, cRLSign" \
+    -addext "basicConstraints = critical, CA:TRUE" 2>/dev/null
 
 print_info "Generating Server certificates..."
 
@@ -258,10 +260,12 @@ openssl genrsa -out server-key.pem 4096 2>/dev/null
 # Generate server certificate request
 openssl req -subj "/CN=$HOST_NAME" -sha256 -new -key server-key.pem -out server.csr 2>/dev/null
 
-# Create extensions file for server certificate
+# Create extensions file for server certificate with proper X.509 v3 extensions
 cat > extfile.cnf <<EOF
 subjectAltName = DNS:$HOST_NAME,DNS:localhost,IP:$HOST_IP,IP:127.0.0.1
 extendedKeyUsage = serverAuth
+keyUsage = critical, digitalSignature, keyEncipherment
+basicConstraints = CA:FALSE
 EOF
 
 # Sign server certificate
@@ -276,8 +280,12 @@ openssl genrsa -out client-key.pem 4096 2>/dev/null
 # Generate client certificate request
 openssl req -subj '/CN=DockMon Client' -new -key client-key.pem -out client.csr 2>/dev/null
 
-# Create extensions file for client certificate
-echo "extendedKeyUsage = clientAuth" > extfile-client.cnf
+# Create extensions file for client certificate with proper X.509 v3 extensions
+cat > extfile-client.cnf <<EOF
+extendedKeyUsage = clientAuth
+keyUsage = critical, digitalSignature, keyEncipherment
+basicConstraints = CA:FALSE
+EOF
 
 # Sign client certificate
 openssl x509 -req -days $DAYS_VALID -sha256 -in client.csr -CA ca.pem -CAkey ca-key.pem \

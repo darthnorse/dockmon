@@ -36,16 +36,26 @@ COPY ui/ ./
 RUN npm run build
 
 # Stage 3: Final image with Python + Go binary + built React app
-FROM python:3.11.10-slim
+FROM python:3.13-alpine
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
+# Install runtime dependencies and build dependencies (temporarily for Python packages with C extensions)
+RUN apk add --no-cache \
+    # Runtime dependencies
     nginx \
     supervisor \
     curl \
-    gcc \
     ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+    openssl \
+    bash \
+    libffi \
+    && apk add --no-cache --virtual .build-deps \
+    # Build dependencies (will be removed after pip install)
+    gcc \
+    musl-dev \
+    linux-headers \
+    libffi-dev \
+    openssl-dev \
+    python3-dev
 
 # Create app directory
 WORKDIR /app
@@ -56,7 +66,9 @@ RUN chmod +x /usr/local/bin/stats-service
 
 # Copy and install Python dependencies
 COPY backend/requirements.txt /app/backend/
-RUN pip install --no-cache-dir -r /app/backend/requirements.txt
+RUN pip install --no-cache-dir -r /app/backend/requirements.txt \
+    # Remove build dependencies to keep image small
+    && apk del .build-deps
 
 # Copy backend code
 COPY backend/ /app/backend/
@@ -70,8 +82,9 @@ RUN find /usr/share/nginx/html -type d -exec chmod 755 {} \;
 RUN mkdir -p /etc/nginx/certs
 
 # Copy nginx configuration
-COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
-RUN rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-available/default
+# Alpine nginx uses /etc/nginx/http.d/ instead of sites-enabled/sites-available
+RUN rm -f /etc/nginx/http.d/default.conf
+COPY docker/nginx.conf /etc/nginx/http.d/default.conf
 
 # Add WebSocket upgrade mapping to main nginx.conf (must be in http block)
 RUN sed -i '/^http {/a \    # WebSocket upgrade mapping\n    map $http_upgrade $connection_upgrade {\n        default upgrade;\n        '"''"' close;\n    }\n' /etc/nginx/nginx.conf
@@ -79,9 +92,10 @@ RUN sed -i '/^http {/a \    # WebSocket upgrade mapping\n    map $http_upgrade $
 # Copy supervisor configuration
 COPY docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
-# Create data directory with correct permissions
+# Create data directory and log directories with correct permissions
 RUN mkdir -p /app/data && \
-    chmod 700 /app/data
+    chmod 700 /app/data && \
+    mkdir -p /var/log/supervisor /var/run
 
 # Create startup script
 RUN echo '#!/bin/bash' > /startup.sh && \

@@ -1,0 +1,288 @@
+"""v1.1.3 to v2.0.0 comprehensive upgrade
+
+Revision ID: 001_v1_to_v2
+Revises:
+Create Date: 2025-10-17 12:00:00
+
+This migration handles the complete upgrade from DockMon v1.1.3 to v2.0.0.
+It is fully defensive and checks for existing tables/columns before creating them.
+
+CHANGES:
+- GlobalSettings: Add missing v2 columns (unused_tag_retention_days, alert templates, update settings, etc.)
+- Users: Add role, display_name, prefs, simplified_workflow, view_mode columns
+- user_prefs table: New table for database-backed user preferences
+- container_desired_states: Add custom_tags column
+- event_logs: Add source column and indexes
+- DockerHosts: Add tags, description columns
+"""
+from alembic import op
+import sqlalchemy as sa
+from sqlalchemy import inspect
+
+
+# revision identifiers, used by Alembic.
+revision = '001_v1_to_v2'
+down_revision = None
+branch_labels = None
+depends_on = None
+
+
+def _table_exists(table_name: str) -> bool:
+    """Check if a table exists."""
+    bind = op.get_bind()
+    inspector = inspect(bind)
+    return table_name in inspector.get_table_names()
+
+
+def _column_exists(table_name: str, column_name: str) -> bool:
+    """Check if a column exists in a table."""
+    bind = op.get_bind()
+    inspector = inspect(bind)
+    if not _table_exists(table_name):
+        return False
+    columns = [col['name'] for col in inspector.get_columns(table_name)]
+    return column_name in columns
+
+
+def _index_exists(index_name: str) -> bool:
+    """Check if an index exists."""
+    bind = op.get_bind()
+    inspector = inspect(bind)
+    for table_name in inspector.get_table_names():
+        indexes = [idx['name'] for idx in inspector.get_indexes(table_name)]
+        if index_name in indexes:
+            return True
+    return False
+
+
+def upgrade() -> None:
+    """
+    Upgrade v1.1.3 database to v2.0.0 schema.
+
+    This migration is fully defensive - it checks what exists before making changes.
+    Safe to run multiple times (idempotent).
+    """
+
+    # ==================== GlobalSettings Table ====================
+    # Add missing v2 columns
+
+    if not _column_exists('global_settings', 'unused_tag_retention_days'):
+        op.add_column('global_settings', sa.Column('unused_tag_retention_days', sa.Integer(), server_default='30'))
+
+    if not _column_exists('global_settings', 'alert_template_metric'):
+        op.add_column('global_settings', sa.Column('alert_template_metric', sa.Text(), nullable=True))
+
+    if not _column_exists('global_settings', 'alert_template_state_change'):
+        op.add_column('global_settings', sa.Column('alert_template_state_change', sa.Text(), nullable=True))
+
+    if not _column_exists('global_settings', 'alert_template_health'):
+        op.add_column('global_settings', sa.Column('alert_template_health', sa.Text(), nullable=True))
+
+    if not _column_exists('global_settings', 'alert_template_update'):
+        op.add_column('global_settings', sa.Column('alert_template_update', sa.Text(), nullable=True))
+
+    if not _column_exists('global_settings', 'auto_update_enabled_default'):
+        op.add_column('global_settings', sa.Column('auto_update_enabled_default', sa.Boolean(), server_default='0'))
+
+    if not _column_exists('global_settings', 'update_check_interval_hours'):
+        op.add_column('global_settings', sa.Column('update_check_interval_hours', sa.Integer(), server_default='24'))
+
+    if not _column_exists('global_settings', 'update_check_time'):
+        op.add_column('global_settings', sa.Column('update_check_time', sa.Text(), server_default='02:00'))
+
+    if not _column_exists('global_settings', 'skip_compose_containers'):
+        op.add_column('global_settings', sa.Column('skip_compose_containers', sa.Boolean(), server_default='1'))
+
+    if not _column_exists('global_settings', 'health_check_timeout_seconds'):
+        op.add_column('global_settings', sa.Column('health_check_timeout_seconds', sa.Integer(), server_default='120'))
+
+    # Version tracking columns (for upgrade notice)
+    if not _column_exists('global_settings', 'app_version'):
+        op.add_column('global_settings', sa.Column('app_version', sa.String(), server_default='2.0.0'))
+        # Set to 2.0.0 for all existing installations
+        op.execute("UPDATE global_settings SET app_version = '2.0.0' WHERE id = 1")
+
+    if not _column_exists('global_settings', 'upgrade_notice_dismissed'):
+        op.add_column('global_settings', sa.Column('upgrade_notice_dismissed', sa.Boolean(), nullable=True))
+        # Set to False for v1→v2 upgrades (show the upgrade notice)
+        op.execute("UPDATE global_settings SET upgrade_notice_dismissed = 0 WHERE id = 1")
+
+    if not _column_exists('global_settings', 'last_viewed_release_notes'):
+        op.add_column('global_settings', sa.Column('last_viewed_release_notes', sa.String(), nullable=True))
+
+
+    # ==================== Users Table ====================
+    # Add v2 columns for future RBAC and user preferences
+
+    if _table_exists('users'):
+        if not _column_exists('users', 'role'):
+            with op.batch_alter_table('users', schema=None) as batch_op:
+                batch_op.add_column(sa.Column('role', sa.String(), server_default='owner'))
+
+        if not _column_exists('users', 'display_name'):
+            with op.batch_alter_table('users', schema=None) as batch_op:
+                batch_op.add_column(sa.Column('display_name', sa.String(), nullable=True))
+
+        if not _column_exists('users', 'prefs'):
+            with op.batch_alter_table('users', schema=None) as batch_op:
+                batch_op.add_column(sa.Column('prefs', sa.Text(), nullable=True))
+
+        if not _column_exists('users', 'simplified_workflow'):
+            with op.batch_alter_table('users', schema=None) as batch_op:
+                batch_op.add_column(sa.Column('simplified_workflow', sa.Boolean(), server_default='0'))
+
+        if not _column_exists('users', 'view_mode'):
+            with op.batch_alter_table('users', schema=None) as batch_op:
+                batch_op.add_column(sa.Column('view_mode', sa.String(), server_default='grid'))
+
+
+    # ==================== user_prefs Table ====================
+    # New table for database-backed user preferences (replaces localStorage)
+
+    if not _table_exists('user_prefs'):
+        op.create_table(
+            'user_prefs',
+            sa.Column('user_id', sa.Integer(), nullable=False),
+            sa.Column('theme', sa.String(), server_default='dark'),
+            sa.Column('defaults_json', sa.Text(), nullable=True),
+            sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP')),
+            sa.Column('updated_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP')),
+            sa.ForeignKeyConstraint(['user_id'], ['users.id'], ondelete='CASCADE'),
+            sa.PrimaryKeyConstraint('user_id')
+        )
+
+
+    # ==================== container_desired_states Table ====================
+    # Add custom_tags column for tag support
+
+    if not _column_exists('container_desired_states', 'custom_tags'):
+        with op.batch_alter_table('container_desired_states', schema=None) as batch_op:
+            batch_op.add_column(sa.Column('custom_tags', sa.Text(), nullable=True))
+
+
+    # ==================== docker_hosts Table ====================
+    # Add tags and description columns
+
+    if _table_exists('docker_hosts'):
+        if not _column_exists('docker_hosts', 'tags'):
+            with op.batch_alter_table('docker_hosts', schema=None) as batch_op:
+                batch_op.add_column(sa.Column('tags', sa.Text(), nullable=True))
+
+        if not _column_exists('docker_hosts', 'description'):
+            with op.batch_alter_table('docker_hosts', schema=None) as batch_op:
+                batch_op.add_column(sa.Column('description', sa.Text(), nullable=True))
+
+
+    # ==================== event_logs Table ====================
+    # Add source column and create indexes
+
+    if _table_exists('event_logs'):
+        if not _column_exists('event_logs', 'source'):
+            with op.batch_alter_table('event_logs', schema=None) as batch_op:
+                batch_op.add_column(sa.Column('source', sa.String(), server_default='docker'))
+
+    # Create indexes for faster event log queries
+    if not _index_exists('idx_event_logs_category'):
+        op.create_index('idx_event_logs_category', 'event_logs', ['category'])
+
+    if not _index_exists('idx_event_logs_source'):
+        op.create_index('idx_event_logs_source', 'event_logs', ['source'])
+
+
+def downgrade() -> None:
+    """
+    Downgrade v2.0.0 to v1.1.3 schema.
+
+    Note: This removes v2 features. Data in v2-only columns will be lost.
+    """
+
+    # Drop indexes
+    if _index_exists('idx_event_logs_source'):
+        op.drop_index('idx_event_logs_source', table_name='event_logs')
+
+    if _index_exists('idx_event_logs_category'):
+        op.drop_index('idx_event_logs_category', table_name='event_logs')
+
+    # Remove event_logs columns
+    if _column_exists('event_logs', 'source'):
+        with op.batch_alter_table('event_logs', schema=None) as batch_op:
+            batch_op.drop_column('source')
+
+    # Remove docker_hosts columns
+    if _column_exists('docker_hosts', 'description'):
+        with op.batch_alter_table('docker_hosts', schema=None) as batch_op:
+            batch_op.drop_column('description')
+
+    if _column_exists('docker_hosts', 'tags'):
+        with op.batch_alter_table('docker_hosts', schema=None) as batch_op:
+            batch_op.drop_column('tags')
+
+    # Remove container_desired_states columns
+    if _column_exists('container_desired_states', 'custom_tags'):
+        with op.batch_alter_table('container_desired_states', schema=None) as batch_op:
+            batch_op.drop_column('custom_tags')
+
+    # Drop user_prefs table
+    if _table_exists('user_prefs'):
+        op.drop_table('user_prefs')
+
+    # Remove users columns
+    if _column_exists('users', 'view_mode'):
+        with op.batch_alter_table('users', schema=None) as batch_op:
+            batch_op.drop_column('view_mode')
+
+    if _column_exists('users', 'simplified_workflow'):
+        with op.batch_alter_table('users', schema=None) as batch_op:
+            batch_op.drop_column('simplified_workflow')
+
+    if _column_exists('users', 'prefs'):
+        with op.batch_alter_table('users', schema=None) as batch_op:
+            batch_op.drop_column('prefs')
+
+    if _column_exists('users', 'display_name'):
+        with op.batch_alter_table('users', schema=None) as batch_op:
+            batch_op.drop_column('display_name')
+
+    if _column_exists('users', 'role'):
+        with op.batch_alter_table('users', schema=None) as batch_op:
+            batch_op.drop_column('role')
+
+    # Remove global_settings v2 columns
+    if _column_exists('global_settings', 'last_viewed_release_notes'):
+        op.drop_column('global_settings', 'last_viewed_release_notes')
+
+    if _column_exists('global_settings', 'upgrade_notice_dismissed'):
+        op.drop_column('global_settings', 'upgrade_notice_dismissed')
+
+    if _column_exists('global_settings', 'app_version'):
+        op.drop_column('global_settings', 'app_version')
+
+    if _column_exists('global_settings', 'health_check_timeout_seconds'):
+        op.drop_column('global_settings', 'health_check_timeout_seconds')
+
+    if _column_exists('global_settings', 'skip_compose_containers'):
+        op.drop_column('global_settings', 'skip_compose_containers')
+
+    if _column_exists('global_settings', 'update_check_time'):
+        op.drop_column('global_settings', 'update_check_time')
+
+    if _column_exists('global_settings', 'update_check_interval_hours'):
+        op.drop_column('global_settings', 'update_check_interval_hours')
+
+    if _column_exists('global_settings', 'auto_update_enabled_default'):
+        op.drop_column('global_settings', 'auto_update_enabled_default')
+
+    if _column_exists('global_settings', 'alert_template_update'):
+        op.drop_column('global_settings', 'alert_template_update')
+
+    if _column_exists('global_settings', 'alert_template_health'):
+        op.drop_column('global_settings', 'alert_template_health')
+
+    if _column_exists('global_settings', 'alert_template_state_change'):
+        op.drop_column('global_settings', 'alert_template_state_change')
+
+    if _column_exists('global_settings', 'alert_template_metric'):
+        op.drop_column('global_settings', 'alert_template_metric')
+
+    if _column_exists('global_settings', 'unused_tag_retention_days'):
+        op.drop_column('global_settings', 'unused_tag_retention_days')

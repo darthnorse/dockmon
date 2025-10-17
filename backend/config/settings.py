@@ -6,7 +6,7 @@ Centralizes all environment-based configuration and settings
 import os
 import logging
 from logging.handlers import RotatingFileHandler
-from typing import List
+from typing import List, Optional
 
 
 class HealthCheckFilter(logging.Filter):
@@ -90,42 +90,25 @@ def _is_docker_container_id(hostname: str) -> bool:
     return False
 
 
-def get_cors_origins() -> List[str]:
+def get_cors_origins() -> Optional[str]:
     """
-    Get CORS origins from environment or use defaults.
+    Get CORS origins from environment or return regex to allow all.
 
-    SECURITY FIX: Only auto-detect hostname-based origins in development mode
-    to prevent overly permissive CORS in production.
+    When DOCKMON_CORS_ORIGINS is empty, returns regex pattern to allow all origins.
+    This makes DockMon production-ready out of the box while still requiring
+    authentication for all endpoints.
+
+    Returns:
+        - Comma-separated string of specific origins if DOCKMON_CORS_ORIGINS is set
+        - None to use regex pattern (allow all) if empty
     """
-    # Check for custom origins from environment (always takes precedence)
+    # Check for custom origins from environment
     custom_origins = os.getenv('DOCKMON_CORS_ORIGINS')
     if custom_origins:
-        return [origin.strip() for origin in custom_origins.split(',')]
+        return custom_origins  # Return as comma-separated string
 
-    # Default origins for development
-    default_origins = [
-        "http://localhost:3000",
-        "http://localhost:8080",
-        "http://localhost:8081",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:8080",
-        "http://127.0.0.1:8081"
-    ]
-
-    # SECURITY FIX: Only auto-detect hostname-based origins in development
-    # In production, require explicit DOCKMON_CORS_ORIGINS configuration
-    environment = os.getenv('ENVIRONMENT', 'development').lower()
-    if environment == 'development':
-        hostname = os.getenv('HOSTNAME', 'localhost')
-        if hostname != 'localhost' and not _is_docker_container_id(hostname):
-            default_origins.extend([
-                f"http://{hostname}:3000",
-                f"http://{hostname}:8080",
-                f"https://{hostname}:3000",
-                f"https://{hostname}:8080"
-            ])
-
-    return default_origins
+    # Empty/not set = allow all origins via regex (auth still required for all endpoints)
+    return None
 
 
 class RateLimitConfig:

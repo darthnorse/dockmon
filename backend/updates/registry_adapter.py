@@ -25,6 +25,8 @@ logger = logging.getLogger(__name__)
 class RegistryCache:
     """Simple in-memory cache with TTL for registry responses"""
 
+    MAX_CACHE_SIZE = 1000  # Prevent unbounded growth
+
     def __init__(self, ttl_seconds: int = 120):
         self._cache: Dict[str, Tuple[any, datetime]] = {}
         self._ttl = timedelta(seconds=ttl_seconds)
@@ -41,7 +43,31 @@ class RegistryCache:
 
     def set(self, key: str, value: any):
         """Set cache value with current timestamp"""
+        # Cleanup before adding if approaching limit
+        if len(self._cache) >= self.MAX_CACHE_SIZE:
+            self._cleanup_expired()
+
+            # If still over limit after TTL cleanup, remove oldest entries (LRU)
+            if len(self._cache) >= self.MAX_CACHE_SIZE:
+                sorted_entries = sorted(self._cache.items(), key=lambda x: x[1][1])
+                keys_to_remove = [k for k, _ in sorted_entries[:self.MAX_CACHE_SIZE // 10]]  # Remove oldest 10%
+                for k in keys_to_remove:
+                    del self._cache[k]
+                logger.warning(f"Registry cache exceeded limit, removed {len(keys_to_remove)} oldest entries")
+
         self._cache[key] = (value, datetime.now(timezone.utc))
+
+    def _cleanup_expired(self):
+        """Remove all expired entries"""
+        now = datetime.now(timezone.utc)
+        keys_to_remove = [
+            key for key, (_, timestamp) in self._cache.items()
+            if now - timestamp >= self._ttl
+        ]
+        for key in keys_to_remove:
+            del self._cache[key]
+        if keys_to_remove:
+            logger.debug(f"Cleaned up {len(keys_to_remove)} expired cache entries")
 
     def clear(self):
         """Clear all cached values"""
@@ -60,9 +86,34 @@ class RegistryAdapter:
     - Private OCI-compliant registries
     """
 
+    MAX_AUTH_CACHE_SIZE = 500  # Prevent unbounded growth of auth tokens
+
     def __init__(self, cache_ttl: int = 120):
         self.cache = RegistryCache(cache_ttl)
         self._auth_cache: Dict[str, Dict] = {}  # Cache auth tokens per registry
+
+    def _cleanup_auth_cache(self):
+        """Clean up expired auth tokens and enforce size limit"""
+        now = datetime.now(timezone.utc)
+
+        # Remove expired tokens
+        keys_to_remove = [
+            key for key, value in self._auth_cache.items()
+            if value.get("expires_at") and value["expires_at"] < now
+        ]
+        for key in keys_to_remove:
+            del self._auth_cache[key]
+
+        # If still over limit, remove oldest entries
+        if len(self._auth_cache) >= self.MAX_AUTH_CACHE_SIZE:
+            sorted_entries = sorted(
+                self._auth_cache.items(),
+                key=lambda x: x[1].get("expires_at", datetime.min.replace(tzinfo=timezone.utc))
+            )
+            keys_to_remove = [k for k, _ in sorted_entries[:self.MAX_AUTH_CACHE_SIZE // 10]]
+            for k in keys_to_remove:
+                del self._auth_cache[k]
+            logger.warning(f"Auth cache exceeded limit, removed {len(keys_to_remove)} oldest entries")
 
     async def resolve_tag(
         self,
@@ -190,6 +241,10 @@ class RegistryAdapter:
 
         Implements Docker Registry v2 token authentication flow.
         """
+        # Periodic cleanup to prevent unbounded growth
+        if len(self._auth_cache) >= self.MAX_AUTH_CACHE_SIZE * 0.8:  # 80% threshold
+            self._cleanup_auth_cache()
+
         # Check cache first
         cache_key = f"{registry}:{repository}"
         if cache_key in self._auth_cache:

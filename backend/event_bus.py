@@ -121,6 +121,24 @@ class EventBus:
         self.subscribers[event_type_str].append(handler)
         logger.info(f"Subscribed handler to event type: {event_type_str}")
 
+    def unsubscribe(self, event_type: EventType, handler: Callable[[Event], Awaitable[None]]):
+        """
+        Unsubscribe from specific event type
+
+        Args:
+            event_type: Type of event to unsubscribe from
+            handler: Handler function to remove
+        """
+        event_type_str = event_type.value if isinstance(event_type, EventType) else str(event_type)
+        if event_type_str in self.subscribers:
+            try:
+                self.subscribers[event_type_str].remove(handler)
+                if not self.subscribers[event_type_str]:
+                    del self.subscribers[event_type_str]
+                logger.info(f"Unsubscribed handler from event type: {event_type_str}")
+            except ValueError:
+                logger.warning(f"Handler not found in subscribers for event type: {event_type_str}")
+
     async def emit(self, event: Event):
         """
         Emit an event - logs to database and triggers alert evaluation

@@ -13,6 +13,11 @@ services:
       - TZ=America/New_York  # Change to your local timezone (e.g., Europe/London, Asia/Tokyo, etc.)
       - PYTHONPATH=/app/backend
       - PYTHONUNBUFFERED=1
+
+      # Optional: Set CORS origins for production deployment (uncomment and edit if needed)
+      # Leave empty/commented for development (auto-detects localhost)
+      # - DOCKMON_CORS_ORIGINS=https://dockmon.yourcompany.com
+      - DOCKMON_CORS_ORIGINS=
     volumes:
       - dockmon_data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock  # For local Docker monitoring (auto-configured on first run)

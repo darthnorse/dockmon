@@ -1,11 +1,7 @@
 name: E2E Tests
 
 on:
-  push:
-    branches: [ main, dev ]
-  pull_request:
-    branches: [ main, dev ]
-  workflow_dispatch:
+  workflow_dispatch:  # Manual trigger only - no automatic runs on push/PR
 
 jobs:
   test:

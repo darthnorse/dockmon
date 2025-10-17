@@ -157,15 +157,28 @@ app = FastAPI(
 )
 
 # Configure CORS - Production ready with environment-based configuration
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=AppConfig.CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization"],
-)
-
-logger.info(f"CORS configured for origins: {AppConfig.CORS_ORIGINS}")
+cors_config = AppConfig.CORS_ORIGINS
+if cors_config:
+    # Specific origins configured
+    origins_list = [origin.strip() for origin in cors_config.split(',')]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins_list,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization"],
+    )
+    logger.info(f"CORS configured for specific origins: {origins_list}")
+else:
+    # Allow all origins (auth still required for all endpoints)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=".*",
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization"],
+    )
+    logger.info("CORS configured to allow all origins (authentication required for all endpoints)")
 
 # ==================== API Routes ====================
 

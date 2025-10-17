@@ -246,11 +246,30 @@ print_info "Generating Certificate Authority (CA)..."
 # Generate CA private key
 openssl genrsa -out ca-key.pem 4096 2>/dev/null
 
+# Create CA config file with X.509 v3 extensions (compatible with all OpenSSL versions)
+cat > ca.cnf <<EOF
+[req]
+distinguished_name = req_distinguished_name
+x509_extensions = v3_ca
+prompt = no
+
+[req_distinguished_name]
+C = US
+ST = State
+L = City
+O = DockMon
+CN = DockMon CA
+
+[v3_ca]
+keyUsage = critical, keyCertSign, cRLSign
+basicConstraints = critical, CA:TRUE
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always,issuer:always
+EOF
+
 # Generate CA certificate with proper X.509 v3 extensions for Alpine Linux compatibility
 openssl req -new -x509 -days $DAYS_VALID -key ca-key.pem -sha256 -out ca.pem \
-    -subj "/C=US/ST=State/L=City/O=DockMon/CN=DockMon CA" \
-    -addext "keyUsage = critical, keyCertSign, cRLSign" \
-    -addext "basicConstraints = critical, CA:TRUE" 2>/dev/null
+    -config ca.cnf 2>/dev/null
 
 print_info "Generating Server certificates..."
 
@@ -292,7 +311,7 @@ openssl x509 -req -days $DAYS_VALID -sha256 -in client.csr -CA ca.pem -CAkey ca-
     -CAcreateserial -out client-cert.pem -extfile extfile-client.cnf 2>/dev/null
 
 # Clean up temporary files
-rm -f *.csr extfile*.cnf ca.srl
+rm -f *.csr *.cnf ca.srl
 
 # Set appropriate permissions
 chmod 400 *-key.pem

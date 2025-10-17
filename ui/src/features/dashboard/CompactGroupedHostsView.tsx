@@ -31,7 +31,7 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { CompactHostCard } from './components/CompactHostCard'
-import { useDashboardPrefs, useUserPrefs } from '@/lib/hooks/useUserPreferences'
+import { useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
 
 interface Host {
   id: string
@@ -52,8 +52,8 @@ interface HostGroup {
 }
 
 export function CompactGroupedHostsView({ hosts, onHostClick }: CompactGroupedHostsViewProps) {
-  const { dashboardPrefs, updateDashboardPrefs, isLoading } = useDashboardPrefs()
-  const { prefs, updatePrefs } = useUserPrefs()
+  const { data: prefs, isLoading } = useUserPreferences()
+  const updatePreferences = useUpdatePreferences()
   const hasLoadedPrefs = useRef(false)
 
   // Group hosts by primary (first) tag
@@ -77,7 +77,7 @@ export function CompactGroupedHostsView({ hosts, onHostClick }: CompactGroupedHo
 
   // Apply user-defined tag order, or use default alphabetical sort
   const groups = useMemo<HostGroup[]>(() => {
-    const tagGroupOrder = dashboardPrefs?.tagGroupOrder || []
+    const tagGroupOrder = prefs?.dashboard?.tagGroupOrder || []
 
     if (tagGroupOrder.length === 0) {
       // Default sort: alphabetically, but "Untagged" always last
@@ -108,7 +108,7 @@ export function CompactGroupedHostsView({ hosts, onHostClick }: CompactGroupedHo
     })
 
     return [...ordered, ...newGroups]
-  }, [baseGroups, dashboardPrefs?.tagGroupOrder])
+  }, [baseGroups, prefs?.dashboard?.tagGroupOrder])
 
   // Get collapsed groups from user preferences
   const collapsedGroups = useMemo(() => {
@@ -126,19 +126,19 @@ export function CompactGroupedHostsView({ hosts, onHostClick }: CompactGroupedHo
       }
 
       // Save to user preferences
-      updatePrefs({
+      updatePreferences.mutate({
         collapsed_groups: Array.from(newCollapsedGroups),
       })
     },
-    [collapsedGroups, updatePrefs]
+    [collapsedGroups, updatePreferences.mutate]
   )
 
   // Mark that preferences have loaded
   useEffect(() => {
-    if (!isLoading && dashboardPrefs) {
+    if (!isLoading && prefs) {
       hasLoadedPrefs.current = true
     }
-  }, [isLoading, dashboardPrefs])
+  }, [isLoading, prefs])
 
   // Drag-and-drop sensors
   const sensors = useSensors(
@@ -162,13 +162,16 @@ export function CompactGroupedHostsView({ hosts, onHostClick }: CompactGroupedHo
           const newOrder = newGroups.map((g) => g.tag)
 
           // Save new order to preferences
-          updateDashboardPrefs({
-            tagGroupOrder: newOrder,
+          updatePreferences.mutate({
+            dashboard: {
+              ...prefs?.dashboard,
+              tagGroupOrder: newOrder,
+            }
           })
         }
       }
     },
-    [groups, updateDashboardPrefs]
+    [groups, updatePreferences, prefs?.dashboard]
   )
 
   // Don't render until prefs have loaded
@@ -340,7 +343,8 @@ interface SortableHostListProps {
 }
 
 function SortableHostList({ group, onHostClick }: SortableHostListProps) {
-  const { dashboardPrefs, updateDashboardPrefs } = useDashboardPrefs()
+  const { data: prefs } = useUserPreferences()
+  const updatePreferences = useUpdatePreferences()
   const hasLoadedPrefs = useRef(false)
 
   // Key for storing this group's host order
@@ -348,7 +352,7 @@ function SortableHostList({ group, onHostClick }: SortableHostListProps) {
 
   // Apply saved order or use default
   const orderedHosts = useMemo(() => {
-    const groupLayouts = dashboardPrefs?.groupLayouts || {}
+    const groupLayouts = prefs?.dashboard?.groupLayouts || {}
     const savedOrder = groupLayouts[orderKey] as string[] | undefined
 
     if (!savedOrder || savedOrder.length !== group.hosts.length) {
@@ -365,14 +369,14 @@ function SortableHostList({ group, onHostClick }: SortableHostListProps) {
 
     // Apply saved order
     return savedOrder.map((id) => hostMap.get(id)!)
-  }, [group.hosts, dashboardPrefs?.groupLayouts, orderKey])
+  }, [group.hosts, prefs?.dashboard?.groupLayouts, orderKey])
 
   // Mark that preferences have loaded
   useEffect(() => {
-    if (dashboardPrefs) {
+    if (prefs) {
       hasLoadedPrefs.current = true
     }
-  }, [dashboardPrefs])
+  }, [prefs])
 
   // Drag-and-drop sensors
   const sensors = useSensors(
@@ -397,18 +401,21 @@ function SortableHostList({ group, onHostClick }: SortableHostListProps) {
 
           // Save to groupLayouts (cast to any to allow string[] for host order keys)
           if (hasLoadedPrefs.current) {
-            const currentGroupLayouts = dashboardPrefs?.groupLayouts || {}
-            updateDashboardPrefs({
-              groupLayouts: {
-                ...currentGroupLayouts,
-                [orderKey]: newOrder as any,
-              },
+            const currentGroupLayouts = prefs?.dashboard?.groupLayouts || {}
+            updatePreferences.mutate({
+              dashboard: {
+                ...prefs?.dashboard,
+                groupLayouts: {
+                  ...currentGroupLayouts,
+                  [orderKey]: newOrder as any,
+                },
+              }
             })
           }
         }
       }
     },
-    [orderedHosts, updateDashboardPrefs, orderKey, dashboardPrefs?.groupLayouts]
+    [orderedHosts, updatePreferences.mutate, orderKey, prefs?.dashboard?.groupLayouts, prefs?.dashboard]
   )
 
   return (

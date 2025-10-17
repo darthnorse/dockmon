@@ -1,7 +1,7 @@
 /**
  * EventsPage Component
  *
- * Table-based event log viewer matching DockMon v1 design
+ * Table-based event log viewer with modern v2 design and enhanced functionality
  */
 
 import { useState, useRef, useEffect } from 'react'

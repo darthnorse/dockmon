@@ -27,18 +27,20 @@ export interface UserPreferences {
   container_table_sort: Array<{ id: string; desc: boolean }> | null
 
   // Dashboard preferences
-  tagGroupOrder?: string[]
-  groupLayouts?: Record<string, any>
   hostContainerSorts?: Record<string, any>
-  compactHostOrder?: string[]
-  showKpiBar?: boolean
-  showStatsWidgets?: boolean
-  optimizedLoading?: boolean
-  hostCardLayout?: string
-  hostCardLayoutStandard?: string
 
-  // Legacy compatibility
-  dashboard?: any
+  // Dashboard settings (nested under dashboard object)
+  dashboard?: {
+    showKpiBar?: boolean
+    showStatsWidgets?: boolean
+    optimizedLoading?: boolean
+    compactHostOrder?: string[]
+    hostCardLayout?: any[]
+    hostCardLayoutStandard?: any[]
+    tagGroupOrder?: string[]
+    groupLayouts?: Record<string, any>
+    [key: string]: any
+  }
 }
 
 // Re-export for convenience
@@ -149,6 +151,8 @@ export function useDashboardLayout() {
   const updatePreferences = useUpdatePreferences()
 
   const setDashboardLayout = (layout: DashboardLayoutV2) => {
+    console.log('💾 useDashboardLayout: setDashboardLayout called with:', layout)
+    console.log('💾 useDashboardLayout: Calling updatePreferences.mutate...')
     updatePreferences.mutate({ dashboard_layout_v2: layout })
   }
 

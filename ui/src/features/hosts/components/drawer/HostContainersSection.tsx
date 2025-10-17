@@ -10,7 +10,7 @@ import { useAllContainers } from '@/lib/stats/StatsProvider'
 import { Link } from 'react-router-dom'
 import { useState, useMemo, useEffect } from 'react'
 import { DropdownMenu, DropdownMenuItem } from '@/components/ui/dropdown-menu'
-import { useDashboardPrefs } from '@/lib/hooks/useUserPreferences'
+import { useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
 
 interface HostContainersSectionProps {
   hostId: string
@@ -20,21 +20,22 @@ type SortKey = 'name' | 'state' | 'cpu' | 'memory' | 'start_time'
 
 export function HostContainersSection({ hostId }: HostContainersSectionProps) {
   const allContainers = useAllContainers(hostId)
-  const { dashboardPrefs, updateDashboardPrefs } = useDashboardPrefs()
+  const { data: prefs } = useUserPreferences()
+  const updatePreferences = useUpdatePreferences()
 
   // Initialize sort key from preferences, fallback to 'state'
   const [sortKey, setSortKey] = useState<SortKey>(() => {
-    const savedSort = dashboardPrefs?.hostContainerSorts?.[hostId]
+    const savedSort = prefs?.hostContainerSorts?.[hostId]
     return (savedSort as SortKey) || 'state'
   })
 
   // Update local state when preferences change (e.g., loaded from server)
   useEffect(() => {
-    const savedSort = dashboardPrefs?.hostContainerSorts?.[hostId]
+    const savedSort = prefs?.hostContainerSorts?.[hostId]
     if (savedSort) {
       setSortKey(savedSort as SortKey)
     }
-  }, [dashboardPrefs?.hostContainerSorts, hostId])
+  }, [prefs?.hostContainerSorts, hostId])
 
   // Sort containers based on selected key
   const sortedContainers = useMemo(() => {
@@ -126,9 +127,9 @@ export function HostContainersSection({ hostId }: HostContainersSectionProps) {
   // Handle sort change and save to preferences
   const handleSortChange = (newSort: SortKey) => {
     setSortKey(newSort)
-    updateDashboardPrefs({
+    updatePreferences.mutate({
       hostContainerSorts: {
-        ...(dashboardPrefs?.hostContainerSorts || {}),
+        ...(prefs?.hostContainerSorts || {}),
         [hostId]: newSort,
       },
     })

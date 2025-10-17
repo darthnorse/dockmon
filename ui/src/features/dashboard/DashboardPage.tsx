@@ -22,8 +22,7 @@ import { SortableCompactHostList } from './components/SortableCompactHostList'
 import { KpiBar } from './components/KpiBar'
 import { useViewMode } from './hooks/useViewMode'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
-import { useDashboardPrefs } from '@/lib/hooks/useUserPreferences'
-import { useUserPrefs } from '@/lib/hooks/useUserPreferences'
+import { useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
 import { HostDrawer } from '@/features/hosts/components/drawer/HostDrawer'
 import { HostDetailsModal } from '@/features/hosts/components/HostDetailsModal'
 import { HostModal } from '@/features/hosts/components/HostModal'
@@ -32,13 +31,14 @@ import { debug } from '@/lib/debug'
 export function DashboardPage() {
   const { viewMode, setViewMode, isLoading: isViewModeLoading } = useViewMode()
   const { data: hosts, isLoading: isHostsLoading } = useHosts()
-  const { dashboardPrefs } = useDashboardPrefs()
-  const { prefs, updatePrefs } = useUserPrefs()
+  // Dashboard layout is handled internally by GridDashboard component
+  const { data: prefs } = useUserPreferences()
+  const updatePreferences = useUpdatePreferences()
 
   // Group by mode
   const groupBy = (prefs?.group_by as GroupByMode) || 'none'
   const setGroupBy = (mode: GroupByMode) => {
-    updatePrefs({ group_by: mode })
+    updatePreferences.mutate({ group_by: mode })
   }
 
   // Drawer state
@@ -73,8 +73,8 @@ export function DashboardPage() {
     }
   }
 
-  const showKpiBar = dashboardPrefs?.showKpiBar ?? true
-  const showStatsWidgets = dashboardPrefs?.showStatsWidgets ?? false
+  const showKpiBar = prefs?.dashboard?.showKpiBar ?? true
+  const showStatsWidgets = prefs?.dashboard?.showStatsWidgets ?? false
 
   return (
     <div className="flex flex-col h-full gap-4 p-4">

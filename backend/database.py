@@ -5,7 +5,7 @@ Uses SQLite for persistent storage of configuration and settings
 
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
-from sqlalchemy import create_engine, Column, String, Integer, BigInteger, Boolean, DateTime, JSON, ForeignKey, Text, UniqueConstraint, text, Float, func, Index
+from sqlalchemy import create_engine, Column, String, Integer, BigInteger, Boolean, DateTime, JSON, ForeignKey, Text, UniqueConstraint, CheckConstraint, text, Float, func, Index
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from sqlalchemy.pool import StaticPool
@@ -172,6 +172,10 @@ class GlobalSettings(Base):
     __tablename__ = "global_settings"
 
     id = Column(Integer, primary_key=True, default=1)
+    __table_args__ = (
+        # Ensure only one settings row exists
+        CheckConstraint('id = 1', name='single_settings_row'),
+    )
     max_retries = Column(Integer, default=3)
     retry_delay = Column(Integer, default=30)
     default_auto_restart = Column(Boolean, default=False)
@@ -541,10 +545,14 @@ class DatabaseManager:
         except OSError as e:
             logger.warning(f"Could not set permissions on data directory {data_dir}: {e}")
 
-        # Create engine with connection pooling
+        # Create engine with connection pooling and timeout protection
+        # Note: SQLite doesn't support pool_timeout/pool_recycle, but timeout in connect_args works
         self.engine = create_engine(
             f"sqlite:///{db_path}",
-            connect_args={"check_same_thread": False},
+            connect_args={
+                "check_same_thread": False,
+                "timeout": 20  # 20 second query timeout to prevent DoS
+            },
             poolclass=StaticPool,
             echo=False
         )
@@ -946,7 +954,8 @@ class DatabaseManager:
                 query = query.filter(DockerHostDB.is_active == True)
             # Order by created_at to ensure consistent ordering (oldest first)
             query = query.order_by(DockerHostDB.created_at)
-            return query.all()
+            # Add safety limit to prevent memory exhaustion with large host lists
+            return query.limit(1000).all()
 
     def get_host(self, host_id: str) -> Optional[DockerHostDB]:
         """Get a specific Docker host"""
@@ -1030,7 +1039,8 @@ class DatabaseManager:
         # Alert rules that monitor containers on this host need to be updated
         rules_deleted = 0
         rules_updated = 0
-        all_rules = session.query(AlertRuleDB).all()
+        # Add safety limit for alert rules processing
+        all_rules = session.query(AlertRuleDB).limit(10000).all()
         for rule in all_rules:
             if not rule.containers:
                 continue
@@ -1683,7 +1693,7 @@ class DatabaseManager:
                 func.count(TagAssignment.tag_id) == 0
             ).filter(
                 Tag.last_used_at < cutoff_date
-            ).all()
+            ).limit(1000).all()  # Add safety limit to prevent memory exhaustion
 
             deleted_count = 0
             for tag in tags_to_delete:
@@ -1721,8 +1731,8 @@ class DatabaseManager:
                 logger.info("Changed global settings")
                 return settings
             except Exception as e:
-                logger.error(f"Failed to update global settings: {e}")
-                raise
+                logger.error("Failed to update global settings")  # Sanitized error to prevent schema disclosure
+                raise Exception("Database operation failed")
 
     # Notification Channels
     def add_notification_channel(self, channel_data: dict) -> NotificationChannel:

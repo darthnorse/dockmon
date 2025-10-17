@@ -27,7 +27,7 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { CompactHostCard } from './CompactHostCard'
-import { useDashboardPrefs } from '@/lib/hooks/useUserPreferences'
+import { useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
 
 interface Host {
   id: string
@@ -43,12 +43,13 @@ interface SortableCompactHostListProps {
 }
 
 export function SortableCompactHostList({ hosts, onHostClick }: SortableCompactHostListProps) {
-  const { dashboardPrefs, updateDashboardPrefs, isLoading } = useDashboardPrefs()
+  const { data: prefs, isLoading } = useUserPreferences()
+  const updatePreferences = useUpdatePreferences()
   const hasLoadedPrefs = useRef(false)
 
   // Apply saved order or use default
   const orderedHosts = useMemo(() => {
-    const savedOrder = dashboardPrefs?.compactHostOrder || []
+    const savedOrder = prefs?.dashboard?.compactHostOrder || []
 
     if (savedOrder.length === 0 || savedOrder.length !== hosts.length) {
       // No saved order or count mismatch - use default
@@ -65,14 +66,14 @@ export function SortableCompactHostList({ hosts, onHostClick }: SortableCompactH
 
     // Apply saved order
     return savedOrder.map((id) => hostMap.get(id)!)
-  }, [hosts, dashboardPrefs?.compactHostOrder])
+  }, [hosts, prefs?.dashboard?.compactHostOrder])
 
   // Mark that preferences have loaded
   useEffect(() => {
-    if (!isLoading && dashboardPrefs) {
+    if (!isLoading && prefs) {
       hasLoadedPrefs.current = true
     }
-  }, [isLoading, dashboardPrefs])
+  }, [isLoading, prefs])
 
   // Drag-and-drop sensors
   const sensors = useSensors(
@@ -97,14 +98,17 @@ export function SortableCompactHostList({ hosts, onHostClick }: SortableCompactH
 
           // Save new order to preferences
           if (hasLoadedPrefs.current) {
-            updateDashboardPrefs({
-              compactHostOrder: newOrder,
+            updatePreferences.mutate({
+              dashboard: {
+                ...prefs?.dashboard,
+                compactHostOrder: newOrder,
+              }
             })
           }
         }
       }
     },
-    [orderedHosts, updateDashboardPrefs]
+    [orderedHosts, updatePreferences.mutate, prefs?.dashboard]
   )
 
   if (isLoading) {

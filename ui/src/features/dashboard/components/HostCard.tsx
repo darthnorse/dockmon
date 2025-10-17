@@ -18,7 +18,7 @@ import { Circle, MoreVertical, Container, ChevronDown, Info, Edit, ChevronsUp } 
 import { ResponsiveMiniChart } from '@/lib/charts/ResponsiveMiniChart'
 import { TagChip } from '@/components/TagChip'
 import { DropdownMenu, DropdownMenuItem } from '@/components/ui/dropdown-menu'
-import { useDashboardPrefs } from '@/lib/hooks/useUserPreferences'
+import { useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
 
 export interface HostCardData {
   id: string
@@ -119,22 +119,23 @@ function getStateColor(state: string): string {
 type ContainerSortKey = 'name' | 'state' | 'cpu' | 'memory'
 
 export function HostCard({ host, onHostClick, onViewDetails, onEditHost }: HostCardProps) {
-  const { dashboardPrefs, updateDashboardPrefs } = useDashboardPrefs()
+  const { data: prefs } = useUserPreferences()
+  const updatePreferences = useUpdatePreferences()
   const [collapsed, setCollapsed] = useState(false)
 
   // Initialize sort key from preferences, fallback to 'cpu'
   const [sortKey, setSortKey] = useState<ContainerSortKey>(() => {
-    const savedSort = dashboardPrefs?.hostContainerSorts?.[host.id]
+    const savedSort = prefs?.hostContainerSorts?.[host.id]
     return (savedSort as ContainerSortKey) || 'cpu'
   })
 
   // Update local state when preferences change (e.g., loaded from server)
   useEffect(() => {
-    const savedSort = dashboardPrefs?.hostContainerSorts?.[host.id]
+    const savedSort = prefs?.hostContainerSorts?.[host.id]
     if (savedSort) {
       setSortKey(savedSort as ContainerSortKey)
     }
-  }, [dashboardPrefs?.hostContainerSorts, host.id])
+  }, [prefs?.hostContainerSorts, host.id])
 
   const hasStats = host.stats && host.sparklines
 
@@ -186,9 +187,9 @@ export function HostCard({ host, onHostClick, onViewDetails, onEditHost }: HostC
   // Handle sort change and save to preferences
   const handleSortChange = (newSort: ContainerSortKey) => {
     setSortKey(newSort)
-    updateDashboardPrefs({
+    updatePreferences.mutate({
       hostContainerSorts: {
-        ...(dashboardPrefs?.hostContainerSorts || {}),
+        ...(prefs?.hostContainerSorts || {}),
         [host.id]: newSort,
       },
     })

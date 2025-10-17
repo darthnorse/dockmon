@@ -3,31 +3,47 @@
  * Controls for dashboard appearance and performance
  */
 
-import { useDashboardPrefs } from '@/lib/hooks/useUserPreferences'
+import { useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
 import { useSimplifiedWorkflow } from '@/lib/hooks/useUserPreferences'
 import { ToggleSwitch } from './ToggleSwitch'
 import { toast } from 'sonner'
 
 export function DashboardSettings() {
-  const { dashboardPrefs, updateDashboardPrefs } = useDashboardPrefs()
+  const { data: prefs } = useUserPreferences()
+  const updatePreferences = useUpdatePreferences()
   const { enabled: simplifiedWorkflow, setEnabled: setSimplifiedWorkflow } = useSimplifiedWorkflow()
 
-  const showKpiBar = dashboardPrefs?.showKpiBar ?? true
-  const showStatsWidgets = dashboardPrefs?.showStatsWidgets ?? false
-  const optimizedLoading = dashboardPrefs?.optimizedLoading ?? true
+  const showKpiBar = prefs?.dashboard?.showKpiBar ?? true
+  const showStatsWidgets = prefs?.dashboard?.showStatsWidgets ?? false
+  const optimizedLoading = prefs?.dashboard?.optimizedLoading ?? true
 
   const handleToggleKpiBar = (checked: boolean) => {
-    updateDashboardPrefs({ showKpiBar: checked })
+    updatePreferences.mutate({
+      dashboard: {
+        ...prefs?.dashboard,
+        showKpiBar: checked
+      }
+    })
     toast.success(checked ? 'KPI bar enabled' : 'KPI bar disabled')
   }
 
   const handleToggleStatsWidgets = (checked: boolean) => {
-    updateDashboardPrefs({ showStatsWidgets: checked })
+    updatePreferences.mutate({
+      dashboard: {
+        ...prefs?.dashboard,
+        showStatsWidgets: checked
+      }
+    })
     toast.success(checked ? 'Stats widgets enabled' : 'Stats widgets disabled')
   }
 
   const handleToggleOptimizedLoading = (checked: boolean) => {
-    updateDashboardPrefs({ optimizedLoading: checked })
+    updatePreferences.mutate({
+      dashboard: {
+        ...prefs?.dashboard,
+        optimizedLoading: checked
+      }
+    })
     toast.success(checked ? 'Optimized loading enabled' : 'Optimized loading disabled')
   }
 

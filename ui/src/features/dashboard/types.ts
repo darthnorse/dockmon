@@ -11,8 +11,6 @@ export type WidgetType =
   | 'recent-events'
   | 'alert-summary'
   | 'updates'
-  | 'cpu-usage'
-  | 'memory-usage'
 
 export interface WidgetConfig {
   id: string

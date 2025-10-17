@@ -31,10 +31,10 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
   const [desiredState, setDesiredState] = useState<'should_run' | 'on_demand' | 'unspecified'>('unspecified')
 
   // Memoize sparkline arrays to prevent unnecessary MiniChart re-renders
-  // Use JSON.stringify for simple deep comparison of array values
-  const cpuData = useMemo(() => sparklines?.cpu || [], [JSON.stringify(sparklines?.cpu)])
-  const memData = useMemo(() => sparklines?.mem || [], [JSON.stringify(sparklines?.mem)])
-  const netData = useMemo(() => sparklines?.net || [], [JSON.stringify(sparklines?.net)])
+  // Use length and checksum for efficient array comparison instead of JSON.stringify
+  const cpuData = useMemo(() => sparklines?.cpu || [], [sparklines?.cpu?.length, sparklines?.cpu?.join(',')])
+  const memData = useMemo(() => sparklines?.mem || [], [sparklines?.mem?.length, sparklines?.mem?.join(',')])
+  const netData = useMemo(() => sparklines?.net || [], [sparklines?.net?.length, sparklines?.net?.join(',')])
 
   // Initialize auto-restart and desired state from container
   // Reset whenever containerId changes (drawer opens for different container)

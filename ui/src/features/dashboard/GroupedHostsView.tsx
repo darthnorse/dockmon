@@ -32,7 +32,7 @@ import {
 import { CSS } from '@dnd-kit/utilities'
 import { ExpandedHostCardContainer } from './components/ExpandedHostCardContainer'
 import { HostCardContainer } from './components/HostCardContainer'
-import { useDashboardPrefs, useUserPrefs } from '@/lib/hooks/useUserPreferences'
+import { useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
 import 'react-grid-layout/css/styles.css'
 
 const ResponsiveGridLayout = WidthProvider(GridLayout)
@@ -90,8 +90,8 @@ function generateGroupLayout(hosts: Host[], mode: 'standard' | 'expanded'): Layo
 }
 
 export function GroupedHostsView({ hosts, onHostClick, onViewDetails, onEditHost, mode = 'expanded' }: GroupedHostsViewProps) {
-  const { dashboardPrefs, updateDashboardPrefs, isLoading } = useDashboardPrefs()
-  const { prefs, updatePrefs } = useUserPrefs()
+  const { data: prefs, isLoading } = useUserPreferences()
+  const updatePreferences = useUpdatePreferences()
   const hasLoadedPrefs = useRef(false)
 
   // Group hosts by primary (first) tag
@@ -115,7 +115,7 @@ export function GroupedHostsView({ hosts, onHostClick, onViewDetails, onEditHost
 
   // Apply user-defined tag order, or use default alphabetical sort
   const groups = useMemo<HostGroup[]>(() => {
-    const tagGroupOrder = dashboardPrefs?.tagGroupOrder || []
+    const tagGroupOrder = prefs?.dashboard?.tagGroupOrder || []
 
     if (tagGroupOrder.length === 0) {
       // Default sort: alphabetically, but "Untagged" always last
@@ -146,7 +146,7 @@ export function GroupedHostsView({ hosts, onHostClick, onViewDetails, onEditHost
     })
 
     return [...ordered, ...newGroups]
-  }, [baseGroups, dashboardPrefs?.tagGroupOrder])
+  }, [baseGroups, prefs?.dashboard?.tagGroupOrder])
 
   // Get collapsed groups from user preferences
   const collapsedGroups = useMemo(() => {
@@ -164,19 +164,19 @@ export function GroupedHostsView({ hosts, onHostClick, onViewDetails, onEditHost
       }
 
       // Save to user preferences
-      updatePrefs({
+      updatePreferences.mutate({
         collapsed_groups: Array.from(newCollapsedGroups),
       })
     },
-    [collapsedGroups, updatePrefs]
+    [collapsedGroups, updatePreferences]
   )
 
   // Mark that preferences have loaded
   useEffect(() => {
-    if (!isLoading && dashboardPrefs) {
+    if (!isLoading && prefs) {
       hasLoadedPrefs.current = true
     }
-  }, [isLoading, dashboardPrefs])
+  }, [isLoading, prefs])
 
   // Drag-and-drop sensors
   const sensors = useSensors(
@@ -200,13 +200,16 @@ export function GroupedHostsView({ hosts, onHostClick, onViewDetails, onEditHost
           const newOrder = newGroups.map((g) => g.tag)
 
           // Save new order to preferences
-          updateDashboardPrefs({
-            tagGroupOrder: newOrder,
+          updatePreferences.mutate({
+            dashboard: {
+              ...prefs?.dashboard,
+              tagGroupOrder: newOrder,
+            }
           })
         }
       }
     },
-    [groups, updateDashboardPrefs]
+    [groups, updatePreferences, prefs?.dashboard]
   )
 
   // Don't render until prefs have loaded
@@ -236,8 +239,13 @@ export function GroupedHostsView({ hosts, onHostClick, onViewDetails, onEditHost
                 {...(onHostClick && { onHostClick })}
                 {...(onViewDetails && { onViewDetails })}
                 {...(onEditHost && { onEditHost })}
-                dashboardPrefs={dashboardPrefs}
-                updateDashboardPrefs={updateDashboardPrefs}
+                dashboardPrefs={prefs}
+                updateDashboardPrefs={(updates) => updatePreferences.mutate({
+                  dashboard: {
+                    ...prefs?.dashboard,
+                    ...updates
+                  }
+                })}
                 hasLoadedPrefs={hasLoadedPrefs.current}
               />
             ))}
@@ -288,7 +296,7 @@ function GroupSection({
 
   // Get layout for this group from the groupLayouts nested object
   const layout = useMemo(() => {
-    const groupLayouts = dashboardPrefs?.groupLayouts || {}
+    const groupLayouts = dashboardPrefs?.dashboard?.groupLayouts || {}
     const storedLayout = groupLayouts[layoutKey] as Layout[] | undefined
 
     if (storedLayout && storedLayout.length === group.hosts.length) {
@@ -301,7 +309,7 @@ function GroupSection({
     }
 
     return generateGroupLayout(group.hosts, mode)
-  }, [group.hosts, dashboardPrefs?.groupLayouts, mode, layoutKey])
+  }, [group.hosts, dashboardPrefs?.dashboard?.groupLayouts, mode, layoutKey])
 
   const [currentLayout, setCurrentLayout] = useState<Layout[]>(layout)
 
@@ -320,7 +328,7 @@ function GroupSection({
       }
 
       // Update the groupLayouts nested object
-      const currentGroupLayouts = dashboardPrefs?.groupLayouts || {}
+      const currentGroupLayouts = dashboardPrefs?.dashboard?.groupLayouts || {}
       updateDashboardPrefs({
         groupLayouts: {
           ...currentGroupLayouts,
@@ -328,7 +336,7 @@ function GroupSection({
         },
       })
     },
-    [updateDashboardPrefs, layoutKey, hasLoadedPrefs, dashboardPrefs?.groupLayouts]
+    [updateDashboardPrefs, layoutKey, hasLoadedPrefs, dashboardPrefs?.dashboard?.groupLayouts]
   )
 
   const hostCount = group.hosts.length

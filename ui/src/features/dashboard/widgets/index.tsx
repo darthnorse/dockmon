@@ -18,9 +18,6 @@ export const widgetComponents: Record<WidgetType, React.ComponentType> = {
   'recent-events': RecentEventsWidget,
   'alert-summary': AlertSummaryWidget,
   'updates': UpdatesWidget,
-  // Placeholder for future widgets
-  'cpu-usage': () => <div>CPU Usage (Coming Soon)</div>,
-  'memory-usage': () => <div>Memory Usage (Coming Soon)</div>,
 }
 
 export * from './ContainerStatsWidget'

@@ -468,7 +468,7 @@ export function LogViewer({
         ) : (
           <div className={compact ? 'p-2' : 'p-3'}>
             {filteredLogs.map((log, index) => (
-              <div key={index} className="leading-relaxed py-0.5">
+              <div key={`${log.timestamp}-${index}`} className="leading-relaxed py-0.5">
                 {showTimestamps && (
                   <span className="text-muted-foreground mr-2">
                     {new Date(log.timestamp).toLocaleString('en-US', {

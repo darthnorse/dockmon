@@ -1521,12 +1521,7 @@ async def update_notification_channel(channel_id: int, updates: NotificationChan
         logger.error(f"Failed to update notification channel: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
-@app.get("/api/notifications/channels/{channel_id}/dependent-alerts")
-async def get_dependent_alerts(channel_id: int, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
-    """Get alerts that would be orphaned if this channel is deleted (V2 only)"""
-    # V1 alert system removed - this endpoint always returns empty list
-    # V2 alerts don't get orphaned when channels are deleted
-    return {"alerts": []}
+# V1 alert system endpoint removed - V2 alerts don't get orphaned when channels are deleted
 
 @app.delete("/api/notifications/channels/{channel_id}")
 async def delete_notification_channel(channel_id: int, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):

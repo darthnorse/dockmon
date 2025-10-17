@@ -13,7 +13,7 @@ import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
 import GridLayout, { WidthProvider, type Layout } from 'react-grid-layout'
 import { ExpandedHostCardContainer } from './components/ExpandedHostCardContainer'
 import { HostCardContainer } from './components/HostCardContainer'
-import { useDashboardPrefs } from '@/lib/hooks/useUserPreferences'
+import { useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
 import 'react-grid-layout/css/styles.css'
 
 const ResponsiveGridLayout = WidthProvider(GridLayout)
@@ -67,7 +67,8 @@ function generateDefaultLayout(hosts: Host[], mode: 'standard' | 'expanded'): La
 }
 
 export function HostCardsGrid({ hosts, onHostClick, onViewDetails, onEditHost, mode = 'expanded' }: HostCardsGridProps) {
-  const { dashboardPrefs, updateDashboardPrefs, isLoading } = useDashboardPrefs()
+  const { data: prefs, isLoading } = useUserPreferences()
+  const updatePreferences = useUpdatePreferences()
   const hasLoadedPrefs = useRef(false)
 
   // Use different layout keys for Standard vs Expanded modes
@@ -75,7 +76,7 @@ export function HostCardsGrid({ hosts, onHostClick, onViewDetails, onEditHost, m
 
   // Get layout from user prefs or generate default
   const layout = useMemo(() => {
-    const storedLayout = dashboardPrefs?.[layoutKey] as Layout[] | undefined
+    const storedLayout = prefs?.dashboard?.[layoutKey] as Layout[] | undefined
 
     if (storedLayout && storedLayout.length === hosts.length) {
       // Validate that all IDs in stored layout exist in current hosts
@@ -90,7 +91,7 @@ export function HostCardsGrid({ hosts, onHostClick, onViewDetails, onEditHost, m
 
     // Generate default layout
     return generateDefaultLayout(hosts, mode)
-  }, [hosts, dashboardPrefs, mode, layoutKey])
+  }, [hosts, prefs, mode, layoutKey])
 
   const [currentLayout, setCurrentLayout] = useState<Layout[]>(layout)
 
@@ -101,10 +102,10 @@ export function HostCardsGrid({ hosts, onHostClick, onViewDetails, onEditHost, m
 
   // Mark that preferences have loaded (so we can save changes)
   useEffect(() => {
-    if (!isLoading && dashboardPrefs) {
+    if (!isLoading && prefs) {
       hasLoadedPrefs.current = true
     }
-  }, [isLoading, dashboardPrefs])
+  }, [isLoading, prefs])
 
   // Handle layout change (drag/resize)
   const handleLayoutChange = useCallback(
@@ -117,11 +118,14 @@ export function HostCardsGrid({ hosts, onHostClick, onViewDetails, onEditHost, m
       }
 
       // Save to user prefs (debounced via React Query) using the correct layout key
-      updateDashboardPrefs({
-        [layoutKey]: newLayout,
+      updatePreferences.mutate({
+        dashboard: {
+          ...prefs?.dashboard,
+          [layoutKey]: newLayout,
+        }
       })
     },
-    [updateDashboardPrefs, layoutKey]
+    [updatePreferences, layoutKey, prefs?.dashboard]
   )
 
   // Don't render grid until prefs have loaded to prevent flash of default layout

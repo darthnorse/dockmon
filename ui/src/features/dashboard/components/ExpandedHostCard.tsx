@@ -34,7 +34,7 @@ import { ResponsiveMiniChart } from '@/lib/charts/ResponsiveMiniChart'
 import { TagChip } from '@/components/TagChip'
 import { useState, useEffect } from 'react'
 import { DropdownMenu, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { useDashboardPrefs } from '@/lib/hooks/useUserPreferences'
+import { useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
 import { debug } from '@/lib/debug'
 
 export interface ExpandedHostData {
@@ -142,22 +142,23 @@ function getStateColor(state: string): string {
 type ContainerSortKey = 'name' | 'state' | 'cpu' | 'memory' | 'start_time'
 
 export function ExpandedHostCard({ host, cardRef, onHostClick, onViewDetails, onEditHost }: ExpandedHostCardProps) {
-  const { dashboardPrefs, updateDashboardPrefs } = useDashboardPrefs()
+  const { data: prefs } = useUserPreferences()
+  const updatePreferences = useUpdatePreferences()
   const [isCollapsed, setIsCollapsed] = useState(false)
 
   // Initialize sort key from preferences, fallback to 'state'
   const [sortKey, setSortKey] = useState<ContainerSortKey>(() => {
-    const savedSort = dashboardPrefs?.hostContainerSorts?.[host.id]
+    const savedSort = prefs?.hostContainerSorts?.[host.id]
     return (savedSort as ContainerSortKey) || 'state'
   })
 
   // Update local state when preferences change (e.g., loaded from server)
   useEffect(() => {
-    const savedSort = dashboardPrefs?.hostContainerSorts?.[host.id]
+    const savedSort = prefs?.hostContainerSorts?.[host.id]
     if (savedSort) {
       setSortKey(savedSort as ContainerSortKey)
     }
-  }, [dashboardPrefs?.hostContainerSorts, host.id])
+  }, [prefs?.hostContainerSorts, host.id])
 
   const hasStats = host.stats && host.sparklines
   const hasValidNetworkData = host.sparklines
@@ -221,9 +222,9 @@ export function ExpandedHostCard({ host, cardRef, onHostClick, onViewDetails, on
   // Handle sort change and save to preferences
   const handleSortChange = (newSort: ContainerSortKey) => {
     setSortKey(newSort)
-    updateDashboardPrefs({
+    updatePreferences.mutate({
       hostContainerSorts: {
-        ...(dashboardPrefs?.hostContainerSorts || {}),
+        ...(prefs?.hostContainerSorts || {}),
         [host.id]: newSort,
       },
     })

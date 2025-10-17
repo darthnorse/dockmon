@@ -236,7 +236,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
             {/* Image */}
             <div>
               <h4 className="text-base font-medium text-foreground mb-3">Image</h4>
-              <div className="text-sm font-mono bg-surface-1 px-3 py-2 rounded">
+              <div className="text-sm font-mono bg-surface-1 px-3 py-2 rounded" data-testid="container-image">
                 {container.image}
               </div>
             </div>
@@ -348,7 +348,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
             </div>
 
             {/* CPU */}
-            <div className="bg-surface-2 rounded-lg p-3 border border-border overflow-hidden">
+            <div className="bg-surface-2 rounded-lg p-3 border border-border overflow-hidden" data-testid="cpu-usage">
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
                   <Cpu className="h-4 w-4 text-amber-500" />
@@ -372,7 +372,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
             </div>
 
             {/* Memory */}
-            <div className="bg-surface-2 rounded-lg p-3 border border-border overflow-hidden">
+            <div className="bg-surface-2 rounded-lg p-3 border border-border overflow-hidden" data-testid="memory-usage">
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
                   <MemoryStick className="h-4 w-4 text-green-500" />
@@ -395,7 +395,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
             </div>
 
             {/* Network */}
-            <div className="bg-surface-2 rounded-lg p-3 border border-border overflow-hidden">
+            <div className="bg-surface-2 rounded-lg p-3 border border-border overflow-hidden" data-testid="network-io">
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
                   <Network className="h-4 w-4 text-orange-500" />

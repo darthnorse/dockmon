@@ -54,7 +54,7 @@ export function HostsPage() {
             Manage your Docker hosts and connections
           </p>
         </div>
-        <Button onClick={handleAddHost} className="flex items-center gap-2">
+        <Button onClick={handleAddHost} className="flex items-center gap-2" data-testid="add-host-button">
           <Plus className="h-4 w-4" />
           Add Host
         </Button>
@@ -70,6 +70,7 @@ export function HostsPage() {
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="pl-10"
+            data-testid="hosts-search-input"
           />
         </div>
         {/* TODO: Add filter dropdowns (status, tags, group) */}

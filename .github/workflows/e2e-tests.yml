@@ -1,0 +1,138 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: [ main, dev ]
+  pull_request:
+    branches: [ main, dev ]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Run E2E Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: tests/v2/package-lock.json
+
+      - name: Install dependencies
+        working-directory: tests/v2
+        run: npm ci
+
+      - name: Install Playwright browsers
+        working-directory: tests/v2
+        run: npx playwright install --with-deps ${{ matrix.browser }}
+
+      - name: Start DockMon
+        run: |
+          docker compose up -d dockmon
+          echo "Waiting for DockMon to be ready..."
+          timeout 60 bash -c 'until curl -f http://localhost:3080/health 2>/dev/null; do sleep 2; done'
+          echo "DockMon is ready!"
+
+      - name: Run Playwright tests
+        working-directory: tests/v2
+        run: npx playwright test --project=${{ matrix.browser }}
+        env:
+          BASE_URL: http://localhost:3080
+          CI: true
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-${{ matrix.browser }}
+          path: tests/v2/playwright-report/
+          retention-days: 30
+
+      - name: Upload test videos
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-videos-${{ matrix.browser }}
+          path: tests/v2/test-results/
+          retention-days: 7
+
+      - name: Stop DockMon
+        if: always()
+        run: docker compose down
+
+  report:
+    name: Generate Test Report
+    needs: test
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-reports
+
+      - name: Merge reports
+        run: |
+          mkdir -p merged-report
+          find all-reports -name "*.json" -exec cp {} merged-report/ \;
+
+      - name: Upload merged report
+        uses: actions/upload-artifact@v4
+        with:
+          name: merged-test-report
+          path: merged-report/
+          retention-days: 30
+
+      - name: Comment PR with results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const reports = fs.readdirSync('merged-report').filter(f => f.endsWith('.json'));
+
+            let totalTests = 0;
+            let passedTests = 0;
+            let failedTests = 0;
+
+            reports.forEach(report => {
+              const data = JSON.parse(fs.readFileSync(`merged-report/${report}`, 'utf8'));
+              // Parse test results (adjust based on actual JSON structure)
+              if (data.stats) {
+                totalTests += data.stats.total || 0;
+                passedTests += data.stats.passed || 0;
+                failedTests += data.stats.failed || 0;
+              }
+            });
+
+            const body = `
+            ## 🎭 E2E Test Results
+
+            | Metric | Value |
+            |--------|-------|
+            | Total Tests | ${totalTests} |
+            | ✅ Passed | ${passedTests} |
+            | ❌ Failed | ${failedTests} |
+            | Success Rate | ${totalTests > 0 ? ((passedTests / totalTests) * 100).toFixed(1) : 0}% |
+
+            [View detailed report](https://github.com/${{github.repository}}/actions/runs/${{github.run_id}})
+            `;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.name,
+              body: body
+            });

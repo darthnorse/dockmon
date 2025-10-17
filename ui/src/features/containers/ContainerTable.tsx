@@ -1182,6 +1182,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
           value={globalFilter ?? ''}
           onChange={(e) => setGlobalFilter(e.target.value)}
           className="max-w-sm"
+          data-testid="containers-search-input"
         />
         <div className="text-sm text-muted-foreground">
           {table.getFilteredRowModel().rows.length} container(s)
@@ -1190,7 +1191,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
 
       {/* Table */}
       <div className="overflow-hidden rounded-lg border border-border">
-        <table className="w-full">
+        <table className="w-full" data-testid="containers-table">
           <thead className="border-b border-border bg-muted/50 sticky top-0 z-10">
             {table.getHeaderGroups().map((headerGroup) => (
               <tr key={headerGroup.id}>

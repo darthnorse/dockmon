@@ -41,7 +41,13 @@ export interface TemplateVariable {
 
 export interface TemplateVariablesResponse {
   variables: TemplateVariable[]
-  default_template: string
+  default_templates: {
+    default: string
+    metric: string
+    state_change: string
+    health: string
+    update: string
+  }
   examples: Record<string, string>
 }
 
@@ -76,16 +82,12 @@ export function useUpdateGlobalSettings() {
 
   return useMutation({
     mutationFn: async (updates: Partial<GlobalSettings>) => {
-      console.log('Calling PUT /api/settings with:', updates)
       const result = await apiClient.put<GlobalSettings>('/settings', updates)
-      console.log('Received response from PUT /api/settings:', result)
       return result
     },
     onSuccess: (updatedSettings) => {
-      console.log('onSuccess called with:', updatedSettings)
       // Update cache with the returned settings from the server
       queryClient.setQueryData<GlobalSettings>(['global-settings'], updatedSettings)
-      console.log('Cache updated')
     },
   })
 }

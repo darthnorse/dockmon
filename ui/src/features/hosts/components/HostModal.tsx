@@ -240,7 +240,7 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
   if (!isOpen) return null
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" data-testid="host-modal">
       <div
         className="relative w-full max-w-lg rounded-2xl border border-border bg-background p-6 shadow-lg"
         onClick={(e) => e.stopPropagation()}
@@ -258,6 +258,7 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
           <button
             onClick={onClose}
             className="rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100"
+            data-testid="host-modal-close"
           >
             <X className="h-4 w-4" />
             <span className="sr-only">Close</span>
@@ -276,6 +277,7 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
               {...register('name')}
               placeholder="docker-prod-01"
               className={errors.name ? 'border-destructive' : ''}
+              data-testid="host-name-input"
             />
             {errors.name && (
               <p className="text-xs text-destructive mt-1">{errors.name.message}</p>
@@ -292,6 +294,7 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
               {...register('url')}
               placeholder="tcp://192.168.1.20:2376 or unix:///var/run/docker.sock"
               className={errors.url ? 'border-destructive' : ''}
+              data-testid="host-url-input"
             />
             {errors.url && (
               <p className="text-xs text-destructive mt-1">{errors.url.message}</p>
@@ -319,6 +322,7 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
                       setValue('enableTls', checked)
                     }}
                     className="h-4 w-4"
+                    data-testid="host-enable-tls"
                   />
                   <label htmlFor="enableTls" className="text-sm font-medium">
                     Enable mTLS (mutual TLS)
@@ -384,6 +388,7 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
                         rows={4}
                         placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
                         className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+                        data-testid="host-tls-ca"
                       />
                     )}
                     {errors.tls_ca && (
@@ -420,6 +425,7 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
                         rows={4}
                         placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
                         className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+                        data-testid="host-tls-cert"
                       />
                     )}
                     {errors.tls_cert && (
@@ -456,6 +462,7 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
                         rows={4}
                         placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----"
                         className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+                        data-testid="host-tls-key"
                       />
                     )}
                     {errors.tls_key && (
@@ -495,6 +502,7 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
               rows={3}
               placeholder="Optional notes about this host..."
               className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              data-testid="host-description"
             />
             {errors.description && (
               <p className="text-xs text-destructive mt-1">{errors.description.message}</p>
@@ -503,10 +511,10 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
 
           {/* Footer Actions */}
           <div className="flex justify-end gap-2 pt-4 border-t">
-            <Button type="button" variant="outline" onClick={onClose}>
+            <Button type="button" variant="outline" onClick={onClose} data-testid="host-modal-cancel">
               Cancel
             </Button>
-            <Button type="submit" disabled={isSubmitting}>
+            <Button type="submit" disabled={isSubmitting} data-testid="host-modal-save">
               {isSubmitting
                 ? 'Saving...'
                 : host

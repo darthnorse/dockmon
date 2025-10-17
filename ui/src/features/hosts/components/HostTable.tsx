@@ -72,7 +72,7 @@ function StatusIcon({ status }: { status: string }) {
   }
 
   return (
-    <div className="flex items-center gap-2" title={config.label}>
+    <div className="flex items-center gap-2" title={config.label} data-testid="host-status">
       <Circle className={`h-3 w-3 ${config.color} ${config.fill}`} />
       <span className="text-sm text-muted-foreground">{config.label}</span>
     </div>
@@ -615,7 +615,7 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
 
   return (
     <div className={`rounded-md border ${selectedHostIds.size > 0 ? 'pb-32' : ''}`}>
-      <table className="w-full">
+      <table className="w-full" data-testid="hosts-table">
         <thead className="bg-muted/50 sticky top-0 z-10">
           {table.getHeaderGroups().map((headerGroup) => (
             <tr key={headerGroup.id}>

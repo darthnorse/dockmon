@@ -96,6 +96,7 @@ export function LoginPage() {
               </label>
               <Input
                 id="username"
+                data-testid="login-username"
                 type="text"
                 value={username}
                 onChange={(e) => {
@@ -119,6 +120,7 @@ export function LoginPage() {
               </label>
               <Input
                 id="password"
+                data-testid="login-password"
                 type="password"
                 value={password}
                 onChange={(e) => {
@@ -134,6 +136,7 @@ export function LoginPage() {
             {/* Submit Button */}
             <Button
               type="submit"
+              data-testid="login-submit"
               disabled={isLoading}
               className="w-full"
               size="lg"

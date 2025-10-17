@@ -1204,21 +1204,40 @@ Rule: {RULE_NAME}
         return self._get_default_template_v2(rule.kind)
 
     def _get_default_template_v2(self, kind=None):
-        """Get built-in default template for v2 alerts - generic fallback only"""
+        """Get built-in default template for v2 alerts - with kind-specific fallbacks"""
+        # Update alerts get a specialized template
+        if kind in ['update_available', 'update_completed', 'update_failed']:
+            return """🔄 **Container Update - {UPDATE_STATUS}**
+
+**Container:** `{CONTAINER_NAME}`
+**Host:** {HOST_NAME}
+**Current:** {CURRENT_IMAGE}
+**Latest:** {LATEST_IMAGE}
+**Digest:** {LATEST_DIGEST}
+**Time:** {TIMESTAMP}
+**Update Status:** {UPDATE_STATUS}
+**Rule:** {RULE_NAME}"""
+
+        # Generic fallback for all other alerts
         return """🚨 **{SEVERITY} Alert: {KIND}**
 
 **{TITLE}**
 {MESSAGE}
 
-**Details:**
-- Container: {CONTAINER_NAME}
-- Host: {HOST_NAME}
-- Severity: {SEVERITY}
-- Scope: {SCOPE_TYPE}
-- First Seen: {FIRST_SEEN}
-- Occurrences: {OCCURRENCES}
+**Host:** {HOST_NAME}
+**Current Value:** {CURRENT_VALUE} (threshold: {THRESHOLD})
+**Occurrences:** {OCCURRENCES}
+**Time:** {TIMESTAMP}
+**Rule:** {RULE_NAME}"""
 
-🤖 DockMon Alert System"""
+    def _get_update_status(self, kind: str) -> str:
+        """Map alert kind to human-readable update status"""
+        status_map = {
+            'update_available': 'Available',
+            'update_completed': 'Succeeded',
+            'update_failed': 'Failed',
+        }
+        return status_map.get(kind, '')
 
     def _format_exit_code(self, exit_code: int) -> str:
         """Format exit code to human-readable string"""
@@ -1266,11 +1285,18 @@ Rule: {RULE_NAME}
         # Shorten container ID to 12 characters (Docker standard)
         container_id_short = alert.scope_id[:12] if alert.scope_type == 'container' and alert.scope_id else 'N/A'
 
+        # For host-scoped alerts without host_name, extract from title (e.g., "Host Offline - Integration Test Host")
+        host_name = alert.host_name
+        if not host_name and alert.scope_type == 'host' and alert.title:
+            # Try to extract from title format "Rule Name - Host Name"
+            if ' - ' in alert.title:
+                host_name = alert.title.split(' - ', 1)[1]
+
         variables = {
             # Basic entity info
             '{CONTAINER_NAME}': alert.container_name or 'N/A',
             '{CONTAINER_ID}': container_id_short,
-            '{HOST_NAME}': alert.host_name or 'N/A',
+            '{HOST_NAME}': host_name or 'N/A',
             '{HOST_ID}': alert.scope_id if alert.scope_type == 'host' else 'N/A',
 
             # Alert info
@@ -1298,6 +1324,9 @@ Rule: {RULE_NAME}
             '{CURRENT_VALUE}': str(alert.current_value) if alert.current_value is not None else 'N/A',
             '{THRESHOLD}': str(alert.threshold) if alert.threshold is not None else 'N/A',
 
+            # Update status (for update alerts)
+            '{UPDATE_STATUS}': self._get_update_status(alert.kind),
+
             # Initialize state change variables (will be overridden if event_context_json exists)
             '{OLD_STATE}': '',
             '{NEW_STATE}': '',
@@ -1305,6 +1334,15 @@ Rule: {RULE_NAME}
             '{IMAGE}': '',
             '{EVENT_TYPE}': '',
             '{TRIGGERED_BY}': 'system',
+
+            # Initialize update variables (will be overridden if event_context_json exists)
+            '{CURRENT_IMAGE}': '',
+            '{LATEST_IMAGE}': '',
+            '{CURRENT_DIGEST}': '',
+            '{LATEST_DIGEST}': '',
+            '{PREVIOUS_IMAGE}': '',
+            '{NEW_IMAGE}': '',
+            '{ERROR_MESSAGE}': '',
         }
 
         # Optional labels
@@ -1338,6 +1376,26 @@ Rule: {RULE_NAME}
                 variables['{IMAGE}'] = event_context.get('image', '') or ''
                 variables['{EVENT_TYPE}'] = event_context.get('event_type', '') or ''
                 variables['{TRIGGERED_BY}'] = event_context.get('triggered_by', 'system') or 'system'
+
+                # Container update variables
+                # For update_available: current_image, latest_image, latest_digest
+                variables['{CURRENT_IMAGE}'] = event_context.get('current_image', '') or ''
+                variables['{LATEST_IMAGE}'] = event_context.get('latest_image', '') or ''
+                variables['{CURRENT_DIGEST}'] = event_context.get('current_digest', '') or ''
+                variables['{LATEST_DIGEST}'] = event_context.get('latest_digest', '') or ''
+
+                # For update_completed: previous_image, new_image
+                # Map to CURRENT/LATEST for template consistency
+                previous_img = event_context.get('previous_image', '') or ''
+                new_img = event_context.get('new_image', '') or ''
+                if previous_img and not variables['{CURRENT_IMAGE}']:
+                    variables['{CURRENT_IMAGE}'] = previous_img
+                if new_img and not variables['{LATEST_IMAGE}']:
+                    variables['{LATEST_IMAGE}'] = new_img
+
+                variables['{PREVIOUS_IMAGE}'] = previous_img
+                variables['{NEW_IMAGE}'] = new_img
+                variables['{ERROR_MESSAGE}'] = event_context.get('error_message', '') or ''
 
                 # Also check attributes for additional info if not directly available
                 if not variables['{IMAGE}'] and 'attributes' in event_context:

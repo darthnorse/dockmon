@@ -719,6 +719,11 @@ class DatabaseManager:
                     session.commit()
                     print("Added alert_template_health column to global_settings table")
 
+                if 'alert_template_update' not in settings_column_names:
+                    session.execute(text("ALTER TABLE global_settings ADD COLUMN alert_template_update TEXT"))
+                    session.commit()
+                    print("Added alert_template_update column to global_settings table")
+
                 # Migration: Drop deprecated container_history table
                 # This table has been replaced by the EventLog table
                 inspector_result = session.connection().engine.dialect.get_table_names(session.connection())
@@ -1686,9 +1691,7 @@ class DatabaseManager:
             try:
                 settings = session.query(GlobalSettings).first()
                 for key, value in updates.items():
-                    logger.info(f"Checking if GlobalSettings has attribute '{key}': {hasattr(settings, key)}")
                     if hasattr(settings, key):
-                        logger.info(f"Setting {key} = {value}")
                         setattr(settings, key, value)
                     else:
                         logger.warning(f"Ignoring unknown setting: {key}")

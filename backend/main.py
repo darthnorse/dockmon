@@ -1079,6 +1079,7 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
         "alert_template_metric": getattr(settings, 'alert_template_metric', None),
         "alert_template_state_change": getattr(settings, 'alert_template_state_change', None),
         "alert_template_health": getattr(settings, 'alert_template_health', None),
+        "alert_template_update": getattr(settings, 'alert_template_update', None),
         "blackout_windows": getattr(settings, 'blackout_windows', None),
         "timezone_offset": getattr(settings, 'timezone_offset', 0),
         "show_host_stats": getattr(settings, 'show_host_stats', True),
@@ -1372,7 +1373,11 @@ async def get_blackout_status(current_user: dict = Depends(get_current_user)):
 
 @app.get("/api/notifications/template-variables")
 async def get_template_variables(current_user: dict = Depends(get_current_user)):
-    """Get available template variables for notification messages"""
+    """Get available template variables for notification messages and default templates"""
+    # Get built-in default templates from notification service
+    from notifications import NotificationService
+    ns = NotificationService(None, None)
+
     return {
         "variables": [
             # Basic entity info
@@ -1387,6 +1392,16 @@ async def get_template_variables(current_user: dict = Depends(get_current_user))
             {"name": "{NEW_STATE}", "description": "New state of the container"},
             {"name": "{EVENT_TYPE}", "description": "Docker event type (if applicable)"},
             {"name": "{EXIT_CODE}", "description": "Container exit code (if applicable)"},
+
+            # Container updates
+            {"name": "{UPDATE_STATUS}", "description": "Update status (Available, Succeeded, Failed)"},
+            {"name": "{CURRENT_IMAGE}", "description": "Current image tag"},
+            {"name": "{LATEST_IMAGE}", "description": "Latest available image tag"},
+            {"name": "{CURRENT_DIGEST}", "description": "Current image digest (SHA256)"},
+            {"name": "{LATEST_DIGEST}", "description": "Latest image digest (SHA256)"},
+            {"name": "{PREVIOUS_IMAGE}", "description": "Image before update (for completed updates)"},
+            {"name": "{NEW_IMAGE}", "description": "Image after update (for completed updates)"},
+            {"name": "{ERROR_MESSAGE}", "description": "Error message (for failed updates)"},
 
             # Metrics (metric-driven alerts)
             {"name": "{CURRENT_VALUE}", "description": "Current metric value (e.g., 92.5 for CPU)"},
@@ -1410,15 +1425,13 @@ async def get_template_variables(current_user: dict = Depends(get_current_user))
             # Tags/Labels
             {"name": "{LABELS}", "description": "Container/host labels as JSON (env=prod, app=web, etc.)"},
         ],
-        "default_template": """🚨 **{SEVERITY} Alert: {KIND}**
-
-**{SCOPE_TYPE}:** `{CONTAINER_NAME}`
-**Host:** {HOST_NAME}
-**Current Value:** {CURRENT_VALUE} (threshold: {THRESHOLD})
-**Occurrences:** {OCCURRENCES}
-**Time:** {TIMESTAMP}
-**Rule:** {RULE_NAME}
-───────────────────────""",
+        "default_templates": {
+            "default": ns._get_default_template_v2(None),
+            "metric": ns._get_default_template_v2("cpu_high"),  # Any metric kind returns metric template
+            "state_change": ns._get_default_template_v2("container_stopped"),  # Any state change kind
+            "health": ns._get_default_template_v2("container_unhealthy"),  # Any health kind
+            "update": ns._get_default_template_v2("update_completed"),  # Any update kind
+        },
         "examples": {
             "simple": "Alert: {CONTAINER_NAME} on {HOST_NAME} - {KIND} ({SEVERITY})",
             "metric_based": """⚠️ **Metric Alert**

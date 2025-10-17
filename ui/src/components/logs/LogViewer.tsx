@@ -455,6 +455,7 @@ export function LogViewer({
         ref={logContainerRef}
         className={`flex-1 overflow-y-auto bg-card font-mono ${compact ? 'text-xs' : 'text-sm'}`}
         style={{ height }}
+        data-testid="logs-content"
       >
         {filteredLogs.length === 0 ? (
           <div className="flex items-center justify-center h-full text-muted-foreground">

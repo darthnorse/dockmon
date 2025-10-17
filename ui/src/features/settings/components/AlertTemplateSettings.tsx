@@ -8,58 +8,6 @@ import { useGlobalSettings, useUpdateGlobalSettings, useTemplateVariables } from
 import { toast } from 'sonner'
 import { RotateCcw, Copy, Check } from 'lucide-react'
 
-const DEFAULT_TEMPLATES = {
-  default: `🚨 **{SEVERITY} Alert: {KIND}**
-
-**{SCOPE_TYPE}:** \`{CONTAINER_NAME}\`
-**Host:** {HOST_NAME}
-**Current Value:** {CURRENT_VALUE} (threshold: {THRESHOLD})
-**Occurrences:** {OCCURRENCES}
-**Time:** {TIMESTAMP}
-**Rule:** {RULE_NAME}
-───────────────────────`,
-
-  metric: `📊 **Metric Alert: {KIND}**
-
-**{SCOPE_TYPE}:** \`{CONTAINER_NAME}\`
-**Host:** {HOST_NAME}
-**Metric Value:** {CURRENT_VALUE} / {THRESHOLD}
-**Severity:** {SEVERITY}
-**First seen:** {FIRST_SEEN}
-**Occurrences:** {OCCURRENCES}
-**Rule:** {RULE_NAME}`,
-
-  state_change: `🔴 **Container State Change**
-
-**Container:** \`{CONTAINER_NAME}\`
-**Host:** {HOST_NAME}
-**State:** \`{OLD_STATE}\` → \`{NEW_STATE}\`
-**Image:** {IMAGE}
-**Exit Code:** {EXIT_CODE}
-**Time:** {TIMESTAMP}
-**Rule:** {RULE_NAME}`,
-
-  health: `💔 **Health Check Alert**
-
-**Container:** \`{CONTAINER_NAME}\`
-**Host:** {HOST_NAME}
-**Status:** {KIND}
-**State:** {NEW_STATE}
-**Severity:** {SEVERITY}
-**Time:** {TIMESTAMP}
-**Rule:** {RULE_NAME}`,
-
-  update: `🔄 **Container Update Available**
-
-**Container:** \`{CONTAINER_NAME}\`
-**Host:** {HOST_NAME}
-**Current:** {CURRENT_IMAGE}
-**Latest:** {LATEST_IMAGE}
-**Digest:** {LATEST_DIGEST}
-**Time:** {TIMESTAMP}
-**Rule:** {RULE_NAME}`
-}
-
 type TemplateType = 'default' | 'metric' | 'state_change' | 'health' | 'update'
 
 export function AlertTemplateSettings() {
@@ -68,22 +16,28 @@ export function AlertTemplateSettings() {
   const updateSettings = useUpdateGlobalSettings()
 
   const [activeTab, setActiveTab] = useState<TemplateType>('default')
-  const [templates, setTemplates] = useState<Record<TemplateType, string>>(DEFAULT_TEMPLATES)
+  const [templates, setTemplates] = useState<Record<TemplateType, string>>({
+    default: '',
+    metric: '',
+    state_change: '',
+    health: '',
+    update: '',
+  })
   const [copiedVar, setCopiedVar] = useState<string | null>(null)
   const [hasChanges, setHasChanges] = useState(false)
 
-  // Load templates from settings
+  // Load templates from settings OR backend defaults
   useEffect(() => {
-    if (settings) {
+    if (settings && variables?.default_templates) {
       setTemplates({
-        default: settings.alert_template || DEFAULT_TEMPLATES.default,
-        metric: settings.alert_template_metric || DEFAULT_TEMPLATES.metric,
-        state_change: settings.alert_template_state_change || DEFAULT_TEMPLATES.state_change,
-        health: settings.alert_template_health || DEFAULT_TEMPLATES.health,
-        update: settings.alert_template_update || DEFAULT_TEMPLATES.update,
+        default: settings.alert_template || variables.default_templates.default,
+        metric: settings.alert_template_metric || variables.default_templates.metric,
+        state_change: settings.alert_template_state_change || variables.default_templates.state_change,
+        health: settings.alert_template_health || variables.default_templates.health,
+        update: settings.alert_template_update || variables.default_templates.update,
       })
     }
-  }, [settings])
+  }, [settings, variables])
 
   const handleTemplateChange = (type: TemplateType, value: string) => {
     setTemplates(prev => ({ ...prev, [type]: value }))
@@ -107,15 +61,19 @@ export function AlertTemplateSettings() {
   }
 
   const handleReset = (type: TemplateType) => {
-    setTemplates(prev => ({ ...prev, [type]: DEFAULT_TEMPLATES[type] }))
-    setHasChanges(true)
-    toast.info(`${type === 'default' ? 'Default' : type.replace('_', ' ')} template reset (click Save to apply)`)
+    if (variables?.default_templates) {
+      setTemplates(prev => ({ ...prev, [type]: variables.default_templates[type] }))
+      setHasChanges(true)
+      toast.info(`${type === 'default' ? 'Default' : type.replace('_', ' ')} template reset (click Save to apply)`)
+    }
   }
 
   const handleResetAll = () => {
-    setTemplates(DEFAULT_TEMPLATES)
-    setHasChanges(true)
-    toast.info('All templates reset to default (click Save to apply)')
+    if (variables?.default_templates) {
+      setTemplates(variables.default_templates)
+      setHasChanges(true)
+      toast.info('All templates reset to default (click Save to apply)')
+    }
   }
 
   const handleCopyVariable = (variable: string) => {

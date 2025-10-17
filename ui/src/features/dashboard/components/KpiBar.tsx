@@ -20,9 +20,10 @@ interface KpiCardProps {
   subtitle?: string
   onClick?: () => void
   variant?: 'default' | 'success' | 'warning' | 'error'
+  'data-testid'?: string
 }
 
-function KpiCard({ icon, label, value, subtitle, onClick, variant = 'default' }: KpiCardProps) {
+function KpiCard({ icon, label, value, subtitle, onClick, variant = 'default', 'data-testid': dataTestId }: KpiCardProps) {
   const variantStyles = {
     default: 'bg-surface border-border hover:border-accent/50',
     success: 'bg-surface border-green-500/30 hover:border-green-500/50',
@@ -39,6 +40,7 @@ function KpiCard({ icon, label, value, subtitle, onClick, variant = 'default' }:
         ${onClick ? 'cursor-pointer hover:shadow-md' : 'cursor-default'}
         flex flex-col gap-2 text-left
       `}
+      data-testid={dataTestId}
     >
       <div className="flex items-center gap-2 text-muted-foreground">
         {icon}
@@ -79,7 +81,7 @@ export function KpiBar() {
   const pendingUpdates = 0
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4" data-testid="kpi-bar">
       {/* Hosts */}
       <KpiCard
         icon={<Server className="w-4 h-4" />}
@@ -88,6 +90,7 @@ export function KpiBar() {
         subtitle={`${onlineHosts} online • ${offlineHosts} offline`}
         onClick={() => navigate('/hosts')}
         variant={onlineHosts === totalHosts ? 'success' : 'default'}
+        data-testid="kpi-total-hosts"
       />
 
       {/* Total Containers */}
@@ -97,6 +100,7 @@ export function KpiBar() {
         value={totalContainers}
         subtitle={`${runningContainers} running • ${stoppedContainers} stopped`}
         onClick={() => navigate('/containers')}
+        data-testid="kpi-total-containers"
       />
 
       {/* Running Containers */}
@@ -107,6 +111,7 @@ export function KpiBar() {
         subtitle={totalContainers > 0 ? `${Math.round((runningContainers / totalContainers) * 100)}% of total` : ''}
         onClick={() => navigate('/containers')}
         variant={runningContainers > 0 ? 'success' : 'default'}
+        data-testid="kpi-running-containers"
       />
 
       {/* Alerts */}

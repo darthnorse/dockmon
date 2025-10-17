@@ -229,7 +229,9 @@ class UpdateExecutor:
                 new_container_id,
                 container_name,
                 update_record.current_image,
-                update_record.latest_image
+                update_record.latest_image,
+                update_record.current_digest,
+                update_record.latest_digest
             )
 
             logger.info(f"Successfully updated container {container_name}")
@@ -551,7 +553,9 @@ class UpdateExecutor:
         container_id: str,
         container_name: str,
         previous_image: str,
-        new_image: str
+        new_image: str,
+        previous_digest: str = None,
+        new_digest: str = None
     ):
         """
         Emit UPDATE_COMPLETED event via EventBus.
@@ -575,6 +579,8 @@ class UpdateExecutor:
                 data={
                     'previous_image': previous_image,
                     'new_image': new_image,
+                    'current_digest': previous_digest,
+                    'latest_digest': new_digest,
                 }
             ))
 

@@ -219,7 +219,7 @@ export function ContainerDetailsModal({
             {/* Container Info */}
             <div>
               <div className="flex items-center gap-2">
-                <h2 className="text-xl font-semibold">
+                <h2 className="text-xl font-semibold" data-testid="container-name">
                   {container.name}
                   <span className="text-muted-foreground ml-2">({container.host_name})</span>
                 </h2>
@@ -228,7 +228,7 @@ export function ContainerDetailsModal({
               </div>
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Circle className={`w-3 h-3 ${getStatusColor()}`} />
-                <span className="capitalize">{container.state}</span>
+                <span className="capitalize" data-testid="container-status">{container.state}</span>
                 <span>•</span>
                 <span>Uptime: {uptime}</span>
               </div>

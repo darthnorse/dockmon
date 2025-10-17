@@ -156,6 +156,7 @@ export function AlertsPage() {
           <Link
             to="/alerts/rules"
             className="flex items-center gap-2 rounded-md bg-gray-800 px-3 py-1.5 text-sm text-gray-300 transition-colors hover:bg-gray-700"
+            data-testid="manage-rules-button"
           >
             <Settings className="h-4 w-4" />
             Manage Rules
@@ -283,7 +284,7 @@ export function AlertsPage() {
             </div>
 
             {/* Table Body */}
-            <div className="divide-y divide-gray-800">
+            <div className="divide-y divide-gray-800" data-testid="alerts-list">
               {alerts.map((alert) => {
                 const isDimmed = alert.state === 'resolved' || alert.state === 'snoozed'
                 return (

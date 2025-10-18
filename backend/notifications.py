@@ -669,7 +669,6 @@ class NotificationService:
 **Host:** {HOST_NAME}
 **Status:** {OLD_STATE} → {NEW_STATE}
 {HEALTH_CHECK_URL}{ERROR_MESSAGE}{CONSECUTIVE_FAILURES}{RESPONSE_TIME}
-**Occurrences:** {OCCURRENCES}
 **Time:** {TIMESTAMP}
 **Rule:** {RULE_NAME}"""
 
@@ -682,7 +681,6 @@ class NotificationService:
 **Host:** {HOST_NAME}
 **State change:** {OLD_STATE} to {NEW_STATE}
 **Exit code:** {EXIT_CODE}
-**Occurrences:** {OCCURRENCES}
 **Time:** {TIMESTAMP}
 **Rule:** {RULE_NAME}"""
 
@@ -693,7 +691,6 @@ class NotificationService:
 **Container:** {CONTAINER_NAME}
 **Host:** {HOST_NAME}
 **Current Value:** {CURRENT_VALUE} (threshold: {THRESHOLD})
-**Occurrences:** {OCCURRENCES}
 **Time:** {TIMESTAMP}
 **Rule:** {RULE_NAME}"""
 
@@ -705,7 +702,6 @@ class NotificationService:
 
 **Host:** {HOST_NAME}
 **Current Value:** {CURRENT_VALUE} (threshold: {THRESHOLD})
-**Occurrences:** {OCCURRENCES}
 **Time:** {TIMESTAMP}
 **Rule:** {RULE_NAME}"""
 
@@ -793,7 +789,6 @@ class NotificationService:
             '{TIMESTAMP}': last_seen_local.strftime('%Y-%m-%d %H:%M:%S'),
             '{TIME}': last_seen_local.strftime('%H:%M:%S'),
             '{DATE}': last_seen_local.strftime('%Y-%m-%d'),
-            '{OCCURRENCES}': str(alert.occurrences),
 
             # Rule context
             '{RULE_NAME}': rule.name if rule else 'N/A',

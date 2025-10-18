@@ -290,7 +290,6 @@ export function ContainerModalAlertsTab({ containerId }: ContainerModalAlertsTab
                 <th className="text-left p-3 text-sm font-medium text-muted-foreground">Severity</th>
                 <th className="text-left p-3 text-sm font-medium text-muted-foreground">Type</th>
                 <th className="text-left p-3 text-sm font-medium text-muted-foreground">Message</th>
-                <th className="text-left p-3 text-sm font-medium text-muted-foreground">Occurrences</th>
                 <th className="text-left p-3 text-sm font-medium text-muted-foreground">Last Seen</th>
                 <th className="text-left p-3 text-sm font-medium text-muted-foreground">State</th>
               </tr>
@@ -313,7 +312,6 @@ export function ContainerModalAlertsTab({ containerId }: ContainerModalAlertsTab
                   <td className="p-3">{getSeverityIcon(alert.severity)}</td>
                   <td className="p-3 text-sm text-foreground font-medium">{alert.kind}</td>
                   <td className="p-3 text-sm text-foreground">{alert.title}</td>
-                  <td className="p-3 text-sm text-muted-foreground">{alert.occurrences}</td>
                   <td className="p-3 text-sm text-muted-foreground">{formatTimestamp(alert.last_seen)}</td>
                   <td className="p-3">{getStateIcon(alert.state)}</td>
                 </tr>

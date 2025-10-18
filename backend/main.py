@@ -1824,7 +1824,13 @@ async def get_template_variables(current_user: dict = Depends(get_current_user))
             {"name": "{LATEST_DIGEST}", "description": "Latest image digest (SHA256)"},
             {"name": "{PREVIOUS_IMAGE}", "description": "Image before update (for completed updates)"},
             {"name": "{NEW_IMAGE}", "description": "Image after update (for completed updates)"},
-            {"name": "{ERROR_MESSAGE}", "description": "Error message (for failed updates)"},
+            {"name": "{ERROR_MESSAGE}", "description": "Error message (for failed updates or health checks)"},
+
+            # Health checks (HTTP/HTTPS monitoring)
+            {"name": "{HEALTH_CHECK_URL}", "description": "Health check URL being monitored"},
+            {"name": "{CONSECUTIVE_FAILURES}", "description": "Number of consecutive failures vs threshold"},
+            {"name": "{FAILURE_THRESHOLD}", "description": "Failure threshold before marking unhealthy"},
+            {"name": "{RESPONSE_TIME}", "description": "HTTP response time in milliseconds"},
 
             # Metrics (metric-driven alerts)
             {"name": "{CURRENT_VALUE}", "description": "Current metric value (e.g., 92.5 for CPU)"},
@@ -1838,7 +1844,6 @@ async def get_template_variables(current_user: dict = Depends(get_current_user))
             {"name": "{TIME}", "description": "Time only (HH:MM:SS)"},
             {"name": "{DATE}", "description": "Date only (YYYY-MM-DD)"},
             {"name": "{FIRST_SEEN}", "description": "When alert first triggered"},
-            {"name": "{OCCURRENCES}", "description": "Number of times this alert has fired"},
 
             # Rule context
             {"name": "{RULE_NAME}", "description": "Name of the alert rule"},
@@ -1862,7 +1867,7 @@ async def get_template_variables(current_user: dict = Depends(get_current_user))
 Metric: {KIND}
 Current: {CURRENT_VALUE} | Threshold: {THRESHOLD}
 Severity: {SEVERITY}
-First seen: {FIRST_SEEN} | Occurrences: {OCCURRENCES}""",
+First seen: {FIRST_SEEN}""",
             "state_change": """🔴 **State Change Alert**
 Container: {CONTAINER_NAME} ({CONTAINER_ID})
 Host: {HOST_NAME}

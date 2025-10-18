@@ -337,7 +337,6 @@ export function AlertsPage() {
                     <div className="mt-2 flex items-center gap-4 text-xs text-gray-500">
                       <span>First seen: {formatRelativeTime(alert.first_seen)}</span>
                       <span>Last seen: {formatRelativeTime(alert.last_seen)}</span>
-                      <span>Occurrences: {alert.occurrences}</span>
                       {alert.current_value != null && alert.threshold != null && (
                         <span>
                           Value: {alert.current_value.toFixed(1)} / Threshold: {alert.threshold.toFixed(1)}

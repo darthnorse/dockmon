@@ -291,10 +291,6 @@ export function AlertDetailsDrawer({ alertId, onClose }: AlertDetailsDrawerProps
                 <div className="text-xs text-gray-500">Last Seen</div>
                 <div className="text-sm text-white">{formatDateTime(alert.last_seen)}</div>
               </div>
-              <div>
-                <div className="text-xs text-gray-500">Occurrences</div>
-                <div className="text-sm text-white">{alert.occurrences}</div>
-              </div>
               {alert.current_value != null && (
                 <div>
                   <div className="text-xs text-gray-500">Current Value</div>

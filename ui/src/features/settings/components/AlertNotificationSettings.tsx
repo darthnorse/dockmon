@@ -13,7 +13,6 @@ const DEFAULT_TEMPLATE = `🚨 **{SEVERITY} Alert: {KIND}**
 **{SCOPE_TYPE}:** \`{CONTAINER_NAME}\`
 **Host:** {HOST_NAME}
 **Current Value:** {CURRENT_VALUE} (threshold: {THRESHOLD})
-**Occurrences:** {OCCURRENCES}
 **Time:** {TIMESTAMP}
 **Rule:** {RULE_NAME}
 ───────────────────────`

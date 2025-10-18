@@ -171,7 +171,7 @@ def upgrade() -> None:
 
 
     # ==================== docker_hosts Table ====================
-    # Add tags and description columns
+    # Add tags, description, and Phase 5 system information columns
 
     if _table_exists('docker_hosts'):
         if not _column_exists('docker_hosts', 'tags'):
@@ -181,6 +181,36 @@ def upgrade() -> None:
         if not _column_exists('docker_hosts', 'description'):
             with op.batch_alter_table('docker_hosts', schema=None) as batch_op:
                 batch_op.add_column(sa.Column('description', sa.Text(), nullable=True))
+
+        # Phase 5 - System information columns
+        if not _column_exists('docker_hosts', 'os_type'):
+            with op.batch_alter_table('docker_hosts', schema=None) as batch_op:
+                batch_op.add_column(sa.Column('os_type', sa.String(), nullable=True))
+
+        if not _column_exists('docker_hosts', 'os_version'):
+            with op.batch_alter_table('docker_hosts', schema=None) as batch_op:
+                batch_op.add_column(sa.Column('os_version', sa.String(), nullable=True))
+
+        if not _column_exists('docker_hosts', 'kernel_version'):
+            with op.batch_alter_table('docker_hosts', schema=None) as batch_op:
+                batch_op.add_column(sa.Column('kernel_version', sa.String(), nullable=True))
+
+        if not _column_exists('docker_hosts', 'docker_version'):
+            with op.batch_alter_table('docker_hosts', schema=None) as batch_op:
+                batch_op.add_column(sa.Column('docker_version', sa.String(), nullable=True))
+
+        if not _column_exists('docker_hosts', 'daemon_started_at'):
+            with op.batch_alter_table('docker_hosts', schema=None) as batch_op:
+                batch_op.add_column(sa.Column('daemon_started_at', sa.String(), nullable=True))
+
+        # System resources
+        if not _column_exists('docker_hosts', 'total_memory'):
+            with op.batch_alter_table('docker_hosts', schema=None) as batch_op:
+                batch_op.add_column(sa.Column('total_memory', sa.BigInteger(), nullable=True))
+
+        if not _column_exists('docker_hosts', 'num_cpus'):
+            with op.batch_alter_table('docker_hosts', schema=None) as batch_op:
+                batch_op.add_column(sa.Column('num_cpus', sa.Integer(), nullable=True))
 
 
     # ==================== event_logs Table ====================
@@ -219,6 +249,34 @@ def downgrade() -> None:
             batch_op.drop_column('source')
 
     # Remove docker_hosts columns
+    if _column_exists('docker_hosts', 'num_cpus'):
+        with op.batch_alter_table('docker_hosts', schema=None) as batch_op:
+            batch_op.drop_column('num_cpus')
+
+    if _column_exists('docker_hosts', 'total_memory'):
+        with op.batch_alter_table('docker_hosts', schema=None) as batch_op:
+            batch_op.drop_column('total_memory')
+
+    if _column_exists('docker_hosts', 'daemon_started_at'):
+        with op.batch_alter_table('docker_hosts', schema=None) as batch_op:
+            batch_op.drop_column('daemon_started_at')
+
+    if _column_exists('docker_hosts', 'docker_version'):
+        with op.batch_alter_table('docker_hosts', schema=None) as batch_op:
+            batch_op.drop_column('docker_version')
+
+    if _column_exists('docker_hosts', 'kernel_version'):
+        with op.batch_alter_table('docker_hosts', schema=None) as batch_op:
+            batch_op.drop_column('kernel_version')
+
+    if _column_exists('docker_hosts', 'os_version'):
+        with op.batch_alter_table('docker_hosts', schema=None) as batch_op:
+            batch_op.drop_column('os_version')
+
+    if _column_exists('docker_hosts', 'os_type'):
+        with op.batch_alter_table('docker_hosts', schema=None) as batch_op:
+            batch_op.drop_column('os_type')
+
     if _column_exists('docker_hosts', 'description'):
         with op.batch_alter_table('docker_hosts', schema=None) as batch_op:
             batch_op.drop_column('description')

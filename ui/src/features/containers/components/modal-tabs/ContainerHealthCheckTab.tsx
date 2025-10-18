@@ -385,11 +385,50 @@ function ContainerHealthCheckTabInternal({ container }: ContainerHealthCheckTabP
               id="interval"
               type="number"
               min="10"
-              max="300"
+              max="3600"
               value={checkIntervalSeconds}
               onChange={(e) => setCheckIntervalSeconds(Number(e.target.value))}
               disabled={!enabled}
             />
+          </div>
+        </div>
+
+        {/* Failure and Success Thresholds */}
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <label htmlFor="failure-threshold" className="text-sm font-medium">
+              Failure Threshold
+            </label>
+            <Input
+              id="failure-threshold"
+              type="number"
+              min="1"
+              max="10"
+              value={failureThreshold}
+              onChange={(e) => setFailureThreshold(Number(e.target.value))}
+              disabled={!enabled}
+            />
+            <p className="text-xs text-muted-foreground">
+              Consecutive failures before marking as unhealthy
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <label htmlFor="success-threshold" className="text-sm font-medium">
+              Success Threshold
+            </label>
+            <Input
+              id="success-threshold"
+              type="number"
+              min="1"
+              max="10"
+              value={successThreshold}
+              onChange={(e) => setSuccessThreshold(Number(e.target.value))}
+              disabled={!enabled}
+            />
+            <p className="text-xs text-muted-foreground">
+              Consecutive successes to mark as healthy after failure
+            </p>
           </div>
         </div>
 
@@ -438,7 +477,7 @@ function ContainerHealthCheckTabInternal({ container }: ContainerHealthCheckTabP
                 Auto-restart on Failure
               </label>
               <p className="text-sm text-muted-foreground mt-1">
-                Automatically restart container when health check fails
+                Automatically restart container when failure threshold is reached
               </p>
             </div>
             <Switch
@@ -447,47 +486,6 @@ function ContainerHealthCheckTabInternal({ container }: ContainerHealthCheckTabP
               onCheckedChange={setAutoRestartOnFailure}
               disabled={!enabled}
             />
-          </div>
-
-          {autoRestartOnFailure && (
-            <div className="space-y-2">
-              <label htmlFor="failure-threshold" className="text-sm font-medium">
-                Failure Threshold
-              </label>
-              <Input
-                id="failure-threshold"
-                type="number"
-                min="1"
-                max="10"
-                value={failureThreshold}
-                onChange={(e) => setFailureThreshold(Number(e.target.value))}
-                disabled={!enabled}
-              />
-              <p className="text-xs text-muted-foreground">
-                Number of consecutive failures before triggering restart
-              </p>
-            </div>
-          )}
-        </div>
-
-        {/* Success threshold for recovery */}
-        <div className="border-t pt-4 space-y-4">
-          <div className="space-y-2">
-            <label htmlFor="success-threshold" className="text-sm font-medium">
-              Success Threshold
-            </label>
-            <Input
-              id="success-threshold"
-              type="number"
-              min="1"
-              max="10"
-              value={successThreshold}
-              onChange={(e) => setSuccessThreshold(Number(e.target.value))}
-              disabled={!enabled}
-            />
-            <p className="text-xs text-muted-foreground">
-              Number of consecutive successes required to mark as healthy after being unhealthy
-            </p>
           </div>
         </div>
       </div>

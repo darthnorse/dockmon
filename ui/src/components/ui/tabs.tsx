@@ -71,7 +71,7 @@ export function Tabs({ tabs, activeTab, onTabChange, className }: TabsProps) {
       </div>
 
       {/* Tab Content */}
-      <div className="flex-1 overflow-hidden">
+      <div className="flex-1 overflow-y-auto">
         {tabs.find((tab) => tab.id === activeTab)?.content}
       </div>
     </div>

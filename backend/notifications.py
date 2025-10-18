@@ -157,11 +157,17 @@ class NotificationService:
             elif hasattr(event, 'event_type') and event.event_type in ['die', 'oom', 'kill']:
                 priority = 1  # High priority for critical Docker events
 
+            # Handle both event objects (legacy) and strings (Alert v2)
+            if isinstance(event, str):
+                title = f"DockMon: {event}"
+            else:
+                title = f"DockMon: {event.container_name}"
+
             payload = {
                 'token': app_token,
                 'user': user_key,
                 'message': plain_message,
-                'title': f"DockMon: {event.container_name}",
+                'title': title,
                 'priority': priority,
                 'url': config.get('url', ''),
                 'url_title': 'Open DockMon'
@@ -502,13 +508,14 @@ class NotificationService:
         Returns:
             True if notification sent successfully to at least one channel
         """
+        logger.info(f"send_alert_v2 START: alert.id={alert.id if alert else 'None'}, rule={rule.name if rule else 'None'}")
         try:
             # Prevent duplicate notifications within 5 seconds (Docker sends kill/stop/die almost simultaneously)
             # This protects against rapid-fire notifications from the same event
             if hasattr(alert, 'notified_at') and alert.notified_at:
                 time_since_notified = datetime.now(timezone.utc) - alert.notified_at.replace(tzinfo=timezone.utc if not alert.notified_at.tzinfo else None)
                 if time_since_notified.total_seconds() < 5:
-                    logger.debug(f"Skipping duplicate notification for alert {alert.id} (last notified {time_since_notified.total_seconds():.1f}s ago)")
+                    logger.info(f"Skipping duplicate notification for alert {alert.id} ({alert.title}) - last notified {time_since_notified.total_seconds():.1f}s ago")
                     return False
 
             # Get the rule if not provided
@@ -527,7 +534,7 @@ class NotificationService:
                 return False
 
             if not channel_ids:
-                logger.debug(f"No notification channels configured for rule {rule.name}")
+                logger.warning(f"No notification channels configured for rule {rule.name} - notifications will not be sent")
                 return False
 
             # Check blackout window
@@ -559,6 +566,9 @@ class NotificationService:
                     channel = channel_map_by_id[channel_id]
                 elif isinstance(channel_id, str) and channel_id in channel_map_by_type:
                     channel = channel_map_by_type[channel_id]
+                else:
+                    logger.warning(f"Notification channel '{channel_id}' not found or not enabled")
+                    continue
 
                 if channel:
                     try:

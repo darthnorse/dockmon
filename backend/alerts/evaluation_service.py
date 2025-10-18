@@ -167,6 +167,7 @@ class AlertEvaluationService:
 
         This is a separate method to centralize notification sending logic.
         """
+        logger.info(f"_send_notification called for alert {alert.id} ({alert.title})")
         try:
             # Get the rule for this alert
             rule = self.engine.db.get_alert_rule_v2(alert.rule_id) if alert.rule_id else None
@@ -226,8 +227,10 @@ class AlertEvaluationService:
 
             # Send notification via notification service
             if hasattr(self, 'notification_service') and self.notification_service:
+                logger.info(f"Calling notification_service.send_alert_v2 for alert {alert.id}")
                 try:
-                    await self.notification_service.send_alert_v2(alert, rule)
+                    result = await self.notification_service.send_alert_v2(alert, rule)
+                    logger.info(f"send_alert_v2 returned: {result} for alert {alert.id}")
                 except Exception as e:
                     logger.error(f"Failed to send notification for alert {alert.id}: {e}", exc_info=True)
             else:

@@ -7,7 +7,7 @@ import logging
 import secrets
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
 from fastapi import Request
@@ -48,8 +48,8 @@ class SessionManager:
 
         with self._sessions_lock:
             self.sessions[session_id] = {
-                "created_at": datetime.utcnow(),
-                "last_accessed": datetime.utcnow(),
+                "created_at": datetime.now(timezone.utc),
+                "last_accessed": datetime.now(timezone.utc),
                 "client_ip": client_ip,
                 "user_agent": user_agent,
                 "authenticated": True,
@@ -71,7 +71,7 @@ class SessionManager:
                 return False
 
             session = self.sessions[session_id]
-            current_time = datetime.utcnow()
+            current_time = datetime.now(timezone.utc)
             client_ip = request.client.host
 
             # Check if session has expired
@@ -115,7 +115,7 @@ class SessionManager:
 
     def cleanup_expired_sessions(self):
         """Clean up expired sessions periodically"""
-        current_time = datetime.utcnow()
+        current_time = datetime.now(timezone.utc)
         expired_sessions = []
 
         with self._sessions_lock:

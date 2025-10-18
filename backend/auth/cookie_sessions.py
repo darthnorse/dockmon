@@ -184,7 +184,7 @@ class CookieSessionManager:
         DOS PROTECTION: Limits maximum concurrent sessions
         """
         session_id = secrets.token_urlsafe(32)
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         with self._sessions_lock:
             # Check if at capacity
@@ -260,7 +260,7 @@ class CookieSessionManager:
                 return None
 
             session = self.sessions[session_id]
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
 
             # 3. Check expiry (belt and suspenders with cookie max_age)
             if now - session["created_at"] > self.session_timeout:
@@ -321,7 +321,7 @@ class CookieSessionManager:
         MEMORY SAFETY: Prevents memory leak from abandoned sessions
         WARNING: Caller must hold self._sessions_lock
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         expired = []
 
         for session_id, data in self.sessions.items():

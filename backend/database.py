@@ -18,6 +18,15 @@ import uuid
 
 logger = logging.getLogger(__name__)
 
+# Singleton instance and thread lock for DatabaseManager
+# CRITICAL: Only ONE DatabaseManager instance should exist per process to avoid:
+# - Multiple SQLAlchemy engine/connection pools (resource waste)
+# - Duplicate migration runs (SQLite lock conflicts)
+# - Inconsistent state across different instances
+import threading
+_database_manager_instance: Optional['DatabaseManager'] = None
+_database_manager_lock = threading.Lock()
+
 
 def utcnow():
     """Helper to get timezone-aware UTC datetime for database defaults"""
@@ -533,11 +542,62 @@ class TagAssignment(Base):
 
 
 class DatabaseManager:
-    """Database management and operations"""
+    """
+    Database management and operations (Singleton)
+
+    ARCHITECTURE:
+    This class uses the singleton pattern to ensure only ONE instance exists per process.
+    Multiple instantiations will return the same instance, preventing:
+    - Resource waste (multiple SQLAlchemy engines/connection pools)
+    - Migration conflicts (Alembic running multiple times)
+    - State inconsistency (different instances with different data)
+
+    Thread-safe: Uses threading.Lock to prevent race conditions during initialization.
+    """
+
+    def __new__(cls, db_path: str = "data/dockmon.db"):
+        """
+        Singleton implementation using __new__.
+
+        Returns the existing instance if one exists, otherwise creates it.
+        Thread-safe using a lock to prevent race conditions.
+        """
+        global _database_manager_instance, _database_manager_lock
+
+        # Fast path: instance already exists
+        if _database_manager_instance is not None:
+            # Verify db_path matches (warn if different)
+            if _database_manager_instance.db_path != db_path:
+                logger.warning(
+                    f"DatabaseManager singleton already exists with path "
+                    f"'{_database_manager_instance.db_path}', ignoring requested path '{db_path}'"
+                )
+            return _database_manager_instance
+
+        # Slow path: need to create instance (use lock for thread safety)
+        with _database_manager_lock:
+            # Double-check pattern: another thread might have created it while we waited
+            if _database_manager_instance is not None:
+                return _database_manager_instance
+
+            # Create the singleton instance
+            instance = super(DatabaseManager, cls).__new__(cls)
+            _database_manager_instance = instance
+            return instance
 
     def __init__(self, db_path: str = "data/dockmon.db"):
-        """Initialize database connection"""
+        """
+        Initialize database connection (only runs once for singleton).
+
+        Note: __init__ is called every time DatabaseManager() is instantiated,
+        but we use a flag to ensure initialization only happens once.
+        """
+        # Skip if already initialized (singleton pattern)
+        if hasattr(self, '_initialized'):
+            return
+
         self.db_path = db_path
+        self._initialized = True
 
         # Ensure data directory exists
         data_dir = os.path.dirname(db_path)
@@ -656,6 +716,8 @@ class DatabaseManager:
         - 006: User preferences table
         - 007: Display name column
         - 008: Version tracking (app_version, upgrade_notice_dismissed)
+
+        NOTE: Singleton pattern ensures this only runs once per process.
         """
         try:
             from alembic.config import Config

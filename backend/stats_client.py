@@ -25,6 +25,7 @@ class StatsServiceClient:
         self.ws_task: Optional[asyncio.Task] = None
         self.event_callback: Optional[Callable] = None
         self._token_lock = asyncio.Lock()
+        self._session_lock = asyncio.Lock()  # Prevent concurrent session creation
 
     async def _load_token(self) -> str:
         """Load auth token from file (with retry for startup race condition)"""
@@ -53,13 +54,22 @@ class StatsServiceClient:
             raise RuntimeError(f"Failed to load stats service token from {TOKEN_FILE_PATH}")
 
     async def _get_session(self) -> aiohttp.ClientSession:
-        """Get or create aiohttp session with auth header"""
-        if self.session is None or self.session.closed:
+        """Get or create aiohttp session with auth header (thread-safe)"""
+        # Fast path: check without lock
+        if self.session is not None and not self.session.closed:
+            return self.session
+
+        # Slow path: create session with lock
+        async with self._session_lock:
+            # Double-check after acquiring lock
+            if self.session is not None and not self.session.closed:
+                return self.session
+
             token = await self._load_token()
             timeout = aiohttp.ClientTimeout(total=5)
             headers = {"Authorization": f"Bearer {token}"}
             self.session = aiohttp.ClientSession(timeout=timeout, headers=headers)
-        return self.session
+            return self.session
 
     async def close(self):
         """Close the HTTP session and WebSocket connection"""

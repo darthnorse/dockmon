@@ -45,9 +45,11 @@ def setup_logging():
     # Set up root logger
     root_logger = logging.getLogger()
 
-    # Check if handlers are already configured (prevent duplicate handlers)
-    if root_logger.handlers:
-        return
+    # Close and clear any existing handlers (e.g., from Alembic migrations or other libraries)
+    # to ensure our logging configuration is used and prevent file descriptor leaks
+    for handler in root_logger.handlers[:]:  # Copy list to avoid modification during iteration
+        handler.close()
+        root_logger.removeHandler(handler)
 
     root_logger.setLevel(logging.INFO)
 

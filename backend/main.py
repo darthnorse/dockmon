@@ -80,8 +80,9 @@ async def lifespan(app: FastAPI):
     uvicorn_access = logging.getLogger("uvicorn.access")
     uvicorn_access.addFilter(HealthCheckFilter())
 
-    # Ensure default user exists
-    monitor.db.get_or_create_default_user()
+    # Ensure default user exists (run in thread pool to avoid blocking event loop)
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, monitor.db.get_or_create_default_user)
 
     # Note: Timezone offset is auto-synced from the browser when the UI loads
     # This ensures timestamps are always displayed in the user's local timezone
@@ -129,10 +130,25 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Shutting down DockMon backend...")
     monitor.event_logger.log_system_event("DockMon Backend Shutting Down", "DockMon backend is shutting down", EventSeverity.INFO, EventType.SHUTDOWN)
+
+    # Cancel and await background tasks to ensure clean shutdown
     if monitor.monitoring_task:
         monitor.monitoring_task.cancel()
+        try:
+            await monitor.monitoring_task
+        except asyncio.CancelledError:
+            logger.info("Monitoring task cancelled successfully")
+        except Exception as e:
+            logger.error(f"Error during monitoring task shutdown: {e}")
+
     if monitor.maintenance_task:
         monitor.maintenance_task.cancel()
+        try:
+            await monitor.maintenance_task
+        except asyncio.CancelledError:
+            logger.info("Maintenance task cancelled successfully")
+        except Exception as e:
+            logger.error(f"Error during maintenance task shutdown: {e}")
     # Stop blackout monitoring
     monitor.notification_service.blackout_manager.stop_monitoring()
     # Stop alert evaluation service
@@ -146,8 +162,9 @@ async def lifespan(app: FastAPI):
     await monitor.notification_service.close()
     # Stop event logger
     await monitor.event_logger.stop()
-    # Dispose SQLAlchemy engine
-    monitor.db.engine.dispose()
+    # Dispose SQLAlchemy engine (run in thread pool to avoid blocking event loop)
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, monitor.db.engine.dispose)
     logger.info("SQLAlchemy engine disposed")
 
 app = FastAPI(
@@ -657,27 +674,27 @@ async def get_container_logs(
                     else:
                         # No valid timestamp, use current time
                         parsed_logs.append({
-                            "timestamp": datetime.utcnow().isoformat() + 'Z',
+                            "timestamp": datetime.now(timezone.utc).isoformat() + 'Z',
                             "log": line
                         })
                 else:
                     # No space found, treat whole line as log
                     parsed_logs.append({
-                        "timestamp": datetime.utcnow().isoformat() + 'Z',
+                        "timestamp": datetime.now(timezone.utc).isoformat() + 'Z',
                         "log": line
                     })
             except (ValueError, IndexError, AttributeError) as e:
                 # If timestamp parsing fails, use current time
                 logger.debug(f"Failed to parse log timestamp: {e}")
                 parsed_logs.append({
-                    "timestamp": datetime.utcnow().isoformat() + 'Z',
+                    "timestamp": datetime.now(timezone.utc).isoformat() + 'Z',
                     "log": line
                 })
 
         return {
             "container_id": container_id,
             "logs": parsed_logs,
-            "last_timestamp": datetime.utcnow().isoformat() + 'Z'  # For next 'since' parameter
+            "last_timestamp": datetime.now(timezone.utc).isoformat() + 'Z'  # For next 'since' parameter
         }
 
     except HTTPException:

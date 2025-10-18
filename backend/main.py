@@ -153,22 +153,49 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"Error during maintenance task shutdown: {e}")
     # Stop blackout monitoring
-    monitor.notification_service.blackout_manager.stop_monitoring()
+    try:
+        monitor.notification_service.blackout_manager.stop_monitoring()
+        logger.info("Blackout monitoring stopped")
+    except Exception as e:
+        logger.error(f"Error stopping blackout monitoring: {e}")
+
     # Stop alert evaluation service
-    if 'alert_evaluation_service' in globals():
-        await alert_evaluation_service.stop()
-        logger.info("Alert evaluation service stopped")
+    try:
+        if 'alert_evaluation_service' in globals():
+            await alert_evaluation_service.stop()
+            logger.info("Alert evaluation service stopped")
+    except Exception as e:
+        logger.error(f"Error stopping alert evaluation service: {e}")
+
     # Close stats client (HTTP session and WebSocket)
-    from stats_client import get_stats_client
-    await get_stats_client().close()
-    # Close notification service
-    await monitor.notification_service.close()
+    try:
+        from stats_client import get_stats_client
+        await get_stats_client().close()
+        logger.info("Stats client closed")
+    except Exception as e:
+        logger.error(f"Error closing stats client: {e}")
+
+    # Close notification service (includes httpx client cleanup)
+    try:
+        await monitor.notification_service.close()
+        logger.info("Notification service closed")
+    except Exception as e:
+        logger.error(f"Error closing notification service: {e}")
+
     # Stop event logger
-    await monitor.event_logger.stop()
+    try:
+        await monitor.event_logger.stop()
+        logger.info("Event logger stopped")
+    except Exception as e:
+        logger.error(f"Error stopping event logger: {e}")
+
     # Dispose SQLAlchemy engine (run in thread pool to avoid blocking event loop)
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, monitor.db.engine.dispose)
-    logger.info("SQLAlchemy engine disposed")
+    try:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, monitor.db.engine.dispose)
+        logger.info("SQLAlchemy engine disposed")
+    except Exception as e:
+        logger.error(f"Error disposing database engine: {e}")
 
 app = FastAPI(
     title="DockMon API",

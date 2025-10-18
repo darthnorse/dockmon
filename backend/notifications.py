@@ -653,6 +653,30 @@ class NotificationService:
 **Update Status:** {UPDATE_STATUS}
 **Rule:** {RULE_NAME}"""
 
+        # State change alerts (stopped, started, paused, restarted, died, unhealthy, healthy)
+        if kind in ['container_stopped', 'container_started', 'container_paused', 'container_restarted',
+                    'container_died', 'container_unhealthy', 'container_healthy', 'container_killed']:
+            return """🚨 **{SEVERITY} Alert: {KIND}**
+
+**Container:** {CONTAINER_NAME}
+**Host:** {HOST_NAME}
+**State change:** {OLD_STATE} to {NEW_STATE}
+**Exit code:** {EXIT_CODE}
+**Occurrences:** {OCCURRENCES}
+**Time:** {TIMESTAMP}
+**Rule:** {RULE_NAME}"""
+
+        # Metric alerts (cpu, memory, disk, network, etc.)
+        if kind in ['cpu_high', 'memory_high', 'disk_high', 'network_high', 'cpu_low', 'memory_low']:
+            return """🚨 **{SEVERITY} Alert: {KIND}**
+
+**Container:** {CONTAINER_NAME}
+**Host:** {HOST_NAME}
+**Current Value:** {CURRENT_VALUE} (threshold: {THRESHOLD})
+**Occurrences:** {OCCURRENCES}
+**Time:** {TIMESTAMP}
+**Rule:** {RULE_NAME}"""
+
         # Generic fallback for all other alerts
         return """🚨 **{SEVERITY} Alert: {KIND}**
 

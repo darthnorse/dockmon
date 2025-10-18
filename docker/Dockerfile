@@ -120,7 +120,7 @@ RUN echo '#!/bin/bash' > /startup.sh && \
     echo 'sleep 2' >> /startup.sh && \
     echo '' >> /startup.sh && \
     echo '# Start supervisor' >> /startup.sh && \
-    echo 'exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf' >> /startup.sh && \
+    echo 'exec /usr/local/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf' >> /startup.sh && \
     chmod +x /startup.sh
 
 # Expose ports (8081 is internal for stats service)

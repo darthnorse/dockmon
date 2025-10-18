@@ -75,6 +75,7 @@ export function UpgradeWelcomeModal({
                   'Tag support for better container organization',
                   'Bulk operations (start/stop/restart multiple containers)',
                   'Automatic container updates with schedules',
+                  'HTTP/HTTPS health checks with auto-restart on failure',
                   'Enhanced metrics and monitoring',
                   'Modern React-based interface',
                   'Improved security (Alpine Linux, OpenSSL 3.x)',

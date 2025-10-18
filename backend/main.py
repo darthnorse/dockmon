@@ -74,6 +74,9 @@ batch_manager: Optional[BatchJobManager] = None
 async def lifespan(app: FastAPI):
     """Manage application lifecycle"""
     # Startup
+    # Validate configuration early to fail fast on misconfiguration
+    AppConfig.validate()
+
     logger.info("Starting DockMon backend...")
 
     # Reapply health check filter to uvicorn access logger (must be done after uvicorn starts)

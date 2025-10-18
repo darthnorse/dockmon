@@ -51,11 +51,19 @@ def setup_logging():
         handler.close()
         root_logger.removeHandler(handler)
 
-    root_logger.setLevel(logging.INFO)
+    # Get log level from environment variable with validation
+    log_level_str = os.getenv('DOCKMON_LOG_LEVEL', 'INFO').upper()
+    allowed_levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
+    if log_level_str not in allowed_levels:
+        print(f"WARNING: Invalid DOCKMON_LOG_LEVEL '{log_level_str}'. Using INFO. Valid values: {allowed_levels}")
+        log_level_str = 'INFO'
+
+    log_level = getattr(logging, log_level_str)
+    root_logger.setLevel(log_level)
 
     # Console handler for stdout
     console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
+    console_handler.setLevel(log_level)
     console_formatter = logging.Formatter(
         '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
@@ -69,7 +77,7 @@ def setup_logging():
         backupCount=14,  # Keep 14 old files
         encoding='utf-8'
     )
-    file_handler.setLevel(logging.INFO)
+    file_handler.setLevel(log_level)
     file_handler.setFormatter(console_formatter)
 
     # Add handlers to root logger
@@ -113,38 +121,82 @@ def get_cors_origins() -> Optional[str]:
     return None
 
 
+def _safe_int(env_var: str, default: int, min_val: int = None, max_val: int = None) -> int:
+    """
+    Safely parse an integer from environment variable with validation.
+
+    Args:
+        env_var: Environment variable name
+        default: Default value if not set
+        min_val: Minimum allowed value (inclusive)
+        max_val: Maximum allowed value (inclusive)
+
+    Returns:
+        Parsed and validated integer
+
+    Raises:
+        ValueError: If value is not a valid integer or out of range
+    """
+    value_str = os.getenv(env_var)
+    if value_str is None:
+        return default
+
+    try:
+        value = int(value_str)
+    except ValueError:
+        raise ValueError(
+            f"{env_var} must be a valid integer, got: '{value_str}'"
+        )
+
+    if min_val is not None and value < min_val:
+        raise ValueError(
+            f"{env_var} must be at least {min_val}, got: {value}"
+        )
+
+    if max_val is not None and value > max_val:
+        raise ValueError(
+            f"{env_var} must be at most {max_val}, got: {value}"
+        )
+
+    return value
+
+
 class RateLimitConfig:
     """Rate limiting configuration from environment variables"""
 
     @staticmethod
     def get_limits() -> dict:
-        """Get all rate limiting configuration from environment"""
+        """
+        Get all rate limiting configuration from environment.
+
+        Rate limits are validated to be positive integers between 1 and 10000.
+        """
         return {
             # endpoint_pattern: (requests_per_minute, burst_limit, violation_threshold)
             "default": (
-                int(os.getenv('DOCKMON_RATE_LIMIT_DEFAULT', 120)),
-                int(os.getenv('DOCKMON_RATE_BURST_DEFAULT', 20)),
-                int(os.getenv('DOCKMON_RATE_VIOLATIONS_DEFAULT', 8))
+                _safe_int('DOCKMON_RATE_LIMIT_DEFAULT', 120, min_val=1, max_val=10000),
+                _safe_int('DOCKMON_RATE_BURST_DEFAULT', 20, min_val=1, max_val=1000),
+                _safe_int('DOCKMON_RATE_VIOLATIONS_DEFAULT', 8, min_val=1, max_val=100)
             ),
             "auth": (
-                int(os.getenv('DOCKMON_RATE_LIMIT_AUTH', 60)),
-                int(os.getenv('DOCKMON_RATE_BURST_AUTH', 15)),
-                int(os.getenv('DOCKMON_RATE_VIOLATIONS_AUTH', 5))
+                _safe_int('DOCKMON_RATE_LIMIT_AUTH', 60, min_val=1, max_val=10000),
+                _safe_int('DOCKMON_RATE_BURST_AUTH', 15, min_val=1, max_val=1000),
+                _safe_int('DOCKMON_RATE_VIOLATIONS_AUTH', 5, min_val=1, max_val=100)
             ),
             "hosts": (
-                int(os.getenv('DOCKMON_RATE_LIMIT_HOSTS', 60)),
-                int(os.getenv('DOCKMON_RATE_BURST_HOSTS', 15)),
-                int(os.getenv('DOCKMON_RATE_VIOLATIONS_HOSTS', 8))
+                _safe_int('DOCKMON_RATE_LIMIT_HOSTS', 60, min_val=1, max_val=10000),
+                _safe_int('DOCKMON_RATE_BURST_HOSTS', 15, min_val=1, max_val=1000),
+                _safe_int('DOCKMON_RATE_VIOLATIONS_HOSTS', 8, min_val=1, max_val=100)
             ),
             "containers": (
-                int(os.getenv('DOCKMON_RATE_LIMIT_CONTAINERS', 200)),
-                int(os.getenv('DOCKMON_RATE_BURST_CONTAINERS', 40)),
-                int(os.getenv('DOCKMON_RATE_VIOLATIONS_CONTAINERS', 15))
+                _safe_int('DOCKMON_RATE_LIMIT_CONTAINERS', 200, min_val=1, max_val=10000),
+                _safe_int('DOCKMON_RATE_BURST_CONTAINERS', 40, min_val=1, max_val=1000),
+                _safe_int('DOCKMON_RATE_VIOLATIONS_CONTAINERS', 15, min_val=1, max_val=100)
             ),
             "notifications": (
-                int(os.getenv('DOCKMON_RATE_LIMIT_NOTIFICATIONS', 30)),
-                int(os.getenv('DOCKMON_RATE_BURST_NOTIFICATIONS', 10)),
-                int(os.getenv('DOCKMON_RATE_VIOLATIONS_NOTIFICATIONS', 5))
+                _safe_int('DOCKMON_RATE_LIMIT_NOTIFICATIONS', 30, min_val=1, max_val=10000),
+                _safe_int('DOCKMON_RATE_BURST_NOTIFICATIONS', 10, min_val=1, max_val=1000),
+                _safe_int('DOCKMON_RATE_VIOLATIONS_NOTIFICATIONS', 5, min_val=1, max_val=100)
             ),
         }
 
@@ -154,7 +206,7 @@ class AppConfig:
 
     # Server settings
     HOST = os.getenv('DOCKMON_HOST', '0.0.0.0')
-    PORT = int(os.getenv('DOCKMON_PORT', 8080))
+    PORT = _safe_int('DOCKMON_PORT', 8080, min_val=1, max_val=65535)
 
     # Security settings
     CORS_ORIGINS = get_cors_origins()
@@ -166,22 +218,31 @@ class AppConfig:
     DATABASE_URL = os.getenv('DOCKMON_DATABASE_URL', DEFAULT_DATABASE_URL)
 
     # Logging
-    LOG_LEVEL = os.getenv('DOCKMON_LOG_LEVEL', 'INFO')
+    LOG_LEVEL = os.getenv('DOCKMON_LOG_LEVEL', 'INFO').upper()
 
     # Authentication
     CREDENTIALS_FILE = os.getenv('DOCKMON_CREDENTIALS_FILE', DEFAULT_CREDENTIALS_FILE)
-    SESSION_TIMEOUT_HOURS = int(os.getenv('DOCKMON_SESSION_TIMEOUT_HOURS', 24))
+    SESSION_TIMEOUT_HOURS = _safe_int('DOCKMON_SESSION_TIMEOUT_HOURS', 24, min_val=1, max_val=8760)  # Max 1 year
 
     # Rate limiting
     RATE_LIMITS = RateLimitConfig.get_limits()
 
     @classmethod
     def validate(cls):
-        """Validate configuration"""
-        if cls.PORT < 1 or cls.PORT > 65535:
-            raise ValueError(f"Invalid port: {cls.PORT}")
+        """
+        Validate configuration.
 
-        if cls.SESSION_TIMEOUT_HOURS < 1:
-            raise ValueError(f"Session timeout must be at least 1 hour: {cls.SESSION_TIMEOUT_HOURS}")
+        Note: Most validation now happens during config loading via _safe_int().
+        This method provides additional checks for complex validation rules.
+        """
+        # Validate LOG_LEVEL
+        allowed_levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
+        if cls.LOG_LEVEL not in allowed_levels:
+            raise ValueError(
+                f"Invalid DOCKMON_LOG_LEVEL: '{cls.LOG_LEVEL}'. "
+                f"Must be one of {allowed_levels}"
+            )
+
+        # PORT and SESSION_TIMEOUT_HOURS already validated by _safe_int()
 
         return True

@@ -38,7 +38,7 @@ from models.docker_models import DockerHostConfig, DockerHost
 from models.settings_models import GlobalSettings, AlertRule, AlertRuleV2Create, AlertRuleV2Update
 from models.request_models import (
     AutoRestartRequest, DesiredStateRequest, AlertRuleCreate, AlertRuleUpdate,
-    NotificationChannelCreate, NotificationChannelUpdate, EventLogFilter, BatchJobCreate, ContainerTagUpdate, HostTagUpdate
+    NotificationChannelCreate, NotificationChannelUpdate, EventLogFilter, BatchJobCreate, ContainerTagUpdate, HostTagUpdate, HttpHealthCheckConfig
 )
 from security.audit import security_audit
 from security.rate_limiting import rate_limiter, rate_limit_auth, rate_limit_hosts, rate_limit_containers, rate_limit_notifications, rate_limit_default
@@ -129,6 +129,12 @@ async def lifespan(app: FastAPI):
     await alert_evaluation_service.start()
     logger.info("Alert evaluation service started")
 
+    # Initialize HTTP health checker
+    from health_check.http_checker import HttpHealthChecker
+    monitor.http_health_checker = HttpHealthChecker(monitor, monitor.db)
+    asyncio.create_task(monitor.http_health_checker.start())
+    logger.info("HTTP health checker started")
+
     yield
     # Shutdown
     logger.info("Shutting down DockMon backend...")
@@ -166,6 +172,14 @@ async def lifespan(app: FastAPI):
             logger.info("Alert evaluation service stopped")
     except Exception as e:
         logger.error(f"Error stopping alert evaluation service: {e}")
+
+    # Stop HTTP health checker
+    try:
+        if hasattr(monitor, 'http_health_checker'):
+            await monitor.http_health_checker.stop()
+            logger.info("HTTP health checker stopped")
+    except Exception as e:
+        logger.error(f"Error stopping HTTP health checker: {e}")
 
     # Close stats client (HTTP session and WebSocket)
     try:
@@ -1275,6 +1289,260 @@ async def dismiss_upgrade_notice(current_user: dict = Depends(get_current_user),
     except Exception as e:
         logger.error(f"Failed to dismiss upgrade notice: {e}")
         return {"success": False, "error": str(e)}
+
+
+# ==================== HTTP Health Checks ====================
+
+@app.get("/api/containers/{host_id}/{container_id}/http-health-check")
+async def get_http_health_check(
+    host_id: str,
+    container_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get HTTP health check configuration for a container"""
+    from database import ContainerHttpHealthCheck
+
+    composite_key = f"{host_id}:{container_id}"
+
+    with monitor.db.get_session() as session:
+        check = session.query(ContainerHttpHealthCheck).filter_by(
+            container_id=composite_key
+        ).first()
+
+        if not check:
+            return {
+                "enabled": False,
+                "url": "",
+                "method": "GET",
+                "expected_status_codes": "200",
+                "timeout_seconds": 10,
+                "check_interval_seconds": 60,
+                "follow_redirects": True,
+                "verify_ssl": True,
+                "auto_restart_on_failure": False,
+                "failure_threshold": 3,
+                "success_threshold": 1,
+                "current_status": "unknown",
+            }
+
+        return {
+            "enabled": check.enabled,
+            "url": check.url,
+            "method": check.method,
+            "expected_status_codes": check.expected_status_codes,
+            "timeout_seconds": check.timeout_seconds,
+            "check_interval_seconds": check.check_interval_seconds,
+            "follow_redirects": check.follow_redirects,
+            "verify_ssl": check.verify_ssl,
+            "auto_restart_on_failure": check.auto_restart_on_failure,
+            "failure_threshold": check.failure_threshold,
+            "success_threshold": getattr(check, 'success_threshold', 1),  # Default to 1 for backwards compatibility
+            "current_status": check.current_status,
+            "last_checked_at": check.last_checked_at.isoformat() if check.last_checked_at else None,
+            "last_success_at": check.last_success_at.isoformat() if check.last_success_at else None,
+            "last_failure_at": check.last_failure_at.isoformat() if check.last_failure_at else None,
+            "consecutive_failures": check.consecutive_failures,
+            "consecutive_successes": check.consecutive_successes,
+            "last_response_time_ms": check.last_response_time_ms,
+            "last_error_message": check.last_error_message
+        }
+
+
+@app.put("/api/containers/{host_id}/{container_id}/http-health-check")
+async def update_http_health_check(
+    host_id: str,
+    container_id: str,
+    config: HttpHealthCheckConfig,
+    current_user: dict = Depends(get_current_user)
+):
+    """Update or create HTTP health check configuration"""
+    from database import ContainerHttpHealthCheck
+    from datetime import datetime, timezone
+
+    composite_key = f"{host_id}:{container_id}"
+
+    with monitor.db.get_session() as session:
+        check = session.query(ContainerHttpHealthCheck).filter_by(
+            container_id=composite_key
+        ).first()
+
+        if check:
+            # Update existing
+            check.enabled = config.enabled
+            check.url = config.url
+            check.method = config.method
+            check.expected_status_codes = config.expected_status_codes
+            check.timeout_seconds = config.timeout_seconds
+            check.check_interval_seconds = config.check_interval_seconds
+            check.follow_redirects = config.follow_redirects
+            check.verify_ssl = config.verify_ssl
+            check.auto_restart_on_failure = config.auto_restart_on_failure
+            check.failure_threshold = config.failure_threshold
+            check.success_threshold = config.success_threshold
+            check.updated_at = datetime.now(timezone.utc)
+        else:
+            # Create new
+            check = ContainerHttpHealthCheck(
+                container_id=composite_key,
+                host_id=host_id,
+                enabled=config.enabled,
+                url=config.url,
+                method=config.method,
+                expected_status_codes=config.expected_status_codes,
+                timeout_seconds=config.timeout_seconds,
+                check_interval_seconds=config.check_interval_seconds,
+                follow_redirects=config.follow_redirects,
+                verify_ssl=config.verify_ssl,
+                auto_restart_on_failure=config.auto_restart_on_failure,
+                failure_threshold=config.failure_threshold,
+                success_threshold=config.success_threshold
+            )
+            session.add(check)
+
+        session.commit()
+
+        return {"success": True}
+
+
+@app.delete("/api/containers/{host_id}/{container_id}/http-health-check")
+async def delete_http_health_check(
+    host_id: str,
+    container_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete HTTP health check configuration"""
+    from database import ContainerHttpHealthCheck
+
+    composite_key = f"{host_id}:{container_id}"
+
+    with monitor.db.get_session() as session:
+        check = session.query(ContainerHttpHealthCheck).filter_by(
+            container_id=composite_key
+        ).first()
+
+        if check:
+            session.delete(check)
+            session.commit()
+
+        return {"success": True}
+
+
+@app.post("/api/containers/{host_id}/{container_id}/http-health-check/test")
+async def test_http_health_check(
+    host_id: str,
+    container_id: str,
+    config: HttpHealthCheckConfig,
+    current_user: dict = Depends(get_current_user)
+):
+    """Test HTTP health check configuration without saving it"""
+    import httpx
+    import time
+    import json
+    from typing import Dict, Any
+
+    # Create a dedicated client for this test (isolated from main health checker)
+    # IMPORTANT: Use context manager to ensure cleanup even on exceptions
+    # Only pass verify for HTTPS URLs
+    client_kwargs = {
+        'timeout': httpx.Timeout(config.timeout_seconds),
+        'follow_redirects': config.follow_redirects,
+        'limits': httpx.Limits(max_connections=1, max_keepalive_connections=0)
+    }
+
+    # Only set verify for HTTPS URLs (SSL verification not applicable to HTTP)
+    if config.url.startswith('https://'):
+        client_kwargs['verify'] = config.verify_ssl
+
+    async with httpx.AsyncClient(**client_kwargs) as test_client:
+        start_time = time.time()
+
+        try:
+            # Build request options
+            request_kwargs: Dict[str, Any] = {
+                'method': config.method,
+                'url': config.url,
+            }
+
+            # Validate and add headers if provided (for testing, headers_json and auth_config_json not in Pydantic model)
+            # For now, test only validates the core URL/method/status codes
+            # TODO: Support custom headers in test if needed in future
+
+            # Make test request
+            response = await test_client.request(**request_kwargs)
+
+            # Calculate response time
+            response_time_ms = int((time.time() - start_time) * 1000)
+
+            # Parse expected status codes
+            expected_codes = set()
+            for part in config.expected_status_codes.split(','):
+                part = part.strip()
+                if '-' in part:
+                    try:
+                        start_code, end_code = part.split('-', 1)
+                        expected_codes.update(range(int(start_code.strip()), int(end_code.strip()) + 1))
+                    except ValueError:
+                        pass
+                else:
+                    try:
+                        expected_codes.add(int(part))
+                    except ValueError:
+                        pass
+
+            if not expected_codes:
+                expected_codes = {200}
+
+            # Check if status code matches
+            is_success = response.status_code in expected_codes
+
+            return {
+                "success": True,
+                "test_result": {
+                    "status_code": response.status_code,
+                    "response_time_ms": response_time_ms,
+                    "is_healthy": is_success,
+                    "message": f"Received status {response.status_code}" + (
+                        " (matches expected)" if is_success else f" (expected: {config.expected_status_codes})"
+                    )
+                }
+            }
+
+        except httpx.TimeoutException:
+            response_time_ms = int((time.time() - start_time) * 1000)
+            return {
+                "success": False,
+                "test_result": {
+                    "status_code": None,
+                    "response_time_ms": response_time_ms,
+                    "is_healthy": False,
+                    "message": f"Request timed out after {config.timeout_seconds}s"
+                }
+            }
+
+        except httpx.ConnectError as e:
+            response_time_ms = int((time.time() - start_time) * 1000)
+            return {
+                "success": False,
+                "test_result": {
+                    "status_code": None,
+                    "response_time_ms": response_time_ms,
+                    "is_healthy": False,
+                    "message": f"Connection failed: {str(e)[:200]}"
+                }
+            }
+
+        except Exception as e:
+            response_time_ms = int((time.time() - start_time) * 1000)
+            return {
+                "success": False,
+                "test_result": {
+                    "status_code": None,
+                    "response_time_ms": response_time_ms,
+                    "is_healthy": False,
+                    "message": f"Error: {str(e)[:200]}"
+                }
+            }
+    # httpx client is automatically closed here via context manager
 
 
 # ==================== Alert Rules V2 Routes ====================

@@ -14,6 +14,7 @@ CHANGES:
 - container_desired_states: Add custom_tags column
 - event_logs: Add source column and indexes
 - DockerHosts: Add tags, description columns
+- container_http_health_checks: New table for HTTP/HTTPS health monitoring
 """
 from alembic import op
 import sqlalchemy as sa
@@ -129,7 +130,9 @@ def upgrade() -> None:
 
         if not _column_exists('users', 'simplified_workflow'):
             with op.batch_alter_table('users', schema=None) as batch_op:
-                batch_op.add_column(sa.Column('simplified_workflow', sa.Boolean(), server_default='0'))
+                batch_op.add_column(sa.Column('simplified_workflow', sa.Boolean(), server_default='1'))
+            # Enable simplified workflow for all existing v1 users (better UX)
+            op.execute("UPDATE users SET simplified_workflow = 1")
 
         if not _column_exists('users', 'view_mode'):
             with op.batch_alter_table('users', schema=None) as batch_op:
@@ -229,12 +232,73 @@ def upgrade() -> None:
         op.create_index('idx_event_logs_source', 'event_logs', ['source'])
 
 
+    # ==================== container_http_health_checks Table ====================
+    # New table for HTTP/HTTPS health monitoring
+
+    if not _table_exists('container_http_health_checks'):
+        op.create_table(
+            'container_http_health_checks',
+            sa.Column('container_id', sa.Text(), nullable=False),
+            sa.Column('host_id', sa.Text(), nullable=False),
+
+            # Configuration
+            sa.Column('enabled', sa.Boolean(), server_default='0', nullable=False),
+            sa.Column('url', sa.Text(), nullable=False),
+            sa.Column('method', sa.Text(), server_default='GET', nullable=False),
+            sa.Column('expected_status_codes', sa.Text(), server_default='200', nullable=False),
+            sa.Column('timeout_seconds', sa.Integer(), server_default='10', nullable=False),
+            sa.Column('check_interval_seconds', sa.Integer(), server_default='60', nullable=False),
+            sa.Column('follow_redirects', sa.Boolean(), server_default='1', nullable=False),
+            sa.Column('verify_ssl', sa.Boolean(), server_default='1', nullable=False),
+
+            # Advanced config (JSON)
+            sa.Column('headers_json', sa.Text(), nullable=True),
+            sa.Column('auth_config_json', sa.Text(), nullable=True),
+
+            # State tracking
+            sa.Column('current_status', sa.Text(), server_default='unknown', nullable=False),
+            sa.Column('last_checked_at', sa.DateTime(), nullable=True),
+            sa.Column('last_success_at', sa.DateTime(), nullable=True),
+            sa.Column('last_failure_at', sa.DateTime(), nullable=True),
+            sa.Column('consecutive_successes', sa.Integer(), server_default='0', nullable=False),
+            sa.Column('consecutive_failures', sa.Integer(), server_default='0', nullable=False),
+            sa.Column('last_response_time_ms', sa.Integer(), nullable=True),
+            sa.Column('last_error_message', sa.Text(), nullable=True),
+
+            # Auto-restart integration
+            sa.Column('auto_restart_on_failure', sa.Boolean(), server_default='0', nullable=False),
+            sa.Column('failure_threshold', sa.Integer(), server_default='3', nullable=False),
+            sa.Column('success_threshold', sa.Integer(), server_default='1', nullable=False),
+
+            # Metadata
+            sa.Column('created_at', sa.DateTime(), server_default=sa.func.now(), nullable=False),
+            sa.Column('updated_at', sa.DateTime(), server_default=sa.func.now(), nullable=False),
+
+            sa.PrimaryKeyConstraint('container_id')
+        )
+
+        # Create indexes
+        op.create_index('idx_http_health_enabled', 'container_http_health_checks', ['enabled'])
+        op.create_index('idx_http_health_host', 'container_http_health_checks', ['host_id'])
+        op.create_index('idx_http_health_status', 'container_http_health_checks', ['current_status'])
+
+
 def downgrade() -> None:
     """
     Downgrade v2.0.0 to v1.1.3 schema.
 
     Note: This removes v2 features. Data in v2-only columns will be lost.
     """
+
+    # Drop container_http_health_checks table
+    if _table_exists('container_http_health_checks'):
+        if _index_exists('idx_http_health_status'):
+            op.drop_index('idx_http_health_status', table_name='container_http_health_checks')
+        if _index_exists('idx_http_health_host'):
+            op.drop_index('idx_http_health_host', table_name='container_http_health_checks')
+        if _index_exists('idx_http_health_enabled'):
+            op.drop_index('idx_http_health_enabled', table_name='container_http_health_checks')
+        op.drop_table('container_http_health_checks')
 
     # Drop indexes
     if _index_exists('idx_event_logs_source'):

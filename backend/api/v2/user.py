@@ -86,7 +86,7 @@ class UserPreferences(BaseModel):
     sidebar_collapsed: bool = Field(default=False)
     dashboard_layout_v2: Optional[Dict[str, Any]] = Field(default=None)  # react-grid-layout format
     dashboard: DashboardPreferences = Field(default_factory=DashboardPreferences)
-    simplified_workflow: bool = Field(default=False)  # Skip drawer, open modal directly
+    simplified_workflow: bool = Field(default=True)  # Skip drawer, open modal directly
 
     # Table sorting preferences (TanStack Table format: [{ id: 'column', desc: bool }])
     host_table_sort: Optional[list[Dict[str, Any]]] = Field(default=None)
@@ -226,7 +226,7 @@ async def get_user_preferences(
             sidebar_collapsed=user_result.sidebar_collapsed if user_result else False,
             dashboard_layout_v2=dashboard_layout_v2,
             dashboard=dashboard,
-            simplified_workflow=user_result.simplified_workflow if user_result and hasattr(user_result, 'simplified_workflow') else False,
+            simplified_workflow=user_result.simplified_workflow if user_result and hasattr(user_result, 'simplified_workflow') else True,
             host_table_sort=prefs_data.get("host_table_sort"),
             container_table_sort=prefs_data.get("container_table_sort")
         )

@@ -23,6 +23,7 @@ class EventCategory(str, Enum):
     ALERT = "alert"
     NOTIFICATION = "notification"
     USER = "user"
+    HEALTH_CHECK = "health_check"
 
 class EventType(str, Enum):
     """Event types"""

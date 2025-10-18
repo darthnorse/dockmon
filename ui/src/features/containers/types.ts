@@ -62,3 +62,32 @@ export interface ContainerUpdateStatus {
   last_checked_at: string | null
   auto_update_enabled?: boolean
 }
+
+export interface ContainerHttpHealthCheck {
+  // Configuration
+  enabled: boolean
+  url: string
+  method: string
+  expected_status_codes: string
+  timeout_seconds: number
+  check_interval_seconds: number
+  follow_redirects: boolean
+  verify_ssl: boolean
+  headers_json: string | null
+  auth_config_json: string | null
+
+  // State tracking
+  current_status: 'unknown' | 'healthy' | 'unhealthy'
+  last_checked_at: string | null
+  last_success_at: string | null
+  last_failure_at: string | null
+  consecutive_successes: number
+  consecutive_failures: number
+  last_response_time_ms: number | null
+  last_error_message: string | null
+
+  // Auto-restart integration
+  auto_restart_on_failure: boolean
+  failure_threshold: number
+  success_threshold: number
+}

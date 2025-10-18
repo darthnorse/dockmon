@@ -12,7 +12,7 @@ Events flow: Service → EventBus → [Database, AlertEvaluator, Subscribers]
 
 import logging
 from typing import Dict, Any, Optional, List, Callable, Awaitable
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
 logger = logging.getLogger(__name__)
@@ -180,7 +180,7 @@ class EventBus:
                 EventType.CONTAINER_STARTED: (LogEventType.STATE_CHANGE, EventCategory.CONTAINER, EventSeverity.INFO),
                 EventType.CONTAINER_STOPPED: (LogEventType.STATE_CHANGE, EventCategory.CONTAINER, EventSeverity.WARNING),
                 EventType.CONTAINER_DIED: (LogEventType.STATE_CHANGE, EventCategory.CONTAINER, EventSeverity.ERROR),
-                EventType.CONTAINER_HEALTH_CHANGED: (LogEventType.STATE_CHANGE, EventCategory.CONTAINER, EventSeverity.WARNING),
+                EventType.CONTAINER_HEALTH_CHANGED: (LogEventType.STATE_CHANGE, EventCategory.HEALTH_CHECK, EventSeverity.WARNING),
                 EventType.HOST_CONNECTED: (LogEventType.CONNECTION, EventCategory.HOST, EventSeverity.INFO),
                 EventType.HOST_DISCONNECTED: (LogEventType.DISCONNECTION, EventCategory.HOST, EventSeverity.ERROR),
             }

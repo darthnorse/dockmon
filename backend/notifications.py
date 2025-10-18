@@ -634,7 +634,7 @@ class NotificationService:
             elif rule.kind in ['container_stopped', 'container_restarted'] and settings.alert_template_state_change:
                 return settings.alert_template_state_change
             # Check if it's a health alert
-            elif rule.kind in ['container_unhealthy', 'host_unhealthy'] and settings.alert_template_health:
+            elif rule.kind in ['container_unhealthy', 'host_unhealthy', 'health_check_failed'] and settings.alert_template_health:
                 return settings.alert_template_health
             # Check if it's an update alert
             elif rule.kind in ['update_completed', 'update_available', 'update_failed'] and settings.alert_template_update:
@@ -661,9 +661,21 @@ class NotificationService:
 **Update Status:** {UPDATE_STATUS}
 **Rule:** {RULE_NAME}"""
 
-        # State change alerts (stopped, started, paused, restarted, died, unhealthy, healthy)
+        # Health check alerts (Docker native HEALTHCHECK and HTTP/HTTPS checks)
+        if kind in ['container_unhealthy', 'container_healthy', 'health_check_failed']:
+            return """🏥 **{SEVERITY} Alert: Health Check Failed**
+
+**Container:** {CONTAINER_NAME}
+**Host:** {HOST_NAME}
+**Status:** {OLD_STATE} → {NEW_STATE}
+{HEALTH_CHECK_URL}{ERROR_MESSAGE}{CONSECUTIVE_FAILURES}{RESPONSE_TIME}
+**Occurrences:** {OCCURRENCES}
+**Time:** {TIMESTAMP}
+**Rule:** {RULE_NAME}"""
+
+        # State change alerts (stopped, started, paused, restarted, died, killed)
         if kind in ['container_stopped', 'container_started', 'container_paused', 'container_restarted',
-                    'container_died', 'container_unhealthy', 'container_healthy', 'container_killed']:
+                    'container_died', 'container_killed']:
             return """🚨 **{SEVERITY} Alert: {KIND}**
 
 **Container:** {CONTAINER_NAME}
@@ -810,6 +822,12 @@ class NotificationService:
             '{PREVIOUS_IMAGE}': '',
             '{NEW_IMAGE}': '',
             '{ERROR_MESSAGE}': '',
+
+            # Initialize health check variables (will be overridden if event_context_json exists)
+            '{HEALTH_CHECK_URL}': '',
+            '{CONSECUTIVE_FAILURES}': '',
+            '{FAILURE_THRESHOLD}': '',
+            '{RESPONSE_TIME}': '',
         }
 
         # Optional labels
@@ -862,7 +880,36 @@ class NotificationService:
 
                 variables['{PREVIOUS_IMAGE}'] = previous_img
                 variables['{NEW_IMAGE}'] = new_img
-                variables['{ERROR_MESSAGE}'] = event_context.get('error_message', '') or ''
+
+                # Format error message with conditional display
+                error_message = event_context.get('error_message', '') or ''
+                if error_message:
+                    variables['{ERROR_MESSAGE}'] = f"**Error:** {error_message}\n"
+                else:
+                    variables['{ERROR_MESSAGE}'] = ''
+
+                # Health check specific variables
+                health_check_url = event_context.get('health_check_url', '') or ''
+                if health_check_url:
+                    variables['{HEALTH_CHECK_URL}'] = f"**URL:** {health_check_url}\n"
+                else:
+                    variables['{HEALTH_CHECK_URL}'] = ''
+
+                consecutive_failures = event_context.get('consecutive_failures')
+                failure_threshold = event_context.get('failure_threshold')
+                if consecutive_failures is not None and failure_threshold is not None:
+                    variables['{CONSECUTIVE_FAILURES}'] = f"**Failures:** {consecutive_failures}/{failure_threshold} consecutive\n"
+                else:
+                    variables['{CONSECUTIVE_FAILURES}'] = ''
+
+                variables['{FAILURE_THRESHOLD}'] = str(failure_threshold) if failure_threshold is not None else ''
+
+                # Format response time with conditional display
+                response_time = event_context.get('response_time_ms')
+                if response_time is not None:
+                    variables['{RESPONSE_TIME}'] = f"**Response Time:** {response_time}ms\n"
+                else:
+                    variables['{RESPONSE_TIME}'] = ''
 
                 # Also check attributes for additional info if not directly available
                 if not variables['{IMAGE}'] and 'attributes' in event_context:

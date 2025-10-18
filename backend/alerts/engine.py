@@ -311,8 +311,15 @@ class AlertEngine:
         # This will be expanded as we add more rule types
 
         if rule.kind == "unhealthy":
-            # Container health status changed to unhealthy
+            # Container health status changed to unhealthy (Docker native health checks)
             return event_type == "state_change" and event_data and event_data.get("new_state") == "unhealthy"
+
+        if rule.kind == "health_check_failed":
+            # HTTP/HTTPS health check failed
+            return (event_type == "state_change" and
+                    event_data and
+                    event_data.get("new_state") == "unhealthy" and
+                    event_data.get("health_check_type") == "http")
 
         if rule.kind == "container_stopped":
             # Container stopped/exited

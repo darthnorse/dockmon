@@ -20,15 +20,17 @@ interface SelectContextType {
   onValueChange: (value: string) => void
   open: boolean
   setOpen: (open: boolean) => void
+  triggerRef: React.RefObject<HTMLButtonElement> | null
 }
 
 const SelectContext = React.createContext<SelectContextType | undefined>(undefined)
 
 export function Select({ value, onValueChange, disabled, children }: SelectProps) {
   const [open, setOpen] = React.useState(false)
+  const triggerRef = React.useRef<HTMLButtonElement>(null)
 
   return (
-    <SelectContext.Provider value={{ value, onValueChange, open, setOpen }}>
+    <SelectContext.Provider value={{ value, onValueChange, open, setOpen, triggerRef }}>
       <div className={cn('relative', disabled && 'pointer-events-none opacity-50')}>
         {children}
       </div>
@@ -46,12 +48,10 @@ export function SelectTrigger({ id, className, children }: SelectTriggerProps) {
   const context = React.useContext(SelectContext)
   if (!context) throw new Error('SelectTrigger must be used within Select')
 
-  const triggerRef = React.useRef<HTMLButtonElement>(null)
-
   return (
     <button
       id={id}
-      ref={triggerRef}
+      ref={context.triggerRef}
       type="button"
       onClick={() => context.setOpen(!context.open)}
       className={cn(
@@ -95,19 +95,16 @@ function SelectPortalContent({ children }: { children: React.ReactNode }) {
 
   // Find the trigger button to position the dropdown
   React.useEffect(() => {
-    if (context.open) {
-      // Find the trigger button by looking for the button with role
-      const trigger = document.querySelector('button[type="button"]') as HTMLElement
-      if (trigger) {
-        const rect = trigger.getBoundingClientRect()
-        setPosition({
-          top: rect.bottom + 4,
-          left: rect.left,
-          width: rect.width,
-        })
-      }
+    if (context.open && context.triggerRef?.current) {
+      const trigger = context.triggerRef.current
+      const rect = trigger.getBoundingClientRect()
+      setPosition({
+        top: rect.bottom + 4,
+        left: rect.left,
+        width: rect.width,
+      })
     }
-  }, [context.open])
+  }, [context, context.open])
 
   // Handle click outside
   React.useEffect(() => {

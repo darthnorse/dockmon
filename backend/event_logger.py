@@ -251,7 +251,7 @@ class EventLogger:
                                 'triggered_by': event_obj.triggered_by,
                                 'details': event_obj.details,
                                 'duration_ms': event_obj.duration_ms,
-                                'timestamp': event_obj.timestamp.isoformat()
+                                'timestamp': event_obj.timestamp.isoformat() + 'Z'
                             }
                         })
                     except Exception as ws_error:

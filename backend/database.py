@@ -1640,8 +1640,8 @@ class DatabaseManager:
                 {
                     'subject_type': a.subject_type,
                     'subject_id': a.subject_id,
-                    'created_at': a.created_at.isoformat() if a.created_at else None,
-                    'last_seen_at': a.last_seen_at.isoformat() if a.last_seen_at else None
+                    'created_at': a.created_at.isoformat() + 'Z' if a.created_at else None,
+                    'last_seen_at': a.last_seen_at.isoformat() + 'Z' if a.last_seen_at else None
                 }
                 for a in assignments
             ]
@@ -1717,7 +1717,7 @@ class DatabaseManager:
                     'name': tag.name,
                     'color': tag.color,
                     'kind': tag.kind,
-                    'created_at': tag.created_at.isoformat() if tag.created_at else None
+                    'created_at': tag.created_at.isoformat() + 'Z' if tag.created_at else None
                 }
                 for tag in tags
             ]
@@ -2266,8 +2266,8 @@ class DatabaseManager:
                 'total_events': total_events,
                 'category_counts': category_counts,
                 'severity_counts': severity_counts,
-                'period_start': start_date.isoformat() if start_date else None,
-                'period_end': end_date.isoformat() if end_date else None
+                'period_start': start_date.isoformat() + 'Z' if start_date else None,
+                'period_end': end_date.isoformat() + 'Z' if end_date else None
             }
 
 

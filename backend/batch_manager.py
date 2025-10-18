@@ -480,9 +480,9 @@ class BatchJobManager:
                 'success_items': job.success_items,
                 'error_items': job.error_items,
                 'skipped_items': job.skipped_items,
-                'created_at': job.created_at.isoformat() if job.created_at else None,
-                'started_at': job.started_at.isoformat() if job.started_at else None,
-                'completed_at': job.completed_at.isoformat() if job.completed_at else None,
+                'created_at': job.created_at.isoformat() + 'Z' if job.created_at else None,
+                'started_at': job.started_at.isoformat() + 'Z' if job.started_at else None,
+                'completed_at': job.completed_at.isoformat() + 'Z' if job.completed_at else None,
                 'items': [
                     {
                         'id': item.id,
@@ -492,8 +492,8 @@ class BatchJobManager:
                         'host_name': item.host_name,
                         'status': item.status,
                         'message': item.message,
-                        'started_at': item.started_at.isoformat() if item.started_at else None,
-                        'completed_at': item.completed_at.isoformat() if item.completed_at else None
+                        'started_at': item.started_at.isoformat() + 'Z' if item.started_at else None,
+                        'completed_at': item.completed_at.isoformat() + 'Z' if item.completed_at else None
                     }
                     for item in items
                 ]

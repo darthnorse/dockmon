@@ -75,7 +75,7 @@ class Event:
             'host_id': self.host_id,
             'host_name': self.host_name,
             'data': self.data,
-            'timestamp': self.timestamp.isoformat()
+            'timestamp': self.timestamp.isoformat() + 'Z'
         }
 
 
@@ -240,7 +240,7 @@ class EventBus:
 
             # Build event data with special flags for alert matching
             event_data = {
-                'timestamp': event.timestamp.isoformat(),
+                'timestamp': event.timestamp.isoformat() + 'Z',
                 'event_type': alert_event_type,
                 'triggered_by': 'event_bus',
                 **event.data  # Include all custom data

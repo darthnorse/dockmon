@@ -203,7 +203,7 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
   const hasUpdate = updateStatus?.update_available
   const lastChecked = updateStatus?.last_checked_at
     ? new Date(updateStatus.last_checked_at).toLocaleString()
-    : 'Never'
+    : 'Not Checked'
 
   return (
     <div className="p-6 space-y-6">
@@ -286,6 +286,39 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
               style={{ width: `${updateProgress.progress}%` }}
             />
           </div>
+        </div>
+      )}
+
+      {/* Status Details */}
+      {updateStatus && (
+        <div className="grid grid-cols-3 gap-4">
+          <div className="bg-muted rounded-lg p-4">
+            <div className="flex items-center gap-2 text-muted-foreground mb-1">
+              <Clock className="h-4 w-4" />
+              <span className="text-xs font-medium">Last Checked</span>
+            </div>
+            <p className="text-sm font-medium">{lastChecked}</p>
+          </div>
+
+          {updateStatus.current_digest && (
+            <div className="bg-muted rounded-lg p-4">
+              <div className="flex items-center gap-2 text-muted-foreground mb-1">
+                <AlertCircle className="h-4 w-4" />
+                <span className="text-xs font-medium">Current Digest</span>
+              </div>
+              <p className="text-sm font-mono font-medium">{updateStatus.current_digest}</p>
+            </div>
+          )}
+
+          {hasUpdate && updateStatus.latest_digest && (
+            <div className="bg-amber-500/10 rounded-lg p-4">
+              <div className="flex items-center gap-2 text-amber-500 mb-1">
+                <Package className="h-4 w-4" />
+                <span className="text-xs font-medium">Latest Digest</span>
+              </div>
+              <p className="text-sm font-mono font-medium text-amber-500">{updateStatus.latest_digest}</p>
+            </div>
+          )}
         </div>
       )}
 
@@ -385,15 +418,6 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
               </SelectContent>
             </Select>
           </div>
-
-          {/* Last checked info */}
-          <div className="flex items-center justify-between text-sm">
-            <span className="text-muted-foreground">Last Checked</span>
-            <div className="flex items-center gap-2 text-muted-foreground">
-              <Clock className="h-4 w-4" />
-              {lastChecked}
-            </div>
-          </div>
         </div>
       </div>
 
@@ -406,6 +430,7 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
           <li>Tracking modes: exact (specific tag), minor (e.g., 1.25.x), major (e.g., 1.x), latest</li>
           <li>Auto-update will automatically pull and recreate containers when updates are available</li>
           <li>Container health is verified after updates to ensure successful deployment</li>
+          <li>For Compose-managed containers, updates apply to the running container only. Update your compose file to persist changes</li>
         </ul>
       </div>
     </div>

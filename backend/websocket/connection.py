@@ -19,7 +19,7 @@ class DateTimeEncoder(json.JSONEncoder):
     def default(self, obj):
         from datetime import datetime
         if isinstance(obj, datetime):
-            return obj.isoformat()
+            return obj.isoformat() + 'Z'
         return super().default(obj)
 
 

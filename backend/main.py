@@ -845,6 +845,7 @@ async def get_container_update_status(
                 "latest_digest": None,
                 "floating_tag_mode": "exact",
                 "last_checked_at": None,
+                "auto_update_enabled": False,
             }
 
         return {
@@ -854,7 +855,7 @@ async def get_container_update_status(
             "latest_image": record.latest_image,
             "latest_digest": record.latest_digest[:12] if record.latest_digest else None,
             "floating_tag_mode": record.floating_tag_mode,
-            "last_checked_at": record.last_checked_at.isoformat() if record.last_checked_at else None,
+            "last_checked_at": record.last_checked_at.isoformat() + 'Z' if record.last_checked_at else None,
             "auto_update_enabled": record.auto_update_enabled,
         }
 
@@ -1030,7 +1031,7 @@ async def update_auto_update_config(
             "latest_image": record.latest_image,
             "latest_digest": record.latest_digest,
             "floating_tag_mode": record.floating_tag_mode,
-            "last_checked_at": record.last_checked_at.isoformat() if record.last_checked_at else None,
+            "last_checked_at": record.last_checked_at.isoformat() + 'Z' if record.last_checked_at else None,
             "auto_update_enabled": record.auto_update_enabled,
         }
 
@@ -1325,6 +1326,14 @@ async def get_http_health_check(
                 "current_status": "unknown",
             }
 
+        # Helper to format datetime with UTC timezone indicator
+        def format_dt(dt):
+            if not dt:
+                return None
+            # SQLite datetimes are naive (no timezone), but we store UTC
+            # Append 'Z' to indicate UTC timezone (consistent with rest of API)
+            return dt.isoformat() + 'Z'
+
         return {
             "enabled": check.enabled,
             "url": check.url,
@@ -1338,9 +1347,9 @@ async def get_http_health_check(
             "failure_threshold": check.failure_threshold,
             "success_threshold": getattr(check, 'success_threshold', 1),  # Default to 1 for backwards compatibility
             "current_status": check.current_status,
-            "last_checked_at": check.last_checked_at.isoformat() if check.last_checked_at else None,
-            "last_success_at": check.last_success_at.isoformat() if check.last_success_at else None,
-            "last_failure_at": check.last_failure_at.isoformat() if check.last_failure_at else None,
+            "last_checked_at": format_dt(check.last_checked_at),
+            "last_success_at": format_dt(check.last_success_at),
+            "last_failure_at": format_dt(check.last_failure_at),
             "consecutive_failures": check.consecutive_failures,
             "consecutive_successes": check.consecutive_successes,
             "last_response_time_ms": check.last_response_time_ms,
@@ -1903,8 +1912,8 @@ async def create_notification_channel(channel: NotificationChannelCreate, curren
             "type": db_channel.type,
             "config": db_channel.config,
             "enabled": db_channel.enabled,
-            "created_at": db_channel.created_at.isoformat(),
-            "updated_at": db_channel.updated_at.isoformat()
+            "created_at": db_channel.created_at.isoformat() + 'Z' if db_channel.created_at else None,
+            "updated_at": db_channel.updated_at.isoformat() + 'Z' if db_channel.updated_at else None
         }
     except Exception as e:
         logger.error(f"Failed to create notification channel: {e}")
@@ -1926,8 +1935,8 @@ async def update_notification_channel(channel_id: int, updates: NotificationChan
             "type": db_channel.type,
             "config": db_channel.config,
             "enabled": db_channel.enabled,
-            "created_at": db_channel.created_at.isoformat(),
-            "updated_at": db_channel.updated_at.isoformat()
+            "created_at": db_channel.created_at.isoformat() + 'Z' if db_channel.created_at else None,
+            "updated_at": db_channel.updated_at.isoformat() + 'Z' if db_channel.updated_at else None
         }
     except HTTPException:
         raise
@@ -2123,7 +2132,7 @@ async def get_event_by_id(
             "triggered_by": event.triggered_by,
             "details": event.details,
             "duration_ms": event.duration_ms,
-            "timestamp": event.timestamp.isoformat()
+            "timestamp": event.timestamp.isoformat() + 'Z'
         }
     except HTTPException:
         raise
@@ -2740,7 +2749,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
         # This eliminates the 5-10 second delay when opening container drawers on page load
         containers = await monitor.get_containers()
         broadcast_data = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat() + 'Z',
             "containers": [c.dict() for c in containers]
         }
 

@@ -145,7 +145,7 @@ class RateLimiter:
         # Check if client is banned
         if client_ip in self.banned_clients:
             if current_time < self.banned_clients[client_ip]:
-                return False, f"IP banned until {datetime.fromtimestamp(self.banned_clients[client_ip]).isoformat()}"
+                return False, f"IP banned until {datetime.fromtimestamp(self.banned_clients[client_ip]).isoformat()}Z"
             else:
                 # Ban expired, remove from banned list
                 del self.banned_clients[client_ip]

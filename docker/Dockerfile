@@ -42,7 +42,6 @@ FROM python:3.13-alpine
 RUN apk add --no-cache \
     # Runtime dependencies
     nginx \
-    supervisor \
     curl \
     ca-certificates \
     openssl \
@@ -63,6 +62,9 @@ WORKDIR /app
 # Copy Go stats service binary from builder
 COPY --from=go-builder /build/stats-service /usr/local/bin/stats-service
 RUN chmod +x /usr/local/bin/stats-service
+
+# Install supervisor 4.3.0 from PyPI (removes pkg_resources dependency)
+RUN pip install --no-cache-dir supervisor==4.3.0
 
 # Copy and install Python dependencies
 COPY backend/requirements.txt /app/backend/

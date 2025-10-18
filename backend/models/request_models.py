@@ -365,3 +365,76 @@ class ContainerTagUpdate(TagUpdateBase):
 class HostTagUpdate(TagUpdateBase):
     """Request model for adding/removing tags from a host"""
     pass
+
+
+class HttpHealthCheckConfig(BaseModel):
+    """Request model for HTTP health check configuration"""
+    enabled: bool = Field(default=False)
+    url: str = Field(..., min_length=1, max_length=500)
+    method: str = Field(default='GET', pattern='^(GET|POST|HEAD)$')
+    expected_status_codes: str = Field(default='200', min_length=1, max_length=100)
+    timeout_seconds: int = Field(default=10, ge=5, le=60)
+    check_interval_seconds: int = Field(default=60, ge=10, le=3600)
+    follow_redirects: bool = Field(default=True)
+    verify_ssl: bool = Field(default=True)
+    auto_restart_on_failure: bool = Field(default=False)
+    failure_threshold: int = Field(default=3, ge=1, le=10)
+    success_threshold: int = Field(default=1, ge=1, le=10)
+
+    @validator('url')
+    def validate_url(cls, v):
+        """Validate URL format"""
+        if not v or not v.strip():
+            raise ValueError('URL cannot be empty')
+
+        v = v.strip()
+
+        # Must start with http:// or https://
+        if not (v.startswith('http://') or v.startswith('https://')):
+            raise ValueError('URL must start with http:// or https://')
+
+        # Basic sanity checks
+        if ' ' in v:
+            raise ValueError('URL cannot contain spaces')
+
+        return v
+
+    @validator('expected_status_codes')
+    def validate_status_codes(cls, v):
+        """Validate status codes format (e.g., "200", "200-299", "200,201,204")"""
+        if not v or not v.strip():
+            raise ValueError('Expected status codes cannot be empty')
+
+        v = v.strip()
+
+        # Split by comma and validate each part
+        for part in v.split(','):
+            part = part.strip()
+
+            if '-' in part:
+                # Range format: "200-299"
+                try:
+                    start, end = part.split('-', 1)
+                    start_code = int(start.strip())
+                    end_code = int(end.strip())
+
+                    if not (100 <= start_code <= 599):
+                        raise ValueError(f'Invalid HTTP status code: {start_code}')
+                    if not (100 <= end_code <= 599):
+                        raise ValueError(f'Invalid HTTP status code: {end_code}')
+                    if start_code >= end_code:
+                        raise ValueError(f'Invalid range: {start_code}-{end_code} (start must be less than end)')
+                except ValueError as e:
+                    if 'Invalid' in str(e):
+                        raise
+                    raise ValueError(f'Invalid status code range format: {part}')
+            else:
+                # Single code
+                try:
+                    code = int(part)
+                    if not (100 <= code <= 599):
+                        raise ValueError(f'Invalid HTTP status code: {code}')
+                except ValueError:
+                    raise ValueError(f'Invalid status code: {part}')
+
+        return v

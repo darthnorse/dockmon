@@ -51,7 +51,7 @@ class User(Base):
     event_sort_order = Column(String, default='desc')  # 'desc' (newest first) or 'asc' (oldest first)
     modal_preferences = Column(Text, nullable=True)  # JSON string of modal size/position preferences
     prefs = Column(Text, nullable=True)  # JSON string of user preferences (dashboard, table sorts, etc.)
-    simplified_workflow = Column(Boolean, default=False)  # Skip drawer, open modal directly
+    simplified_workflow = Column(Boolean, default=True)  # Skip drawer, open modal directly
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
     last_login = Column(DateTime, nullable=True)
@@ -251,6 +251,54 @@ class ContainerUpdate(Base):
 
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class ContainerHttpHealthCheck(Base):
+    """HTTP/HTTPS health check configuration for containers"""
+    __tablename__ = "container_http_health_checks"
+
+    container_id = Column(Text, primary_key=True)  # Composite: host_id:container_id
+    host_id = Column(Text, nullable=False)
+
+    # Configuration
+    enabled = Column(Boolean, default=False, nullable=False)
+    url = Column(Text, nullable=False)
+    method = Column(Text, default='GET', nullable=False)
+    expected_status_codes = Column(Text, default='200', nullable=False)
+    timeout_seconds = Column(Integer, default=10, nullable=False)
+    check_interval_seconds = Column(Integer, default=60, nullable=False)
+    follow_redirects = Column(Boolean, default=True, nullable=False)
+    verify_ssl = Column(Boolean, default=True, nullable=False)
+
+    # Advanced config (JSON)
+    headers_json = Column(Text, nullable=True)
+    auth_config_json = Column(Text, nullable=True)
+
+    # State tracking
+    current_status = Column(Text, default='unknown', nullable=False)
+    last_checked_at = Column(DateTime, nullable=True)
+    last_success_at = Column(DateTime, nullable=True)
+    last_failure_at = Column(DateTime, nullable=True)
+    consecutive_successes = Column(Integer, default=0, nullable=False)
+    consecutive_failures = Column(Integer, default=0, nullable=False)
+    last_response_time_ms = Column(Integer, nullable=True)
+    last_error_message = Column(Text, nullable=True)
+
+    # Auto-restart integration
+    auto_restart_on_failure = Column(Boolean, default=False, nullable=False)
+    failure_threshold = Column(Integer, default=3, nullable=False)
+    success_threshold = Column(Integer, default=1, nullable=False)  # Consecutive successes to mark healthy
+
+    # Metadata
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+    __table_args__ = (
+        Index('idx_http_health_enabled', 'enabled'),
+        Index('idx_http_health_host', 'host_id'),
+        Index('idx_http_health_status', 'current_status'),
+    )
+
 
 class NotificationChannel(Base):
     """Notification channel configuration"""

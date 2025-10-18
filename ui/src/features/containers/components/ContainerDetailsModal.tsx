@@ -23,6 +23,7 @@ import { ContainerModalEventsTab } from './modal-tabs/ContainerModalEventsTab'
 import { ContainerModalLogsTab } from './modal-tabs/ContainerModalLogsTab'
 import { ContainerModalAlertsTab } from './modal-tabs/ContainerModalAlertsTab'
 import { ContainerUpdatesTab } from './modal-tabs/ContainerUpdatesTab'
+import { ContainerHealthCheckTab } from './modal-tabs/ContainerHealthCheckTab'
 
 export interface ContainerDetailsModalProps {
   containerId: string | null
@@ -179,6 +180,11 @@ export function ContainerDetailsModal({
       id: 'updates',
       label: 'Updates',
       content: <ContainerUpdatesTab container={container} />,
+    },
+    {
+      id: 'health',
+      label: 'Health Check',
+      content: <ContainerHealthCheckTab container={container} />,
     },
   ]
 

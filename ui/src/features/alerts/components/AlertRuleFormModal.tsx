@@ -57,7 +57,15 @@ const RULE_KINDS = [
   {
     value: 'container_unhealthy',
     label: 'Container Health Check Failing',
-    description: 'Alert when container health check fails (requires health check configured)',
+    description: 'Alert when Docker native health check fails (HEALTHCHECK in Dockerfile)',
+    category: 'Container State',
+    requiresMetric: false,
+    scopes: ['container']
+  },
+  {
+    value: 'health_check_failed',
+    label: 'Health Check Failed',
+    description: 'Alert when HTTP/HTTPS health check fails (configured in Health Check tab)',
     category: 'Container State',
     requiresMetric: false,
     scopes: ['container']

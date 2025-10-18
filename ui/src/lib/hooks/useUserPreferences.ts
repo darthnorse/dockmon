@@ -173,7 +173,7 @@ export function useSimplifiedWorkflow() {
   }
 
   return {
-    enabled: preferences?.simplified_workflow ?? false,
+    enabled: preferences?.simplified_workflow ?? true,
     setEnabled: setSimplifiedWorkflow,
     isLoading: updatePreferences.isPending,
   }

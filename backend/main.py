@@ -1328,6 +1328,12 @@ async def create_alert_rule_v2(
     from models.settings_models import AlertRuleV2Create
 
     try:
+        # Default suppress_during_updates to True for container-scoped rules if not explicitly set
+        suppress_during_updates = rule.suppress_during_updates
+        if suppress_during_updates is None:
+            # If not explicitly set, default to True for container scope
+            suppress_during_updates = (rule.scope == 'container')
+
         new_rule = monitor.db.create_alert_rule_v2(
             name=rule.name,
             description=rule.description,
@@ -1344,7 +1350,7 @@ async def create_alert_rule_v2(
             clear_duration_seconds=rule.clear_duration_seconds,
             cooldown_seconds=rule.cooldown_seconds,
             auto_resolve=rule.auto_resolve or False,
-            suppress_during_updates=rule.suppress_during_updates or False,
+            suppress_during_updates=suppress_during_updates,
             host_selector_json=rule.host_selector_json,
             container_selector_json=rule.container_selector_json,
             labels_json=rule.labels_json,

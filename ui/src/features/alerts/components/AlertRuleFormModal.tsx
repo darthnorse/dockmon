@@ -194,10 +194,12 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
 
     const containerSelector = parseContainerSelector(rule?.container_selector_json)
 
+    const scope = rule?.scope || 'container'
+
     return {
       name: rule?.name || '',
       description: rule?.description || '',
-      scope: rule?.scope || 'container',
+      scope: scope,
       kind: ruleKind,
       enabled: rule?.enabled ?? true,
       severity: rule?.severity || 'warning',
@@ -220,7 +222,8 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       notify_channels: rule?.notify_channels_json ? JSON.parse(rule.notify_channels_json) : [],
       custom_template: rule?.custom_template !== undefined ? rule.custom_template : null,
       auto_resolve_updates: rule?.auto_resolve ?? false,
-      suppress_during_updates: rule?.suppress_during_updates ?? false,
+      // Default suppress_during_updates to true for container-scoped rules
+      suppress_during_updates: rule?.suppress_during_updates ?? (scope === 'container'),
     }
   })
 
@@ -443,6 +446,9 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       // Also clear selected tags since they're scope-specific
       if (field === 'scope') {
         setSelectedTags([])
+        // Default suppress_during_updates to true for container scope
+        updated.suppress_during_updates = (value === 'container')
+
         const currentKind = RULE_KINDS.find((k) => k.value === prev.kind)
         if (currentKind && !currentKind.scopes.includes(value)) {
           // Find first valid rule kind for new scope
@@ -565,6 +571,11 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
 
     // Cooldown
     parts.push(`Cooldown: ${formData.cooldown_seconds}s`)
+
+    // Suppress during updates (container scope only)
+    if (formData.scope === 'container') {
+      parts.push(`Suppress during updates: ${formData.suppress_during_updates ? 'Yes' : 'No'}`)
+    }
 
     // Notifications
     if (formData.notify_channels.length > 0) {

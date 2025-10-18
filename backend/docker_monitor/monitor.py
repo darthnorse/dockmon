@@ -1028,16 +1028,16 @@ class DockerMonitor:
         orphaned = {}
 
         try:
-            # Get all alert rules
+            # Get all current containers FIRST (async operation)
+            current_containers = {}
+            for container in await self.get_containers():
+                key = f"{container.host_id}:{container.name}"
+                current_containers[key] = True
+
+            # Now query database with session closed during async operations
             with self.db.get_session() as session:
                 from database import AlertRuleDB, AlertRuleContainer
                 alert_rules = session.query(AlertRuleDB).all()
-
-                # Get all current containers (name + host_id pairs)
-                current_containers = {}
-                for container in await self.get_containers():
-                    key = f"{container.host_id}:{container.name}"
-                    current_containers[key] = True
 
                 # Check each alert rule's containers
                 for rule in alert_rules:
@@ -1058,10 +1058,10 @@ class DockerMonitor:
                             'orphaned_containers': orphaned_containers
                         }
 
-                if orphaned:
-                    logger.info(f"Found {len(orphaned)} alert rules with orphaned containers")
+            if orphaned:
+                logger.info(f"Found {len(orphaned)} alert rules with orphaned containers")
 
-                return orphaned
+            return orphaned
 
         except Exception as e:
             logger.error(f"Error checking orphaned alerts: {e}")

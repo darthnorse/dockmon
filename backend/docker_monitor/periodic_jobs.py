@@ -39,63 +39,87 @@ class PeriodicJobsManager:
 
         resolved_count = 0
 
+        # Extract alert data and close session BEFORE Docker API calls
+        alerts_to_check = []
         with self.db.get_session() as session:
             # Get all open/snoozed alerts
             open_alerts = session.query(AlertV2).filter(
                 AlertV2.state.in_(['open', 'snoozed'])
             ).all()
 
+            # Extract data we need while session is open
             for alert in open_alerts:
-                should_resolve = False
-                resolve_reason = None
+                alerts_to_check.append({
+                    'id': alert.id,
+                    'scope_type': alert.scope_type,
+                    'scope_id': alert.scope_id,
+                    'last_seen': alert.last_seen
+                })
 
-                # Check if entity still exists
-                if alert.scope_type == 'container':
-                    # Check if container actually exists in Docker (any state - running, stopped, etc.)
-                    if self.monitor:
-                        container_exists = False
+        # Session is now closed - safe for blocking Docker API calls
+        alerts_to_resolve = []
 
-                        # Check all connected hosts for this container
-                        for host_id, client in self.monitor.clients.items():
-                            try:
-                                # Try to get container by ID (works for any state)
-                                client.containers.get(alert.scope_id)
-                                container_exists = True
-                                break
-                            except Exception:
-                                # Container not found on this host, try next
-                                continue
+        for alert_data in alerts_to_check:
+            should_resolve = False
+            resolve_reason = None
 
-                        if not container_exists:
-                            should_resolve = True
-                            resolve_reason = 'entity_gone'
-                            logger.info(f"Container {alert.scope_id[:12]} no longer exists on any host, auto-resolving alert {alert.id}")
+            # Check if entity still exists
+            if alert_data['scope_type'] == 'container':
+                # Check if container actually exists in Docker (any state - running, stopped, etc.)
+                if self.monitor:
+                    container_exists = False
 
-                elif alert.scope_type == 'host':
-                    # Check if host exists and is connected
-                    if self.monitor and alert.scope_id not in self.monitor.hosts:
+                    # Check all connected hosts for this container
+                    for host_id, client in self.monitor.clients.items():
+                        try:
+                            # Try to get container by ID (works for any state)
+                            client.containers.get(alert_data['scope_id'])
+                            container_exists = True
+                            break
+                        except Exception:
+                            # Container not found on this host, try next
+                            continue
+
+                    if not container_exists:
                         should_resolve = True
                         resolve_reason = 'entity_gone'
-                        logger.info(f"Host {alert.scope_id[:12]} no longer exists, auto-resolving alert {alert.id}")
+                        logger.info(f"Container {alert_data['scope_id'][:12]} no longer exists on any host, auto-resolving alert {alert_data['id']}")
 
-                # Check for stale alerts (no updates in 24h)
-                if not should_resolve and alert.last_seen:
-                    last_seen_aware = alert.last_seen if alert.last_seen.tzinfo else alert.last_seen.replace(tzinfo=timezone.utc)
-                    time_since_update = datetime.now(timezone.utc) - last_seen_aware
+            elif alert_data['scope_type'] == 'host':
+                # Check if host exists and is connected
+                if self.monitor and alert_data['scope_id'] not in self.monitor.hosts:
+                    should_resolve = True
+                    resolve_reason = 'entity_gone'
+                    logger.info(f"Host {alert_data['scope_id'][:12]} no longer exists, auto-resolving alert {alert_data['id']}")
 
-                    if time_since_update > timedelta(hours=24):
-                        should_resolve = True
-                        resolve_reason = 'expired'
-                        logger.info(f"Alert {alert.id} stale for {time_since_update.total_seconds()/3600:.1f}h, auto-resolving")
+            # Check for stale alerts (no updates in 24h)
+            if not should_resolve and alert_data['last_seen']:
+                last_seen_aware = alert_data['last_seen'] if alert_data['last_seen'].tzinfo else alert_data['last_seen'].replace(tzinfo=timezone.utc)
+                time_since_update = datetime.now(timezone.utc) - last_seen_aware
 
-                # Resolve the alert
-                if should_resolve:
-                    alert.state = 'resolved'
-                    alert.resolved_at = datetime.now(timezone.utc)
-                    alert.resolved_reason = resolve_reason
-                    resolved_count += 1
+                if time_since_update > timedelta(hours=24):
+                    should_resolve = True
+                    resolve_reason = 'expired'
+                    logger.info(f"Alert {alert_data['id']} stale for {time_since_update.total_seconds()/3600:.1f}h, auto-resolving")
 
-            if resolved_count > 0:
+            # Store alerts that need resolving
+            if should_resolve:
+                alerts_to_resolve.append({
+                    'id': alert_data['id'],
+                    'reason': resolve_reason
+                })
+
+        # Reopen session to update alerts
+        if alerts_to_resolve:
+            with self.db.get_session() as session:
+                for alert_info in alerts_to_resolve:
+                    alert = session.query(AlertV2).filter(AlertV2.id == alert_info['id']).first()
+                    if alert:
+                        alert.state = 'resolved'
+                        alert.resolved_at = datetime.now(timezone.utc)
+                        alert.resolved_reason = alert_info['reason']
+                        resolved_count += 1
+
                 session.commit()
                 logger.info(f"Auto-resolved {resolved_count} stale alerts")
 

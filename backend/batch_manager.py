@@ -130,6 +130,8 @@ class BatchJobManager:
                 await asyncio.gather(*tasks, return_exceptions=True)
 
             # Update final job status
+            # Extract status and close session BEFORE WebSocket broadcast
+            final_status = None
             with self.db.get_session() as session:
                 job = session.query(BatchJob).filter_by(id=job_id).first()
                 if job:
@@ -143,11 +145,13 @@ class BatchJobManager:
                     else:
                         job.status = 'completed'
 
+                    final_status = job.status
                     session.commit()
 
-                    # Broadcast completion
-                    await self._broadcast_job_update(job_id, job.status, None)
-                    logger.info(f"Job {job_id} completed: {job.status}")
+            # Session is now closed - safe for WebSocket broadcast
+            if final_status:
+                await self._broadcast_job_update(job_id, final_status, None)
+                logger.info(f"Job {job_id} completed: {final_status}")
 
         except Exception as e:
             logger.error(f"Error processing job {job_id}: {e}")
@@ -404,32 +408,38 @@ class BatchJobManager:
         logger.info(f"Broadcasting job update: {job_id} - {status}")
 
         # Get job details to include progress counters
+        # Extract data and close session BEFORE WebSocket broadcast
+        job_data = None
         with self.db.get_session() as session:
             job = session.query(BatchJob).filter_by(id=job_id).first()
             if job:
-                await self.ws_manager.broadcast({
-                    'type': 'batch_job_update',
-                    'data': {
-                        'job_id': job_id,
-                        'status': status,
-                        'message': message,
-                        'total_items': job.total_items,
-                        'completed_items': job.completed_items,
-                        'success_items': job.success_items,
-                        'error_items': job.error_items,
-                        'skipped_items': job.skipped_items,
-                    }
-                })
-            else:
-                # Fallback if job not found
-                await self.ws_manager.broadcast({
-                    'type': 'batch_job_update',
-                    'data': {
-                        'job_id': job_id,
-                        'status': status,
-                        'message': message
-                    }
-                })
+                job_data = {
+                    'job_id': job_id,
+                    'status': status,
+                    'message': message,
+                    'total_items': job.total_items,
+                    'completed_items': job.completed_items,
+                    'success_items': job.success_items,
+                    'error_items': job.error_items,
+                    'skipped_items': job.skipped_items,
+                }
+
+        # Session is now closed - safe for WebSocket broadcast
+        if job_data:
+            await self.ws_manager.broadcast({
+                'type': 'batch_job_update',
+                'data': job_data
+            })
+        else:
+            # Fallback if job not found
+            await self.ws_manager.broadcast({
+                'type': 'batch_job_update',
+                'data': {
+                    'job_id': job_id,
+                    'status': status,
+                    'message': message
+                }
+            })
 
     async def _broadcast_item_update(
         self,

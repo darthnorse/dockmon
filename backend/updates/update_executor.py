@@ -68,6 +68,8 @@ class UpdateExecutor:
         }
 
         # Get all containers with auto-update enabled and updates available
+        # Extract data and close session BEFORE async operations
+        updates_data = []
         with self.db.get_session() as session:
             from database import ContainerUpdate
             updates = session.query(ContainerUpdate).filter_by(
@@ -78,31 +80,36 @@ class UpdateExecutor:
             stats["total"] = len(updates)
             logger.info(f"Found {len(updates)} containers with auto-update enabled and updates available")
 
+            # Extract data we need while session is open
             for update_record in updates:
-                # Parse composite key
-                try:
-                    host_id, container_id = update_record.container_id.split(":", 1)
-                except ValueError:
-                    logger.error(f"Invalid composite key format: {update_record.container_id}")
+                updates_data.append(update_record)
+
+        # Session is now closed - safe for async operations
+        for update_record in updates_data:
+            # Parse composite key
+            try:
+                host_id, container_id = update_record.container_id.split(":", 1)
+            except ValueError:
+                logger.error(f"Invalid composite key format: {update_record.container_id}")
+                stats["failed"] += 1
+                continue
+
+            stats["attempted"] += 1
+
+            try:
+                # Execute the update
+                success = await self.update_container(host_id, container_id, update_record)
+
+                if success:
+                    stats["successful"] += 1
+                    logger.info(f"Successfully updated container {container_id} on host {host_id}")
+                else:
                     stats["failed"] += 1
-                    continue
+                    logger.error(f"Failed to update container {container_id} on host {host_id}")
 
-                stats["attempted"] += 1
-
-                try:
-                    # Execute the update
-                    success = await self.update_container(host_id, container_id, update_record)
-
-                    if success:
-                        stats["successful"] += 1
-                        logger.info(f"Successfully updated container {container_id} on host {host_id}")
-                    else:
-                        stats["failed"] += 1
-                        logger.error(f"Failed to update container {container_id} on host {host_id}")
-
-                except Exception as e:
-                    logger.error(f"Error updating container {container_id} on host {host_id}: {e}")
-                    stats["failed"] += 1
+            except Exception as e:
+                logger.error(f"Error updating container {container_id} on host {host_id}: {e}")
+                stats["failed"] += 1
 
         logger.info(f"Auto-update execution complete: {stats}")
         return stats

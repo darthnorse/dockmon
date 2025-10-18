@@ -121,6 +121,10 @@ class AlertEvaluationService:
     async def _check_pending_notifications(self):
         """Check for alerts that have exceeded their clear_duration and need notifications"""
         try:
+            # Fetch alerts and close session BEFORE calling async methods
+            # to avoid holding database connections across await boundaries
+            pending_alerts_data = []
+
             with self.db.get_session() as session:
                 # Get all open alerts that haven't been notified yet
                 # Use joinedload to eagerly load rules (avoids N+1 query)
@@ -133,8 +137,8 @@ class AlertEvaluationService:
 
                 now = datetime.now(timezone.utc)
 
+                # Extract data we need while session is still open
                 for alert in pending_alerts:
-                    # Rule is already loaded via joinedload (no extra query)
                     rule = alert.rule
 
                     if not rule:
@@ -143,20 +147,29 @@ class AlertEvaluationService:
                     # Get clear_duration (default to 0 if not set)
                     clear_duration = rule.clear_duration_seconds or 0
 
-                    # Calculate alert age from last_seen (when alert was most recently triggered)
-                    # This ensures clear_duration applies to each re-trigger, not just the first occurrence
+                    # Calculate alert age from last_seen
                     last_seen = alert.last_seen if alert.last_seen.tzinfo else alert.last_seen.replace(tzinfo=timezone.utc)
                     alert_age = (now - last_seen).total_seconds()
 
                     # Check if alert has exceeded clear_duration
                     if alert_age >= clear_duration:
-                        logger.info(
-                            f"Alert {alert.id} ({alert.title}) exceeded clear_duration "
-                            f"({alert_age:.1f}s >= {clear_duration}s) - sending notification"
-                        )
+                        # Store alert data for processing after session closes
+                        pending_alerts_data.append({
+                            'alert': alert,
+                            'alert_age': alert_age,
+                            'clear_duration': clear_duration
+                        })
 
-                        # Send notification (send_alert_v2 will update notified_at and notification_count)
-                        await self._send_notification(alert)
+            # Session is now closed - safe to call async methods
+            for data in pending_alerts_data:
+                alert = data['alert']
+                logger.info(
+                    f"Alert {alert.id} ({alert.title}) exceeded clear_duration "
+                    f"({data['alert_age']:.1f}s >= {data['clear_duration']}s) - sending notification"
+                )
+
+                # Send notification (send_alert_v2 will update notified_at and notification_count)
+                await self._send_notification(alert)
 
         except Exception as e:
             logger.error(f"Error checking pending notifications: {e}", exc_info=True)

@@ -364,6 +364,10 @@ class UpdateChecker:
         composite_key = f"{container['host_id']}:{container['id']}"
 
         # Check if we already created an event for this update
+        # Extract data and close session BEFORE async event emission
+        should_emit_event = False
+        existing_digest = None
+
         with self.db.get_session() as session:
             record = session.query(ContainerUpdate).filter_by(
                 container_id=composite_key
@@ -372,34 +376,41 @@ class UpdateChecker:
             # Only create event if:
             # 1. No record exists (first time seeing update), OR
             # 2. Record exists but digest changed (new update available)
-            if not record or record.latest_digest != update_info["latest_digest"]:
-                try:
-                    logger.info(f"New update available for {container['name']}: {update_info['latest_image']}")
+            if not record:
+                should_emit_event = True
+            elif record.latest_digest != update_info["latest_digest"]:
+                should_emit_event = True
+                existing_digest = record.latest_digest
 
-                    # Get host name
-                    host_name = self.monitor.hosts.get(container["host_id"]).name if container["host_id"] in self.monitor.hosts else container["host_id"]
+        # Session is now closed - safe to emit events
+        if should_emit_event:
+            try:
+                logger.info(f"New update available for {container['name']}: {update_info['latest_image']}")
 
-                    # Emit event via EventBus - it handles database logging and alert triggering
-                    event_bus = get_event_bus(self.monitor)
-                    await event_bus.emit(Event(
-                        event_type=EventType.UPDATE_AVAILABLE,
-                        scope_type='container',
-                        scope_id=container["id"],
-                        scope_name=container["name"],
-                        host_id=container["host_id"],
-                        host_name=host_name,
-                        data={
-                            'current_image': update_info['current_image'],
-                            'latest_image': update_info['latest_image'],
-                            'current_digest': update_info['current_digest'],
-                            'latest_digest': update_info['latest_digest'],
-                        }
-                    ))
+                # Get host name
+                host_name = self.monitor.hosts.get(container["host_id"]).name if container["host_id"] in self.monitor.hosts else container["host_id"]
 
-                    logger.debug(f"Emitted UPDATE_AVAILABLE event for {container['name']}")
+                # Emit event via EventBus - it handles database logging and alert triggering
+                event_bus = get_event_bus(self.monitor)
+                await event_bus.emit(Event(
+                    event_type=EventType.UPDATE_AVAILABLE,
+                    scope_type='container',
+                    scope_id=container["id"],
+                    scope_name=container["name"],
+                    host_id=container["host_id"],
+                    host_name=host_name,
+                    data={
+                        'current_image': update_info['current_image'],
+                        'latest_image': update_info['latest_image'],
+                        'current_digest': update_info['current_digest'],
+                        'latest_digest': update_info['latest_digest'],
+                    }
+                ))
 
-                except Exception as e:
-                    logger.error(f"Could not emit update event: {e}", exc_info=True)
+                logger.debug(f"Emitted UPDATE_AVAILABLE event for {container['name']}")
+
+            except Exception as e:
+                logger.error(f"Could not emit update event: {e}", exc_info=True)
 
     def _is_compose_container(self, container: Dict) -> bool:
         """

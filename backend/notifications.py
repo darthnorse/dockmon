@@ -450,48 +450,56 @@ class NotificationService:
             dict with 'success' and optional 'error' keys
         """
         try:
-            # Get the channel
+            # Get the channel and extract data BEFORE async operations
+            channel_type = None
+            channel_config = None
+
             with self.db.get_session() as session:
                 channel = session.query(NotificationChannel).filter_by(id=channel_id).first()
                 if not channel:
                     return {"success": False, "error": f"Channel {channel_id} not found"}
 
-                # Create a test message
-                test_message = "🧪 **DockMon Test Notification**\n\nThis is a test message from DockMon to verify your notification channel is configured correctly."
+                # Extract channel data while session is open
+                channel_type = channel.type
+                channel_config = channel.config
 
-                # Create a mock event object for the send methods
-                class TestEvent:
-                    container_name = "test-container"
-                    host_name = "test-host"
-                    timestamp = datetime.now(timezone.utc)
-                    new_state = "running"
-                    event_type = "test"
+            # Session is now closed - safe for async notification sends
+            # Create a test message
+            test_message = "🧪 **DockMon Test Notification**\n\nThis is a test message from DockMon to verify your notification channel is configured correctly."
 
-                test_event = TestEvent()
+            # Create a mock event object for the send methods
+            class TestEvent:
+                container_name = "test-container"
+                host_name = "test-host"
+                timestamp = datetime.now(timezone.utc)
+                new_state = "running"
+                event_type = "test"
 
-                # Send based on channel type
-                success = False
-                if channel.type == 'pushover':
-                    success = await self._send_pushover(channel.config, test_message, test_event)
-                elif channel.type == 'telegram':
-                    success = await self._send_telegram(channel.config, test_message, test_event)
-                elif channel.type == 'discord':
-                    success = await self._send_discord(channel.config, test_message, test_event)
-                elif channel.type == 'slack':
-                    success = await self._send_slack(channel.config, test_message, test_event)
-                elif channel.type == 'gotify':
-                    success = await self._send_gotify(channel.config, test_message, test_event)
-                elif channel.type == 'ntfy':
-                    success = await self._send_ntfy(channel.config, test_message, test_event)
-                elif channel.type == 'smtp':
-                    success = await self._send_smtp(channel.config, test_message, test_event)
-                else:
-                    return {"success": False, "error": f"Unsupported channel type: {channel.type}"}
+            test_event = TestEvent()
 
-                if success:
-                    return {"success": True}
-                else:
-                    return {"success": False, "error": "Failed to send test message (check logs for details)"}
+            # Send based on channel type
+            success = False
+            if channel_type == 'pushover':
+                success = await self._send_pushover(channel_config, test_message, test_event)
+            elif channel_type == 'telegram':
+                success = await self._send_telegram(channel_config, test_message, test_event)
+            elif channel_type == 'discord':
+                success = await self._send_discord(channel_config, test_message, test_event)
+            elif channel_type == 'slack':
+                success = await self._send_slack(channel_config, test_message, test_event)
+            elif channel_type == 'gotify':
+                success = await self._send_gotify(channel_config, test_message, test_event)
+            elif channel_type == 'ntfy':
+                success = await self._send_ntfy(channel_config, test_message, test_event)
+            elif channel_type == 'smtp':
+                success = await self._send_smtp(channel_config, test_message, test_event)
+            else:
+                return {"success": False, "error": f"Unsupported channel type: {channel_type}"}
+
+            if success:
+                return {"success": True}
+            else:
+                return {"success": False, "error": "Failed to send test message (check logs for details)"}
 
         except Exception as e:
             logger.error(f"Error testing channel {channel_id}: {e}", exc_info=True)

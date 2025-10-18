@@ -133,7 +133,7 @@ def upgrade() -> None:
 
         if not _column_exists('users', 'view_mode'):
             with op.batch_alter_table('users', schema=None) as batch_op:
-                batch_op.add_column(sa.Column('view_mode', sa.String(), server_default='grid'))
+                batch_op.add_column(sa.Column('view_mode', sa.String(), server_default='standard'))
 
         # v2 renamed dashboard_layout -> dashboard_layout_v2
         if not _column_exists('users', 'dashboard_layout_v2'):

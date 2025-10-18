@@ -95,16 +95,25 @@ export function UpgradeWelcomeModal({
                 <AlertTriangle className="h-5 w-5 text-danger shrink-0 mt-0.5" />
                 <div className="flex-1">
                   <h4 className="text-base font-semibold text-danger mb-2">
-                    Important: mTLS Certificate Update Required
+                    Action Required: Migration Checklist
                   </h4>
-                  <div className="space-y-3 text-sm">
+                  <div className="space-y-4 text-sm">
                     <p>
-                      If you have remote Docker hosts with mTLS enabled, you need to regenerate
-                      certificates due to Alpine's stricter security requirements.
+                      Your hosts, containers, and event history have been preserved, but v2 has some breaking changes that require action:
                     </p>
 
                     <div>
-                      <div className="font-semibold mb-2">Steps to update:</div>
+                      <div className="font-semibold mb-2">1. Alert Rules (if applicable)</div>
+                      <p className="mb-2">
+                        v2 has a completely redesigned alert system. Your old alert rules were not migrated and need to be recreated using the new alerts interface.
+                      </p>
+                    </div>
+
+                    <div>
+                      <div className="font-semibold mb-2">2. mTLS Certificates (if applicable)</div>
+                      <p className="mb-2">
+                        If you have remote Docker hosts with mTLS enabled, you need to regenerate certificates due to Alpine's stricter security requirements.
+                      </p>
                       <ol className="list-decimal list-inside space-y-2 pl-2">
                         <li>
                           On each remote host, download the updated script:

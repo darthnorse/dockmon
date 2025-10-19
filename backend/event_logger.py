@@ -155,9 +155,10 @@ class EventLogger:
         }
 
         # Deduplicate rapid-fire events (e.g., Docker kill/die/stop events within 3 seconds)
-        # Create a deduplication key based on container, category, event type, and state change
+        # Create a deduplication key based on container, category, event type, state change, and title
+        # Including title ensures distinct events like "start" vs "restart" aren't deduplicated
         if context.container_id and category == EventCategory.CONTAINER:
-            dedup_key = f"{context.host_id}:{context.container_id}:{category.value}:{event_type.value}:{old_state}:{new_state}"
+            dedup_key = f"{context.host_id}:{context.container_id}:{category.value}:{event_type.value}:{old_state}:{new_state}:{title}"
             current_time = time.time()
 
             # Check if we've seen this event recently (within 3 seconds)

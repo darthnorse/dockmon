@@ -1127,8 +1127,8 @@ class DockerMonitor:
                     new_state = "running"
                 elif action == 'restart':
                     # Docker 'restart' event is emitted AFTER the container has been restarted
-                    # Treat it as a CONTAINER_STARTED event since restart = stop + start
-                    bus_event_type = BusEventType.CONTAINER_STARTED
+                    # Log as distinct CONTAINER_RESTARTED event (not just CONTAINER_STARTED)
+                    bus_event_type = BusEventType.CONTAINER_RESTARTED
                     new_state = "running"
                 elif action == 'health_status':
                     # Health status change

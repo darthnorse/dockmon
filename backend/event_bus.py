@@ -178,6 +178,7 @@ class EventBus:
                 EventType.UPDATE_COMPLETED: (LogEventType.ACTION_TAKEN, EventCategory.CONTAINER, EventSeverity.INFO),
                 EventType.UPDATE_FAILED: (LogEventType.ERROR, EventCategory.CONTAINER, EventSeverity.ERROR),
                 EventType.CONTAINER_STARTED: (LogEventType.STATE_CHANGE, EventCategory.CONTAINER, EventSeverity.INFO),
+                EventType.CONTAINER_RESTARTED: (LogEventType.STATE_CHANGE, EventCategory.CONTAINER, EventSeverity.INFO),
                 EventType.CONTAINER_STOPPED: (LogEventType.STATE_CHANGE, EventCategory.CONTAINER, EventSeverity.WARNING),
                 EventType.CONTAINER_DIED: (LogEventType.STATE_CHANGE, EventCategory.CONTAINER, EventSeverity.ERROR),
                 EventType.CONTAINER_HEALTH_CHANGED: (LogEventType.STATE_CHANGE, EventCategory.HEALTH_CHECK, EventSeverity.WARNING),
@@ -201,6 +202,10 @@ class EventBus:
             # Generate title and message based on event type
             title, message = self._generate_event_message(event)
 
+            # Extract old_state and new_state from event data for proper deduplication
+            old_state = event.data.get('old_state') if event.data else None
+            new_state = event.data.get('new_state') if event.data else None
+
             # Log event
             self.monitor.event_logger.log_event(
                 category=category,
@@ -208,7 +213,9 @@ class EventBus:
                 severity=severity,
                 title=title,
                 message=message,
-                context=context
+                context=context,
+                old_state=old_state,
+                new_state=new_state
             )
 
         except Exception as e:
@@ -227,6 +234,7 @@ class EventBus:
                 EventType.UPDATE_COMPLETED: 'action_taken',
                 EventType.UPDATE_FAILED: 'error',
                 EventType.CONTAINER_STARTED: 'state_change',
+                EventType.CONTAINER_RESTARTED: 'state_change',
                 EventType.CONTAINER_STOPPED: 'state_change',
                 EventType.CONTAINER_DIED: 'state_change',
                 EventType.CONTAINER_HEALTH_CHANGED: 'state_change',
@@ -312,6 +320,10 @@ class EventBus:
         elif event.event_type == EventType.CONTAINER_STARTED:
             title = f"Container Started: {event.scope_name}"
             message = f"Container {event.scope_name} started"
+
+        elif event.event_type == EventType.CONTAINER_RESTARTED:
+            title = f"Container Restarted: {event.scope_name}"
+            message = f"Container {event.scope_name} restarted"
 
         elif event.event_type == EventType.CONTAINER_STOPPED:
             title = f"Container Stopped: {event.scope_name}"

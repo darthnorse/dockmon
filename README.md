@@ -16,19 +16,18 @@ A comprehensive Docker container monitoring and management platform with real-ti
 ## Key Features
 
 - **Multi-Host Monitoring** - Monitor containers across unlimited Docker hosts (local and remote)
-- **Real-Time Statistics** - Live CPU, memory, network, and disk I/O metrics with Go-based streaming
+- **Real-Time Dashboard** - Drag-and-drop customizable widgets with WebSocket updates
+- **Real-Time Statistics** - Live CPU, memory, network metrics
 - **Real-Time Container Logs** - View logs from multiple containers simultaneously with live updates
 - **Event Viewer** - Comprehensive audit trail with filtering, search, and real-time updates
 - **Intelligent Auto-Restart** - Per-container auto-restart with configurable retry logic
-- **Advanced Alerting** - Discord, Slack, Telegram, Pushover, Gotify, ntfy, SMTP with customizable templates
-- **Real-Time Dashboard** - Drag-and-drop customizable widgets with WebSocket updates
+- **Advanced Alerting** - Discord, Slack, Telegram, Pushover, Gotify, SMTP with customizable templates
 - **Container Tagging** - Automatic tag derivation from Docker labels with user-defined tags
 - **Bulk Operations** - Start, stop, restart multiple containers simultaneously with progress tracking
 - **Automatic Updates** - Detect and execute container image updates on schedule
 - **HTTP/HTTPS Health Checks** - Custom endpoint monitoring with auto-restart on failure
 - **Blackout Windows** - Schedule maintenance periods to suppress alerts
 - **Secure by Design** - Session-based auth, rate limiting, mTLS for remote hosts, Alpine Linux base
-- **Mobile-Friendly** - Responsive React UI that works seamlessly on all devices
 
 ## Documentation
 
@@ -110,8 +109,8 @@ A comprehensive Docker container monitoring and management platform with real-ti
 ### Planned (v2.1+)
 - [ ] Historical metrics graphs with trend analysis
 - [ ] Configuration export/import
-- [ ] Automatic Proxmox LXC installation script
-- [ ] Plugin system for custom notification channels
+- [ ] Mobile-friendly responsive UI
+- [ ] DockMon Agent for remote Docker hosts (avoid exposing Docker socket)
 - [ ] Advanced RBAC and multi-user permissions
 
 See the [full roadmap](https://github.com/darthnorse/dockmon/wiki/Roadmap) for details.

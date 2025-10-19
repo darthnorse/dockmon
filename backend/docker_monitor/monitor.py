@@ -76,6 +76,61 @@ def parse_container_ports(port_bindings: dict) -> list[str]:
     return sorted(list(ports_set))
 
 
+def _fetch_system_info_from_docker(client: DockerClient, host_name: str) -> dict:
+    """
+    Fetch system information from Docker daemon.
+
+    Args:
+        client: Docker client instance
+        host_name: Name of the host (for logging)
+
+    Returns:
+        Dict with system info keys (os_type, os_version, etc.)
+        Returns dict with None values if fetch fails
+    """
+    try:
+        system_info = client.info()
+        os_type = system_info.get('OSType', None)
+        os_version = system_info.get('OperatingSystem', None)
+        kernel_version = system_info.get('KernelVersion', None)
+        total_memory = system_info.get('MemTotal', None)
+        num_cpus = system_info.get('NCPU', None)
+
+        version_info = client.version()
+        docker_version = version_info.get('Version', None)
+
+        # Get Docker daemon start time from bridge network creation
+        daemon_started_at = None
+        try:
+            networks = client.networks.list()
+            bridge_net = next((n for n in networks if n.name == 'bridge'), None)
+            if bridge_net:
+                daemon_started_at = bridge_net.attrs.get('Created')
+        except Exception as e:
+            logger.debug(f"Failed to get daemon start time for {host_name}: {e}")
+
+        return {
+            'os_type': os_type,
+            'os_version': os_version,
+            'kernel_version': kernel_version,
+            'docker_version': docker_version,
+            'daemon_started_at': daemon_started_at,
+            'total_memory': total_memory,
+            'num_cpus': num_cpus
+        }
+    except Exception as e:
+        logger.warning(f"Failed to fetch system info for {host_name}: {e}")
+        return {
+            'os_type': None,
+            'os_version': None,
+            'kernel_version': None,
+            'docker_version': None,
+            'daemon_started_at': None,
+            'total_memory': None,
+            'num_cpus': None
+        }
+
+
 def parse_restart_policy(host_config: dict) -> str:
     """
     Parse Docker restart policy from HostConfig.
@@ -327,36 +382,15 @@ class DockerMonitor:
             # Test connection
             client.ping()
 
-            # Fetch system information
-            try:
-                system_info = client.info()
-                os_type = system_info.get('OSType', None)
-                os_version = system_info.get('OperatingSystem', None)
-                kernel_version = system_info.get('KernelVersion', None)
-                total_memory = system_info.get('MemTotal', None)  # Total memory in bytes
-                num_cpus = system_info.get('NCPU', None)  # Number of CPUs
-
-                version_info = client.version()
-                docker_version = version_info.get('Version', None)
-
-                # Get Docker daemon start time from bridge network creation
-                daemon_started_at = None
-                try:
-                    networks = client.networks.list()
-                    bridge_net = next((n for n in networks if n.name == 'bridge'), None)
-                    if bridge_net:
-                        daemon_started_at = bridge_net.attrs.get('Created')
-                except Exception as e:
-                    logger.debug(f"Failed to get daemon start time for {config.name}: {e}")
-            except Exception as e:
-                logger.warning(f"Failed to fetch system info for {config.name}: {e}")
-                os_type = None
-                os_version = None
-                kernel_version = None
-                docker_version = None
-                daemon_started_at = None
-                total_memory = None
-                num_cpus = None
+            # Fetch system information using shared helper
+            sys_info = _fetch_system_info_from_docker(client, config.name)
+            os_type = sys_info['os_type']
+            os_version = sys_info['os_version']
+            kernel_version = sys_info['kernel_version']
+            docker_version = sys_info['docker_version']
+            daemon_started_at = sys_info['daemon_started_at']
+            total_memory = sys_info['total_memory']
+            num_cpus = sys_info['num_cpus']
 
             # Validate TLS configuration for TCP connections
             security_status = self._validate_host_security(config)
@@ -655,9 +689,9 @@ class DockerMonitor:
         if os.path.exists(cert_dir):
             try:
                 shutil.rmtree(cert_dir)
-                logger.info(f"Cleaned up certificate files for host {host_id}")
+                logger.info(f"Cleaned up certificate files for host {host_id[:8]}")
             except Exception as e:
-                logger.warning(f"Failed to clean up certificates for host {host_id}: {e}")
+                logger.warning(f"Failed to clean up certificates for host {host_id[:8]}: {e}")
 
     async def remove_host(self, host_id: str):
         """Remove a Docker host"""
@@ -696,7 +730,7 @@ class DockerMonitor:
                 except Exception as e:
                     logger.error(f"Failed to remove {host_name} from Go services: {e}")
             except Exception as e:
-                logger.warning(f"Failed to remove host {host_id} from Go services: {e}")
+                logger.warning(f"Failed to remove host {host_name} ({host_id[:8]}) from Go services: {e}")
 
             # Clean up certificate files
             self._cleanup_host_certificates(host_id)
@@ -768,7 +802,7 @@ class DockerMonitor:
                 triggered_by="user"
             )
 
-            logger.info(f"Removed host {host_id}")
+            logger.info(f"Removed host {host_name} ({host_id[:8]})")
 
     def update_host(self, host_id: str, config: DockerHostConfig):
         """Update an existing Docker host"""
@@ -806,7 +840,8 @@ class DockerMonitor:
             if host_id in self.hosts:
                 # Close existing client first (this should stop the monitoring task)
                 if host_id in self.clients:
-                    logger.info(f"Closing Docker client for host {host_id}")
+                    host_name = self.hosts[host_id].name
+                    logger.info(f"Closing Docker client for host {host_name} ({host_id[:8]})")
                     self.clients[host_id].close()
                     del self.clients[host_id]
 
@@ -1081,10 +1116,13 @@ class DockerMonitor:
             if action.startswith('exec_'):
                 return
 
+            # Get host name for logging
+            host_name = self.hosts.get(host_id).name if host_id in self.hosts else host_id[:8]
+
             # Only log important events
             important_events = ['create', 'start', 'stop', 'die', 'kill', 'destroy', 'pause', 'unpause', 'restart', 'oom', 'health_status']
             if action in important_events:
-                logger.info(f"Docker event: {action} - {container_name} ({container_id[:12]}) on host {host_id[:8]}")
+                logger.debug(f"Docker event: {action} - {container_name} ({container_id[:12]}) on {host_name} ({host_id[:8]})")
 
             # Process event using EventBus
             # Only process final/definitive events to avoid duplicate evaluations:
@@ -1092,9 +1130,9 @@ class DockerMonitor:
             # - start for container started
             # - restart for container restarted (emitted after restart completes)
             # - oom, health_status for their respective conditions
-            logger.info(f"V2 alert check: alert_evaluation_service={self.alert_evaluation_service is not None}, action={action}")
+            logger.debug(f"V2 alert check: alert_evaluation_service={self.alert_evaluation_service is not None}, action={action}")
             if self.alert_evaluation_service and action in ['die', 'oom', 'health_status', 'start', 'restart']:
-                logger.info(f"V2: Processing {action} event for {container_name}")
+                logger.debug(f"V2: Processing {action} event for {container_name} ({container_id[:12]}) on {host_name} ({host_id[:8]})")
 
                 # Parse timestamp
                 from datetime import datetime, timezone
@@ -1741,3 +1779,81 @@ class DockerMonitor:
 
         except Exception as e:
             logger.error(f"Error during container state cleanup: {e}")
+
+    async def refresh_all_hosts_system_info(self):
+        """
+        Refresh OS and Docker version information for all connected hosts.
+
+        Called by periodic maintenance job (daily) to keep host info current.
+        Updates both in-memory DockerHost objects and database records.
+        """
+        if not self.hosts or not self.clients:
+            logger.debug("No hosts to refresh system info for")
+            return
+
+        updated_count = 0
+        failed_count = 0
+
+        for host_id, host in list(self.hosts.items()):  # Use list() to avoid dict iteration issues
+            try:
+                # Get client for this host
+                client = self.clients.get(host_id)
+                if not client:
+                    logger.warning(f"No client found for host {host.name} ({host_id[:8]}), skipping system info refresh")
+                    failed_count += 1
+                    continue
+
+                # Fetch fresh system info using shared helper
+                sys_info = _fetch_system_info_from_docker(client, host.name)
+
+                # Check if anything changed (avoid unnecessary DB writes)
+                changed = (
+                    sys_info['os_type'] != host.os_type or
+                    sys_info['os_version'] != host.os_version or
+                    sys_info['kernel_version'] != host.kernel_version or
+                    sys_info['docker_version'] != host.docker_version or
+                    sys_info['daemon_started_at'] != host.daemon_started_at or
+                    sys_info['total_memory'] != host.total_memory or
+                    sys_info['num_cpus'] != host.num_cpus
+                )
+
+                if not changed:
+                    logger.debug(f"System info unchanged for {host.name} ({host_id[:8]})")
+                    continue
+
+                # Update in-memory DockerHost object
+                host.os_type = sys_info['os_type']
+                host.os_version = sys_info['os_version']
+                host.kernel_version = sys_info['kernel_version']
+                host.docker_version = sys_info['docker_version']
+                host.daemon_started_at = sys_info['daemon_started_at']
+                host.total_memory = sys_info['total_memory']
+                host.num_cpus = sys_info['num_cpus']
+
+                # Update database (in separate session to avoid blocking)
+                with self.db.get_session() as session:
+                    db_host = session.query(DockerHostDB).filter(DockerHostDB.id == host_id).first()
+                    if db_host:
+                        db_host.os_type = sys_info['os_type']
+                        db_host.os_version = sys_info['os_version']
+                        db_host.kernel_version = sys_info['kernel_version']
+                        db_host.docker_version = sys_info['docker_version']
+                        db_host.daemon_started_at = sys_info['daemon_started_at']
+                        db_host.total_memory = sys_info['total_memory']
+                        db_host.num_cpus = sys_info['num_cpus']
+                        session.commit()
+
+                        logger.info(f"Refreshed system info for {host.name} ({host_id[:8]}): {sys_info['os_version']} / Docker {sys_info['docker_version']}")
+                        updated_count += 1
+                    else:
+                        logger.warning(f"Host {host.name} ({host_id[:8]}) not found in database")
+                        failed_count += 1
+
+            except Exception as e:
+                logger.error(f"Failed to refresh system info for {host.name} ({host_id[:8]}): {e}")
+                failed_count += 1
+
+        if updated_count > 0 or failed_count > 0:
+            logger.info(f"Host system info refresh complete: {updated_count} updated, {failed_count} failed")
+        else:
+            logger.debug("Host system info refresh complete: no changes detected")

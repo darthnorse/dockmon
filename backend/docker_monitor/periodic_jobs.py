@@ -190,6 +190,10 @@ class PeriodicJobsManager:
                     # Clean up notification cooldown dictionary
                     self.monitor.notification_service._cleanup_old_cooldowns()
 
+                # Refresh host system info (OS version, Docker version, etc.)
+                if self.monitor:
+                    await self.monitor.refresh_all_hosts_system_info()
+
                 # Clean up stale container update entries (for deleted containers)
                 from database import ContainerUpdate
                 containers = await self.monitor.get_containers()

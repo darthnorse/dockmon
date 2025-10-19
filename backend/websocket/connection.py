@@ -34,13 +34,13 @@ class ConnectionManager:
         await websocket.accept()
         async with self._lock:
             self.active_connections.append(websocket)
-        logger.info(f"New WebSocket connection. Total connections: {len(self.active_connections)}")
+        logger.debug(f"New WebSocket connection. Total connections: {len(self.active_connections)}")
 
     async def disconnect(self, websocket: WebSocket):
         async with self._lock:
             if websocket in self.active_connections:
                 self.active_connections.remove(websocket)
-        logger.info(f"WebSocket disconnected. Total connections: {len(self.active_connections)}")
+        logger.debug(f"WebSocket disconnected. Total connections: {len(self.active_connections)}")
 
     def has_active_connections(self) -> bool:
         """Check if there are any active WebSocket connections"""

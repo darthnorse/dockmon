@@ -634,7 +634,7 @@ class AlertEvaluationService:
             host_name: Host name
             event_data: Additional event data (timestamp, exit_code, etc.)
         """
-        logger.info(f"V2: Processing {event_type} for {container_name} on {host_name}")
+        logger.debug(f"V2: Processing {event_type} for {container_name} ({container_id}) on {host_name} ({host_id[:8]})")
         try:
             # Get desired_state from database
             desired_state = self.db.get_desired_state(host_id, container_id) or 'unspecified'

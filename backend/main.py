@@ -2053,7 +2053,7 @@ async def get_events(
         # Get user's sort order preference
         username = current_user.get('username')
         sort_order = monitor.db.get_event_sort_order(username) if username else 'desc'
-        logger.info(f"Getting events for user {username}, sort_order: {sort_order}")
+        logger.debug(f"Getting events for user {username}, sort_order: {sort_order}")
 
         # Query events from database
         events, total_count = monitor.db.get_events(
@@ -2683,7 +2683,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
         await websocket.close(code=1008, reason="Invalid or expired session")
         return
 
-    logger.info(f"WebSocket authenticated for user: {session_data.get('username')}")
+    logger.debug(f"WebSocket authenticated for user: {session_data.get('username')}")
 
     try:
         # Accept connection and subscribe to events

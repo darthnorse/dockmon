@@ -4,14 +4,17 @@
  * Table-based event log viewer with modern v2 design and enhanced functionality
  */
 
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEvents } from '@/hooks/useEvents'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
 import type { EventFilters, EventSeverity, EventCategory } from '@/types/events'
-import { formatSeverity, getSeverityColor } from '@/lib/utils/eventUtils'
-import { ChevronLeft, ChevronRight, Search, MoreHorizontal, ArrowUpDown, X, Check, Download } from 'lucide-react'
+import { formatSeverity } from '@/lib/utils/eventUtils'
+import { ChevronLeft, ChevronRight, Search, ArrowUpDown, X, Check, Download } from 'lucide-react'
 import { useDynamicPageSize } from '@/hooks/useDynamicPageSize'
+import { ContainerDetailsModal } from '@/features/containers/components/ContainerDetailsModal'
+import { HostDetailsModal } from '@/features/hosts/components/HostDetailsModal'
+import { EventRow } from './components/EventRow'
 
 const SEVERITY_OPTIONS: EventSeverity[] = ['critical', 'error', 'warning', 'info', 'debug']
 const CATEGORY_OPTIONS: EventCategory[] = ['container', 'host', 'system', 'alert', 'notification', 'user']
@@ -53,6 +56,10 @@ export function EventsPage() {
   const [showContainerDropdown, setShowContainerDropdown] = useState(false)
   const containerDropdownRef = useRef<HTMLDivElement>(null)
 
+  // Modal state for viewing container/host details from event links
+  const [selectedContainerId, setSelectedContainerId] = useState<string | null>(null)
+  const [selectedHostId, setSelectedHostId] = useState<string | null>(null)
+
   // Update filters.limit when pageSize changes
   useEffect(() => {
     setFilters((prev) => ({ ...prev, limit: pageSize }))
@@ -87,6 +94,16 @@ export function EventsPage() {
   const totalCount = eventsData?.total_count ?? 0
   const currentPage = Math.floor((filters.offset ?? 0) / (filters.limit ?? 20)) + 1
   const totalPages = Math.ceil(totalCount / (filters.limit ?? 20))
+
+  // Find selected container/host for modals
+  const selectedContainer = useMemo(
+    () => containers.find((c) => c.id === selectedContainerId),
+    [containers, selectedContainerId]
+  )
+  const selectedHost = useMemo(
+    () => hosts.find((h) => h.id === selectedHostId),
+    [hosts, selectedHostId]
+  )
 
   // Filter hosts based on search
   const filteredHosts = hosts.filter(
@@ -192,90 +209,6 @@ export function EventsPage() {
   const goToPage = (page: number) => {
     const offset = (page - 1) * (filters.limit ?? 20)
     updateFilter('offset', offset)
-  }
-
-  const formatTimestamp = (timestamp: string) => {
-    const date = new Date(timestamp)
-    return date.toLocaleString('en-US', {
-      month: '2-digit',
-      day: '2-digit',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: true,
-    })
-  }
-
-  // Get color for container state
-  const getStateColor = (state: string): string => {
-    const stateLower = state.toLowerCase()
-
-    // Good states - green
-    if (stateLower === 'running' || stateLower === 'healthy') {
-      return 'text-green-400'
-    }
-
-    // Bad states - red
-    if (stateLower === 'exited' || stateLower === 'dead' || stateLower === 'unhealthy') {
-      return 'text-red-400'
-    }
-
-    // Neutral/other states - gray
-    return 'text-gray-400'
-  }
-
-  // Format message with colored state transitions
-  const formatMessage = (event: any) => {
-    let message = event.message || ''
-
-    // Replace state names in the message with colored versions
-    if (event.old_state && event.new_state) {
-      // Handle "from X to Y" pattern
-      const pattern = new RegExp(`(from\\s+)(${event.old_state})(\\s+to\\s+)(${event.new_state})`, 'i')
-      if (pattern.test(message)) {
-        return {
-          hasStates: true,
-          pattern: 'from-to',
-          oldState: event.old_state,
-          newState: event.new_state,
-          prefix: message.match(pattern)?.[1] || 'from ',
-          infix: message.match(pattern)?.[3] || ' to ',
-          beforeText: message.split(pattern)[0],
-          afterText: message.split(new RegExp(event.new_state, 'i'))[1] || '',
-        }
-      }
-
-      // Handle "X → Y" pattern (using alternation instead of character class to avoid regex range error)
-      const arrowPattern = new RegExp(`(${event.old_state})\\s*(?:→|->)\\s*(${event.new_state})`, 'i')
-      if (arrowPattern.test(message)) {
-        return {
-          hasStates: true,
-          pattern: 'arrow',
-          oldState: event.old_state,
-          newState: event.new_state,
-          beforeText: message.split(arrowPattern)[0],
-          afterText: message.split(arrowPattern)[message.split(arrowPattern).length - 1] || '',
-        }
-      }
-    }
-
-    return { hasStates: false, text: message }
-  }
-
-  // Get metadata string for container/host
-  const getMetadata = (event: any): string => {
-    const parts: string[] = []
-
-    if (event.container_name) {
-      parts.push(`container=${event.container_name}`)
-    }
-
-    if (event.host_name) {
-      parts.push(`host=${event.host_name}`)
-    }
-
-    return parts.join(' ')
   }
 
   // Export events to CSV
@@ -565,89 +498,16 @@ export function EventsPage() {
 
             {/* Table Rows */}
             <div className="divide-y divide-border">
-              {events.map((event) => {
-                const severityColors = getSeverityColor(event.severity)
-                const formattedMsg = formatMessage(event)
-                const metadata = getMetadata(event)
-
-                return (
-                  <div
-                    key={event.id}
-                    className="px-6 py-2 grid grid-cols-[200px_120px_1fr] gap-4 hover:bg-surface-1 transition-colors items-start group"
-                  >
-                    {/* Timestamp */}
-                    <div className="text-sm font-mono text-muted-foreground pt-0.5">
-                      {formatTimestamp(event.timestamp)}
-                    </div>
-
-                    {/* Severity */}
-                    <div className="pt-0.5">
-                      <span className={`text-sm font-medium ${severityColors.text}`}>
-                        {formatSeverity(event.severity)}
-                      </span>
-                    </div>
-
-                    {/* Event Details */}
-                    <div className="flex items-start justify-between gap-4 min-w-0">
-                      <div className="flex-1 min-w-0">
-                        {/* Main message with inline colored states */}
-                        <div className="text-sm leading-relaxed">
-                          <span className="text-foreground">{event.title}</span>
-                          {event.message && (
-                            <>
-                              {' '}
-                              {formattedMsg.hasStates ? (
-                                <>
-                                  {formattedMsg.beforeText}
-                                  {formattedMsg.pattern === 'from-to' && (
-                                    <>
-                                      {formattedMsg.prefix}
-                                      <span className={getStateColor(formattedMsg.oldState)}>
-                                        {formattedMsg.oldState}
-                                      </span>
-                                      {formattedMsg.infix}
-                                      <span className={getStateColor(formattedMsg.newState)}>
-                                        {formattedMsg.newState}
-                                      </span>
-                                      {formattedMsg.afterText}
-                                    </>
-                                  )}
-                                  {formattedMsg.pattern === 'arrow' && (
-                                    <>
-                                      <span className={getStateColor(formattedMsg.oldState)}>
-                                        {formattedMsg.oldState}
-                                      </span>
-                                      {' → '}
-                                      <span className={getStateColor(formattedMsg.newState)}>
-                                        {formattedMsg.newState}
-                                      </span>
-                                      {formattedMsg.afterText}
-                                    </>
-                                  )}
-                                </>
-                              ) : (
-                                <span className="text-muted-foreground">{formattedMsg.text}</span>
-                              )}
-                            </>
-                          )}
-                        </div>
-
-                        {/* Metadata line (container/host) in gray */}
-                        {metadata && (
-                          <div className="text-xs text-muted-foreground mt-1 font-mono">
-                            {metadata}
-                          </div>
-                        )}
-                      </div>
-
-                      {/* More options */}
-                      <button className="opacity-0 group-hover:opacity-100 p-1 hover:bg-surface-2 rounded transition-opacity">
-                        <MoreHorizontal className="h-4 w-4 text-muted-foreground" />
-                      </button>
-                    </div>
-                  </div>
-                )
-              })}
+              {events.map((event) => (
+                <EventRow
+                  key={event.id}
+                  event={event}
+                  showMetadata={true}
+                  compact={false}
+                  onContainerClick={setSelectedContainerId}
+                  onHostClick={setSelectedHostId}
+                />
+              ))}
             </div>
           </div>
         )}
@@ -683,6 +543,21 @@ export function EventsPage() {
           </button>
         </div>
       </div>
+
+      {/* Modals for viewing container/host details from event links */}
+      <ContainerDetailsModal
+        open={!!selectedContainerId}
+        onClose={() => setSelectedContainerId(null)}
+        containerId={selectedContainerId}
+        container={selectedContainer}
+      />
+
+      <HostDetailsModal
+        open={!!selectedHostId}
+        onClose={() => setSelectedHostId(null)}
+        hostId={selectedHostId}
+        host={selectedHost}
+      />
     </div>
   )
 }

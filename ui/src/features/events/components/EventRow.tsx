@@ -5,12 +5,14 @@
  * Includes colored state transitions, metadata, and timestamps
  */
 
-import { formatTimestamp } from '@/lib/utils/eventUtils'
+import { formatTimestamp, getSeverityColor, formatSeverity } from '@/lib/utils/eventUtils'
 
 interface EventRowProps {
   event: any
   showMetadata?: boolean
   compact?: boolean
+  onContainerClick?: (containerId: string) => void
+  onHostClick?: (hostId: string) => void
 }
 
 // Get color for state based on semantic meaning
@@ -29,27 +31,6 @@ const getStateColor = (state: string): string => {
 
   // Neutral/other states - gray
   return 'text-gray-400'
-}
-
-// Get severity color classes
-const getSeverityColor = (severity: string) => {
-  switch (severity.toLowerCase()) {
-    case 'critical':
-      return { text: 'text-red-500', bg: 'bg-red-500/10', border: 'border-red-500/20' }
-    case 'error':
-      return { text: 'text-red-400', bg: 'bg-red-400/10', border: 'border-red-400/20' }
-    case 'warning':
-      return { text: 'text-yellow-500', bg: 'bg-yellow-500/10', border: 'border-yellow-500/20' }
-    case 'info':
-      return { text: 'text-blue-400', bg: 'bg-blue-400/10', border: 'border-blue-400/20' }
-    default:
-      return { text: 'text-gray-400', bg: 'bg-gray-400/10', border: 'border-gray-400/20' }
-  }
-}
-
-// Format severity for display
-const formatSeverity = (severity: string): string => {
-  return severity.charAt(0).toUpperCase() + severity.slice(1).toLowerCase()
 }
 
 // Format message with colored state transitions
@@ -90,25 +71,52 @@ const formatMessage = (event: any) => {
   return { hasStates: false, text: message }
 }
 
-// Get metadata string for container/host
-const getMetadata = (event: any): string => {
-  const parts: string[] = []
+// Render metadata with clickable links
+const MetadataLinks = ({
+  event,
+  onContainerClick,
+  onHostClick
+}: {
+  event: any
+  onContainerClick?: (id: string) => void
+  onHostClick?: (id: string) => void
+}) => {
+  const hasContainer = event.container_name && event.container_id
+  const hasHost = event.host_name && event.host_id
 
-  if (event.container_name) {
-    parts.push(`container=${event.container_name}`)
-  }
+  if (!hasContainer && !hasHost) return null
 
-  if (event.host_name) {
-    parts.push(`host=${event.host_name}`)
-  }
-
-  return parts.join(' ')
+  return (
+    <div className="text-xs text-muted-foreground/70 mt-0.5 space-x-2">
+      {hasContainer && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation()
+            onContainerClick?.(event.container_id)
+          }}
+          className="hover:text-primary hover:underline transition-colors"
+        >
+          container={event.container_name}
+        </button>
+      )}
+      {hasHost && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation()
+            onHostClick?.(event.host_id)
+          }}
+          className="hover:text-primary hover:underline transition-colors"
+        >
+          host={event.host_name}
+        </button>
+      )}
+    </div>
+  )
 }
 
-export function EventRow({ event, showMetadata = true, compact = false }: EventRowProps) {
+export function EventRow({ event, showMetadata = true, compact = false, onContainerClick, onHostClick }: EventRowProps) {
   const severityColors = getSeverityColor(event.severity)
   const formattedMsg = formatMessage(event)
-  const metadata = getMetadata(event)
 
   if (compact) {
     // Compact view for cards/smaller spaces
@@ -162,8 +170,12 @@ export function EventRow({ event, showMetadata = true, compact = false }: EventR
             </>
           )}
         </div>
-        {showMetadata && metadata && (
-          <div className="mt-1 text-xs text-muted-foreground/70">{metadata}</div>
+        {showMetadata && (
+          <MetadataLinks
+            event={event}
+            {...(onContainerClick && { onContainerClick })}
+            {...(onHostClick && { onHostClick })}
+          />
         )}
       </div>
     )
@@ -230,8 +242,12 @@ export function EventRow({ event, showMetadata = true, compact = false }: EventR
           </div>
 
           {/* Metadata */}
-          {showMetadata && metadata && (
-            <div className="text-xs text-muted-foreground/70 mt-0.5">{metadata}</div>
+          {showMetadata && (
+            <MetadataLinks
+              event={event}
+              {...(onContainerClick && { onContainerClick })}
+              {...(onHostClick && { onHostClick })}
+            />
           )}
         </div>
       </div>

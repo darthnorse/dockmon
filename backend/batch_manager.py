@@ -287,13 +287,13 @@ class BatchJobManager:
 
             # Execute the action via monitor (using short_id for consistency)
             if action == 'start':
-                self.monitor.start_container(host_id, short_id)
+                await self.monitor.start_container(host_id, short_id)
                 message = 'Started successfully'
             elif action == 'stop':
-                self.monitor.stop_container(host_id, short_id)
+                await self.monitor.stop_container(host_id, short_id)
                 message = 'Stopped successfully'
             elif action == 'restart':
-                self.monitor.restart_container(host_id, short_id)
+                await self.monitor.restart_container(host_id, short_id)
                 message = 'Restarted successfully'
             elif action == 'add-tags' or action == 'remove-tags':
                 # Tag operations require params

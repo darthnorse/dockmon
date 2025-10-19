@@ -31,7 +31,7 @@ class ContainerOperations:
         self.event_logger = event_logger
         self._recent_user_actions = recent_user_actions
 
-    def restart_container(self, host_id: str, container_id: str) -> bool:
+    async def restart_container(self, host_id: str, container_id: str) -> bool:
         """
         Restart a specific container.
 
@@ -45,6 +45,8 @@ class ContainerOperations:
         Raises:
             HTTPException: If host not found or restart fails
         """
+        from utils.async_docker import async_docker_call, async_container_restart
+
         if host_id not in self.clients:
             raise HTTPException(status_code=404, detail="Host not found")
 
@@ -56,10 +58,10 @@ class ContainerOperations:
 
         try:
             client = self.clients[host_id]
-            container = client.containers.get(container_id)
+            container = await async_docker_call(client.containers.get, container_id)
             container_name = container.name
 
-            container.restart(timeout=10)
+            await async_container_restart(container, timeout=10)
             duration_ms = int((time.time() - start_time) * 1000)
 
             logger.info(f"Restarted container '{container_name}' on host '{host_name}'")
@@ -94,7 +96,7 @@ class ContainerOperations:
             )
             raise HTTPException(status_code=500, detail=str(e))
 
-    def stop_container(self, host_id: str, container_id: str) -> bool:
+    async def stop_container(self, host_id: str, container_id: str) -> bool:
         """
         Stop a specific container.
 
@@ -108,6 +110,8 @@ class ContainerOperations:
         Raises:
             HTTPException: If host not found or stop fails
         """
+        from utils.async_docker import async_docker_call, async_container_stop
+
         if host_id not in self.clients:
             raise HTTPException(status_code=404, detail="Host not found")
 
@@ -119,10 +123,10 @@ class ContainerOperations:
 
         try:
             client = self.clients[host_id]
-            container = client.containers.get(container_id)
+            container = await async_docker_call(client.containers.get, container_id)
             container_name = container.name
 
-            container.stop(timeout=10)
+            await async_container_stop(container, timeout=10)
             duration_ms = int((time.time() - start_time) * 1000)
 
             logger.info(f"Stopped container '{container_name}' on host '{host_name}'")
@@ -162,7 +166,7 @@ class ContainerOperations:
             )
             raise HTTPException(status_code=500, detail=str(e))
 
-    def start_container(self, host_id: str, container_id: str) -> bool:
+    async def start_container(self, host_id: str, container_id: str) -> bool:
         """
         Start a specific container.
 
@@ -176,6 +180,8 @@ class ContainerOperations:
         Raises:
             HTTPException: If host not found or start fails
         """
+        from utils.async_docker import async_docker_call, async_container_start
+
         if host_id not in self.clients:
             raise HTTPException(status_code=404, detail="Host not found")
 
@@ -187,10 +193,10 @@ class ContainerOperations:
 
         try:
             client = self.clients[host_id]
-            container = client.containers.get(container_id)
+            container = await async_docker_call(client.containers.get, container_id)
             container_name = container.name
 
-            container.start()
+            await async_container_start(container)
             duration_ms = int((time.time() - start_time) * 1000)
 
             logger.info(f"Started container '{container_name}' on host '{host_name}'")

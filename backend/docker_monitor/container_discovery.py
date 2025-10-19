@@ -259,7 +259,8 @@ class ContainerDiscovery:
                 )
 
             # Test the connection
-            client.ping()
+            from utils.async_docker import async_client_ping
+            await async_client_ping(client)
             # Connection successful - add to clients
             self.clients[host_id] = client
 
@@ -316,7 +317,7 @@ class ContainerDiscovery:
             logger.debug(f"Host {host.name} still offline (attempt {attempts + 1}). Next retry in {next_attempt_in}s")
             return False
 
-    def discover_containers_for_host(self, host_id: str, get_auto_restart_status_fn) -> List[Container]:
+    async def discover_containers_for_host(self, host_id: str, get_auto_restart_status_fn) -> List[Container]:
         """
         Discover all containers for a single host.
 
@@ -327,6 +328,8 @@ class ContainerDiscovery:
         Returns:
             List of Container objects
         """
+        from utils.async_docker import async_containers_list
+
         containers = []
         host = self.hosts.get(host_id)
         if not host:
@@ -337,7 +340,7 @@ class ContainerDiscovery:
             return containers
 
         try:
-            docker_containers = client.containers.list(all=True)
+            docker_containers = await async_containers_list(client, all=True)
 
             # Track status transition to detect when host comes back online
             previous_status = self.host_previous_status.get(host_id, "unknown")

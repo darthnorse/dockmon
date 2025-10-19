@@ -89,14 +89,16 @@ def _fetch_system_info_from_docker(client: DockerClient, host_name: str) -> dict
         Returns dict with None values if fetch fails
     """
     try:
+        # Fetch system information
         system_info = client.info()
+        version_info = client.version()
+
         os_type = system_info.get('OSType', None)
         os_version = system_info.get('OperatingSystem', None)
         kernel_version = system_info.get('KernelVersion', None)
         total_memory = system_info.get('MemTotal', None)
         num_cpus = system_info.get('NCPU', None)
 
-        version_info = client.version()
         docker_version = version_info.get('Version', None)
 
         # Get Docker daemon start time from bridge network creation
@@ -997,7 +999,7 @@ class DockerMonitor:
                     continue
 
             # Discover containers for this host
-            host_containers = self.discovery.discover_containers_for_host(hid, self._get_auto_restart_status)
+            host_containers = await self.discovery.discover_containers_for_host(hid, self._get_auto_restart_status)
 
             # Populate restart_attempts from monitor's state using composite key to prevent collisions
             for container in host_containers:
@@ -1019,17 +1021,17 @@ class DockerMonitor:
         """
         return self._last_containers
 
-    def restart_container(self, host_id: str, container_id: str) -> bool:
+    async def restart_container(self, host_id: str, container_id: str) -> bool:
         """Restart a specific container"""
-        return self.operations.restart_container(host_id, container_id)
+        return await self.operations.restart_container(host_id, container_id)
 
-    def stop_container(self, host_id: str, container_id: str) -> bool:
+    async def stop_container(self, host_id: str, container_id: str) -> bool:
         """Stop a specific container"""
-        return self.operations.stop_container(host_id, container_id)
+        return await self.operations.stop_container(host_id, container_id)
 
-    def start_container(self, host_id: str, container_id: str) -> bool:
+    async def start_container(self, host_id: str, container_id: str) -> bool:
         """Start a specific container"""
-        return self.operations.start_container(host_id, container_id)
+        return await self.operations.start_container(host_id, container_id)
 
     def toggle_auto_restart(self, host_id: str, container_id: str, container_name: str, enabled: bool):
         """Toggle auto-restart for a container"""
@@ -1549,7 +1551,7 @@ class DockerMonitor:
             # Use start instead of restart since we know the container is stopped (from 'die' event)
             # This avoids unnecessary kill/die events that restart would generate
             # Docker API accepts short IDs
-            success = self.start_container(container.host_id, container.short_id)
+            success = await self.start_container(container.host_id, container.short_id)
             if success:
                 self.restart_attempts[container_key] = 0
 
@@ -1803,8 +1805,9 @@ class DockerMonitor:
                     failed_count += 1
                     continue
 
-                # Fetch fresh system info using shared helper
-                sys_info = _fetch_system_info_from_docker(client, host.name)
+                # Fetch fresh system info using shared helper (run in thread pool to avoid blocking)
+                from utils.async_docker import async_docker_call
+                sys_info = await async_docker_call(_fetch_system_info_from_docker, client, host.name)
 
                 # Check if anything changed (avoid unnecessary DB writes)
                 changed = (

@@ -612,19 +612,19 @@ async def get_containers(host_id: Optional[str] = None, current_user: dict = Dep
 @app.post("/api/hosts/{host_id}/containers/{container_id}/restart")
 async def restart_container(host_id: str, container_id: str, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
     """Restart a container"""
-    success = monitor.restart_container(host_id, container_id)
+    success = await monitor.restart_container(host_id, container_id)
     return {"status": "success" if success else "failed"}
 
 @app.post("/api/hosts/{host_id}/containers/{container_id}/stop")
 async def stop_container(host_id: str, container_id: str, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
     """Stop a container"""
-    success = monitor.stop_container(host_id, container_id)
+    success = await monitor.stop_container(host_id, container_id)
     return {"status": "success" if success else "failed"}
 
 @app.post("/api/hosts/{host_id}/containers/{container_id}/start")
 async def start_container(host_id: str, container_id: str, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
     """Start a container"""
-    success = monitor.start_container(host_id, container_id)
+    success = await monitor.start_container(host_id, container_id)
     return {"status": "success" if success else "failed"}
 
 @app.get("/api/hosts/{host_id}/containers/{container_id}/logs")

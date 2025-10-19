@@ -43,32 +43,6 @@ A comprehensive Docker container monitoring and management platform with real-ti
 - **[FAQ](https://github.com/darthnorse/dockmon/wiki/FAQ)** - Frequently asked questions
 - **[Troubleshooting](https://github.com/darthnorse/dockmon/wiki/Troubleshooting)** - Common issues
 
-## Use Cases
-
-### Home Lab
-- Monitor all your Docker containers with beautiful real-time dashboards
-- Get notified on multiple channels (Discord, Slack, Telegram, Email)
-- Automatically restart failed containers with intelligent retry logic
-- Track container events and changes with comprehensive audit trail
-- Tag containers for better organization
-- Health checks for mission-critical services
-
-### Small Business / Self-Hosted
-- Centralized monitoring across multiple servers
-- Multi-channel alerting with customizable rules
-- Automatic container updates to keep services current
-- Health checks for mission-critical services
-- Bulk operations for efficient container management
-- Maintenance windows (blackout periods) during deployments
-
-### Development Teams
-- Monitor dev, staging, and production environments
-- Quick container management (start, stop, restart, logs)
-- Collaborative monitoring dashboard with real-time updates
-- Alert history with correlation tracking
-- Test notifications before deploying to production
-- Bulk restart containers during deployments
-
 ## Support & Community
 
 - **[Report Issues](https://github.com/darthnorse/dockmon/issues)** - Found a bug?

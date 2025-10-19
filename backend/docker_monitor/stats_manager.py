@@ -132,14 +132,22 @@ class StatsManager:
                     self.streaming_containers.discard(container_key)
                     continue
 
-                # Await the stop request to verify it succeeded before unmarking as streaming
+                # Attempt to stop the stream
                 success = await stats_client.stop_container_stream(container_id, host_id)
-                # Only unmark as streaming if the request succeeded
+
+                # Always remove from tracking, even on failure
+                # Rationale: If stop failed (stats service down), keeping it in tracking prevents
+                # recovery when service comes back. Next sync cycle will send fresh start request
+                # if still needed. Stats service handles duplicate starts gracefully.
+                self.streaming_containers.discard(container_key)
+
                 if success:
-                    self.streaming_containers.discard(container_key)
                     logger.debug(f"Stopped stats stream for container {container_id[:12]}")
                 else:
-                    logger.warning(f"Failed to stop stats stream for container {container_id[:12]}")
+                    logger.warning(
+                        f"Failed to stop stats stream for container {container_id[:12]}, "
+                        f"removed from tracking to allow retry on next sync"
+                    )
 
     async def stop_all_streams(self, stats_client, error_callback) -> None:
         """
@@ -170,27 +178,33 @@ class StatsManager:
 
                 # Wait for all stop requests to complete
                 if stop_requests:
+                    total_count = len(stop_requests)
                     results = await asyncio.gather(*[task for _, task in stop_requests], return_exceptions=True)
 
-                    # Only remove containers whose stop request actually succeeded
+                    # Always remove from tracking to prevent permanent stuck state
+                    # If stop failed, next sync will retry if container still needs stats
                     failed_count = 0
                     for (container_key, _), result in zip(stop_requests, results):
+                        # Always remove from tracking regardless of result
+                        self.streaming_containers.discard(container_key)
+
                         if isinstance(result, Exception):
-                            logger.error(f"Failed to stop stream for {container_key}: {result}")
+                            logger.error(f"Failed to stop stream for {container_key}: {result}, removed from tracking")
                             failed_count += 1
                         elif result is True:
-                            # Successfully stopped - remove from tracking
-                            self.streaming_containers.discard(container_key)
+                            logger.debug(f"Successfully stopped stream for {container_key}")
                         else:
-                            # stop_container_stream returned False - keep tracking for retry
-                            logger.warning(f"Stop request failed for {container_key}, keeping in tracking for retry")
+                            # stop_container_stream returned False
+                            logger.warning(f"Stop request failed for {container_key}, removed from tracking to allow recovery")
                             failed_count += 1
 
+                    # Log summary with appropriate level
                     if failed_count > 0:
                         logger.warning(
-                            f"Failed to stop {failed_count} streams, "
-                            f"{len(self.streaming_containers)} containers still tracked as streaming"
+                            f"Stopped all streams; {failed_count}/{total_count} stop requests errored but were removed from tracking"
                         )
+                    else:
+                        logger.info(f"Successfully stopped all {total_count} stats streams")
 
     def should_broadcast_host_metrics(self, settings: GlobalSettings) -> bool:
         """Determine if host metrics should be included in broadcast"""

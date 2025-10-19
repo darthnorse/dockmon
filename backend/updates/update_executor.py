@@ -537,7 +537,9 @@ class UpdateExecutor:
                     host_path = parts[0]
                     container_path = parts[1]
                     mode = parts[2] if len(parts) > 2 else "rw"
-                    container_config["volumes"][container_path] = {
+                    # CRITICAL: Use host_path as key (where data lives on host)
+                    # and container_path as bind value (where it mounts in container)
+                    container_config["volumes"][host_path] = {
                         "bind": container_path,
                         "mode": mode
                     }

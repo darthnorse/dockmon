@@ -28,7 +28,7 @@ class EventType(str, Enum):
     # Container state events
     CONTAINER_STARTED = "container_started"
     CONTAINER_STOPPED = "container_stopped"
-    CONTAINER_RESTARTED = "container_restarted"  # TODO: Not yet implemented (Docker sends kill→die→start sequence)
+    CONTAINER_RESTARTED = "container_restarted"
     CONTAINER_DIED = "container_died"
     CONTAINER_HEALTH_CHANGED = "container_health_changed"
 

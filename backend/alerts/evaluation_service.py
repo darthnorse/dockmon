@@ -446,7 +446,7 @@ class AlertEvaluationService:
                         f"{metric_name}={metric_value}"
                     )
 
-                    # TODO: Trigger notifications here
+                    # Trigger notifications for all matched alerts
                     for alert in alerts:
                         await self._handle_alert_notification(alert)
 

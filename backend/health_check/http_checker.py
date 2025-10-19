@@ -461,8 +461,10 @@ class HttpHealthChecker:
                 f"(attempt {len(self.restart_history[container_id])} in last 10min)"
             )
 
-            # Use existing restart functionality
-            await self.monitor.restart_container(host_id, short_id)
+            # Run blocking restart in thread pool to avoid blocking event loop
+            # restart_container is synchronous and makes blocking Docker API calls
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self.monitor.restart_container, host_id, short_id)
 
         except Exception as e:
             logger.error(f"Failed to auto-restart container {container_id}: {e}", exc_info=True)

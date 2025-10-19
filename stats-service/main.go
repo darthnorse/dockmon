@@ -6,10 +6,12 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -28,7 +30,7 @@ var config = struct {
 	MaxRequestBodySize  int64
 	AllowedOrigins      string
 }{
-	TokenFilePath:       getEnv("TOKEN_FILE_PATH", "/tmp/stats-service-token"),
+	TokenFilePath:       getEnv("TOKEN_FILE_PATH", "/app/data/stats-service-token"),
 	Port:                getEnv("STATS_SERVICE_PORT", "8081"),
 	AggregationInterval: getEnvDuration("AGGREGATION_INTERVAL", "1s"),
 	EventCacheSize:      getEnvInt("EVENT_CACHE_SIZE", 100),
@@ -87,6 +89,64 @@ func generateToken() (string, error) {
 	return hex.EncodeToString(bytes), nil
 }
 
+// writeTokenSecurely writes the token to a file with protection against symlink attacks
+// Uses atomic write (temp file + rename) to prevent TOCTOU races and symlink exploits
+func writeTokenSecurely(path string, token string) error {
+	// Ensure parent directory exists with restrictive permissions
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return fmt.Errorf("failed to create directory %s: %w", dir, err)
+	}
+
+	// Create temporary file in same directory (required for atomic rename)
+	tmpFile, err := os.CreateTemp(dir, ".stats-token-*.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+
+	// Ensure cleanup on error
+	defer func() {
+		if tmpPath != "" {
+			os.Remove(tmpPath) // Clean up temp file if we didn't successfully rename it
+		}
+	}()
+
+	// Set restrictive permissions (owner read/write only)
+	if err := tmpFile.Chmod(0600); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("failed to set permissions: %w", err)
+	}
+
+	// Write token to temp file
+	if _, err := tmpFile.WriteString(token); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("failed to write token: %w", err)
+	}
+
+	// Sync to disk to ensure durability
+	if err := tmpFile.Sync(); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("failed to sync file: %w", err)
+	}
+
+	// Close temp file before rename
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temp file: %w", err)
+	}
+
+	// Atomic rename - this is the key security feature
+	// os.Rename will NOT follow symlinks at the destination
+	// If destination is a symlink, it will be replaced with our file
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("failed to rename temp file: %w", err)
+	}
+
+	// Success - prevent cleanup of temp file (it's been renamed)
+	tmpPath = ""
+	return nil
+}
+
 // limitRequestBody limits the size of request bodies
 func limitRequestBody(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -139,8 +199,8 @@ func main() {
 		log.Fatalf("Failed to generate token: %v", err)
 	}
 
-	// Write token to file for Python backend
-	if err := os.WriteFile(config.TokenFilePath, []byte(token), 0600); err != nil {
+	// Write token to file for Python backend using secure atomic write
+	if err := writeTokenSecurely(config.TokenFilePath, token); err != nil {
 		log.Fatalf("Failed to write token file: %v", err)
 	}
 	log.Printf("Generated temporary auth token for stats service")

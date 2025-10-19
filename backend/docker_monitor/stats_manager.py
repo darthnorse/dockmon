@@ -107,16 +107,18 @@ class StatsManager:
                 # Use short_id for consistency
                 container_key = f"{container.host_id}:{container.short_id}"
                 if container_key in containers_needing_stats and container_key not in self.streaming_containers:
-                    task = asyncio.create_task(
-                        stats_client.start_container_stream(
-                            container.short_id,  # Docker API accepts short IDs
-                            container.name,
-                            container.host_id
-                        )
+                    # Await the start request to verify it succeeded before marking as streaming
+                    success = await stats_client.start_container_stream(
+                        container.short_id,  # Docker API accepts short IDs
+                        container.name,
+                        container.host_id
                     )
-                    task.add_done_callback(error_callback)
-                    self.streaming_containers.add(container_key)
-                    logger.debug(f"Started stats stream for {container.name} on {container.host_name}")
+                    # Only mark as streaming if the request succeeded
+                    if success:
+                        self.streaming_containers.add(container_key)
+                        logger.debug(f"Started stats stream for {container.name} on {container.host_name}")
+                    else:
+                        logger.warning(f"Failed to start stats stream for {container.name} on {container.host_name}")
 
             # Stop streams for containers that no longer need stats
             containers_to_stop = self.streaming_containers - containers_needing_stats
@@ -130,10 +132,14 @@ class StatsManager:
                     self.streaming_containers.discard(container_key)
                     continue
 
-                task = asyncio.create_task(stats_client.stop_container_stream(container_id, host_id))
-                task.add_done_callback(error_callback)
-                self.streaming_containers.discard(container_key)
-                logger.debug(f"Stopped stats stream for container {container_id[:12]}")
+                # Await the stop request to verify it succeeded before unmarking as streaming
+                success = await stats_client.stop_container_stream(container_id, host_id)
+                # Only unmark as streaming if the request succeeded
+                if success:
+                    self.streaming_containers.discard(container_key)
+                    logger.debug(f"Stopped stats stream for container {container_id[:12]}")
+                else:
+                    logger.warning(f"Failed to stop stats stream for container {container_id[:12]}")
 
     async def stop_all_streams(self, stats_client, error_callback) -> None:
         """
@@ -148,17 +154,43 @@ class StatsManager:
         async with self._streaming_lock:
             if self.streaming_containers:
                 logger.info(f"Stopping {len(self.streaming_containers)} stats streams")
+                # Build list of (container_key, stop_task) pairs
+                stop_requests = []
                 for container_key in list(self.streaming_containers):
                     # Extract host_id and container_id from the key (format: host_id:container_id)
                     try:
                         host_id, container_id = container_key.split(':', 1)
                     except ValueError:
                         logger.error(f"Invalid container key format during cleanup: {container_key}")
+                        # Remove invalid keys immediately
+                        self.streaming_containers.discard(container_key)
                         continue
 
-                    task = asyncio.create_task(stats_client.stop_container_stream(container_id, host_id))
-                    task.add_done_callback(error_callback)
-                self.streaming_containers.clear()
+                    stop_requests.append((container_key, stats_client.stop_container_stream(container_id, host_id)))
+
+                # Wait for all stop requests to complete
+                if stop_requests:
+                    results = await asyncio.gather(*[task for _, task in stop_requests], return_exceptions=True)
+
+                    # Only remove containers whose stop request actually succeeded
+                    failed_count = 0
+                    for (container_key, _), result in zip(stop_requests, results):
+                        if isinstance(result, Exception):
+                            logger.error(f"Failed to stop stream for {container_key}: {result}")
+                            failed_count += 1
+                        elif result is True:
+                            # Successfully stopped - remove from tracking
+                            self.streaming_containers.discard(container_key)
+                        else:
+                            # stop_container_stream returned False - keep tracking for retry
+                            logger.warning(f"Stop request failed for {container_key}, keeping in tracking for retry")
+                            failed_count += 1
+
+                    if failed_count > 0:
+                        logger.warning(
+                            f"Failed to stop {failed_count} streams, "
+                            f"{len(self.streaming_containers)} containers still tracked as streaming"
+                        )
 
     def should_broadcast_host_metrics(self, settings: GlobalSettings) -> bool:
         """Determine if host metrics should be included in broadcast"""

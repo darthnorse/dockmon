@@ -165,14 +165,86 @@ class AlertEvaluationService:
                 alert = data['alert']
                 logger.info(
                     f"Alert {alert.id} ({alert.title}) exceeded clear_duration "
-                    f"({data['alert_age']:.1f}s >= {data['clear_duration']}s) - sending notification"
+                    f"({data['alert_age']:.1f}s >= {data['clear_duration']}s) - verifying condition still true"
                 )
 
-                # Send notification (send_alert_v2 will update notified_at and notification_count)
-                await self._send_notification(alert)
+                # Verify alert condition is still true before notifying
+                # This prevents false alerts when condition was transient (e.g., container stopped then quickly restarted)
+                if await self._verify_alert_condition(alert):
+                    logger.info(f"Alert {alert.id} condition verified - sending notification")
+                    await self._send_notification(alert)
+                else:
+                    logger.info(f"Alert {alert.id} condition no longer true - auto-resolving without notification")
+                    # Condition cleared during grace period - resolve silently
+                    with self.db.get_session() as session:
+                        alert_to_resolve = session.query(AlertV2).filter(AlertV2.id == alert.id).first()
+                        if alert_to_resolve and alert_to_resolve.state == "open":
+                            self.engine._resolve_alert(alert_to_resolve, "Condition cleared during grace period")
 
         except Exception as e:
             logger.error(f"Error checking pending notifications: {e}", exc_info=True)
+
+    async def _verify_alert_condition(self, alert: AlertV2) -> bool:
+        """
+        Verify that an alert's condition is still true before sending delayed notification.
+
+        This prevents false alerts when:
+        - Container stopped briefly then restarted (within grace period)
+        - Metric spiked momentarily then returned to normal
+        - Host disconnected briefly then reconnected
+
+        Returns: True if condition still true (send notification), False if condition cleared
+        """
+        try:
+            # For container_stopped alerts, verify container is actually still stopped
+            if alert.kind == "container_stopped" and alert.scope_type == "container":
+                if not self.monitor:
+                    logger.warning(f"Cannot verify container state - monitor not available")
+                    return True  # Default to sending notification if we can't verify
+
+                # Get current container state from monitor
+                containers = await self.monitor.get_containers()
+                container = next((c for c in containers if c.short_id == alert.scope_id), None)
+
+                if not container:
+                    # Container no longer exists - still consider this a valid alert
+                    logger.info(f"Alert {alert.id}: Container no longer found - keeping alert")
+                    return True
+
+                # Check if container is running
+                if container.state.lower() in ["running", "restarting"]:
+                    logger.info(f"Alert {alert.id}: Container now {container.state} - condition cleared")
+                    return False
+
+                # Container still stopped/exited - condition still true
+                logger.info(f"Alert {alert.id}: Container still {container.state} - condition valid")
+                return True
+
+            # For unhealthy alerts, verify container is still unhealthy
+            elif alert.kind == "unhealthy" and alert.scope_type == "container":
+                if not self.monitor:
+                    return True
+
+                containers = await self.monitor.get_containers()
+                container = next((c for c in containers if c.short_id == alert.scope_id), None)
+
+                if not container:
+                    return True
+
+                if container.state.lower() == "unhealthy":
+                    return True
+                else:
+                    logger.info(f"Alert {alert.id}: Container now {container.state} - no longer unhealthy")
+                    return False
+
+            # For other alert types, default to sending notification
+            # TODO: Add verification for metric-based alerts and other event types
+            return True
+
+        except Exception as e:
+            logger.error(f"Error verifying alert condition for {alert.id}: {e}", exc_info=True)
+            # On error, default to sending notification (fail-open)
+            return True
 
     async def _send_notification(self, alert: AlertV2):
         """

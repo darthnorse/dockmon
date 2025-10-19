@@ -193,6 +193,7 @@ class EventBus:
             # Create context
             context = EventContext(
                 host_id=event.host_id,
+                host_name=event.host_name,
                 container_id=event.scope_id if event.scope_type == 'container' else None,
                 container_name=event.scope_name if event.scope_type == 'container' else None
             )

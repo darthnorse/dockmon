@@ -1090,9 +1090,10 @@ class DockerMonitor:
             # Only process final/definitive events to avoid duplicate evaluations:
             # - die (not kill/stop) for container stopped
             # - start for container started
+            # - restart for container restarted (emitted after restart completes)
             # - oom, health_status for their respective conditions
             logger.info(f"V2 alert check: alert_evaluation_service={self.alert_evaluation_service is not None}, action={action}")
-            if self.alert_evaluation_service and action in ['die', 'oom', 'health_status', 'start']:
+            if self.alert_evaluation_service and action in ['die', 'oom', 'health_status', 'start', 'restart']:
                 logger.info(f"V2: Processing {action} event for {container_name}")
 
                 # Parse timestamp
@@ -1122,6 +1123,11 @@ class DockerMonitor:
                     else:
                         exit_code = 0  # Default to 0 if not provided
                 elif action == 'start':
+                    bus_event_type = BusEventType.CONTAINER_STARTED
+                    new_state = "running"
+                elif action == 'restart':
+                    # Docker 'restart' event is emitted AFTER the container has been restarted
+                    # Treat it as a CONTAINER_STARTED event since restart = stop + start
                     bus_event_type = BusEventType.CONTAINER_STARTED
                     new_state = "running"
                 elif action == 'health_status':

@@ -271,11 +271,33 @@ def upgrade() -> None:
 
 
     # ==================== Fix Foreign Keys (CASCADE DELETE) ====================
-    # NOTE: CASCADE DELETE constraints are NOT modified during v1→v2 upgrade.
-    # They're only needed for fresh v2 installations (handled by Base.metadata.create_all()).
-    # Modifying existing foreign keys in SQLite requires rebuilding entire tables (slow),
-    # and it's not worth the performance cost just to enable cascade deletes on v1 databases.
-    # Users upgrading from v1 will continue with their existing foreign key behavior.
+    # Add CASCADE DELETE to auto_restart_configs so hosts can be deleted cleanly.
+    # container_desired_states doesn't exist in v1, so it's created fresh with CASCADE DELETE.
+    #
+    # NOTE: This is a slow operation in SQLite (requires rebuilding the table).
+    # The idempotent check in migrate.py prevents restart loops if this times out.
+
+    if _table_exists('auto_restart_configs'):
+        print("Adding CASCADE DELETE to auto_restart_configs (rebuilding table, may take 10-30 seconds)...")
+        # SQLite doesn't support ALTER CONSTRAINT, must use batch mode (rebuilds entire table)
+        with op.batch_alter_table('auto_restart_configs', schema=None) as batch_op:
+            try:
+                batch_op.drop_constraint('auto_restart_configs_host_id_fkey', type_='foreignkey')
+            except:
+                pass  # Constraint may not exist or have different name
+            try:
+                batch_op.create_foreign_key(
+                    'fk_auto_restart_configs_host_id',
+                    'docker_hosts',
+                    ['host_id'],
+                    ['id'],
+                    ondelete='CASCADE'
+                )
+                print("✓ CASCADE DELETE added to auto_restart_configs")
+            except Exception as e:
+                print(f"WARNING: Could not add CASCADE DELETE to auto_restart_configs: {e}")
+                print("Non-fatal - hosts with auto-restart configs cannot be deleted without manually removing configs first")
+                # Non-fatal - worst case users can't delete hosts with configs
 
 
     # ==================== update_policies Table ====================

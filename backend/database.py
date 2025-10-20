@@ -699,9 +699,6 @@ class DatabaseManager:
         # Create tables if they don't exist
         Base.metadata.create_all(bind=self.engine)
 
-        # Run Alembic migrations for v1→v2 upgrades and future schema changes
-        self._run_alembic_migrations()
-
         # Run database migrations
         self._run_migrations()
 
@@ -750,82 +747,6 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Failed to configure SQLite PRAGMAs: {e}", exc_info=True)
             # Non-fatal: SQLite will work with defaults
-
-    def _run_alembic_migrations(self):
-        """
-        Run Alembic database migrations to upgrade schema to latest version.
-
-        CRITICAL FOR v1→v2 UPGRADES:
-        This method ensures v1.x databases are automatically upgraded to v2.x schema
-        without requiring manual intervention from users. It enables seamless upgrades
-        when users pull new Docker images.
-
-        ARCHITECTURE:
-        - Uses existing database connection (no duplicate connections)
-        - Migrations execute in sequential order (001 → 002 → ... → 008 → ...)
-        - Each migration is idempotent with defensive checks (table_exists, column_exists)
-        - Migration history tracked in alembic_version table
-        - Works for both fresh installations and upgrades
-
-        TIMING & ORDER:
-        Must run AFTER Base.metadata.create_all() to ensure base tables exist,
-        but BEFORE any code accesses v2-specific columns (app_version, upgrade_notice_dismissed, etc.)
-
-        ERROR HANDLING:
-        Non-fatal by design - logs errors but continues startup to maintain backward
-        compatibility. Manual migrations in _run_migrations() provide fallback for legacy schemas.
-
-        MIGRATIONS APPLIED:
-        - 001: v2 schema additions (user_prefs table, RBAC columns, event indexes)
-        - 002: React preferences migration
-        - 003: Host tags support
-        - 004: Dashboard view mode
-        - 005: Container custom tags
-        - 006: User preferences table
-        - 007: Display name column
-        - 008: Version tracking (app_version, upgrade_notice_dismissed)
-
-        NOTE: Singleton pattern ensures this only runs once per process.
-        """
-        try:
-            from alembic.config import Config
-            from alembic import command
-            import os
-
-            # Get the directory where database.py is located (/app/backend in container)
-            backend_dir = os.path.dirname(os.path.abspath(__file__))
-            alembic_dir = os.path.join(backend_dir, "alembic")
-            alembic_ini = os.path.join(backend_dir, "alembic.ini")
-
-            # Verify alembic directory exists before attempting migration
-            if not os.path.exists(alembic_dir):
-                logger.warning(f"Alembic directory not found at {alembic_dir}, skipping automatic migrations")
-                return
-
-            # Create Alembic configuration object
-            alembic_cfg = Config(alembic_ini)
-
-            # Override configuration to use current database path
-            # This ensures migrations run on the correct database regardless of environment
-            # (development, production, or custom data directory)
-            alembic_cfg.set_main_option("script_location", alembic_dir)
-            alembic_cfg.set_main_option("sqlalchemy.url", f"sqlite:///{self.db_path}")
-
-            # Run all pending migrations to bring database to latest version ("head")
-            # This is idempotent - already-applied migrations are skipped automatically
-            logger.info("Running Alembic database migrations to latest version...")
-            command.upgrade(alembic_cfg, "head")
-            logger.info("✓ Alembic migrations completed successfully - database schema is up to date")
-
-        except ImportError as e:
-            # Alembic package not installed (shouldn't happen in production)
-            logger.warning(f"Alembic package not available ({e}), skipping automatic migrations")
-            logger.warning("Database schema may be outdated - manual migration required")
-        except Exception as e:
-            # Migration failed (corrupt database, permission issues, etc.)
-            logger.error(f"Error running Alembic migrations: {e}", exc_info=True)
-            logger.warning("Continuing with manual migrations as fallback")
-            # Don't raise - allow startup to continue
 
     def _run_migrations(self):
         """Run database migrations for schema updates"""

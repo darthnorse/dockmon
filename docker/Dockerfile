@@ -116,8 +116,15 @@ RUN echo '#!/bin/bash' > /startup.sh && \
     echo '  chmod 644 /etc/nginx/certs/dockmon.crt' >> /startup.sh && \
     echo 'fi' >> /startup.sh && \
     echo '' >> /startup.sh && \
-    echo '# Wait for backend to be ready' >> /startup.sh && \
-    echo 'sleep 2' >> /startup.sh && \
+    echo '# Run database migrations' >> /startup.sh && \
+    echo 'echo "Running database migrations..."' >> /startup.sh && \
+    echo 'cd /app' >> /startup.sh && \
+    echo 'python3 backend/migrate.py' >> /startup.sh && \
+    echo 'if [ $? -ne 0 ]; then' >> /startup.sh && \
+    echo '  echo "ERROR: Database migration failed. Container will not start."' >> /startup.sh && \
+    echo '  exit 1' >> /startup.sh && \
+    echo 'fi' >> /startup.sh && \
+    echo 'echo "Database migrations completed successfully"' >> /startup.sh && \
     echo '' >> /startup.sh && \
     echo '# Start supervisor' >> /startup.sh && \
     echo 'exec /usr/local/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf' >> /startup.sh && \

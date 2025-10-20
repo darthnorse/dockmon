@@ -317,12 +317,14 @@ def upgrade() -> None:
 
     # Insert default validation patterns (separate from table creation)
     # Check if table is empty to handle case where Base.metadata.create_all() created empty table
-    bind = op.get_bind()
-    result = bind.execute(sa.text("SELECT COUNT(*) FROM update_policies")).scalar()
+    try:
+        bind = op.get_bind()
+        result = bind.execute(sa.text("SELECT COUNT(*) FROM update_policies")).scalar()
 
-    if result == 0:
-        # Table exists but is empty - insert default patterns
-        op.execute("""
+        if result == 0:
+            print("Inserting default update validation policies...")
+            # Table exists but is empty - insert default patterns
+            op.execute("""
             INSERT INTO update_policies (category, pattern, enabled) VALUES
             ('databases', 'postgres', 1),
             ('databases', 'mysql', 1),
@@ -348,6 +350,12 @@ def upgrade() -> None:
             ('critical', 'watchtower', 1),
             ('critical', 'dockmon', 1)
         """)
+            print("✓ Default update validation policies inserted")
+        else:
+            print(f"Skipping update_policies insert - table already has {result} records")
+    except Exception as e:
+        print(f"WARNING: Could not insert default update_policies: {e}")
+        print("Non-fatal - update validation will work but may not have default patterns")
 
 
 def downgrade() -> None:

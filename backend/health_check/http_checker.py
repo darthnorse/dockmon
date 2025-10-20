@@ -327,12 +327,18 @@ class HttpHealthChecker:
             check.updated_at = now
             session.commit()
 
-            # Log state change
+            # Log state change (INFO) or routine check (DEBUG)
             if old_status != new_status:
                 logger.info(
                     f"Health check status changed for {container_id}: "
                     f"{old_status} → {new_status} "
                     f"(consecutive_failures={check.consecutive_failures})"
+                )
+            else:
+                # Routine check with no state change - log at DEBUG level
+                logger.debug(
+                    f"Health check for {container_id}: {new_status} "
+                    f"(response_time={response_time_ms}ms)"
                 )
 
                 # Store config data for event emission (outside session)

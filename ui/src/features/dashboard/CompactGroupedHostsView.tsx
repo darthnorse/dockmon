@@ -433,6 +433,7 @@ function SortableHostList({ group, onHostClick }: SortableHostListProps) {
 
 /**
  * SortableHostCard - Individual draggable host card
+ * Left side (hostname) is clickable, right side is draggable area
  */
 interface SortableHostCardProps {
   host: Host
@@ -448,11 +449,18 @@ function SortableHostCard({ host, onHostClick }: SortableHostCardProps) {
     transform: CSS.Transform.toString(transform),
     transition,
     opacity: isDragging ? 0.5 : 1,
-    cursor: 'grab',
   }
 
   return (
-    <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
+    <div ref={setNodeRef} style={style} className="relative">
+      {/* Drag handle overlay - covers right side only */}
+      <div
+        {...attributes}
+        {...listeners}
+        className="absolute right-0 top-0 h-full cursor-grab active:cursor-grabbing"
+        style={{ width: 'calc(100% - 200px)', zIndex: 10 }}
+        title="Drag to reorder"
+      />
       <CompactHostCard
         host={{
           id: host.id,

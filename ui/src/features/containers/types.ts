@@ -81,8 +81,8 @@ export interface ContainerHttpHealthCheck {
   last_checked_at: string | null
   last_success_at: string | null
   last_failure_at: string | null
-  consecutive_successes: number
-  consecutive_failures: number
+  consecutive_successes: number | null  // null = no health check record exists
+  consecutive_failures: number | null   // null = no health check record exists
   last_response_time_ms: number | null
   last_error_message: string | null
 

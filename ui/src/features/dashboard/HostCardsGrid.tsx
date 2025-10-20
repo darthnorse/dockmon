@@ -187,13 +187,14 @@ export function HostCardsGrid({ hosts, onHostClick, onViewDetails, onEditHost, m
               )}
             </div>
 
-            {/* Drag handle - positioned above content but below resize handles */}
-            {/* Excludes three-dots menu area and resize handle edges */}
+            {/* Drag handle - covers header area only (like Standard mode) */}
+            {/* Positioned above content but below resize handles */}
+            {/* Left side of header is clickable via host-card-drag-handle-content class */}
             <div
               className="host-card-drag-handle absolute left-0 top-0 cursor-move pointer-events-auto"
               style={{
                 width: 'calc(100% - 60px)',
-                height: '48px',
+                height: '64px',
                 zIndex: 10
               }}
               title="Drag to reorder"

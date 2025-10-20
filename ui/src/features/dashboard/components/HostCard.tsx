@@ -18,7 +18,7 @@ import { Circle, MoreVertical, Container, ChevronDown, Info, Edit, ChevronsUp } 
 import { ResponsiveMiniChart } from '@/lib/charts/ResponsiveMiniChart'
 import { TagChip } from '@/components/TagChip'
 import { DropdownMenu, DropdownMenuItem } from '@/components/ui/dropdown-menu'
-import { useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
+import { useUserPreferences, useUpdatePreferences, useSimplifiedWorkflow } from '@/lib/hooks/useUserPreferences'
 
 export interface HostCardData {
   id: string
@@ -121,6 +121,7 @@ type ContainerSortKey = 'name' | 'state' | 'cpu' | 'memory'
 export function HostCard({ host, onHostClick, onViewDetails, onEditHost }: HostCardProps) {
   const { data: prefs } = useUserPreferences()
   const updatePreferences = useUpdatePreferences()
+  const { enabled: simplifiedWorkflow } = useSimplifiedWorkflow()
   const [collapsed, setCollapsed] = useState(false)
 
   // Initialize sort key from preferences, fallback to 'cpu'
@@ -195,16 +196,25 @@ export function HostCard({ host, onHostClick, onViewDetails, onEditHost }: HostC
     })
   }
 
+  // Handle click based on simplified workflow preference
+  const handleHostClick = () => {
+    if (simplifiedWorkflow) {
+      onViewDetails?.(host.id)
+    } else {
+      onHostClick?.(host.id)
+    }
+  }
+
   return (
     <div
       className="bg-surface border border-border rounded-lg p-4 hover:shadow-lg hover:border-accent/50 transition-all cursor-pointer"
-      onClick={() => onHostClick?.(host.id)}
+      onClick={handleHostClick}
       role="button"
       tabIndex={0}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault()
-          onHostClick?.(host.id)
+          handleHostClick()
         }
       }}
       aria-label={`Host ${host.name}, ${host.status}`}

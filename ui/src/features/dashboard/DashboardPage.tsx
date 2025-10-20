@@ -22,7 +22,7 @@ import { SortableCompactHostList } from './components/SortableCompactHostList'
 import { KpiBar } from './components/KpiBar'
 import { useViewMode } from './hooks/useViewMode'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
-import { useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
+import { useUserPreferences, useUpdatePreferences, useSimplifiedWorkflow } from '@/lib/hooks/useUserPreferences'
 import { HostDrawer } from '@/features/hosts/components/drawer/HostDrawer'
 import { HostDetailsModal } from '@/features/hosts/components/HostDetailsModal'
 import { HostModal } from '@/features/hosts/components/HostModal'
@@ -33,6 +33,7 @@ export function DashboardPage() {
   // Dashboard layout is handled internally by GridDashboard component
   const { data: prefs } = useUserPreferences()
   const updatePreferences = useUpdatePreferences()
+  const { enabled: simplifiedWorkflow } = useSimplifiedWorkflow()
 
   // Group by mode
   const groupBy = (prefs?.group_by as GroupByMode) || 'none'
@@ -53,9 +54,14 @@ export function DashboardPage() {
 
   const selectedHost = hosts?.find(h => h.id === selectedHostId)
 
+  // Unified handler that respects simplified workflow setting
   const handleHostClick = (hostId: string) => {
     setSelectedHostId(hostId)
-    setDrawerOpen(true)
+    if (simplifiedWorkflow) {
+      setModalOpen(true)
+    } else {
+      setDrawerOpen(true)
+    }
   }
 
   const handleViewDetails = (hostId: string) => {

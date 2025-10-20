@@ -100,7 +100,11 @@ class NotificationService:
     # V2 alert system (AlertEngine) handles all alert processing via send_alert_v2()
 
     async def _send_telegram(self, config: Dict[str, Any], message: str) -> bool:
-        """Send notification via Telegram"""
+        """Send notification via Telegram
+
+        Uses HTML parse mode instead of Markdown for better compatibility.
+        HTML is more forgiving with special characters in container/host names.
+        """
         try:
             # Support both 'token' and 'bot_token' for backward compatibility
             token = config.get('token') or config.get('bot_token')
@@ -111,10 +115,29 @@ class NotificationService:
                 return False
 
             url = f"https://api.telegram.org/bot{token}/sendMessage"
+
+            # Convert Markdown-style formatting to HTML
+            # Most templates use **bold** and `code`, convert these to HTML
+            html_message = message
+
+            # Replace **bold** with <b>bold</b> (toggle on/off)
+            parts = html_message.split('**')
+            for i in range(1, len(parts), 2):
+                if i < len(parts):
+                    parts[i] = f'<b>{parts[i]}</b>'
+            html_message = ''.join(parts)
+
+            # Replace `code` with <code>code</code> (toggle on/off)
+            parts = html_message.split('`')
+            for i in range(1, len(parts), 2):
+                if i < len(parts):
+                    parts[i] = f'<code>{parts[i]}</code>'
+            html_message = ''.join(parts)
+
             payload = {
                 'chat_id': chat_id,
-                'text': message,
-                'parse_mode': 'Markdown'
+                'text': html_message,
+                'parse_mode': 'HTML'
             }
 
             response = await self.http_client.post(url, json=payload)

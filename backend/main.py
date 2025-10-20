@@ -1587,6 +1587,13 @@ async def get_http_health_check(
                 "failure_threshold": 3,
                 "success_threshold": 1,
                 "current_status": "unknown",
+                "last_checked_at": None,
+                "last_success_at": None,
+                "last_failure_at": None,
+                "consecutive_failures": None,  # None = no record exists
+                "consecutive_successes": None,  # None = no record exists
+                "last_response_time_ms": None,
+                "last_error_message": None,
             }
 
         # Helper to format datetime with UTC timezone indicator
@@ -1706,11 +1713,12 @@ async def test_http_health_check(
     config: HttpHealthCheckConfig,
     current_user: dict = Depends(get_current_user)
 ):
-    """Test HTTP health check configuration without saving it"""
+    """Test HTTP health check configuration and update status immediately"""
     import httpx
     import time
-    import json
     from typing import Dict, Any
+    from datetime import datetime, timezone
+    from database import ContainerHttpHealthCheck
 
     # Create a dedicated client for this test (isolated from main health checker)
     # IMPORTANT: Use context manager to ensure cleanup even on exceptions
@@ -1727,6 +1735,10 @@ async def test_http_health_check(
 
     async with httpx.AsyncClient(**client_kwargs) as test_client:
         start_time = time.time()
+        is_success = False
+        response_time_ms = 0
+        status_code = 0
+        error_message = None
 
         try:
             # Build request options
@@ -1741,6 +1753,7 @@ async def test_http_health_check(
 
             # Make test request
             response = await test_client.request(**request_kwargs)
+            status_code = response.status_code
 
             # Calculate response time
             response_time_ms = int((time.time() - start_time) * 1000)
@@ -1766,55 +1779,71 @@ async def test_http_health_check(
 
             # Check if status code matches
             is_success = response.status_code in expected_codes
+            if not is_success:
+                error_message = f"Status {response.status_code}"
 
-            return {
-                "success": True,
-                "test_result": {
-                    "status_code": response.status_code,
-                    "response_time_ms": response_time_ms,
-                    "is_healthy": is_success,
-                    "message": f"Received status {response.status_code}" + (
-                        " (matches expected)" if is_success else f" (expected: {config.expected_status_codes})"
-                    )
-                }
-            }
-
-        except httpx.TimeoutException:
+        except (httpx.TimeoutException, httpx.ConnectError, Exception) as e:
             response_time_ms = int((time.time() - start_time) * 1000)
-            return {
-                "success": False,
-                "test_result": {
-                    "status_code": None,
-                    "response_time_ms": response_time_ms,
-                    "is_healthy": False,
-                    "message": f"Request timed out after {config.timeout_seconds}s"
-                }
-            }
+            is_success = False
+            if isinstance(e, httpx.TimeoutException):
+                error_message = f"Timeout after {config.timeout_seconds}s"
+            elif isinstance(e, httpx.ConnectError):
+                error_message = f"Connection failed: {str(e)[:100]}"
+            else:
+                error_message = f"Error: {str(e)[:100]}"
 
-        except httpx.ConnectError as e:
-            response_time_ms = int((time.time() - start_time) * 1000)
-            return {
-                "success": False,
-                "test_result": {
-                    "status_code": None,
-                    "response_time_ms": response_time_ms,
-                    "is_healthy": False,
-                    "message": f"Connection failed: {str(e)[:200]}"
-                }
-            }
+        # Update database with test result (if health check exists)
+        composite_key = make_composite_key(host_id, container_id)
 
-        except Exception as e:
-            response_time_ms = int((time.time() - start_time) * 1000)
-            return {
-                "success": False,
-                "test_result": {
-                    "status_code": None,
-                    "response_time_ms": response_time_ms,
-                    "is_healthy": False,
-                    "message": f"Error: {str(e)[:200]}"
-                }
+        with monitor.db.get_session() as session:
+            check = session.query(ContainerHttpHealthCheck).filter_by(
+                container_id=composite_key
+            ).first()
+
+            if not check:
+                logger.warning(f"No health check record found for {composite_key} - test result not persisted. User must save configuration first.")
+
+            if check:
+                now = datetime.now(timezone.utc)
+
+                # Update test results
+                check.last_checked_at = now
+                check.last_response_time_ms = response_time_ms
+
+                if is_success:
+                    check.consecutive_successes += 1
+                    check.consecutive_failures = 0
+                    check.last_success_at = now
+                    check.last_error_message = None
+                else:
+                    check.consecutive_failures += 1
+                    check.consecutive_successes = 0
+                    check.last_failure_at = now
+                    check.last_error_message = error_message
+
+                # Update status based on thresholds
+                success_threshold = getattr(check, 'success_threshold', 1)
+                if is_success and check.consecutive_successes >= success_threshold:
+                    check.current_status = 'healthy'
+                elif not is_success and check.consecutive_failures >= check.failure_threshold:
+                    check.current_status = 'unhealthy'
+                # Keep current status if within debounce thresholds
+
+                check.updated_at = now
+                session.commit()
+                logger.info(f"Updated health check status for {composite_key}: {check.current_status} (consecutive_successes={check.consecutive_successes}, consecutive_failures={check.consecutive_failures})")
+
+        return {
+            "success": True,
+            "test_result": {
+                "status_code": status_code,
+                "response_time_ms": response_time_ms,
+                "is_healthy": is_success,
+                "message": f"Received status {status_code}" + (
+                    " (matches expected)" if is_success else f" (expected: {config.expected_status_codes})"
+                ) if status_code > 0 else error_message or "Test failed"
             }
-    # httpx client is automatically closed here via context manager
+        }
 
 
 # ==================== Alert Rules V2 Routes ====================

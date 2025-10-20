@@ -34,7 +34,7 @@ import { ResponsiveMiniChart } from '@/lib/charts/ResponsiveMiniChart'
 import { TagChip } from '@/components/TagChip'
 import { useState, useEffect } from 'react'
 import { DropdownMenu, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
+import { useUserPreferences, useUpdatePreferences, useSimplifiedWorkflow } from '@/lib/hooks/useUserPreferences'
 import { debug } from '@/lib/debug'
 
 export interface ExpandedHostData {
@@ -144,6 +144,7 @@ type ContainerSortKey = 'name' | 'state' | 'cpu' | 'memory' | 'start_time'
 export function ExpandedHostCard({ host, cardRef, onHostClick, onViewDetails, onEditHost }: ExpandedHostCardProps) {
   const { data: prefs } = useUserPreferences()
   const updatePreferences = useUpdatePreferences()
+  const { enabled: simplifiedWorkflow } = useSimplifiedWorkflow()
   const [isCollapsed, setIsCollapsed] = useState(false)
 
   // Initialize sort key from preferences, fallback to 'state'
@@ -230,20 +231,27 @@ export function ExpandedHostCard({ host, cardRef, onHostClick, onViewDetails, on
     })
   }
 
+  // Handle card click based on simplified workflow preference
+  const handleCardClick = () => {
+    if (simplifiedWorkflow) {
+      onViewDetails?.(host.id)
+    } else {
+      onHostClick?.(host.id)
+    }
+  }
+
   return (
     <div
       ref={cardRef}
-      className="bg-surface border border-border rounded-lg p-4 hover:shadow-lg hover:border-accent/50 transition-all h-full flex flex-col"
+      className="bg-surface border border-border rounded-lg p-4 hover:shadow-lg hover:border-accent/50 transition-all h-full flex flex-col cursor-pointer"
+      onClick={handleCardClick}
       aria-label={`Host ${host.name}, ${host.status}`}
     >
-      {/* Header - Name, Status, Menu (same as Standard mode) */}
-      <div className="flex items-start justify-between mb-3">
+      {/* Header - Name, Status, Menu (drag handle area) */}
+      <div className="flex items-start justify-between mb-3 host-card-drag-handle-content">
         <div className="flex items-center gap-2 min-w-0 flex-1">
           <Circle className={`w-3 h-3 ${getStatusColor(host.status)}`} />
-          <h3
-            className="text-base font-semibold text-foreground truncate cursor-pointer hover:text-primary transition-colors"
-            onClick={() => onHostClick?.(host.id)}
-          >
+          <h3 className="text-base font-semibold text-foreground truncate">
             {host.name}
           </h3>
         </div>

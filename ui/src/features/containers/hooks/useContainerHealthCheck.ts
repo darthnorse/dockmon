@@ -41,8 +41,8 @@ export function useContainerHealthCheck(hostId: string | undefined, containerId:
           last_checked_at: null,
           last_success_at: null,
           last_failure_at: null,
-          consecutive_successes: 0,
-          consecutive_failures: 0,
+          consecutive_successes: null,  // null = no record exists
+          consecutive_failures: null,   // null = no record exists
           last_response_time_ms: null,
           last_error_message: null,
           auto_restart_on_failure: false,
@@ -126,6 +126,8 @@ export interface HealthCheckTestResult {
  * Hook to test HTTP health check configuration without saving
  */
 export function useTestHealthCheck() {
+  const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async ({
       hostId,
@@ -141,6 +143,12 @@ export function useTestHealthCheck() {
         config
       )
       return response.test_result
+    },
+    onSuccess: (_data, variables) => {
+      // Invalidate the health check query to refetch updated status
+      queryClient.invalidateQueries({
+        queryKey: ['container-health-check', variables.hostId, variables.containerId],
+      })
     },
   })
 }

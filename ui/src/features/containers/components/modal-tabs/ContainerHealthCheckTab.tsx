@@ -162,6 +162,10 @@ function ContainerHealthCheckTabInternal({ container }: ContainerHealthCheckTabP
     )
   }
 
+  // Check if health check record exists in database
+  // Backend returns null for consecutive_failures when no record exists
+  const healthCheckExists = healthCheck && healthCheck.consecutive_failures !== null
+
   const currentStatus = healthCheck?.current_status || 'unknown'
   const lastChecked = healthCheck?.last_checked_at
     ? new Date(healthCheck.last_checked_at).toLocaleString()
@@ -214,8 +218,9 @@ function ContainerHealthCheckTabInternal({ container }: ContainerHealthCheckTabP
         <div className="flex gap-2">
           <Button
             onClick={handleTest}
-            disabled={testHealthCheck.isPending || !url}
+            disabled={testHealthCheck.isPending || !url || !healthCheckExists}
             variant="outline"
+            title={!healthCheckExists ? 'Save configuration first to test' : ''}
           >
             {testHealthCheck.isPending ? (
               <>
@@ -225,7 +230,7 @@ function ContainerHealthCheckTabInternal({ container }: ContainerHealthCheckTabP
             ) : (
               <>
                 <FlaskConical className="mr-2 h-4 w-4" />
-                Test
+                Check Now
               </>
             )}
           </Button>
@@ -268,7 +273,7 @@ function ContainerHealthCheckTabInternal({ container }: ContainerHealthCheckTabP
             </div>
           )}
 
-          {healthCheck.consecutive_failures > 0 && (
+          {healthCheck.consecutive_failures !== null && healthCheck.consecutive_failures > 0 && (
             <div className="bg-danger/10 rounded-lg p-4">
               <div className="flex items-center gap-2 text-danger mb-1">
                 <AlertTriangle className="h-4 w-4" />

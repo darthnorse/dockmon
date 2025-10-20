@@ -34,12 +34,18 @@ def run_migrations():
     Run database migrations to upgrade schema to latest version.
 
     Steps:
-    1. Create tables that don't exist (fresh install scenario)
-    2. Run Alembic migrations (v1→v2 upgrade scenario)
+    1. Acquire migration lock (prevents concurrent migrations)
+    2. Create tables that don't exist (fresh install scenario)
+    3. Run Alembic migrations (v1→v2 upgrade scenario)
+    4. Release lock
 
     Returns:
         bool: True if successful, False otherwise
     """
+    import fcntl
+    import time
+
+    lock_file = None
     try:
         from sqlalchemy import create_engine
         from database import Base  # Import ORM Base to get table definitions
@@ -58,6 +64,35 @@ def run_migrations():
         data_dir = os.path.dirname(db_path)
         os.makedirs(data_dir, exist_ok=True)
         logger.info(f"Data directory: {data_dir}")
+
+        # Acquire exclusive lock to prevent concurrent migrations
+        lock_path = os.path.join(data_dir, '.migration.lock')
+        lock_file = open(lock_path, 'w')
+
+        logger.info("Waiting for migration lock...")
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            logger.info("✓ Migration lock acquired")
+        except IOError:
+            # Another process is running migrations, wait for it
+            logger.info("Another migration in progress, waiting...")
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            logger.info("✓ Migration lock acquired")
+
+            # Check if migration was already completed by other process
+            # If alembic_version table exists and has 001_v1_to_v2, skip
+            try:
+                engine_check = create_engine(f"sqlite:///{db_path}")
+                with engine_check.connect() as conn:
+                    result = conn.execute("SELECT version_num FROM alembic_version LIMIT 1")
+                    version = result.scalar()
+                    if version:
+                        logger.info(f"Migration already completed by another process (version: {version})")
+                        logger.info("✓ All migrations completed successfully")
+                        return True
+            except:
+                # Table doesn't exist or error checking - proceed with migration
+                pass
 
         # Create SQLAlchemy engine
         engine = create_engine(
@@ -100,6 +135,15 @@ def run_migrations():
     except Exception as e:
         logger.error(f"Migration error: {e}", exc_info=True)
         return False
+    finally:
+        # Release lock
+        if lock_file:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                lock_file.close()
+                logger.debug("Migration lock released")
+            except:
+                pass
 
 
 def main():

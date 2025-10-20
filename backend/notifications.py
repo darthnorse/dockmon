@@ -549,8 +549,6 @@ class NotificationService:
                 success = await self._send_slack(channel_config, test_message, test_event)
             elif channel_type == 'gotify':
                 success = await self._send_gotify(channel_config, test_message, test_event)
-            elif channel_type == 'ntfy':
-                success = await self._send_ntfy(channel_config, test_message, test_event)
             elif channel_type == 'smtp':
                 success = await self._send_smtp(channel_config, test_message, test_event)
             else:

@@ -37,10 +37,6 @@ interface StatsContextValue {
   containerStats: Map<string, ContainerStats> // Key: "hostId:containerId"
   containerSparklines: Map<string, Sparklines> // Key: "hostId:containerId"
 
-  // Performance optimization: Reverse lookup map (containerId -> compositeKey)
-  // Precomputed once in provider to avoid O(n) rebuilds in each hook instance
-  idToCompositeKey: Map<string, string>
-
   // Metadata
   lastUpdate: Date | null
   isConnected: boolean
@@ -68,7 +64,6 @@ export function StatsProvider({ children }: StatsProviderProps) {
   const [hostSparklines, setHostSparklines] = useState<Map<string, Sparklines>>(new Map())
   const [containerStats, setContainerStats] = useState<Map<string, ContainerStats>>(new Map())
   const [containerSparklines, setContainerSparklines] = useState<Map<string, Sparklines>>(new Map())
-  const [idToCompositeKey, setIdToCompositeKey] = useState<Map<string, string>>(new Map())
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null)
 
   // Handle WebSocket messages
@@ -86,17 +81,12 @@ export function StatsProvider({ children }: StatsProviderProps) {
       debug.log('StatsProvider', `Received update: ${containers?.length || 0} containers, ${Object.keys(host_metrics || {}).length} hosts`)
 
       // Update container stats Map (use composite key: hostId:containerId)
-      // PERFORMANCE: Also build reverse lookup map (containerId -> compositeKey) once here
-      // to avoid O(n) rebuilds in each useContainerSparklines hook instance
       const newContainerStats = new Map<string, ContainerStats>()
-      const newIdToCompositeKey = new Map<string, string>()
       containers?.forEach((container) => {
         const compositeKey = makeCompositeKey(container)
         newContainerStats.set(compositeKey, container)
-        newIdToCompositeKey.set(container.id, compositeKey)
       })
       setContainerStats(newContainerStats)
-      setIdToCompositeKey(newIdToCompositeKey)
 
       // Update host metrics Map
       if (host_metrics) {
@@ -167,7 +157,6 @@ export function StatsProvider({ children }: StatsProviderProps) {
     hostSparklines,
     containerStats,
     containerSparklines,
-    idToCompositeKey,
     lastUpdate,
     isConnected: status === 'connected',
   }
@@ -351,45 +340,32 @@ export function useAllContainers(
 
 /**
  * Hook: useContainer
- * Get a single container by ID (searches across all hosts)
+ * Get a single container by composite key
  *
- * @param containerId - The container ID
+ * @param compositeKey - The composite key in format "{host_id}:{container_id}"
  * @returns Container stats or null if not found
  */
-export function useContainer(containerId: string | null | undefined): ContainerStats | null {
+export function useContainer(compositeKey: string | null | undefined): ContainerStats | null {
   const { containerStats } = useStatsContext()
 
-  if (!containerId) return null
+  if (!compositeKey) return null
 
-  // Search through all containers to find matching ID
-  for (const [, container] of containerStats) {
-    if (container.id === containerId) {
-      return container
-    }
-  }
-
-  return null
+  // Direct O(1) lookup using composite key
+  return containerStats.get(compositeKey) || null
 }
 
 /**
  * Hook: useContainerSparklines
  * Get sparkline data for a specific container
  *
- * @param containerId - The container ID
+ * @param compositeKey - The composite key in format "{host_id}:{container_id}"
  * @returns Sparklines (cpu, mem, net arrays) or null if not available
  */
-export function useContainerSparklines(containerId: string | null | undefined): Sparklines | null {
-  const { containerSparklines, idToCompositeKey } = useStatsContext()
+export function useContainerSparklines(compositeKey: string | null | undefined): Sparklines | null {
+  const { containerSparklines } = useStatsContext()
 
-  if (!containerId) return null
+  if (!compositeKey) return null
 
-  // O(1) lookup using precomputed reverse map from provider
-  // PERFORMANCE: Map is built once in provider, not rebuilt per hook instance
-  const compositeKey = idToCompositeKey.get(containerId)
-  if (!compositeKey) {
-    debug.warn('useContainerSparklines', `Container ${containerId} not found in containerStats`)
-    return null
-  }
-
+  // Direct O(1) lookup using composite key
   return containerSparklines.get(compositeKey) || null
 }

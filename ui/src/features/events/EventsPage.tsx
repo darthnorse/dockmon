@@ -15,6 +15,7 @@ import { useDynamicPageSize } from '@/hooks/useDynamicPageSize'
 import { ContainerDetailsModal } from '@/features/containers/components/ContainerDetailsModal'
 import { HostDetailsModal } from '@/features/hosts/components/HostDetailsModal'
 import { EventRow } from './components/EventRow'
+import { makeCompositeKey } from '@/lib/utils/containerKeys'
 
 const SEVERITY_OPTIONS: EventSeverity[] = ['critical', 'error', 'warning', 'info', 'debug']
 const CATEGORY_OPTIONS: EventCategory[] = ['container', 'host', 'system', 'alert', 'notification', 'user']
@@ -97,7 +98,7 @@ export function EventsPage() {
 
   // Find selected container/host for modals
   const selectedContainer = useMemo(
-    () => containers.find((c) => c.id === selectedContainerId),
+    () => containers.find((c) => makeCompositeKey(c) === selectedContainerId),
     [containers, selectedContainerId]
   )
   const selectedHost = useMemo(

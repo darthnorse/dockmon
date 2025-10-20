@@ -29,13 +29,14 @@ import { TagInput } from '@/components/TagInput'
 import { TagChip } from '@/components/TagChip'
 import { Button } from '@/components/ui/button'
 import { useContainerTagEditor } from '@/hooks/useContainerTagEditor'
+import { makeCompositeKey } from '@/lib/utils/containerKeys'
 
 interface ContainerInfoTabProps {
   container: Container
 }
 
 export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
-  const sparklines = useContainerSparklines(container.id)
+  const sparklines = useContainerSparklines(makeCompositeKey(container))
   const [autoRestart, setAutoRestart] = useState(false)
   const [desiredState, setDesiredState] = useState<'should_run' | 'on_demand' | 'unspecified'>('unspecified')
 

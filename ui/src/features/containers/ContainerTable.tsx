@@ -527,7 +527,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
       if (selectedContainerKey) {
         return data?.find((c) => c.name === selectedContainerKey.name && c.host_id === selectedContainerKey.hostId)
       }
-      return data?.find((c) => c.id === selectedContainerId)
+      return data?.find((c) => makeCompositeKey(c) === selectedContainerId)
     },
     [data, selectedContainerId, selectedContainerKey]
   )
@@ -538,7 +538,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
     if (containerId && data) {
       const container = data.find(c => c.id === containerId)
       if (container && container.host_id) {
-        setSelectedContainerId(containerId)
+        setSelectedContainerId(makeCompositeKey(container))
         setSelectedContainerKey({ name: container.name, hostId: container.host_id })
         setModalOpen(true)
         // Clear the URL param after opening
@@ -685,7 +685,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
               <button
                 className="font-medium text-foreground hover:text-primary transition-colors text-left"
                 onClick={() => {
-                  setSelectedContainerId(row.original.id)
+                  setSelectedContainerId(makeCompositeKey(row.original))
                   if (row.original.host_id) {
                     setSelectedContainerKey({ name: row.original.name, hostId: row.original.host_id })
                   }

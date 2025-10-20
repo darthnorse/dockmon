@@ -6,12 +6,13 @@
  */
 
 import { formatTimestamp, getSeverityColor, formatSeverity } from '@/lib/utils/eventUtils'
+import { makeCompositeKeyFrom } from '@/lib/utils/containerKeys'
 
 interface EventRowProps {
   event: any
   showMetadata?: boolean
   compact?: boolean
-  onContainerClick?: (containerId: string) => void
+  onContainerClick?: (compositeKey: string) => void
   onHostClick?: (hostId: string) => void
 }
 
@@ -92,7 +93,9 @@ const MetadataLinks = ({
         <button
           onClick={(e) => {
             e.stopPropagation()
-            onContainerClick?.(event.container_id)
+            if (event.host_id && event.container_id) {
+              onContainerClick?.(makeCompositeKeyFrom(event.host_id, event.container_id))
+            }
           }}
           className="hover:text-primary hover:underline transition-colors"
         >

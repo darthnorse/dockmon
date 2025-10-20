@@ -136,13 +136,25 @@ export function useExecuteUpdate() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async ({ hostId, containerId }: { hostId: string; containerId: string }) => {
+    mutationFn: async ({
+      hostId,
+      containerId,
+      force = false
+    }: {
+      hostId: string
+      containerId: string
+      force?: boolean
+    }) => {
+      const params = force ? { force: 'true' } : {}
       return await apiClient.post<{
         status: string
         message: string
         previous_image: string
         new_image: string
-      }>(`/hosts/${hostId}/containers/${containerId}/execute-update`)
+        validation?: 'allow' | 'warn' | 'block'
+        reason?: string
+        matched_pattern?: string
+      }>(`/hosts/${hostId}/containers/${containerId}/execute-update`, null, { params })
     },
     onSuccess: (_data, variables) => {
       // Invalidate update status query to refetch new status

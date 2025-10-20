@@ -34,6 +34,7 @@ from docker_monitor.state_manager import StateManager
 from docker_monitor.operations import ContainerOperations
 from docker_monitor.periodic_jobs import PeriodicJobsManager
 from auth.session_manager import session_manager
+from utils.keys import make_composite_key
 
 
 logger = logging.getLogger(__name__)
@@ -1003,7 +1004,7 @@ class DockerMonitor:
 
             # Populate restart_attempts from monitor's state using composite key to prevent collisions
             for container in host_containers:
-                container_key = f"{container.host_id}:{container.short_id}"
+                container_key = make_composite_key(container.host_id, container.short_id)
                 container.restart_attempts = self.restart_attempts.get(container_key, 0)
 
             containers.extend(host_containers)
@@ -1048,7 +1049,7 @@ class DockerMonitor:
 
     def update_container_auto_update(self, host_id: str, container_id: str, container_name: str, enabled: bool, floating_tag_mode: str = 'exact'):
         """Enable/disable auto-update for a container with specified tracking mode"""
-        container_key = f"{host_id}:{container_id}"
+        container_key = make_composite_key(host_id, container_id)
         return self.db.set_container_auto_update(container_key, enabled, floating_tag_mode)
 
     def update_container_desired_state(self, host_id: str, container_id: str, container_name: str, desired_state: str):
@@ -1180,7 +1181,7 @@ class DockerMonitor:
                     new_state = "oom"
 
                 # Get old state from container state tracking (with lock to prevent race with polling loop)
-                container_key = f"{host_id}:{container_id}"
+                container_key = make_composite_key(host_id, container_id)
                 async with self._state_lock:
                     old_state = self._container_states.get(container_key)
                     # Update state tracking immediately so polling loop doesn't think there's drift
@@ -1245,7 +1246,7 @@ class DockerMonitor:
                     if container:
                         # 'die' event means container just died - don't wait for cache to update
                         # Restart immediately for instant response
-                        container_key = f"{host_id}:{container_id}"
+                        container_key = make_composite_key(host_id, container_id)
 
                         # Atomically check and set the restarting flag to prevent duplicate restarts (with lock)
                         async with self._state_lock:
@@ -1347,7 +1348,7 @@ class DockerMonitor:
                 # This acts as a safety net to catch any states that events might have missed
                 for container in containers:
                     # Use short_id to match event handler's key format
-                    container_key = f"{container.host_id}:{container.short_id}"
+                    container_key = make_composite_key(container.host_id, container.short_id)
                     current_state = container.status
 
                     # Hold lock during entire read-process-write to prevent race conditions
@@ -1374,7 +1375,7 @@ class DockerMonitor:
                         self._get_auto_restart_status(container.host_id, container.short_id)):
 
                         # Use host_id:container_id as key to prevent collisions between hosts
-                        container_key = f"{container.host_id}:{container.short_id}"
+                        container_key = make_composite_key(container.host_id, container.short_id)
 
                         # Atomically check and set restart flag (with lock)
                         async with self._state_lock:
@@ -1491,7 +1492,7 @@ class DockerMonitor:
                     container_sparklines = {}
                     for container in containers:
                         # Use composite key with SHORT ID: host_id:container_id (12 chars)
-                        container_key = f"{container.host_id}:{container.short_id}"
+                        container_key = make_composite_key(container.host_id, container.short_id)
 
                         # Collect sparklines for ALL containers (running or not)
                         # This ensures we always send sparkline data in every broadcast
@@ -1531,7 +1532,7 @@ class DockerMonitor:
         """Attempt to auto-restart a container"""
         container_id = container.short_id
         # Use host_id:container_id as key to prevent collisions between hosts
-        container_key = f"{container.host_id}:{container_id}"
+        container_key = make_composite_key(container.host_id, container_id)
 
         self.restart_attempts[container_key] = self.restart_attempts.get(container_key, 0) + 1
         attempt = self.restart_attempts[container_key]
@@ -1718,7 +1719,7 @@ class DockerMonitor:
                     ).all()
                     for config in configs:
                         # Use host_id:container_id as key to prevent collisions between hosts
-                        container_key = f"{config.host_id}:{config.container_id}"
+                        container_key = make_composite_key(config.host_id, config.container_id)
                         self.auto_restart_status[container_key] = True
                         self.restart_attempts[container_key] = config.restart_count
 
@@ -1743,7 +1744,7 @@ class DockerMonitor:
             # Get current containers
             containers = await self.get_containers()
             current_container_keys = {
-                f"{c.host_id}:{c.short_id}" for c in containers
+                make_composite_key(c.host_id, c.short_id) for c in containers
             }
 
             # Clean up _container_states

@@ -18,6 +18,7 @@ from sqlalchemy.orm import joinedload
 from database import DatabaseManager, AlertRuleV2, AlertV2
 from alerts.engine import AlertEngine, EvaluationContext
 from event_logger import EventLogger, EventContext, EventCategory, EventType, EventSeverity
+from utils.keys import make_composite_key
 
 logger = logging.getLogger(__name__)
 
@@ -371,7 +372,7 @@ class AlertEvaluationService:
 
             # Build lookup map for O(1) container lookups using composite key
             # Stats dict uses composite keys (host_id:container_id), so map must match
-            container_map = {f"{c.host_id}:{c.short_id}": c for c in containers}
+            container_map = {make_composite_key(c.host_id, c.short_id): c for c in containers}
 
             # Evaluate each container's metrics
             # Note: container_id here is actually the composite key (host_id:container_id)
@@ -641,7 +642,7 @@ class AlertEvaluationService:
 
             # Fetch container tags for tag-based selector matching
             # Tags are stored with composite key: host_id:container_id
-            composite_key = f"{host_id}:{container_id}"
+            composite_key = make_composite_key(host_id, container_id)
             container_tags = self.db.get_tags_for_subject('container', composite_key)
 
             # Create evaluation context with the data passed in

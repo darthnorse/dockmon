@@ -16,6 +16,8 @@ import secrets
 import bcrypt
 import uuid
 
+from utils.keys import make_composite_key
+
 logger = logging.getLogger(__name__)
 
 # Singleton instance and thread lock for DatabaseManager
@@ -101,7 +103,7 @@ class AutoRestartConfig(Base):
     __tablename__ = "auto_restart_configs"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    host_id = Column(String, ForeignKey("docker_hosts.id"))
+    host_id = Column(String, ForeignKey("docker_hosts.id", ondelete="CASCADE"))
     container_id = Column(String, nullable=False)
     container_name = Column(String, nullable=False)
     enabled = Column(Boolean, default=True)
@@ -121,11 +123,12 @@ class ContainerDesiredState(Base):
     __tablename__ = "container_desired_states"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    host_id = Column(String, ForeignKey("docker_hosts.id"))
+    host_id = Column(String, ForeignKey("docker_hosts.id", ondelete="CASCADE"))
     container_id = Column(String, nullable=False)
     container_name = Column(String, nullable=False)
     desired_state = Column(String, default='unspecified')  # 'should_run', 'on_demand', 'unspecified'
     custom_tags = Column(Text, nullable=True)  # Comma-separated custom tags
+    update_policy = Column(Text, nullable=True)  # 'allow', 'warn', 'block', or NULL (auto-detect)
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
@@ -211,7 +214,7 @@ class GlobalSettings(Base):
     update_check_interval_hours = Column(Integer, default=24)  # How often to check for updates (hours)
     update_check_time = Column(Text, default="02:00")  # Time of day to run checks (HH:MM format, 24-hour)
     skip_compose_containers = Column(Boolean, default=True)  # Skip Docker Compose-managed containers
-    health_check_timeout_seconds = Column(Integer, default=120)  # Health check timeout (seconds)
+    health_check_timeout_seconds = Column(Integer, default=10)  # Health check timeout (seconds)
 
     # Version tracking and upgrade notifications
     app_version = Column(String, default="2.0.0")  # Current application version
@@ -226,7 +229,7 @@ class ContainerUpdate(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     container_id = Column(Text, nullable=False, unique=True)  # Composite: host_id:short_container_id
-    host_id = Column(Text, nullable=False)
+    host_id = Column(Text, ForeignKey("docker_hosts.id", ondelete="CASCADE"), nullable=False)
 
     # Current state
     current_image = Column(Text, nullable=False)
@@ -258,7 +261,7 @@ class ContainerHttpHealthCheck(Base):
     __tablename__ = "container_http_health_checks"
 
     container_id = Column(Text, primary_key=True)  # Composite: host_id:container_id
-    host_id = Column(Text, nullable=False)
+    host_id = Column(Text, ForeignKey("docker_hosts.id", ondelete="CASCADE"), nullable=False)
 
     # Configuration
     enabled = Column(Boolean, default=False, nullable=False)
@@ -297,6 +300,23 @@ class ContainerHttpHealthCheck(Base):
         Index('idx_http_health_enabled', 'enabled'),
         Index('idx_http_health_host', 'host_id'),
         Index('idx_http_health_status', 'current_status'),
+    )
+
+
+class UpdatePolicy(Base):
+    """Update validation policy rules"""
+    __tablename__ = "update_policies"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    category = Column(Text, nullable=False)  # 'databases', 'proxies', 'monitoring', 'custom', 'critical'
+    pattern = Column(Text, nullable=False)   # Pattern to match against image/container name
+    enabled = Column(Boolean, nullable=False, default=True)
+
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint('category', 'pattern', name='uq_update_policies_category_pattern'),
     )
 
 
@@ -1750,7 +1770,7 @@ class DatabaseManager:
                     tag = session.query(Tag).filter(Tag.id == prev_assignment.tag_id).first()
                     if tag:
                         # Create new assignment for the new container ID
-                        container_key = f"{host_id}:{container_id}"
+                        container_key = make_composite_key(host_id, container_id)
 
                         # Check if already assigned
                         existing = session.query(TagAssignment).filter(
@@ -1785,7 +1805,7 @@ class DatabaseManager:
                 for prev_assignment in prev_assignments:
                     tag = session.query(Tag).filter(Tag.id == prev_assignment.tag_id).first()
                     if tag:
-                        container_key = f"{host_id}:{container_id}"
+                        container_key = make_composite_key(host_id, container_id)
 
                         existing = session.query(TagAssignment).filter(
                             TagAssignment.tag_id == tag.id,

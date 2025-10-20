@@ -2,10 +2,11 @@
  * Container Updates Tab
  *
  * Shows update status and allows manual update checks
+ * Includes update policy selector and validation
  */
 
 import { memo, useState, useEffect, useCallback } from 'react'
-import { Package, RefreshCw, Check, Clock, AlertCircle, Download } from 'lucide-react'
+import { Package, RefreshCw, Check, Clock, AlertCircle, Download, Shield } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 import {
@@ -17,8 +18,12 @@ import {
 } from '@/components/ui/select'
 import { toast } from 'sonner'
 import { useContainerUpdateStatus, useCheckContainerUpdate, useUpdateAutoUpdateConfig, useExecuteUpdate } from '../../hooks/useContainerUpdates'
+import { useSetContainerUpdatePolicy } from '../../hooks/useUpdatePolicies'
+import { UpdateValidationConfirmModal } from '../UpdateValidationConfirmModal'
 import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
 import type { Container } from '../../types'
+import type { UpdatePolicyValue } from '../../types/updatePolicy'
+import { POLICY_OPTIONS } from '../../types/updatePolicy'
 
 interface UpdateProgress {
   stage: string
@@ -38,14 +43,24 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
   const checkUpdate = useCheckContainerUpdate()
   const updateAutoUpdateConfig = useUpdateAutoUpdateConfig()
   const executeUpdate = useExecuteUpdate()
+  const setContainerPolicy = useSetContainerUpdatePolicy()
   const { addMessageHandler } = useWebSocketContext()
 
   // Local state for settings
   const [autoUpdateEnabled, setAutoUpdateEnabled] = useState(updateStatus?.auto_update_enabled ?? false)
   const [trackingMode, setTrackingMode] = useState<string>(updateStatus?.floating_tag_mode || 'exact')
+  const [updatePolicy, setUpdatePolicy] = useState<UpdatePolicyValue>(null)
 
   // Update progress state
   const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null)
+
+  // Validation confirmation modal state
+  const [validationConfirmOpen, setValidationConfirmOpen] = useState(false)
+  const [validationReason, setValidationReason] = useState<string>('')
+  const [validationPattern, setValidationPattern] = useState<string | undefined>()
+
+  // Rate limiting state for "Check Now" button
+  const [lastCheckTime, setLastCheckTime] = useState<number>(0)
 
   // Sync local state when server data changes
   useEffect(() => {
@@ -96,6 +111,16 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
       return
     }
 
+    // Rate limiting: prevent spamming "Check Now" button (5 second minimum between checks)
+    const now = Date.now()
+    const MIN_CHECK_INTERVAL_MS = 5000 // 5 seconds
+    if (now - lastCheckTime < MIN_CHECK_INTERVAL_MS) {
+      const remainingSeconds = Math.ceil((MIN_CHECK_INTERVAL_MS - (now - lastCheckTime)) / 1000)
+      toast.warning(`Please wait ${remainingSeconds} second${remainingSeconds > 1 ? 's' : ''} before checking again`)
+      return
+    }
+    setLastCheckTime(now)
+
     try {
       await checkUpdate.mutateAsync({
         hostId: container.host_id,
@@ -111,31 +136,7 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
   }
 
   const handleUpdateNow = async () => {
-    if (!container.host_id) {
-      toast.error('Cannot execute update', {
-        description: 'Container missing host information',
-      })
-      return
-    }
-
-    // Reset progress state before starting
-    setUpdateProgress({ stage: 'starting', progress: 0, message: 'Initializing update...' })
-
-    try {
-      const result = await executeUpdate.mutateAsync({
-        hostId: container.host_id,
-        containerId: container.id,
-      })
-      toast.success('Container updated successfully', {
-        description: result.message,
-      })
-      // Query will auto-invalidate via the mutation's onSuccess
-    } catch (error) {
-      setUpdateProgress(null) // Clear progress on error
-      toast.error('Failed to update container', {
-        description: error instanceof Error ? error.message : 'Unknown error',
-      })
-    }
+    await performUpdate(false)
   }
 
   const handleAutoUpdateToggle = async (enabled: boolean) => {
@@ -187,6 +188,78 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
       // Revert on error
       setTrackingMode(previousMode)
       toast.error('Failed to update tracking mode', {
+        description: error instanceof Error ? error.message : 'Unknown error',
+      })
+    }
+  }
+
+  const handlePolicyChange = async (policy: UpdatePolicyValue) => {
+    if (!container.host_id) {
+      toast.error('Cannot configure update policy', {
+        description: 'Container missing host information',
+      })
+      return
+    }
+
+    const previousPolicy = updatePolicy
+
+    try {
+      setUpdatePolicy(policy)
+      await setContainerPolicy.mutateAsync({
+        hostId: container.host_id,
+        containerId: container.id,
+        policy,
+      })
+      const policyLabel = POLICY_OPTIONS.find((opt) => opt.value === policy)?.label || 'Auto-detect'
+      toast.success(`Update policy set to ${policyLabel}`)
+    } catch (error) {
+      // Revert on error
+      setUpdatePolicy(previousPolicy)
+      toast.error('Failed to update policy', {
+        description: error instanceof Error ? error.message : 'Unknown error',
+      })
+    }
+  }
+
+  const handleConfirmUpdate = async () => {
+    // User confirmed, proceed with update
+    await performUpdate(true)
+  }
+
+  const performUpdate = async (force: boolean = false) => {
+    if (!container.host_id) {
+      toast.error('Cannot execute update', {
+        description: 'Container missing host information',
+      })
+      return
+    }
+
+    // Reset progress state before starting
+    setUpdateProgress({ stage: 'starting', progress: 0, message: 'Initializing update...' })
+
+    try {
+      const result = await executeUpdate.mutateAsync({
+        hostId: container.host_id,
+        containerId: container.id,
+        force,
+      })
+
+      // Check if validation warning returned
+      if (!force && result.validation === 'warn') {
+        setValidationReason(result.reason || 'Container matched validation pattern')
+        setValidationPattern(result.matched_pattern)
+        setValidationConfirmOpen(true)
+        setUpdateProgress(null)
+        return
+      }
+
+      toast.success('Container updated successfully', {
+        description: result.message,
+      })
+      // Query will auto-invalidate via the mutation's onSuccess
+    } catch (error) {
+      setUpdateProgress(null) // Clear progress on error
+      toast.error('Failed to update container', {
         description: error instanceof Error ? error.message : 'Unknown error',
       })
     }
@@ -418,8 +491,47 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
               </SelectContent>
             </Select>
           </div>
+
+          {/* Update policy selector */}
+          <div className="flex items-start justify-between py-4 border-t">
+            <div className="flex-1 mr-4">
+              <label htmlFor="update-policy" className="text-sm font-medium flex items-center gap-2">
+                <Shield className="h-4 w-4" />
+                Update Policy
+              </label>
+              <p className="text-sm text-muted-foreground mt-1">
+                Control when this container can be updated
+              </p>
+            </div>
+            <Select
+              value={updatePolicy ?? 'null'}
+              onValueChange={(value) => handlePolicyChange(value === 'null' ? null : value as UpdatePolicyValue)}
+              disabled={setContainerPolicy.isPending}
+            >
+              <SelectTrigger id="update-policy" className="w-[160px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {POLICY_OPTIONS.map((option) => (
+                  <SelectItem key={option.value ?? 'null'} value={option.value ?? 'null'}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
       </div>
+
+      {/* Validation Confirmation Modal */}
+      <UpdateValidationConfirmModal
+        isOpen={validationConfirmOpen}
+        onClose={() => setValidationConfirmOpen(false)}
+        onConfirm={handleConfirmUpdate}
+        containerName={container.name}
+        reason={validationReason}
+        matchedPattern={validationPattern}
+      />
 
       {/* Help text */}
       <div className="bg-muted/50 rounded-lg p-4 text-sm text-muted-foreground space-y-2">

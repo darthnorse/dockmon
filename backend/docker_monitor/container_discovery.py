@@ -17,6 +17,7 @@ from database import DatabaseManager, DockerHostDB
 from models.docker_models import DockerHost, Container, derive_container_tags
 from event_bus import Event, EventType as BusEventType, get_event_bus
 from stats_client import get_stats_client
+from utils.keys import make_composite_key
 
 logger = logging.getLogger(__name__)
 
@@ -403,7 +404,7 @@ class ContainerDiscovery:
                     # Reattach tags from previous containers with same logical identity (sticky tags)
                     # Only do this for NEW containers that don't have existing tag assignments
                     # Use SHORT ID (12 chars) for consistency with database storage
-                    container_key = f"{host_id}:{dc.id[:12]}"
+                    container_key = make_composite_key(host_id, dc.id[:12])
                     existing_tags = self.db.get_tags_for_subject('container', container_key)
                     if not existing_tags:  # Only reattach if no tags exist yet (new container)
                         try:
@@ -558,7 +559,7 @@ class ContainerDiscovery:
             # Populate stats for each container using composite key (host_id:container_id)
             for container in containers:
                 # Use short_id for consistency with all other container operations
-                composite_key = f"{container.host_id}:{container.short_id}"
+                composite_key = make_composite_key(container.host_id, container.short_id)
                 stats = container_stats.get(composite_key, {})
                 if stats:
                     container.cpu_percent = stats.get('cpu_percent')

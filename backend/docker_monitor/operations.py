@@ -12,6 +12,7 @@ from fastapi import HTTPException
 
 from event_logger import EventLogger
 from models.docker_models import DockerHost
+from utils.keys import make_composite_key
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +133,7 @@ class ContainerOperations:
             logger.info(f"Stopped container '{container_name}' on host '{host_name}'")
 
             # Track this user action to suppress critical severity on expected state change
-            container_key = f"{host_id}:{container_id}"
+            container_key = make_composite_key(host_id, container_id)
             self._recent_user_actions[container_key] = time.time()
             logger.info(f"Tracked user stop action for {container_key}")
 
@@ -202,7 +203,7 @@ class ContainerOperations:
             logger.info(f"Started container '{container_name}' on host '{host_name}'")
 
             # Track this user action to suppress critical severity on expected state change
-            container_key = f"{host_id}:{container_id}"
+            container_key = make_composite_key(host_id, container_id)
             self._recent_user_actions[container_key] = time.time()
             logger.info(f"Tracked user start action for {container_key}")
 

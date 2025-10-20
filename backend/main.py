@@ -47,6 +47,7 @@ from websocket.connection import ConnectionManager, DateTimeEncoder
 from websocket.rate_limiter import ws_rate_limiter
 from docker_monitor.monitor import DockerMonitor
 from batch_manager import BatchJobManager
+from utils.keys import make_composite_key
 
 # Configure logging
 setup_logging()
@@ -828,7 +829,7 @@ async def get_container_update_status(
 
     # Normalize to short ID
     short_id = container_id[:12] if len(container_id) > 12 else container_id
-    composite_key = f"{host_id}:{short_id}"
+    composite_key = make_composite_key(host_id, short_id)
 
     with monitor.db.get_session() as session:
         record = session.query(ContainerUpdate).filter_by(
@@ -903,6 +904,7 @@ async def check_container_update(
 async def execute_container_update(
     host_id: str,
     container_id: str,
+    force: bool = Query(False),
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -910,24 +912,30 @@ async def execute_container_update(
 
     This endpoint:
     1. Verifies an update is available
-    2. Pulls the new image
-    3. Recreates the container with the new image
-    4. Waits for health check
-    5. Creates events for success/failure
+    2. Validates update policy (unless force=True)
+    3. Pulls the new image
+    4. Recreates the container with the new image
+    5. Waits for health check
+    6. Creates events for success/failure
+
+    Args:
+        force: If True, bypass WARN validation (BLOCK still prevents update)
 
     Returns success status and details.
     """
     from updates.update_executor import get_update_executor
+    from updates.container_validator import ContainerValidator, ValidationResult
     from database import ContainerUpdate
+    from utils.async_docker import async_docker_call
 
     # Normalize to short ID
     short_id = container_id[:12] if len(container_id) > 12 else container_id
 
-    logger.info(f"User {current_user.get('username')} triggered manual update for container {short_id} on host {host_id}")
+    logger.info(f"User {current_user.get('username')} triggered manual update for container {short_id} on host {host_id} (force={force})")
 
     # Get update record from database
     with monitor.db.get_session() as session:
-        composite_key = f"{host_id}:{short_id}"
+        composite_key = make_composite_key(host_id, short_id)
         update_record = session.query(ContainerUpdate).filter_by(
             container_id=composite_key
         ).first()
@@ -944,9 +952,60 @@ async def execute_container_update(
                 detail="No update available for this container"
             )
 
-    # Execute the update
+        # Get container for validation (unless force=True)
+        if not force:
+            # Get Docker client
+            client = monitor.clients.get(host_id)
+            if not client:
+                raise HTTPException(status_code=404, detail="Docker host not found")
+
+            # Get container
+            try:
+                container = await async_docker_call(client.containers.get, short_id)
+                labels = container.labels or {}
+                container_name = container.name.lstrip('/')
+            except Exception as e:
+                logger.error(f"Error getting container for validation: {e}")
+                raise HTTPException(status_code=404, detail=f"Container not found: {short_id}")
+
+            # Validate update
+            try:
+                validator = ContainerValidator(session)
+                validation_result = validator.validate_update(
+                    host_id=host_id,
+                    container_id=short_id,
+                    container_name=container_name,
+                    image_name=update_record.current_image,
+                    labels=labels
+                )
+            except Exception as e:
+                logger.error(f"Error validating update policy: {e}")
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Unable to validate update policy: {str(e)}"
+                )
+
+            # If BLOCK, prevent update even with force
+            if validation_result.result == ValidationResult.BLOCK:
+                return {
+                    "status": "blocked",
+                    "validation": "block",
+                    "reason": validation_result.reason,
+                    "matched_pattern": validation_result.matched_pattern
+                }
+
+            # If WARN, return to frontend for confirmation
+            if validation_result.result == ValidationResult.WARN:
+                return {
+                    "status": "requires_confirmation",
+                    "validation": "warn",
+                    "reason": validation_result.reason,
+                    "matched_pattern": validation_result.matched_pattern
+                }
+
+    # Execute the update (validation passed or force=True)
     executor = get_update_executor(monitor.db, monitor)
-    success = await executor.update_container(host_id, short_id, update_record)
+    success = await executor.update_container(host_id, short_id, update_record, force=force)
 
     if success:
         return {
@@ -980,7 +1039,7 @@ async def update_auto_update_config(
 
     # Normalize to short ID
     short_id = container_id[:12] if len(container_id) > 12 else container_id
-    composite_key = f"{host_id}:{short_id}"
+    composite_key = make_composite_key(host_id, short_id)
 
     logger.info(f"User {current_user.get('username')} updating auto-update config for {composite_key}: {config}")
 
@@ -1062,7 +1121,7 @@ async def get_updates_summary(current_user: dict = Depends(get_current_user)):
 
     # Get current containers to validate against
     containers = await monitor.get_containers()
-    current_container_keys = {f"{c.host_id}:{c.short_id}" for c in containers}
+    current_container_keys = {make_composite_key(c.host_id, c.short_id) for c in containers}
 
     with monitor.db.get_session() as session:
         # Get all containers marked as having updates
@@ -1084,6 +1143,206 @@ async def get_updates_summary(current_user: dict = Depends(get_current_user)):
         return {
             "total_updates": len(valid_updates),
             "containers_with_updates": [u.container_id for u in valid_updates]
+        }
+
+
+# ==================== Update Policy Endpoints ====================
+
+@app.get("/api/update-policies")
+async def get_update_policies(current_user: dict = Depends(get_current_user)):
+    """
+    Get all update validation policies.
+
+    Returns list of all policies grouped by category with their enabled status.
+    """
+    from database import UpdatePolicy
+
+    with monitor.db.get_session() as session:
+        policies = session.query(UpdatePolicy).all()
+
+        # Group by category
+        grouped = {}
+        for policy in policies:
+            if policy.category not in grouped:
+                grouped[policy.category] = []
+            grouped[policy.category].append({
+                "id": policy.id,
+                "pattern": policy.pattern,
+                "enabled": policy.enabled,
+                "created_at": policy.created_at.isoformat() + 'Z' if policy.created_at else None,
+                "updated_at": policy.updated_at.isoformat() + 'Z' if policy.updated_at else None,
+            })
+
+        return {
+            "categories": grouped
+        }
+
+
+@app.put("/api/update-policies/{category}/toggle")
+async def toggle_update_policy_category(
+    category: str,
+    enabled: bool = Query(..., description="Enable or disable all patterns in category"),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Toggle all patterns in a category.
+
+    Args:
+        category: Category name (databases, proxies, monitoring, critical, custom)
+        enabled: True to enable all patterns in category, False to disable
+    """
+    from database import UpdatePolicy
+
+    with monitor.db.get_session() as session:
+        # Update all patterns in category
+        count = session.query(UpdatePolicy).filter_by(category=category).update(
+            {"enabled": enabled}
+        )
+        session.commit()
+
+        logger.info(f"Toggled {count} patterns in category '{category}' to enabled={enabled}")
+
+        return {
+            "success": True,
+            "category": category,
+            "enabled": enabled,
+            "patterns_affected": count
+        }
+
+
+@app.post("/api/update-policies/custom")
+async def create_custom_update_policy(
+    pattern: str = Query(..., description="Pattern to match against image/container name"),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Add a custom update policy pattern.
+
+    Args:
+        pattern: Pattern to match (case-insensitive substring match)
+    """
+    from database import UpdatePolicy
+
+    with monitor.db.get_session() as session:
+        # Check if pattern already exists
+        existing = session.query(UpdatePolicy).filter_by(
+            category="custom",
+            pattern=pattern
+        ).first()
+
+        if existing:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Pattern '{pattern}' already exists"
+            )
+
+        # Create new policy
+        policy = UpdatePolicy(
+            category="custom",
+            pattern=pattern,
+            enabled=True
+        )
+        session.add(policy)
+        session.commit()
+
+        logger.info(f"Created custom update policy pattern: {pattern}")
+
+        return {
+            "success": True,
+            "id": policy.id,
+            "pattern": pattern
+        }
+
+
+@app.delete("/api/update-policies/custom/{policy_id}")
+async def delete_custom_update_policy(
+    policy_id: int,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Delete a custom update policy pattern.
+
+    Args:
+        policy_id: Policy ID to delete
+    """
+    from database import UpdatePolicy
+
+    with monitor.db.get_session() as session:
+        policy = session.query(UpdatePolicy).filter_by(
+            id=policy_id,
+            category="custom"
+        ).first()
+
+        if not policy:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Custom policy {policy_id} not found"
+            )
+
+        pattern = policy.pattern
+        session.delete(policy)
+        session.commit()
+
+        logger.info(f"Deleted custom update policy: {pattern}")
+
+        return {
+            "success": True,
+            "deleted_pattern": pattern
+        }
+
+
+@app.put("/api/hosts/{host_id}/containers/{container_id}/update-policy")
+async def set_container_update_policy(
+    host_id: str,
+    container_id: str,
+    policy: Optional[str] = Query(None, description="Policy: 'allow', 'warn', 'block', or null for auto-detect"),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Set per-container update policy override.
+
+    Args:
+        host_id: Host UUID
+        container_id: Container short ID (12 chars)
+        policy: One of 'allow', 'warn', 'block', or null to use global patterns
+    """
+    from database import ContainerDesiredState
+
+    # Validate policy value
+    if policy is not None and policy not in ["allow", "warn", "block"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid policy value: {policy}. Must be 'allow', 'warn', 'block', or null"
+        )
+
+    with monitor.db.get_session() as session:
+        # Get or create desired state record
+        desired_state = session.query(ContainerDesiredState).filter_by(
+            host_id=host_id,
+            container_id=container_id
+        ).first()
+
+        if not desired_state:
+            # Create new record
+            desired_state = ContainerDesiredState(
+                host_id=host_id,
+                container_id=container_id,
+                update_policy=policy
+            )
+            session.add(desired_state)
+        else:
+            # Update existing record
+            desired_state.update_policy = policy
+
+        session.commit()
+
+        logger.info(f"Set update policy for {host_id}:{container_id} to {policy}")
+
+        return {
+            "success": True,
+            "host_id": host_id,
+            "container_id": container_id,
+            "update_policy": policy
         }
 
 
@@ -1303,7 +1562,7 @@ async def get_http_health_check(
     """Get HTTP health check configuration for a container"""
     from database import ContainerHttpHealthCheck
 
-    composite_key = f"{host_id}:{container_id}"
+    composite_key = make_composite_key(host_id, container_id)
 
     with monitor.db.get_session() as session:
         check = session.query(ContainerHttpHealthCheck).filter_by(
@@ -1368,7 +1627,7 @@ async def update_http_health_check(
     from database import ContainerHttpHealthCheck
     from datetime import datetime, timezone
 
-    composite_key = f"{host_id}:{container_id}"
+    composite_key = make_composite_key(host_id, container_id)
 
     with monitor.db.get_session() as session:
         check = session.query(ContainerHttpHealthCheck).filter_by(
@@ -1422,7 +1681,7 @@ async def delete_http_health_check(
     """Delete HTTP health check configuration"""
     from database import ContainerHttpHealthCheck
 
-    composite_key = f"{host_id}:{container_id}"
+    composite_key = make_composite_key(host_id, container_id)
 
     with monitor.db.get_session() as session:
         check = session.query(ContainerHttpHealthCheck).filter_by(
@@ -2763,7 +3022,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
             container_sparklines = {}
             for container in containers:
                 # Use composite key with SHORT ID: host_id:container_id (12 chars)
-                container_key = f"{container.host_id}:{container.short_id}"
+                container_key = make_composite_key(container.host_id, container.short_id)
                 sparklines = monitor.container_stats_history.get_sparklines(container_key, num_points=30)
                 container_sparklines[container_key] = sparklines
             broadcast_data["container_sparklines"] = container_sparklines

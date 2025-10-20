@@ -8,6 +8,7 @@ import logging
 from typing import Set, List
 from models.docker_models import Container
 from database import GlobalSettings
+from utils.keys import make_composite_key
 
 logger = logging.getLogger(__name__)
 
@@ -23,13 +24,13 @@ class StatsManager:
 
     def add_modal_container(self, container_id: str, host_id: str) -> None:
         """Track that a container modal is open"""
-        composite_key = f"{host_id}:{container_id}"
+        composite_key = make_composite_key(host_id, container_id)
         self.modal_containers.add(composite_key)
         logger.debug(f"Container modal opened for {container_id[:12]} on host {host_id[:8]} - stats tracking enabled")
 
     def remove_modal_container(self, container_id: str, host_id: str) -> None:
         """Remove container from modal tracking"""
-        composite_key = f"{host_id}:{container_id}"
+        composite_key = make_composite_key(host_id, container_id)
         self.modal_containers.discard(composite_key)
         logger.debug(f"Container modal closed for {container_id[:12]} on host {host_id[:8]}")
 
@@ -67,7 +68,7 @@ class StatsManager:
             for container in containers:
                 if container.status == 'running':
                     # Use short_id for consistency
-                    containers_needing_stats.add(f"{container.host_id}:{container.short_id}")
+                    containers_needing_stats.add(make_composite_key(container.host_id, container.short_id))
 
         # Rule 2: Always add modal containers (even if settings are off)
         # Modal containers are already stored as composite keys
@@ -75,7 +76,7 @@ class StatsManager:
             # Verify container is still running before adding
             for container in containers:
                 # Use short_id for consistency
-                container_key = f"{container.host_id}:{container.short_id}"
+                container_key = make_composite_key(container.host_id, container.short_id)
                 if container_key == modal_composite_key and container.status == 'running':
                     containers_needing_stats.add(container_key)
                     break
@@ -105,7 +106,7 @@ class StatsManager:
             # Start streams for containers that need stats but aren't streaming yet
             for container in containers:
                 # Use short_id for consistency
-                container_key = f"{container.host_id}:{container.short_id}"
+                container_key = make_composite_key(container.host_id, container.short_id)
                 if container_key in containers_needing_stats and container_key not in self.streaming_containers:
                     # Await the start request to verify it succeeded before marking as streaming
                     success = await stats_client.start_container_stream(

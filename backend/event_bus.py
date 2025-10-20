@@ -24,6 +24,7 @@ class EventType(str, Enum):
     UPDATE_AVAILABLE = "update_available"
     UPDATE_COMPLETED = "update_completed"
     UPDATE_FAILED = "update_failed"
+    UPDATE_SKIPPED_VALIDATION = "update_skipped_validation"  # Auto-update skipped due to validation
 
     # Container state events
     CONTAINER_STARTED = "container_started"

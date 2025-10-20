@@ -5,11 +5,14 @@ Manages background tasks that run at regular intervals
 
 import asyncio
 import logging
-from datetime import datetime, time as dt_time, timezone
+import time as time_module
+from datetime import datetime, time as dt_time, timezone, timedelta
 
 from database import DatabaseManager
 from event_logger import EventLogger, EventSeverity, EventType
 from auth.session_manager import session_manager
+from utils.keys import make_composite_key
+from utils.async_docker import async_docker_call
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +26,7 @@ class PeriodicJobsManager:
         self.monitor = None  # Will be set by monitor.py after initialization
         self._last_update_check = None  # Track when we last ran update check
 
-    def auto_resolve_stale_alerts(self):
+    async def auto_resolve_stale_alerts(self):
         """
         Auto-resolve alerts for entities that no longer exist or are stale.
 
@@ -36,6 +39,7 @@ class PeriodicJobsManager:
         """
         from datetime import datetime, timezone, timedelta
         from database import AlertV2
+        from utils.async_docker import async_docker_call
 
         resolved_count = 0
 
@@ -56,7 +60,22 @@ class PeriodicJobsManager:
                     'last_seen': alert.last_seen
                 })
 
-        # Session is now closed - safe for blocking Docker API calls
+        # Session is now closed - safe for async Docker API calls
+
+        # Optimization: Batch-fetch all existing containers once per host (prevents N+1 queries)
+        existing_containers_by_host = {}
+        if self.monitor:
+            for host_id, client in self.monitor.clients.items():
+                try:
+                    # Fetch all containers on this host in one call
+                    containers = await async_docker_call(client.containers.list, all=True)
+                    # Store SHORT IDs (12 chars) in set for fast lookup
+                    existing_containers_by_host[host_id] = {c.id[:12] for c in containers}
+                    logger.debug(f"Found {len(existing_containers_by_host[host_id])} containers on host {host_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to fetch containers for host {host_id}: {e}")
+                    existing_containers_by_host[host_id] = set()
+
         alerts_to_resolve = []
 
         for alert_data in alerts_to_check:
@@ -65,20 +84,12 @@ class PeriodicJobsManager:
 
             # Check if entity still exists
             if alert_data['scope_type'] == 'container':
-                # Check if container actually exists in Docker (any state - running, stopped, etc.)
+                # Check if container exists in any host (using pre-fetched sets)
                 if self.monitor:
-                    container_exists = False
-
-                    # Check all connected hosts for this container
-                    for host_id, client in self.monitor.clients.items():
-                        try:
-                            # Try to get container by ID (works for any state)
-                            client.containers.get(alert_data['scope_id'])
-                            container_exists = True
-                            break
-                        except Exception:
-                            # Container not found on this host, try next
-                            continue
+                    container_exists = any(
+                        alert_data['scope_id'] in existing_containers_by_host.get(host_id, set())
+                        for host_id in self.monitor.clients.keys()
+                    )
 
                     if not container_exists:
                         should_resolve = True
@@ -175,7 +186,7 @@ class PeriodicJobsManager:
                     )
 
                 # Auto-resolve stale alerts (deleted entities, expired)
-                resolved_alerts = self.auto_resolve_stale_alerts()
+                resolved_alerts = await self.auto_resolve_stale_alerts()
                 if resolved_alerts > 0:
                     self.event_logger.log_system_event(
                         "Alert Auto-Resolve",
@@ -194,19 +205,86 @@ class PeriodicJobsManager:
                 if self.monitor:
                     await self.monitor.refresh_all_hosts_system_info()
 
-                # Clean up stale container update entries (for deleted containers)
-                from database import ContainerUpdate
+                # Clean up stale container-related database entries (for deleted containers)
+                from database import (
+                    ContainerUpdate,
+                    ContainerHttpHealthCheck,
+                    AutoRestartConfig,
+                    ContainerDesiredState
+                )
                 containers = await self.monitor.get_containers()
-                current_container_keys = {f"{c.host_id}:{c.short_id}" for c in containers}
+                current_container_keys = {make_composite_key(c.host_id, c.short_id) for c in containers}
+
+                # Also track SHORT IDs only for tables that use SHORT IDs instead of composite keys
+                current_container_short_ids_by_host = {}
+                for c in containers:
+                    if c.host_id not in current_container_short_ids_by_host:
+                        current_container_short_ids_by_host[c.host_id] = set()
+                    current_container_short_ids_by_host[c.host_id].add(c.short_id)
+
+                total_cleaned = 0
 
                 with self.db.get_session() as session:
+                    # 1. Clean up container_updates (uses composite key)
                     all_updates = session.query(ContainerUpdate).all()
                     stale_updates = [u for u in all_updates if u.container_id not in current_container_keys]
                     if stale_updates:
                         for stale in stale_updates:
                             session.delete(stale)
+                        total_cleaned += len(stale_updates)
+                        logger.debug(f"Cleaned up {len(stale_updates)} stale container_updates entries")
+
+                    # 2. Clean up container_http_health_checks (uses composite key)
+                    all_health_checks = session.query(ContainerHttpHealthCheck).all()
+                    stale_health_checks = [h for h in all_health_checks if h.container_id not in current_container_keys]
+                    if stale_health_checks:
+                        for stale in stale_health_checks:
+                            session.delete(stale)
+                        total_cleaned += len(stale_health_checks)
+                        logger.debug(f"Cleaned up {len(stale_health_checks)} stale container_http_health_checks entries")
+
+                    # 3. Clean up auto_restart_configs (uses SHORT ID, not composite)
+                    all_restart_configs = session.query(AutoRestartConfig).all()
+                    stale_restart_configs = []
+                    for config in all_restart_configs:
+                        # Check if container still exists on this host
+                        host_containers = current_container_short_ids_by_host.get(config.host_id, set())
+                        if config.container_id not in host_containers:
+                            stale_restart_configs.append(config)
+                    if stale_restart_configs:
+                        for stale in stale_restart_configs:
+                            session.delete(stale)
+                        total_cleaned += len(stale_restart_configs)
+                        logger.debug(f"Cleaned up {len(stale_restart_configs)} stale auto_restart_configs entries")
+
+                    # 4. Clean up container_desired_states (uses SHORT ID, not composite)
+                    all_desired_states = session.query(ContainerDesiredState).all()
+                    stale_desired_states = []
+                    for state in all_desired_states:
+                        # Check if container still exists on this host
+                        host_containers = current_container_short_ids_by_host.get(state.host_id, set())
+                        if state.container_id not in host_containers:
+                            stale_desired_states.append(state)
+                    if stale_desired_states:
+                        for stale in stale_desired_states:
+                            session.delete(stale)
+                        total_cleaned += len(stale_desired_states)
+                        logger.debug(f"Cleaned up {len(stale_desired_states)} stale container_desired_states entries")
+
+                    # Commit all deletions in one transaction
+                    if total_cleaned > 0:
                         session.commit()
-                        logger.info(f"Cleaned up {len(stale_updates)} stale container update entries")
+                        logger.info(f"Cleaned up {total_cleaned} total stale container-related database entries")
+
+                # Clean up old backup containers (older than 24 hours)
+                backup_cleaned = await self.cleanup_old_backup_containers()
+                if backup_cleaned > 0:
+                    self.event_logger.log_system_event(
+                        "Backup Container Cleanup",
+                        f"Removed {backup_cleaned} old backup containers (older than 24 hours)",
+                        EventSeverity.INFO,
+                        EventType.STARTUP
+                    )
 
                 # Note: Timezone offset is auto-synced from the browser, not from server
                 # This ensures DST changes are handled automatically on the client side
@@ -319,3 +397,65 @@ class PeriodicJobsManager:
         except Exception as e:
             logger.error(f"Error in manual update check: {e}", exc_info=True)
             return {"total": 0, "checked": 0, "updates_found": 0, "errors": 1}
+
+    async def cleanup_old_backup_containers(self) -> int:
+        """
+        Remove backup containers older than 24 hours.
+
+        Backup containers are created during updates with pattern: {name}-backup-{timestamp}
+        If update succeeds, cleanup removes them. If cleanup fails, they accumulate.
+        This job removes old backups to prevent disk bloat.
+
+        Returns:
+            Number of backup containers removed
+        """
+        if not self.monitor:
+            logger.warning("No monitor available for backup container cleanup")
+            return 0
+
+        removed_count = 0
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=24)
+
+        try:
+            # Check all hosts
+            for host_id, client in self.monitor.clients.items():
+                try:
+                    # Get all containers (including stopped)
+                    containers = await async_docker_call(client.containers.list, all=True)
+
+                    for container in containers:
+                        # Check if this is a backup container (pattern: {name}-backup-{timestamp})
+                        if '-backup-' not in container.name:
+                            continue
+
+                        # Parse created timestamp
+                        try:
+                            created_str = container.attrs.get('Created', '')
+                            if not created_str:
+                                continue
+
+                            # Parse ISO format timestamp
+                            created_dt = datetime.fromisoformat(created_str.replace('Z', '+00:00'))
+
+                            # Check if older than 24 hours
+                            if created_dt < cutoff_time:
+                                logger.info(f"Removing old backup container: {container.name} (created {created_dt})")
+                                await async_docker_call(container.remove, force=True)
+                                removed_count += 1
+
+                        except Exception as e:
+                            logger.warning(f"Error parsing/removing backup container {container.name}: {e}")
+                            continue
+
+                except Exception as e:
+                    logger.error(f"Error cleaning backups on host {host_id}: {e}")
+                    continue
+
+            if removed_count > 0:
+                logger.info(f"Cleaned up {removed_count} old backup containers")
+
+            return removed_count
+
+        except Exception as e:
+            logger.error(f"Error in backup container cleanup: {e}", exc_info=True)
+            return removed_count

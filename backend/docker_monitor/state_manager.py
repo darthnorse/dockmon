@@ -11,6 +11,7 @@ from docker import DockerClient
 from fastapi import HTTPException
 
 from database import DatabaseManager
+from utils.keys import make_composite_key
 from models.docker_models import DockerHost, derive_container_tags
 from models.settings_models import GlobalSettings
 
@@ -43,7 +44,7 @@ class StateManager:
         Returns:
             True if auto-restart is enabled, False otherwise
         """
-        container_key = f"{host_id}:{container_id}"
+        container_key = make_composite_key(host_id, container_id)
 
         # Check in-memory cache first
         if container_key in self.auto_restart_status:
@@ -74,7 +75,7 @@ class StateManager:
         host_name = host.name if host else 'Unknown Host'
 
         # Use host_id:container_id as key to prevent collisions between hosts
-        container_key = f"{host_id}:{container_id}"
+        container_key = make_composite_key(host_id, container_id)
         self.auto_restart_status[container_key] = enabled
         if not enabled:
             self.restart_attempts[container_key] = 0
@@ -128,7 +129,7 @@ class StateManager:
             labels = container.labels if container.labels else {}
 
             # Update custom tags in database
-            container_key = f"{host_id}:{container_id}"
+            container_key = make_composite_key(host_id, container_id)
             custom_tags = self.db.update_subject_tags(
                 'container',
                 container_key,

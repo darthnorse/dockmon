@@ -13,6 +13,7 @@ from typing import List, Dict, Optional
 from database import DatabaseManager, ContainerUpdate, GlobalSettings
 from updates.registry_adapter import get_registry_adapter
 from event_bus import Event, EventType, get_event_bus
+from utils.keys import make_composite_key
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +148,7 @@ class UpdateChecker:
             return None
 
         # Get or create container_update record to get tracking mode
-        composite_key = f"{container['host_id']}:{container['id']}"
+        composite_key = make_composite_key(container['host_id'], container['id'])
         tracking_mode = self._get_tracking_mode(composite_key)
 
         # Compute floating tag based on tracking mode
@@ -220,8 +221,9 @@ class UpdateChecker:
                 logger.debug(f"No Docker client found for host {host_id}")
                 return None
 
-            # Get container and extract digest
-            dc = client.containers.get(container["id"])
+            # Get container and extract digest (use async wrapper to prevent event loop blocking)
+            from utils.async_docker import async_docker_call
+            dc = await async_docker_call(client.containers.get, container["id"])
             image = dc.image
             repo_digests = image.attrs.get("RepoDigests", [])
 
@@ -314,7 +316,7 @@ class UpdateChecker:
             container: Container dict
             update_info: Update info dict from _check_container_update
         """
-        composite_key = f"{container['host_id']}:{container['id']}"
+        composite_key = make_composite_key(container['host_id'], container['id'])
 
         with self.db.get_session() as session:
             record = session.query(ContainerUpdate).filter_by(
@@ -361,7 +363,7 @@ class UpdateChecker:
             container: Container dict
             update_info: Update info dict
         """
-        composite_key = f"{container['host_id']}:{container['id']}"
+        composite_key = make_composite_key(container['host_id'], container['id'])
 
         # Check if we already created an event for this update
         # Extract data and close session BEFORE async event emission

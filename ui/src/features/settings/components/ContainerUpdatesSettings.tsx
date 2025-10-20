@@ -1,6 +1,6 @@
 /**
  * Container Updates Settings Component
- * Configure automatic update checks and registry credentials
+ * Configure automatic update checks, validation policies, and registry credentials
  */
 
 import { useState, useEffect } from 'react'
@@ -10,6 +10,7 @@ import { RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { apiClient } from '@/lib/api/client'
 import { ToggleSwitch } from './ToggleSwitch'
+import { UpdatePoliciesSettings } from './UpdatePoliciesSettings'
 
 export function ContainerUpdatesSettings() {
   const { data: settings } = useGlobalSettings()
@@ -174,6 +175,11 @@ export function ContainerUpdatesSettings() {
             </p>
           </div>
         </div>
+      </div>
+
+      {/* Update Validation Policies */}
+      <div>
+        <UpdatePoliciesSettings />
       </div>
 
       {/* Registry Credentials */}

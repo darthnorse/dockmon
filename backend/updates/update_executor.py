@@ -12,6 +12,7 @@ Handles the execution of container updates:
 import asyncio
 import logging
 import time
+import threading
 from datetime import datetime, timezone
 from typing import Dict, Optional, Any, Tuple
 import docker
@@ -19,6 +20,8 @@ import docker
 from database import DatabaseManager, ContainerUpdate, AutoRestartConfig, ContainerDesiredState, ContainerHttpHealthCheck
 from event_bus import Event, EventType as BusEventType, get_event_bus
 from utils.async_docker import async_docker_call
+from utils.keys import make_composite_key, parse_composite_key
+from updates.container_validator import ContainerValidator, ValidationResult
 
 logger = logging.getLogger(__name__)
 
@@ -34,19 +37,20 @@ class UpdateExecutor:
     4. Stop and rename old container to backup (for rollback capability)
     5. Create new container with same config but new image
     6. Wait for health check
-    7. If health check passes: cleanup backup and emit success event
-    8. If health check fails or error: rollback to backup and emit failure event
-    9. Update database with new container ID
+    7. Update database with new container ID (if health check passes)
+    8. Emit success event and cleanup backup
+    9. If health check fails or error: rollback to backup and emit failure event
     """
 
     def __init__(self, db: DatabaseManager, monitor=None):
         self.db = db
         self.monitor = monitor
         self.updating_containers = set()  # Track containers currently being updated (format: "host_id:container_id")
+        self._update_lock = threading.Lock()  # Lock for atomic check-and-set operations
 
     def is_container_updating(self, host_id: str, container_id: str) -> bool:
         """Check if a container is currently being updated"""
-        composite_key = f"{host_id}:{container_id}"
+        composite_key = make_composite_key(host_id, container_id)
         return composite_key in self.updating_containers
 
     async def execute_auto_updates(self) -> Dict[str, int]:
@@ -85,40 +89,66 @@ class UpdateExecutor:
                 updates_data.append(update_record)
 
         # Session is now closed - safe for async operations
-        for update_record in updates_data:
-            # Parse composite key
-            try:
-                host_id, container_id = update_record.container_id.split(":", 1)
-            except ValueError:
-                logger.error(f"Invalid composite key format: {update_record.container_id}")
-                stats["failed"] += 1
-                continue
 
+        # Implement bounded concurrency to update multiple containers in parallel
+        # but avoid overwhelming the system
+        MAX_CONCURRENT_UPDATES = 3  # TODO: Make this configurable in global settings
+
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_UPDATES)
+
+        async def update_with_semaphore(update_record):
+            """Execute single update with semaphore to limit concurrency"""
+            async with semaphore:
+                # Parse composite key
+                try:
+                    host_id, container_id = parse_composite_key(update_record.container_id)
+                except ValueError as e:
+                    logger.error(f"Invalid composite key format: {update_record.container_id} - {e}")
+                    return {"status": "failed", "reason": "invalid_key"}
+
+                try:
+                    # Execute the update
+                    success = await self.update_container(host_id, container_id, update_record)
+
+                    if success:
+                        logger.info(f"Successfully updated container {container_id} on host {host_id}")
+                        return {"status": "successful", "container_id": container_id, "host_id": host_id}
+                    else:
+                        logger.error(f"Failed to update container {container_id} on host {host_id}")
+                        return {"status": "failed", "container_id": container_id, "host_id": host_id}
+
+                except Exception as e:
+                    logger.error(f"Error updating container {container_id} on host {host_id}: {e}", exc_info=True)
+                    return {"status": "failed", "container_id": container_id, "host_id": host_id, "error": str(e)}
+
+        # Execute all updates with bounded parallelism
+        tasks = [update_with_semaphore(record) for record in updates_data]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Aggregate results
+        for result in results:
             stats["attempted"] += 1
-
-            try:
-                # Execute the update
-                success = await self.update_container(host_id, container_id, update_record)
-
-                if success:
+            if isinstance(result, Exception):
+                logger.error(f"Unexpected exception during update: {result}", exc_info=result)
+                stats["failed"] += 1
+            elif isinstance(result, dict):
+                if result.get("status") == "successful":
                     stats["successful"] += 1
-                    logger.info(f"Successfully updated container {container_id} on host {host_id}")
                 else:
                     stats["failed"] += 1
-                    logger.error(f"Failed to update container {container_id} on host {host_id}")
-
-            except Exception as e:
-                logger.error(f"Error updating container {container_id} on host {host_id}: {e}")
+            else:
+                logger.error(f"Unexpected result type: {type(result)}")
                 stats["failed"] += 1
 
-        logger.info(f"Auto-update execution complete: {stats}")
+        logger.info(f"Auto-update execution complete (parallel, max={MAX_CONCURRENT_UPDATES}): {stats}")
         return stats
 
     async def update_container(
         self,
         host_id: str,
         container_id: str,
-        update_record: ContainerUpdate
+        update_record: ContainerUpdate,
+        force: bool = False
     ) -> bool:
         """
         Execute update for a single container.
@@ -127,20 +157,21 @@ class UpdateExecutor:
             host_id: Host UUID
             container_id: Container short ID (12 chars)
             update_record: ContainerUpdate database record
+            force: If True, skip validation (API layer already validated)
 
         Returns:
             True if successful, False otherwise
         """
-        logger.info(f"Executing update for container {container_id} on host {host_id}")
+        logger.info(f"Executing update for container {container_id} on host {host_id} (force={force})")
 
-        # Check if already updating
-        if self.is_container_updating(host_id, container_id):
-            logger.warning(f"Container {container_id} is already being updated, rejecting concurrent update")
-            return False
+        composite_key = make_composite_key(host_id, container_id)
 
-        # Mark this container as currently updating to prevent auto-restart conflicts
-        composite_key = f"{host_id}:{container_id}"
-        self.updating_containers.add(composite_key)
+        # Atomic check-and-set to prevent concurrent updates
+        with self._update_lock:
+            if composite_key in self.updating_containers:
+                logger.warning(f"Container {container_id} is already being updated, rejecting concurrent update")
+                return False
+            self.updating_containers.add(composite_key)
 
         # Track backup for rollback capability
         backup_container = None
@@ -187,15 +218,71 @@ class UpdateExecutor:
 
             container_name = container_info.get("name", container_id)
 
+            # Get container object for configuration extraction
+            old_container = await async_docker_call(docker_client.containers.get, container_id)
+
+            # Validate update is allowed (unless force=True)
+            if not force:
+                container_labels = old_container.labels or {}
+
+                # Perform validation check
+                with self.db.get_session() as session:
+                    validator = ContainerValidator(session)
+                    validation_result = validator.validate_update(
+                        host_id=host_id,
+                        container_id=container_id,
+                        container_name=container_name,
+                        image_name=update_record.current_image,
+                        labels=container_labels
+                    )
+
+                # Handle validation results
+                if validation_result.result == ValidationResult.BLOCK:
+                    error_message = f"Container update blocked: {validation_result.reason}"
+                    logger.warning(f"Update blocked for {container_name}: {validation_result.reason}")
+
+                    # Emit UPDATE_FAILED event
+                    await self._emit_update_failed_event(
+                        host_id,
+                        container_id,
+                        container_name,
+                        error_message
+                    )
+
+                    return False
+
+                elif validation_result.result == ValidationResult.WARN:
+                    # For auto-updates, skip containers that require warnings
+                    # (user confirmation required - not safe for auto-update)
+                    logger.info(
+                        f"Skipping auto-update for {container_name}: {validation_result.reason} "
+                        f"(requires user confirmation)"
+                    )
+
+                    # Emit warning event (non-critical)
+                    await self._emit_update_warning_event(
+                        host_id,
+                        container_id,
+                        container_name,
+                        validation_result.reason
+                    )
+
+                    return False
+
+                # ValidationResult.ALLOW - proceed with update
+                logger.debug(f"Update allowed for {container_name}: {validation_result.reason}")
+            else:
+                logger.info(f"Skipping validation for {container_name} (force=True)")
+
             # Step 1: Pull new image
             logger.info(f"Pulling new image: {update_record.latest_image}")
             await self._broadcast_progress(host_id, container_id, "pulling", 20, "Pulling new image")
             await self._pull_image(docker_client, update_record.latest_image)
 
             # Step 2: Get full container configuration
+            # (reuse old_container fetched during validation to avoid duplicate API call)
             logger.info("Getting container configuration")
             await self._broadcast_progress(host_id, container_id, "configuring", 35, "Reading container configuration")
-            old_container = await async_docker_call(docker_client.containers.get, container_id)
             container_config = await self._extract_container_config(old_container)
 
             # Step 3: Create backup of old container (stop + rename for rollback)
@@ -235,8 +322,8 @@ class UpdateExecutor:
 
             # Step 5: Start new container
             logger.info(f"Starting new container {container_name}")
-            # Use new container ID for broadcasts now that container is recreated
-            await self._broadcast_progress(host_id, new_container_id, "starting", 80, "Starting new container")
+            # Continue using original container_id for broadcasts so frontend can track progress
+            await self._broadcast_progress(host_id, container_id, "starting", 80, "Starting new container")
             await async_docker_call(new_container.start)
 
             # Step 6: Wait for health check
@@ -248,7 +335,7 @@ class UpdateExecutor:
                     health_check_timeout = settings.health_check_timeout_seconds
 
             logger.info(f"Waiting for health check (timeout: {health_check_timeout}s)")
-            await self._broadcast_progress(host_id, new_container_id, "health_check", 90, "Waiting for health check")
+            await self._broadcast_progress(host_id, container_id, "health_check", 90, "Waiting for health check")
             is_healthy = await self._wait_for_health(
                 docker_client,
                 new_container_id,  # Use SHORT ID (12 chars) for consistency
@@ -286,8 +373,8 @@ class UpdateExecutor:
 
             # Step 7: Update database - mark update as applied
             with self.db.get_session() as session:
-                old_composite_key = f"{host_id}:{container_id}"
-                new_composite_key = f"{host_id}:{new_container_id}"
+                old_composite_key = make_composite_key(host_id, container_id)
+                new_composite_key = make_composite_key(host_id, new_container_id)
 
                 record = session.query(ContainerUpdate).filter_by(
                     container_id=old_composite_key
@@ -353,8 +440,8 @@ class UpdateExecutor:
             await self._cleanup_backup_container(docker_client, backup_container, backup_name)
 
             logger.info(f"Successfully updated container {container_name}")
-            # Use new container ID for final broadcast
-            await self._broadcast_progress(host_id, new_container_id, "completed", 100, "Update completed successfully")
+            # Use original container_id for final broadcast so frontend receives it
+            await self._broadcast_progress(host_id, container_id, "completed", 100, "Update completed successfully")
             return True
 
         except Exception as e:
@@ -364,14 +451,14 @@ class UpdateExecutor:
             if update_committed:
                 # Update succeeded but post-update operations (event emission, cleanup) failed
                 # DO NOT ROLLBACK - the update is complete and database is updated
-                logger.error(
+                logger.warning(
                     f"Update succeeded for {container_name if 'container_name' in locals() else container_id}, "
                     f"but post-update operations failed: {e}. "
                     f"Container is running with new image, but backup cleanup or event emission failed."
                 )
-                # Return False to indicate the operation didn't fully complete
-                # but don't rollback the successful container update
-                return False
+                # Return True because update succeeded (container updated correctly)
+                # Post-commit failures are non-critical (backup cleanup, event emission)
+                return True
 
             # Update failed before commit - safe to rollback
             error_message = f"Container update failed: {str(e)}"
@@ -406,7 +493,8 @@ class UpdateExecutor:
 
         finally:
             # Always remove from updating set when done (whether success or failure)
-            self.updating_containers.discard(composite_key)
+            with self._update_lock:
+                self.updating_containers.discard(composite_key)
             logger.debug(f"Removed {composite_key} from updating containers set")
 
             # Re-evaluate alerts that may have been suppressed during the update
@@ -482,11 +570,30 @@ class UpdateExecutor:
             logger.error(f"Error getting container info: {e}")
             return None
 
-    async def _pull_image(self, client: docker.DockerClient, image: str):
-        """Pull Docker image"""
+    async def _pull_image(self, client: docker.DockerClient, image: str, timeout: int = 600):
+        """
+        Pull Docker image with timeout.
+
+        Args:
+            client: Docker client instance
+            image: Image name to pull
+            timeout: Timeout in seconds (default: 600 = 10 minutes)
+
+        Raises:
+            asyncio.TimeoutError: If pull takes longer than timeout
+            Exception: If pull fails for other reasons
+        """
         try:
-            # Use async wrapper to prevent event loop blocking
-            await async_docker_call(client.images.pull, image)
+            # Use async wrapper with timeout to prevent event loop blocking and handle large images
+            await asyncio.wait_for(
+                async_docker_call(client.images.pull, image),
+                timeout=timeout
+            )
+            logger.debug(f"Successfully pulled image {image}")
+        except asyncio.TimeoutError:
+            error_msg = f"Image pull timed out after {timeout} seconds for {image}"
+            logger.error(error_msg)
+            raise Exception(error_msg)
         except Exception as e:
             logger.error(f"Error pulling image {image}: {e}")
             raise
@@ -523,6 +630,14 @@ class UpdateExecutor:
             "cap_add": host_config.get("CapAdd"),
             "cap_drop": host_config.get("CapDrop"),
             "devices": host_config.get("Devices"),
+            "security_opt": host_config.get("SecurityOpt"),
+            "tmpfs": host_config.get("Tmpfs"),
+            "ulimits": host_config.get("Ulimits"),
+            "dns": host_config.get("Dns"),
+            "extra_hosts": host_config.get("ExtraHosts"),
+            "ipc_mode": host_config.get("IpcMode"),
+            "pid_mode": host_config.get("PidMode"),
+            "shm_size": host_config.get("ShmSize"),
         }
 
         # Extract port bindings
@@ -584,6 +699,14 @@ class UpdateExecutor:
                 cap_add=config.get("cap_add"),
                 cap_drop=config.get("cap_drop"),
                 devices=config.get("devices"),
+                security_opt=config.get("security_opt"),
+                tmpfs=config.get("tmpfs"),
+                ulimits=config.get("ulimits"),
+                dns=config.get("dns"),
+                extra_hosts=config.get("extra_hosts"),
+                ipc_mode=config.get("ipc_mode"),
+                pid_mode=config.get("pid_mode"),
+                shm_size=config.get("shm_size"),
             )
             return container
         except Exception as e:
@@ -599,9 +722,9 @@ class UpdateExecutor:
         """
         Wait for container to become healthy.
 
-        Checks:
+        Health check logic:
         1. Container is running
-        2. If container has health check, wait for healthy status
+        2. If container has health check, wait for healthy status (up to timeout)
         3. If no health check, wait 10s and verify still running
 
         Returns:
@@ -876,6 +999,44 @@ class UpdateExecutor:
 
         except Exception as e:
             logger.error(f"Error emitting update completion event: {e}", exc_info=True)
+
+    async def _emit_update_warning_event(
+        self,
+        host_id: str,
+        container_id: str,
+        container_name: str,
+        warning_message: str
+    ):
+        """
+        Emit UPDATE_SKIPPED_VALIDATION event via EventBus for validation warnings.
+        This is informational - the update was skipped due to validation policy.
+        """
+        try:
+            logger.info(f"Emitting UPDATE_SKIPPED_VALIDATION event for {container_name}")
+
+            # Get host name
+            host_name = self.monitor.hosts.get(host_id).name if host_id in self.monitor.hosts else host_id
+
+            # Emit event via EventBus
+            event_bus = get_event_bus(self.monitor)
+            await event_bus.emit(Event(
+                event_type=BusEventType.UPDATE_SKIPPED_VALIDATION,
+                scope_type='container',
+                scope_id=container_id,
+                scope_name=container_name,
+                host_id=host_id,
+                host_name=host_name,
+                data={
+                    'message': f"Auto-update skipped: {warning_message}",
+                    'category': 'update_validation',
+                    'reason': warning_message
+                }
+            ))
+
+            logger.debug(f"Emitted UPDATE_SKIPPED_VALIDATION event for {container_name}")
+
+        except Exception as e:
+            logger.error(f"Error emitting update warning event: {e}", exc_info=True)
 
     async def _emit_update_failed_event(
         self,

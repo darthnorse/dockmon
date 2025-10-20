@@ -172,6 +172,11 @@ def upgrade() -> None:
         with op.batch_alter_table('container_desired_states', schema=None) as batch_op:
             batch_op.add_column(sa.Column('custom_tags', sa.Text(), nullable=True))
 
+    # Add update_policy column for per-container update protection
+    if not _column_exists('container_desired_states', 'update_policy'):
+        with op.batch_alter_table('container_desired_states', schema=None) as batch_op:
+            batch_op.add_column(sa.Column('update_policy', sa.Text(), nullable=True))
+
 
     # ==================== docker_hosts Table ====================
     # Add tags, description, and Phase 5 system information columns
@@ -283,6 +288,96 @@ def upgrade() -> None:
         op.create_index('idx_http_health_status', 'container_http_health_checks', ['current_status'])
 
 
+    # ==================== Fix Foreign Keys (CASCADE DELETE) ====================
+    # Add CASCADE DELETE to auto_restart_configs and container_desired_states
+    # so that orphaned records are cleaned up when hosts are deleted
+
+    if _table_exists('auto_restart_configs'):
+        # SQLite doesn't support ALTER CONSTRAINT, use batch mode
+        with op.batch_alter_table('auto_restart_configs', schema=None) as batch_op:
+            try:
+                batch_op.drop_constraint('auto_restart_configs_host_id_fkey', type_='foreignkey')
+            except:
+                pass  # Constraint may not exist or have different name
+            try:
+                batch_op.create_foreign_key(
+                    'fk_auto_restart_configs_host_id',
+                    'docker_hosts',
+                    ['host_id'],
+                    ['id'],
+                    ondelete='CASCADE'
+                )
+            except:
+                pass  # May already exist
+
+    if _table_exists('container_desired_states'):
+        with op.batch_alter_table('container_desired_states', schema=None) as batch_op:
+            try:
+                batch_op.drop_constraint('container_desired_states_host_id_fkey', type_='foreignkey')
+            except:
+                pass  # Constraint may not exist or have different name
+            try:
+                batch_op.create_foreign_key(
+                    'fk_container_desired_states_host_id',
+                    'docker_hosts',
+                    ['host_id'],
+                    ['id'],
+                    ondelete='CASCADE'
+                )
+            except:
+                pass  # May already exist
+
+
+    # ==================== update_policies Table ====================
+    # New table for configurable update validation rules
+
+    if not _table_exists('update_policies'):
+        op.create_table(
+            'update_policies',
+            sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
+            sa.Column('category', sa.Text(), nullable=False),
+            sa.Column('pattern', sa.Text(), nullable=False),
+            sa.Column('enabled', sa.Boolean(), nullable=False, server_default='1'),
+            sa.Column('created_at', sa.DateTime(), nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
+            sa.Column('updated_at', sa.DateTime(), nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
+            sa.UniqueConstraint('category', 'pattern', name='uq_update_policies_category_pattern')
+        )
+
+    # Insert default validation patterns (separate from table creation)
+    # Check if table is empty to handle case where Base.metadata.create_all() created empty table
+    bind = op.get_bind()
+    result = bind.execute(sa.text("SELECT COUNT(*) FROM update_policies")).scalar()
+
+    if result == 0:
+        # Table exists but is empty - insert default patterns
+        op.execute("""
+            INSERT INTO update_policies (category, pattern, enabled) VALUES
+            ('databases', 'postgres', 1),
+            ('databases', 'mysql', 1),
+            ('databases', 'mariadb', 1),
+            ('databases', 'mongodb', 1),
+            ('databases', 'mongo', 1),
+            ('databases', 'redis', 1),
+            ('databases', 'sqlite', 1),
+            ('databases', 'mssql', 1),
+            ('databases', 'cassandra', 1),
+            ('databases', 'influxdb', 1),
+            ('databases', 'elasticsearch', 1),
+            ('proxies', 'traefik', 1),
+            ('proxies', 'nginx', 1),
+            ('proxies', 'caddy', 1),
+            ('proxies', 'haproxy', 1),
+            ('proxies', 'envoy', 1),
+            ('monitoring', 'grafana', 1),
+            ('monitoring', 'prometheus', 1),
+            ('monitoring', 'alertmanager', 1),
+            ('monitoring', 'uptime-kuma', 1),
+            ('critical', 'portainer', 1),
+            ('critical', 'watchtower', 1),
+            ('critical', 'dockmon', 1)
+        """)
+
+
 def downgrade() -> None:
     """
     Downgrade v2.0.0 to v1.1.3 schema.
@@ -299,6 +394,15 @@ def downgrade() -> None:
         if _index_exists('idx_http_health_enabled'):
             op.drop_index('idx_http_health_enabled', table_name='container_http_health_checks')
         op.drop_table('container_http_health_checks')
+
+    # Drop update_policies table
+    if _table_exists('update_policies'):
+        op.drop_table('update_policies')
+
+    # Remove update_policy column from container_desired_states
+    if _column_exists('container_desired_states', 'update_policy'):
+        with op.batch_alter_table('container_desired_states', schema=None) as batch_op:
+            batch_op.drop_column('update_policy')
 
     # Drop indexes
     if _index_exists('idx_event_logs_source'):

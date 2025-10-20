@@ -279,13 +279,28 @@ def upgrade() -> None:
 
     if _table_exists('auto_restart_configs'):
         print("Adding CASCADE DELETE to auto_restart_configs (rebuilding table, may take 10-30 seconds)...")
+
+        # Find the actual foreign key constraint name from the database
+        bind = op.get_bind()
+        inspector = inspect(bind)
+        fks = inspector.get_foreign_keys('auto_restart_configs')
+
+        print(f"Found {len(fks)} foreign key constraints on auto_restart_configs:")
+        for fk in fks:
+            print(f"  - {fk}")
+
         # SQLite doesn't support ALTER CONSTRAINT, must use batch mode (rebuilds entire table)
-        # Note: We recreate the foreign key without dropping first because SQLite auto-generated
-        # constraint names may not match 'auto_restart_configs_host_id_fkey'
         try:
-            with op.batch_alter_table('auto_restart_configs', schema=None, recreate='always') as batch_op:
-                # Batch mode with recreate='always' will rebuild table with new foreign keys
-                # We don't need to explicitly drop/add - just declare the foreign key we want
+            with op.batch_alter_table('auto_restart_configs', schema=None) as batch_op:
+                # Drop all existing foreign keys to host_id
+                for fk in fks:
+                    if 'host_id' in fk.get('constrained_columns', []):
+                        fk_name = fk.get('name')
+                        if fk_name:
+                            print(f"Dropping foreign key: {fk_name}")
+                            batch_op.drop_constraint(fk_name, type_='foreignkey')
+
+                # Add new foreign key with CASCADE DELETE
                 batch_op.create_foreign_key(
                     'fk_auto_restart_configs_host_id',
                     'docker_hosts',

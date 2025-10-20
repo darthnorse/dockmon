@@ -317,6 +317,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   const [modalInitialTab, setModalInitialTab] = useState<string>('info')
   const [selectedContainerId, setSelectedContainerId] = useState<string | null>(null)
   const [selectedContainerKey, setSelectedContainerKey] = useState<{ name: string; hostId: string } | null>(null)
+  // Use composite keys {host_id}:{container_id} for multi-host support (cloned VMs with same short IDs)
   const [selectedContainerIds, setSelectedContainerIds] = useState<Set<string>>(new Set())
   const [confirmModalOpen, setConfirmModalOpen] = useState(false)
   const [pendingAction, setPendingAction] = useState<'start' | 'stop' | 'restart' | null>(null)
@@ -353,7 +354,11 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
 
   const queryClient = useQueryClient()
 
+  // Helper to create composite key for multi-host support (prevents collision from cloned VMs)
+  const makeCompositeKey = (container: Container) => `${container.host_id}:${container.id}`
+
   // Selection handlers
+  // containerId should be composite key: {host_id}:{container_id}
   const toggleContainerSelection = (containerId: string) => {
     setSelectedContainerIds(prev => {
       const newSet = new Set(prev)
@@ -368,23 +373,23 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
 
   const toggleSelectAll = (table: Table<Container>) => {
     const currentRows = table.getFilteredRowModel().rows
-    const currentIds = currentRows.map((row) => row.original.id)
+    const currentCompositeKeys = currentRows.map((row) => makeCompositeKey(row.original))
 
     // Check if all current rows are selected
-    const allCurrentSelected = currentIds.every((id: string) => selectedContainerIds.has(id))
+    const allCurrentSelected = currentCompositeKeys.every((key: string) => selectedContainerIds.has(key))
 
     if (allCurrentSelected) {
       // Deselect all current rows
       setSelectedContainerIds(prev => {
         const newSet = new Set(prev)
-        currentIds.forEach((id: string) => newSet.delete(id))
+        currentCompositeKeys.forEach((key: string) => newSet.delete(key))
         return newSet
       })
     } else {
       // Select all current rows
       setSelectedContainerIds(prev => {
         const newSet = new Set(prev)
-        currentIds.forEach((id: string) => newSet.add(id))
+        currentCompositeKeys.forEach((key: string) => newSet.add(key))
         return newSet
       })
     }
@@ -412,7 +417,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   const handleBulkTagUpdate = async (mode: 'add' | 'remove', tags: string[]) => {
     if (!data) return
 
-    const selectedContainers = data.filter((c) => selectedContainerIds.has(c.id))
+    const selectedContainers = data.filter((c) => selectedContainerIds.has(makeCompositeKey(c)))
     const action = mode === 'add' ? 'add-tags' : 'remove-tags'
 
     try {
@@ -420,7 +425,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
       const result = await apiClient.post<{ job_id: string }>('/batch', {
         scope: 'container',
         action,
-        ids: Array.from(selectedContainerIds),
+        ids: Array.from(selectedContainerIds), // Send composite keys to backend
         params: { tags },
       })
       setBatchJobId(result.job_id)
@@ -609,8 +614,8 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         id: 'select',
         header: ({ table }) => {
           const currentRows = table.getFilteredRowModel().rows
-          const currentIds = currentRows.map(row => row.original.id)
-          const allCurrentSelected = currentIds.length > 0 && currentIds.every(id => selectedContainerIds.has(id))
+          const currentCompositeKeys = currentRows.map(row => makeCompositeKey(row.original))
+          const allCurrentSelected = currentCompositeKeys.length > 0 && currentCompositeKeys.every(key => selectedContainerIds.has(key))
 
           return (
             <div className="flex items-center justify-center">
@@ -627,8 +632,8 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
           <div className="flex items-center justify-center">
             <input
               type="checkbox"
-              checked={selectedContainerIds.has(row.original.id)}
-              onChange={() => toggleContainerSelection(row.original.id)}
+              checked={selectedContainerIds.has(makeCompositeKey(row.original))}
+              onChange={() => toggleContainerSelection(makeCompositeKey(row.original))}
               onClick={(e) => e.stopPropagation()}
               className="h-4 w-4 rounded border-border text-primary focus:ring-primary cursor-pointer"
             />
@@ -1233,7 +1238,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
       {/* Bulk Action Bar */}
       <BulkActionBar
         selectedCount={selectedContainerIds.size}
-        selectedContainers={data?.filter((c) => selectedContainerIds.has(c.id)) || []}
+        selectedContainers={data?.filter((c) => selectedContainerIds.has(makeCompositeKey(c))) || []}
         onClearSelection={clearSelection}
         onAction={handleBulkAction}
         onTagUpdate={handleBulkTagUpdate}
@@ -1252,7 +1257,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         onConfirm={handleConfirmBulkAction}
         action={pendingAction || 'start'}
         containers={
-          data?.filter((c) => selectedContainerIds.has(c.id)) || []
+          data?.filter((c) => selectedContainerIds.has(makeCompositeKey(c))) || []
         }
       />
 

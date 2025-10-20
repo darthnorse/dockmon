@@ -52,7 +52,8 @@ class BatchJobManager:
 
         # Get container details from monitor
         all_containers = await self.monitor.get_containers()
-        container_map = {c.id: c for c in all_containers}
+        # Use composite keys {host_id}:{container_id} for multi-host support (cloned VMs)
+        container_map = {f"{c.host_id}:{c.id}": c for c in all_containers}
 
         # Create job record
         with self.db.get_session() as session:

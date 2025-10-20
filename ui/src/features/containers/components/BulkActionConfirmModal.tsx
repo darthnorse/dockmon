@@ -54,7 +54,7 @@ export function BulkActionConfirmModal({
           <div className="space-y-2">
             {containers.map((container) => (
               <div
-                key={container.id}
+                key={`${container.host_id}:${container.id}`}
                 className="flex items-center gap-3 p-2 rounded bg-surface-2"
               >
                 <div

@@ -797,11 +797,6 @@ class DockerMonitor:
                 for container_key in actions_to_remove:
                     del self._recent_user_actions[container_key]
 
-            # Clean up notification service's alert cooldown tracking for this host
-            alert_cooldowns_to_remove = [key for key in self.notification_service._last_alerts.keys() if key.startswith(f"{host_id}:")]
-            for container_key in alert_cooldowns_to_remove:
-                del self.notification_service._last_alerts[container_key]
-
             # Clean up reconnection tracking for this host
             if host_id in self.reconnect_attempts:
                 del self.reconnect_attempts[host_id]
@@ -838,8 +833,6 @@ class DockerMonitor:
             if notification_states_to_remove:
                 logger.debug(f"Cleaned up {len(notification_states_to_remove)} notification state entries for removed host {host_id[:8]}")
             # V1 alert processor cleanup removed - v2 uses event-driven architecture
-            if alert_cooldowns_to_remove:
-                logger.debug(f"Cleaned up {len(alert_cooldowns_to_remove)} alert cooldown entries for removed host {host_id[:8]}")
             if auto_restart_to_remove:
                 logger.debug(f"Cleaned up {len(auto_restart_to_remove)} auto-restart entries for removed host {host_id[:8]}")
 

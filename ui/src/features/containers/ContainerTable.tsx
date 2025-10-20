@@ -49,7 +49,6 @@ import {
   PlayCircle,
   Square,
   RotateCw,
-  MoreVertical,
   ArrowUpDown,
   FileText,
   RefreshCw,
@@ -59,6 +58,7 @@ import {
   AlertTriangle,
   Maximize2,
   Package,
+  ExternalLink,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { apiClient } from '@/lib/api/client'
@@ -74,9 +74,10 @@ import { ContainerDetailsModal } from './components/ContainerDetailsModal'
 import { BulkActionBar } from './components/BulkActionBar'
 import { BulkActionConfirmModal } from './components/BulkActionConfirmModal'
 import { BatchJobPanel } from './components/BatchJobPanel'
-import type { Container, ContainerAction} from './types'
+import type { Container } from './types'
 import { useSimplifiedWorkflow, useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
 import { useContainerUpdateStatus } from './hooks/useContainerUpdates'
+import { useContainerActions } from './hooks/useContainerActions'
 import { makeCompositeKey } from '@/lib/utils/containerKeys'
 
 /**
@@ -207,15 +208,17 @@ function StatusIcon({ state }: { state: Container['state'] }) {
  * Alert severity counts with color coding and click-to-open-drawer
  */
 function ContainerAlertSeverityCounts({
-  containerId,
+  container,
   alertCounts,
   onAlertClick
 }: {
-  containerId: string
+  container: Container
   alertCounts: Map<string, AlertSeverityCounts> | undefined
   onAlertClick: (alertId: string) => void
 }) {
-  const counts = alertCounts?.get(containerId)
+  // Use composite key to prevent cross-host collisions (cloned VMs with same short IDs)
+  const compositeKey = makeCompositeKey(container)
+  const counts = alertCounts?.get(compositeKey)
 
   if (!counts || counts.total === 0) {
     return <span className="text-xs text-muted-foreground">-</span>
@@ -548,33 +551,9 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
     }
   }, [searchParams, data, setSearchParams])
 
-  // Container action mutation
-  const actionMutation = useMutation({
-    mutationFn: (action: ContainerAction) =>
-      apiClient.post(`/hosts/${action.host_id}/containers/${action.container_id}/${action.type}`, {}),
-    onSuccess: (_data, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['containers'] })
-      const actionLabel = variables.type.charAt(0).toUpperCase() + variables.type.slice(1)
-      // Map action types to proper past tense
-      const actionPastTense: Record<string, string> = {
-        start: 'started',
-        stop: 'stopped',
-        restart: 'restarted',
-        pause: 'paused',
-        unpause: 'unpaused',
-        remove: 'removed',
-      }
-      const pastTense = actionPastTense[variables.type] || `${variables.type}ed`
-      toast.success(`Container ${pastTense} successfully`, {
-        description: `Action: ${actionLabel}`,
-      })
-    },
-    onError: (error, variables) => {
-      debug.error('ContainerTable', `Action ${variables.type} failed:`, error)
-      toast.error(`Failed to ${variables.type} container`, {
-        description: error instanceof Error ? error.message : 'Unknown error',
-      })
-    },
+  // Container action hook (reusable across components)
+  const { executeAction, isPending: isActionPending } = useContainerActions({
+    invalidateQueries: ['containers'],
   })
 
   // Batch action mutation
@@ -785,7 +764,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         header: 'Alerts',
         cell: ({ row }) => (
           <ContainerAlertSeverityCounts
-            containerId={row.original.id}
+            container={row.original}
             alertCounts={alertCounts}
             onAlertClick={setSelectedAlertId}
           />
@@ -936,13 +915,13 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
                     })
                     return
                   }
-                  actionMutation.mutate({
+                  executeAction({
                     type: 'start',
                     container_id: container.id,
                     host_id: container.host_id,
                   })
                 }}
-                disabled={!canStart || actionMutation.isPending}
+                disabled={!canStart || isActionPending}
                 title="Start container"
               >
                 <PlayCircle className={`h-4 w-4 ${canStart ? 'text-success' : 'text-muted-foreground'}`} />
@@ -960,13 +939,13 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
                     })
                     return
                   }
-                  actionMutation.mutate({
+                  executeAction({
                     type: 'stop',
                     container_id: container.id,
                     host_id: container.host_id,
                   })
                 }}
-                disabled={!canStop || actionMutation.isPending}
+                disabled={!canStop || isActionPending}
                 title="Stop container"
               >
                 <Square className={`h-4 w-4 ${canStop ? 'text-danger' : 'text-muted-foreground'}`} />
@@ -984,13 +963,13 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
                     })
                     return
                   }
-                  actionMutation.mutate({
+                  executeAction({
                     type: 'restart',
                     container_id: container.id,
                     host_id: container.host_id,
                   })
                 }}
-                disabled={!canRestart || actionMutation.isPending}
+                disabled={!canRestart || isActionPending}
                 title="Restart container"
               >
                 <RotateCw className={`h-4 w-4 ${canRestart ? 'text-info' : 'text-muted-foreground'}`} />
@@ -1003,7 +982,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
                   size="icon"
                   className="h-8 w-8"
                   onClick={() => {
-                    setSelectedContainerId(container.id)
+                    setSelectedContainerId(makeCompositeKey(container))
                     if (container.host_id) {
                       setSelectedContainerKey({ name: container.name, hostId: container.host_id })
                     }
@@ -1022,7 +1001,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
                 size="icon"
                 className="h-8 w-8"
                 onClick={() => {
-                  setSelectedContainerId(container.id)
+                  setSelectedContainerId(makeCompositeKey(container))
                   if (container.host_id) {
                     setSelectedContainerKey({ name: container.name, hostId: container.host_id })
                   }
@@ -1038,7 +1017,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
               <UpdateBadge
                 container={container}
                 onClick={() => {
-                  setSelectedContainerId(container.id)
+                  setSelectedContainerId(makeCompositeKey(container))
                   if (container.host_id) {
                     setSelectedContainerKey({ name: container.name, hostId: container.host_id })
                   }
@@ -1047,21 +1026,25 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
                 }}
               />
 
-              {/* More actions menu */}
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8"
-                title="More actions"
-              >
-                <MoreVertical className="h-4 w-4" />
-              </Button>
+              {/* WebUI link - shows if web_ui_url is defined */}
+              {container.web_ui_url && (
+                <a
+                  href={container.web_ui_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center justify-center h-8 w-8 rounded hover:bg-surface-2 text-muted-foreground hover:text-primary transition-colors"
+                  title="Open WebUI"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <ExternalLink className="h-4 w-4" />
+                </a>
+              )}
             </div>
           )
         },
       },
     ],
-    [actionMutation, selectedContainerIds, data, toggleContainerSelection, toggleSelectAll, alertCounts]
+    [executeAction, isActionPending, selectedContainerIds, data, toggleContainerSelection, toggleSelectAll, alertCounts]
   )
 
   const table = useReactTable({

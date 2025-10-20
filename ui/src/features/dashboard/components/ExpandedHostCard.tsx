@@ -26,16 +26,15 @@ import {
   Square,
   RotateCcw,
   ScrollText,
-  BellOff,
-  EyeOff,
-  Pin,
   ExternalLink,
 } from 'lucide-react'
 import { ResponsiveMiniChart } from '@/lib/charts/ResponsiveMiniChart'
 import { TagChip } from '@/components/TagChip'
 import { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { DropdownMenu, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
 import { useUserPreferences, useUpdatePreferences, useSimplifiedWorkflow } from '@/lib/hooks/useUserPreferences'
+import { useContainerActions } from '@/features/containers/hooks/useContainerActions'
 import { debug } from '@/lib/debug'
 
 export interface ExpandedHostData {
@@ -76,7 +75,7 @@ export interface ExpandedHostData {
       memory_percent: number | null
       network_rx: number | null
       network_tx: number | null
-      web_ui_url?: string | null
+      web_ui_url?: string | null | undefined
     }>
   }
 
@@ -148,6 +147,8 @@ export function ExpandedHostCard({ host, cardRef, onHostClick, onViewDetails, on
   const updatePreferences = useUpdatePreferences()
   const { enabled: simplifiedWorkflow } = useSimplifiedWorkflow()
   const [isCollapsed, setIsCollapsed] = useState(false)
+  const navigate = useNavigate()
+  const { executeAction } = useContainerActions()
 
   // Initialize sort key from preferences, fallback to 'state'
   const [sortKey, setSortKey] = useState<ContainerSortKey>(() => {
@@ -201,8 +202,20 @@ export function ExpandedHostCard({ host, cardRef, onHostClick, onViewDetails, on
   }
 
   const handleContainerAction = (containerId: string, action: string) => {
-    // Future feature: Implement container actions
-    debug.log('ExpandedHostCard', `${action} container:`, containerId)
+    if (action === 'start' || action === 'stop' || action === 'restart') {
+      // Execute container lifecycle action
+      executeAction({
+        type: action as 'start' | 'stop' | 'restart',
+        host_id: host.id,
+        container_id: containerId, // Short 12-char ID
+      })
+    } else if (action === 'logs') {
+      // Navigate to containers page with logs modal open
+      navigate(`/containers?containerId=${containerId}`)
+    } else {
+      // Unimplemented actions (silence, hide, pin)
+      debug.log('ExpandedHostCard', `${action} container:`, containerId)
+    }
   }
 
   const getSortLabel = (key: ContainerSortKey) => {
@@ -441,22 +454,6 @@ export function ExpandedHostCard({ host, cardRef, onHostClick, onViewDetails, on
                       {container.state.toUpperCase()}
                     </span>
 
-                    {/* WebUI Link */}
-                    {container.web_ui_url && (
-                      <div onClick={(e) => e.stopPropagation()}>
-                        <a
-                          href={container.web_ui_url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-muted-foreground hover:text-primary p-1 flex-shrink-0 inline-flex items-center"
-                          aria-label="Open WebUI"
-                          title="Open WebUI"
-                        >
-                          <ExternalLink className="w-3 h-3" />
-                        </a>
-                      </div>
-                    )}
-
                     {/* Container Kebab Menu */}
                     <div onClick={(e) => e.stopPropagation()}>
                       <DropdownMenu
@@ -469,13 +466,7 @@ export function ExpandedHostCard({ host, cardRef, onHostClick, onViewDetails, on
                           </button>
                         }
                       >
-                        <DropdownMenuItem
-                          onClick={() => handleContainerClick(container.id)}
-                          icon={<Info />}
-                        >
-                          Open details
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
+                        {/* Start/Stop - conditional based on container state */}
                         {container.state === 'running' ? (
                           <>
                             <DropdownMenuItem
@@ -503,27 +494,20 @@ export function ExpandedHostCard({ host, cardRef, onHostClick, onViewDetails, on
                           onClick={() => handleContainerAction(container.id, 'logs')}
                           icon={<ScrollText />}
                         >
-                          View logs
+                          View Logs
                         </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem
-                          onClick={() => handleContainerAction(container.id, 'silence')}
-                          icon={<BellOff />}
-                        >
-                          Silence alerts
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          onClick={() => handleContainerAction(container.id, 'hide')}
-                          icon={<EyeOff />}
-                        >
-                          Hide from dashboard
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          onClick={() => handleContainerAction(container.id, 'pin')}
-                          icon={<Pin />}
-                        >
-                          Pin to dashboard
-                        </DropdownMenuItem>
+                        {/* WebUI - only show if configured */}
+                        {container.web_ui_url && (
+                          <>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              onClick={() => window.open(container.web_ui_url!, '_blank', 'noopener,noreferrer')}
+                              icon={<ExternalLink />}
+                            >
+                              Open WebUI
+                            </DropdownMenuItem>
+                          </>
+                        )}
                       </DropdownMenu>
                     </div>
                 </div>

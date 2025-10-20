@@ -109,6 +109,10 @@ async def lifespan(app: FastAPI):
         monitor.manager  # Pass ConnectionManager for WebSocket broadcasts
     )
 
+    # Start notification retry loop for failed deliveries
+    await monitor.notification_service.start_retry_loop()
+    logger.info("Notification retry loop started")
+
     # Initialize batch job manager
     global batch_manager
     batch_manager = BatchJobManager(monitor.db, monitor, monitor.manager)
@@ -168,6 +172,13 @@ async def lifespan(app: FastAPI):
         logger.info("Blackout monitoring stopped")
     except Exception as e:
         logger.error(f"Error stopping blackout monitoring: {e}")
+
+    # Stop notification retry loop
+    try:
+        await monitor.notification_service.stop_retry_loop()
+        logger.info("Notification retry loop stopped")
+    except Exception as e:
+        logger.error(f"Error stopping notification retry loop: {e}")
 
     # Stop alert evaluation service
     try:

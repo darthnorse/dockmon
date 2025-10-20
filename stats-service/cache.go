@@ -207,10 +207,11 @@ func (c *StatsCache) CleanStaleStats(maxAge time.Duration) {
 
 	now := time.Now()
 
-	// Clean container stats
+	// Clean container stats and corresponding network baselines
 	for id, stats := range c.containerStats {
 		if now.Sub(stats.LastUpdate) > maxAge {
 			delete(c.containerStats, id)
+			delete(c.lastNetStats, id) // Clean up network baseline to prevent memory leak
 		}
 	}
 

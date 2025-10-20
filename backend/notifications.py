@@ -4,6 +4,7 @@ Handles sending alerts via Discord, Telegram, and Pushover
 """
 
 import asyncio
+import html
 import json
 import logging
 import re
@@ -116,10 +117,12 @@ class NotificationService:
 
             url = f"https://api.telegram.org/bot{token}/sendMessage"
 
-            # Convert Markdown-style formatting to HTML
-            # Most templates use **bold** and `code`, convert these to HTML
-            html_message = message
+            # Escape HTML entities FIRST to prevent malformed HTML errors
+            # This prevents issues with container names like <none>, JSON snippets, etc.
+            html_message = html.escape(message)
 
+            # Then convert Markdown-style formatting to HTML
+            # Most templates use **bold** and `code`, convert these to HTML
             # Replace **bold** with <b>bold</b> (toggle on/off)
             parts = html_message.split('**')
             for i in range(1, len(parts), 2):

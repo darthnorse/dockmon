@@ -515,9 +515,10 @@ class AlertEvaluationService:
                 container_tags = self.db.get_tags_for_subject('container', composite_key)
 
                 # Create evaluation context
+                # Use composite key for scope_id to prevent cross-host collisions
                 context = EvaluationContext(
                     scope_type="container",
-                    scope_id=container.short_id,
+                    scope_id=make_composite_key(container.host_id, container.short_id),
                     host_id=container.host_id,
                     host_name=container.host_name,
                     container_id=container.short_id,
@@ -773,9 +774,10 @@ class AlertEvaluationService:
             container_tags = self.db.get_tags_for_subject('container', composite_key)
 
             # Create evaluation context with the data passed in
+            # Use composite key for scope_id to prevent cross-host collisions
             context = EvaluationContext(
                 scope_type="container",
-                scope_id=container_id,
+                scope_id=make_composite_key(host_id, container_id),
                 host_id=host_id,
                 host_name=host_name,
                 container_id=container_id,
@@ -792,10 +794,11 @@ class AlertEvaluationService:
                 new_state = event_data.get("new_state")
 
                 # Container started → clear container_stopped alerts
+                # Use composite key for cross-host safety
                 if new_state in ["running", "restarting"]:
                     await self._auto_clear_alerts_by_kind(
                         scope_type="container",
-                        scope_id=container_id,
+                        scope_id=make_composite_key(host_id, container_id),
                         kinds_to_clear=["container_stopped"],
                         reason="Container started"
                     )
@@ -804,7 +807,7 @@ class AlertEvaluationService:
                 elif new_state == "healthy":
                     await self._auto_clear_alerts_by_kind(
                         scope_type="container",
-                        scope_id=container_id,
+                        scope_id=make_composite_key(host_id, container_id),
                         kinds_to_clear=["unhealthy"],
                         reason="Container became healthy"
                     )

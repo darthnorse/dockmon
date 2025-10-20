@@ -29,6 +29,7 @@ export interface ContainerStats {
   auto_restart: boolean
   restart_attempts: number
   desired_state?: string
+  web_ui_url?: string | null  // URL to container's web interface
   ports?: string[]
   restart_policy?: string
   tags?: string[]  // Container tags (from labels + custom)

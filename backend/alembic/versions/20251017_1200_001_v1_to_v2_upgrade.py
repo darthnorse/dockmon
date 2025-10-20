@@ -114,39 +114,33 @@ def upgrade() -> None:
 
     # ==================== Users Table ====================
     # Add v2 columns for future RBAC and user preferences
+    # Use direct op.add_column() instead of batch mode for performance (no table rebuild)
 
     if _table_exists('users'):
         if not _column_exists('users', 'role'):
-            with op.batch_alter_table('users', schema=None) as batch_op:
-                batch_op.add_column(sa.Column('role', sa.String(), server_default='owner'))
+            op.add_column('users', sa.Column('role', sa.String(), server_default='owner'))
 
         if not _column_exists('users', 'display_name'):
-            with op.batch_alter_table('users', schema=None) as batch_op:
-                batch_op.add_column(sa.Column('display_name', sa.String(), nullable=True))
+            op.add_column('users', sa.Column('display_name', sa.String(), nullable=True))
 
         if not _column_exists('users', 'prefs'):
-            with op.batch_alter_table('users', schema=None) as batch_op:
-                batch_op.add_column(sa.Column('prefs', sa.Text(), nullable=True))
+            op.add_column('users', sa.Column('prefs', sa.Text(), nullable=True))
 
         if not _column_exists('users', 'simplified_workflow'):
-            with op.batch_alter_table('users', schema=None) as batch_op:
-                batch_op.add_column(sa.Column('simplified_workflow', sa.Boolean(), server_default='1'))
+            op.add_column('users', sa.Column('simplified_workflow', sa.Boolean(), server_default='1'))
             # Enable simplified workflow for all existing v1 users (better UX)
             op.execute("UPDATE users SET simplified_workflow = 1")
 
         if not _column_exists('users', 'view_mode'):
-            with op.batch_alter_table('users', schema=None) as batch_op:
-                batch_op.add_column(sa.Column('view_mode', sa.String(), server_default='standard'))
+            op.add_column('users', sa.Column('view_mode', sa.String(), server_default='standard'))
 
         # v2 renamed dashboard_layout -> dashboard_layout_v2
         if not _column_exists('users', 'dashboard_layout_v2'):
-            with op.batch_alter_table('users', schema=None) as batch_op:
-                batch_op.add_column(sa.Column('dashboard_layout_v2', sa.Text(), nullable=True))
+            op.add_column('users', sa.Column('dashboard_layout_v2', sa.Text(), nullable=True))
 
         # v2 added sidebar collapsed state
         if not _column_exists('users', 'sidebar_collapsed'):
-            with op.batch_alter_table('users', schema=None) as batch_op:
-                batch_op.add_column(sa.Column('sidebar_collapsed', sa.Boolean(), server_default='0'))
+            op.add_column('users', sa.Column('sidebar_collapsed', sa.Boolean(), server_default='0'))
 
 
     # ==================== user_prefs Table ====================
@@ -169,13 +163,11 @@ def upgrade() -> None:
     # Add custom_tags column for tag support
 
     if not _column_exists('container_desired_states', 'custom_tags'):
-        with op.batch_alter_table('container_desired_states', schema=None) as batch_op:
-            batch_op.add_column(sa.Column('custom_tags', sa.Text(), nullable=True))
+        op.add_column('container_desired_states', sa.Column('custom_tags', sa.Text(), nullable=True))
 
     # Add update_policy column for per-container update protection
     if not _column_exists('container_desired_states', 'update_policy'):
-        with op.batch_alter_table('container_desired_states', schema=None) as batch_op:
-            batch_op.add_column(sa.Column('update_policy', sa.Text(), nullable=True))
+        op.add_column('container_desired_states', sa.Column('update_policy', sa.Text(), nullable=True))
 
 
     # ==================== docker_hosts Table ====================
@@ -183,42 +175,33 @@ def upgrade() -> None:
 
     if _table_exists('docker_hosts'):
         if not _column_exists('docker_hosts', 'tags'):
-            with op.batch_alter_table('docker_hosts', schema=None) as batch_op:
-                batch_op.add_column(sa.Column('tags', sa.Text(), nullable=True))
+            op.add_column('docker_hosts', sa.Column('tags', sa.Text(), nullable=True))
 
         if not _column_exists('docker_hosts', 'description'):
-            with op.batch_alter_table('docker_hosts', schema=None) as batch_op:
-                batch_op.add_column(sa.Column('description', sa.Text(), nullable=True))
+            op.add_column('docker_hosts', sa.Column('description', sa.Text(), nullable=True))
 
         # Phase 5 - System information columns
         if not _column_exists('docker_hosts', 'os_type'):
-            with op.batch_alter_table('docker_hosts', schema=None) as batch_op:
-                batch_op.add_column(sa.Column('os_type', sa.String(), nullable=True))
+            op.add_column('docker_hosts', sa.Column('os_type', sa.String(), nullable=True))
 
         if not _column_exists('docker_hosts', 'os_version'):
-            with op.batch_alter_table('docker_hosts', schema=None) as batch_op:
-                batch_op.add_column(sa.Column('os_version', sa.String(), nullable=True))
+            op.add_column('docker_hosts', sa.Column('os_version', sa.String(), nullable=True))
 
         if not _column_exists('docker_hosts', 'kernel_version'):
-            with op.batch_alter_table('docker_hosts', schema=None) as batch_op:
-                batch_op.add_column(sa.Column('kernel_version', sa.String(), nullable=True))
+            op.add_column('docker_hosts', sa.Column('kernel_version', sa.String(), nullable=True))
 
         if not _column_exists('docker_hosts', 'docker_version'):
-            with op.batch_alter_table('docker_hosts', schema=None) as batch_op:
-                batch_op.add_column(sa.Column('docker_version', sa.String(), nullable=True))
+            op.add_column('docker_hosts', sa.Column('docker_version', sa.String(), nullable=True))
 
         if not _column_exists('docker_hosts', 'daemon_started_at'):
-            with op.batch_alter_table('docker_hosts', schema=None) as batch_op:
-                batch_op.add_column(sa.Column('daemon_started_at', sa.String(), nullable=True))
+            op.add_column('docker_hosts', sa.Column('daemon_started_at', sa.String(), nullable=True))
 
         # System resources
         if not _column_exists('docker_hosts', 'total_memory'):
-            with op.batch_alter_table('docker_hosts', schema=None) as batch_op:
-                batch_op.add_column(sa.Column('total_memory', sa.BigInteger(), nullable=True))
+            op.add_column('docker_hosts', sa.Column('total_memory', sa.BigInteger(), nullable=True))
 
         if not _column_exists('docker_hosts', 'num_cpus'):
-            with op.batch_alter_table('docker_hosts', schema=None) as batch_op:
-                batch_op.add_column(sa.Column('num_cpus', sa.Integer(), nullable=True))
+            op.add_column('docker_hosts', sa.Column('num_cpus', sa.Integer(), nullable=True))
 
 
     # ==================== event_logs Table ====================
@@ -226,8 +209,7 @@ def upgrade() -> None:
 
     if _table_exists('event_logs'):
         if not _column_exists('event_logs', 'source'):
-            with op.batch_alter_table('event_logs', schema=None) as batch_op:
-                batch_op.add_column(sa.Column('source', sa.String(), server_default='docker'))
+            op.add_column('event_logs', sa.Column('source', sa.String(), server_default='docker'))
 
     # Create indexes for faster event log queries
     if not _index_exists('idx_event_logs_category'):
@@ -289,43 +271,11 @@ def upgrade() -> None:
 
 
     # ==================== Fix Foreign Keys (CASCADE DELETE) ====================
-    # Add CASCADE DELETE to auto_restart_configs and container_desired_states
-    # so that orphaned records are cleaned up when hosts are deleted
-
-    if _table_exists('auto_restart_configs'):
-        # SQLite doesn't support ALTER CONSTRAINT, use batch mode
-        with op.batch_alter_table('auto_restart_configs', schema=None) as batch_op:
-            try:
-                batch_op.drop_constraint('auto_restart_configs_host_id_fkey', type_='foreignkey')
-            except:
-                pass  # Constraint may not exist or have different name
-            try:
-                batch_op.create_foreign_key(
-                    'fk_auto_restart_configs_host_id',
-                    'docker_hosts',
-                    ['host_id'],
-                    ['id'],
-                    ondelete='CASCADE'
-                )
-            except:
-                pass  # May already exist
-
-    if _table_exists('container_desired_states'):
-        with op.batch_alter_table('container_desired_states', schema=None) as batch_op:
-            try:
-                batch_op.drop_constraint('container_desired_states_host_id_fkey', type_='foreignkey')
-            except:
-                pass  # Constraint may not exist or have different name
-            try:
-                batch_op.create_foreign_key(
-                    'fk_container_desired_states_host_id',
-                    'docker_hosts',
-                    ['host_id'],
-                    ['id'],
-                    ondelete='CASCADE'
-                )
-            except:
-                pass  # May already exist
+    # NOTE: CASCADE DELETE constraints are NOT modified during v1→v2 upgrade.
+    # They're only needed for fresh v2 installations (handled by Base.metadata.create_all()).
+    # Modifying existing foreign keys in SQLite requires rebuilding entire tables (slow),
+    # and it's not worth the performance cost just to enable cascade deletes on v1 databases.
+    # Users upgrading from v1 will continue with their existing foreign key behavior.
 
 
     # ==================== update_policies Table ====================

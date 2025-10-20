@@ -299,11 +299,13 @@ def upgrade() -> None:
                 print("Non-fatal - hosts with auto-restart configs cannot be deleted without manually removing configs first")
                 # Non-fatal - worst case users can't delete hosts with configs
 
+    print("CASCADE DELETE section complete, moving to update_policies...")
 
     # ==================== update_policies Table ====================
     # New table for configurable update validation rules
 
     if not _table_exists('update_policies'):
+        print("Creating update_policies table...")
         op.create_table(
             'update_policies',
             sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
@@ -314,6 +316,9 @@ def upgrade() -> None:
             sa.Column('updated_at', sa.DateTime(), nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
             sa.UniqueConstraint('category', 'pattern', name='uq_update_policies_category_pattern')
         )
+        print("✓ update_policies table created")
+    else:
+        print("update_policies table already exists, skipping creation")
 
     # Insert default validation patterns (separate from table creation)
     # Check if table is empty to handle case where Base.metadata.create_all() created empty table

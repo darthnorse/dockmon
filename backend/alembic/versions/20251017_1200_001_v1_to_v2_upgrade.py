@@ -152,30 +152,20 @@ def upgrade() -> None:
         op.execute(sa.text("UPDATE users SET simplified_workflow = 1"))
 
 
-    # ==================== user_prefs Table ====================
-    # New table for database-backed user preferences (v1: does NOT exist, created by Base.metadata.create_all())
-
-    if not helper.table_exists('user_prefs'):
-        op.create_table(
-            'user_prefs',
-            sa.Column('user_id', sa.Integer(), nullable=False),
-            sa.Column('theme', sa.String(), server_default='dark'),
-            sa.Column('defaults_json', sa.Text(), nullable=True),
-            sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP')),
-            sa.Column('updated_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP')),
-            sa.ForeignKeyConstraint(['user_id'], ['users.id'], ondelete='CASCADE'),
-            sa.PrimaryKeyConstraint('user_id')
-        )
-
-
-    # ==================== container_desired_states Table ====================
-    # Add columns (v1: table does NOT exist, created by Base.metadata.create_all() with CASCADE)
-
-    container_desired_states_columns = [
-        sa.Column('custom_tags', sa.Text(), nullable=True),
-        sa.Column('update_policy', sa.Text(), nullable=True),
-    ]
-    helper.add_columns_if_missing('container_desired_states', container_desired_states_columns)
+    # ==================== New Tables Created by Base.metadata.create_all() ====================
+    # The following tables do NOT exist in v1.1.3 and are created by Base.metadata.create_all()
+    # in migrate.py with all columns and CASCADE DELETE constraints already defined:
+    # - user_prefs
+    # - container_desired_states
+    # - container_updates
+    # - container_http_health_checks (also created below for completeness)
+    # - update_policies (also created below for completeness)
+    # - alert_rule_containers
+    # - alert_annotations
+    # - rule_runtime
+    # - tag_assignments
+    #
+    # No migration code needed for these tables - they're already created with correct schema.
 
 
     # ==================== docker_hosts Table ====================
@@ -212,55 +202,8 @@ def upgrade() -> None:
         op.create_index('idx_event_logs_source', 'event_logs', ['source'])
 
 
-    # ==================== container_http_health_checks Table ====================
-    # New table for HTTP/HTTPS health monitoring (v1: does NOT exist)
-
-    if not helper.table_exists('container_http_health_checks'):
-        op.create_table(
-            'container_http_health_checks',
-            sa.Column('container_id', sa.Text(), nullable=False),
-            sa.Column('host_id', sa.Text(), nullable=False),
-
-            # Configuration
-            sa.Column('enabled', sa.Boolean(), server_default='0', nullable=False),
-            sa.Column('url', sa.Text(), nullable=False),
-            sa.Column('method', sa.Text(), server_default='GET', nullable=False),
-            sa.Column('expected_status_codes', sa.Text(), server_default='200', nullable=False),
-            sa.Column('timeout_seconds', sa.Integer(), server_default='10', nullable=False),
-            sa.Column('check_interval_seconds', sa.Integer(), server_default='60', nullable=False),
-            sa.Column('follow_redirects', sa.Boolean(), server_default='1', nullable=False),
-            sa.Column('verify_ssl', sa.Boolean(), server_default='1', nullable=False),
-
-            # Advanced config (JSON)
-            sa.Column('headers_json', sa.Text(), nullable=True),
-            sa.Column('auth_config_json', sa.Text(), nullable=True),
-
-            # State tracking
-            sa.Column('current_status', sa.Text(), server_default='unknown', nullable=False),
-            sa.Column('last_checked_at', sa.DateTime(), nullable=True),
-            sa.Column('last_success_at', sa.DateTime(), nullable=True),
-            sa.Column('last_failure_at', sa.DateTime(), nullable=True),
-            sa.Column('consecutive_successes', sa.Integer(), server_default='0', nullable=False),
-            sa.Column('consecutive_failures', sa.Integer(), server_default='0', nullable=False),
-            sa.Column('last_response_time_ms', sa.Integer(), nullable=True),
-            sa.Column('last_error_message', sa.Text(), nullable=True),
-
-            # Auto-restart integration
-            sa.Column('auto_restart_on_failure', sa.Boolean(), server_default='0', nullable=False),
-            sa.Column('failure_threshold', sa.Integer(), server_default='3', nullable=False),
-            sa.Column('success_threshold', sa.Integer(), server_default='1', nullable=False),
-
-            # Metadata
-            sa.Column('created_at', sa.DateTime(), server_default=sa.func.now(), nullable=False),
-            sa.Column('updated_at', sa.DateTime(), server_default=sa.func.now(), nullable=False),
-
-            sa.PrimaryKeyConstraint('container_id')
-        )
-
-        # Create indexes
-        op.create_index('idx_http_health_enabled', 'container_http_health_checks', ['enabled'])
-        op.create_index('idx_http_health_host', 'container_http_health_checks', ['host_id'])
-        op.create_index('idx_http_health_status', 'container_http_health_checks', ['current_status'])
+    # container_http_health_checks is created by Base.metadata.create_all() with all
+    # columns, indexes, and CASCADE DELETE - no migration code needed
 
 
     # ==================== Fix Foreign Keys (CASCADE DELETE) ====================
@@ -284,21 +227,9 @@ def upgrade() -> None:
 
 
     # ==================== update_policies Table ====================
-    # New table for configurable update validation rules (v1: does NOT exist)
+    # Table created by Base.metadata.create_all(), but we need to populate default patterns
 
-    if not helper.table_exists('update_policies'):
-        op.create_table(
-            'update_policies',
-            sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
-            sa.Column('category', sa.Text(), nullable=False),
-            sa.Column('pattern', sa.Text(), nullable=False),
-            sa.Column('enabled', sa.Boolean(), nullable=False, server_default='1'),
-            sa.Column('created_at', sa.DateTime(), nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
-            sa.Column('updated_at', sa.DateTime(), nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
-            sa.UniqueConstraint('category', 'pattern', name='uq_update_policies_category_pattern')
-        )
-
-    # Insert default validation patterns (separate from table creation)
+    # Insert default validation patterns
     # Table may exist but be empty if created by Base.metadata.create_all()
     # Wrapped in try/except to handle duplicate key errors on retry
     try:

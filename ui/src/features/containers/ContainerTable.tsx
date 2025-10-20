@@ -77,6 +77,7 @@ import { BatchJobPanel } from './components/BatchJobPanel'
 import type { Container, ContainerAction} from './types'
 import { useSimplifiedWorkflow, useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
 import { useContainerUpdateStatus } from './hooks/useContainerUpdates'
+import { makeCompositeKey } from '@/lib/utils/containerKeys'
 
 /**
  * Update badge component showing if updates are available
@@ -353,9 +354,6 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   const [expandedTagsContainerId, setExpandedTagsContainerId] = useState<string | null>(null)
 
   const queryClient = useQueryClient()
-
-  // Helper to create composite key for multi-host support (prevents collision from cloned VMs)
-  const makeCompositeKey = (container: Container) => `${container.host_id}:${container.id}`
 
   // Selection handlers
   // containerId should be composite key: {host_id}:{container_id}

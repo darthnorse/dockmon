@@ -26,6 +26,7 @@ import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
 import type { WebSocketMessage } from '@/lib/websocket/useWebSocket'
 import type { HostMetrics, Sparklines, ContainerStats, ContainersUpdateMessage } from './types'
 import { debug } from '@/lib/debug'
+import { makeCompositeKey, makeCompositeKeyFrom } from '@/lib/utils/containerKeys'
 
 interface StatsContextValue {
   // Host-level stats (aggregated from containers)
@@ -82,7 +83,7 @@ export function StatsProvider({ children }: StatsProviderProps) {
       // Update container stats Map (use composite key: hostId:containerId)
       const newContainerStats = new Map<string, ContainerStats>()
       containers?.forEach((container) => {
-        const compositeKey = `${container.host_id}:${container.id}`
+        const compositeKey = makeCompositeKey(container)
         newContainerStats.set(compositeKey, container)
       })
       setContainerStats(newContainerStats)
@@ -212,7 +213,7 @@ export function useContainerStats(
   if (!hostId || !containerId) return null
 
   // Use composite key: hostId:containerId
-  const compositeKey = `${hostId}:${containerId}`
+  const compositeKey = makeCompositeKeyFrom(hostId, containerId)
   return containerStats.get(compositeKey) || null
 }
 

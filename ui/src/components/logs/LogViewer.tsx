@@ -25,6 +25,7 @@ import {
 import { apiClient } from '@/lib/api/client'
 import { debug } from '@/lib/debug'
 import { toast } from 'sonner'
+import { makeCompositeKeyFrom } from '@/lib/utils/containerKeys'
 
 interface LogLine {
   timestamp: string
@@ -102,7 +103,7 @@ export function LogViewer({
   // Assign colors to containers
   useEffect(() => {
     containers.forEach((container) => {
-      const key = `${container.hostId}:${container.containerId}`
+      const key = makeCompositeKeyFrom(container.hostId, container.containerId)
       if (!(key in containerColorMap.current)) {
         containerColorMap.current[key] = nextColorIndex.current % CONTAINER_COLORS.length
         nextColorIndex.current++
@@ -154,7 +155,7 @@ export function LogViewer({
           return (response.logs || []).map((log) => ({
             ...log,
             containerName: container.name,
-            containerKey: `${container.hostId}:${container.containerId}`,
+            containerKey: makeCompositeKeyFrom(container.hostId, container.containerId),
           }))
         } catch (error: any) {
           if (error?.response?.status === 429) {
@@ -222,7 +223,7 @@ export function LogViewer({
   // Track container IDs to detect actual changes (not just reference changes)
   const containerIdsRef = useRef<string>('')
   const prevContainerIds = containerIdsRef.current
-  const currentContainerIds = containers.map(c => `${c.hostId}:${c.containerId}`).sort().join(',')
+  const currentContainerIds = containers.map(c => makeCompositeKeyFrom(c.hostId, c.containerId)).sort().join(',')
   const containersChanged = prevContainerIds !== currentContainerIds
 
   // Update container IDs ref

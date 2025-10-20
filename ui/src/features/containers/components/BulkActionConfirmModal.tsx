@@ -1,4 +1,5 @@
 import type { Container } from '../types'
+import { makeCompositeKey } from '@/lib/utils/containerKeys'
 
 interface BulkActionConfirmModalProps {
   isOpen: boolean
@@ -54,7 +55,7 @@ export function BulkActionConfirmModal({
           <div className="space-y-2">
             {containers.map((container) => (
               <div
-                key={`${container.host_id}:${container.id}`}
+                key={makeCompositeKey(container)}
                 className="flex items-center gap-3 p-2 rounded bg-surface-2"
               >
                 <div

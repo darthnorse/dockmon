@@ -295,7 +295,26 @@ export function BatchJobPanel({ jobId, onClose, bulkActionBarOpen = false }: Bat
       {job && job.status === 'completed' && (
         <div className="px-4 py-3 border-t border-border bg-surface-2">
           <p className="text-xs text-muted-foreground text-center">
-            Completed at {new Date(job.completed_at!).toLocaleTimeString()}
+            {job.completed_at ? (
+              <>
+                Completed at {(() => {
+                  const date = new Date(job.completed_at)
+                  // Validate date is valid
+                  if (isNaN(date.getTime())) {
+                    debug.error('BatchJobPanel', `Invalid completed_at timestamp: ${job.completed_at}`)
+                    return 'Invalid timestamp'
+                  }
+                  return date.toLocaleTimeString(undefined, {
+                    hour: 'numeric',
+                    minute: '2-digit',
+                    second: '2-digit',
+                    hour12: true
+                  })
+                })()}
+              </>
+            ) : (
+              'Completed'
+            )}
           </p>
         </div>
       )}

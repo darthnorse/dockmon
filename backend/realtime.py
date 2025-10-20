@@ -13,6 +13,8 @@ from dataclasses import dataclass, asdict
 import docker
 from docker.models.containers import Container as DockerContainer
 
+from utils.async_docker import async_docker_call
+
 logger = logging.getLogger(__name__)
 
 # Custom JSON encoder for datetime objects
@@ -86,18 +88,23 @@ class RealtimeMonitor:
 
     async def _monitor_container_stats(self, client: docker.DockerClient,
                                       container_id: str, interval: int):
-        """Monitor and broadcast container stats"""
+        """
+        Monitor and broadcast container stats.
+        NOTE: This is a legacy implementation. New code should use the Go stats service instead.
+        """
         logger.info(f"Starting stats monitoring for container {container_id}")
 
         while container_id in self.stats_subscribers and self.stats_subscribers[container_id]:
             try:
-                container = client.containers.get(container_id)
+                # CRITICAL: Use async wrapper to prevent blocking event loop (CLAUDE.md standard)
+                container = await async_docker_call(client.containers.get, container_id)
 
                 if container.status != 'running':
                     await asyncio.sleep(interval)
                     continue
 
-                stats = self._calculate_container_stats(container)
+                # CRITICAL: Calculate stats using async wrapper to prevent blocking
+                stats = await self._calculate_container_stats_async(container)
 
                 # Broadcast to all subscribers
                 dead_sockets = []
@@ -125,10 +132,14 @@ class RealtimeMonitor:
 
         logger.info(f"Stopped stats monitoring for container {container_id}")
 
-    def _calculate_container_stats(self, container: DockerContainer) -> ContainerStats:
-        """Calculate container statistics from Docker stats API"""
+    async def _calculate_container_stats_async(self, container: DockerContainer) -> ContainerStats:
+        """
+        Calculate container statistics from Docker stats API (async version).
+        Uses async wrapper to prevent blocking the event loop.
+        """
         try:
-            stats = container.stats(stream=False)
+            # CRITICAL: Wrap blocking stats() call with async wrapper
+            stats = await async_docker_call(container.stats, stream=False)
 
             # CPU calculation
             cpu_delta = stats["cpu_stats"]["cpu_usage"]["total_usage"] - \

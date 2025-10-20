@@ -254,8 +254,10 @@ class AlertEvaluationService:
                     return True  # Default to sending notification if we can't verify
 
                 # Get current container state from monitor
+                # CRITICAL: Match by both short_id AND host_id to prevent cross-host confusion in multi-host setups
                 containers = await self.monitor.get_containers()
-                container = next((c for c in containers if c.short_id == alert.scope_id), None)
+                container = next((c for c in containers
+                                if c.short_id == alert.scope_id and c.host_id == alert.host_id), None)
 
                 if not container:
                     # Container no longer exists - still consider this a valid alert
@@ -276,8 +278,10 @@ class AlertEvaluationService:
                 if not self.monitor:
                     return True
 
+                # CRITICAL: Match by both short_id AND host_id to prevent cross-host confusion
                 containers = await self.monitor.get_containers()
-                container = next((c for c in containers if c.short_id == alert.scope_id), None)
+                container = next((c for c in containers
+                                if c.short_id == alert.scope_id and c.host_id == alert.host_id), None)
 
                 if not container:
                     return True

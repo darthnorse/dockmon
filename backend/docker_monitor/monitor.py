@@ -330,6 +330,15 @@ class DockerMonitor:
             if config.tls_cert or config.tls_key or config.tls_ca:
                 self._validate_certificates(config)
 
+            # Generate and sanitize host ID ONCE (used for both cert storage and host record)
+            # This ensures cert directory cleanup works correctly when host is removed
+            host_id = existing_id or str(uuid.uuid4())
+            try:
+                host_id = sanitize_host_id(host_id)
+            except ValueError as e:
+                logger.error(f"Invalid host ID: {e}")
+                raise HTTPException(status_code=400, detail=str(e))
+
             # Create Docker client
             if config.url.startswith("unix://"):
                 client = docker.DockerClient(base_url=config.url)
@@ -337,9 +346,8 @@ class DockerMonitor:
                 # For TCP connections
                 tls_config = None
                 if config.tls_cert and config.tls_key:
-                    # Create persistent certificate storage directory
-                    safe_id = sanitize_host_id(existing_id or str(uuid.uuid4()))
-                    cert_dir = os.path.join(CERTS_DIR, safe_id)
+                    # Create persistent certificate storage directory using the host ID
+                    cert_dir = os.path.join(CERTS_DIR, host_id)
 
                     # Create with secure permissions - handle TOCTOU race condition
                     try:
@@ -398,15 +406,7 @@ class DockerMonitor:
             # Validate TLS configuration for TCP connections
             security_status = self._validate_host_security(config)
 
-            # Create host object with existing ID if provided (for persistence after restarts)
-            # Sanitize the ID to prevent path traversal
-            host_id = existing_id or str(uuid.uuid4())
-            try:
-                host_id = sanitize_host_id(host_id)
-            except ValueError as e:
-                logger.error(f"Invalid host ID: {e}")
-                raise HTTPException(status_code=400, detail=str(e))
-
+            # Create host object (host_id already generated and sanitized above)
             host = DockerHost(
                 id=host_id,
                 name=config.name,
@@ -695,6 +695,51 @@ class DockerMonitor:
                 logger.info(f"Cleaned up certificate files for host {host_id[:8]}")
             except Exception as e:
                 logger.warning(f"Failed to clean up certificates for host {host_id[:8]}: {e}")
+
+    def cleanup_orphaned_certificates(self):
+        """
+        Clean up orphaned certificate directories on startup.
+        Removes cert directories that don't match any existing host ID in the database.
+        This handles the legacy bug where cert dirs and host IDs could differ.
+        """
+        try:
+            if not os.path.exists(CERTS_DIR):
+                return
+
+            # Get all valid host IDs from database
+            with self.db.get_session() as session:
+                from database import DockerHostDB
+                valid_host_ids = {host.id for host in session.query(DockerHostDB).all()}
+
+            # List all cert directories
+            cert_dirs = [d for d in os.listdir(CERTS_DIR)
+                        if os.path.isdir(os.path.join(CERTS_DIR, d))]
+
+            # Remove orphaned directories
+            orphaned_count = 0
+            for cert_dir_name in cert_dirs:
+                if cert_dir_name not in valid_host_ids:
+                    cert_path = os.path.join(CERTS_DIR, cert_dir_name)
+
+                    # Defense in depth: verify path is within CERTS_DIR
+                    abs_cert_path = os.path.abspath(cert_path)
+                    abs_certs_dir = os.path.abspath(CERTS_DIR)
+                    if not abs_cert_path.startswith(abs_certs_dir):
+                        logger.error(f"Path traversal detected during cleanup: {cert_dir_name}")
+                        continue
+
+                    try:
+                        shutil.rmtree(cert_path)
+                        orphaned_count += 1
+                        logger.info(f"Removed orphaned certificate directory: {cert_dir_name[:8]}...")
+                    except Exception as e:
+                        logger.warning(f"Failed to remove orphaned cert directory {cert_dir_name[:8]}: {e}")
+
+            if orphaned_count > 0:
+                logger.info(f"Cleaned up {orphaned_count} orphaned certificate director{'y' if orphaned_count == 1 else 'ies'}")
+
+        except Exception as e:
+            logger.error(f"Failed to cleanup orphaned certificates: {e}")
 
     async def remove_host(self, host_id: str):
         """Remove a Docker host"""

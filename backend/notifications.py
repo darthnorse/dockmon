@@ -242,29 +242,34 @@ class NotificationService:
 
             # Determine color based on event type
             color = "#ff0000"  # Default red for critical
-            if hasattr(event, 'new_state'):
+            if event and hasattr(event, 'new_state'):
                 if event.new_state == 'running':
                     color = "#00ff00"  # Green for running
                 elif event.new_state in ['stopped', 'paused']:
                     color = "#ffaa00"  # Orange for stopped/paused
-            elif hasattr(event, 'event_type'):
+            elif event and hasattr(event, 'event_type'):
                 if event.event_type in ['start', 'unpause']:
                     color = "#00ff00"  # Green for recovery events
                 elif event.event_type in ['stop', 'pause']:
                     color = "#ffaa00"  # Orange for controlled stops
 
             # Create rich Slack message with attachments
+            attachment = {
+                'color': color,
+                'fallback': slack_message,
+                'title': '🚨 DockMon Alert',
+                'text': slack_message,
+                'mrkdwn_in': ['text'],
+                'footer': 'DockMon',
+                'footer_icon': 'https://raw.githubusercontent.com/docker/compose/v2/logo.png'
+            }
+
+            # Only include timestamp if event is provided
+            if event and hasattr(event, 'timestamp') and event.timestamp:
+                attachment['ts'] = int(event.timestamp.timestamp())
+
             payload = {
-                'attachments': [{
-                    'color': color,
-                    'fallback': slack_message,
-                    'title': '🚨 DockMon Alert',
-                    'text': slack_message,
-                    'mrkdwn_in': ['text'],
-                    'footer': 'DockMon',
-                    'footer_icon': 'https://raw.githubusercontent.com/docker/compose/v2/logo.png',
-                    'ts': int(event.timestamp.timestamp())
-                }]
+                'attachments': [attachment]
             }
 
             response = await self.http_client.post(webhook_url, json=payload)
@@ -286,7 +291,7 @@ class NotificationService:
             logger.error(f"Failed to send Slack notification: {e}")
             return False
 
-    async def _send_gotify(self, config: Dict[str, Any], message: str, event) -> bool:
+    async def _send_gotify(self, config: Dict[str, Any], message: str, event=None, title: str = "DockMon Alert") -> bool:
         """Send notification via Gotify"""
         try:
             # Validate required config fields
@@ -313,18 +318,21 @@ class NotificationService:
 
             # Determine priority (0-10, default 5)
             priority = 5
-            if hasattr(event, 'new_state') and event.new_state in ['exited', 'dead']:
+            if event and hasattr(event, 'new_state') and event.new_state in ['exited', 'dead']:
                 priority = 8  # High priority for critical states
-            elif hasattr(event, 'event_type') and event.event_type in ['die', 'oom', 'kill']:
+            elif event and hasattr(event, 'event_type') and event.event_type in ['die', 'oom', 'kill']:
                 priority = 8  # High priority for critical events
 
             # Build URL with proper path handling
             base_url = server_url.rstrip('/')
             url = f"{base_url}/message?token={app_token}"
 
+            # Determine title: use event container name if available, otherwise use provided title
+            notification_title = f"DockMon: {event.container_name}" if event and hasattr(event, 'container_name') else title
+
             # Create payload
             payload = {
-                'title': f"DockMon: {event.container_name}",
+                'title': notification_title,
                 'message': plain_message,
                 'priority': priority
             }
@@ -346,7 +354,7 @@ class NotificationService:
             logger.error(f"Failed to send Gotify notification: {e}")
             return False
 
-    async def _send_smtp(self, config: Dict[str, Any], message: str, event) -> bool:
+    async def _send_smtp(self, config: Dict[str, Any], message: str, event=None, title: str = "DockMon Alert") -> bool:
         """Send notification via SMTP (Email)"""
         try:
             # Import SMTP libraries (only when needed to avoid dependency issues)
@@ -403,9 +411,12 @@ class NotificationService:
                 logger.error(f"Invalid to_email format: {to_email}")
                 return False
 
+            # Determine subject: use event container name if available, otherwise use provided title
+            subject = f"DockMon Alert: {event.container_name}" if event and hasattr(event, 'container_name') else title
+
             # Create multipart email
             msg = MIMEMultipart('alternative')
-            msg['Subject'] = f"DockMon Alert: {event.container_name}"
+            msg['Subject'] = subject
             msg['From'] = from_email
             msg['To'] = to_email
 
@@ -654,6 +665,14 @@ class NotificationService:
                         elif channel.type == "pushover":
                             if await self._send_pushover(channel.config, message, alert.title):
                                 success_count += 1
+                        elif channel.type == "gotify":
+                            if await self._send_gotify(channel.config, message, title=alert.title):
+                                success_count += 1
+                        elif channel.type == "smtp":
+                            if await self._send_smtp(channel.config, message, title=alert.title):
+                                success_count += 1
+                        else:
+                            logger.warning(f"Unknown channel type '{channel.type}' for channel {channel.name}")
                     except Exception as e:
                         logger.error(f"Failed to send alert to channel {channel.name}: {e}")
 

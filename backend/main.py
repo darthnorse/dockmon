@@ -88,6 +88,9 @@ async def lifespan(app: FastAPI):
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, monitor.db.get_or_create_default_user)
 
+    # Clean up orphaned certificate directories from legacy bug (run in thread pool to avoid blocking)
+    await loop.run_in_executor(None, monitor.cleanup_orphaned_certificates)
+
     # Note: Timezone offset is auto-synced from the browser when the UI loads
     # This ensures timestamps are always displayed in the user's local timezone
 
@@ -3056,9 +3059,10 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
                 if container_id:
                     await monitor.realtime.subscribe_to_stats(websocket, container_id)
                     # Find the host and start monitoring
+                    # CRITICAL: Use async wrapper to prevent blocking event loop
                     for host_id, client in monitor.clients.items():
                         try:
-                            client.containers.get(container_id)
+                            await async_docker_call(client.containers.get, container_id)
                             await monitor.realtime.start_container_stats_stream(
                                 client, container_id, interval=2
                             )

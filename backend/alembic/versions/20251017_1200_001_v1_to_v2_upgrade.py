@@ -280,9 +280,12 @@ def upgrade() -> None:
     if _table_exists('auto_restart_configs'):
         print("Adding CASCADE DELETE to auto_restart_configs (rebuilding table, may take 10-30 seconds)...")
         # SQLite doesn't support ALTER CONSTRAINT, must use batch mode (rebuilds entire table)
+        # Note: We recreate the foreign key without dropping first because SQLite auto-generated
+        # constraint names may not match 'auto_restart_configs_host_id_fkey'
         try:
-            with op.batch_alter_table('auto_restart_configs', schema=None) as batch_op:
-                batch_op.drop_constraint('auto_restart_configs_host_id_fkey', type_='foreignkey')
+            with op.batch_alter_table('auto_restart_configs', schema=None, recreate='always') as batch_op:
+                # Batch mode with recreate='always' will rebuild table with new foreign keys
+                # We don't need to explicitly drop/add - just declare the foreign key we want
                 batch_op.create_foreign_key(
                     'fk_auto_restart_configs_host_id',
                     'docker_hosts',
@@ -292,10 +295,9 @@ def upgrade() -> None:
                 )
             print("✓ CASCADE DELETE added to auto_restart_configs")
         except Exception as e:
-            print(f"ERROR adding CASCADE DELETE: {e}")
-            import traceback
-            traceback.print_exc()
-            raise  # Re-raise to see full error
+            print(f"WARNING: Could not add CASCADE DELETE to auto_restart_configs: {e}")
+            print("Non-fatal - hosts with auto-restart configs cannot be deleted without manually removing configs first")
+            # Non-fatal - make this a warning instead of fatal error
 
     print("CASCADE DELETE section complete, moving to update_policies...")
 

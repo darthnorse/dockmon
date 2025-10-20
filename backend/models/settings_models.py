@@ -27,6 +27,7 @@ class GlobalSettings(BaseModel):
     timezone_offset: int = Field(0, ge=-720, le=720)  # Timezone offset in minutes from UTC (-12h to +12h)
     show_host_stats: bool = Field(True)  # Show host statistics graphs on dashboard
     show_container_stats: bool = Field(True)  # Show container statistics on dashboard
+    alert_retention_days: int = Field(90, ge=0, le=365)  # Keep resolved alerts for N days (0 = keep forever)
 
     @validator('max_retries')
     def validate_max_retries(cls, v):

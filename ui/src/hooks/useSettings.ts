@@ -29,6 +29,7 @@ export interface GlobalSettings {
   show_container_alerts_on_hosts: boolean
   unused_tag_retention_days: number
   event_retention_days: number
+  alert_retention_days: number
   update_check_time: string
   skip_compose_containers: boolean
   health_check_timeout_seconds: number

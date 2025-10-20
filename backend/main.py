@@ -1457,7 +1457,8 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
         "show_host_stats": getattr(settings, 'show_host_stats', True),
         "show_container_stats": getattr(settings, 'show_container_stats', True),
         "unused_tag_retention_days": getattr(settings, 'unused_tag_retention_days', 30),
-        "event_retention_days": getattr(settings, 'event_retention_days', 60)
+        "event_retention_days": getattr(settings, 'event_retention_days', 60),
+        "alert_retention_days": getattr(settings, 'alert_retention_days', 90)
     }
 
 @app.post("/api/settings")

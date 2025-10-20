@@ -195,11 +195,30 @@ class PeriodicJobsManager:
                         EventType.STARTUP
                     )
 
+                # Clean up old resolved alerts (based on retention setting)
+                if settings.alert_retention_days > 0:
+                    alerts_deleted = self.db.cleanup_old_alerts(settings.alert_retention_days)
+                    if alerts_deleted > 0:
+                        self.event_logger.log_system_event(
+                            "Alert Cleanup",
+                            f"Cleaned up {alerts_deleted} resolved alerts older than {settings.alert_retention_days} days",
+                            EventSeverity.INFO,
+                            EventType.STARTUP
+                        )
+
+                # Clean up old rule evaluations (24 hours retention)
+                evaluations_deleted = self.db.cleanup_old_rule_evaluations(hours=24)
+                if evaluations_deleted > 0:
+                    self.event_logger.log_system_event(
+                        "Rule Evaluation Cleanup",
+                        f"Cleaned up {evaluations_deleted} rule evaluations older than 24 hours",
+                        EventSeverity.INFO,
+                        EventType.STARTUP
+                    )
+
                 # Clean up stale container state dictionaries (prevent memory leak)
                 if self.monitor:
                     await self.monitor.cleanup_stale_container_state()
-                    # Clean up notification cooldown dictionary
-                    self.monitor.notification_service._cleanup_old_cooldowns()
 
                 # Refresh host system info (OS version, Docker version, etc.)
                 if self.monitor:
@@ -275,6 +294,16 @@ class PeriodicJobsManager:
                     if total_cleaned > 0:
                         session.commit()
                         logger.info(f"Cleaned up {total_cleaned} total stale container-related database entries")
+
+                # Clean up orphaned RuleRuntime entries (for deleted containers)
+                runtime_cleaned = self.db.cleanup_orphaned_rule_runtime(current_container_keys)
+                if runtime_cleaned > 0:
+                    self.event_logger.log_system_event(
+                        "Rule Runtime Cleanup",
+                        f"Cleaned up {runtime_cleaned} orphaned rule runtime entries",
+                        EventSeverity.INFO,
+                        EventType.STARTUP
+                    )
 
                 # Clean up old backup containers (older than 24 hours)
                 backup_cleaned = await self.cleanup_old_backup_containers()

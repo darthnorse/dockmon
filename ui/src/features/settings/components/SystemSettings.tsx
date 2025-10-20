@@ -19,6 +19,7 @@ export function SystemSettings() {
   const [defaultAutoRestart, setDefaultAutoRestart] = useState(settings?.default_auto_restart ?? false)
   const [unusedTagRetentionDays, setUnusedTagRetentionDays] = useState(settings?.unused_tag_retention_days ?? 30)
   const [eventRetentionDays, setEventRetentionDays] = useState(settings?.event_retention_days ?? 60)
+  const [alertRetentionDays, setAlertRetentionDays] = useState(settings?.alert_retention_days ?? 90)
 
   // Sync state when settings load from API
   useEffect(() => {
@@ -30,6 +31,7 @@ export function SystemSettings() {
       setDefaultAutoRestart(settings.default_auto_restart ?? false)
       setUnusedTagRetentionDays(settings.unused_tag_retention_days ?? 30)
       setEventRetentionDays(settings.event_retention_days ?? 60)
+      setAlertRetentionDays(settings.alert_retention_days ?? 90)
     }
   }, [settings])
 
@@ -96,6 +98,17 @@ export function SystemSettings() {
         toast.success('Event retention updated')
       } catch (error) {
         toast.error('Failed to update event retention')
+      }
+    }
+  }
+
+  const handleAlertRetentionBlur = async () => {
+    if (alertRetentionDays !== settings?.alert_retention_days) {
+      try {
+        await updateSettings.mutateAsync({ alert_retention_days: alertRetentionDays })
+        toast.success('Alert retention updated')
+      } catch (error) {
+        toast.error('Failed to update alert retention')
       }
     }
   }
@@ -259,6 +272,25 @@ export function SystemSettings() {
             />
             <p className="mt-1 text-xs text-gray-400">
               Automatically delete tags that haven't been assigned to anything for this many days. Set to 0 to keep unused tags forever. (0-365 days)
+            </p>
+          </div>
+
+          <div>
+            <label htmlFor="alert-retention" className="block text-sm font-medium text-gray-300 mb-2">
+              Alert Retention (days)
+            </label>
+            <input
+              id="alert-retention"
+              type="number"
+              min="0"
+              max="365"
+              value={alertRetentionDays}
+              onChange={(e) => setAlertRetentionDays(Number(e.target.value))}
+              onBlur={handleAlertRetentionBlur}
+              className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            <p className="mt-1 text-xs text-gray-400">
+              How long to keep resolved alerts. Resolved alerts older than this are automatically deleted during nightly maintenance. Set to 0 to keep alerts forever. (0-365 days)
             </p>
           </div>
         </div>

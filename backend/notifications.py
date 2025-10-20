@@ -26,37 +26,59 @@ class NotificationService:
         self.db = db
         self.event_logger = event_logger
         self.http_client = httpx.AsyncClient(timeout=30.0)
-        self._last_alerts: Dict[str, datetime] = {}  # For V2 cooldown tracking (prevent duplicate notifications)
-        self.MAX_COOLDOWN_ENTRIES = 10000  # Prevent unbounded cooldown dictionary
-        self.COOLDOWN_MAX_AGE_DAYS = 7  # Remove cooldown entries older than 7 days
+
+        # Retry queue management
+        self._retry_task: Optional[asyncio.Task] = None
+        self._retry_running = False
+
+        # Rate limit tracking (channel_id -> retry_after_timestamp)
+        self._rate_limited_channels: Dict[str, datetime] = {}
 
         # Initialize blackout manager
         from blackout_manager import BlackoutManager
         self.blackout_manager = BlackoutManager(db)
 
-    def _cleanup_old_cooldowns(self) -> None:
-        """Clean up old cooldown entries to prevent memory leak"""
-        now = datetime.now(timezone.utc)
-        max_age = timedelta(days=self.COOLDOWN_MAX_AGE_DAYS)
+    async def start_retry_loop(self):
+        """Start the notification retry background task"""
+        if self._retry_running:
+            logger.warning("Notification retry loop already running")
+            return
 
-        # Remove entries older than max age
-        keys_to_remove = [
-            key for key, timestamp in self._last_alerts.items()
-            if now - timestamp > max_age
-        ]
+        self._retry_running = True
+        self._retry_task = asyncio.create_task(self._retry_loop())
+        logger.info("Notification retry loop started")
 
-        for key in keys_to_remove:
-            del self._last_alerts[key]
+    async def stop_retry_loop(self):
+        """Stop the notification retry background task"""
+        self._retry_running = False
 
-        if keys_to_remove:
-            logger.info(f"Cleaned up {len(keys_to_remove)} old cooldown entries")
+        if self._retry_task:
+            self._retry_task.cancel()
+            try:
+                await self._retry_task
+            except asyncio.CancelledError:
+                pass
 
-        # If still over limit, remove oldest entries
-        if len(self._last_alerts) > self.MAX_COOLDOWN_ENTRIES:
-            # Sort by timestamp and keep only the newest MAX_COOLDOWN_ENTRIES
-            sorted_alerts = sorted(self._last_alerts.items(), key=lambda x: x[1], reverse=True)
-            self._last_alerts = dict(sorted_alerts[:self.MAX_COOLDOWN_ENTRIES])
-            logger.warning(f"Cooldown dictionary exceeded limit, truncated to {self.MAX_COOLDOWN_ENTRIES} entries")
+        logger.info("Notification retry loop stopped")
+
+    def _is_rate_limited(self, channel_type: str) -> bool:
+        """
+        Check if channel is currently rate-limited
+
+        Args:
+            channel_type: Channel type (telegram, discord, slack, etc.)
+
+        Returns:
+            True if channel is rate-limited, False otherwise
+        """
+        if channel_type in self._rate_limited_channels:
+            retry_after = self._rate_limited_channels[channel_type]
+            if datetime.now(timezone.utc) < retry_after:
+                return True
+            else:
+                # Rate limit expired, remove from dict
+                del self._rate_limited_channels[channel_type]
+        return False
 
     def _get_host_name(self, event) -> str:
         """Get host name from event (generic event object with host_id/host_name)"""
@@ -101,6 +123,15 @@ class NotificationService:
             logger.info("Telegram notification sent successfully")
             return True
 
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                # Parse Retry-After header (seconds)
+                retry_after = int(e.response.headers.get('Retry-After', 60))
+                retry_timestamp = datetime.now(timezone.utc) + timedelta(seconds=retry_after)
+                self._rate_limited_channels['telegram'] = retry_timestamp
+                logger.warning(f"Telegram rate limited, retry after {retry_after}s")
+            logger.error(f"Failed to send Telegram notification: {e}")
+            return False
         except Exception as e:
             logger.error(f"Failed to send Telegram notification: {e}")
             return False
@@ -129,6 +160,15 @@ class NotificationService:
             logger.info("Discord notification sent successfully")
             return True
 
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                # Parse Retry-After header (seconds)
+                retry_after = int(e.response.headers.get('Retry-After', 60))
+                retry_timestamp = datetime.now(timezone.utc) + timedelta(seconds=retry_after)
+                self._rate_limited_channels['discord'] = retry_timestamp
+                logger.warning(f"Discord rate limited, retry after {retry_after}s")
+            logger.error(f"Failed to send Discord notification: {e}")
+            return False
         except Exception as e:
             logger.error(f"Failed to send Discord notification: {e}")
             return False
@@ -233,6 +273,15 @@ class NotificationService:
             logger.info("Slack notification sent successfully")
             return True
 
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                # Parse Retry-After header (seconds)
+                retry_after = int(e.response.headers.get('Retry-After', 60))
+                retry_timestamp = datetime.now(timezone.utc) + timedelta(seconds=retry_after)
+                self._rate_limited_channels['slack'] = retry_timestamp
+                logger.warning(f"Slack rate limited, retry after {retry_after}s")
+            logger.error(f"Failed to send Slack notification: {e}")
+            return False
         except Exception as e:
             logger.error(f"Failed to send Slack notification: {e}")
             return False
@@ -509,6 +558,11 @@ class NotificationService:
         """
         Send notifications for Alert System v2
 
+        Uses commitment point pattern to prevent duplicate notifications:
+        - operation_committed flag tracks if notifications were successfully sent
+        - Database updates happen AFTER notifications (commitment point)
+        - If DB fails after notifications sent, we don't retry (users already notified)
+
         Args:
             alert: AlertV2 database object
             rule: Optional AlertRuleV2 object (if not provided, will be fetched)
@@ -517,6 +571,9 @@ class NotificationService:
             True if notification sent successfully to at least one channel
         """
         logger.info(f"send_alert_v2 START: alert.id={alert.id if alert else 'None'}, rule={rule.name if rule else 'None'}")
+
+        operation_committed = False  # Track if notifications were sent successfully
+
         try:
             # Prevent duplicate notifications within 5 seconds (Docker sends kill/stop/die almost simultaneously)
             # This protects against rapid-fire notifications from the same event
@@ -579,6 +636,11 @@ class NotificationService:
                     continue
 
                 if channel:
+                    # Check if channel is rate-limited
+                    if self._is_rate_limited(channel.type):
+                        logger.warning(f"Skipping {channel.type} - currently rate limited")
+                        continue
+
                     try:
                         if channel.type == "telegram":
                             if await self._send_telegram(channel.config, message):
@@ -595,8 +657,17 @@ class NotificationService:
                     except Exception as e:
                         logger.error(f"Failed to send alert to channel {channel.name}: {e}")
 
-            # Update notified_at timestamp to prevent immediate duplicates
+            # Mark operation as committed if any notification succeeded
             if success_count > 0:
+                operation_committed = True
+                logger.info(f"Notifications sent successfully ({success_count} channels) - marking committed")
+
+            # If all channels failed, queue for retry
+            if success_count == 0 and total_channels > 0:
+                self._queue_retry(alert.id, rule.id if rule else None, channel_ids, "All channels failed")
+
+            # Update database (commitment point) - only if notifications were sent
+            if operation_committed:
                 with self.db.get_session() as session:
                     alert_to_update = session.query(AlertV2).filter(AlertV2.id == alert.id).first()
                     if alert_to_update:
@@ -612,11 +683,17 @@ class NotificationService:
                         session.commit()
 
             logger.info(f"Alert '{alert.title}' sent to {success_count}/{total_channels} channels")
-            return success_count > 0
+            return operation_committed
 
         except Exception as e:
-            logger.error(f"Error sending alert v2 notification: {e}", exc_info=True)
-            return False
+            if operation_committed:
+                # Notifications already sent - don't rollback, just log error
+                logger.error(f"Notifications sent but database update failed: {e}", exc_info=True)
+                return True  # Consider it successful since notifications sent
+            else:
+                # Notifications not sent yet - safe to fail
+                logger.error(f"Error sending alert v2 notification: {e}", exc_info=True)
+                return False
 
     def _get_template_for_alert_v2(self, alert, rule):
         """Get the appropriate template for v2 alert based on priority"""
@@ -924,8 +1001,154 @@ class NotificationService:
 
         return message
 
+    def _queue_retry(self, alert_id: str, rule_id: Optional[str], channel_ids: List, error_message: str):
+        """
+        Add failed notification to retry queue
+
+        Args:
+            alert_id: AlertV2 ID
+            rule_id: AlertRuleV2 ID (optional)
+            channel_ids: List of channel IDs that failed
+            error_message: Error message from failure
+        """
+        try:
+            from database import NotificationRetry
+            with self.db.get_session() as session:
+                # Check if retry already exists for this alert
+                existing = session.query(NotificationRetry).filter(
+                    NotificationRetry.alert_id == alert_id
+                ).first()
+
+                if existing:
+                    # Update existing retry
+                    existing.attempt_count = 0  # Reset attempt count for new failure
+                    existing.next_retry_at = datetime.now(timezone.utc) + timedelta(seconds=60)
+                    existing.error_message = error_message
+                    logger.info(f"Updated existing retry entry for alert {alert_id}")
+                else:
+                    # Create new retry entry
+                    retry = NotificationRetry(
+                        alert_id=alert_id,
+                        rule_id=rule_id,
+                        attempt_count=0,
+                        next_retry_at=datetime.now(timezone.utc) + timedelta(seconds=60),  # Retry in 1 minute
+                        channel_ids_json=json.dumps(channel_ids),
+                        error_message=error_message
+                    )
+                    session.add(retry)
+                    logger.info(f"Queued notification retry for alert {alert_id}")
+
+                session.commit()
+
+        except Exception as e:
+            logger.error(f"Failed to queue retry for alert {alert_id}: {e}", exc_info=True)
+
+    async def _retry_loop(self):
+        """Process retry queue every 60 seconds"""
+        while self._retry_running:
+            try:
+                await self._process_retry_queue()
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in retry loop: {e}", exc_info=True)
+                await asyncio.sleep(60)
+
+    async def _process_retry_queue(self):
+        """
+        Retry failed notifications with exponential backoff
+
+        Backoff schedule: [60s, 300s, 900s, 3600s, 21600s] (1m, 5m, 15m, 1h, 6h)
+        Max 5 retries, then log permanent failure
+        """
+        try:
+            from database import NotificationRetry, AlertV2, AlertRuleV2
+
+            # Exponential backoff schedule (in seconds)
+            backoff_schedule = [60, 300, 900, 3600, 21600]  # 1m, 5m, 15m, 1h, 6h
+            max_retries = 5
+
+            # Extract retry data and close session BEFORE async operations
+            retries_to_process = []
+            with self.db.get_session() as session:
+                now = datetime.now(timezone.utc)
+                retries = session.query(NotificationRetry).filter(
+                    NotificationRetry.next_retry_at <= now
+                ).all()
+
+                for retry in retries:
+                    # Get alert and rule while session is open
+                    alert = session.query(AlertV2).filter(AlertV2.id == retry.alert_id).first()
+                    rule = None
+                    if retry.rule_id:
+                        rule = session.query(AlertRuleV2).filter(AlertRuleV2.id == retry.rule_id).first()
+
+                    if alert:
+                        try:
+                            channel_ids = json.loads(retry.channel_ids_json)
+                        except (json.JSONDecodeError, TypeError):
+                            channel_ids = []
+
+                        retries_to_process.append({
+                            'retry_id': retry.id,
+                            'alert': alert,
+                            'rule': rule,
+                            'channel_ids': channel_ids,
+                            'attempt_count': retry.attempt_count
+                        })
+
+            # Session closed - safe for async notification sends
+            for retry_data in retries_to_process:
+                try:
+                    # Attempt to send notification
+                    success = await self.send_alert_v2(retry_data['alert'], retry_data['rule'])
+
+                    with self.db.get_session() as session:
+                        retry_entry = session.query(NotificationRetry).filter(
+                            NotificationRetry.id == retry_data['retry_id']
+                        ).first()
+
+                        if not retry_entry:
+                            continue
+
+                        if success:
+                            # Success - delete from queue
+                            session.delete(retry_entry)
+                            logger.info(f"Retry succeeded for alert {retry_data['alert'].id}, removed from queue")
+                        else:
+                            # Failed - increment attempt count
+                            retry_entry.attempt_count += 1
+                            retry_entry.last_attempt_at = datetime.now(timezone.utc)
+
+                            if retry_entry.attempt_count >= max_retries:
+                                # Max retries reached - delete and log permanent failure
+                                session.delete(retry_entry)
+                                logger.error(
+                                    f"Permanent failure for alert {retry_data['alert'].id} "
+                                    f"after {max_retries} attempts, removed from queue"
+                                )
+                            else:
+                                # Calculate next retry time with exponential backoff
+                                backoff_index = min(retry_entry.attempt_count, len(backoff_schedule) - 1)
+                                backoff_seconds = backoff_schedule[backoff_index]
+                                retry_entry.next_retry_at = datetime.now(timezone.utc) + timedelta(seconds=backoff_seconds)
+                                logger.info(
+                                    f"Retry {retry_entry.attempt_count}/{max_retries} failed for alert {retry_data['alert'].id}, "
+                                    f"next attempt in {backoff_seconds}s"
+                                )
+
+                        session.commit()
+
+                except Exception as e:
+                    logger.error(f"Error processing retry for alert {retry_data['alert'].id}: {e}", exc_info=True)
+
+        except Exception as e:
+            logger.error(f"Error processing retry queue: {e}", exc_info=True)
+
     async def close(self):
         """Clean up resources"""
+        await self.stop_retry_loop()
         await self.http_client.aclose()
 
     async def __aenter__(self):

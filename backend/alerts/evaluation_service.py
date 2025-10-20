@@ -54,6 +54,7 @@ class AlertEvaluationService:
         self._running = False
         self._task: Optional[asyncio.Task] = None
         self._notification_task: Optional[asyncio.Task] = None
+        self._snooze_task: Optional[asyncio.Task] = None
 
     async def start(self):
         """Start the alert evaluation service"""
@@ -64,6 +65,7 @@ class AlertEvaluationService:
         self._running = True
         self._task = asyncio.create_task(self._evaluation_loop())
         self._notification_task = asyncio.create_task(self._pending_notifications_loop())
+        self._snooze_task = asyncio.create_task(self._snooze_expiry_loop())
         logger.info(f"Alert evaluation service started (interval: {self.evaluation_interval}s)")
 
     async def stop(self):
@@ -81,6 +83,13 @@ class AlertEvaluationService:
             self._notification_task.cancel()
             try:
                 await self._notification_task
+            except asyncio.CancelledError:
+                pass
+
+        if self._snooze_task:
+            self._snooze_task.cancel()
+            try:
+                await self._snooze_task
             except asyncio.CancelledError:
                 pass
 
@@ -185,6 +194,47 @@ class AlertEvaluationService:
         except Exception as e:
             logger.error(f"Error checking pending notifications: {e}", exc_info=True)
 
+    async def _snooze_expiry_loop(self):
+        """
+        Background task to check for expired snoozes every 60 seconds.
+
+        When an alert is snoozed, it has a snoozed_until timestamp. Once that
+        time passes, the alert should automatically return to 'open' state.
+        """
+        check_interval = 60  # Check every 60 seconds
+
+        while self._running:
+            try:
+                await self._check_expired_snoozes()
+                await asyncio.sleep(check_interval)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in snooze expiry loop: {e}", exc_info=True)
+                await asyncio.sleep(check_interval)
+
+    async def _check_expired_snoozes(self):
+        """Un-snooze alerts where snoozed_until has expired"""
+        try:
+            with self.db.get_session() as session:
+                now = datetime.now(timezone.utc)
+                expired = session.query(AlertV2).filter(
+                    AlertV2.state == "snoozed",
+                    AlertV2.snoozed_until <= now
+                ).all()
+
+                for alert in expired:
+                    alert.state = "open"
+                    alert.snoozed_until = None
+                    logger.info(f"Auto-unsnoozed alert {alert.id}: {alert.title}")
+
+                if expired:
+                    session.commit()
+                    logger.info(f"Auto-unsnoozed {len(expired)} expired alerts")
+
+        except Exception as e:
+            logger.error(f"Error checking expired snoozes: {e}", exc_info=True)
+
     async def _verify_alert_condition(self, alert: AlertV2) -> bool:
         """
         Verify that an alert's condition is still true before sending delayed notification.
@@ -238,8 +288,75 @@ class AlertEvaluationService:
                     logger.info(f"Alert {alert.id}: Container now {container.state} - no longer unhealthy")
                     return False
 
+            # For metric-based alerts (CPU, memory), re-check current metric value
+            elif alert.kind in ["cpu_high", "memory_high"] and alert.scope_type == "container":
+                if not self.stats_client:
+                    logger.debug(f"Alert {alert.id}: Stats client not available, cannot verify metric")
+                    return True  # Cannot verify without stats, send notification
+
+                try:
+                    # Get current stats for this container
+                    stats = await self.stats_client.get_container_stats()
+                    container_key = f"{alert.host_id}:{alert.scope_id}"
+                    current_stats = stats.get(container_key)
+
+                    if not current_stats:
+                        # Container gone or no stats - keep alert
+                        logger.debug(f"Alert {alert.id}: No current stats found, keeping alert")
+                        return True
+
+                    # Get rule to check threshold
+                    rule = self.engine.db.get_alert_rule_v2(alert.rule_id) if alert.rule_id else None
+                    if not rule:
+                        logger.debug(f"Alert {alert.id}: Rule not found, cannot verify threshold")
+                        return True
+
+                    # Check if metric still breaching
+                    metric_name = "cpu_percent" if alert.kind == "cpu_high" else "memory_percent"
+                    current_value = current_stats.get(metric_name)
+
+                    if current_value is None:
+                        logger.debug(f"Alert {alert.id}: Metric {metric_name} not in current stats")
+                        return True
+
+                    # Use engine's breach checking logic
+                    breached = self.engine._check_breach(current_value, rule.threshold, rule.operator)
+                    if not breached:
+                        logger.info(
+                            f"Alert {alert.id}: Metric {metric_name} no longer breaching "
+                            f"(current: {current_value:.1f}%, threshold: {rule.threshold}, operator: {rule.operator}) - condition cleared"
+                        )
+                        return False
+
+                    logger.debug(f"Alert {alert.id}: Metric {metric_name} still breaching (current: {current_value:.1f}%)")
+                    return True
+
+                except Exception as e:
+                    logger.error(f"Error verifying metric alert {alert.id}: {e}", exc_info=True)
+                    return True  # On error, send notification
+
+            # For host disconnected alerts, check if host reconnected
+            elif alert.kind in ["host_disconnected", "host_down"] and alert.scope_type == "host":
+                if not self.monitor:
+                    return True
+
+                try:
+                    # Check if host is online in monitor
+                    host = self.db.get_host(alert.scope_id)
+                    if host and host.is_active:
+                        # Check if host is actually connected in monitor
+                        if alert.scope_id in self.monitor.clients:
+                            logger.info(f"Alert {alert.id}: Host {host.name} reconnected - condition cleared")
+                            return False
+
+                    logger.debug(f"Alert {alert.id}: Host still disconnected")
+                    return True
+
+                except Exception as e:
+                    logger.error(f"Error verifying host alert {alert.id}: {e}", exc_info=True)
+                    return True
+
             # For other alert types, default to sending notification
-            # TODO: Add verification for metric-based alerts and other event types
             return True
 
         except Exception as e:
@@ -351,6 +468,12 @@ class AlertEvaluationService:
 
         except Exception as e:
             logger.error(f"Error evaluating rules: {e}", exc_info=True)
+            # Create system alert to notify users of evaluation failure
+            await self._create_system_alert(
+                title="Alert Rule Evaluation Failed",
+                message=f"Failed to evaluate alert rules: {str(e)[:500]}",  # Truncate long error messages
+                severity="error"
+            )
 
     async def _evaluate_container_metrics(self, rules_by_metric: Dict[str, List[AlertRuleV2]]):
         """Evaluate container metric rules"""
@@ -739,6 +862,131 @@ class AlertEvaluationService:
 
         except Exception as e:
             logger.error(f"Error handling host event: {e}", exc_info=True)
+
+    # ==================== Cleanup & Maintenance ====================
+
+    async def auto_resolve_orphaned_container_alerts(self) -> int:
+        """
+        Auto-resolve open alerts for containers that no longer exist.
+
+        This prevents the alerts table from filling with orphaned alerts when
+        containers are permanently deleted.
+
+        Returns:
+            Number of alerts auto-resolved
+        """
+        resolved_count = 0
+
+        try:
+            # Extract alert data and close session BEFORE async Docker calls
+            container_alerts_to_check = []
+            with self.db.get_session() as session:
+                # Get all open/snoozed container-scoped alerts
+                open_alerts = session.query(AlertV2).filter(
+                    AlertV2.scope_type == 'container',
+                    AlertV2.state.in_(['open', 'snoozed'])
+                ).all()
+
+                # Extract data we need while session is open
+                for alert in open_alerts:
+                    container_alerts_to_check.append({
+                        'id': alert.id,
+                        'scope_id': alert.scope_id,  # SHORT container ID (12 chars)
+                        'container_name': alert.container_name,
+                        'host_id': alert.host_id
+                    })
+
+            # Session is now closed - safe for async operations
+            if not self.monitor:
+                logger.warning("Cannot auto-resolve orphaned alerts - monitor not available")
+                return 0
+
+            # Get all existing containers from monitor
+            containers = await self.monitor.get_containers()
+
+            # Build set of existing container SHORT IDs (12 chars)
+            existing_container_ids = {c.short_id for c in containers}
+
+            # Check each alert to see if container still exists
+            alerts_to_resolve = []
+            for alert_data in container_alerts_to_check:
+                if alert_data['scope_id'] not in existing_container_ids:
+                    alerts_to_resolve.append(alert_data)
+                    logger.info(
+                        f"Container {alert_data['container_name']} ({alert_data['scope_id']}) "
+                        f"no longer exists, will auto-resolve alert {alert_data['id']}"
+                    )
+
+            # Reopen session to update alerts
+            if alerts_to_resolve:
+                with self.db.get_session() as session:
+                    for alert_info in alerts_to_resolve:
+                        alert = session.query(AlertV2).filter(AlertV2.id == alert_info['id']).first()
+                        if alert and alert.state in ['open', 'snoozed']:
+                            alert.state = 'resolved'
+                            alert.resolved_at = datetime.now(timezone.utc)
+                            alert.resolved_reason = 'Container deleted'
+                            resolved_count += 1
+
+                    session.commit()
+                    logger.info(f"Auto-resolved {resolved_count} alerts for deleted containers")
+
+            return resolved_count
+
+        except Exception as e:
+            logger.error(f"Error auto-resolving orphaned container alerts: {e}", exc_info=True)
+            return resolved_count
+
+    async def _create_system_alert(self, title: str, message: str, severity: str = "error"):
+        """
+        Create a system alert for internal failures.
+
+        System alerts notify users when the alert system itself encounters problems,
+        such as rule evaluation failures, database errors, or service crashes.
+
+        Args:
+            title: Alert title
+            message: Detailed error message
+            severity: Alert severity ('warning' or 'error')
+        """
+        try:
+            from alerts.engine import EvaluationContext
+
+            # Get or create the system alert rule
+            system_rule = self.db.get_or_create_system_alert_rule()
+
+            # Create evaluation context for system scope
+            context = EvaluationContext(
+                scope_type="system",
+                scope_id="alert_service",
+                host_id=None,
+                host_name="Alert System"
+            )
+
+            # Create dedup key for this specific error type
+            dedup_key = f"{system_rule.id}|system_error|system:alert_service"
+
+            # Get or create the alert (deduplicates if already exists)
+            alert, is_new = self.engine._get_or_create_alert(
+                dedup_key=dedup_key,
+                rule=system_rule,
+                context=context,
+                title=title,
+                message=message
+            )
+
+            if not is_new:
+                # Update existing alert with new occurrence
+                alert = self.engine._update_alert(alert)
+
+            # Send notification
+            await self._send_notification(alert)
+
+            logger.info(f"Created system alert: {title}")
+
+        except Exception as e:
+            # Fail silently - we don't want system alert creation to crash the service
+            logger.error(f"Failed to create system alert: {e}", exc_info=True)
 
     # ==================== Manual Evaluation ====================
 

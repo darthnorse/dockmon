@@ -216,6 +216,9 @@ class GlobalSettings(Base):
     skip_compose_containers = Column(Boolean, default=True)  # Skip Docker Compose-managed containers
     health_check_timeout_seconds = Column(Integer, default=10)  # Health check timeout (seconds)
 
+    # Alert system settings
+    alert_retention_days = Column(Integer, default=90)  # Keep resolved alerts for N days (0 = keep forever)
+
     # Version tracking and upgrade notifications
     app_version = Column(String, default="2.0.0")  # Current application version
     upgrade_notice_dismissed = Column(Boolean, default=True)  # Whether user has seen v2 upgrade notice (False for v1→v2 upgrades set by migration)
@@ -471,6 +474,7 @@ class AlertV2(Base):
         Index('idx_alertv2_scope', 'scope_type', 'scope_id'),  # Filter by scope (host/container)
         Index('idx_alertv2_severity', 'severity'),  # Filter by severity
         Index('idx_alertv2_first_seen', 'first_seen'),  # Sort by first_seen
+        Index('idx_alertv2_last_seen', last_seen.desc()),  # Sort by last_seen DESC (most recent first)
         Index('idx_alertv2_host_id', 'host_id'),  # Filter by host
         Index('idx_alertv2_rule_id', 'rule_id'),  # FK lookup performance
         {"sqlite_autoincrement": True},
@@ -517,6 +521,27 @@ class RuleEvaluation(Base):
     action = Column(String, nullable=True)  # 'opened' | 'updated' | 'cleared' | 'skipped_cooldown'
 
     __table_args__ = (
+        {"sqlite_autoincrement": True},
+    )
+
+
+class NotificationRetry(Base):
+    """Notification retry queue for failed notifications"""
+    __tablename__ = "notification_retries"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    alert_id = Column(String, ForeignKey("alerts_v2.id", ondelete="CASCADE"), nullable=False)
+    rule_id = Column(String, nullable=True)
+    attempt_count = Column(Integer, default=0)
+    last_attempt_at = Column(DateTime, nullable=True)
+    next_retry_at = Column(DateTime, nullable=False)
+    channel_ids_json = Column(Text, nullable=False)  # JSON array of failed channel IDs
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+    error_message = Column(Text, nullable=True)
+
+    # Indexes
+    __table_args__ = (
+        Index('idx_notification_retry_next', 'next_retry_at'),  # Find retries to process
         {"sqlite_autoincrement": True},
     )
 
@@ -1945,6 +1970,45 @@ class DatabaseManager:
         with self.get_session() as session:
             return session.query(AlertRuleV2).filter(AlertRuleV2.id == rule_id).first()
 
+    def get_or_create_system_alert_rule(self) -> AlertRuleV2:
+        """
+        Get or create the system alert rule for alerting on internal failures.
+
+        This rule is auto-created and used for system health notifications
+        (e.g., alert evaluation failures, service crashes, etc.)
+        """
+        with self.get_session() as session:
+            # Check if system rule already exists
+            rule = session.query(AlertRuleV2).filter(
+                AlertRuleV2.kind == "system_error",
+                AlertRuleV2.scope == "system"
+            ).first()
+
+            if rule:
+                return rule
+
+            # Create new system rule
+            import uuid
+            rule = AlertRuleV2(
+                id=str(uuid.uuid4()),
+                name="Alert System Health",
+                description="Notifications for alert system failures and internal errors",
+                scope="system",
+                kind="system_error",
+                enabled=True,
+                severity="error",
+                cooldown_seconds=3600,  # 1 hour cooldown to prevent spam
+                auto_resolve=False,
+                suppress_during_updates=False,
+                notify_channels_json=None,  # Will use default channels
+                created_by="system"
+            )
+            session.add(rule)
+            session.commit()
+            session.refresh(rule)
+            logger.info("Created system alert rule for health monitoring")
+            return rule
+
     def create_alert_rule_v2(
         self,
         name: str,
@@ -2175,6 +2239,99 @@ class DatabaseManager:
                 EventLog.timestamp < cutoff_date
             ).delete()
             session.commit()
+            return deleted_count
+
+    def cleanup_old_alerts(self, retention_days: int) -> int:
+        """
+        Delete resolved alerts older than retention_days
+
+        Args:
+            retention_days: Number of days to keep resolved alerts (0 = keep forever)
+
+        Returns:
+            Number of alerts deleted
+        """
+        if retention_days <= 0:
+            return 0
+
+        with self.get_session() as session:
+            cutoff_date = datetime.now(timezone.utc) - timedelta(days=retention_days)
+            deleted_count = session.query(AlertV2).filter(
+                AlertV2.state == 'resolved',
+                AlertV2.resolved_at < cutoff_date
+            ).delete()
+            session.commit()
+            logger.info(f"Cleaned up {deleted_count} resolved alerts older than {retention_days} days")
+            return deleted_count
+
+    def cleanup_old_rule_evaluations(self, hours: int = 24) -> int:
+        """
+        Delete rule evaluations older than hours
+
+        Rule evaluations are used for debugging and don't need long retention.
+        Default: 24 hours
+
+        Args:
+            hours: Number of hours to keep evaluations
+
+        Returns:
+            Number of evaluations deleted
+        """
+        with self.get_session() as session:
+            cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
+            deleted_count = session.query(RuleEvaluation).filter(
+                RuleEvaluation.timestamp < cutoff_time
+            ).delete()
+            session.commit()
+            logger.info(f"Cleaned up {deleted_count} rule evaluations older than {hours} hours")
+            return deleted_count
+
+    def cleanup_orphaned_rule_runtime(self, existing_container_keys: set) -> int:
+        """
+        Delete RuleRuntime entries for containers that no longer exist
+
+        RuleRuntime stores sliding window state for metric alerts. When containers
+        are deleted, these entries become orphaned and waste database space.
+
+        Args:
+            existing_container_keys: Set of composite keys (host_id:container_id) for existing containers
+
+        Returns:
+            Number of runtime entries deleted
+        """
+        with self.get_session() as session:
+            # Get all runtime entries
+            all_runtime = session.query(RuleRuntime).all()
+
+            deleted_count = 0
+            for runtime in all_runtime:
+                # RuleRuntime.dedup_key format: {rule_id}|{scope_type}:{scope_id}
+                # We need to extract the scope part to check if container exists
+                try:
+                    # Parse dedup_key: "rule-123|container:host-id:container-id"
+                    if '|' in runtime.dedup_key:
+                        _, scope_part = runtime.dedup_key.split('|', 1)
+                        if ':' in scope_part:
+                            scope_type, scope_id = scope_part.split(':', 1)
+
+                            # Only clean up container-scoped runtime entries
+                            if scope_type == 'container':
+                                # scope_id might be SHORT ID or composite key depending on context
+                                # Check both formats for safety
+                                if scope_id not in existing_container_keys:
+                                    # Also check if it's a SHORT ID that exists in any composite key
+                                    short_id_exists = any(scope_id in key for key in existing_container_keys)
+                                    if not short_id_exists:
+                                        session.delete(runtime)
+                                        deleted_count += 1
+                except Exception as e:
+                    logger.warning(f"Error parsing RuleRuntime dedup_key '{runtime.dedup_key}': {e}")
+                    continue
+
+            if deleted_count > 0:
+                session.commit()
+                logger.info(f"Cleaned up {deleted_count} orphaned RuleRuntime entries")
+
             return deleted_count
 
     def get_event_statistics(self,

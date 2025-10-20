@@ -8,7 +8,7 @@ This migration handles the complete upgrade from DockMon v1.1.3 to v2.0.0.
 It is fully defensive and checks for existing tables/columns before creating them.
 
 CHANGES:
-- GlobalSettings: Add missing v2 columns (unused_tag_retention_days, alert templates, update settings, etc.)
+- GlobalSettings: Add missing v2 columns (unused_tag_retention_days, alert_retention_days, alert templates, update settings, etc.)
 - Users: Add role, display_name, prefs, simplified_workflow, view_mode columns
 - user_prefs table: New table for database-backed user preferences
 - container_desired_states: Add custom_tags column
@@ -112,6 +112,7 @@ def upgrade() -> None:
         sa.Column('update_check_time', sa.Text(), server_default='02:00'),
         sa.Column('skip_compose_containers', sa.Boolean(), server_default='1'),
         sa.Column('health_check_timeout_seconds', sa.Integer(), server_default='120'),
+        sa.Column('alert_retention_days', sa.Integer(), server_default='90'),
         sa.Column('app_version', sa.String(), server_default='2.0.0'),
         sa.Column('upgrade_notice_dismissed', sa.Boolean(), nullable=True),
         sa.Column('last_viewed_release_notes', sa.String(), nullable=True),
@@ -391,6 +392,9 @@ def downgrade() -> None:
 
     if _column_exists('global_settings', 'health_check_timeout_seconds'):
         op.drop_column('global_settings', 'health_check_timeout_seconds')
+
+    if _column_exists('global_settings', 'alert_retention_days'):
+        op.drop_column('global_settings', 'alert_retention_days')
 
     if _column_exists('global_settings', 'skip_compose_containers'):
         op.drop_column('global_settings', 'skip_compose_containers')

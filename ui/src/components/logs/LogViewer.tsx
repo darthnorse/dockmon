@@ -186,9 +186,11 @@ export function LogViewer({
       if (shouldAutoScroll) {
         setTimeout(() => {
           if (sortOrderRef.current === 'desc') {
-            scrollToBottom()
-          } else {
+            // Desc = newest first, so new logs appear at top
             scrollToTop()
+          } else {
+            // Asc = oldest first, so new logs appear at bottom
+            scrollToBottom()
           }
         }, 0)
       }
@@ -317,13 +319,13 @@ export function LogViewer({
 
       // Check if user scrolled away from the auto-scroll position
       if (sortOrder === 'desc') {
-        // In desc mode, auto-scroll is to bottom
-        const atBottom = scrollHeight - scrollTop <= clientHeight + 100
-        setUserHasScrolled(!atBottom)
-      } else {
-        // In asc mode, auto-scroll is to top
+        // In desc mode, newest logs are at top, so auto-scroll is to top
         const atTop = scrollTop <= 100
         setUserHasScrolled(!atTop)
+      } else {
+        // In asc mode, newest logs are at bottom, so auto-scroll is to bottom
+        const atBottom = scrollHeight - scrollTop <= clientHeight + 100
+        setUserHasScrolled(!atBottom)
       }
     }
 

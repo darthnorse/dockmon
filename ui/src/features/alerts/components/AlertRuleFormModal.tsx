@@ -229,7 +229,8 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       container_run_mode: containerSelector.should_run === null ? 'all' : containerSelector.should_run ? 'should_run' : 'on_demand',
       notify_channels: rule?.notify_channels_json ? JSON.parse(rule.notify_channels_json) : [],
       custom_template: rule?.custom_template !== undefined ? rule.custom_template : null,
-      auto_resolve_updates: rule?.auto_resolve ?? false,
+      // Auto-resolve should default to true for transient update events
+      auto_resolve_updates: rule?.auto_resolve ?? (ruleKind === 'update_available' || ruleKind === 'update_completed'),
       // Default suppress_during_updates to true for container-scoped rules
       suppress_during_updates: rule?.suppress_during_updates ?? (scope === 'container'),
     }

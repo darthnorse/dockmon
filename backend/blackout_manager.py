@@ -139,82 +139,14 @@ class BlackoutManager:
                 except Exception as e:
                     logger.error(f"Error checking containers on host {host.name}: {e}")
 
-            # Send alert if any containers are down
-            if summary['containers_down'] and notification_service:
-                await self._send_post_blackout_alert(notification_service, summary)
+            # Note: Post-blackout alerts are handled by V2 alert evaluation system
+            # which continuously monitors container states
 
         except Exception as e:
             logger.error(f"Error checking container states after blackout: {e}")
 
         return summary
 
-    async def _send_post_blackout_alert(self, notification_service, summary: Dict):
-        """Send alert for containers found in problematic state after blackout"""
-        try:
-            containers_down = summary['containers_down']
-
-            # Get all alert rules that monitor state changes
-            alert_rules = self.db.get_alert_rules()
-
-            # For each container that's down, check if it matches any alert rules
-            for container_info in containers_down:
-                # Find matching alert rules for this container
-                matching_rules = []
-                for rule in alert_rules:
-                    if not rule.enabled:
-                        continue
-
-                    # Check if this rule monitors the problematic state
-                    if rule.trigger_states and container_info['state'] in rule.trigger_states:
-                        # Check if container matches rule's container pattern
-                        if self._container_matches_rule(container_info, rule):
-                            matching_rules.append(rule)
-
-                # Send alert through matching rules
-                if matching_rules:
-                    from notifications import AlertEvent
-                    event = AlertEvent(
-                        container_id=container_info['id'],
-                        container_name=container_info['name'],
-                        host_id=container_info['host_id'],
-                        host_name=container_info['host_name'],
-                        old_state='unknown_during_blackout',
-                        new_state=container_info['state'],
-                        exit_code=container_info.get('exit_code'),
-                        timestamp=datetime.now(timezone.utc),
-                        image=container_info['image'],
-                        triggered_by='post_blackout_check'
-                    )
-
-                    # Send through each matching rule's channels
-                    for rule in matching_rules:
-                        try:
-                            # Add note about blackout in the event
-                            event.notes = f"Container found in {container_info['state']} state after maintenance window ended"
-                            await notification_service.send_alert(event, rule)
-                        except Exception as e:
-                            logger.error(f"Failed to send post-blackout alert for {container_info['name']}: {e}")
-
-        except Exception as e:
-            logger.error(f"Error sending post-blackout alerts: {e}")
-
-    def _container_matches_rule(self, container_info: Dict, rule) -> bool:
-        """Check if container matches an alert rule's container criteria"""
-        try:
-            # If rule has specific container+host pairs
-            if hasattr(rule, 'containers') and rule.containers:
-                for container_spec in rule.containers:
-                    if (container_spec.container_name == container_info['name'] and
-                        container_spec.host_id == container_info['host_id']):
-                        return True
-                return False
-
-            # Otherwise, rule applies to all containers
-            return True
-
-        except Exception as e:
-            logger.error(f"Error matching container to rule: {e}")
-            return False
 
     async def start_monitoring(self, notification_service, monitor, connection_manager=None):
         """Start monitoring for blackout window transitions

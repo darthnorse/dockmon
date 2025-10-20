@@ -335,44 +335,6 @@ class NotificationChannel(Base):
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
-class AlertRuleDB(Base):
-    """Alert rules for container state changes"""
-    __tablename__ = "alert_rules"
-
-    id = Column(String, primary_key=True)
-    name = Column(String, nullable=False)
-    trigger_events = Column(JSON, nullable=True)  # list of Docker events that trigger alert
-    trigger_states = Column(JSON, nullable=True)  # list of states that trigger alert
-    notification_channels = Column(JSON, nullable=False)  # list of channel IDs
-    cooldown_minutes = Column(Integer, default=15)  # prevent spam
-    enabled = Column(Boolean, default=True)
-    last_triggered = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=utcnow)
-    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
-
-    # Relationships
-    containers = relationship("AlertRuleContainer", back_populates="alert_rule", cascade="all, delete-orphan")
-
-class AlertRuleContainer(Base):
-    """Container+Host pairs for alert rules"""
-    __tablename__ = "alert_rule_containers"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    alert_rule_id = Column(String, ForeignKey("alert_rules.id", ondelete="CASCADE"), nullable=False)
-    host_id = Column(String, ForeignKey("docker_hosts.id", ondelete="CASCADE"), nullable=False)
-    container_name = Column(String, nullable=False)
-    created_at = Column(DateTime, default=utcnow)
-
-    # Relationships
-    alert_rule = relationship("AlertRuleDB", back_populates="containers")
-    host = relationship("DockerHostDB")
-
-    # Unique constraint to prevent duplicates
-    __table_args__ = (
-        UniqueConstraint('alert_rule_id', 'host_id', 'container_name', name='_alert_container_uc'),
-    )
-
-
 # ==================== Alerts v2 Tables ====================
 
 class AlertRuleV2(Base):
@@ -1193,38 +1155,7 @@ class DatabaseManager:
         if alerts_updated > 0:
             logger.info(f"  ✓ Resolved {alerts_updated} open alert(s)")
 
-        # 4. Process AlertRuleDB (v1 rules) - remove containers from the deleted host
-        # Alert rules that monitor containers on this host need to be updated
-        rules_deleted = 0
-        rules_updated = 0
-        # Add safety limit for alert rules processing
-        all_rules = session.query(AlertRuleDB).limit(10000).all()
-        for rule in all_rules:
-            if not rule.containers:
-                continue
-
-            # Filter out containers from the deleted host
-            remaining_containers = [
-                c for c in rule.containers
-                if c.host_id != host_id
-            ]
-
-            if not remaining_containers:
-                # No containers left, delete the entire alert rule
-                session.delete(rule)
-                rules_deleted += 1
-                logger.info(f"  ✓ Deleted alert rule '{rule.name}' (all containers were on this host)")
-            elif len(remaining_containers) < len(rule.containers):
-                # Some containers remain, update the alert rule
-                rule.containers = remaining_containers
-                rule.updated_at = datetime.now(timezone.utc)
-                rules_updated += 1
-                logger.info(f"  ✓ Updated alert rule '{rule.name}' (removed containers from this host)")
-
-        cleanup_stats['alert_rules_deleted'] = rules_deleted
-        cleanup_stats['alert_rules_updated'] = rules_updated
-
-        # 5. Keep EventLog records (for audit trail)
+        # 4. Keep EventLog records (for audit trail)
         # Events preserve historical data and show the original host_name
         event_count = session.query(EventLog).filter(EventLog.host_id == host_id).count()
         cleanup_stats['events_kept'] = event_count

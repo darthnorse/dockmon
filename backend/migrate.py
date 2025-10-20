@@ -70,6 +70,18 @@ def run_migrations():
                 version = result.scalar()
                 if version:
                     logger.info(f"✓ Migration already completed (version: {version})")
+
+                    # Clean up V1 alert tables (may exist on upgraded systems)
+                    # Check if tables exist before attempting to drop them
+                    result = conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('alert_rules', 'alert_rule_containers')"))
+                    v1_tables = result.fetchall()
+                    if v1_tables:
+                        logger.info(f"Dropping legacy V1 alert tables: {[t[0] for t in v1_tables]}...")
+                        conn.execute(text("DROP TABLE IF EXISTS alert_rule_containers"))
+                        conn.execute(text("DROP TABLE IF EXISTS alert_rules"))
+                        conn.commit()
+                        logger.info("✓ V1 alert tables dropped")
+
                     logger.info("✓ All migrations completed successfully")
                     return True
         except Exception as e:
@@ -109,6 +121,18 @@ def run_migrations():
         logger.info("Running Alembic migrations...")
         command.upgrade(alembic_cfg, "head")
         logger.info("✓ Alembic migrations complete")
+
+        # Step 3: Drop legacy V1 alert tables (cleanup after migration)
+        with engine.connect() as conn:
+            from sqlalchemy import text
+            result = conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('alert_rules', 'alert_rule_containers')"))
+            v1_tables = result.fetchall()
+            if v1_tables:
+                logger.info(f"Dropping legacy V1 alert tables: {[t[0] for t in v1_tables]}...")
+                conn.execute(text("DROP TABLE IF EXISTS alert_rule_containers"))
+                conn.execute(text("DROP TABLE IF EXISTS alert_rules"))
+                conn.commit()
+                logger.info("✓ V1 alert tables dropped")
 
         logger.info("✓ All migrations completed successfully")
         return True

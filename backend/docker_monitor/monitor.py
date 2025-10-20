@@ -1060,50 +1060,6 @@ class DockerMonitor:
         """Update container custom tags in database"""
         return self.state_manager.update_container_tags(host_id, container_id, container_name, tags_to_add, tags_to_remove)
 
-    async def check_orphaned_alerts(self):
-        """Check for alert rules that reference non-existent containers
-        Returns dict mapping alert_rule_id to list of orphaned container entries"""
-        orphaned = {}
-
-        try:
-            # Get all current containers FIRST (async operation)
-            current_containers = {}
-            for container in await self.get_containers():
-                key = f"{container.host_id}:{container.name}"
-                current_containers[key] = True
-
-            # Now query database with session closed during async operations
-            with self.db.get_session() as session:
-                from database import AlertRuleDB, AlertRuleContainer
-                alert_rules = session.query(AlertRuleDB).all()
-
-                # Check each alert rule's containers
-                for rule in alert_rules:
-                    orphaned_containers = []
-                    for alert_container in rule.containers:
-                        key = f"{alert_container.host_id}:{alert_container.container_name}"
-                        if key not in current_containers:
-                            # Container doesn't exist anymore
-                            orphaned_containers.append({
-                                'host_id': alert_container.host_id,
-                                'host_name': alert_container.host.name if alert_container.host else 'Unknown',
-                                'container_name': alert_container.container_name
-                            })
-
-                    if orphaned_containers:
-                        orphaned[rule.id] = {
-                            'rule_name': rule.name,
-                            'orphaned_containers': orphaned_containers
-                        }
-
-            if orphaned:
-                logger.info(f"Found {len(orphaned)} alert rules with orphaned containers")
-
-            return orphaned
-
-        except Exception as e:
-            logger.error(f"Error checking orphaned alerts: {e}")
-            return {}
 
     async def _handle_docker_event(self, event: dict):
         """Handle Docker events from Go service"""

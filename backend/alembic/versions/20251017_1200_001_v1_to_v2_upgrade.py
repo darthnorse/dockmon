@@ -11,7 +11,7 @@ CHANGES:
 - GlobalSettings: Add missing v2 columns (unused_tag_retention_days, alert_retention_days, alert templates, update settings, etc.)
 - Users: Add role, display_name, prefs, simplified_workflow, view_mode columns
 - user_prefs table: New table for database-backed user preferences
-- container_desired_states: Add custom_tags column
+- container_desired_states: New table (includes custom_tags, web_ui_url, desired_state, etc.)
 - event_logs: Add source column and indexes
 - DockerHosts: Add tags, description columns
 - container_http_health_checks: New table for HTTP/HTTPS health monitoring

@@ -235,6 +235,7 @@ class Container(BaseModel):
     auto_restart: bool = False
     restart_attempts: int = 0
     desired_state: Optional[str] = 'unspecified'  # 'should_run', 'on_demand', or 'unspecified'
+    web_ui_url: Optional[str] = None  # URL to container's web interface
     # Docker configuration
     ports: Optional[list[str]] = None  # e.g., ["8080:80/tcp", "443:443/tcp"]
     restart_policy: Optional[str] = None  # e.g., "always", "unless-stopped", "no"

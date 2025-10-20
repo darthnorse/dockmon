@@ -71,7 +71,7 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
           <div className="space-y-6">
             {/* Host Information */}
             <div>
-              <h4 className="text-base font-medium text-foreground mb-3">Host Information</h4>
+              <h4 className="text-lg font-medium text-foreground mb-3">Host Information</h4>
               <div className="space-y-2">
                 <div className="flex justify-between text-sm">
                   <span className="text-muted-foreground">Address</span>
@@ -101,7 +101,7 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
               {isEditingTags ? (
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <h4 className="text-base font-medium text-foreground">Tags</h4>
+                    <h4 className="text-lg font-medium text-foreground">Tags</h4>
                   </div>
                   <TagInput
                     value={editedTags}
@@ -133,7 +133,7 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
               ) : (
                 <div>
                   <div className="flex items-center justify-between mb-3">
-                    <h4 className="text-base font-medium text-foreground">Tags</h4>
+                    <h4 className="text-lg font-medium text-foreground">Tags</h4>
                     <button
                       onClick={handleStartEdit}
                       className="text-xs text-primary hover:text-primary/80"
@@ -156,7 +156,7 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
 
             {/* Events */}
             <div>
-              <h4 className="text-base font-medium text-foreground mb-3">Recent Events</h4>
+              <h4 className="text-lg font-medium text-foreground mb-3">Recent Events</h4>
               {isLoadingEvents ? (
                 <div className="text-center py-4 text-muted-foreground">
                   <p className="text-sm">Loading events...</p>
@@ -209,7 +209,7 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
           <div className="space-y-6">
             {/* Live Stats Header */}
             <div className="-mb-3">
-              <h4 className="text-base font-medium text-foreground">Live Stats</h4>
+              <h4 className="text-lg font-medium text-foreground">Live Stats</h4>
             </div>
 
             {/* CPU Usage */}

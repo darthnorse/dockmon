@@ -3,19 +3,18 @@
  *
  * 2-column layout displaying:
  * LEFT COLUMN:
- * - Status (with restart policy)
+ * - Overview (Status with restart policy)
+ * - WebUI URL
+ * - Tags
  * - Image
- * - Labels (key: value pairs)
  * - Ports
  * - Volumes
  *
  * RIGHT COLUMN:
- * - CPU usage with sparkline
- * - Memory usage with sparkline
- * - Network I/O with sparkline
- * - Environment Variables (key: value pairs)
  * - Auto-restart toggle
  * - Desired state selector
+ * - Live Stats (CPU, Memory, Network with sparklines)
+ * - Environment Variables (key: value pairs)
  */
 
 import { useState, useEffect, useMemo } from 'react'
@@ -39,6 +38,8 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
   const sparklines = useContainerSparklines(makeCompositeKey(container))
   const [autoRestart, setAutoRestart] = useState(false)
   const [desiredState, setDesiredState] = useState<'should_run' | 'on_demand' | 'unspecified'>('unspecified')
+  const [webUiUrl, setWebUiUrl] = useState('')
+  const [isEditingWebUi, setIsEditingWebUi] = useState(false)
 
   // Tag editor
   const currentTags = container.tags || []
@@ -62,7 +63,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
   const memData = useMemo(() => sparklines?.mem || [], [sparklines?.mem?.length, sparklines?.mem?.join(',')])
   const netData = useMemo(() => sparklines?.net || [], [sparklines?.net?.length, sparklines?.net?.join(',')])
 
-  // Initialize auto-restart and desired state
+  // Initialize auto-restart, desired state, and web UI URL
   useEffect(() => {
     setAutoRestart(container.auto_restart ?? false)
 
@@ -70,7 +71,9 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
     const containerState = container.desired_state as 'should_run' | 'on_demand' | 'unspecified' | undefined
     const newState = containerState && validStates.includes(containerState) ? containerState : 'unspecified'
     setDesiredState(newState)
-  }, [container.auto_restart, container.desired_state])
+
+    setWebUiUrl(container.web_ui_url || '')
+  }, [container.auto_restart, container.desired_state, container.web_ui_url])
 
   const handleAutoRestartToggle = async (checked: boolean) => {
     setAutoRestart(checked)
@@ -94,12 +97,27 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
     try {
       await apiClient.post(`/hosts/${container.host_id}/containers/${container.id}/desired-state`, {
         desired_state: newState,
-        container_name: container.name
+        container_name: container.name,
+        web_ui_url: webUiUrl || null
       })
       toast.success(`Desired state set to "${newState}"`)
     } catch (error) {
       toast.error(`Failed to update desired state: ${error instanceof Error ? error.message : 'Unknown error'}`)
       setDesiredState(previousState)
+    }
+  }
+
+  const handleSaveWebUiUrl = async () => {
+    try {
+      await apiClient.post(`/hosts/${container.host_id}/containers/${container.id}/desired-state`, {
+        desired_state: desiredState,
+        container_name: container.name,
+        web_ui_url: webUiUrl || null
+      })
+      toast.success('WebUI URL saved')
+      setIsEditingWebUi(false)
+    } catch (error) {
+      toast.error(`Failed to save WebUI URL: ${error instanceof Error ? error.message : 'Unknown error'}`)
     }
   }
 
@@ -161,7 +179,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
           <div className="space-y-6">
             {/* Overview */}
             <div>
-              <h4 className="text-base font-medium text-foreground mb-3">Overview</h4>
+              <h4 className="text-lg font-medium text-foreground mb-3">Overview</h4>
               <div className="space-y-1.5">
                 <div className="flex justify-between text-sm">
                   <span className="text-muted-foreground">State</span>
@@ -169,11 +187,75 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
                 </div>
                 {container.restart_policy && (
                   <div className="flex justify-between text-sm">
-                    <span className="text-muted-foreground">Restart Policy</span>
+                    <span className="text-muted-foreground">Docker Engine Restart Policy</span>
                     <span className="font-mono text-xs">{container.restart_policy}</span>
                   </div>
                 )}
               </div>
+            </div>
+
+            {/* WebUI URL */}
+            <div>
+              <h4 className="text-lg font-medium text-foreground mb-3">WebUI</h4>
+              {isEditingWebUi ? (
+                <div className="space-y-2">
+                  <input
+                    type="url"
+                    value={webUiUrl}
+                    onChange={(e) => setWebUiUrl(e.target.value)}
+                    placeholder="https://example.com:8080"
+                    className="w-full px-3 py-2 text-sm bg-surface-1 border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary"
+                  />
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      onClick={handleSaveWebUiUrl}
+                      className="flex-1"
+                    >
+                      Save
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        setWebUiUrl(container.web_ui_url || '')
+                        setIsEditingWebUi(false)
+                      }}
+                      className="flex-1"
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  {webUiUrl ? (
+                    <div className="flex items-center gap-2">
+                      <a
+                        href={webUiUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-sm text-primary hover:underline truncate flex-1"
+                      >
+                        {webUiUrl}
+                      </a>
+                      <button
+                        onClick={() => setIsEditingWebUi(true)}
+                        className="text-xs text-primary hover:text-primary/80"
+                      >
+                        Edit
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setIsEditingWebUi(true)}
+                      className="text-sm text-muted-foreground hover:text-foreground"
+                    >
+                      + Add URL
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Tags */}
@@ -181,7 +263,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
               {isEditingTags ? (
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <h4 className="text-base font-medium text-foreground">Tags</h4>
+                    <h4 className="text-lg font-medium text-foreground">Tags</h4>
                   </div>
                   <TagInput
                     value={editedTags}
@@ -213,7 +295,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
               ) : (
                 <div>
                   <div className="flex items-center justify-between mb-3">
-                    <h4 className="text-base font-medium text-foreground">Tags</h4>
+                    <h4 className="text-lg font-medium text-foreground">Tags</h4>
                     <button
                       onClick={handleStartEdit}
                       className="text-xs text-primary hover:text-primary/80"
@@ -236,7 +318,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
 
             {/* Image */}
             <div>
-              <h4 className="text-base font-medium text-foreground mb-3">Image</h4>
+              <h4 className="text-lg font-medium text-foreground mb-3">Image</h4>
               <div className="text-sm font-mono bg-surface-1 px-3 py-2 rounded" data-testid="container-image">
                 {container.image}
               </div>
@@ -245,7 +327,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
             {/* Ports */}
             {container.ports && container.ports.length > 0 && (
               <div>
-                <h4 className="text-base font-medium text-foreground mb-3">Ports</h4>
+                <h4 className="text-lg font-medium text-foreground mb-3">Ports</h4>
                 <div className="flex flex-wrap gap-2">
                   {container.ports.map((port) => (
                     <div key={port} className="text-sm font-mono bg-surface-1 px-3 py-1.5 rounded">
@@ -259,7 +341,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
             {/* Volumes */}
             {container.volumes && container.volumes.length > 0 && (
               <div>
-                <h4 className="text-base font-medium text-foreground mb-3">Volumes</h4>
+                <h4 className="text-lg font-medium text-foreground mb-3">Volumes</h4>
                 <div className="space-y-1">
                   {container.volumes.map((volume) => (
                     <div key={volume} className="text-xs font-mono bg-surface-1 px-3 py-1.5 rounded break-all">
@@ -273,7 +355,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
             {/* Environment Variables */}
             {filteredEnv.length > 0 && (
               <div>
-                <h4 className="text-base font-medium text-foreground mb-3">Environment Variables</h4>
+                <h4 className="text-lg font-medium text-foreground mb-3">Environment Variables</h4>
                 <div className="space-y-1.5 max-h-64 overflow-y-auto">
                   {filteredEnv.map(([key, value]) => (
                     <div key={key} className="flex justify-between text-sm gap-4">
@@ -292,7 +374,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
           <div className="space-y-6">
             {/* Auto-restart Toggle */}
             <div>
-              <h4 className="text-base font-medium text-foreground mb-3">Auto-restart</h4>
+              <h4 className="text-lg font-medium text-foreground mb-3">Auto-restart</h4>
               <label className="flex items-center gap-3 cursor-pointer">
                 <input
                   type="checkbox"
@@ -308,7 +390,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
 
             {/* Desired State */}
             <div>
-              <h4 className="text-base font-medium text-foreground mb-3">Desired State</h4>
+              <h4 className="text-lg font-medium text-foreground mb-3">Desired State</h4>
               <div className="flex gap-2">
                 <button
                   onClick={() => handleDesiredStateChange('should_run')}
@@ -345,7 +427,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
 
             {/* Live Stats Header */}
             <div className="-mb-3">
-              <h4 className="text-base font-medium text-foreground">Live Stats</h4>
+              <h4 className="text-lg font-medium text-foreground">Live Stats</h4>
             </div>
 
             {/* CPU */}

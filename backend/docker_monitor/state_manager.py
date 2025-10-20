@@ -85,7 +85,7 @@ class StateManager:
         self.db.set_auto_restart(host_id, container_id, container_name, enabled)
         logger.info(f"Auto-restart {'enabled' if enabled else 'disabled'} for container '{container_name}' on host '{host_name}'")
 
-    def set_container_desired_state(self, host_id: str, container_id: str, container_name: str, desired_state: str) -> None:
+    def set_container_desired_state(self, host_id: str, container_id: str, container_name: str, desired_state: str, web_ui_url: str = None) -> None:
         """
         Set desired state for a container.
 
@@ -94,13 +94,14 @@ class StateManager:
             container_id: Container ID
             container_name: Container name
             desired_state: Desired state ('running' or 'stopped')
+            web_ui_url: Optional URL to container's web interface
         """
         # Get host name for logging
         host = self.hosts.get(host_id)
         host_name = host.name if host else 'Unknown Host'
 
         # Save to database
-        self.db.set_desired_state(host_id, container_id, container_name, desired_state)
+        self.db.set_desired_state(host_id, container_id, container_name, desired_state, web_ui_url)
         logger.info(f"Desired state set to '{desired_state}' for container '{container_name}' on host '{host_name}'")
 
     def update_container_tags(self, host_id: str, container_id: str, container_name: str, tags_to_add: list[str], tags_to_remove: list[str]) -> dict:

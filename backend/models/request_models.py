@@ -27,6 +27,7 @@ class DesiredStateRequest(BaseModel):
     """Request model for setting container desired state"""
     container_name: str
     desired_state: str = Field(..., pattern='^(should_run|on_demand|unspecified)$')
+    web_ui_url: Optional[str] = None
 
     @validator('desired_state')
     def validate_desired_state(cls, v):

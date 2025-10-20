@@ -24,6 +24,7 @@ export interface Container {
   // Policy fields
   auto_restart?: boolean // DockMon's auto-restart feature (not Docker's restart policy)
   desired_state?: 'should_run' | 'on_demand' | 'unspecified' // Expected operational state
+  web_ui_url?: string | null // URL to container's web interface
   // Stats fields (Phase 3d - from Go stats service)
   cpu_percent?: number
   memory_usage?: number

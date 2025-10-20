@@ -436,8 +436,8 @@ class ContainerDiscovery:
                             tags.append(tag)
                             seen.add(tag)
 
-                    # Get desired state from database
-                    desired_state = self.db.get_desired_state(host_id, container_id)
+                    # Get desired state and web UI URL from database
+                    desired_state, web_ui_url = self.db.get_desired_state(host_id, container_id)
 
                     # Extract ports, restart policy, volumes, env
                     port_bindings = dc.attrs.get('NetworkSettings', {}).get('Ports', {})
@@ -465,6 +465,7 @@ class ContainerDiscovery:
                         auto_restart=get_auto_restart_status_fn(host_id, container_id),
                         restart_attempts=0,  # Will be populated by caller
                         desired_state=desired_state,
+                        web_ui_url=web_ui_url,
                         ports=ports,
                         restart_policy=restart_policy,
                         volumes=volumes,

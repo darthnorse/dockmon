@@ -29,6 +29,7 @@ import {
   BellOff,
   EyeOff,
   Pin,
+  ExternalLink,
 } from 'lucide-react'
 import { ResponsiveMiniChart } from '@/lib/charts/ResponsiveMiniChart'
 import { TagChip } from '@/components/TagChip'
@@ -75,6 +76,7 @@ export interface ExpandedHostData {
       memory_percent: number | null
       network_rx: number | null
       network_tx: number | null
+      web_ui_url?: string | null
     }>
   }
 
@@ -438,6 +440,22 @@ export function ExpandedHostCard({ host, cardRef, onHostClick, onViewDetails, on
                     >
                       {container.state.toUpperCase()}
                     </span>
+
+                    {/* WebUI Link */}
+                    {container.web_ui_url && (
+                      <div onClick={(e) => e.stopPropagation()}>
+                        <a
+                          href={container.web_ui_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-muted-foreground hover:text-primary p-1 flex-shrink-0 inline-flex items-center"
+                          aria-label="Open WebUI"
+                          title="Open WebUI"
+                        >
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      </div>
+                    )}
 
                     {/* Container Kebab Menu */}
                     <div onClick={(e) => e.stopPropagation()}>

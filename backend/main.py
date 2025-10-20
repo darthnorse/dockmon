@@ -772,8 +772,8 @@ async def set_desired_state(host_id: str, container_id: str, request: DesiredSta
     """Set desired state for a container"""
     # Normalize to short ID (12 chars) for consistency
     short_id = container_id[:12] if len(container_id) > 12 else container_id
-    monitor.set_container_desired_state(host_id, short_id, request.container_name, request.desired_state)
-    return {"host_id": host_id, "container_id": container_id, "desired_state": request.desired_state}
+    monitor.set_container_desired_state(host_id, short_id, request.container_name, request.desired_state, request.web_ui_url)
+    return {"host_id": host_id, "container_id": container_id, "desired_state": request.desired_state, "web_ui_url": request.web_ui_url}
 
 @app.patch("/api/hosts/{host_id}/containers/{container_id}/tags")
 async def update_container_tags(

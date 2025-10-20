@@ -289,7 +289,7 @@ function ContainerHealthCheckTabInternal({ container }: ContainerHealthCheckTabP
 
       {/* Configuration Form */}
       <div className="space-y-4 border-t pt-6">
-        <h4 className="text-base font-medium text-foreground mb-3">Configuration</h4>
+        <h4 className="text-lg font-medium text-foreground mb-3">Configuration</h4>
 
         {/* Enable/Disable toggle */}
         <div className="flex items-start justify-between py-4">

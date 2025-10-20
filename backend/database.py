@@ -129,6 +129,7 @@ class ContainerDesiredState(Base):
     desired_state = Column(String, default='unspecified')  # 'should_run', 'on_demand', 'unspecified'
     custom_tags = Column(Text, nullable=True)  # Comma-separated custom tags
     update_policy = Column(Text, nullable=True)  # 'allow', 'warn', 'block', or NULL (auto-detect)
+    web_ui_url = Column(Text, nullable=True)  # URL to container's web interface
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
@@ -1271,16 +1272,22 @@ class DatabaseManager:
                 raise
 
     # Container Desired State Operations
-    def get_desired_state(self, host_id: str, container_id: str) -> Optional[str]:
-        """Get desired state for a container"""
+    def get_desired_state(self, host_id: str, container_id: str) -> tuple[str, Optional[str]]:
+        """Get desired state and web UI URL for a container
+
+        Returns:
+            tuple: (desired_state, web_ui_url)
+        """
         with self.get_session() as session:
             config = session.query(ContainerDesiredState).filter(
                 ContainerDesiredState.host_id == host_id,
                 ContainerDesiredState.container_id == container_id
             ).first()
-            return config.desired_state if config else 'unspecified'
+            if config:
+                return (config.desired_state, config.web_ui_url)
+            return ('unspecified', None)
 
-    def set_desired_state(self, host_id: str, container_id: str, container_name: str, desired_state: str):
+    def set_desired_state(self, host_id: str, container_id: str, container_name: str, desired_state: str, web_ui_url: str = None):
         """Set desired state for a container"""
         with self.get_session() as session:
             try:
@@ -1291,6 +1298,7 @@ class DatabaseManager:
 
                 if config:
                     config.desired_state = desired_state
+                    config.web_ui_url = web_ui_url
                     config.updated_at = datetime.now(timezone.utc)
                     logger.info(f"Updated desired state for {container_name} ({container_id[:12]}): {desired_state}")
                 else:
@@ -1298,7 +1306,8 @@ class DatabaseManager:
                         host_id=host_id,
                         container_id=container_id,
                         container_name=container_name,
-                        desired_state=desired_state
+                        desired_state=desired_state,
+                        web_ui_url=web_ui_url
                     )
                     session.add(config)
                     logger.info(f"Created desired state config for {container_name} ({container_id[:12]}): {desired_state}")

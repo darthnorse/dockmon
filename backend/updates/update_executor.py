@@ -717,10 +717,15 @@ class UpdateExecutor:
         self,
         client: docker.DockerClient,
         container_id: str,
-        timeout: int = 120
+        timeout: int = 10  # NOTE: This default is never used - caller always passes settings.health_check_timeout_seconds
     ) -> bool:
         """
         Wait for container to become healthy.
+
+        NOTE: The timeout parameter default (10s) is NOT used in practice.
+        The caller always explicitly passes settings.health_check_timeout_seconds
+        which is user-configurable via Settings → Container Updates (default: 10s).
+        This function default exists only for defensive programming.
 
         Health check logic:
         1. Container is running

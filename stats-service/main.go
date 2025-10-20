@@ -360,6 +360,7 @@ func main() {
 
 		var req struct {
 			HostID      string `json:"host_id"`
+			HostName    string `json:"host_name"`
 			HostAddress string `json:"host_address"`
 			TLSCACert   string `json:"tls_ca_cert,omitempty"`
 			TLSCert     string `json:"tls_cert,omitempty"`
@@ -372,12 +373,12 @@ func main() {
 		}
 
 		// Validate required fields
-		if req.HostID == "" || req.HostAddress == "" {
-			http.Error(w, "host_id and host_address are required", http.StatusBadRequest)
+		if req.HostID == "" || req.HostName == "" || req.HostAddress == "" {
+			http.Error(w, "host_id, host_name, and host_address are required", http.StatusBadRequest)
 			return
 		}
 
-		if err := streamManager.AddDockerHost(req.HostID, req.HostAddress, req.TLSCACert, req.TLSCert, req.TLSKey); err != nil {
+		if err := streamManager.AddDockerHost(req.HostID, req.HostName, req.HostAddress, req.TLSCACert, req.TLSCert, req.TLSKey); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -435,6 +436,7 @@ func main() {
 
 		var req struct {
 			HostID      string `json:"host_id"`
+			HostName    string `json:"host_name"`
 			HostAddress string `json:"host_address"`
 			TLSCACert   string `json:"tls_ca_cert,omitempty"`
 			TLSCert     string `json:"tls_cert,omitempty"`
@@ -447,12 +449,12 @@ func main() {
 		}
 
 		// Validate required fields
-		if req.HostID == "" || req.HostAddress == "" {
-			http.Error(w, "host_id and host_address are required", http.StatusBadRequest)
+		if req.HostID == "" || req.HostName == "" || req.HostAddress == "" {
+			http.Error(w, "host_id, host_name, and host_address are required", http.StatusBadRequest)
 			return
 		}
 
-		if err := eventManager.AddHost(req.HostID, req.HostAddress, req.TLSCACert, req.TLSCert, req.TLSKey); err != nil {
+		if err := eventManager.AddHost(req.HostID, req.HostName, req.HostAddress, req.TLSCACert, req.TLSCert, req.TLSKey); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

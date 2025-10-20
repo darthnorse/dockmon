@@ -114,12 +114,16 @@ class StatsServiceClient:
                 return False
         return False
 
-    async def add_docker_host(self, host_id: str, host_address: str, tls_ca: str = None, tls_cert: str = None, tls_key: str = None) -> bool:
+    async def add_docker_host(self, host_id: str, host_name: str, host_address: str, tls_ca: str = None, tls_cert: str = None, tls_key: str = None) -> bool:
         """Register a Docker host with the stats service"""
         for attempt in range(2):
             try:
                 session = await self._get_session()
-                payload = {"host_id": host_id, "host_address": host_address}
+                payload = {
+                    "host_id": host_id,
+                    "host_name": host_name,
+                    "host_address": host_address
+                }
 
                 # Add TLS certificates if provided
                 if tls_ca and tls_cert and tls_key:
@@ -285,12 +289,16 @@ class StatsServiceClient:
 
     # Event service methods
 
-    async def add_event_host(self, host_id: str, host_address: str, tls_ca: str = None, tls_cert: str = None, tls_key: str = None) -> bool:
+    async def add_event_host(self, host_id: str, host_name: str, host_address: str, tls_ca: str = None, tls_cert: str = None, tls_key: str = None) -> bool:
         """Register a Docker host with the event monitoring service"""
         for attempt in range(2):
             try:
                 session = await self._get_session()
-                payload = {"host_id": host_id, "host_address": host_address}
+                payload = {
+                    "host_id": host_id,
+                    "host_name": host_name,
+                    "host_address": host_address
+                }
 
                 # Add TLS certificates if provided
                 if tls_ca and tls_cert and tls_key:

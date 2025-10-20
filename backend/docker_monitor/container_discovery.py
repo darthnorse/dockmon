@@ -295,8 +295,8 @@ class ContainerDiscovery:
                 tls_cert = db_host.tls_cert if db_host else None
                 tls_key = db_host.tls_key if db_host else None
 
-                await stats_client.add_docker_host(host_id, host.url, tls_ca, tls_cert, tls_key)
-                await stats_client.add_event_host(host_id, host.url, tls_ca, tls_cert, tls_key)
+                await stats_client.add_docker_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key)
+                await stats_client.add_event_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key)
                 logger.info(f"Re-registered {host.name} ({host_id[:8]}) with stats/events service after reconnection")
             except Exception as e:
                 logger.warning(f"Failed to re-register {host.name} with Go services after reconnection: {e}")

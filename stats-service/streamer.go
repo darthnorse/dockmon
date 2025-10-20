@@ -70,6 +70,8 @@ type StreamManager struct {
 	cache      *StatsCache
 	clients    map[string]*client.Client // hostID -> Docker client
 	clientsMu  sync.RWMutex
+	hostNames  map[string]string // hostID -> host name (for logging)
+	hostNamesMu sync.RWMutex
 	streams    map[string]context.CancelFunc // composite key (hostID:containerID) -> cancel function
 	streamsMu  sync.RWMutex
 	containers map[string]*ContainerInfo // composite key (hostID:containerID) -> info
@@ -81,13 +83,14 @@ func NewStreamManager(cache *StatsCache) *StreamManager {
 	return &StreamManager{
 		cache:      cache,
 		clients:    make(map[string]*client.Client),
+		hostNames:  make(map[string]string),
 		streams:    make(map[string]context.CancelFunc),
 		containers: make(map[string]*ContainerInfo),
 	}
 }
 
 // AddDockerHost adds a Docker host client
-func (sm *StreamManager) AddDockerHost(hostID, hostAddress, tlsCACert, tlsCert, tlsKey string) error {
+func (sm *StreamManager) AddDockerHost(hostID, hostName, hostAddress, tlsCACert, tlsCert, tlsKey string) error {
 	// Create Docker client for this host FIRST (before acquiring lock)
 	var cli *client.Client
 	var err error
@@ -137,12 +140,18 @@ func (sm *StreamManager) AddDockerHost(hostID, hostAddress, tlsCACert, tlsCert, 
 	// Close existing client if it exists (only after new one succeeds)
 	if existingClient, exists := sm.clients[hostID]; exists {
 		existingClient.Close()
-		log.Printf("Closed existing Docker client for host %s", truncateID(hostID, 8))
+		log.Printf("Closed existing Docker client for host %s (%s)", hostName, truncateID(hostID, 8))
 	}
 
 	sm.clients[hostID] = cli
 	clientStored = true // Mark as successfully stored
-	log.Printf("Added Docker host: %s (%s)", truncateID(hostID, 8), hostAddress)
+
+	// Store host name for logging
+	sm.hostNamesMu.Lock()
+	sm.hostNames[hostID] = hostName
+	sm.hostNamesMu.Unlock()
+
+	log.Printf("Added Docker host: %s (%s) at %s", hostName, truncateID(hostID, 8), hostAddress)
 
 	// Initialize host stats with zero values so the host appears immediately in the UI
 	sm.cache.UpdateHostStats(&HostStats{
@@ -179,10 +188,16 @@ func (sm *StreamManager) RemoveDockerHost(hostID string) {
 	sm.clientsMu.Lock()
 	defer sm.clientsMu.Unlock()
 	if cli, exists := sm.clients[hostID]; exists {
+		hostName := sm.getHostName(hostID)
 		cli.Close()
 		delete(sm.clients, hostID)
-		log.Printf("Removed Docker host: %s", truncateID(hostID, 8))
+		log.Printf("Removed Docker host: %s (%s)", hostName, truncateID(hostID, 8))
 	}
+
+	// Remove host name
+	sm.hostNamesMu.Lock()
+	delete(sm.hostNames, hostID)
+	sm.hostNamesMu.Unlock()
 
 	// Remove all stats for this host from cache
 	sm.cache.RemoveHostStats(hostID)
@@ -209,7 +224,8 @@ func (sm *StreamManager) StartStream(ctx context.Context, containerID, container
 	if !clientExists {
 		sm.streamsMu.Unlock()
 		sm.clientsMu.RUnlock()
-		log.Printf("Warning: No Docker client for host %s", truncateID(hostID, 8))
+		hostName := sm.getHostName(hostID)
+		log.Printf("Warning: No Docker client for host %s (%s)", hostName, truncateID(hostID, 8))
 		return nil
 	}
 
@@ -233,7 +249,8 @@ func (sm *StreamManager) StartStream(ctx context.Context, containerID, container
 	// Start streaming goroutine (no locks held)
 	go sm.streamStats(streamCtx, containerID, containerName, hostID)
 
-	log.Printf("Started stats stream for container %s (%s) on host %s", containerName, truncateID(containerID, 12), truncateID(hostID, 12))
+	hostName := sm.getHostName(hostID)
+	log.Printf("Started stats stream for container %s (%s) on host %s (%s)", containerName, truncateID(containerID, 12), hostName, truncateID(hostID, 8))
 	return nil
 }
 
@@ -285,7 +302,8 @@ func (sm *StreamManager) streamStats(ctx context.Context, containerID, container
 		sm.clientsMu.RUnlock() // Manual unlock needed - we're in a loop
 
 		if !ok {
-			log.Printf("No Docker client for host %s (container %s), retrying in %v", truncateID(hostID, 8), truncateID(containerID, 12), backoff)
+			hostName := sm.getHostName(hostID)
+			log.Printf("No Docker client for host %s (%s) (container %s), retrying in %v", hostName, truncateID(hostID, 8), truncateID(containerID, 12), backoff)
 			time.Sleep(backoff)
 			backoff = min(backoff*2, maxBackoff)
 			continue
@@ -403,6 +421,16 @@ func (sm *StreamManager) GetStreamCount() int {
 	return len(sm.streams)
 }
 
+// getHostName safely retrieves the host name for logging (returns truncated ID if name not found)
+func (sm *StreamManager) getHostName(hostID string) string {
+	sm.hostNamesMu.RLock()
+	defer sm.hostNamesMu.RUnlock()
+	if name, ok := sm.hostNames[hostID]; ok {
+		return name
+	}
+	return truncateID(hostID, 8) // Fallback to short ID
+}
+
 // HasHost checks if a Docker host is registered
 func (sm *StreamManager) HasHost(hostID string) bool {
 	sm.clientsMu.RLock()
@@ -425,11 +453,17 @@ func (sm *StreamManager) StopAllStreams() {
 	// Close all Docker clients
 	sm.clientsMu.Lock()
 	for hostID, cli := range sm.clients {
+		hostName := sm.getHostName(hostID)
 		cli.Close()
-		log.Printf("Closed Docker client for host %s", truncateID(hostID, 8))
+		log.Printf("Closed Docker client for host %s (%s)", hostName, truncateID(hostID, 8))
 	}
 	sm.clients = make(map[string]*client.Client)
 	sm.clientsMu.Unlock()
+
+	// Clear all host names
+	sm.hostNamesMu.Lock()
+	sm.hostNames = make(map[string]string)
+	sm.hostNamesMu.Unlock()
 }
 
 func min(a, b time.Duration) time.Duration {

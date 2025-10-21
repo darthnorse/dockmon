@@ -426,6 +426,8 @@ class AlertV2(Base):
     # Notification tracking
     notified_at = Column(DateTime, nullable=True)
     notification_count = Column(Integer, default=0)
+    last_notification_attempt_at = Column(DateTime, nullable=True)  # First notification attempt (for 24h timeout)
+    next_retry_at = Column(DateTime, nullable=True)  # When to retry next (exponential backoff)
     suppressed_by_blackout = Column(Boolean, default=False, nullable=False)  # Alert suppressed during blackout window
 
     # Relationships

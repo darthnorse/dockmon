@@ -12,8 +12,9 @@ import asyncio
 import json
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Any
+from sqlalchemy import or_
 from sqlalchemy.orm import joinedload
 
 from database import DatabaseManager, AlertRuleV2, AlertV2
@@ -22,6 +23,61 @@ from event_logger import EventLogger, EventContext, EventCategory, EventType, Ev
 from utils.keys import make_composite_key, parse_composite_key
 
 logger = logging.getLogger(__name__)
+
+
+def calculate_next_retry(attempt_count: int) -> datetime:
+    """
+    Calculate next retry time with exponential backoff.
+
+    Formula: delay = min(5 * 2^attempt, 3600)
+
+    Backoff schedule:
+    - Attempt 1: 5s
+    - Attempt 2: 10s
+    - Attempt 3: 20s
+    - Attempt 4: 40s
+    - Attempt 5: 80s
+    - Attempt 6: 160s (2.6min)
+    - Attempt 7: 320s (5.3min)
+    - Attempt 8: 640s (10.6min)
+    - Attempt 9: 1280s (21.3min)
+    - Attempt 10: 2560s (42.6min)
+    - Attempt 11+: 3600s (1 hour, capped)
+
+    Over 24h: ~32 total attempts
+
+    Args:
+        attempt_count: Number of failed attempts so far
+
+    Returns:
+        Datetime when next retry should occur
+    """
+    from datetime import timedelta
+    base_delay = 5  # seconds
+    max_delay = 3600  # 1 hour cap
+    delay = min(base_delay * (2 ** attempt_count), max_delay)
+    return datetime.now(timezone.utc) + timedelta(seconds=delay)
+
+
+def should_give_up_retry(first_attempt_time: datetime) -> bool:
+    """
+    Determine if we should give up retrying after 24 hours.
+
+    Args:
+        first_attempt_time: When the first notification attempt occurred
+
+    Returns:
+        True if more than 24 hours have elapsed since first attempt
+    """
+    from datetime import timedelta
+    if not first_attempt_time:
+        return False
+    max_window = timedelta(hours=24)
+    # Ensure timezone-aware comparison
+    if not first_attempt_time.tzinfo:
+        first_attempt_time = first_attempt_time.replace(tzinfo=timezone.utc)
+    elapsed = datetime.now(timezone.utc) - first_attempt_time
+    return elapsed > max_window
 
 
 class AlertEvaluationService:
@@ -151,16 +207,20 @@ class AlertEvaluationService:
             with self.db.get_session() as session:
                 # Get all open alerts that haven't been notified yet
                 # Exclude alerts suppressed by blackout (will be processed when blackout ends)
+                # Respect exponential backoff: only retry if next_retry_at is NULL or in the past
                 # Use joinedload to eagerly load rules (avoids N+1 query)
+                now = datetime.now(timezone.utc)
                 pending_alerts = session.query(AlertV2).options(
                     joinedload(AlertV2.rule)
                 ).filter(
                     AlertV2.state == "open",
                     AlertV2.notified_at == None,
-                    AlertV2.suppressed_by_blackout == False
+                    AlertV2.suppressed_by_blackout == False,
+                    or_(
+                        AlertV2.next_retry_at == None,  # Never attempted or no retry scheduled
+                        AlertV2.next_retry_at <= now  # Retry time has passed
+                    )
                 ).all()
-
-                now = datetime.now(timezone.utc)
 
                 # Extract data we need while session is still open
                 for alert in pending_alerts:
@@ -543,49 +603,92 @@ class AlertEvaluationService:
                 except Exception as e:
                     logger.error(f"Failed to log alert event: {e}", exc_info=True)
 
-            # Send notification via notification service
-            should_mark_notified = False
-            if hasattr(self, 'notification_service') and self.notification_service:
+            # Send notification via notification service with exponential backoff retry logic
+            now = datetime.now(timezone.utc)
+
+            # Determine if this is a permanent failure (no retry) or temporary (retry with backoff)
+            permanent_failure = False
+            notification_result = False
+
+            if not rule:
+                # Rule was deleted - permanent failure
+                logger.warning(f"Rule not found for alert {alert.id} - permanent failure")
+                permanent_failure = True
+            elif not hasattr(self, 'notification_service') or not self.notification_service:
+                # No notification service - permanent failure
+                logger.warning(f"No notification service available for alert {alert.id}")
+                permanent_failure = True
+            else:
+                # Try to send notification
                 logger.info(f"Calling notification_service.send_alert_v2 for alert {alert.id}")
                 try:
-                    result = await self.notification_service.send_alert_v2(alert, rule)
-                    logger.info(f"send_alert_v2 returned: {result} for alert {alert.id}")
+                    notification_result = await self.notification_service.send_alert_v2(alert, rule)
+                    logger.info(f"send_alert_v2 returned: {notification_result} for alert {alert.id}")
 
-                    # Mark as notified if:
-                    # 1. Notification succeeded (result=True), OR
-                    # 2. Rule has no channels configured (permanent config issue - prevent retry loop)
-                    if result:
-                        should_mark_notified = True
-                    else:
-                        # Check if failure was due to no channels (permanent) vs temporary failure
-                        # No channels = permanent config issue, don't retry
-                        # Parse channels from rule
+                    # Check if failure was due to no channels (permanent)
+                    if not notification_result:
                         try:
                             channel_ids = json.loads(rule.notify_channels_json) if rule.notify_channels_json else []
                             if not channel_ids:
-                                logger.info(f"No channels configured for rule {rule.name} - marking as notified to prevent retry loop")
-                                should_mark_notified = True
+                                logger.info(f"No channels configured for rule {rule.name} - permanent failure")
+                                permanent_failure = True
                         except (json.JSONDecodeError, TypeError, AttributeError):
-                            # Can't parse channels, be conservative and don't retry
-                            should_mark_notified = True
+                            # Can't parse channels - treat as permanent to avoid infinite retry
+                            logger.warning(f"Cannot parse channels for rule {rule.name} - treating as permanent failure")
+                            permanent_failure = True
 
                 except Exception as e:
-                    logger.error(f"Failed to send notification for alert {alert.id}: {e}", exc_info=True)
-                    # Don't mark as notified on exception - allow retry
-            else:
-                logger.warning(f"No notification service available for alert {alert.id}")
-                # No service is a permanent issue - mark as notified
-                should_mark_notified = True
+                    logger.error(f"Exception sending notification for alert {alert.id}: {e}", exc_info=True)
+                    # Exception is a temporary failure - will retry
 
-            # Mark alert as notified if appropriate
-            if should_mark_notified:
-                with self.engine.db.get_session() as session:
-                    alert_to_update = session.query(AlertV2).filter(AlertV2.id == alert.id).first()
-                    if alert_to_update:
-                        alert_to_update.notified_at = datetime.now(timezone.utc)
-                        alert_to_update.notification_count = (alert_to_update.notification_count or 0) + 1
-                        session.commit()
-                        logger.debug(f"Marked alert {alert.id} as notified (count: {alert_to_update.notification_count})")
+            # Update database with retry state
+            with self.engine.db.get_session() as session:
+                alert_to_update = session.query(AlertV2).filter(AlertV2.id == alert.id).first()
+                if not alert_to_update:
+                    return
+
+                # Track first attempt time (for 24h timeout)
+                if not alert_to_update.last_notification_attempt_at:
+                    alert_to_update.last_notification_attempt_at = now
+
+                # Increment attempt counter
+                alert_to_update.notification_count = (alert_to_update.notification_count or 0) + 1
+
+                if notification_result:
+                    # SUCCESS - mark as notified, clear retry state
+                    alert_to_update.notified_at = now
+                    alert_to_update.next_retry_at = None
+                    logger.info(f"Alert {alert.id} notification sent successfully (attempt {alert_to_update.notification_count})")
+
+                elif permanent_failure:
+                    # PERMANENT FAILURE - mark as notified to stop retrying
+                    alert_to_update.notified_at = now
+                    alert_to_update.next_retry_at = None
+                    logger.warning(f"Alert {alert.id} permanent failure - marking as notified to stop retries")
+
+                else:
+                    # TEMPORARY FAILURE - check if should give up or schedule retry
+                    first_attempt = alert_to_update.last_notification_attempt_at
+
+                    if should_give_up_retry(first_attempt):
+                        # Give up after 24 hours
+                        alert_to_update.notified_at = now
+                        alert_to_update.next_retry_at = None
+                        logger.error(
+                            f"Alert {alert.id} failed for 24+ hours - giving up after "
+                            f"{alert_to_update.notification_count} attempts"
+                        )
+                    else:
+                        # Schedule retry with exponential backoff
+                        alert_to_update.next_retry_at = calculate_next_retry(alert_to_update.notification_count)
+                        time_until_retry = (alert_to_update.next_retry_at - now).total_seconds()
+                        logger.info(
+                            f"Alert {alert.id} will retry in {time_until_retry:.0f}s "
+                            f"(attempt {alert_to_update.notification_count}, "
+                            f"next: {alert_to_update.next_retry_at.strftime('%H:%M:%S')})"
+                        )
+
+                session.commit()
 
         except Exception as e:
             logger.error(f"Error in _send_notification: {e}", exc_info=True)

@@ -230,13 +230,16 @@ def upgrade() -> None:
 
     # ==================== alerts_v2 Table ====================
     # Add suppressed_by_blackout column for blackout window support
+    # Add retry tracking columns for exponential backoff (v2.0.1+)
     # Table created by Base.metadata.create_all() for fresh installs, but we need
-    # to add the column for any existing v2.0.x installations that don't have it yet
+    # to add the columns for any existing v2.0.x installations that don't have them yet
 
     if helper.table_exists('alerts_v2'):
-        helper.add_column_if_missing('alerts_v2',
-            sa.Column('suppressed_by_blackout', sa.Boolean(), server_default='0', nullable=False)
-        )
+        helper.add_columns_if_missing('alerts_v2', [
+            sa.Column('suppressed_by_blackout', sa.Boolean(), server_default='0', nullable=False),
+            sa.Column('last_notification_attempt_at', sa.DateTime(), nullable=True),
+            sa.Column('next_retry_at', sa.DateTime(), nullable=True),
+        ])
 
 
     # ==================== update_policies Table ====================

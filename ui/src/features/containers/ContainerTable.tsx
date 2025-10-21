@@ -538,14 +538,20 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   // Handle URL param for opening specific container
   useEffect(() => {
     const containerId = searchParams.get('containerId')
+    const tab = searchParams.get('tab')
     if (containerId && data) {
       const container = data.find(c => c.id === containerId)
       if (container && container.host_id) {
         setSelectedContainerId(makeCompositeKey(container))
         setSelectedContainerKey({ name: container.name, hostId: container.host_id })
+        // Set initial tab if specified in URL (e.g., from "View Logs" kebab action)
+        if (tab) {
+          setModalInitialTab(tab)
+        }
         setModalOpen(true)
-        // Clear the URL param after opening
+        // Clear the URL params after opening
         searchParams.delete('containerId')
+        searchParams.delete('tab')
         setSearchParams(searchParams, { replace: true })
       }
     }

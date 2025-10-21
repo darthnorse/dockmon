@@ -210,8 +210,8 @@ export function ExpandedHostCard({ host, cardRef, onHostClick, onViewDetails, on
         container_id: containerId, // Short 12-char ID
       })
     } else if (action === 'logs') {
-      // Navigate to containers page with logs modal open
-      navigate(`/containers?containerId=${containerId}`)
+      // Navigate to containers page with logs modal open on logs tab
+      navigate(`/containers?containerId=${containerId}&tab=logs`)
     } else {
       // Unimplemented actions (silence, hide, pin)
       debug.log('ExpandedHostCard', `${action} container:`, containerId)

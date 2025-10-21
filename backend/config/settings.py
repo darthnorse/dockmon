@@ -29,7 +29,10 @@ class HealthCheckFilter(logging.Filter):
             if '/api/hosts' in message:
                 return False
             # Alert counts polling (happens every 30 seconds)
-            if '/api/alerts/' in message and 'state=open' in message:
+            if '/api/alerts/' in message:
+                return False
+            # Update summary polling (happens every 30 seconds)
+            if '/api/updates/summary' in message:
                 return False
         return True
 
@@ -87,6 +90,11 @@ def setup_logging():
     # Suppress noisy Uvicorn access logs for health checks and polling
     uvicorn_access = logging.getLogger("uvicorn.access")
     uvicorn_access.addFilter(HealthCheckFilter())
+
+    # Suppress httpx client logging (used for health checks and notifications)
+    # Only show WARNING and above to avoid logging every HTTP request
+    httpx_logger = logging.getLogger("httpx")
+    httpx_logger.setLevel(logging.WARNING)
 
 
 def _is_docker_container_id(hostname: str) -> bool:

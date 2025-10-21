@@ -1027,7 +1027,7 @@ class UpdateExecutor:
             await event_bus.emit(Event(
                 event_type=BusEventType.UPDATE_SKIPPED_VALIDATION,
                 scope_type='container',
-                scope_id=container_id,
+                scope_id=make_composite_key(host_id, container_id),
                 scope_name=container_name,
                 host_id=host_id,
                 host_name=host_name,
@@ -1065,7 +1065,7 @@ class UpdateExecutor:
             await event_bus.emit(Event(
                 event_type=BusEventType.UPDATE_FAILED,
                 scope_type='container',
-                scope_id=container_id,
+                scope_id=make_composite_key(host_id, container_id),
                 scope_name=container_name,
                 host_id=host_id,
                 host_name=host_name,

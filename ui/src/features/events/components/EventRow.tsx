@@ -94,7 +94,12 @@ const MetadataLinks = ({
           onClick={(e) => {
             e.stopPropagation()
             if (event.host_id && event.container_id) {
-              onContainerClick?.(makeCompositeKeyFrom(event.host_id, event.container_id))
+              // Check if container_id is already a composite key (contains ':')
+              // This handles mixed state where some events have composite keys, others have short IDs
+              const compositeKey = event.container_id.includes(':')
+                ? event.container_id // Already composite, use as-is
+                : makeCompositeKeyFrom(event.host_id, event.container_id) // Short ID, create composite
+              onContainerClick?.(compositeKey)
             }
           }}
           className="hover:text-primary hover:underline transition-colors"

@@ -21,11 +21,20 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Extract metadata (tags, labels)
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ secrets.DOCKERHUB_USERNAME }}/dockmon
+          images: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/dockmon
+            ghcr.io/${{ github.repository_owner }}/dockmon
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}

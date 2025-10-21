@@ -426,6 +426,7 @@ class AlertV2(Base):
     # Notification tracking
     notified_at = Column(DateTime, nullable=True)
     notification_count = Column(Integer, default=0)
+    suppressed_by_blackout = Column(Boolean, default=False, nullable=False)  # Alert suppressed during blackout window
 
     # Relationships
     rule = relationship("AlertRuleV2", foreign_keys=[rule_id])
@@ -1812,24 +1813,65 @@ class DatabaseManager:
             return session.query(GlobalSettings).first()
 
     def update_settings(self, updates: dict) -> GlobalSettings:
-        """Update global settings"""
+        """
+        Update global settings
+
+        NOTE: Input should already be validated by Pydantic at API layer.
+        This method adds defense-in-depth checks.
+        """
         with self.get_session() as session:
             try:
                 settings = session.query(GlobalSettings).first()
+
+                # Whitelist of allowed setting keys (defense in depth)
+                ALLOWED_SETTINGS = {
+                    'max_retries', 'retry_delay', 'default_auto_restart',
+                    'polling_interval', 'connection_timeout', 'event_retention_days',
+                    'alert_retention_days', 'unused_tag_retention_days',
+                    'enable_notifications', 'alert_template', 'alert_template_metric',
+                    'alert_template_state_change', 'alert_template_health', 'alert_template_update',
+                    'blackout_windows', 'timezone_offset', 'show_host_stats',
+                    'show_container_stats', 'show_container_alerts_on_hosts',
+                    'auto_update_enabled_default', 'update_check_interval_hours',
+                    'update_check_time', 'skip_compose_containers', 'health_check_timeout_seconds'
+                }
+
                 for key, value in updates.items():
-                    if hasattr(settings, key):
-                        setattr(settings, key, value)
-                    else:
-                        logger.warning(f"Ignoring unknown setting: {key}")
+                    # Check 1: Key must be in whitelist
+                    if key not in ALLOWED_SETTINGS:
+                        logger.warning(f"Rejected unknown setting key: {key}")
+                        continue
+
+                    # Check 2: Attribute must exist on model
+                    if not hasattr(settings, key):
+                        logger.error(f"Setting key '{key}' not found on GlobalSettings model")
+                        continue
+
+                    # Check 3: Type safety (runtime check as backup)
+                    expected_type = type(getattr(settings, key))
+                    if expected_type is not type(None) and value is not None:
+                        if not isinstance(value, expected_type):
+                            logger.error(
+                                f"Type mismatch for '{key}': expected {expected_type.__name__}, "
+                                f"got {type(value).__name__}. Skipping."
+                            )
+                            continue
+
+                    # All checks passed - apply update
+                    setattr(settings, key, value)
+                    logger.debug(f"Updated setting: {key} = {value}")
+
                 settings.updated_at = datetime.now(timezone.utc)
                 session.commit()
                 session.refresh(settings)
                 # Expunge the object so it's not tied to the session
                 session.expunge(settings)
-                logger.info("Changed global settings")
+
+                logger.info(f"Updated {len(updates)} settings successfully")
                 return settings
+
             except Exception as e:
-                logger.error("Failed to update global settings")  # Sanitized error to prevent schema disclosure
+                logger.error(f"Failed to update global settings: {e}", exc_info=True)
                 raise Exception("Database operation failed")
 
     # Notification Channels

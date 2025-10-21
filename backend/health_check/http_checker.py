@@ -342,21 +342,21 @@ class HttpHealthChecker:
                     f"(response_time={response_time_ms}ms)"
                 )
 
-                # Store config data for event emission (outside session)
-                # WARNING: Only access column attributes here, NOT relationships!
-                # Accessing lazy-loaded relationships would trigger queries after session closes.
-                event_data = {
-                    'host_id': check.host_id,
-                    'container_id': container_id,
-                    'old_status': old_status,
-                    'new_status': new_status,
-                    'error_message': error_message,
-                    'auto_restart_on_failure': check.auto_restart_on_failure,
-                    'health_check_url': check.url,
-                    'consecutive_failures': check.consecutive_failures,
-                    'failure_threshold': check.failure_threshold,
-                    'response_time_ms': check.last_response_time_ms,
-                }
+            # Store config data for event emission (outside session)
+            # WARNING: Only access column attributes here, NOT relationships!
+            # Accessing lazy-loaded relationships would trigger queries after session closes.
+            event_data = {
+                'host_id': check.host_id,
+                'container_id': container_id,
+                'old_status': old_status,
+                'new_status': new_status,
+                'error_message': error_message,
+                'auto_restart_on_failure': check.auto_restart_on_failure,
+                'health_check_url': check.url,
+                'consecutive_failures': check.consecutive_failures,
+                'failure_threshold': check.failure_threshold,
+                'response_time_ms': check.last_response_time_ms,
+            }
 
         # Session is now closed - safe for async operations
         if old_status != new_status:

@@ -152,3 +152,74 @@ class AlertRuleV2Update(BaseModel):
     labels_json: Optional[str] = None
     notify_channels_json: Optional[str] = None
     custom_template: Optional[str] = Field(None, max_length=2000)  # Custom template for this rule
+
+
+class GlobalSettingsUpdate(BaseModel):
+    """
+    Pydantic model for validating global settings updates.
+
+    Enforces:
+    - Type safety (int, bool, str)
+    - Range constraints (min/max values)
+    - Rejects unknown fields
+
+    All fields are optional to support partial updates.
+    """
+
+    # Auto-restart settings
+    max_retries: Optional[int] = Field(None, ge=0, le=10, description="Maximum restart attempts (0-10)")
+    retry_delay: Optional[int] = Field(None, ge=5, le=300, description="Delay between retries in seconds (5-300)")
+    default_auto_restart: Optional[bool] = Field(None, description="Enable auto-restart by default")
+
+    # Monitoring settings
+    polling_interval: Optional[int] = Field(None, ge=1, le=600, description="Polling interval in seconds (1-600)")
+    connection_timeout: Optional[int] = Field(None, ge=5, le=120, description="Docker connection timeout (5-120)")
+
+    # Retention settings
+    event_retention_days: Optional[int] = Field(None, ge=0, le=365, description="Event retention days (0-365, 0=forever)")
+    alert_retention_days: Optional[int] = Field(None, ge=0, le=730, description="Alert retention days (0=forever, max 730)")
+    unused_tag_retention_days: Optional[int] = Field(None, ge=0, le=365, description="Unused tag retention (0=never, max 365)")
+
+    # Notification settings
+    enable_notifications: Optional[bool] = None
+    alert_template: Optional[str] = Field(None, max_length=5000)
+    alert_template_metric: Optional[str] = Field(None, max_length=5000)
+    alert_template_state_change: Optional[str] = Field(None, max_length=5000)
+    alert_template_health: Optional[str] = Field(None, max_length=5000)
+    alert_template_update: Optional[str] = Field(None, max_length=5000)
+
+    # Blackout windows (JSON array)
+    blackout_windows: Optional[List[dict]] = None
+
+    # UI settings
+    timezone_offset: Optional[int] = Field(None, ge=-720, le=720, description="Timezone offset in minutes (-720 to +720)")
+    show_host_stats: Optional[bool] = None
+    show_container_stats: Optional[bool] = None
+    show_container_alerts_on_hosts: Optional[bool] = None
+
+    # Update settings
+    auto_update_enabled_default: Optional[bool] = None
+    update_check_interval_hours: Optional[int] = Field(None, ge=1, le=168, description="Update check interval (1-168 hours)")
+    update_check_time: Optional[str] = Field(None, pattern=r'^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$', description="Time in HH:MM format (with or without leading zero)")
+    skip_compose_containers: Optional[bool] = None
+    health_check_timeout_seconds: Optional[int] = Field(None, ge=5, le=600, description="Health check timeout (5-600)")
+
+    class Config:
+        extra = "forbid"  # Reject unknown keys (typos, attacks)
+
+    @validator('blackout_windows')
+    def validate_blackout_windows(cls, v):
+        """Validate blackout window structure"""
+        if v is None:
+            return v
+        if not isinstance(v, list):
+            raise ValueError("blackout_windows must be an array")
+        for window in v:
+            if not isinstance(window, dict):
+                raise ValueError("Each blackout window must be an object")
+            # Validate required fields
+            required = ['name', 'start_time', 'end_time', 'days']
+            for field in required:
+                if field not in window:
+                    raise ValueError(f"Blackout window missing required field: {field}")
+        return v

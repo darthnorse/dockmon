@@ -142,13 +142,13 @@ export function SystemSettings() {
               id="polling-interval"
               type="number"
               min="1"
-              max="300"
+              max="600"
               value={pollingInterval}
               onChange={(e) => setPollingInterval(Number(e.target.value))}
               onBlur={handlePollingIntervalBlur}
               className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
-            <p className="mt-1 text-xs text-gray-400">How often to check Docker hosts (1-300 seconds)</p>
+            <p className="mt-1 text-xs text-gray-400">How often to check Docker hosts (1-600 seconds)</p>
           </div>
         </div>
       </div>
@@ -167,14 +167,14 @@ export function SystemSettings() {
             <input
               id="connection-timeout"
               type="number"
-              min="1"
-              max="60"
+              min="5"
+              max="120"
               value={connectionTimeout}
               onChange={(e) => setConnectionTimeout(Number(e.target.value))}
               onBlur={handleConnectionTimeoutBlur}
               className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
-            <p className="mt-1 text-xs text-gray-400">Timeout for Docker API connections (1-60 seconds)</p>
+            <p className="mt-1 text-xs text-gray-400">Timeout for Docker API connections (5-120 seconds)</p>
           </div>
 
           <div>
@@ -283,14 +283,14 @@ export function SystemSettings() {
               id="alert-retention"
               type="number"
               min="0"
-              max="365"
+              max="730"
               value={alertRetentionDays}
               onChange={(e) => setAlertRetentionDays(Number(e.target.value))}
               onBlur={handleAlertRetentionBlur}
               className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
             <p className="mt-1 text-xs text-gray-400">
-              How long to keep resolved alerts. Resolved alerts older than this are automatically deleted during nightly maintenance. Set to 0 to keep alerts forever. (0-365 days)
+              How long to keep resolved alerts. Resolved alerts older than this are automatically deleted during nightly maintenance. Set to 0 to keep alerts forever. (0-730 days)
             </p>
           </div>
         </div>

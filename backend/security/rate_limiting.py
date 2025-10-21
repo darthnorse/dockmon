@@ -50,6 +50,7 @@ class RateLimiter:
         # Start with generous initial tokens to allow immediate bursts
         # This prevents legitimate users from getting rate limited on first use
         self.clients = defaultdict(lambda: {"tokens": 100, "last_update": time.time(), "violations": 0})
+        self._last_cleanup = time.time()  # Track last cleanup time
 
         # Get rate limits from environment or use production-friendly defaults
         self.limits = {
@@ -138,9 +139,10 @@ class RateLimiter:
         """Check if request is allowed and return (allowed, reason)"""
         current_time = time.time()
 
-        # Cleanup old entries periodically
-        if current_time % 300 < 1:  # Every 5 minutes
+        # Cleanup old entries periodically (every 5 minutes)
+        if current_time - self._last_cleanup >= 300:
             self._cleanup_old_entries()
+            self._last_cleanup = current_time
 
         # Check if client is banned
         if client_ip in self.banned_clients:

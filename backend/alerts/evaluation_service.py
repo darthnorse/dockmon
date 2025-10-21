@@ -55,6 +55,10 @@ class AlertEvaluationService:
         self._task: Optional[asyncio.Task] = None
         self._notification_task: Optional[asyncio.Task] = None
         self._snooze_task: Optional[asyncio.Task] = None
+        self._blackout_task: Optional[asyncio.Task] = None
+
+        # Track blackout state for transition detection
+        self._last_blackout_state = False
 
     async def start(self):
         """Start the alert evaluation service"""
@@ -66,6 +70,7 @@ class AlertEvaluationService:
         self._task = asyncio.create_task(self._evaluation_loop())
         self._notification_task = asyncio.create_task(self._pending_notifications_loop())
         self._snooze_task = asyncio.create_task(self._snooze_expiry_loop())
+        self._blackout_task = asyncio.create_task(self._blackout_transition_loop())
         logger.info(f"Alert evaluation service started (interval: {self.evaluation_interval}s)")
 
     async def stop(self):
@@ -90,6 +95,13 @@ class AlertEvaluationService:
             self._snooze_task.cancel()
             try:
                 await self._snooze_task
+            except asyncio.CancelledError:
+                pass
+
+        if self._blackout_task:
+            self._blackout_task.cancel()
+            try:
+                await self._blackout_task
             except asyncio.CancelledError:
                 pass
 
@@ -137,12 +149,14 @@ class AlertEvaluationService:
 
             with self.db.get_session() as session:
                 # Get all open alerts that haven't been notified yet
+                # Exclude alerts suppressed by blackout (will be processed when blackout ends)
                 # Use joinedload to eagerly load rules (avoids N+1 query)
                 pending_alerts = session.query(AlertV2).options(
                     joinedload(AlertV2.rule)
                 ).filter(
                     AlertV2.state == "open",
-                    AlertV2.notified_at == None
+                    AlertV2.notified_at == None,
+                    AlertV2.suppressed_by_blackout == False
                 ).all()
 
                 now = datetime.now(timezone.utc)
@@ -234,6 +248,99 @@ class AlertEvaluationService:
 
         except Exception as e:
             logger.error(f"Error checking expired snoozes: {e}", exc_info=True)
+
+    async def _blackout_transition_loop(self):
+        """
+        Background task to detect blackout window transitions.
+
+        Checks every 30 seconds for blackout state changes. When a blackout window ends,
+        all suppressed alerts are re-evaluated. If the condition is still true, the alert
+        is sent. If the condition cleared during blackout, the alert is auto-resolved.
+        """
+        check_interval = 30  # Check every 30 seconds
+
+        while self._running:
+            try:
+                await self._check_blackout_transitions()
+                await asyncio.sleep(check_interval)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in blackout transition loop: {e}", exc_info=True)
+                await asyncio.sleep(check_interval)
+
+    async def _check_blackout_transitions(self):
+        """
+        Detect when blackout window ends and process suppressed alerts.
+
+        When blackout ends:
+        1. Find all alerts suppressed during blackout
+        2. Re-verify each alert's condition
+        3. If still true → send notification
+        4. If no longer true → auto-resolve silently
+        """
+        try:
+            # Check if notification service is available
+            if not self.notification_service:
+                return
+
+            # Get current blackout state
+            is_blackout, window_name = self.notification_service.blackout_manager.is_in_blackout_window()
+
+            # Detect transition from blackout to non-blackout
+            if self._last_blackout_state and not is_blackout:
+                logger.info("Blackout window ended - processing suppressed alerts")
+
+                # Find ALL suppressed alerts (both open and resolved)
+                # We need to clear the flag on all of them to prevent issues when alerts reopen later
+                with self.db.get_session() as session:
+                    suppressed_alerts = session.query(AlertV2).options(
+                        joinedload(AlertV2.rule)
+                    ).filter(
+                        AlertV2.suppressed_by_blackout == True
+                    ).all()
+
+                    if suppressed_alerts:
+                        logger.info(f"Found {len(suppressed_alerts)} suppressed alerts to process")
+
+                # Process each suppressed alert outside the session
+                for alert in suppressed_alerts:
+                    try:
+                        # Only process and potentially send notifications for OPEN alerts
+                        if alert.state == "open":
+                            # Re-verify the alert condition
+                            if await self._verify_alert_condition(alert):
+                                # Condition still true - send notification
+                                logger.info(f"Alert {alert.id} ({alert.title}) still active - sending notification")
+                                await self._send_notification(alert)
+                            else:
+                                # Condition cleared during blackout - auto-resolve silently
+                                logger.info(f"Alert {alert.id} ({alert.title}) cleared during blackout - auto-resolving")
+                                with self.db.get_session() as session:
+                                    alert_to_resolve = session.query(AlertV2).filter(AlertV2.id == alert.id).first()
+                                    if alert_to_resolve and alert_to_resolve.state == "open":
+                                        self.engine._resolve_alert(
+                                            alert_to_resolve,
+                                            "Auto-resolved: condition cleared during blackout window"
+                                        )
+                                        session.commit()
+
+                        # Clear suppression flag on ALL suppressed alerts (open, resolved, etc.)
+                        # This ensures the flag doesn't persist if the alert is reopened later
+                        with self.db.get_session() as session:
+                            alert_to_clear = session.query(AlertV2).filter(AlertV2.id == alert.id).first()
+                            if alert_to_clear:
+                                alert_to_clear.suppressed_by_blackout = False
+                                session.commit()
+                                logger.debug(f"Cleared suppression flag on alert {alert.id} (state={alert.state})")
+                    except Exception as e:
+                        logger.error(f"Error processing suppressed alert {alert.id}: {e}", exc_info=True)
+
+            # Update state for next check
+            self._last_blackout_state = is_blackout
+
+        except Exception as e:
+            logger.error(f"Error checking blackout transitions: {e}", exc_info=True)
 
     async def _verify_alert_condition(self, alert: AlertV2) -> bool:
         """
@@ -391,8 +498,6 @@ class AlertEvaluationService:
             # Log event to event log system
             if self.event_logger:
                 try:
-                    from event_logger import EventContext, EventCategory, EventType, EventSeverity
-
                     event_type = EventType.RULE_TRIGGERED
                     event_message = f"Alert triggered: {alert.message}"
 
@@ -714,8 +819,10 @@ class AlertEvaluationService:
         Auto-clear open alerts of specific kinds for a scope.
 
         This is used for auto-resolving alerts when opposite conditions occur:
-        - Container starts → clear container_stopped alerts
-        - Container becomes healthy → clear unhealthy alerts
+        - Container starts → clear container_stopped alerts (if rule.auto_resolve=True)
+        - Container becomes healthy → clear unhealthy alerts (if rule.auto_resolve=True)
+
+        Only alerts whose rules have auto_resolve=True will be cleared.
 
         Args:
             scope_type: "container" or "host"
@@ -726,12 +833,27 @@ class AlertEvaluationService:
         try:
             with self.db.get_session() as session:
                 # Find open alerts matching the scope and kinds
-                alerts_to_clear = session.query(AlertV2).filter(
+                # Join with rules to check auto_resolve setting
+                alerts_to_check = session.query(AlertV2).join(
+                    AlertRuleV2, AlertV2.rule_id == AlertRuleV2.id
+                ).filter(
                     AlertV2.scope_type == scope_type,
                     AlertV2.scope_id == scope_id,
                     AlertV2.state == "open",
                     AlertV2.kind.in_(kinds_to_clear)
                 ).all()
+
+                # Filter to only alerts whose rules have auto_resolve=True
+                alerts_to_clear = []
+                for alert in alerts_to_check:
+                    rule = session.query(AlertRuleV2).filter(AlertRuleV2.id == alert.rule_id).first()
+                    if rule and rule.auto_resolve:
+                        alerts_to_clear.append(alert)
+                    else:
+                        logger.debug(
+                            f"Skipping auto-clear for alert {alert.id} ({alert.title}) - "
+                            f"rule auto_resolve={rule.auto_resolve if rule else None}"
+                        )
 
                 if alerts_to_clear:
                     logger.info(
@@ -962,8 +1084,6 @@ class AlertEvaluationService:
             severity: Alert severity ('warning' or 'error')
         """
         try:
-            from alerts.engine import EvaluationContext
-
             # Get or create the system alert rule
             system_rule = self.db.get_or_create_system_alert_rule()
 
@@ -982,9 +1102,7 @@ class AlertEvaluationService:
             alert, is_new = self.engine._get_or_create_alert(
                 dedup_key=dedup_key,
                 rule=system_rule,
-                context=context,
-                title=title,
-                message=message
+                context=context
             )
 
             if not is_new:

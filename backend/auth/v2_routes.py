@@ -24,6 +24,7 @@ router = APIRouter(prefix="/api/v2/auth", tags=["auth-v2"])
 
 # Import shared database instance (single connection pool)
 from auth.shared import db
+from database import User
 
 # Argon2 password hasher (more secure than bcrypt)
 # SECURITY: Argon2id is resistant to GPU attacks
@@ -82,7 +83,6 @@ async def login_v2(
     """
     # Get user from database
     with db.get_session() as session:
-        from database import User
         user = session.query(User).filter(User.username == credentials.username).first()
 
         if not user:
@@ -245,7 +245,6 @@ async def get_current_user_v2(
     Requires valid session cookie.
     """
     # Get user from database to include is_first_login status
-    from database import User
 
     with db.get_session() as session:
         user = session.query(User).filter(User.id == current_user["user_id"]).first()
@@ -280,7 +279,6 @@ async def change_password_v2(
             "new_password": "new_password"
         }
     """
-    from database import User
 
     # SECURITY FIX: Use validated Pydantic model fields instead of dict.get()
     current_password = password_data.current_password

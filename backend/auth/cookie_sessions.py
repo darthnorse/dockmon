@@ -71,9 +71,12 @@ def _load_or_generate_secret() -> str:
                                 logger.info(f"Loaded existing session secret (age: {age_days} days)")
                                 return secret
                         else:
-                            # No creation timestamp, consider it old
-                            logger.info("Loaded existing session secret from file")
-                            return secret
+                            # No creation timestamp - treat as legacy, rotate immediately
+                            logger.warning(
+                                "Session secret has no timestamp (legacy format), rotating for security. "
+                                "Users will be logged out."
+                            )
+                            # Continue to generate new secret (fall through)
                 except json.JSONDecodeError:
                     # Legacy format (plain secret string) - accept but will upgrade on next write
                     if len(content) >= 32:

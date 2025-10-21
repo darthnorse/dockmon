@@ -12,6 +12,7 @@ from fastapi import HTTPException
 
 from database import DatabaseManager
 from utils.keys import make_composite_key
+from utils.async_docker import async_docker_call
 from models.docker_models import DockerHost, derive_container_tags
 from models.settings_models import GlobalSettings
 
@@ -104,7 +105,7 @@ class StateManager:
         self.db.set_desired_state(host_id, container_id, container_name, desired_state, web_ui_url)
         logger.info(f"Desired state set to '{desired_state}' for container '{container_name}' on host '{host_name}'")
 
-    def update_container_tags(self, host_id: str, container_id: str, container_name: str, tags_to_add: list[str], tags_to_remove: list[str]) -> dict:
+    async def update_container_tags(self, host_id: str, container_id: str, container_name: str, tags_to_add: list[str], tags_to_remove: list[str]) -> dict:
         """
         Update container custom tags in database.
 
@@ -122,9 +123,9 @@ class StateManager:
             raise HTTPException(status_code=404, detail="Host not found")
 
         try:
-            # Verify container exists
+            # Verify container exists (async to prevent event loop blocking)
             client = self.clients[host_id]
-            container = client.containers.get(container_id)
+            container = await async_docker_call(client.containers.get, container_id)
 
             # Get labels to derive compose/swarm tags
             labels = container.labels if container.labels else {}

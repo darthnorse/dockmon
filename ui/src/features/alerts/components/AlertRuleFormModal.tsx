@@ -9,7 +9,7 @@ import { X, Search, Check, Bell, Send, MessageSquare, Hash, Smartphone, Mail } f
 import { useQuery } from '@tanstack/react-query'
 import { useCreateAlertRule, useUpdateAlertRule } from '../hooks/useAlertRules'
 import { useNotificationChannels } from '../hooks/useNotificationChannels'
-import type { AlertRule, AlertSeverity, AlertScope } from '@/types/alerts'
+import type { AlertRule, AlertSeverity, AlertScope, AlertRuleRequest } from '@/types/alerts'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
 import type { Host } from '@/types/api'
 import type { Container } from '@/features/containers/types'
@@ -18,6 +18,46 @@ import { apiClient } from '@/lib/api/client'
 interface Props {
   rule?: AlertRule | null
   onClose: () => void
+}
+
+/**
+ * Form data for alert rule creation/editing
+ */
+interface AlertRuleFormData {
+  name: string
+  description: string
+  scope: AlertScope
+  kind: string
+  enabled: boolean
+  severity: AlertSeverity
+  metric?: string | undefined
+  threshold?: number | undefined
+  operator?: string | undefined
+  duration_seconds: number
+  occurrences: number
+  clear_threshold?: number | null | undefined
+  clear_duration_seconds?: number | null | undefined
+  cooldown_seconds: number
+  host_selector_all: boolean
+  host_selector_ids: string[]
+  container_selector_all: boolean
+  container_selector_included: string[]
+  container_run_mode: 'all' | 'should_run' | 'on_demand'
+  notify_channels: string[]
+  custom_template: string | null
+  auto_resolve_updates: boolean
+  suppress_during_updates: boolean
+}
+
+/**
+ * Container selector structure for API requests
+ */
+interface ContainerSelector {
+  tags?: string[]
+  include_all?: boolean
+  include?: string[]
+  exclude?: string[]
+  should_run?: boolean | null
 }
 
 const RULE_KINDS = [
@@ -168,7 +208,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
     }
   }
 
-  const [formData, setFormData] = useState<any>(() => {
+  const [formData, setFormData] = useState<AlertRuleFormData>(() => {
     // Determine if this rule requires a metric
     const ruleKind = rule?.kind || 'cpu_high'
     const kindConfig = RULE_KINDS.find((k) => k.value === ruleKind)
@@ -229,8 +269,8 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       container_run_mode: containerSelector.should_run === null ? 'all' : containerSelector.should_run ? 'should_run' : 'on_demand',
       notify_channels: rule?.notify_channels_json ? JSON.parse(rule.notify_channels_json) : [],
       custom_template: rule?.custom_template !== undefined ? rule.custom_template : null,
-      // Auto-resolve should default to true for transient update events
-      auto_resolve_updates: rule?.auto_resolve ?? (ruleKind === 'update_available' || ruleKind === 'update_completed'),
+      // Auto-resolve defaults to false - user can enable for any alert type
+      auto_resolve_updates: rule?.auto_resolve ?? false,
       // Default suppress_during_updates to true for container-scoped rules
       suppress_during_updates: rule?.suppress_during_updates ?? (scope === 'container'),
     }
@@ -282,7 +322,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
         const data = await res.json()
         // Tags API returns objects like {id, name, color, kind}, extract just the names
         const tagNames = Array.isArray(data.tags)
-          ? data.tags.map((t: any) => typeof t === 'string' ? t : t.name)
+          ? data.tags.map((t: string | { name: string }) => typeof t === 'string' ? t : t.name)
           : []
         setAvailableTags(tagNames)
       } catch (err) {
@@ -340,7 +380,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
 
     try {
       // Prepare request data
-      const requestData: any = {
+      const requestData: Partial<AlertRuleRequest> = {
         name: formData.name,
         description: formData.description,
         scope: formData.scope,
@@ -352,18 +392,24 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
 
       // Add metric fields only if required
       if (requiresMetric) {
-        requestData.metric = formData.metric
-        requestData.threshold = formData.threshold
-        requestData.operator = formData.operator
-        if (formData.clear_threshold !== undefined) {
+        if (formData.metric !== undefined) {
+          requestData.metric = formData.metric
+        }
+        if (formData.threshold !== undefined) {
+          requestData.threshold = formData.threshold
+        }
+        if (formData.operator !== undefined) {
+          requestData.operator = formData.operator
+        }
+        if (formData.clear_threshold !== undefined && formData.clear_threshold !== null) {
           requestData.clear_threshold = formData.clear_threshold
         }
-        if (formData.clear_duration_seconds !== undefined) {
+        if (formData.clear_duration_seconds !== undefined && formData.clear_duration_seconds !== null) {
           requestData.clear_duration_seconds = formData.clear_duration_seconds
         }
       } else {
         // For non-metric (event-driven) rules, add clear_duration_seconds
-        if (formData.clear_duration_seconds !== undefined) {
+        if (formData.clear_duration_seconds !== undefined && formData.clear_duration_seconds !== null) {
           requestData.clear_duration_seconds = formData.clear_duration_seconds
         }
       }
@@ -387,7 +433,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
         // Container scope selectors
         if (selectedTags.length > 0) {
           // Tag-based: containers with ANY of these tags
-          const containerSelector: any = { tags: selectedTags }
+          const containerSelector: ContainerSelector = { tags: selectedTags }
           // Add should_run filter if specified
           if (formData.container_run_mode === 'should_run') {
             containerSelector.should_run = true
@@ -396,7 +442,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
           }
           requestData.container_selector_json = JSON.stringify(containerSelector)
         } else if (formData.container_selector_all) {
-          const containerSelector: any = { include_all: true }
+          const containerSelector: ContainerSelector = { include_all: true }
           // Add should_run filter if specified
           if (formData.container_run_mode === 'should_run') {
             containerSelector.should_run = true
@@ -405,7 +451,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
           }
           requestData.container_selector_json = JSON.stringify(containerSelector)
         } else if (formData.container_selector_included.length > 0) {
-          const containerSelector: any = { include: formData.container_selector_included }
+          const containerSelector: ContainerSelector = { include: formData.container_selector_included }
           // Add should_run filter if specified
           if (formData.container_run_mode === 'should_run') {
             containerSelector.should_run = true
@@ -422,14 +468,12 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       }
 
       // Add custom template (null/empty string means use category default)
-      if (formData.custom_template !== undefined) {
+      if (formData.custom_template !== undefined && formData.custom_template !== null) {
         requestData.custom_template = formData.custom_template
       }
 
-      // Add auto_resolve flag for update rules
-      if (['update_available', 'update_completed'].includes(formData.kind)) {
-        requestData.auto_resolve = formData.auto_resolve_updates || false
-      }
+      // Add auto_resolve flag for all alert types
+      requestData.auto_resolve = formData.auto_resolve_updates || false
 
       // Add suppress_during_updates flag for container-scoped rules
       if (formData.scope === 'container') {
@@ -437,31 +481,33 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       }
 
       if (isEditing && rule) {
-        await updateRule.mutateAsync({ ruleId: rule.id, rule: requestData })
+        await updateRule.mutateAsync({ ruleId: rule.id, rule: requestData as AlertRuleRequest })
       } else {
-        await createRule.mutateAsync(requestData)
+        await createRule.mutateAsync(requestData as AlertRuleRequest)
       }
       onClose()
-    } catch (err: any) {
-      setError(err.message || 'Failed to save rule')
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to save rule'
+      setError(errorMessage)
     }
   }
 
-  const handleChange = (field: string, value: any) => {
-    setFormData((prev: any) => {
+  const handleChange = <K extends keyof AlertRuleFormData>(field: K, value: AlertRuleFormData[K]) => {
+    setFormData((prev) => {
       const updated = { ...prev, [field]: value }
 
       // When scope changes, reset rule kind if current selection is invalid for new scope
       // Also clear selected tags since they're scope-specific
       if (field === 'scope') {
+        const newScope = value as AlertScope
         setSelectedTags([])
         // Default suppress_during_updates to true for container scope
-        updated.suppress_during_updates = (value === 'container')
+        updated.suppress_during_updates = (newScope === 'container')
 
         const currentKind = RULE_KINDS.find((k) => k.value === prev.kind)
-        if (currentKind && !currentKind.scopes.includes(value)) {
+        if (currentKind && !currentKind.scopes.includes(newScope)) {
           // Find first valid rule kind for new scope
-          const firstValidKind = RULE_KINDS.find((k) => k.scopes.includes(value))
+          const firstValidKind = RULE_KINDS.find((k) => k.scopes.includes(newScope))
           if (firstValidKind) {
             updated.kind = firstValidKind.value
             if (firstValidKind.requiresMetric) {
@@ -539,8 +585,8 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
         scopeText = `All containers with tags [${selectedTags.join(', ')}]`
       } else if (formData.container_selector_all) {
         scopeText = 'All containers'
-      } else if (formData.container_selector_names.length > 0) {
-        scopeText = `${formData.container_selector_names.length} selected container${formData.container_selector_names.length > 1 ? 's' : ''}`
+      } else if (formData.container_selector_included.length > 0) {
+        scopeText = `${formData.container_selector_included.length} selected container${formData.container_selector_included.length > 1 ? 's' : ''}`
       }
       // Add run mode filter
       if (formData.container_run_mode === 'should_run') {
@@ -565,15 +611,15 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
         parts.push(`Duration: ${formData.duration_seconds}s (${formData.occurrences} occurrence${formData.occurrences > 1 ? 's' : ''})`)
       }
       // Show clear duration for event-driven rules
-      if (formData.clear_duration_seconds !== undefined && formData.clear_duration_seconds > 0) {
+      if (formData.clear_duration_seconds !== undefined && formData.clear_duration_seconds !== null && formData.clear_duration_seconds > 0) {
         parts.push(`Clear Duration: ${formData.clear_duration_seconds}s`)
       }
     } else {
       // For metric-driven rules, show clear threshold/duration if set
-      if (formData.clear_threshold !== undefined) {
+      if (formData.clear_threshold !== undefined && formData.clear_threshold !== null) {
         parts.push(`Clear Threshold: ${formData.clear_threshold}%`)
       }
-      if (formData.clear_duration_seconds !== undefined && formData.clear_duration_seconds > 0) {
+      if (formData.clear_duration_seconds !== undefined && formData.clear_duration_seconds !== null && formData.clear_duration_seconds > 0) {
         parts.push(`Clear Duration: ${formData.clear_duration_seconds}s`)
       }
     }
@@ -600,8 +646,17 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-      <div className="w-full max-w-6xl rounded-lg border border-gray-700 bg-[#0d1117] shadow-2xl max-h-[90vh] overflow-y-auto">
+    <>
+      {/* Backdrop */}
+      <div
+        className="fixed inset-0 bg-black/70 z-50"
+        onClick={onClose}
+        aria-hidden="true"
+      />
+
+      {/* Modal */}
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
+        <div className="w-full max-w-6xl rounded-lg border border-gray-700 bg-[#0d1117] shadow-2xl max-h-[90vh] overflow-y-auto pointer-events-auto">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-gray-700 px-6 py-4">
           <h2 className="text-xl font-semibold text-white">{isEditing ? 'Edit Alert Rule' : 'Create Alert Rule'}</h2>
@@ -1244,8 +1299,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
           </div>
           )}
 
-          {/* Auto-Resolve Option - Only for update_available and update_completed */}
-          {['update_available', 'update_completed'].includes(formData.kind) && (
+          {/* Auto-Resolve Option - Available for all alert types */}
           <div className="space-y-4 rounded-lg border border-gray-700 bg-gray-800/30 p-4">
             <h3 className="text-sm font-semibold text-white">Auto-Resolve Behavior</h3>
             <div className="flex items-start gap-3">
@@ -1261,14 +1315,11 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                   Automatically resolve alert after notification
                 </label>
                 <p className="mt-1 text-xs text-gray-400">
-                  {formData.kind === 'update_available'
-                    ? 'Alert will be auto-resolved immediately after notifying. Useful to just get informed about updates without keeping the alert open.'
-                    : 'Alert will be auto-resolved immediately after notifying. Useful to get confirmation of successful updates without cluttering the alert list.'}
+                  Alert will be auto-resolved immediately after sending notification. Use this if you only want to be notified without keeping alerts in the DockMon alert list.
                 </p>
               </div>
             </div>
           </div>
-          )}
 
           {/* Suppress During Updates - Only for container-scoped rules */}
           {formData.scope === 'container' && !['update_available', 'update_completed', 'update_failed'].includes(formData.kind) && (
@@ -1449,7 +1500,8 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                 : 'Create Rule'}
           </button>
         </div>
+        </div>
       </div>
-    </div>
+    </>
   )
 }

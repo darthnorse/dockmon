@@ -8,6 +8,7 @@ import logging
 from datetime import datetime, time, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 from database import DatabaseManager
+from utils.async_docker import async_docker_call
 
 logger = logging.getLogger(__name__)
 
@@ -79,75 +80,6 @@ class BlackoutManager:
             logger.error(f"Error checking blackout window: {e}")
             return False, None
 
-    def get_last_window_end_time(self) -> Optional[datetime]:
-        """Get when the last blackout window ended (for tracking)"""
-        return getattr(self, '_last_window_end', None)
-
-    def set_last_window_end_time(self, end_time: datetime):
-        """Set when the last blackout window ended"""
-        self._last_window_end = end_time
-
-    async def check_container_states_after_blackout(self, notification_service, monitor) -> Dict:
-        """
-        Check all container states after blackout window ends.
-        Alert if any containers are in problematic states.
-        Returns summary of what was found.
-
-        Args:
-            notification_service: The notification service instance
-            monitor: The DockerMonitor instance (reused, not created)
-        """
-        summary = {
-            'containers_down': [],
-            'total_checked': 0,
-            'window_name': None
-        }
-
-        try:
-
-            problematic_states = ['exited', 'dead', 'paused', 'removing']
-
-            # Check all containers across all hosts
-            for host_id, host in monitor.hosts.items():
-                if not host.client:
-                    continue
-
-                try:
-                    containers = host.client.containers.list(all=True)
-                    summary['total_checked'] += len(containers)
-
-                    for container in containers:
-                        if container.status in problematic_states:
-                            # Get exit code if container exited
-                            exit_code = None
-                            if container.status == 'exited':
-                                try:
-                                    exit_code = container.attrs.get('State', {}).get('ExitCode')
-                                except (AttributeError, KeyError, TypeError) as e:
-                                    logger.debug(f"Could not get exit code for container {container.id[:12]}: {e}")
-
-                            summary['containers_down'].append({
-                                'id': container.id[:12],
-                                'name': container.name,
-                                'host_id': host_id,
-                                'host_name': host.name,
-                                'state': container.status,
-                                'exit_code': exit_code,
-                                'image': container.image.tags[0] if container.image.tags else 'unknown'
-                            })
-
-                except Exception as e:
-                    logger.error(f"Error checking containers on host {host.name}: {e}")
-
-            # Note: Post-blackout alerts are handled by V2 alert evaluation system
-            # which continuously monitors container states
-
-        except Exception as e:
-            logger.error(f"Error checking container states after blackout: {e}")
-
-        return summary
-
-
     async def start_monitoring(self, notification_service, monitor, connection_manager=None):
         """Start monitoring for blackout window transitions
 
@@ -157,7 +89,6 @@ class BlackoutManager:
             connection_manager: Optional WebSocket connection manager
         """
         self._connection_manager = connection_manager
-        self._monitor = monitor  # Store monitor reference
 
         async def monitor_loop():
             was_in_blackout = False
@@ -178,10 +109,9 @@ class BlackoutManager:
                                 }
                             })
 
-                        # If we just exited blackout, process suppressed alerts
+                        # Alert processing is now handled by evaluation_service._check_blackout_transitions()
                         if was_in_blackout and not is_blackout:
-                            logger.info(f"Blackout window ended. Processing suppressed alerts...")
-                            await notification_service.process_suppressed_alerts(self._monitor)
+                            logger.info(f"Blackout window ended - alert processing handled by evaluation service")
 
                     was_in_blackout = is_blackout
 
@@ -194,8 +124,12 @@ class BlackoutManager:
 
         self._check_task = asyncio.create_task(monitor_loop())
 
-    def stop_monitoring(self):
+    async def stop_monitoring(self):
         """Stop the monitoring task"""
         if self._check_task:
             self._check_task.cancel()
+            try:
+                await self._check_task
+            except asyncio.CancelledError:
+                pass
             self._check_task = None

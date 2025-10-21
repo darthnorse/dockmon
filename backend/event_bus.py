@@ -264,9 +264,13 @@ class EventBus:
 
             # Call alert evaluation service based on scope
             if event.scope_type == 'container':
+                # Extract container_id from composite key (scope_id = host_id:container_id)
+                from utils.keys import parse_composite_key
+                _, container_id = parse_composite_key(event.scope_id)
+
                 await self.monitor.alert_evaluation_service.handle_container_event(
                     event_type=alert_event_type,
-                    container_id=event.scope_id,
+                    container_id=container_id,
                     container_name=event.scope_name,
                     host_id=event.host_id or '',
                     host_name=event.host_name or '',

@@ -10,6 +10,22 @@ import { apiClient } from '@/lib/api/client'
 import { debug } from '@/lib/debug'
 import type { DashboardLayout } from '@/features/dashboard/types'
 
+/**
+ * Layout configuration for a single host card in grid view
+ */
+export interface HostCardLayout {
+  i: string
+  x: number
+  y: number
+  w: number
+  h: number
+  minW?: number
+  maxW?: number
+  minH?: number
+  maxH?: number
+  static?: boolean
+}
+
 export interface UserPreferences {
   theme: string
   group_by: string | null
@@ -26,8 +42,8 @@ export interface UserPreferences {
   host_table_sort: Array<{ id: string; desc: boolean }> | null
   container_table_sort: Array<{ id: string; desc: boolean }> | null
 
-  // Dashboard preferences
-  hostContainerSorts?: Record<string, any>
+  // Dashboard preferences (host container sorts are string-based sort keys)
+  hostContainerSorts?: Record<string, string>
 
   // Dashboard settings (nested under dashboard object)
   dashboard?: {
@@ -35,11 +51,10 @@ export interface UserPreferences {
     showStatsWidgets?: boolean
     optimizedLoading?: boolean
     compactHostOrder?: string[]
-    hostCardLayout?: any[]
-    hostCardLayoutStandard?: any[]
+    hostCardLayout?: HostCardLayout[]
+    hostCardLayoutStandard?: HostCardLayout[]
     tagGroupOrder?: string[]
-    groupLayouts?: Record<string, any>
-    [key: string]: any
+    groupLayouts?: Record<string, HostCardLayout[]>
   }
 }
 

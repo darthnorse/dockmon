@@ -7,9 +7,10 @@
 
 import { formatTimestamp, getSeverityColor, formatSeverity } from '@/lib/utils/eventUtils'
 import { makeCompositeKeyFrom } from '@/lib/utils/containerKeys'
+import type { Event } from '@/types/events'
 
 interface EventRowProps {
-  event: any
+  event: Event
   showMetadata?: boolean
   compact?: boolean
   onContainerClick?: (compositeKey: string) => void
@@ -35,7 +36,7 @@ const getStateColor = (state: string): string => {
 }
 
 // Format message with colored state transitions
-const formatMessage = (event: any) => {
+const formatMessage = (event: Event) => {
   let message = event.message || ''
 
   // Replace state names in the message with colored versions
@@ -78,7 +79,7 @@ const MetadataLinks = ({
   onContainerClick,
   onHostClick
 }: {
-  event: any
+  event: Event
   onContainerClick?: (id: string) => void
   onHostClick?: (id: string) => void
 }) => {
@@ -107,11 +108,11 @@ const MetadataLinks = ({
           container={event.container_name}
         </button>
       )}
-      {hasHost && (
+      {hasHost && event.host_id && (
         <button
           onClick={(e) => {
             e.stopPropagation()
-            onHostClick?.(event.host_id)
+            onHostClick?.(event.host_id!)
           }}
           className="hover:text-primary hover:underline transition-colors"
         >

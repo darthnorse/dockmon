@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 
 from database import DatabaseManager, AlertRuleV2, AlertV2, RuleRuntime, RuleEvaluation
+from utils.keys import parse_composite_key
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +156,7 @@ class AlertEngine:
                 alert.state = "open"
                 alert.resolved_at = None
                 alert.resolved_reason = None
+                alert.notified_at = None  # Clear notification timestamp so alert gets re-sent
                 logger.info(f"Reopened previously resolved alert {alert.id}")
 
             alert.last_seen = datetime.now(timezone.utc)
@@ -265,7 +267,9 @@ class AlertEngine:
 
                 # Check if we should suppress this alert during container update
                 if rule.suppress_during_updates and context.scope_type == "container":
-                    is_updating = self._is_container_updating(context.host_id, context.scope_id)
+                    # scope_id is composite key (host_id:container_id), extract SHORT ID
+                    _, container_id = parse_composite_key(context.scope_id)
+                    is_updating = self._is_container_updating(context.host_id, container_id)
                     if is_updating:
                         logger.info(f"Engine: Rule '{rule.name}' suppressed - container is being updated")
                         continue
@@ -296,7 +300,8 @@ class AlertEngine:
                 logger.info(f"Engine: Added alert {alert.id} to alerts_changed list (count={len(alerts_changed)})")
                 logger.info(f"Engine: Alert {alert.id} ready for notification")
 
-        logger.info(f"Engine: evaluate_event returning {len(alerts_changed)} alerts")
+        if alerts_changed:
+            logger.info(f"Engine: evaluate_event returning {len(alerts_changed)} alerts")
         return alerts_changed
 
     def _rule_matches_event(

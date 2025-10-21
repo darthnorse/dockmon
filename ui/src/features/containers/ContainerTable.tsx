@@ -59,6 +59,7 @@ import {
   Maximize2,
   Package,
   ExternalLink,
+  Activity,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { apiClient } from '@/lib/api/client'
@@ -77,6 +78,7 @@ import type { Container } from './types'
 import { useSimplifiedWorkflow, useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
 import { useContainerUpdateStatus } from './hooks/useContainerUpdates'
 import { useContainerActions } from './hooks/useContainerActions'
+import { useContainerHealthCheck } from './hooks/useContainerHealthCheck'
 import { makeCompositeKey } from '@/lib/utils/containerKeys'
 import { useContainerModal } from '@/providers'
 
@@ -108,7 +110,7 @@ function UpdateBadge({ container, onClick }: { container: Container; onClick?: (
 }
 
 /**
- * Policy icons component showing auto-restart, desired state, and auto-update
+ * Policy icons component showing auto-restart, HTTP health check, desired state, and auto-update
  */
 function PolicyIcons({ container }: { container: Container }) {
   const isRunning = container.state === 'running'
@@ -119,6 +121,11 @@ function PolicyIcons({ container }: { container: Container }) {
   // Get auto-update status
   const { data: updateStatus } = useContainerUpdateStatus(container.host_id, container.id)
   const autoUpdateEnabled = updateStatus?.auto_update_enabled ?? false
+
+  // Get HTTP health check status
+  const { data: healthCheck } = useContainerHealthCheck(container.host_id, container.id)
+  const healthCheckEnabled = healthCheck?.enabled ?? false
+  const healthStatus = healthCheck?.current_status ?? 'unknown'
 
   // Determine if we should show warning (desired state is "should_run" but container is exited)
   const showWarning = desiredState === 'should_run' && isExited
@@ -137,6 +144,34 @@ function PolicyIcons({ container }: { container: Container }) {
           Auto-restart: {autoRestart ? 'Enabled' : 'Disabled'}
         </div>
       </div>
+
+      {/* HTTP Health Check icon */}
+      {healthCheckEnabled && (
+        <div className="relative group">
+          <Activity
+            className={`h-4 w-4 ${
+              healthStatus === 'healthy'
+                ? 'text-success'
+                : healthStatus === 'unhealthy'
+                ? 'text-danger'
+                : 'text-muted-foreground'
+            }`}
+          />
+          {/* Tooltip */}
+          <div className="invisible group-hover:visible absolute left-1/2 -translate-x-1/2 bottom-full mb-2 z-10 px-2 py-1 text-xs bg-surface-1 border border-border rounded shadow-lg whitespace-nowrap">
+            {healthStatus === 'healthy' && 'HTTP(S) Health Check: Healthy'}
+            {healthStatus === 'unhealthy' && (
+              <>
+                HTTP(S) Health Check: Unhealthy
+                {healthCheck?.consecutive_failures && healthCheck.consecutive_failures > 0 && (
+                  <> ({healthCheck.consecutive_failures} consecutive failures)</>
+                )}
+              </>
+            )}
+            {healthStatus === 'unknown' && 'HTTP(S) Health Check: Unknown'}
+          </div>
+        </div>
+      )}
 
       {/* Desired state icon */}
       <div className="relative group">
@@ -719,12 +754,12 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
           )
         },
       },
-      // 3. Policy (auto-restart and desired state)
+      // 3. Policy (auto-restart, health check, desired state, auto-update)
       {
         id: 'policy',
         header: 'Policy',
         cell: ({ row }) => <PolicyIcons container={row.original} />,
-        size: 100,
+        size: 120,
         enableSorting: false,
       },
       // 4. Alerts

@@ -157,9 +157,13 @@ export function LogViewer({
             containerName: container.name,
             containerKey: makeCompositeKeyFrom(container.hostId, container.containerId),
           }))
-        } catch (error: any) {
-          if (error?.response?.status === 429) {
-            rateLimitHit = true
+        } catch (error) {
+          // TypeScript infers 'unknown' - safer than 'any'
+          if (error && typeof error === 'object' && 'response' in error) {
+            const apiError = error as { response?: { status?: number } }
+            if (apiError.response?.status === 429) {
+              rateLimitHit = true
+            }
           }
           return []
         }

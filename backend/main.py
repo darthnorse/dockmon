@@ -24,10 +24,20 @@ import docker
 from docker import DockerClient
 from docker.errors import DockerException, APIError
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Depends, status, Cookie, Response, Query
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 # Session-based auth - no longer need HTTPBearer
-from fastapi.responses import FileResponse
-from database import DatabaseManager, GlobalSettings as GlobalSettingsDB
+from fastapi.responses import FileResponse, JSONResponse
+from database import (
+    DatabaseManager,
+    GlobalSettings as GlobalSettingsDB,
+    ContainerUpdate,
+    UpdatePolicy,
+    ContainerDesiredState,
+    ContainerHttpHealthCheck,
+    User,
+    DockerHostDB
+)
 from realtime import RealtimeMonitor
 from notifications import NotificationService
 from event_logger import EventLogger, EventContext, EventCategory, EventType, EventSeverity, PerformanceTimer
@@ -35,7 +45,7 @@ from event_logger import EventLogger, EventContext, EventCategory, EventType, Ev
 # Import extracted modules
 from config.settings import AppConfig, get_cors_origins, setup_logging, HealthCheckFilter
 from models.docker_models import DockerHostConfig, DockerHost
-from models.settings_models import GlobalSettings, AlertRule, AlertRuleV2Create, AlertRuleV2Update
+from models.settings_models import GlobalSettings, AlertRule, AlertRuleV2Create, AlertRuleV2Update, GlobalSettingsUpdate
 from models.request_models import (
     AutoRestartRequest, DesiredStateRequest, AlertRuleCreate, AlertRuleUpdate,
     NotificationChannelCreate, NotificationChannelUpdate, EventLogFilter, BatchJobCreate, ContainerTagUpdate, HostTagUpdate, HttpHealthCheckConfig
@@ -48,6 +58,7 @@ from websocket.rate_limiter import ws_rate_limiter
 from docker_monitor.monitor import DockerMonitor
 from batch_manager import BatchJobManager
 from utils.keys import make_composite_key
+from utils.async_docker import async_docker_call
 
 # Configure logging
 setup_logging()
@@ -172,7 +183,7 @@ async def lifespan(app: FastAPI):
             logger.error(f"Error during maintenance task shutdown: {e}")
     # Stop blackout monitoring
     try:
-        monitor.notification_service.blackout_manager.stop_monitoring()
+        await monitor.notification_service.blackout_manager.stop_monitoring()
         logger.info("Blackout monitoring stopped")
     except Exception as e:
         logger.error(f"Error stopping blackout monitoring: {e}")
@@ -259,6 +270,32 @@ else:
         allow_headers=["Content-Type", "Authorization"],
     )
     logger.info("CORS configured to allow all origins (authentication required for all endpoints)")
+
+# Custom exception handler for Pydantic validation errors
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """
+    Custom handler for Pydantic validation errors.
+    Returns user-friendly error messages with field-level details.
+    """
+    errors = []
+    for error in exc.errors():
+        field = " -> ".join(str(x) for x in error['loc'])
+        errors.append({
+            "field": field,
+            "message": error['msg'],
+            "type": error['type']
+        })
+
+    logger.warning(f"Validation failed for {request.url.path}: {errors}")
+
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": "Invalid request data",
+            "errors": errors
+        }
+    )
 
 # ==================== API Routes ====================
 
@@ -384,7 +421,6 @@ async def test_host_connection(config: DockerHostConfig, current_user: dict = De
         # If certs are null, try to load from database
         if (config.tls_ca is None or config.tls_cert is None or config.tls_key is None):
             # Try to find existing host by URL to get certificates
-            from database import DockerHostDB
             db_session = monitor.db.get_session()
             try:
                 existing_host = db_session.query(DockerHostDB).filter(DockerHostDB.url == config.url).first()
@@ -559,8 +595,11 @@ async def get_host_metrics(host_id: str, current_user: dict = Depends(get_curren
         if not client:
             raise HTTPException(status_code=503, detail="Host client not available")
 
-        # Get all running containers on this host
-        containers = client.containers.list(filters={'status': 'running'})
+        # Get all running containers on this host (async to prevent event loop blocking)
+        containers = await async_docker_call(
+            client.containers.list,
+            filters={'status': 'running'}
+        )
 
         total_cpu = 0.0
         total_memory_used = 0
@@ -571,7 +610,8 @@ async def get_host_metrics(host_id: str, current_user: dict = Depends(get_curren
 
         for container in containers:
             try:
-                stats = container.stats(stream=False)
+                # Get stats asynchronously to prevent event loop blocking
+                stats = await async_docker_call(container.stats, stream=False)
 
                 # Calculate CPU percentage
                 cpu_delta = stats['cpu_stats']['cpu_usage']['total_usage'] - \
@@ -599,7 +639,8 @@ async def get_host_metrics(host_id: str, current_user: dict = Depends(get_curren
                 container_count += 1
 
             except Exception as e:
-                logger.warning(f"Failed to get stats for container {container.id}: {e}")
+                # Use short_id for logging (Issue #2 fix)
+                logger.warning(f"Failed to get stats for container {container.short_id}: {e}")
                 continue
 
         # Calculate percentages
@@ -837,7 +878,7 @@ async def update_container_tags(
     if not container:
         raise HTTPException(status_code=404, detail="Container not found")
 
-    result = monitor.update_container_tags(
+    result = await monitor.update_container_tags(
         host_id,
         container_id,
         container.name,
@@ -870,7 +911,6 @@ async def get_container_update_status(
         - floating_tag_mode: str (exact|minor|major|latest)
         - last_checked_at: datetime
     """
-    from database import ContainerUpdate
 
     # Normalize to short ID
     short_id = container_id[:12] if len(container_id) > 12 else container_id
@@ -970,8 +1010,6 @@ async def execute_container_update(
     """
     from updates.update_executor import get_update_executor
     from updates.container_validator import ContainerValidator, ValidationResult
-    from database import ContainerUpdate
-    from utils.async_docker import async_docker_call
 
     # Normalize to short ID
     short_id = container_id[:12] if len(container_id) > 12 else container_id
@@ -1080,7 +1118,6 @@ async def update_auto_update_config(
     - auto_update_enabled: bool
     - floating_tag_mode: str (exact|minor|major|latest)
     """
-    from database import ContainerUpdate
 
     # Normalize to short ID
     short_id = container_id[:12] if len(container_id) > 12 else container_id
@@ -1162,7 +1199,6 @@ async def get_updates_summary(current_user: dict = Depends(get_current_user)):
         - total_updates: Number of containers with updates available
         - containers_with_updates: List of container IDs that have updates
     """
-    from database import ContainerUpdate
 
     # Get current containers to validate against
     containers = await monitor.get_containers()
@@ -1200,7 +1236,6 @@ async def get_update_policies(current_user: dict = Depends(get_current_user)):
 
     Returns list of all policies grouped by category with their enabled status.
     """
-    from database import UpdatePolicy
 
     with monitor.db.get_session() as session:
         policies = session.query(UpdatePolicy).all()
@@ -1236,7 +1271,6 @@ async def toggle_update_policy_category(
         category: Category name (databases, proxies, monitoring, critical, custom)
         enabled: True to enable all patterns in category, False to disable
     """
-    from database import UpdatePolicy
 
     with monitor.db.get_session() as session:
         # Update all patterns in category
@@ -1266,7 +1300,6 @@ async def create_custom_update_policy(
     Args:
         pattern: Pattern to match (case-insensitive substring match)
     """
-    from database import UpdatePolicy
 
     with monitor.db.get_session() as session:
         # Check if pattern already exists
@@ -1310,7 +1343,6 @@ async def delete_custom_update_policy(
     Args:
         policy_id: Policy ID to delete
     """
-    from database import UpdatePolicy
 
     with monitor.db.get_session() as session:
         policy = session.query(UpdatePolicy).filter_by(
@@ -1351,7 +1383,6 @@ async def set_container_update_policy(
         container_id: Container short ID (12 chars)
         policy: One of 'allow', 'warn', 'block', or null to use global patterns
     """
-    from database import ContainerDesiredState
 
     # Validate policy value
     if policy is not None and policy not in ["allow", "warn", "block"]:
@@ -1501,26 +1532,47 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
         "timezone_offset": getattr(settings, 'timezone_offset', 0),
         "show_host_stats": getattr(settings, 'show_host_stats', True),
         "show_container_stats": getattr(settings, 'show_container_stats', True),
+        "show_container_alerts_on_hosts": getattr(settings, 'show_container_alerts_on_hosts', False),
         "unused_tag_retention_days": getattr(settings, 'unused_tag_retention_days', 30),
         "event_retention_days": getattr(settings, 'event_retention_days', 60),
-        "alert_retention_days": getattr(settings, 'alert_retention_days', 90)
+        "alert_retention_days": getattr(settings, 'alert_retention_days', 90),
+        "update_check_time": getattr(settings, 'update_check_time', "02:00"),
+        "skip_compose_containers": getattr(settings, 'skip_compose_containers', True),
+        "health_check_timeout_seconds": getattr(settings, 'health_check_timeout_seconds', 10)
     }
 
 @app.post("/api/settings")
 @app.put("/api/settings")
-async def update_settings(settings: dict, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_default):
-    """Update global settings (partial updates supported)"""
+async def update_settings(
+    settings: GlobalSettingsUpdate,
+    current_user: dict = Depends(get_current_user),
+    rate_limit_check: bool = rate_limit_default
+):
+    """
+    Update global settings (partial updates supported)
+
+    Request body is validated against GlobalSettingsUpdate schema:
+    - Type safety enforced
+    - Range constraints checked
+    - Unknown keys rejected
+
+    Returns updated settings on success, 422 on validation error.
+    """
     # Check if stats settings changed
     old_show_host_stats = monitor.settings.show_host_stats
     old_show_container_stats = monitor.settings.show_container_stats
 
-    updated = monitor.db.update_settings(settings)
+    # Convert to dict, excluding unset fields (supports partial updates)
+    validated_dict = settings.dict(exclude_unset=True)
+
+    # Update database with validated values
+    updated = monitor.db.update_settings(validated_dict)
     monitor.settings = updated  # Update in-memory settings
 
     # Log stats collection changes
-    if 'show_host_stats' in settings and old_show_host_stats != updated.show_host_stats:
+    if 'show_host_stats' in validated_dict and old_show_host_stats != updated.show_host_stats:
         logger.info(f"Host stats collection {'enabled' if updated.show_host_stats else 'disabled'}")
-    if 'show_container_stats' in settings and old_show_container_stats != updated.show_container_stats:
+    if 'show_container_stats' in validated_dict and old_show_container_stats != updated.show_container_stats:
         logger.info(f"Container stats collection {'enabled' if updated.show_container_stats else 'disabled'}")
 
     # Broadcast blackout status change to all clients
@@ -1545,13 +1597,18 @@ async def update_settings(settings: dict, current_user: dict = Depends(get_curre
         "alert_template_metric": getattr(updated, 'alert_template_metric', None),
         "alert_template_state_change": getattr(updated, 'alert_template_state_change', None),
         "alert_template_health": getattr(updated, 'alert_template_health', None),
+        "alert_template_update": getattr(updated, 'alert_template_update', None),
         "blackout_windows": getattr(updated, 'blackout_windows', None),
         "timezone_offset": getattr(updated, 'timezone_offset', 0),
         "show_host_stats": getattr(updated, 'show_host_stats', True),
         "show_container_stats": getattr(updated, 'show_container_stats', True),
         "show_container_alerts_on_hosts": getattr(updated, 'show_container_alerts_on_hosts', False),
         "unused_tag_retention_days": getattr(updated, 'unused_tag_retention_days', 30),
-        "event_retention_days": getattr(updated, 'event_retention_days', 60)
+        "event_retention_days": getattr(updated, 'event_retention_days', 60),
+        "alert_retention_days": getattr(updated, 'alert_retention_days', 90),
+        "update_check_time": getattr(updated, 'update_check_time', "02:00"),
+        "skip_compose_containers": getattr(updated, 'skip_compose_containers', True),
+        "health_check_timeout_seconds": getattr(updated, 'health_check_timeout_seconds', 10)
     }
 
 
@@ -1606,7 +1663,6 @@ async def get_http_health_check(
     current_user: dict = Depends(get_current_user)
 ):
     """Get HTTP health check configuration for a container"""
-    from database import ContainerHttpHealthCheck
 
     composite_key = make_composite_key(host_id, container_id)
 
@@ -1677,7 +1733,6 @@ async def update_http_health_check(
     current_user: dict = Depends(get_current_user)
 ):
     """Update or create HTTP health check configuration"""
-    from database import ContainerHttpHealthCheck
     from datetime import datetime, timezone
 
     composite_key = make_composite_key(host_id, container_id)
@@ -1732,7 +1787,6 @@ async def delete_http_health_check(
     current_user: dict = Depends(get_current_user)
 ):
     """Delete HTTP health check configuration"""
-    from database import ContainerHttpHealthCheck
 
     composite_key = make_composite_key(host_id, container_id)
 
@@ -1760,7 +1814,6 @@ async def test_http_health_check(
     import time
     from typing import Dict, Any
     from datetime import datetime, timezone
-    from database import ContainerHttpHealthCheck
 
     # Create a dedicated client for this test (isolated from main health checker)
     # IMPORTANT: Use context manager to ensure cleanup even on exceptions
@@ -2651,7 +2704,6 @@ async def get_view_mode(request: Request, current_user: dict = Depends(get_curre
     try:
         session = monitor.db.get_session()
         try:
-            from database import User
             user = session.query(User).filter(User.username == username).first()
             if user:
                 return {"view_mode": user.view_mode or "standard"}  # Default to standard
@@ -2681,7 +2733,6 @@ async def save_view_mode(request: Request, current_user: dict = Depends(get_curr
 
         session = monitor.db.get_session()
         try:
-            from database import User
             from datetime import datetime
 
             user = session.query(User).filter(User.username == username).first()

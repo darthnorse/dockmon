@@ -227,6 +227,17 @@ def upgrade() -> None:
             )
 
 
+    # ==================== alerts_v2 Table ====================
+    # Add suppressed_by_blackout column for blackout window support
+    # Table created by Base.metadata.create_all() for fresh installs, but we need
+    # to add the column for any existing v2.0.x installations that don't have it yet
+
+    if helper.table_exists('alerts_v2'):
+        helper.add_column_if_missing('alerts_v2',
+            sa.Column('suppressed_by_blackout', sa.Boolean(), server_default='0', nullable=False)
+        )
+
+
     # ==================== update_policies Table ====================
     # Table created by Base.metadata.create_all(), but we need to populate default patterns
 

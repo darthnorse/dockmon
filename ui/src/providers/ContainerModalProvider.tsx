@@ -4,17 +4,17 @@
  * Provides a single modal instance accessible from anywhere in the app via useContainerModal() hook.
  * Eliminates code duplication and provides better UX by avoiding navigation/page changes.
  *
+ * Architecture:
+ * - Provider: Pure state management (open/closed, containerId, initialTab)
+ * - Modal: Self-fetching data based on containerId (decoupled from provider)
+ *
  * Usage:
  *   const { openModal } = useContainerModal()
  *   openModal(compositeKey, 'logs')  // Opens modal on logs tab
  */
 
-import { createContext, useContext, useState, ReactNode, useMemo } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { createContext, useContext, useState, ReactNode } from 'react'
 import { ContainerDetailsModal } from '@/features/containers/components/ContainerDetailsModal'
-import { parseCompositeKey } from '@/lib/utils/containerKeys'
-import type { Container } from '@/features/containers/types'
-import { useStatsContext } from '@/lib/stats/StatsProvider'
 
 interface ContainerModalState {
   isOpen: boolean
@@ -36,41 +36,11 @@ interface ContainerModalContextValue {
 const ContainerModalContext = createContext<ContainerModalContextValue | null>(null)
 
 export function ContainerModalProvider({ children }: { children: ReactNode }) {
-  const queryClient = useQueryClient()
-  const { containerStats } = useStatsContext()
   const [state, setState] = useState<ContainerModalState>({
     isOpen: false,
     containerId: null,
     initialTab: 'info',
   })
-
-  // Get container from cached query data OR StatsProvider (no additional API call)
-  // NOTE: Dual data source pattern required because:
-  //   - Container list page: Uses React Query cache (HTTP API)
-  //   - Dashboard: Uses StatsProvider (WebSocket data)
-  // TODO: Future refactor - make modal self-fetching to decouple from data sources
-  const container = useMemo(() => {
-    if (!state.containerId) return null
-
-    // Parse composite key
-    const { hostId, containerId } = parseCompositeKey(state.containerId)
-
-    // Try React Query cache first (used by container list page)
-    const containers = queryClient.getQueryData<Container[]>(['containers'])
-    if (containers) {
-      const found = containers.find((c) => c.host_id === hostId && c.id === containerId)
-      if (found) return found
-    }
-
-    // Fallback to StatsProvider (used by dashboard)
-    const statsContainer = containerStats.get(state.containerId)
-    if (statsContainer) {
-      // StatsProvider container type matches Container type from WebSocket
-      return statsContainer as Container
-    }
-
-    return null
-  }, [state.containerId, queryClient, containerStats])
 
   const openModal = (compositeKey: string, initialTab: string = 'info') => {
     setState({
@@ -99,10 +69,9 @@ export function ContainerModalProvider({ children }: { children: ReactNode }) {
       {children}
 
       {/* Global modal instance - single instance for entire app */}
-      {/* Uses cached container data from React Query - no additional API calls */}
+      {/* Modal fetches its own data - provider just manages state */}
       <ContainerDetailsModal
         containerId={state.containerId}
-        container={container}
         open={state.isOpen}
         onClose={closeModal}
         initialTab={state.initialTab}

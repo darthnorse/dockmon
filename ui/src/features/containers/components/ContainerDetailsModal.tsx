@@ -9,13 +9,16 @@
  * - Info tab: 2-column layout with status, image, labels, ports, volumes, env vars
  */
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { X, Play, RotateCw, Circle } from 'lucide-react'
 import { Tabs } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
 import type { Container } from '../types'
 import { toast } from 'sonner'
 import { apiClient } from '@/lib/api/client'
+import { useQueryClient } from '@tanstack/react-query'
+import { useStatsContext } from '@/lib/stats/StatsProvider'
+import { parseCompositeKey } from '@/lib/utils/containerKeys'
 
 // Import tab content components
 import { ContainerInfoTab } from './modal-tabs/ContainerInfoTab'
@@ -27,7 +30,7 @@ import { ContainerHealthCheckTab } from './modal-tabs/ContainerHealthCheckTab'
 
 export interface ContainerDetailsModalProps {
   containerId: string | null
-  container: Container | null | undefined
+  container?: Container | null // Optional - modal will self-fetch if not provided
   open: boolean
   onClose: () => void
   initialTab?: string // Optional initial tab (defaults to 'info')
@@ -35,14 +38,49 @@ export interface ContainerDetailsModalProps {
 
 export function ContainerDetailsModal({
   containerId,
-  container,
+  container: externalContainer, // Rename to indicate external source
   open,
   onClose,
   initialTab = 'info',
 }: ContainerDetailsModalProps) {
+  const queryClient = useQueryClient()
+  const { containerStats } = useStatsContext()
   const [activeTab, setActiveTab] = useState(initialTab)
   const [uptime, setUptime] = useState<string>('')
   const [isPerformingAction, setIsPerformingAction] = useState(false)
+
+  // Self-fetch container if not provided externally
+  // This decouples the modal from the provider's data sources
+  const container = useMemo(() => {
+    // If modal is closed or no containerId, return null
+    if (!open || !containerId) return null
+
+    // If container provided externally (backward compatibility), use it
+    if (externalContainer) return externalContainer
+
+    // Parse composite key
+    const { hostId, containerId: cId } = parseCompositeKey(containerId)
+
+    // Try React Query cache first (fast lookup, no API call)
+    // Used when modal opened from container list page
+    const cached = queryClient.getQueryData<Container[]>(['containers'])
+    if (cached) {
+      const found = cached.find((c) => c.host_id === hostId && c.id === cId)
+      if (found) return found
+    }
+
+    // Try StatsProvider (WebSocket data)
+    // Used when modal opened from dashboard
+    const stats = containerStats.get(containerId)
+    if (stats) {
+      return stats as Container
+    }
+
+    // Container not found in any source
+    // In practice, this should rarely happen since modal is opened
+    // from pages that already have the container data loaded
+    return null
+  }, [open, containerId, externalContainer, queryClient, containerStats])
 
   // Update active tab when initialTab changes
   useEffect(() => {

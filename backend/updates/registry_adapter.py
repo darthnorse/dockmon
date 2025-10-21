@@ -115,6 +115,20 @@ class RegistryAdapter:
                 del self._auth_cache[k]
             logger.warning(f"Auth cache exceeded limit, removed {len(keys_to_remove)} oldest entries")
 
+    def _encode_basic_auth(self, auth: Dict) -> str:
+        """
+        Encode username:password as Basic authentication header.
+
+        Args:
+            auth: Dict with keys 'username' and 'password'
+
+        Returns:
+            Basic auth header string (e.g., "Basic dXNlcjpwYXNz")
+        """
+        credentials = f"{auth['username']}:{auth['password']}"
+        encoded = base64.b64encode(credentials.encode()).decode()
+        return f"Basic {encoded}"
+
     async def resolve_tag(
         self,
         image_ref: str,
@@ -402,9 +416,7 @@ class RegistryAdapter:
             # Build headers
             headers = {}
             if auth:
-                credentials = f"{auth['username']}:{auth['password']}"
-                encoded = base64.b64encode(credentials.encode()).decode()
-                headers["Authorization"] = f"Basic {encoded}"
+                headers["Authorization"] = self._encode_basic_auth(auth)
 
             # Fetch token
             async with aiohttp.ClientSession() as session:
@@ -427,13 +439,13 @@ class RegistryAdapter:
                                     "expires_at": datetime.now(timezone.utc) + timedelta(minutes=4)
                                 }
 
-                            logger.debug(f"Successfully fetched token from {realm}")
+                            logger.debug(f"Successfully obtained token from {realm}")
                             return bearer_token
                         else:
-                            logger.warning(f"Token endpoint {realm} returned 200 but no token in response")
+                            logger.error(f"Token endpoint {realm} returned 200 but no token in response")
                     else:
                         response_text = await response.text()
-                        logger.warning(f"Token request to {realm} returned {response.status}: {response_text[:100]}")
+                        logger.error(f"Token request to {realm} failed with status {response.status}: {response_text[:200]}")
 
         except asyncio.TimeoutError:
             logger.warning(f"Timeout fetching token from {realm}")
@@ -528,9 +540,7 @@ class RegistryAdapter:
         # Step 4: Try basic auth if credentials provided
         if auth:
             logger.debug(f"Attempting basic auth for {registry}")
-            credentials = f"{auth['username']}:{auth['password']}"
-            encoded = base64.b64encode(credentials.encode()).decode()
-            return f"Basic {encoded}"
+            return self._encode_basic_auth(auth)
 
         # Step 5: No auth needed (public registry with anonymous access)
         logger.debug(f"No authentication required for {registry}")
@@ -555,9 +565,7 @@ class RegistryAdapter:
 
         headers = {}
         if auth:
-            credentials = f"{auth['username']}:{auth['password']}"
-            encoded = base64.b64encode(credentials.encode()).decode()
-            headers["Authorization"] = f"Basic {encoded}"
+            headers["Authorization"] = self._encode_basic_auth(auth)
 
         try:
             async with aiohttp.ClientSession() as session:
@@ -572,7 +580,13 @@ class RegistryAdapter:
                                 "token": f"Bearer {token}",
                                 "expires_at": datetime.now(timezone.utc) + timedelta(minutes=4)
                             }
+                            logger.debug(f"Successfully obtained Docker Hub token for '{repository}'")
                             return f"Bearer {token}"
+                        else:
+                            logger.error(f"Docker Hub returned 200 but no token in response for '{repository}'")
+                    else:
+                        response_text = await response.text()
+                        logger.error(f"Docker Hub token request failed with status {response.status} for '{repository}': {response_text[:200]}")
         except Exception as e:
             logger.warning(f"Failed to get Docker Hub token: {e}")
 
@@ -597,9 +611,7 @@ class RegistryAdapter:
 
         headers = {}
         if auth:
-            credentials = f"{auth['username']}:{auth['password']}"
-            encoded = base64.b64encode(credentials.encode()).decode()
-            headers["Authorization"] = f"Basic {encoded}"
+            headers["Authorization"] = self._encode_basic_auth(auth)
 
         try:
             async with aiohttp.ClientSession() as session:

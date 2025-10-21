@@ -15,6 +15,7 @@ CHANGES:
 - event_logs: Add source column and indexes
 - DockerHosts: Add tags, description columns
 - container_http_health_checks: New table for HTTP/HTTPS health monitoring
+- registry_credentials: New table for private registry authentication (v2.0.1+)
 """
 from alembic import op
 import sqlalchemy as sa

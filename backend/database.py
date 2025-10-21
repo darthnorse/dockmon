@@ -598,6 +598,28 @@ class TagAssignment(Base):
     )
 
 
+class RegistryCredential(Base):
+    """
+    Registry authentication credentials for private container registries.
+
+    Stores encrypted credentials for authenticating with private Docker registries.
+    Passwords are encrypted using Fernet symmetric encryption before storage.
+
+    Security:
+        - Passwords are encrypted at rest
+        - Encryption key stored in /app/data/encryption.key
+        - Protects against database dumps, NOT against full container compromise
+    """
+    __tablename__ = "registry_credentials"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    registry_url = Column(String, nullable=False, unique=True)  # e.g., "registry.example.com", "ghcr.io"
+    username = Column(String, nullable=False)
+    password_encrypted = Column(Text, nullable=False)  # Fernet-encrypted password
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+
 class DatabaseManager:
     """
     Database management and operations (Singleton)

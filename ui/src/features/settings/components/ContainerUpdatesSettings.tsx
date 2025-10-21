@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button'
 import { apiClient } from '@/lib/api/client'
 import { ToggleSwitch } from './ToggleSwitch'
 import { UpdatePoliciesSettings } from './UpdatePoliciesSettings'
+import { RegistryCredentialsSettings } from './RegistryCredentialsSettings'
 
 export function ContainerUpdatesSettings() {
   const { data: settings } = useGlobalSettings()
@@ -184,18 +185,7 @@ export function ContainerUpdatesSettings() {
 
       {/* Registry Credentials */}
       <div>
-        <div className="mb-4">
-          <h3 className="text-lg font-semibold text-white">Registry Credentials</h3>
-          <p className="text-xs text-gray-400 mt-1">Configure credentials for private container registries</p>
-        </div>
-        <div className="rounded-md border border-gray-700 bg-gray-800/50 px-4 py-3">
-          <p className="text-sm text-gray-400">
-            Private registry credentials management coming soon...
-          </p>
-          <p className="text-xs text-gray-500 mt-2">
-            Currently, only public registries are supported (Docker Hub, GHCR, LSCR, Quay.io). Support for reading credentials from Docker's config.json and a UI for managing private registry credentials will be added in a future update.
-          </p>
-        </div>
+        <RegistryCredentialsSettings />
       </div>
     </div>
   )

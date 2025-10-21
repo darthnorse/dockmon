@@ -36,7 +36,8 @@ from database import (
     ContainerDesiredState,
     ContainerHttpHealthCheck,
     User,
-    DockerHostDB
+    DockerHostDB,
+    RegistryCredential
 )
 from realtime import RealtimeMonitor
 from notifications import NotificationService
@@ -58,6 +59,7 @@ from websocket.rate_limiter import ws_rate_limiter
 from docker_monitor.monitor import DockerMonitor
 from batch_manager import BatchJobManager
 from utils.keys import make_composite_key
+from utils.encryption import encrypt_password, decrypt_password
 from utils.async_docker import async_docker_call
 
 # Configure logging
@@ -3052,6 +3054,244 @@ async def cleanup_old_events(days: int = 30, current_user: dict = Depends(get_cu
     except Exception as e:
         logger.error(f"Failed to cleanup events: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== Registry Credentials Endpoints ====================
+
+
+@app.get("/api/registry-credentials")
+async def get_registry_credentials(current_user: dict = Depends(get_current_user)):
+    """
+    Get all registry credentials (passwords hidden for security).
+
+    Returns:
+        List of registry credentials with encrypted passwords omitted
+    """
+    try:
+        with monitor.db.get_session() as session:
+            credentials = session.query(RegistryCredential).order_by(
+                RegistryCredential.created_at.desc()
+            ).all()
+
+            # Return credentials without exposing passwords
+            return [{
+                "id": cred.id,
+                "registry_url": cred.registry_url,
+                "username": cred.username,
+                "created_at": cred.created_at.isoformat() + 'Z' if cred.created_at else None,
+                "updated_at": cred.updated_at.isoformat() + 'Z' if cred.updated_at else None
+            } for cred in credentials]
+
+    except Exception as e:
+        logger.error(f"Failed to get registry credentials: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get credentials: {str(e)}")
+
+
+@app.post("/api/registry-credentials")
+async def create_registry_credential(
+    data: dict,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Create new registry credential.
+
+    Args:
+        data: {registry_url, username, password}
+
+    Returns:
+        Created credential (password hidden)
+    """
+    try:
+        # Validate required fields
+        registry_url = data.get("registry_url", "").strip()
+        username = data.get("username", "").strip()
+        password = data.get("password", "")
+
+        if not registry_url:
+            raise HTTPException(status_code=400, detail="registry_url is required")
+        if not username:
+            raise HTTPException(status_code=400, detail="username is required")
+        if not password:
+            raise HTTPException(status_code=400, detail="password is required")
+
+        # Normalize registry URL (remove protocol if present, lowercase)
+        if registry_url.startswith("http://") or registry_url.startswith("https://"):
+            registry_url = registry_url.split("://", 1)[1]
+        registry_url = registry_url.lower()
+
+        with monitor.db.get_session() as session:
+            # Check for duplicate registry URL
+            existing = session.query(RegistryCredential).filter_by(
+                registry_url=registry_url
+            ).first()
+
+            if existing:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Credentials for registry '{registry_url}' already exist. Use update instead."
+                )
+
+            # Encrypt password
+            try:
+                password_encrypted = encrypt_password(password)
+            except Exception as e:
+                logger.error(f"Failed to encrypt password: {e}")
+                raise HTTPException(status_code=500, detail="Failed to encrypt password")
+
+            # Create credential
+            credential = RegistryCredential(
+                registry_url=registry_url,
+                username=username,
+                password_encrypted=password_encrypted
+            )
+
+            session.add(credential)
+            session.commit()
+            session.refresh(credential)
+
+            logger.info(f"Created registry credential for {registry_url} (username: {username})")
+
+            # Log event
+            monitor.event_logger.log_system_event(
+                "Registry Credential Created",
+                f"Added credentials for registry: {registry_url}",
+                EventSeverity.INFO,
+                EventType.CONFIG_CHANGED
+            )
+
+            # Return credential without password
+            return {
+                "id": credential.id,
+                "registry_url": credential.registry_url,
+                "username": credential.username,
+                "created_at": credential.created_at.isoformat() + 'Z' if credential.created_at else None,
+                "updated_at": credential.updated_at.isoformat() + 'Z' if credential.updated_at else None
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to create registry credential: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to create credential: {str(e)}")
+
+
+@app.put("/api/registry-credentials/{credential_id}")
+async def update_registry_credential(
+    credential_id: int,
+    data: dict,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Update existing registry credential.
+
+    Args:
+        credential_id: Credential ID
+        data: {username?, password?}
+
+    Returns:
+        Updated credential (password hidden)
+    """
+    try:
+        username = data.get("username", "").strip()
+        password = data.get("password", "")
+
+        if not username and not password:
+            raise HTTPException(status_code=400, detail="Either username or password must be provided")
+
+        with monitor.db.get_session() as session:
+            credential = session.query(RegistryCredential).filter_by(id=credential_id).first()
+
+            if not credential:
+                raise HTTPException(status_code=404, detail=f"Credential {credential_id} not found")
+
+            # Update username if provided
+            if username:
+                credential.username = username
+
+            # Update password if provided
+            if password:
+                try:
+                    credential.password_encrypted = encrypt_password(password)
+                except Exception as e:
+                    logger.error(f"Failed to encrypt password: {e}")
+                    raise HTTPException(status_code=500, detail="Failed to encrypt password")
+
+            session.commit()
+            session.refresh(credential)
+
+            logger.info(f"Updated registry credential for {credential.registry_url}")
+
+            # Log event
+            monitor.event_logger.log_system_event(
+                "Registry Credential Updated",
+                f"Updated credentials for registry: {credential.registry_url}",
+                EventSeverity.INFO,
+                EventType.CONFIG_CHANGED
+            )
+
+            # Return credential without password
+            return {
+                "id": credential.id,
+                "registry_url": credential.registry_url,
+                "username": credential.username,
+                "created_at": credential.created_at.isoformat() + 'Z' if credential.created_at else None,
+                "updated_at": credential.updated_at.isoformat() + 'Z' if credential.updated_at else None
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update registry credential: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to update credential: {str(e)}")
+
+
+@app.delete("/api/registry-credentials/{credential_id}")
+async def delete_registry_credential(
+    credential_id: int,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Delete registry credential.
+
+    Args:
+        credential_id: Credential ID
+
+    Returns:
+        Success message
+    """
+    try:
+        with monitor.db.get_session() as session:
+            credential = session.query(RegistryCredential).filter_by(id=credential_id).first()
+
+            if not credential:
+                raise HTTPException(status_code=404, detail=f"Credential {credential_id} not found")
+
+            registry_url = credential.registry_url
+
+            session.delete(credential)
+            session.commit()
+
+            logger.info(f"Deleted registry credential for {registry_url}")
+
+            # Log event
+            monitor.event_logger.log_system_event(
+                "Registry Credential Deleted",
+                f"Deleted credentials for registry: {registry_url}",
+                EventSeverity.INFO,
+                EventType.CONFIG_CHANGED
+            )
+
+            return {
+                "success": True,
+                "message": f"Deleted credentials for {registry_url}"
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete registry credential: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete credential: {str(e)}")
+
 
 @app.websocket("/ws")
 @app.websocket("/ws/")

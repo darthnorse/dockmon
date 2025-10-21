@@ -10,10 +10,11 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
 
-from database import DatabaseManager, ContainerUpdate, GlobalSettings
+from database import DatabaseManager, ContainerUpdate, GlobalSettings, RegistryCredential
 from updates.registry_adapter import get_registry_adapter
 from event_bus import Event, EventType, get_event_bus
 from utils.keys import make_composite_key
+from utils.encryption import decrypt_password
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,62 @@ class UpdateChecker:
         self.db = db
         self.monitor = monitor
         self.registry = get_registry_adapter()
+
+    def _get_registry_credentials(self, image_name: str) -> Optional[Dict[str, str]]:
+        """
+        Get credentials for registry from image name.
+
+        Extracts registry URL from image and looks up stored credentials.
+
+        Args:
+            image_name: Full image reference (e.g., "nginx:1.25", "ghcr.io/user/app:latest")
+
+        Returns:
+            Dict with {username, password} if credentials found, None otherwise
+
+        Examples:
+            nginx:1.25 → docker.io → lookup credentials for "docker.io"
+            ghcr.io/user/app:latest → ghcr.io → lookup credentials for "ghcr.io"
+            registry.example.com:5000/app:v1 → registry.example.com:5000 → lookup
+        """
+        try:
+            # Extract registry URL using same logic as registry_adapter
+            registry_url = "docker.io"  # Default
+
+            # Check for explicit registry
+            if "/" in image_name:
+                parts = image_name.split("/", 1)
+                # If first part has dot or colon, it's likely a registry
+                if "." in parts[0] or ":" in parts[0]:
+                    registry_url = parts[0]
+
+            # Normalize (lowercase)
+            registry_url = registry_url.lower()
+
+            # Query database for credentials
+            with self.db.get_session() as session:
+                cred = session.query(RegistryCredential).filter_by(
+                    registry_url=registry_url
+                ).first()
+
+                if cred:
+                    try:
+                        plaintext = decrypt_password(cred.password_encrypted)
+                        logger.debug(f"Using credentials for registry '{registry_url}'")
+                        return {
+                            "username": cred.username,
+                            "password": plaintext
+                        }
+                    except Exception as e:
+                        logger.error(f"Failed to decrypt credentials for {registry_url}: {e}")
+                        return None
+
+                # No credentials found
+                return None
+
+        except Exception as e:
+            logger.error(f"Error looking up credentials for {image_name}: {e}")
+            return None
 
     async def check_all_containers(self) -> Dict[str, int]:
         """
@@ -156,19 +213,24 @@ class UpdateChecker:
 
         logger.debug(f"Checking {image} with mode '{tracking_mode}' → tracking {floating_tag}")
 
+        # Look up registry credentials for this image
+        auth = self._get_registry_credentials(image)
+        if auth:
+            logger.debug(f"Using credentials for {container['name']}")
+
         # Get current digest from Docker API (the actual digest the container is running)
         current_digest = await self._get_container_image_digest(container)
         if not current_digest:
             logger.warning(f"Could not get current digest for {container['name']}, falling back to registry query")
             # Fallback: query registry for current image tag (less accurate for :latest tags)
-            current_result = await self.registry.resolve_tag(image)
+            current_result = await self.registry.resolve_tag(image, auth=auth)
             if not current_result:
                 logger.warning(f"Could not resolve current image: {image}")
                 return None
             current_digest = current_result["digest"]
 
         # Resolve floating tag to digest (what's available in registry)
-        latest_result = await self.registry.resolve_tag(floating_tag)
+        latest_result = await self.registry.resolve_tag(floating_tag, auth=auth)
         if not latest_result:
             logger.warning(f"Could not resolve floating tag: {floating_tag}")
             return None

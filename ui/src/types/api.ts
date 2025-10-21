@@ -114,3 +114,25 @@ export interface Container {
   // Tags
   tags?: string[] | null
 }
+
+// ==================== Registry Credentials ====================
+
+export interface RegistryCredential {
+  id: number
+  registry_url: string
+  username: string
+  // password never returned by API for security
+  created_at: string
+  updated_at: string
+}
+
+export interface RegistryCredentialCreate {
+  registry_url: string
+  username: string
+  password: string
+}
+
+export interface RegistryCredentialUpdate {
+  username?: string
+  password?: string
+}

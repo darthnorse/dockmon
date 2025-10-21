@@ -198,12 +198,13 @@ export function EventsPage() {
     updateFilter('host_id', newSelection.length > 0 ? newSelection : undefined)
   }
 
-  const toggleContainerSelection = (containerId: string) => {
-    const newSelection = selectedContainerIds.includes(containerId)
-      ? selectedContainerIds.filter((id) => id !== containerId)
-      : [...selectedContainerIds, containerId]
+  const toggleContainerSelection = (containerCompositeKey: string) => {
+    const newSelection = selectedContainerIds.includes(containerCompositeKey)
+      ? selectedContainerIds.filter((id) => id !== containerCompositeKey)
+      : [...selectedContainerIds, containerCompositeKey]
 
     setSelectedContainerIds(newSelection)
+    // Use composite keys for filtering to match database storage format
     updateFilter('container_id', newSelection.length > 0 ? newSelection : undefined)
   }
 
@@ -431,11 +432,13 @@ export function EventsPage() {
                   <div className="px-3 py-2 text-sm text-muted-foreground">No containers found</div>
                 ) : (
                   filteredContainers.map((container) => {
-                    const isSelected = selectedContainerIds.includes(container.id)
+                    // Use composite key for selection to match database storage format
+                    const compositeKey = makeCompositeKey(container)
+                    const isSelected = selectedContainerIds.includes(compositeKey)
                     return (
                       <button
                         key={container.id}
-                        onClick={() => toggleContainerSelection(container.id)}
+                        onClick={() => toggleContainerSelection(compositeKey)}
                         className="w-full px-3 py-2 text-left text-sm flex items-center gap-2 hover:bg-surface-2 transition-colors"
                       >
                         <div

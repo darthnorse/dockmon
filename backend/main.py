@@ -2864,9 +2864,12 @@ async def get_event_statistics(start_date: Optional[str] = None,
 async def get_container_events(host_id: str, container_id: str, limit: int = 50, current_user: dict = Depends(get_current_user)):
     """Get events for a specific container"""
     try:
+        # Convert short container ID to composite key for database query
+        # Events are stored with composite keys: {host_id}:{container_id}
+        container_composite_key = make_composite_key(host_id, container_id)
+
         events, total_count = monitor.db.get_events(
-            host_id=host_id,
-            container_id=container_id,
+            container_id=container_composite_key,
             limit=limit,
             offset=0
         )

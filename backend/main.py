@@ -914,7 +914,11 @@ async def get_container_update_status(
         - last_checked_at: datetime
         - auto_update_enabled: bool
         - update_policy: str|null (allow|warn|block|null)
+        - validation_info: dict (validation details for UI warnings)
+        - is_compose_container: bool
+        - skip_compose_enabled: bool (global setting)
     """
+    from updates.container_validator import ContainerValidator
 
     # Normalize to short ID
     short_id = container_id[:12] if len(container_id) > 12 else container_id
@@ -924,6 +928,48 @@ async def get_container_update_status(
         record = session.query(ContainerUpdate).filter_by(
             container_id=composite_key
         ).first()
+
+        # Get container info for validation (labels, name, image)
+        container = None
+        try:
+            containers = await monitor.get_containers(host_id=host_id)
+            container = next((c for c in containers if c.id == short_id), None)
+        except Exception as e:
+            logger.warning(f"Failed to get container {short_id} for validation: {e}")
+
+        # Default response if no container found
+        validation_info = None
+        is_compose_container = False
+        skip_compose_enabled = False
+
+        if container:
+            # Run validation check
+            validator = ContainerValidator(session)
+            validation_result = validator.validate_update(
+                host_id=host_id,
+                container_id=short_id,
+                container_name=container.name,
+                image_name=container.image,
+                labels=container.labels or {}
+            )
+
+            validation_info = {
+                "result": validation_result.result.value,
+                "reason": validation_result.reason,
+                "matched_pattern": validation_result.matched_pattern,
+                "source": "validation_check"
+            }
+
+            # Check for compose container
+            labels = container.labels or {}
+            is_compose_container = any(
+                label.startswith("com.docker.compose")
+                for label in labels.keys()
+            )
+
+            # Get global skip_compose_containers setting
+            settings = session.query(GlobalSettings).first()
+            skip_compose_enabled = settings.skip_compose_containers if settings else True
 
         if not record:
             # No update check performed yet
@@ -937,6 +983,9 @@ async def get_container_update_status(
                 "last_checked_at": None,
                 "auto_update_enabled": False,
                 "update_policy": None,
+                "validation_info": validation_info,
+                "is_compose_container": is_compose_container,
+                "skip_compose_enabled": skip_compose_enabled,
             }
 
         return {
@@ -949,6 +998,9 @@ async def get_container_update_status(
             "last_checked_at": record.last_checked_at.isoformat() + 'Z' if record.last_checked_at else None,
             "auto_update_enabled": record.auto_update_enabled,
             "update_policy": record.update_policy,
+            "validation_info": validation_info,
+            "is_compose_container": is_compose_container,
+            "skip_compose_enabled": skip_compose_enabled,
         }
 
 

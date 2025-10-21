@@ -273,6 +273,13 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
     ? new Date(updateStatus.last_checked_at).toLocaleString()
     : 'Not Checked'
 
+  // Check if auto-updates are enabled but won't work due to blockers
+  const isComposeBlocked = updateStatus?.is_compose_container && updateStatus?.skip_compose_enabled
+  const isValidationBlocked = updateStatus?.validation_info?.result === 'block'
+  const isValidationWarned = updateStatus?.validation_info?.result === 'warn'
+
+  const hasBlockers = autoUpdateEnabled && (isComposeBlocked || isValidationBlocked || isValidationWarned)
+
   return (
     <div className="p-6 space-y-6">
       {/* Header with status */}
@@ -340,6 +347,58 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
           </Button>
         </div>
       </div>
+
+      {/* Auto-Update Blocker Warning */}
+      {hasBlockers && (
+        <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-4">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="h-5 w-5 text-yellow-400 flex-shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <h4 className="text-sm font-semibold text-yellow-200 mb-2">
+                Auto-Update Won't Run Automatically
+              </h4>
+              <p className="text-sm text-yellow-200/90 mb-3">
+                Despite enabling auto-updates, this container won't update automatically because:
+              </p>
+              <ul className="text-sm text-yellow-200/90 space-y-1.5">
+                {isComposeBlocked && (
+                  <li className="flex flex-col gap-1">
+                    <span>• This container uses Docker Compose which is blocked by system settings</span>
+                    <span className="text-xs text-yellow-200/70 ml-4">
+                      Change in Settings → Container Updates → "Skip Docker Compose containers"
+                    </span>
+                  </li>
+                )}
+                {isValidationBlocked && updateStatus?.validation_info && (
+                  <li className="flex flex-col gap-1">
+                    <span>• {updateStatus.validation_info.reason}</span>
+                    <span className="text-xs text-yellow-200/70 ml-4">
+                      {updateStatus.validation_info.matched_pattern
+                        ? `Change in Settings → Update Validation → Edit pattern "${updateStatus.validation_info.matched_pattern}"`
+                        : 'Change in Settings → Update Validation or update the container policy'
+                      }
+                    </span>
+                  </li>
+                )}
+                {isValidationWarned && updateStatus?.validation_info && (
+                  <li className="flex flex-col gap-1">
+                    <span>• Requires manual confirmation: {updateStatus.validation_info.reason}</span>
+                    <span className="text-xs text-yellow-200/70 ml-4">
+                      {updateStatus.validation_info.matched_pattern
+                        ? `Matched pattern "${updateStatus.validation_info.matched_pattern}" - confirmation required for each update`
+                        : 'Manual confirmation required for each update'
+                      }
+                    </span>
+                  </li>
+                )}
+              </ul>
+              <p className="text-xs text-yellow-200/70 mt-3">
+                Manual updates are still available using the "Update Now" button above.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Update Progress */}
       {updateProgress && (

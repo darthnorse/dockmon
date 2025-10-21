@@ -139,10 +139,16 @@ export function useSetContainerUpdatePolicy() {
       containerId: string
       policy: UpdatePolicyValue
     }) => {
+      // Build params object conditionally - omit policy key when null
+      const params: Record<string, string> = {}
+      if (policy !== null) {
+        params.policy = policy
+      }
+
       const data = await apiClient.put<SetContainerPolicyResponse>(
         `/hosts/${hostId}/containers/${containerId}/update-policy`,
         null,
-        { params: { policy: policy || 'null' } }
+        { params }
       )
       return data
     },

@@ -408,10 +408,10 @@ export function BulkActionBar({
                         disabled={isLoading || autoUpdateMode === 'disable'}
                         className="px-2 py-1 text-sm rounded border border-border bg-background disabled:opacity-50"
                       >
-                        <option value="exact">Exact</option>
-                        <option value="minor">Minor</option>
-                        <option value="major">Major</option>
-                        <option value="latest">Latest</option>
+                        <option value="exact">Respect Tag</option>
+                        <option value="minor">Minor Updates</option>
+                        <option value="major">Major Updates</option>
+                        <option value="latest">Always Latest</option>
                       </select>
                       <Button
                         variant="default"

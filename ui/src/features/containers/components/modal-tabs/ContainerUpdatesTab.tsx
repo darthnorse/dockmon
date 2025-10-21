@@ -595,7 +595,7 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
               onValueChange={(value) => handlePolicyChange(value === 'null' ? null : value as UpdatePolicyValue)}
               disabled={setContainerPolicy.isPending}
             >
-              <SelectTrigger id="update-policy" className="w-[160px]">
+              <SelectTrigger id="update-policy" className="w-[180px]">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

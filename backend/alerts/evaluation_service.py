@@ -9,6 +9,7 @@ Runs periodic evaluation of metric-driven rules and processes events for event-d
 """
 
 import asyncio
+import json
 import logging
 import time
 from datetime import datetime, timezone
@@ -543,15 +544,48 @@ class AlertEvaluationService:
                     logger.error(f"Failed to log alert event: {e}", exc_info=True)
 
             # Send notification via notification service
+            should_mark_notified = False
             if hasattr(self, 'notification_service') and self.notification_service:
                 logger.info(f"Calling notification_service.send_alert_v2 for alert {alert.id}")
                 try:
                     result = await self.notification_service.send_alert_v2(alert, rule)
                     logger.info(f"send_alert_v2 returned: {result} for alert {alert.id}")
+
+                    # Mark as notified if:
+                    # 1. Notification succeeded (result=True), OR
+                    # 2. Rule has no channels configured (permanent config issue - prevent retry loop)
+                    if result:
+                        should_mark_notified = True
+                    else:
+                        # Check if failure was due to no channels (permanent) vs temporary failure
+                        # No channels = permanent config issue, don't retry
+                        # Parse channels from rule
+                        try:
+                            channel_ids = json.loads(rule.notify_channels_json) if rule.notify_channels_json else []
+                            if not channel_ids:
+                                logger.info(f"No channels configured for rule {rule.name} - marking as notified to prevent retry loop")
+                                should_mark_notified = True
+                        except (json.JSONDecodeError, TypeError, AttributeError):
+                            # Can't parse channels, be conservative and don't retry
+                            should_mark_notified = True
+
                 except Exception as e:
                     logger.error(f"Failed to send notification for alert {alert.id}: {e}", exc_info=True)
+                    # Don't mark as notified on exception - allow retry
             else:
                 logger.warning(f"No notification service available for alert {alert.id}")
+                # No service is a permanent issue - mark as notified
+                should_mark_notified = True
+
+            # Mark alert as notified if appropriate
+            if should_mark_notified:
+                with self.engine.db.get_session() as session:
+                    alert_to_update = session.query(AlertV2).filter(AlertV2.id == alert.id).first()
+                    if alert_to_update:
+                        alert_to_update.notified_at = datetime.now(timezone.utc)
+                        alert_to_update.notification_count = (alert_to_update.notification_count or 0) + 1
+                        session.commit()
+                        logger.debug(f"Marked alert {alert.id} as notified (count: {alert_to_update.notification_count})")
 
         except Exception as e:
             logger.error(f"Error in _send_notification: {e}", exc_info=True)

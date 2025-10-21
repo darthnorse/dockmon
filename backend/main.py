@@ -53,7 +53,11 @@ from utils.keys import make_composite_key
 setup_logging()
 logger = logging.getLogger(__name__)
 
+# ==================== Security Constants ====================
 
+# Log fetching limits to prevent DoS attacks
+MAX_LOG_TAIL = 1000  # Maximum log lines allowed per request (reasonable for multi-container viewing)
+MAX_LOG_AGE_DAYS = 30  # Maximum age for 'since' parameter to prevent memory exhaustion
 
 
 
@@ -651,12 +655,21 @@ async def get_container_logs(
     current_user: dict = Depends(get_current_user)
     # No rate limiting - authenticated users can poll logs freely
 ):
-    """Get container logs - Portainer-style polling approach"""
+    """Get container logs - Portainer-style polling approach
+
+    Security:
+    - tail parameter is clamped to MAX_LOG_TAIL to prevent DoS attacks
+    - since parameter validated to prevent fetching excessive historical logs
+    """
     if host_id not in monitor.clients:
         raise HTTPException(status_code=404, detail="Host not found")
 
     try:
         client = monitor.clients[host_id]
+
+        # SECURITY: Clamp tail to prevent DoS attacks
+        # Even if client requests 1,000,000 lines, limit to MAX_LOG_TAIL
+        tail = max(1, min(tail, MAX_LOG_TAIL))
 
         # Run blocking Docker calls in executor with timeout
         loop = asyncio.get_event_loop()
@@ -673,7 +686,7 @@ async def get_container_logs(
         # Prepare log options
         log_kwargs = {
             'timestamps': True,
-            'tail': tail
+            'tail': tail  # Use clamped value
         }
 
         # Add since parameter if provided (for getting only new logs)
@@ -682,14 +695,32 @@ async def get_container_logs(
                 # Parse ISO timestamp and convert to Unix timestamp for Docker
                 import dateutil.parser
                 dt = dateutil.parser.parse(since)
-                # Docker's 'since' expects Unix timestamp as float
-                import time
-                unix_ts = time.mktime(dt.timetuple())
+
+                # SECURITY: Reject timestamps older than MAX_LOG_AGE_DAYS to prevent memory exhaustion
+                # This prevents attacks like since="1970-01-01" that would fetch entire container history
+                max_age = datetime.now(timezone.utc) - timedelta(days=MAX_LOG_AGE_DAYS)
+                if dt.replace(tzinfo=None) < max_age.replace(tzinfo=None):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"'since' parameter cannot be older than {MAX_LOG_AGE_DAYS} days"
+                    )
+
+                # BUG FIX: Use dt.timestamp() instead of time.mktime()
+                # mktime() incorrectly interprets timezone-aware datetime as local time
+                # timestamp() correctly handles timezone offsets
+                unix_ts = dt.timestamp()
                 log_kwargs['since'] = unix_ts
-                log_kwargs['tail'] = 'all'  # Get all logs since timestamp
-            except Exception as e:
-                logger.debug(f"Could not parse 'since' parameter: {e}")
-                pass  # Invalid timestamp, ignore
+
+                # SECURITY: Even with 'since', respect tail limit
+                # Never use tail='all' to prevent unbounded memory usage
+                log_kwargs['tail'] = tail  # Use clamped value, not 'all'
+
+            except ValueError as e:
+                # Provide clear error message for invalid timestamps
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid 'since' timestamp format: {e}"
+                )
 
         # Fetch logs with timeout
         try:

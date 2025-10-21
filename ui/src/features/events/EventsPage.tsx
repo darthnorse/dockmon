@@ -495,7 +495,7 @@ export function EventsPage() {
           <div className="h-full overflow-y-auto">
             {/* Table Header */}
             <div className="sticky top-0 bg-surface border-b border-border px-6 py-2 grid grid-cols-[200px_120px_1fr] gap-4 text-xs font-medium text-muted-foreground">
-              <div>TIME RLZTVS</div>
+              <div>TIME</div>
               <div>SEVERITY</div>
               <div>EVENT DETAILS</div>
             </div>

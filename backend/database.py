@@ -2277,8 +2277,14 @@ class DatabaseManager:
     def get_event_statistics(self,
                            start_date: Optional[datetime] = None,
                            end_date: Optional[datetime] = None) -> Dict[str, Any]:
-        """Get event statistics for dashboard"""
+        """Get event statistics for dashboard
+
+        BUG FIX: Apply date filters to ALL queries to ensure consistent counts.
+        Previously, category_counts and severity_counts ignored the date filters,
+        causing total_events to differ from the sum of categories/severities.
+        """
         with self.get_session() as session:
+            # Build base query with date filters
             query = session.query(EventLog)
 
             if start_date:
@@ -2288,16 +2294,22 @@ class DatabaseManager:
 
             total_events = query.count()
 
-            # Count by category
+            # BUG FIX: Reuse filtered query for category counts
+            # Previous code created a new query that ignored date filters
             category_counts = {}
-            for category, count in session.query(EventLog.category,
-                                               session.func.count(EventLog.id)).group_by(EventLog.category).all():
+            for category, count in query.with_entities(
+                EventLog.category,
+                session.func.count(EventLog.id)
+            ).group_by(EventLog.category).all():
                 category_counts[category] = count
 
-            # Count by severity
+            # BUG FIX: Reuse filtered query for severity counts
+            # Previous code created a new query that ignored date filters
             severity_counts = {}
-            for severity, count in session.query(EventLog.severity,
-                                               session.func.count(EventLog.id)).group_by(EventLog.severity).all():
+            for severity, count in query.with_entities(
+                EventLog.severity,
+                session.func.count(EventLog.id)
+            ).group_by(EventLog.severity).all():
                 severity_counts[severity] = count
 
             return {

@@ -269,7 +269,8 @@ def upgrade() -> None:
             ('monitoring', 'uptime-kuma', 1),
             ('critical', 'portainer', 1),
             ('critical', 'watchtower', 1),
-            ('critical', 'dockmon', 1)
+            ('critical', 'dockmon', 1),
+            ('critical', 'komodo', 1)
         """):
             pass  # Successfully inserted default policies
     except Exception as e:

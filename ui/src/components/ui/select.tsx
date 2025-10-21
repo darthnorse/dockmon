@@ -65,11 +65,24 @@ export function SelectTrigger({ id, className, children }: SelectTriggerProps) {
   )
 }
 
-export function SelectValue() {
+interface SelectValueProps {
+  children?: React.ReactNode
+  placeholder?: string
+}
+
+export function SelectValue({ children, placeholder }: SelectValueProps = {}) {
   const context = React.useContext(SelectContext)
   if (!context) throw new Error('SelectValue must be used within Select')
 
-  return <span>{context.value}</span>
+  // If children provided, use that as custom render
+  if (children) {
+    return <span>{children}</span>
+  }
+
+  // Otherwise show value or placeholder
+  return <span className={!context.value && placeholder ? 'text-muted-foreground' : ''}>
+    {context.value || placeholder}
+  </span>
 }
 
 interface SelectContentProps {

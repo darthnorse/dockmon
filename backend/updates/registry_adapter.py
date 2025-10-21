@@ -230,6 +230,218 @@ class RegistryAdapter:
 
         return f"{registry}/v2/{repository}/manifests/{tag}"
 
+    def _parse_www_authenticate(self, header: str) -> Optional[Dict[str, str]]:
+        """
+        Parse WWW-Authenticate header to extract auth parameters.
+
+        The header format follows RFC 7235 (HTTP Authentication) and is typically:
+        Bearer realm="https://auth.example.com/token",service="registry.example.com",scope="repository:repo/name:pull"
+
+        Args:
+            header: WWW-Authenticate header value
+
+        Returns:
+            Dict with keys: realm, service, scope
+            Or None if parsing fails
+
+        Example:
+            Input: 'Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:user/app:pull"'
+            Output: {
+                "realm": "https://ghcr.io/token",
+                "service": "ghcr.io",
+                "scope": "repository:user/app:pull"
+            }
+        """
+        if not header:
+            return None
+
+        try:
+            # Extract the auth scheme (should be "Bearer")
+            if not header.startswith("Bearer "):
+                logger.warning(f"Unexpected WWW-Authenticate scheme: {header[:20]}")
+                return None
+
+            # Remove "Bearer " prefix
+            params_str = header[7:]  # len("Bearer ") = 7
+
+            # Parse key="value" pairs using regex
+            # Pattern matches: key="value" or key=value
+            param_pattern = r'(\w+)="([^"]+)"'
+            matches = re.findall(param_pattern, params_str)
+
+            if not matches:
+                logger.warning(f"No parameters found in WWW-Authenticate header")
+                return None
+
+            # Convert to dict
+            params = {key: value for key, value in matches}
+
+            # Validate required fields
+            if "realm" not in params:
+                logger.warning(f"WWW-Authenticate missing 'realm' parameter")
+                return None
+
+            logger.debug(f"Parsed WWW-Authenticate: realm={params.get('realm')}, service={params.get('service')}, scope={params.get('scope', 'none')}")
+            return params
+
+        except Exception as e:
+            logger.error(f"Error parsing WWW-Authenticate header: {e}")
+            return None
+
+    async def _discover_auth_endpoint(
+        self,
+        registry: str,
+        repository: str
+    ) -> Optional[Dict[str, str]]:
+        """
+        Discover authentication endpoint by attempting manifest fetch.
+
+        Following the Docker Registry V2 specification:
+        1. Send HEAD request to manifest endpoint without auth
+        2. If 401, parse WWW-Authenticate header to discover auth endpoint
+        3. Return parsed auth parameters (realm, service, scope)
+
+        This is the standards-compliant way to discover auth requirements
+        for any OCI-compliant registry.
+
+        Args:
+            registry: Registry URL (e.g., "ghcr.io", "lscr.io")
+            repository: Repository name (e.g., "linuxserver/sabnzbd")
+
+        Returns:
+            Dict with keys: realm, service, scope
+            Or None if discovery fails or no auth required
+
+        Example:
+            _discover_auth_endpoint("lscr.io", "linuxserver/sabnzbd")
+            → {
+                "realm": "https://ghcr.io/token",
+                "service": "ghcr.io",
+                "scope": "repository:linuxserver/sabnzbd:pull"
+              }
+        """
+        try:
+            # Construct manifest URL for discovery (use 'latest' tag)
+            manifest_url = self._get_manifest_url(registry, repository, "latest")
+
+            # Send HEAD request (lighter than GET, we only need headers)
+            async with aiohttp.ClientSession() as session:
+                async with session.head(
+                    manifest_url,
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as response:
+                    if response.status == 401:
+                        # Registry requires auth - parse WWW-Authenticate header
+                        www_auth = response.headers.get("WWW-Authenticate")
+                        if www_auth:
+                            params = self._parse_www_authenticate(www_auth)
+                            if params:
+                                logger.debug(f"Discovered auth endpoint for {registry}: {params.get('realm')}")
+                                return params
+                            else:
+                                logger.warning(f"Failed to parse WWW-Authenticate for {registry}")
+                        else:
+                            logger.warning(f"Registry {registry} returned 401 but no WWW-Authenticate header")
+                    elif response.status == 200:
+                        # No auth required - public registry
+                        logger.debug(f"Registry {registry} allows anonymous access")
+                        return None
+                    else:
+                        # Unexpected status - log and return None
+                        logger.warning(f"Unexpected status {response.status} during auth discovery for {registry}")
+
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout during auth discovery for {registry}")
+        except Exception as e:
+            logger.warning(f"Error discovering auth endpoint for {registry}: {e}")
+
+        return None
+
+    async def _fetch_token_from_endpoint(
+        self,
+        realm: str,
+        service: Optional[str],
+        scope: Optional[str],
+        auth: Optional[Dict] = None,
+        cache_key: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        Fetch Bearer token from discovered auth endpoint.
+
+        This is a generic token fetcher that works with any OCI-compliant
+        registry token endpoint. Follows the pattern discovered via
+        WWW-Authenticate header parsing.
+
+        Args:
+            realm: Token endpoint URL (e.g., "https://ghcr.io/token")
+            service: Service name (e.g., "ghcr.io")
+            scope: Access scope (e.g., "repository:user/app:pull")
+            auth: Optional credentials dict with username/password
+            cache_key: Optional cache key for token caching
+
+        Returns:
+            Bearer token string (e.g., "Bearer abc123...")
+            Or None if fetch fails
+
+        Example:
+            _fetch_token_from_endpoint(
+                realm="https://ghcr.io/token",
+                service="ghcr.io",
+                scope="repository:linuxserver/sabnzbd:pull"
+            )
+            → "Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
+        """
+        try:
+            # Build query parameters
+            params = {}
+            if service:
+                params["service"] = service
+            if scope:
+                params["scope"] = scope
+
+            # Build headers
+            headers = {}
+            if auth:
+                credentials = f"{auth['username']}:{auth['password']}"
+                encoded = base64.b64encode(credentials.encode()).decode()
+                headers["Authorization"] = f"Basic {encoded}"
+
+            # Fetch token
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    realm,
+                    params=params,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        token = data.get("token")
+                        if token:
+                            bearer_token = f"Bearer {token}"
+
+                            # Cache token if cache_key provided
+                            if cache_key:
+                                self._auth_cache[cache_key] = {
+                                    "token": bearer_token,
+                                    "expires_at": datetime.now(timezone.utc) + timedelta(minutes=4)
+                                }
+
+                            logger.debug(f"Successfully fetched token from {realm}")
+                            return bearer_token
+                        else:
+                            logger.warning(f"Token endpoint {realm} returned 200 but no token in response")
+                    else:
+                        response_text = await response.text()
+                        logger.warning(f"Token request to {realm} returned {response.status}: {response_text[:100]}")
+
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout fetching token from {realm}")
+        except Exception as e:
+            logger.warning(f"Error fetching token from {realm}: {e}")
+
+        return None
+
     async def _get_auth_token(
         self,
         registry: str,
@@ -239,47 +451,89 @@ class RegistryAdapter:
         """
         Get authentication token for registry.
 
-        Implements Docker Registry v2 token authentication flow.
+        Implements proper OCI/Docker Registry v2 authentication flow:
+        1. Check cache for existing valid token
+        2. Attempt dynamic discovery via WWW-Authenticate header (standards-compliant)
+        3. Fallback to hardcoded methods for known non-standard registries (Docker Hub)
+        4. Try basic auth if credentials provided
+        5. Return None (anonymous access)
+
+        This approach works with any OCI-compliant registry automatically,
+        while maintaining compatibility with registries that don't fully
+        follow the specification.
+
+        Args:
+            registry: Registry URL (e.g., "ghcr.io", "lscr.io", "docker.io")
+            repository: Repository name (e.g., "linuxserver/sabnzbd")
+            auth: Optional credentials dict with username/password
+
+        Returns:
+            Bearer token string or None
         """
         # Periodic cleanup to prevent unbounded growth
         if len(self._auth_cache) >= self.MAX_AUTH_CACHE_SIZE * 0.8:  # 80% threshold
             self._cleanup_auth_cache()
 
-        # Check cache first
+        # Step 1: Check cache for existing valid token
         cache_key = f"{registry}:{repository}"
         if cache_key in self._auth_cache:
             cached_token = self._auth_cache[cache_key]
             # Check if token is still valid (expires_at field)
             if cached_token.get("expires_at"):
                 if datetime.now(timezone.utc) < cached_token["expires_at"]:
+                    logger.debug(f"Using cached token for {registry}:{repository}")
                     return cached_token["token"]
                 else:
                     # Token expired - delete it to prevent memory leak
                     del self._auth_cache[cache_key]
+                    logger.debug(f"Cached token expired for {registry}:{repository}")
 
-        # For Docker Hub, get token from auth service
+        # Step 2: Attempt dynamic discovery (standards-compliant, works with any OCI registry)
+        logger.debug(f"Attempting dynamic auth discovery for {registry}")
+        auth_params = await self._discover_auth_endpoint(registry, repository)
+
+        if auth_params:
+            # Extract discovered parameters
+            realm = auth_params.get("realm")
+            service = auth_params.get("service")
+            scope = auth_params.get("scope")
+
+            if realm:
+                logger.info(f"Discovered auth endpoint for {registry}: {realm}")
+                token = await self._fetch_token_from_endpoint(
+                    realm=realm,
+                    service=service,
+                    scope=scope,
+                    auth=auth,
+                    cache_key=cache_key
+                )
+                if token:
+                    return token
+                else:
+                    logger.warning(f"Failed to fetch token from discovered endpoint: {realm}")
+            else:
+                logger.warning(f"Auth parameters discovered but missing realm for {registry}")
+
+        # Step 3: Fallback to hardcoded methods for known non-standard registries
+        # Docker Hub doesn't properly implement WWW-Authenticate discovery
         if "docker.io" in registry or "registry.hub.docker.com" in registry:
+            logger.debug(f"Using Docker Hub fallback for {registry}")
             return await self._get_dockerhub_token(repository, auth)
 
-        # For GHCR (GitHub Container Registry), get token from GitHub
+        # GHCR fallback (should work with discovery, but keep as safety net)
         if "ghcr.io" in registry:
+            logger.debug(f"Using GHCR fallback for {registry}")
             return await self._get_ghcr_token(repository, auth)
 
-        # For LSCR (LinuxServer.io Container Registry), get token
-        if "lscr.io" in registry:
-            return await self._get_lscr_token(repository, auth)
-
-        # For Quay.io (Red Hat Quay), get token
-        if "quay.io" in registry:
-            return await self._get_quay_token(repository, auth)
-
-        # For other registries, basic auth might be enough
+        # Step 4: Try basic auth if credentials provided
         if auth:
+            logger.debug(f"Attempting basic auth for {registry}")
             credentials = f"{auth['username']}:{auth['password']}"
             encoded = base64.b64encode(credentials.encode()).decode()
             return f"Basic {encoded}"
 
-        # No auth needed for public registries
+        # Step 5: No auth needed (public registry with anonymous access)
+        logger.debug(f"No authentication required for {registry}")
         return None
 
     async def _get_dockerhub_token(
@@ -369,101 +623,6 @@ class RegistryAdapter:
                         logger.warning(f"GHCR token request returned {response.status}: {response_text}")
         except Exception as e:
             logger.warning(f"Failed to get GHCR token: {e}")
-
-        return None
-
-    async def _get_lscr_token(
-        self,
-        repository: str,
-        auth: Optional[Dict] = None
-    ) -> Optional[str]:
-        """
-        Get Bearer token from LinuxServer.io Container Registry (lscr.io).
-
-        LSCR is similar to GHCR - public images can be accessed anonymously with a token.
-        """
-        # LSCR uses lscr.io as the service name
-        auth_url = (
-            f"https://lscr.io/token"
-            f"?scope=repository:{repository}:pull"
-        )
-
-        headers = {}
-        if auth:
-            credentials = f"{auth['username']}:{auth['password']}"
-            encoded = base64.b64encode(credentials.encode()).decode()
-            headers["Authorization"] = f"Basic {encoded}"
-
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(auth_url, headers=headers) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        token = data.get("token")
-                        if token:
-                            # Cache token (LSCR tokens expire in 5 minutes)
-                            cache_key = f"lscr.io:{repository}"
-                            self._auth_cache[cache_key] = {
-                                "token": f"Bearer {token}",
-                                "expires_at": datetime.now(timezone.utc) + timedelta(minutes=4)
-                            }
-                            logger.debug(f"Got LSCR token for {repository}")
-                            return f"Bearer {token}"
-                        else:
-                            logger.warning(f"LSCR token response missing token field: {data}")
-                    else:
-                        response_text = await response.text()
-                        logger.warning(f"LSCR token request returned {response.status}: {response_text}")
-        except Exception as e:
-            logger.warning(f"Failed to get LSCR token: {e}")
-
-        return None
-
-    async def _get_quay_token(
-        self,
-        repository: str,
-        auth: Optional[Dict] = None
-    ) -> Optional[str]:
-        """
-        Get Bearer token from Quay.io (Red Hat Quay Container Registry).
-
-        Quay uses a standard Docker v2 token authentication flow.
-        """
-        # Quay uses quay.io as the service name
-        auth_url = (
-            f"https://quay.io/v2/auth"
-            f"?service=quay.io"
-            f"&scope=repository:{repository}:pull"
-        )
-
-        headers = {}
-        if auth:
-            credentials = f"{auth['username']}:{auth['password']}"
-            encoded = base64.b64encode(credentials.encode()).decode()
-            headers["Authorization"] = f"Basic {encoded}"
-
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(auth_url, headers=headers) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        token = data.get("token")
-                        if token:
-                            # Cache token (Quay tokens expire in 5 minutes)
-                            cache_key = f"quay.io:{repository}"
-                            self._auth_cache[cache_key] = {
-                                "token": f"Bearer {token}",
-                                "expires_at": datetime.now(timezone.utc) + timedelta(minutes=4)
-                            }
-                            logger.debug(f"Got Quay token for {repository}")
-                            return f"Bearer {token}"
-                        else:
-                            logger.warning(f"Quay token response missing token field: {data}")
-                    else:
-                        response_text = await response.text()
-                        logger.warning(f"Quay token request returned {response.status}: {response_text}")
-        except Exception as e:
-            logger.warning(f"Failed to get Quay token: {e}")
 
         return None
 

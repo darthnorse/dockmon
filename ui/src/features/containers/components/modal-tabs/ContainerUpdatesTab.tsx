@@ -596,7 +596,9 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
               disabled={setContainerPolicy.isPending}
             >
               <SelectTrigger id="update-policy" className="w-[180px]">
-                <SelectValue />
+                <SelectValue>
+                  {POLICY_OPTIONS.find((opt) => opt.value === updatePolicy)?.label || 'Use Global Settings'}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {POLICY_OPTIONS.map((option) => (

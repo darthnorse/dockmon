@@ -6,7 +6,7 @@ Uses priority-based validation: labels → per-container → patterns → defaul
 
 Priority Order:
 1. Docker label: com.dockmon.update.policy (allow/warn/block)
-2. Per-container database setting (container_desired_states.update_policy)
+2. Per-container database setting (container_updates.update_policy)
 3. Global pattern matching (update_policies table)
 4. Default: ALLOW
 """
@@ -15,7 +15,8 @@ from enum import Enum
 from dataclasses import dataclass
 from typing import Optional
 from sqlalchemy.orm import Session
-from database import UpdatePolicy, ContainerDesiredState
+from database import UpdatePolicy, ContainerUpdate
+from utils.keys import make_composite_key
 import logging
 
 logger = logging.getLogger(__name__)
@@ -96,13 +97,13 @@ class ContainerValidator:
                 )
 
         # Priority 2: Check per-container database setting
-        desired_state = self.session.query(ContainerDesiredState).filter_by(
-            host_id=host_id,
-            container_id=container_id
+        composite_key = make_composite_key(host_id, container_id)
+        update_record = self.session.query(ContainerUpdate).filter_by(
+            container_id=composite_key
         ).first()
 
-        if desired_state and desired_state.update_policy:
-            policy_value = desired_state.update_policy.lower()
+        if update_record and update_record.update_policy:
+            policy_value = update_record.update_policy.lower()
             if policy_value in ["allow", "warn", "block"]:
                 result = ValidationResult(policy_value)
                 logger.info(
@@ -177,13 +178,13 @@ class ContainerValidator:
             sources.append(f"Docker label: {self.LABEL_KEY}={labels[self.LABEL_KEY]}")
 
         # Priority 2: Per-container setting
-        desired_state = self.session.query(ContainerDesiredState).filter_by(
-            host_id=host_id,
-            container_id=container_id
+        composite_key = make_composite_key(host_id, container_id)
+        update_record = self.session.query(ContainerUpdate).filter_by(
+            container_id=composite_key
         ).first()
 
-        if desired_state and desired_state.update_policy:
-            sources.append(f"Per-container setting: {desired_state.update_policy}")
+        if update_record and update_record.update_policy:
+            sources.append(f"Per-container setting: {update_record.update_policy}")
 
         # Priority 3: Global patterns
         patterns = self.session.query(UpdatePolicy).filter_by(

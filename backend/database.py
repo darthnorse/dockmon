@@ -128,7 +128,6 @@ class ContainerDesiredState(Base):
     container_name = Column(String, nullable=False)
     desired_state = Column(String, default='unspecified')  # 'should_run', 'on_demand', 'unspecified'
     custom_tags = Column(Text, nullable=True)  # Comma-separated custom tags
-    update_policy = Column(Text, nullable=True)  # 'allow', 'warn', 'block', or NULL (auto-detect)
     web_ui_url = Column(Text, nullable=True)  # URL to container's web interface
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
@@ -247,6 +246,7 @@ class ContainerUpdate(Base):
     # Tracking settings
     floating_tag_mode = Column(Text, default='exact', nullable=False)  # exact|minor|major|latest
     auto_update_enabled = Column(Boolean, default=False, nullable=False)
+    update_policy = Column(Text, nullable=True)  # 'allow', 'warn', 'block', or NULL (use global patterns)
     health_check_strategy = Column(Text, default='docker', nullable=False)  # docker|warmup|http
     health_check_url = Column(Text, nullable=True)
 

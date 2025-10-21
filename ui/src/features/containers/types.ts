@@ -62,6 +62,7 @@ export interface ContainerUpdateStatus {
   floating_tag_mode: 'exact' | 'minor' | 'major' | 'latest'
   last_checked_at: string | null
   auto_update_enabled?: boolean
+  update_policy?: 'allow' | 'warn' | 'block' | null
 }
 
 export interface ContainerHttpHealthCheck {

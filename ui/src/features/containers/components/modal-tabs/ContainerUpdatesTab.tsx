@@ -9,13 +9,7 @@ import { memo, useState, useEffect, useCallback } from 'react'
 import { Package, RefreshCw, Check, Clock, AlertCircle, Download, Shield } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { toast } from 'sonner'
 import { useContainerUpdateStatus, useCheckContainerUpdate, useUpdateAutoUpdateConfig, useExecuteUpdate } from '../../hooks/useContainerUpdates'
 import { useSetContainerUpdatePolicy } from '../../hooks/useUpdatePolicies'
@@ -67,6 +61,7 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
     if (updateStatus) {
       setAutoUpdateEnabled(updateStatus.auto_update_enabled ?? false)
       setTrackingMode(updateStatus.floating_tag_mode || 'exact')
+      setUpdatePolicy(updateStatus.update_policy ?? null)
     }
   }, [updateStatus])
 
@@ -466,30 +461,122 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
           </div>
 
           {/* Tracking mode selector */}
-          <div className="flex items-start justify-between py-4">
-            <div className="flex-1 mr-4">
-              <label htmlFor="tracking-mode" className="text-sm font-medium">
+          <div className="py-4">
+            <div className="mb-3">
+              <label className="text-sm font-medium">
                 Tracking Mode
               </label>
               <p className="text-sm text-muted-foreground mt-1">
-                How to track updates for this container
+                Choose how DockMon should track updates for this container
               </p>
             </div>
-            <Select
-              value={trackingMode}
-              onValueChange={handleTrackingModeChange}
-              disabled={updateAutoUpdateConfig.isPending}
-            >
-              <SelectTrigger id="tracking-mode" className="w-[140px]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="exact">Exact Tag</SelectItem>
-                <SelectItem value="minor">Minor (x.Y.z)</SelectItem>
-                <SelectItem value="major">Major (X.y.z)</SelectItem>
-                <SelectItem value="latest">Latest</SelectItem>
-              </SelectContent>
-            </Select>
+
+            <div className="space-y-3">
+              {/* Respect Tag (was "exact") */}
+              <label
+                className={`flex items-start gap-3 p-4 rounded-lg border-2 cursor-pointer transition-colors ${
+                  trackingMode === 'exact'
+                    ? 'border-primary bg-primary/5'
+                    : 'border-border hover:border-primary/50'
+                } ${updateAutoUpdateConfig.isPending ? 'opacity-50 cursor-not-allowed' : ''}`}
+              >
+                <input
+                  type="radio"
+                  name="tracking-mode"
+                  value="exact"
+                  checked={trackingMode === 'exact'}
+                  onChange={(e) => handleTrackingModeChange(e.target.value)}
+                  disabled={updateAutoUpdateConfig.isPending}
+                  className="mt-0.5 h-4 w-4 text-primary"
+                />
+                <div className="flex-1">
+                  <div className="font-medium text-sm">Respect Tag</div>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Use the image tag defined in your container or Compose configuration. If the tag is fixed (e.g., nginx:1.25.3),
+                    the container will stay on that version. If it's a floating tag (e.g., :latest), DockMon will pull the newest
+                    image for that tag.
+                  </p>
+                </div>
+              </label>
+
+              {/* Minor Updates */}
+              <label
+                className={`flex items-start gap-3 p-4 rounded-lg border-2 cursor-pointer transition-colors ${
+                  trackingMode === 'minor'
+                    ? 'border-primary bg-primary/5'
+                    : 'border-border hover:border-primary/50'
+                } ${updateAutoUpdateConfig.isPending ? 'opacity-50 cursor-not-allowed' : ''}`}
+              >
+                <input
+                  type="radio"
+                  name="tracking-mode"
+                  value="minor"
+                  checked={trackingMode === 'minor'}
+                  onChange={(e) => handleTrackingModeChange(e.target.value)}
+                  disabled={updateAutoUpdateConfig.isPending}
+                  className="mt-0.5 h-4 w-4 text-primary"
+                />
+                <div className="flex-1">
+                  <div className="font-medium text-sm">Minor Updates (X.Y.z)</div>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Track patch updates within the same minor version. Example: nginx:1.25.3 → tracks 1.25.x
+                    (will detect 1.25.4, 1.25.5, but not 1.26.0 or 2.0.0)
+                  </p>
+                </div>
+              </label>
+
+              {/* Major Updates */}
+              <label
+                className={`flex items-start gap-3 p-4 rounded-lg border-2 cursor-pointer transition-colors ${
+                  trackingMode === 'major'
+                    ? 'border-primary bg-primary/5'
+                    : 'border-border hover:border-primary/50'
+                } ${updateAutoUpdateConfig.isPending ? 'opacity-50 cursor-not-allowed' : ''}`}
+              >
+                <input
+                  type="radio"
+                  name="tracking-mode"
+                  value="major"
+                  checked={trackingMode === 'major'}
+                  onChange={(e) => handleTrackingModeChange(e.target.value)}
+                  disabled={updateAutoUpdateConfig.isPending}
+                  className="mt-0.5 h-4 w-4 text-primary"
+                />
+                <div className="flex-1">
+                  <div className="font-medium text-sm">Major Updates (X.y.z)</div>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Track all updates within the same major version. Example: nginx:1.25.3 → tracks 1.x
+                    (will detect 1.26.0, 1.99.0, but not 2.0.0)
+                  </p>
+                </div>
+              </label>
+
+              {/* Always Latest */}
+              <label
+                className={`flex items-start gap-3 p-4 rounded-lg border-2 cursor-pointer transition-colors ${
+                  trackingMode === 'latest'
+                    ? 'border-primary bg-primary/5'
+                    : 'border-border hover:border-primary/50'
+                } ${updateAutoUpdateConfig.isPending ? 'opacity-50 cursor-not-allowed' : ''}`}
+              >
+                <input
+                  type="radio"
+                  name="tracking-mode"
+                  value="latest"
+                  checked={trackingMode === 'latest'}
+                  onChange={(e) => handleTrackingModeChange(e.target.value)}
+                  disabled={updateAutoUpdateConfig.isPending}
+                  className="mt-0.5 h-4 w-4 text-primary"
+                />
+                <div className="flex-1">
+                  <div className="font-medium text-sm">Always Latest</div>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Always track the :latest tag regardless of your current version. This will pull the newest available
+                    version, which may include breaking changes.
+                  </p>
+                </div>
+              </label>
+            </div>
           </div>
 
           {/* Update policy selector */}
@@ -539,9 +626,9 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
         <ul className="list-disc list-inside space-y-1 text-xs">
           <li>DockMon checks for updates daily at the configured time</li>
           <li>Click "Check Now" to manually check for updates immediately</li>
-          <li>Tracking modes: exact (specific tag), minor (e.g., 1.25.x), major (e.g., 1.x), latest</li>
           <li>Auto-update will automatically pull and recreate containers when updates are available</li>
           <li>Container health is verified after updates to ensure successful deployment</li>
+          <li>Updates are detected by comparing image digests, not just tags</li>
           <li>For Compose-managed containers, updates apply to the running container only. Update your compose file to persist changes</li>
         </ul>
       </div>

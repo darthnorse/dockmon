@@ -910,6 +910,8 @@ async def get_container_update_status(
         - latest_digest: str (first 12 chars)
         - floating_tag_mode: str (exact|minor|major|latest)
         - last_checked_at: datetime
+        - auto_update_enabled: bool
+        - update_policy: str|null (allow|warn|block|null)
     """
 
     # Normalize to short ID
@@ -932,6 +934,7 @@ async def get_container_update_status(
                 "floating_tag_mode": "exact",
                 "last_checked_at": None,
                 "auto_update_enabled": False,
+                "update_policy": None,
             }
 
         return {
@@ -943,6 +946,7 @@ async def get_container_update_status(
             "floating_tag_mode": record.floating_tag_mode,
             "last_checked_at": record.last_checked_at.isoformat() + 'Z' if record.last_checked_at else None,
             "auto_update_enabled": record.auto_update_enabled,
+            "update_policy": record.update_policy,
         }
 
 
@@ -1391,25 +1395,26 @@ async def set_container_update_policy(
             detail=f"Invalid policy value: {policy}. Must be 'allow', 'warn', 'block', or null"
         )
 
+    # Normalize to short ID
+    short_id = container_id[:12] if len(container_id) > 12 else container_id
+    composite_key = make_composite_key(host_id, short_id)
+
     with monitor.db.get_session() as session:
-        # Get or create desired state record
-        desired_state = session.query(ContainerDesiredState).filter_by(
-            host_id=host_id,
-            container_id=container_id
+        # Get or create container update record
+        update_record = session.query(ContainerUpdate).filter_by(
+            container_id=composite_key
         ).first()
 
-        if not desired_state:
-            # Create new record
-            desired_state = ContainerDesiredState(
-                host_id=host_id,
-                container_id=container_id,
-                update_policy=policy
+        if not update_record:
+            # No update record exists yet - can't set policy without it
+            # User needs to check for updates first
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No update tracking record found for container. Please check for updates first."
             )
-            session.add(desired_state)
-        else:
-            # Update existing record
-            desired_state.update_policy = policy
 
+        # Update policy
+        update_record.update_policy = policy
         session.commit()
 
         logger.info(f"Set update policy for {host_id}:{container_id} to {policy}")

@@ -139,7 +139,7 @@ export const CATEGORY_METADATA: Record<UpdatePolicyCategory, CategoryMetadata> =
 export const POLICY_OPTIONS: Array<{ value: UpdatePolicyValue; label: string; description: string }> = [
   {
     value: null,
-    label: 'Auto-detect',
+    label: 'Use Global Settings',
     description: 'Use global patterns and Docker labels'
   },
   {

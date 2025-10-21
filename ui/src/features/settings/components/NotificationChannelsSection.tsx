@@ -233,9 +233,16 @@ export function NotificationChannelsSection() {
                   This will permanently delete the channel and remove it from all alert rules.
                 </p>
                 {dependentData && dependentData.alert_count > 0 && (
-                  <p className="text-sm text-yellow-400 mt-2">
-                    Warning: {dependentData.alert_count} alert rule{dependentData.alert_count > 1 ? 's' : ''} will be updated.
-                  </p>
+                  <div className="mt-3 rounded-md bg-yellow-500/10 border border-yellow-500/20 p-3">
+                    <p className="text-sm text-yellow-400 font-medium mb-1">
+                      Warning: {dependentData.alert_count} alert rule{dependentData.alert_count > 1 ? 's' : ''} will be updated:
+                    </p>
+                    <ul className="text-sm text-yellow-300 list-disc list-inside space-y-1">
+                      {dependentData.alert_names.map((name, idx) => (
+                        <li key={idx}>{name}</li>
+                      ))}
+                    </ul>
+                  </div>
                 )}
               </div>
             </div>

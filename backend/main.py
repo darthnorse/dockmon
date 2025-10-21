@@ -37,7 +37,9 @@ from database import (
     ContainerHttpHealthCheck,
     User,
     DockerHostDB,
-    RegistryCredential
+    RegistryCredential,
+    NotificationChannel,
+    AlertRuleV2
 )
 from realtime import RealtimeMonitor
 from notifications import NotificationService
@@ -61,10 +63,27 @@ from batch_manager import BatchJobManager
 from utils.keys import make_composite_key
 from utils.encryption import encrypt_password, decrypt_password
 from utils.async_docker import async_docker_call
+from updates.container_validator import ContainerValidator, ValidationResult
 
 # Configure logging
 setup_logging()
 logger = logging.getLogger(__name__)
+
+
+# ==================== Helper Functions ====================
+
+def is_compose_container(labels: Dict[str, str]) -> bool:
+    """
+    Check if container is managed by Docker Compose.
+
+    Args:
+        labels: Container labels dict
+
+    Returns:
+        True if container has com.docker.compose.* labels
+    """
+    return any(label.startswith("com.docker.compose") for label in labels.keys())
+
 
 # ==================== Security Constants ====================
 
@@ -918,8 +937,6 @@ async def get_container_update_status(
         - is_compose_container: bool
         - skip_compose_enabled: bool (global setting)
     """
-    from updates.container_validator import ContainerValidator
-
     # Normalize to short ID
     short_id = container_id[:12] if len(container_id) > 12 else container_id
     composite_key = make_composite_key(host_id, short_id)
@@ -939,7 +956,7 @@ async def get_container_update_status(
 
         # Default response if no container found
         validation_info = None
-        is_compose_container = False
+        is_compose = False
         skip_compose_enabled = False
 
         if container:
@@ -961,14 +978,10 @@ async def get_container_update_status(
             }
 
             # Check for compose container
-            labels = container.labels or {}
-            is_compose_container = any(
-                label.startswith("com.docker.compose")
-                for label in labels.keys()
-            )
+            is_compose = is_compose_container(container.labels or {})
 
             # Get global skip_compose_containers setting
-            settings = session.query(GlobalSettings).first()
+            settings = session.query(GlobalSettingsDB).first()
             skip_compose_enabled = settings.skip_compose_containers if settings else True
 
         if not record:
@@ -984,7 +997,7 @@ async def get_container_update_status(
                 "auto_update_enabled": False,
                 "update_policy": None,
                 "validation_info": validation_info,
-                "is_compose_container": is_compose_container,
+                "is_compose_container": is_compose,
                 "skip_compose_enabled": skip_compose_enabled,
             }
 
@@ -999,7 +1012,7 @@ async def get_container_update_status(
             "auto_update_enabled": record.auto_update_enabled,
             "update_policy": record.update_policy,
             "validation_info": validation_info,
-            "is_compose_container": is_compose_container,
+            "is_compose_container": is_compose,
             "skip_compose_enabled": skip_compose_enabled,
         }
 
@@ -1067,7 +1080,6 @@ async def execute_container_update(
     Returns success status and details.
     """
     from updates.update_executor import get_update_executor
-    from updates.container_validator import ContainerValidator, ValidationResult
 
     # Normalize to short ID
     short_id = container_id[:12] if len(container_id) > 12 else container_id
@@ -2433,6 +2445,51 @@ async def test_notification_channel(channel_id: int, current_user: dict = Depend
     except Exception as e:
         logger.error(f"Failed to test notification channel: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/notifications/channels/{channel_id}/dependent-alerts")
+async def get_dependent_alerts(channel_id: int, current_user: dict = Depends(get_current_user)):
+    """
+    Get alert rules that depend on this notification channel.
+    Returns count and names of alert rules that will be affected if this channel is deleted.
+    """
+    try:
+        with monitor.db.get_session() as session:
+            # Get the channel to verify it exists and get its type
+            channel = session.query(NotificationChannel).filter(
+                NotificationChannel.id == channel_id
+            ).first()
+
+            if not channel:
+                raise HTTPException(status_code=404, detail="Notification channel not found")
+
+            channel_type = channel.type
+
+            # Get all alert rules
+            all_rules = session.query(AlertRuleV2).all()
+
+            # Filter rules that use this channel type
+            dependent_rules = []
+            for rule in all_rules:
+                if rule.notify_channels_json:
+                    try:
+                        # Parse the JSON array of channel types
+                        notify_channels = json.loads(rule.notify_channels_json)
+                        if isinstance(notify_channels, list) and channel_type in notify_channels:
+                            dependent_rules.append(rule.name)
+                    except (json.JSONDecodeError, TypeError) as e:
+                        # Log malformed JSON but continue processing other rules
+                        logger.warning(f"Malformed notify_channels_json in rule {rule.id}: {e}")
+                        continue
+
+            return {
+                "alert_count": len(dependent_rules),
+                "alert_names": dependent_rules
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get dependent alerts for channel {channel_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get dependent alerts: {str(e)}")
 
 # ==================== Event Log Routes ====================
 

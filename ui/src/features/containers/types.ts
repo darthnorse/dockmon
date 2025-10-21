@@ -21,7 +21,6 @@ export interface Container {
   volumes?: string[] // e.g., ["/var/www:/usr/share/nginx/html"]
   env?: Record<string, string> // Environment variables
   restart_policy?: string // e.g., "always", "unless-stopped", "no"
-  ip_address?: string // Container IP address from NetworkSettings
   // Policy fields
   auto_restart?: boolean // DockMon's auto-restart feature (not Docker's restart policy)
   desired_state?: 'should_run' | 'on_demand' | 'unspecified' // Expected operational state

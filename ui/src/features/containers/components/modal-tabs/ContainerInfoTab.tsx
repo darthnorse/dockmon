@@ -191,12 +191,6 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
                     <span className="font-mono text-xs">{container.restart_policy}</span>
                   </div>
                 )}
-                {container.ip_address && (
-                  <div className="flex justify-between text-sm">
-                    <span className="text-muted-foreground">IP Address</span>
-                    <span className="font-mono text-xs">{container.ip_address}</span>
-                  </div>
-                )}
               </div>
             </div>
 

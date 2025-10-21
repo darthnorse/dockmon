@@ -1523,7 +1523,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
         onClose={() => setShowNoChannelsConfirm(false)}
         onConfirm={() => {
           setShowNoChannelsConfirm(false)
-          performSubmit()
+          void performSubmit()
         }}
         hasConfiguredChannels={configuredChannels.length > 0}
       />

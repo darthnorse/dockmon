@@ -239,6 +239,15 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
         force,
       })
 
+      // Check if update is blocked by policy
+      if (result.status === 'blocked' || result.validation === 'block') {
+        setUpdateProgress(null)
+        toast.error('Update blocked by policy', {
+          description: result.reason || 'This container has a block policy that prevents updates',
+        })
+        return
+      }
+
       // Check if validation warning returned
       if (!force && result.validation === 'warn') {
         setValidationReason(result.reason || 'Container matched validation pattern')

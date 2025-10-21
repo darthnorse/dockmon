@@ -357,12 +357,36 @@ func (sm *StreamManager) processStats(stat *types.StatsJSON, containerID, contai
 	// Calculate CPU percentage
 	cpuPercent := calculateCPUPercent(stat)
 
-	// Memory stats
+	// Memory stats - Calculate working set (excludes reclaimable cache)
+	// This matches what Kubernetes, cAdvisor, and Proxmox report
 	memUsage := stat.MemoryStats.Usage
 	memLimit := stat.MemoryStats.Limit
+
+	// Calculate working set memory (actual usage excluding reclaimable cache)
+	// Preferred method (cgroups v2): anon + active_file (most accurate)
+	// Fallback method (cgroups v1): usage - inactive_file
+	workingSet := memUsage
+	if stat.MemoryStats.Stats != nil {
+		// Try cgroups v2 approach first: anon (process memory) + active_file (actively-used cache)
+		if anon, hasAnon := stat.MemoryStats.Stats["anon"]; hasAnon {
+			if activeFile, hasActiveFile := stat.MemoryStats.Stats["active_file"]; hasActiveFile {
+				// Use anon + active_file for most accurate working set
+				workingSet = anon + activeFile
+			} else {
+				// Only anon available, use that (safest)
+				workingSet = anon
+			}
+		} else if inactiveFile, ok := stat.MemoryStats.Stats["inactive_file"]; ok {
+			// Fallback to cgroups v1 approach: subtract inactive_file
+			if memUsage > inactiveFile {
+				workingSet = memUsage - inactiveFile
+			}
+		}
+	}
+
 	memPercent := 0.0
 	if memLimit > 0 {
-		memPercent = (float64(memUsage) / float64(memLimit)) * 100.0
+		memPercent = (float64(workingSet) / float64(memLimit)) * 100.0
 	}
 
 	// Network stats
@@ -388,7 +412,7 @@ func (sm *StreamManager) processStats(stat *types.StatsJSON, containerID, contai
 		ContainerName: containerName,
 		HostID:        hostID,
 		CPUPercent:    roundToDecimal(cpuPercent, 1),
-		MemoryUsage:   memUsage,
+		MemoryUsage:   workingSet, // Use working set instead of raw usage
 		MemoryLimit:   memLimit,
 		MemoryPercent: roundToDecimal(memPercent, 1),
 		NetworkRx:     netRx,

@@ -152,6 +152,39 @@ def parse_container_env(env_list: list) -> dict[str, str]:
     return env_dict
 
 
+def parse_container_ip_address(network_settings: dict) -> Optional[str]:
+    """
+    Extract container IP address from NetworkSettings.
+
+    Args:
+        network_settings: Docker NetworkSettings dict
+
+    Returns:
+        IP address string or None if not available
+
+    Note:
+        - For default bridge network: Uses IPAddress field
+        - For custom networks: Uses first network's IPAddress
+        - Returns None if container not connected to any network
+    """
+    if not network_settings:
+        return None
+
+    # Try default IPAddress first (bridge network)
+    ip_address = network_settings.get('IPAddress')
+    if ip_address:
+        return ip_address
+
+    # For custom networks, check Networks dict
+    networks = network_settings.get('Networks', {})
+    for network_name, network_config in networks.items():
+        ip_address = network_config.get('IPAddress')
+        if ip_address:
+            return ip_address
+
+    return None
+
+
 class ContainerDiscovery:
     """Handles container discovery and reconnection logic"""
 
@@ -439,9 +472,11 @@ class ContainerDiscovery:
                     # Get desired state and web UI URL from database
                     desired_state, web_ui_url = self.db.get_desired_state(host_id, container_id)
 
-                    # Extract ports, restart policy, volumes, env
-                    port_bindings = dc.attrs.get('NetworkSettings', {}).get('Ports', {})
+                    # Extract ports, restart policy, volumes, env, IP address
+                    network_settings = dc.attrs.get('NetworkSettings', {})
+                    port_bindings = network_settings.get('Ports', {})
                     ports = parse_container_ports(port_bindings)
+                    ip_address = parse_container_ip_address(network_settings)
 
                     host_config = dc.attrs.get('HostConfig', {})
                     restart_policy = parse_restart_policy(host_config)
@@ -470,6 +505,7 @@ class ContainerDiscovery:
                         restart_policy=restart_policy,
                         volumes=volumes,
                         env=env,
+                        ip_address=ip_address,
                         labels=labels,
                         tags=tags
                     )

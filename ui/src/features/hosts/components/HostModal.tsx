@@ -86,11 +86,12 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
   const containers = useAllContainers(host?.id || undefined)
 
   // Get open alerts for this host (for delete confirmation)
+  // Includes both host-scoped alerts and container-scoped alerts for containers on this host
   const { data: alertsData } = useQuery({
     queryKey: ['alerts', 'host', host?.id],
     queryFn: async () => {
       const response = await apiClient.get<{ alerts: any[]; total: number }>(
-        `/alerts/?state=open&scope_type=host&page_size=500`
+        `/alerts/?state=open&page_size=500`
       )
       return response.alerts.filter((alert: any) => alert.host_id === host?.id)
     },

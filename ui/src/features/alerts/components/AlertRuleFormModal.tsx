@@ -14,6 +14,7 @@ import { useHosts } from '@/features/hosts/hooks/useHosts'
 import type { Host } from '@/types/api'
 import type { Container } from '@/features/containers/types'
 import { apiClient } from '@/lib/api/client'
+import { NoChannelsConfirmModal } from './NoChannelsConfirmModal'
 
 interface Props {
   rule?: AlertRule | null
@@ -277,6 +278,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
   })
 
   const [error, setError] = useState<string | null>(null)
+  const [showNoChannelsConfirm, setShowNoChannelsConfirm] = useState(false)
 
   // Host/Container dropdown state
   const [hostSearchInput, setHostSearchInput] = useState('')
@@ -378,6 +380,18 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
     e.preventDefault()
     setError(null)
 
+    // Check if user has selected notification channels
+    if (formData.notify_channels.length === 0) {
+      // Show confirmation modal
+      setShowNoChannelsConfirm(true)
+      return
+    }
+
+    // Proceed with submission
+    await performSubmit()
+  }
+
+  const performSubmit = async () => {
     try {
       // Prepare request data
       const requestData: Partial<AlertRuleRequest> = {
@@ -1502,6 +1516,17 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
         </div>
         </div>
       </div>
+
+      {/* No Channels Confirmation Modal */}
+      <NoChannelsConfirmModal
+        isOpen={showNoChannelsConfirm}
+        onClose={() => setShowNoChannelsConfirm(false)}
+        onConfirm={() => {
+          setShowNoChannelsConfirm(false)
+          performSubmit()
+        }}
+        hasConfiguredChannels={configuredChannels.length > 0}
+      />
     </>
   )
 }

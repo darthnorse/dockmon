@@ -19,6 +19,8 @@ import { ResponsiveMiniChart } from '@/lib/charts/ResponsiveMiniChart'
 import { TagChip } from '@/components/TagChip'
 import { DropdownMenu, DropdownMenuItem } from '@/components/ui/dropdown-menu'
 import { useUserPreferences, useUpdatePreferences, useSimplifiedWorkflow } from '@/lib/hooks/useUserPreferences'
+import { useContainerModal } from '@/providers'
+import { makeCompositeKeyFrom } from '@/lib/utils/containerKeys'
 
 export interface HostCardData {
   id: string
@@ -122,6 +124,7 @@ export function HostCard({ host, onHostClick, onViewDetails, onEditHost }: HostC
   const { data: prefs } = useUserPreferences()
   const updatePreferences = useUpdatePreferences()
   const { enabled: simplifiedWorkflow } = useSimplifiedWorkflow()
+  const { openModal } = useContainerModal()
   const [collapsed, setCollapsed] = useState(false)
 
   // Initialize sort key from preferences, fallback to 'cpu'
@@ -363,7 +366,12 @@ export function HostCard({ host, onHostClick, onViewDetails, onEditHost }: HostC
                 onClick={(e) => e.stopPropagation()}
               >
                 <div className="flex items-center gap-2 min-w-0 flex-1">
-                  <span className="text-foreground truncate">{container.name}</span>
+                  <button
+                    className="text-foreground truncate hover:text-primary transition-colors text-left"
+                    onClick={() => openModal(makeCompositeKeyFrom(host.id, container.id), 'info')}
+                  >
+                    {container.name}
+                  </button>
                   <span className={`text-xs ${getStateColor(container.state)}`}>
                     [{container.state}]
                   </span>

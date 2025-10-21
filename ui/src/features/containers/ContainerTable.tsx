@@ -70,7 +70,6 @@ import { TagChip } from '@/components/TagChip'
 import { useAlertCounts, type AlertSeverityCounts } from '@/features/alerts/hooks/useAlerts'
 import { AlertDetailsDrawer } from '@/features/alerts/components/AlertDetailsDrawer'
 import { ContainerDrawer } from './components/ContainerDrawer'
-import { ContainerDetailsModal } from './components/ContainerDetailsModal'
 import { BulkActionBar } from './components/BulkActionBar'
 import { BulkActionConfirmModal } from './components/BulkActionConfirmModal'
 import { BatchJobPanel } from './components/BatchJobPanel'
@@ -79,6 +78,7 @@ import { useSimplifiedWorkflow, useUserPreferences, useUpdatePreferences } from 
 import { useContainerUpdateStatus } from './hooks/useContainerUpdates'
 import { useContainerActions } from './hooks/useContainerActions'
 import { makeCompositeKey } from '@/lib/utils/containerKeys'
+import { useContainerModal } from '@/providers'
 
 /**
  * Update badge component showing if updates are available
@@ -315,17 +315,15 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   const [sorting, setSorting] = useState<SortingState>(preferences?.container_table_sort || [])
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
   const [globalFilter, setGlobalFilter] = useState('')
-  const [searchParams, setSearchParams] = useSearchParams()
+  const [searchParams] = useSearchParams()
   const [drawerOpen, setDrawerOpen] = useState(false)
-  const [modalOpen, setModalOpen] = useState(false)
-  const [modalInitialTab, setModalInitialTab] = useState<string>('info')
   const [selectedContainerId, setSelectedContainerId] = useState<string | null>(null)
-  const [selectedContainerKey, setSelectedContainerKey] = useState<{ name: string; hostId: string } | null>(null)
   // Use composite keys {host_id}:{container_id} for multi-host support (cloned VMs with same short IDs)
   const [selectedContainerIds, setSelectedContainerIds] = useState<Set<string>>(new Set())
   const [confirmModalOpen, setConfirmModalOpen] = useState(false)
   const [pendingAction, setPendingAction] = useState<'start' | 'stop' | 'restart' | null>(null)
   const { enabled: simplifiedWorkflow } = useSimplifiedWorkflow()
+  const { openModal } = useContainerModal()
 
   // Initialize sorting from preferences when loaded
   useEffect(() => {
@@ -523,40 +521,6 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
     refetchInterval: POLLING_CONFIG.CONTAINER_DATA,
   })
 
-  // Memoize selected container to prevent unnecessary re-renders of modal
-  // Use container name + host ID as stable key (survives container recreation during updates)
-  const selectedContainer = useMemo(
-    () => {
-      if (selectedContainerKey) {
-        return data?.find((c) => c.name === selectedContainerKey.name && c.host_id === selectedContainerKey.hostId)
-      }
-      return data?.find((c) => makeCompositeKey(c) === selectedContainerId)
-    },
-    [data, selectedContainerId, selectedContainerKey]
-  )
-
-  // Handle URL param for opening specific container
-  useEffect(() => {
-    const containerId = searchParams.get('containerId')
-    const tab = searchParams.get('tab')
-    if (containerId && data) {
-      const container = data.find(c => c.id === containerId)
-      if (container && container.host_id) {
-        setSelectedContainerId(makeCompositeKey(container))
-        setSelectedContainerKey({ name: container.name, hostId: container.host_id })
-        // Set initial tab if specified in URL (e.g., from "View Logs" kebab action)
-        if (tab) {
-          setModalInitialTab(tab)
-        }
-        setModalOpen(true)
-        // Clear the URL params after opening
-        searchParams.delete('containerId')
-        searchParams.delete('tab')
-        setSearchParams(searchParams, { replace: true })
-      }
-    }
-  }, [searchParams, data, setSearchParams])
-
   // Container action hook (reusable across components)
   const { executeAction, isPending: isActionPending } = useContainerActions({
     invalidateQueries: ['containers'],
@@ -670,14 +634,13 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
               <button
                 className="font-medium text-foreground hover:text-primary transition-colors text-left"
                 onClick={() => {
-                  setSelectedContainerId(makeCompositeKey(row.original))
-                  if (row.original.host_id) {
-                    setSelectedContainerKey({ name: row.original.name, hostId: row.original.host_id })
-                  }
-                  setModalInitialTab('info') // Default to info tab
+                  const compositeKey = makeCompositeKey(row.original)
                   if (simplifiedWorkflow) {
-                    setModalOpen(true)
+                    // Open global modal directly
+                    openModal(compositeKey, 'info')
                   } else {
+                    // Open drawer (keeps local state for drawer)
+                    setSelectedContainerId(compositeKey)
                     setDrawerOpen(true)
                   }
                 }}
@@ -988,12 +951,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
                   size="icon"
                   className="h-8 w-8"
                   onClick={() => {
-                    setSelectedContainerId(makeCompositeKey(container))
-                    if (container.host_id) {
-                      setSelectedContainerKey({ name: container.name, hostId: container.host_id })
-                    }
-                    setModalInitialTab('info') // Default to info tab
-                    setModalOpen(true)
+                    openModal(makeCompositeKey(container), 'info')
                   }}
                   title="View full details"
                 >
@@ -1007,12 +965,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
                 size="icon"
                 className="h-8 w-8"
                 onClick={() => {
-                  setSelectedContainerId(makeCompositeKey(container))
-                  if (container.host_id) {
-                    setSelectedContainerKey({ name: container.name, hostId: container.host_id })
-                  }
-                  setModalInitialTab('logs')
-                  setModalOpen(true)
+                  openModal(makeCompositeKey(container), 'logs')
                 }}
                 title="View logs"
               >
@@ -1023,12 +976,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
               <UpdateBadge
                 container={container}
                 onClick={() => {
-                  setSelectedContainerId(makeCompositeKey(container))
-                  if (container.host_id) {
-                    setSelectedContainerKey({ name: container.name, hostId: container.host_id })
-                  }
-                  setModalInitialTab('updates')
-                  setModalOpen(true)
+                  openModal(makeCompositeKey(container), 'updates')
                 }}
               />
 
@@ -1203,23 +1151,11 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         containerId={selectedContainerId}
         onExpand={() => {
           setDrawerOpen(false)
-          setModalInitialTab('info') // Default to info tab when expanding from drawer
-          setModalOpen(true)
+          // Open global modal when expanding from drawer
+          if (selectedContainerId) {
+            openModal(selectedContainerId, 'info')
+          }
         }}
-      />
-
-      {/* Container Details Modal */}
-      <ContainerDetailsModal
-        open={modalOpen}
-        onClose={() => {
-          setModalOpen(false)
-          setSelectedContainerId(null)
-          setSelectedContainerKey(null)
-          setModalInitialTab('info') // Reset to default tab on close
-        }}
-        containerId={selectedContainerId}
-        container={selectedContainer}
-        initialTab={modalInitialTab}
       />
 
       {/* Bulk Action Bar */}

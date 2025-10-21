@@ -15,6 +15,7 @@ import { Toaster } from 'sonner'
 import { AuthProvider, useAuth } from '@/features/auth/AuthContext'
 import { WebSocketProvider } from '@/lib/websocket/WebSocketProvider'
 import { StatsProvider } from '@/lib/stats/StatsProvider'
+import { ContainerModalProvider } from '@/providers'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { LoginPage } from '@/features/auth/LoginPage'
 import { DashboardPage } from '@/features/dashboard/DashboardPage'
@@ -91,7 +92,9 @@ function AppRoutes() {
           <ProtectedRoute>
             <WebSocketProvider>
               <StatsProvider>
-                <AppLayout />
+                <ContainerModalProvider>
+                  <AppLayout />
+                </ContainerModalProvider>
               </StatsProvider>
             </WebSocketProvider>
           </ProtectedRoute>

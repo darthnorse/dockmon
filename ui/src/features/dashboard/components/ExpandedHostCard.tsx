@@ -31,10 +31,11 @@ import {
 import { ResponsiveMiniChart } from '@/lib/charts/ResponsiveMiniChart'
 import { TagChip } from '@/components/TagChip'
 import { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { DropdownMenu, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
 import { useUserPreferences, useUpdatePreferences, useSimplifiedWorkflow } from '@/lib/hooks/useUserPreferences'
 import { useContainerActions } from '@/features/containers/hooks/useContainerActions'
+import { useContainerModal } from '@/providers'
+import { makeCompositeKeyFrom } from '@/lib/utils/containerKeys'
 import { debug } from '@/lib/debug'
 
 export interface ExpandedHostData {
@@ -147,8 +148,8 @@ export function ExpandedHostCard({ host, cardRef, onHostClick, onViewDetails, on
   const updatePreferences = useUpdatePreferences()
   const { enabled: simplifiedWorkflow } = useSimplifiedWorkflow()
   const [isCollapsed, setIsCollapsed] = useState(false)
-  const navigate = useNavigate()
   const { executeAction } = useContainerActions()
+  const { openModal } = useContainerModal()
 
   // Initialize sort key from preferences, fallback to 'state'
   const [sortKey, setSortKey] = useState<ContainerSortKey>(() => {
@@ -197,8 +198,8 @@ export function ExpandedHostCard({ host, cardRef, onHostClick, onViewDetails, on
   const displayContainers = sortedContainers
 
   const handleContainerClick = (containerId: string) => {
-    // Future feature: Open Container Drawer
-    debug.log('ExpandedHostCard', 'Open container drawer:', containerId)
+    // Open container modal on info tab
+    openModal(makeCompositeKeyFrom(host.id, containerId), 'info')
   }
 
   const handleContainerAction = (containerId: string, action: string) => {
@@ -210,8 +211,9 @@ export function ExpandedHostCard({ host, cardRef, onHostClick, onViewDetails, on
         container_id: containerId, // Short 12-char ID
       })
     } else if (action === 'logs') {
-      // Navigate to containers page with logs modal open on logs tab
-      navigate(`/containers?containerId=${containerId}&tab=logs`)
+      // Open global modal on logs tab - no navigation, stays in dashboard context
+      // Dashboard container items don't have host_id, so use makeCompositeKeyFrom
+      openModal(makeCompositeKeyFrom(host.id, containerId), 'logs')
     } else {
       // Unimplemented actions (silence, hide, pin)
       debug.log('ExpandedHostCard', `${action} container:`, containerId)
@@ -439,7 +441,7 @@ export function ExpandedHostCard({ host, cardRef, onHostClick, onViewDetails, on
                     <Circle className={`w-2 h-2 ${getStateColor(container.state)} flex-shrink-0`} />
 
                     {/* Container Name */}
-                    <span className="text-sm text-foreground truncate flex-1 min-w-0">
+                    <span className="text-sm text-foreground hover:text-primary transition-colors truncate flex-1 min-w-0">
                       {container.name}
                     </span>
 

@@ -15,6 +15,7 @@ import requests
 import httpx
 from database import DatabaseManager, NotificationChannel, AlertV2
 from event_logger import EventSeverity, EventCategory, EventType
+from utils.keys import parse_composite_key
 
 logger = logging.getLogger(__name__)
 
@@ -877,8 +878,15 @@ class NotificationService:
         last_seen_local = alert.last_seen.replace(tzinfo=timezone.utc).astimezone(local_tz) if alert.last_seen else datetime.now(timezone.utc)
 
         # Build variable substitution map
-        # Shorten container ID to 12 characters (Docker standard)
-        container_id_short = alert.scope_id[:12] if alert.scope_type == 'container' and alert.scope_id else 'N/A'
+        # Extract short container ID from composite scope_id
+        if alert.scope_type == 'container' and alert.scope_id:
+            try:
+                _, container_id_short = parse_composite_key(alert.scope_id)
+            except (ValueError, AttributeError):
+                # Fallback if parsing fails (shouldn't happen with valid data)
+                container_id_short = 'N/A'
+        else:
+            container_id_short = 'N/A'
 
         # For host-scoped alerts without host_name, extract from title (e.g., "Host Offline - Integration Test Host")
         host_name = alert.host_name

@@ -18,6 +18,7 @@ import httpx
 
 from database import ContainerHttpHealthCheck
 from event_bus import Event, EventType, get_event_bus
+from utils.keys import make_composite_key
 
 logger = logging.getLogger(__name__)
 
@@ -382,7 +383,7 @@ class HttpHealthChecker:
             await event_bus.emit(Event(
                 event_type=EventType.CONTAINER_HEALTH_CHANGED,
                 scope_type='container',
-                scope_id=container['short_id'],
+                scope_id=make_composite_key(event_data['host_id'], container['short_id']),
                 scope_name=container['name'],
                 host_id=event_data['host_id'],
                 host_name=container['host_name'],

@@ -11,7 +11,7 @@ from datetime import datetime, time as dt_time, timezone, timedelta
 from database import DatabaseManager
 from event_logger import EventLogger, EventSeverity, EventType
 from auth.session_manager import session_manager
-from utils.keys import make_composite_key
+from utils.keys import make_composite_key, parse_composite_key
 from utils.async_docker import async_docker_call
 
 logger = logging.getLogger(__name__)
@@ -84,17 +84,16 @@ class PeriodicJobsManager:
 
             # Check if entity still exists
             if alert_data['scope_type'] == 'container':
-                # Check if container exists in any host (using pre-fetched sets)
+                # Check if container exists on its host (using pre-fetched sets)
+                # Parse composite scope_id to extract host_id and container_id
                 if self.monitor:
-                    container_exists = any(
-                        alert_data['scope_id'] in existing_containers_by_host.get(host_id, set())
-                        for host_id in self.monitor.clients.keys()
-                    )
+                    alert_host_id, container_short_id = parse_composite_key(alert_data['scope_id'])
+                    container_exists = container_short_id in existing_containers_by_host.get(alert_host_id, set())
 
                     if not container_exists:
                         should_resolve = True
                         resolve_reason = 'entity_gone'
-                        logger.info(f"Container {alert_data['scope_id'][:12]} no longer exists on any host, auto-resolving alert {alert_data['id']}")
+                        logger.info(f"Container {container_short_id} no longer exists on host {alert_host_id}, auto-resolving alert {alert_data['id']}")
 
             elif alert_data['scope_type'] == 'host':
                 # Check if host exists and is connected

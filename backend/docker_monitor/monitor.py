@@ -1191,7 +1191,7 @@ class DockerMonitor:
                         get_event_bus(self).emit(Event(
                             event_type=bus_event_type,
                             scope_type='container',
-                            scope_id=container_id,  # Short ID (12 chars)
+                            scope_id=make_composite_key(host_id, container_id),
                             scope_name=container_name,
                             host_id=host_id,
                             host_name=host_name,

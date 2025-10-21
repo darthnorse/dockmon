@@ -7,11 +7,13 @@
 import { useState } from 'react'
 import { useAlerts, useResolveAlert, useSnoozeAlert } from '@/features/alerts/hooks/useAlerts'
 import type { AlertFilters, AlertState, AlertSeverity } from '@/types/alerts'
+import type { Container } from '@/features/containers/types'
 import { AlertTriangle, Bell, CheckCircle2, Clock, ChevronLeft, ChevronRight, AlertCircle, Info, ChevronDown } from 'lucide-react'
 import { AlertDetailsDrawer } from '@/features/alerts/components/AlertDetailsDrawer'
+import { makeCompositeKey } from '@/lib/utils/containerKeys'
 
 interface ContainerModalAlertsTabProps {
-  containerId: string
+  container: Pick<Container, 'host_id' | 'id'>
 }
 
 const SNOOZE_DURATIONS = [
@@ -34,10 +36,12 @@ const SEVERITY_OPTIONS: { value: AlertSeverity; label: string; color: string }[]
   { value: 'info', label: 'Info', color: 'text-blue-600' },
 ]
 
-export function ContainerModalAlertsTab({ containerId }: ContainerModalAlertsTabProps) {
+export function ContainerModalAlertsTab({ container }: ContainerModalAlertsTabProps) {
+  const compositeKey = makeCompositeKey(container)
+
   const [filters, setFilters] = useState<AlertFilters>({
     scope_type: 'container',
-    scope_id: containerId,
+    scope_id: compositeKey,
     state: 'open', // Default to showing only open alerts
     page: 1,
     page_size: 10,
@@ -64,7 +68,7 @@ export function ContainerModalAlertsTab({ containerId }: ContainerModalAlertsTab
       [key]: value === prev[key] ? undefined : value, // Toggle off if same
       page: 1, // Reset to first page
       scope_type: 'container', // Always container
-      scope_id: containerId, // Always this container
+      scope_id: compositeKey, // Always this container (composite key)
     }))
   }
 

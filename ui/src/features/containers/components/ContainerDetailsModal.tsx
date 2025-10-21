@@ -174,7 +174,7 @@ export function ContainerDetailsModal({
     {
       id: 'alerts',
       label: 'Alerts',
-      content: <ContainerModalAlertsTab containerId={container.id} />,
+      content: <ContainerModalAlertsTab container={container} />,
     },
     {
       id: 'updates',

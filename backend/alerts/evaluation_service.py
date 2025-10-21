@@ -18,7 +18,7 @@ from sqlalchemy.orm import joinedload
 from database import DatabaseManager, AlertRuleV2, AlertV2
 from alerts.engine import AlertEngine, EvaluationContext
 from event_logger import EventLogger, EventContext, EventCategory, EventType, EventSeverity
-from utils.keys import make_composite_key
+from utils.keys import make_composite_key, parse_composite_key
 
 logger = logging.getLogger(__name__)
 
@@ -255,9 +255,11 @@ class AlertEvaluationService:
 
                 # Get current container state from monitor
                 # CRITICAL: Match by both short_id AND host_id to prevent cross-host confusion in multi-host setups
+                # Parse composite scope_id to extract short container ID
+                _, container_short_id = parse_composite_key(alert.scope_id)
                 containers = await self.monitor.get_containers()
                 container = next((c for c in containers
-                                if c.short_id == alert.scope_id and c.host_id == alert.host_id), None)
+                                if c.short_id == container_short_id and c.host_id == alert.host_id), None)
 
                 if not container:
                     # Container no longer exists - still consider this a valid alert
@@ -279,9 +281,11 @@ class AlertEvaluationService:
                     return True
 
                 # CRITICAL: Match by both short_id AND host_id to prevent cross-host confusion
+                # Parse composite scope_id to extract short container ID
+                _, container_short_id = parse_composite_key(alert.scope_id)
                 containers = await self.monitor.get_containers()
                 container = next((c for c in containers
-                                if c.short_id == alert.scope_id and c.host_id == alert.host_id), None)
+                                if c.short_id == container_short_id and c.host_id == alert.host_id), None)
 
                 if not container:
                     return True
@@ -300,8 +304,9 @@ class AlertEvaluationService:
 
                 try:
                     # Get current stats for this container
+                    # scope_id is already a composite key {host_id}:{container_id}
                     stats = await self.stats_client.get_container_stats()
-                    container_key = f"{alert.host_id}:{alert.scope_id}"
+                    container_key = alert.scope_id
                     current_stats = stats.get(container_key)
 
                     if not current_stats:
@@ -898,7 +903,7 @@ class AlertEvaluationService:
                 for alert in open_alerts:
                     container_alerts_to_check.append({
                         'id': alert.id,
-                        'scope_id': alert.scope_id,  # SHORT container ID (12 chars)
+                        'scope_id': alert.scope_id,  # Composite key {host_id}:{container_id}
                         'container_name': alert.container_name,
                         'host_id': alert.host_id
                     })
@@ -911,8 +916,8 @@ class AlertEvaluationService:
             # Get all existing containers from monitor
             containers = await self.monitor.get_containers()
 
-            # Build set of existing container SHORT IDs (12 chars)
-            existing_container_ids = {c.short_id for c in containers}
+            # Build set of existing container composite keys {host_id}:{container_id}
+            existing_container_ids = {make_composite_key(c.host_id, c.short_id) for c in containers}
 
             # Check each alert to see if container still exists
             alerts_to_resolve = []

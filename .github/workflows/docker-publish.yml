@@ -41,7 +41,7 @@ jobs:
         with:
           images: |
             ${{ secrets.DOCKERHUB_USERNAME }}/dockmon
-            ghcr.io/${{ steps.lowercase.outputs.owner }}/dockmon
+            ghcr.io/${{ secrets.GHCR_USERNAME }}/dockmon
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}

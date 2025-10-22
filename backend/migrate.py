@@ -137,13 +137,13 @@ def _migrate_old_revision_ids(engine):
 
         if current and current in migration_map:
             new_id = migration_map[current]
-            logger.info(f"🔄 Updating revision ID: {current} → {new_id}")
+            logger.info(f"Updating revision ID: {current} → {new_id}")
             conn.execute(
                 text("UPDATE alembic_version SET version_num = :new_id")
                 .bindparams(new_id=new_id)
             )
             conn.commit()
-            logger.info("✓ Revision ID updated")
+            logger.info("Revision ID updated")
 
 
 def _log_migration_plan(alembic_cfg, current: str, target: str):
@@ -168,7 +168,7 @@ def _log_migration_plan(alembic_cfg, current: str, target: str):
         return
 
     if revisions:
-        logger.info(f"📋 Migration plan ({len(revisions)} step(s)):")
+        logger.info(f"Migration plan ({len(revisions)} step(s)):")
         for rev in reversed(revisions):  # Show in execution order
             # Extract version from revision ID (e.g., '002_v2_0_1' → 'v2.0.1')
             if '_' in rev.revision:
@@ -239,7 +239,7 @@ def _validate_schema(engine, version: str):
                 if missing:
                     raise RuntimeError(f"Schema validation failed: Missing columns in {table_name}: {missing}")
 
-    logger.info(f"✓ Schema validation passed for version: {version}")
+    logger.info(f"Schema validation passed for version: {version}")
 
 
 def _handle_fresh_install(engine, alembic_cfg) -> bool:
@@ -259,13 +259,13 @@ def _handle_fresh_install(engine, alembic_cfg) -> bool:
     from database import Base
     from alembic import command
 
-    logger.info("🆕 Fresh installation detected")
+    logger.info("Fresh installation detected")
 
     try:
         # Create all tables with current schema
         logger.info("Creating database tables...")
         Base.metadata.create_all(bind=engine)
-        logger.info("✓ Tables created")
+        logger.info("Tables created")
 
         # Get HEAD revision
         head_revision = _get_head_revision(alembic_cfg)
@@ -273,7 +273,7 @@ def _handle_fresh_install(engine, alembic_cfg) -> bool:
         # Stamp database as HEAD without running migrations
         logger.info(f"Stamping database at version: {head_revision}")
         command.stamp(alembic_cfg, head_revision)
-        logger.info(f"✓ Database initialized at version: {head_revision}")
+        logger.info(f"Database initialized at version: {head_revision}")
 
         # Validate schema was created correctly
         _validate_schema(engine, head_revision)
@@ -281,7 +281,7 @@ def _handle_fresh_install(engine, alembic_cfg) -> bool:
         return True
 
     except Exception as e:
-        logger.error(f"❌ Fresh installation failed: {e}", exc_info=True)
+        logger.error(f"Fresh installation failed: {e}", exc_info=True)
         return False
 
 
@@ -302,25 +302,25 @@ def _handle_v1_upgrade(engine, alembic_cfg, db_path: str) -> bool:
     """
     from alembic import command
 
-    logger.info("🔄 Upgrading v1.x database to v2")
+    logger.info("Upgrading v1.x database to v2")
 
     try:
         # Create backup before migration
         backup_path = f"{db_path}.backup-v1-to-v2"
-        logger.info(f"💾 Creating backup: {backup_path}")
+        logger.info(f"Creating backup: {backup_path}")
         try:
             shutil.copy2(db_path, backup_path)
-            logger.info("✓ Backup created")
+            logger.info("Backup created")
         except Exception as e:
-            logger.error(f"❌ Backup creation failed: {e}")
+            logger.error(f"Backup creation failed: {e}")
             logger.error("Aborting migration - cannot proceed without backup")
             return False
 
         # Run all migrations from scratch (v1 → v2.0.0 → v2.0.1 → ...)
-        logger.info("🔄 Applying all migrations...")
+        logger.info("Applying all migrations...")
         try:
             command.upgrade(alembic_cfg, "head")
-            logger.info("✓ Migrations completed successfully")
+            logger.info("Migrations completed successfully")
 
             # Get final version for validation
             head_version = _get_head_revision(alembic_cfg)
@@ -334,7 +334,7 @@ def _handle_v1_upgrade(engine, alembic_cfg, db_path: str) -> bool:
             # Clean up backup on success
             try:
                 os.remove(backup_path)
-                logger.info("✓ Backup removed (migration successful)")
+                logger.info("Backup removed (migration successful)")
             except Exception as e:
                 logger.warning(f"Could not remove backup: {e}")
                 logger.info(f"Manual cleanup: rm {backup_path}")
@@ -342,13 +342,13 @@ def _handle_v1_upgrade(engine, alembic_cfg, db_path: str) -> bool:
             return True
 
         except Exception as e:
-            logger.error(f"❌ Migration failed: {e}", exc_info=True)
-            logger.error(f"💾 Backup preserved at: {backup_path}")
+            logger.error(f"Migration failed: {e}", exc_info=True)
+            logger.error(f"Backup preserved at: {backup_path}")
             logger.error(f"To restore: docker cp {backup_path} dockmon:/app/data/dockmon.db")
             return False
 
     except Exception as e:
-        logger.error(f"❌ V1 upgrade process failed: {e}", exc_info=True)
+        logger.error(f"V1 upgrade process failed: {e}", exc_info=True)
         return False
 
 
@@ -385,7 +385,7 @@ def _handle_upgrade(engine, alembic_cfg, db_path: str) -> bool:
 
         # Already at latest? (Idempotent check)
         if current_version == head_version:
-            logger.info("✓ Already at latest version")
+            logger.info("Already at latest version")
 
             # Clean up V1 alert tables if they still exist (legacy cleanup)
             _cleanup_v1_tables(engine)
@@ -397,20 +397,20 @@ def _handle_upgrade(engine, alembic_cfg, db_path: str) -> bool:
 
         # Create backup before migration
         backup_path = f"{db_path}.backup-{current_version}-to-{head_version}"
-        logger.info(f"💾 Creating backup: {backup_path}")
+        logger.info(f"Creating backup: {backup_path}")
         try:
             shutil.copy2(db_path, backup_path)
-            logger.info("✓ Backup created")
+            logger.info("Backup created")
         except Exception as e:
-            logger.error(f"❌ Backup creation failed: {e}")
+            logger.error(f"Backup creation failed: {e}")
             logger.error("Aborting migration - cannot proceed without backup")
             return False
 
         # Run migrations
-        logger.info("🔄 Applying migrations...")
+        logger.info("Applying migrations...")
         try:
             command.upgrade(alembic_cfg, "head")
-            logger.info("✓ Migrations completed successfully")
+            logger.info("Migrations completed successfully")
 
             # Validate schema
             _validate_schema(engine, head_version)
@@ -421,7 +421,7 @@ def _handle_upgrade(engine, alembic_cfg, db_path: str) -> bool:
             # Clean up backup on success
             try:
                 os.remove(backup_path)
-                logger.info("✓ Backup removed (migration successful)")
+                logger.info("Backup removed (migration successful)")
             except Exception as e:
                 logger.warning(f"Could not remove backup: {e}")
                 logger.info(f"Manual cleanup: rm {backup_path}")
@@ -429,13 +429,13 @@ def _handle_upgrade(engine, alembic_cfg, db_path: str) -> bool:
             return True
 
         except Exception as e:
-            logger.error(f"❌ Migration failed: {e}", exc_info=True)
-            logger.error(f"💾 Backup preserved at: {backup_path}")
+            logger.error(f"Migration failed: {e}", exc_info=True)
+            logger.error(f"Backup preserved at: {backup_path}")
             logger.error(f"To restore: docker cp {backup_path} dockmon:/app/data/dockmon.db")
             return False
 
     except Exception as e:
-        logger.error(f"❌ Upgrade process failed: {e}", exc_info=True)
+        logger.error(f"Upgrade process failed: {e}", exc_info=True)
         return False
 
 
@@ -464,7 +464,7 @@ def _cleanup_v1_tables(engine):
                 conn.execute(text("DROP TABLE IF EXISTS alert_rule_containers"))
                 conn.execute(text("DROP TABLE IF EXISTS alert_rules"))
                 conn.commit()
-                logger.info("✓ V1 alert tables dropped")
+                logger.info("V1 alert tables dropped")
     except Exception as e:
         logger.warning(f"Could not clean up V1 tables (non-fatal): {e}")
 
@@ -508,7 +508,7 @@ def run_migrations() -> bool:
         # Verify alembic directory exists
         if not os.path.exists(alembic_dir):
             logger.warning(f"Alembic directory not found at {alembic_dir}, skipping migrations")
-            logger.info("✓ Migration completed (no Alembic migrations available)")
+            logger.info("Migration completed (no Alembic migrations available)")
             return True
 
         # Create Alembic configuration object

@@ -8,6 +8,7 @@ A comprehensive Docker container monitoring and management platform with real-ti
 ![React](https://img.shields.io/badge/React-18.3-61DAFB?logo=react&logoColor=white)
 ![Go](https://img.shields.io/badge/Go-1.23-00ADD8?logo=go&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-Support-FFDD00?logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/darthnorse)
 
 <p align="center">
   <img src="screenshots/dashboard.png" alt="DockMon Dashboard" width="800">

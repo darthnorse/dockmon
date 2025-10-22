@@ -35,7 +35,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('migrate')
 
 
 def _alembic_version_table_exists(engine) -> bool:
@@ -380,8 +380,8 @@ def _handle_upgrade(engine, alembic_cfg, db_path: str) -> bool:
         current_version = _get_current_version(engine)
         head_version = _get_head_revision(alembic_cfg)
 
-        logger.info(f"📊 Database version: {current_version}")
-        logger.info(f"📊 Target version: {head_version}")
+        logger.info(f"Database version: {current_version}")
+        logger.info(f"Target version: {head_version}")
 
         # Already at latest? (Idempotent check)
         if current_version == head_version:

@@ -158,8 +158,11 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
     [queryClient]
   )
 
-  // Determine WebSocket URL dynamically based on current host and protocol
-  const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/`
+  // Determine WebSocket URL dynamically based on current host, protocol, and base URL
+  // For sub-path deployments (e.g., /dockmon/), configure base: '/dockmon/' in vite.config.ts
+  // import.meta.env.BASE_URL will then provide the app root path (not including current route)
+  const basePath = import.meta.env.BASE_URL.replace(/\/$/, '')
+  const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}${basePath}/ws/`
 
   const { status, send } = useWebSocket({
     url: wsUrl,

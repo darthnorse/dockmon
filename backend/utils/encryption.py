@@ -2,7 +2,7 @@
 Encryption utilities for sensitive data storage.
 
 Uses Fernet symmetric encryption to protect passwords and sensitive data.
-The encryption key is stored in /app/data/encryption.key and auto-generated
+The encryption key is stored in the configured data directory and auto-generated
 on first use.
 
 Security Note:
@@ -15,18 +15,19 @@ import os
 import logging
 from typing import Optional
 from cryptography.fernet import Fernet, InvalidToken
+from config.paths import DATA_DIR
 
 logger = logging.getLogger(__name__)
 
-# Path to encryption key file
-KEY_PATH = '/app/data/encryption.key'
+# Path to encryption key file (respects DOCKMON_DATA_DIR environment variable)
+KEY_PATH = os.path.join(DATA_DIR, 'encryption.key')
 
 
 def _get_or_create_key() -> bytes:
     """
     Load existing encryption key or generate a new one.
 
-    The key is stored in /app/data/encryption.key. If the file doesn't exist,
+    The key is stored in the configured data directory. If the file doesn't exist,
     a new key is generated and saved.
 
     Returns:

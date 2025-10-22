@@ -1,17 +1,16 @@
-"""v2.0.1 upgrade - Add changelog URL resolution
+"""v2.0.1 upgrade - Changelog URL resolution + Alert retry tracking
 
 Revision ID: 002_v2_0_1
 Revises: 001_v2_0_0
 Create Date: 2025-10-22
 
-This migration adds changelog URL resolution columns to container_updates table.
-Defensive: checks if columns exist before adding (handles v1→v2.0.1 upgrades where
-Base.metadata.create_all() already created the table with these columns).
+This migration adds changelog URL resolution and alert retry tracking.
+All additions are defensive (checks if columns exist before adding).
 
 CHANGES IN v2.0.1:
-- container_updates: Add changelog_url (TEXT, nullable)
-- container_updates: Add changelog_source (TEXT, nullable)
-- container_updates: Add changelog_checked_at (DATETIME, nullable)
+- container_updates: Add changelog_url, changelog_source, changelog_checked_at
+- alerts_v2: Add last_notification_attempt_at, next_retry_at (exponential backoff)
+- global_settings: Update app_version to '2.0.1'
 """
 from alembic import op
 import sqlalchemy as sa
@@ -29,41 +28,70 @@ def column_exists(table_name: str, column_name: str) -> bool:
     """Check if column exists (defensive pattern)"""
     bind = op.get_bind()
     inspector = inspect(bind)
+
+    # Check table exists first (belts and braces)
+    if table_name not in inspector.get_table_names():
+        return False
+
     columns = [col['name'] for col in inspector.get_columns(table_name)]
     return column_name in columns
 
 
 def upgrade() -> None:
     """
-    Add changelog columns to container_updates table.
+    Add changelog columns and alert retry tracking.
 
     Defensive: Only adds columns if they don't exist.
-    Handles both v2.0.0→v2.0.1 (columns don't exist) and
-    v1→v2.0.1 (columns already exist from Base.metadata.create_all()).
+    Safe to run multiple times (idempotent).
     """
 
-    # Add changelog_url column
+    # ==================== container_updates: Add changelog columns ====================
     if not column_exists('container_updates', 'changelog_url'):
         op.add_column('container_updates',
             sa.Column('changelog_url', sa.Text(), nullable=True))
 
-    # Add changelog_source column
     if not column_exists('container_updates', 'changelog_source'):
         op.add_column('container_updates',
             sa.Column('changelog_source', sa.Text(), nullable=True))
 
-    # Add changelog_checked_at column
     if not column_exists('container_updates', 'changelog_checked_at'):
         op.add_column('container_updates',
             sa.Column('changelog_checked_at', sa.DateTime(), nullable=True))
 
+    # ==================== alerts_v2: Add retry tracking columns ====================
+    # Exponential backoff for notification retries
+    if not column_exists('alerts_v2', 'last_notification_attempt_at'):
+        op.add_column('alerts_v2',
+            sa.Column('last_notification_attempt_at', sa.DateTime(), nullable=True))
+
+    if not column_exists('alerts_v2', 'next_retry_at'):
+        op.add_column('alerts_v2',
+            sa.Column('next_retry_at', sa.DateTime(), nullable=True))
+
+    # ==================== global_settings: Update app_version ====================
+    op.execute(
+        sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
+        .bindparams(version='2.0.1', id=1)
+    )
+
 
 def downgrade() -> None:
     """
-    Remove changelog columns from container_updates table.
+    Remove v2.0.1 columns.
 
     Note: Downgrade is rarely used in production, but provided for completeness.
     """
+    # Remove container_updates changelog columns
     op.drop_column('container_updates', 'changelog_checked_at')
     op.drop_column('container_updates', 'changelog_source')
     op.drop_column('container_updates', 'changelog_url')
+
+    # Remove alerts_v2 retry tracking columns
+    op.drop_column('alerts_v2', 'next_retry_at')
+    op.drop_column('alerts_v2', 'last_notification_attempt_at')
+
+    # Revert app_version to 2.0.0
+    op.execute(
+        sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
+        .bindparams(version='2.0.0', id=1)
+    )

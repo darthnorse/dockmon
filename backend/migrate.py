@@ -44,10 +44,44 @@ def _alembic_version_table_exists(engine) -> bool:
 
     Returns:
         True if table exists (indicates existing database with migrations)
-        False if table doesn't exist (indicates fresh install)
+        False if table doesn't exist (could be fresh install or v1 database)
     """
     inspector = inspect(engine)
     return 'alembic_version' in inspector.get_table_names()
+
+
+def _is_v1_database(engine) -> bool:
+    """
+    Check if this is a v1.x database (needs migration to v2).
+
+    V1 databases have:
+    - global_settings table (exists)
+    - NO app_version column (v2 feature)
+
+    Fresh installs have:
+    - NO tables at all
+
+    Args:
+        engine: SQLAlchemy engine
+
+    Returns:
+        True if v1 database (needs migration), False otherwise
+    """
+    inspector = inspect(engine)
+    tables = inspector.get_table_names()
+
+    # No tables = fresh install, not v1
+    if 'global_settings' not in tables:
+        return False
+
+    # Has global_settings - check for app_version column
+    columns = {col['name'] for col in inspector.get_columns('global_settings')}
+    is_v1 = 'app_version' not in columns
+
+    if is_v1:
+        logger.info("Detected v1.x database (no app_version column)")
+
+    return is_v1
 
 
 def _get_current_version(engine) -> str:
@@ -250,6 +284,73 @@ def _handle_fresh_install(engine, alembic_cfg) -> bool:
         return False
 
 
+def _handle_v1_upgrade(engine, alembic_cfg, db_path: str) -> bool:
+    """
+    Handle v1.x database upgrade to v2.
+
+    V1 databases have tables but no alembic_version table.
+    This function creates the alembic_version table and runs all migrations.
+
+    Args:
+        engine: SQLAlchemy engine
+        alembic_cfg: Alembic configuration object
+        db_path: Path to database file (for backup)
+
+    Returns:
+        True on success, False on failure
+    """
+    from alembic import command
+
+    logger.info("🔄 Upgrading v1.x database to v2")
+
+    try:
+        # Create backup before migration
+        backup_path = f"{db_path}.backup-v1-to-v2"
+        logger.info(f"💾 Creating backup: {backup_path}")
+        try:
+            shutil.copy2(db_path, backup_path)
+            logger.info("✓ Backup created")
+        except Exception as e:
+            logger.error(f"❌ Backup creation failed: {e}")
+            logger.error("Aborting migration - cannot proceed without backup")
+            return False
+
+        # Run all migrations from scratch (v1 → v2.0.0 → v2.0.1 → ...)
+        logger.info("🔄 Applying all migrations...")
+        try:
+            command.upgrade(alembic_cfg, "head")
+            logger.info("✓ Migrations completed successfully")
+
+            # Get final version for validation
+            head_version = _get_head_revision(alembic_cfg)
+
+            # Validate schema
+            _validate_schema(engine, head_version)
+
+            # Clean up V1 alert tables (legacy cleanup)
+            _cleanup_v1_tables(engine)
+
+            # Clean up backup on success
+            try:
+                os.remove(backup_path)
+                logger.info("✓ Backup removed (migration successful)")
+            except Exception as e:
+                logger.warning(f"Could not remove backup: {e}")
+                logger.info(f"Manual cleanup: rm {backup_path}")
+
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Migration failed: {e}", exc_info=True)
+            logger.error(f"💾 Backup preserved at: {backup_path}")
+            logger.error(f"To restore: docker cp {backup_path} dockmon:/app/data/dockmon.db")
+            return False
+
+    except Exception as e:
+        logger.error(f"❌ V1 upgrade process failed: {e}", exc_info=True)
+        return False
+
+
 def _handle_upgrade(engine, alembic_cfg, db_path: str) -> bool:
     """
     Handle existing database: Check version and run pending migrations.
@@ -414,12 +515,17 @@ def run_migrations() -> bool:
         alembic_cfg.set_main_option("script_location", alembic_dir)
         alembic_cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_path}")
 
-        # DETECT: Fresh install or existing database?
+        # DETECT: Fresh install, v1 database, or v2+ upgrade?
         if not _alembic_version_table_exists(engine):
-            # Fresh install path
-            return _handle_fresh_install(engine, alembic_cfg)
+            # No alembic_version - either fresh install or v1 database
+            if _is_v1_database(engine):
+                # V1 database - run migrations to upgrade
+                return _handle_v1_upgrade(engine, alembic_cfg, db_path)
+            else:
+                # Fresh install - create tables and stamp
+                return _handle_fresh_install(engine, alembic_cfg)
         else:
-            # Upgrade path
+            # V2+ database - check if upgrade needed
             return _handle_upgrade(engine, alembic_cfg, db_path)
 
     except ImportError as e:

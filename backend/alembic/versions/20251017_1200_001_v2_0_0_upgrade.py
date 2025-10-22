@@ -74,6 +74,11 @@ class MigrationHelper:
 
     def execute_if_zero_rows(self, table_name: str, insert_sql: str) -> bool:
         """Execute INSERT only if table is empty. Returns True if executed."""
+        # Validate table_name is a valid SQL identifier (prevent SQL injection)
+        if not table_name.replace('_', '').isalnum():
+            raise ValueError(f"Invalid table name: {table_name}")
+
+        # Note: SQLite doesn't support parameterized table names, so we validate instead
         result = self.bind.execute(sa.text(f"SELECT COUNT(*) FROM {table_name}")).scalar()
         if result == 0:
             op.execute(insert_sql)

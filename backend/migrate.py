@@ -104,7 +104,10 @@ def _migrate_old_revision_ids(engine):
         if current and current in migration_map:
             new_id = migration_map[current]
             logger.info(f"🔄 Updating revision ID: {current} → {new_id}")
-            conn.execute(text(f"UPDATE alembic_version SET version_num = '{new_id}'"))
+            conn.execute(
+                text("UPDATE alembic_version SET version_num = :new_id")
+                .bindparams(new_id=new_id)
+            )
             conn.commit()
             logger.info("✓ Revision ID updated")
 
@@ -379,7 +382,6 @@ def run_migrations() -> bool:
     """
     try:
         from alembic.config import Config
-        from alembic import command
 
         # Get the directory where this script is located (/app/backend in container)
         backend_dir = os.path.dirname(os.path.abspath(__file__))

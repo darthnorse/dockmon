@@ -3,11 +3,16 @@
 Standalone database migration script.
 
 This script runs database migrations BEFORE the application starts.
-Handles both fresh v2 installations and v1→v2 upgrades.
+Handles fresh installs, version upgrades, and schema updates.
 
 Workflow:
 1. Create missing tables (handles fresh installs)
-2. Run Alembic migrations (handles v1→v2 upgrades)
+2. Run Alembic migrations to latest version (handles all upgrades)
+
+Scenarios:
+- Fresh install: Creates all tables with latest schema
+- v1→v2.x: Runs v1_to_v2 migration, then any newer migrations
+- v2.0.0→v2.0.1+: Runs only the new migrations (e.g., changelog columns)
 
 Usage:
     python migrate.py
@@ -60,36 +65,22 @@ def run_migrations():
         os.makedirs(data_dir, exist_ok=True)
         logger.info(f"Data directory: {data_dir}")
 
-        # Check if migration already completed (idempotent check)
-        # If alembic_version table exists and has a version, skip migration
+        # Check current migration version (for logging purposes)
+        current_version = None
         try:
             engine_check = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False, "timeout": 30})
             with engine_check.connect() as conn:
                 from sqlalchemy import text
                 result = conn.execute(text("SELECT version_num FROM alembic_version LIMIT 1"))
-                version = result.scalar()
-                if version:
-                    logger.info(f"✓ Migration already completed (version: {version})")
-
-                    # Clean up V1 alert tables (may exist on upgraded systems)
-                    # Check if tables exist before attempting to drop them
-                    result = conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('alert_rules', 'alert_rule_containers')"))
-                    v1_tables = result.fetchall()
-                    if v1_tables:
-                        logger.info(f"Dropping legacy V1 alert tables: {[t[0] for t in v1_tables]}...")
-                        conn.execute(text("DROP TABLE IF EXISTS alert_rule_containers"))
-                        conn.execute(text("DROP TABLE IF EXISTS alert_rules"))
-                        conn.commit()
-                        logger.info("✓ V1 alert tables dropped")
-
-                    logger.info("✓ All migrations completed successfully")
-                    return True
+                current_version = result.scalar()
+                if current_version:
+                    logger.info(f"Current database version: {current_version}")
         except Exception as e:
-            # Table doesn't exist or error checking - proceed with migration
-            logger.debug(f"No existing migration version found: {e}")
+            # Table doesn't exist - this is a fresh database
+            logger.info("No existing migration version found (fresh database)")
             pass
 
-        logger.info("Starting fresh migration...")
+        logger.info("Starting database migration...")
 
         # Create SQLAlchemy engine
         engine = create_engine(

@@ -256,6 +256,11 @@ class ContainerUpdate(Base):
     registry_url = Column(Text, nullable=True)
     platform = Column(Text, nullable=True)
 
+    # Changelog URL resolution (v2.0.1+)
+    changelog_url = Column(Text, nullable=True)  # GitHub releases URL or NULL
+    changelog_source = Column(Text, nullable=True)  # 'oci_label', 'ghcr', 'fuzzy_match', 'failed'
+    changelog_checked_at = Column(DateTime, nullable=True)  # When we last checked
+
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 

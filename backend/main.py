@@ -1087,7 +1087,7 @@ async def execute_container_update(
 
     This endpoint:
     1. Verifies an update is available
-    2. Validates update policy (unless force=True)
+    2. Validates update policy (ALWAYS - force only affects WARN handling)
     3. Pulls the new image
     4. Recreates the container with the new image
     5. Waits for health check
@@ -1124,56 +1124,55 @@ async def execute_container_update(
                 detail="No update available for this container"
             )
 
-        # Get container for validation (unless force=True)
-        if not force:
-            # Get Docker client
-            client = monitor.clients.get(host_id)
-            if not client:
-                raise HTTPException(status_code=404, detail="Docker host not found")
+        # Get container for validation (ALWAYS - needed even with force=True)
+        # Get Docker client
+        client = monitor.clients.get(host_id)
+        if not client:
+            raise HTTPException(status_code=404, detail="Docker host not found")
 
-            # Get container
-            try:
-                container = await async_docker_call(client.containers.get, short_id)
-                labels = container.labels or {}
-                container_name = container.name.lstrip('/')
-            except Exception as e:
-                logger.error(f"Error getting container for validation: {e}")
-                raise HTTPException(status_code=404, detail=f"Container not found: {short_id}")
+        # Get container
+        try:
+            container = await async_docker_call(client.containers.get, short_id)
+            labels = container.labels or {}
+            container_name = container.name.lstrip('/')
+        except Exception as e:
+            logger.error(f"Error getting container for validation: {e}")
+            raise HTTPException(status_code=404, detail=f"Container not found: {short_id}")
 
-            # Validate update
-            try:
-                validator = ContainerValidator(session)
-                validation_result = validator.validate_update(
-                    host_id=host_id,
-                    container_id=short_id,
-                    container_name=container_name,
-                    image_name=update_record.current_image,
-                    labels=labels
-                )
-            except Exception as e:
-                logger.error(f"Error validating update policy: {e}")
-                raise HTTPException(
-                    status_code=503,
-                    detail=f"Unable to validate update policy: {str(e)}"
-                )
+        # Validate update (ALWAYS - force only affects WARN behavior)
+        try:
+            validator = ContainerValidator(session)
+            validation_result = validator.validate_update(
+                host_id=host_id,
+                container_id=short_id,
+                container_name=container_name,
+                image_name=update_record.current_image,
+                labels=labels
+            )
+        except Exception as e:
+            logger.error(f"Error validating update policy: {e}")
+            raise HTTPException(
+                status_code=503,
+                detail=f"Unable to validate update policy: {str(e)}"
+            )
 
-            # If BLOCK, prevent update even with force
-            if validation_result.result == ValidationResult.BLOCK:
-                return {
-                    "status": "blocked",
-                    "validation": "block",
-                    "reason": validation_result.reason,
-                    "matched_pattern": validation_result.matched_pattern
-                }
+        # BLOCK always prevents update (force cannot bypass)
+        if validation_result.result == ValidationResult.BLOCK:
+            return {
+                "status": "blocked",
+                "validation": "block",
+                "reason": validation_result.reason,
+                "matched_pattern": validation_result.matched_pattern
+            }
 
-            # If WARN, return to frontend for confirmation
-            if validation_result.result == ValidationResult.WARN:
-                return {
-                    "status": "requires_confirmation",
-                    "validation": "warn",
-                    "reason": validation_result.reason,
-                    "matched_pattern": validation_result.matched_pattern
-                }
+        # WARN requires user confirmation (unless force=True)
+        if validation_result.result == ValidationResult.WARN and not force:
+            return {
+                "status": "requires_confirmation",
+                "validation": "warn",
+                "reason": validation_result.reason,
+                "matched_pattern": validation_result.matched_pattern
+            }
 
     # Execute the update (validation passed or force=True)
     executor = get_update_executor(monitor.db, monitor)

@@ -1,13 +1,13 @@
-"""v1.1.3 to v2.0.0 comprehensive upgrade
+"""v2.0.0 upgrade - Major upgrade from v1.1.3
 
-Revision ID: 001_v1_to_v2
-Revises:
+Revision ID: 001_v2_0_0
+Revises: None
 Create Date: 2025-10-17 12:00:00
 
 This migration handles the complete upgrade from DockMon v1.1.3 to v2.0.0.
 It is fully defensive and checks for existing tables/columns before creating them.
 
-CHANGES:
+CHANGES IN v2.0.0:
 - GlobalSettings: Add missing v2 columns (unused_tag_retention_days, alert_retention_days, alert templates, update settings, etc.)
 - Users: Add role, display_name, prefs, simplified_workflow, view_mode columns
 - user_prefs table: New table for database-backed user preferences
@@ -15,7 +15,9 @@ CHANGES:
 - event_logs: Add source column and indexes
 - DockerHosts: Add tags, description columns
 - container_http_health_checks: New table for HTTP/HTTPS health monitoring
-- registry_credentials: New table for private registry authentication (v2.0.1+)
+- registry_credentials: New table for private registry authentication
+- update_policies: New table with default validation patterns
+- alerts_v2: Add blackout and retry tracking columns
 """
 from alembic import op
 import sqlalchemy as sa
@@ -23,7 +25,7 @@ from sqlalchemy import inspect
 
 
 # revision identifiers, used by Alembic.
-revision = '001_v1_to_v2'
+revision = '001_v2_0_0'
 down_revision = None
 branch_labels = None
 depends_on = None

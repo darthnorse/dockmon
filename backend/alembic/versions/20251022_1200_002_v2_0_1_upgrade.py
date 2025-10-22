@@ -1,14 +1,14 @@
-"""add changelog URL columns to container_updates
+"""v2.0.1 upgrade - Add changelog URL resolution
 
-Revision ID: 002_add_changelog
-Revises: 001_v1_to_v2
+Revision ID: 002_v2_0_1
+Revises: 001_v2_0_0
 Create Date: 2025-10-22
 
 This migration adds changelog URL resolution columns to container_updates table.
 Defensive: checks if columns exist before adding (handles v1→v2.0.1 upgrades where
 Base.metadata.create_all() already created the table with these columns).
 
-CHANGES:
+CHANGES IN v2.0.1:
 - container_updates: Add changelog_url (TEXT, nullable)
 - container_updates: Add changelog_source (TEXT, nullable)
 - container_updates: Add changelog_checked_at (DATETIME, nullable)
@@ -19,8 +19,8 @@ from sqlalchemy import inspect
 
 
 # revision identifiers, used by Alembic.
-revision = '002_add_changelog'
-down_revision = '001_v1_to_v2'
+revision = '002_v2_0_1'
+down_revision = '001_v2_0_0'
 branch_labels = None
 depends_on = None
 

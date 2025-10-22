@@ -160,8 +160,9 @@ def _log_migration_plan(alembic_cfg, current: str, target: str):
     script = ScriptDirectory.from_config(alembic_cfg)
 
     # Get list of revisions between current and target
+    # iterate_revisions walks DOWN from upper to lower, so we pass target first
     try:
-        revisions = list(script.iterate_revisions(current, target))
+        revisions = list(script.iterate_revisions(target, current))
     except Exception as e:
         logger.warning(f"Could not determine migration plan: {e}")
         return

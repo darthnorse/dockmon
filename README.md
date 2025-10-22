@@ -49,6 +49,7 @@ A comprehensive Docker container monitoring and management platform with real-ti
 - **[Discussions](https://github.com/darthnorse/dockmon/discussions)** - Ask questions, share ideas
 - **[Wiki](https://github.com/darthnorse/dockmon/wiki)** - Complete documentation
 - **[Star on GitHub](https://github.com/darthnorse/dockmon)** - Show your support!
+- **[Buy Me A Coffee](https://buymeacoffee.com/darthnorse)** - Support the project
 
 ## Roadmap
 
@@ -166,7 +167,13 @@ This project has been developed with **vibe coding** and **AI assistance** using
 ---
 
 <p align="center">
-  <strong>If DockMon helps you, please consider giving it a star!</strong>
+  <strong>If DockMon helps you, please consider giving it a star or supporting the project!</strong>
+</p>
+
+<p align="center">
+  <a href="https://buymeacoffee.com/darthnorse" target="_blank">
+    <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" style="height: 60px !important;width: 217px !important;" >
+  </a>
 </p>
 
 <p align="center">

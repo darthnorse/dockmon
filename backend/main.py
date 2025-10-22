@@ -999,6 +999,7 @@ async def get_container_update_status(
                 "validation_info": validation_info,
                 "is_compose_container": is_compose,
                 "skip_compose_enabled": skip_compose_enabled,
+                "changelog_url": None,
             }
 
         return {
@@ -1014,6 +1015,7 @@ async def get_container_update_status(
             "validation_info": validation_info,
             "is_compose_container": is_compose,
             "skip_compose_enabled": skip_compose_enabled,
+            "changelog_url": record.changelog_url,
         }
 
 
@@ -2282,6 +2284,7 @@ async def get_template_variables(current_user: dict = Depends(get_current_user))
             {"name": "{LATEST_DIGEST}", "description": "Latest image digest (SHA256)"},
             {"name": "{PREVIOUS_IMAGE}", "description": "Image before update (for completed updates)"},
             {"name": "{NEW_IMAGE}", "description": "Image after update (for completed updates)"},
+            {"name": "{CHANGELOG_URL}", "description": "Changelog/release notes URL (GitHub releases, etc.)"},
             {"name": "{ERROR_MESSAGE}", "description": "Error message (for failed updates or health checks)"},
 
             # Health checks (HTTP/HTTPS monitoring)

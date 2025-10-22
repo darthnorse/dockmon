@@ -71,6 +71,7 @@ export interface ContainerUpdateStatus {
   } | null
   is_compose_container?: boolean
   skip_compose_enabled?: boolean
+  changelog_url?: string | null  // v2.0.1+ - GitHub releases URL
 }
 
 export interface ContainerHttpHealthCheck {

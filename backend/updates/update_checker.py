@@ -12,6 +12,7 @@ from typing import List, Dict, Optional
 
 from database import DatabaseManager, ContainerUpdate, GlobalSettings, RegistryCredential
 from updates.registry_adapter import get_registry_adapter
+from updates.changelog_resolver import resolve_changelog_url
 from event_bus import Event, EventType, get_event_bus
 from utils.keys import make_composite_key
 from utils.encryption import decrypt_password
@@ -241,6 +242,26 @@ class UpdateChecker:
 
         logger.debug(f"Digest comparison: current={current_digest[:16]}... latest={latest_digest[:16]}... update={update_available}")
 
+        # Resolve changelog URL (v2.0.1+)
+        # Get existing record to check if re-resolution needed
+        existing_record = None
+        with self.db.get_session() as session:
+            existing_record = session.query(ContainerUpdate).filter_by(
+                container_id=composite_key
+            ).first()
+
+        # Extract manifest labels for OCI label detection
+        manifest_labels = latest_result.get("manifest", {}).get("config", {}).get("Labels", {}) or {}
+
+        # Resolve changelog URL with 3-tier strategy
+        changelog_url, changelog_source, changelog_checked_at = await resolve_changelog_url(
+            image_name=floating_tag,
+            manifest_labels=manifest_labels,
+            current_url=existing_record.changelog_url if existing_record else None,
+            current_source=existing_record.changelog_source if existing_record else None,
+            last_checked=existing_record.changelog_checked_at if existing_record else None
+        )
+
         return {
             "current_image": image,
             "current_digest": current_digest,
@@ -250,6 +271,9 @@ class UpdateChecker:
             "registry_url": latest_result["registry"],
             "platform": container.get("platform", "linux/amd64"),
             "floating_tag_mode": tracking_mode,
+            "changelog_url": changelog_url,
+            "changelog_source": changelog_source,
+            "changelog_checked_at": changelog_checked_at,
         }
 
     async def _get_container_image_digest(self, container: Dict) -> Optional[str]:
@@ -396,6 +420,10 @@ class UpdateChecker:
                 record.platform = update_info["platform"]
                 record.last_checked_at = datetime.now(timezone.utc)
                 record.updated_at = datetime.now(timezone.utc)
+                # Update changelog fields (v2.0.1+)
+                record.changelog_url = update_info.get("changelog_url")
+                record.changelog_source = update_info.get("changelog_source")
+                record.changelog_checked_at = update_info.get("changelog_checked_at")
             else:
                 # Create new record
                 record = ContainerUpdate(
@@ -410,6 +438,10 @@ class UpdateChecker:
                     registry_url=update_info["registry_url"],
                     platform=update_info["platform"],
                     last_checked_at=datetime.now(timezone.utc),
+                    # Changelog fields (v2.0.1+)
+                    changelog_url=update_info.get("changelog_url"),
+                    changelog_source=update_info.get("changelog_source"),
+                    changelog_checked_at=update_info.get("changelog_checked_at"),
                 )
                 session.add(record)
 
@@ -468,6 +500,7 @@ class UpdateChecker:
                         'latest_image': update_info['latest_image'],
                         'current_digest': update_info['current_digest'],
                         'latest_digest': update_info['latest_digest'],
+                        'changelog_url': update_info.get('changelog_url'),
                     }
                 ))
 

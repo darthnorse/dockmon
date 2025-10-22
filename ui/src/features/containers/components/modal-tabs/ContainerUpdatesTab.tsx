@@ -6,7 +6,7 @@
  */
 
 import { memo, useState, useEffect, useCallback } from 'react'
-import { Package, RefreshCw, Check, Clock, AlertCircle, Download, Shield } from 'lucide-react'
+import { Package, RefreshCw, Check, Clock, AlertCircle, Download, Shield, ExternalLink } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -302,6 +302,17 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
                 <p className="text-sm text-muted-foreground">
                   A newer version of this container image is available
                 </p>
+                {updateStatus?.changelog_url && (
+                  <a
+                    href={updateStatus.changelog_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-sm text-blue-500 hover:text-blue-600 mt-1"
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                    View Changelog
+                  </a>
+                )}
               </div>
             </>
           ) : (

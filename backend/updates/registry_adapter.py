@@ -678,12 +678,10 @@ class RegistryAdapter:
                             "application/vnd.docker.distribution.manifest.list.v2+json",
                             "application/vnd.oci.image.index.v1+json"
                         ]:
-                            # Find platform-specific manifest
-                            logger.debug(f"Manifest is a list, resolving platform-specific manifest for {platform}")
-                            digest = await self._resolve_platform_manifest(
-                                manifest, platform, manifest_url, token
-                            )
-                            logger.debug(f"Resolved platform-specific digest: {digest}")
+                            # Keep the index digest (manifest list digest) for comparison
+                            # This matches Docker CLI behavior and what docker inspect shows in RepoDigests
+                            # Docker uses the index digest as the canonical identifier for multi-platform images
+                            logger.debug(f"Manifest list detected for {platform}, using index digest: {digest}")
 
                         return digest, manifest
 
@@ -711,11 +709,20 @@ class RegistryAdapter:
         token: Optional[str]
     ) -> Optional[str]:
         """
-        Resolve platform-specific digest from manifest list.
+        Resolve platform-specific manifest digest from manifest list.
 
-        Multi-platform images have a manifest list that points to
-        platform-specific manifests. We need to fetch the correct one
-        to get the actual platform-specific digest (not the digest from the list).
+        NOTE: This method is currently NOT used for update detection.
+        Docker CLI uses the manifest list (index) digest as the canonical identifier,
+        not the platform-specific manifest digest. This method is preserved for
+        potential future use cases like layer-level inspection or detailed platform
+        manifest analysis.
+
+        Multi-platform images have a manifest list that points to platform-specific
+        manifests. This method fetches the platform-specific manifest and returns
+        its digest (different from the index digest).
+
+        For update detection, use the index digest from the manifest list instead
+        to match Docker CLI behavior and docker inspect RepoDigests.
         """
         # Parse platform (e.g., "linux/amd64" → os=linux, arch=amd64)
         os_name, arch = platform.split("/") if "/" in platform else ("linux", platform)

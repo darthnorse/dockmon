@@ -1,15 +1,17 @@
-"""v2.0.1 upgrade - Changelog URL resolution + Alert retry tracking
+"""v2.0.1 upgrade - Changelog URL + Alert retry + DockMon update notifications
 
 Revision ID: 002_v2_0_1
 Revises: 001_v2_0_0
 Create Date: 2025-10-22
 
-This migration adds changelog URL resolution and alert retry tracking.
+This migration adds changelog URL resolution, alert retry tracking, and DockMon update notifications.
 All additions are defensive (checks if columns exist before adding).
 
 CHANGES IN v2.0.1:
 - container_updates: Add changelog_url, changelog_source, changelog_checked_at
 - alerts_v2: Add last_notification_attempt_at, next_retry_at (exponential backoff)
+- global_settings: Add latest_available_version, last_dockmon_update_check_at
+- user_prefs: Add dismissed_dockmon_update_version
 - global_settings: Update app_version to '2.0.1'
 """
 from alembic import op
@@ -68,6 +70,20 @@ def upgrade() -> None:
         op.add_column('alerts_v2',
             sa.Column('next_retry_at', sa.DateTime(), nullable=True))
 
+    # ==================== DockMon Update Notifications ====================
+    # Track DockMon application updates from GitHub (not container updates)
+    if not column_exists('global_settings', 'latest_available_version'):
+        op.add_column('global_settings',
+            sa.Column('latest_available_version', sa.Text(), nullable=True))
+
+    if not column_exists('global_settings', 'last_dockmon_update_check_at'):
+        op.add_column('global_settings',
+            sa.Column('last_dockmon_update_check_at', sa.DateTime(), nullable=True))
+
+    if not column_exists('user_prefs', 'dismissed_dockmon_update_version'):
+        op.add_column('user_prefs',
+            sa.Column('dismissed_dockmon_update_version', sa.Text(), nullable=True))
+
     # ==================== global_settings: Update app_version ====================
     op.execute(
         sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
@@ -89,6 +105,11 @@ def downgrade() -> None:
     # Remove alerts_v2 retry tracking columns
     op.drop_column('alerts_v2', 'next_retry_at')
     op.drop_column('alerts_v2', 'last_notification_attempt_at')
+
+    # Remove DockMon update notification columns
+    op.drop_column('user_prefs', 'dismissed_dockmon_update_version')
+    op.drop_column('global_settings', 'last_dockmon_update_check_at')
+    op.drop_column('global_settings', 'latest_available_version')
 
     # Revert app_version to 2.0.0
     op.execute(

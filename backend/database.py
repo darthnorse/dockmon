@@ -65,6 +65,7 @@ class UserPrefs(Base):
     user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
     theme = Column(String, default="dark")
     defaults_json = Column(Text, nullable=True)  # JSON string of default preferences
+    dismissed_dockmon_update_version = Column(Text, nullable=True)  # Version user dismissed (v2.0.1+)
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
@@ -223,6 +224,10 @@ class GlobalSettings(Base):
     app_version = Column(String, default="2.0.0")  # Current application version
     upgrade_notice_dismissed = Column(Boolean, default=True)  # Whether user has seen v2 upgrade notice (False for v1→v2 upgrades set by migration)
     last_viewed_release_notes = Column(String, nullable=True)  # Last version of release notes user viewed
+
+    # DockMon update notifications (v2.0.1+)
+    latest_available_version = Column(Text, nullable=True)  # Latest DockMon version from GitHub
+    last_dockmon_update_check_at = Column(DateTime, nullable=True)  # Last time we checked GitHub
 
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 

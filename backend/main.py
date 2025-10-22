@@ -36,6 +36,7 @@ from database import (
     ContainerDesiredState,
     ContainerHttpHealthCheck,
     User,
+    UserPrefs,
     DockerHostDB,
     RegistryCredential,
     NotificationChannel,
@@ -64,6 +65,7 @@ from utils.keys import make_composite_key
 from utils.encryption import encrypt_password, decrypt_password
 from utils.async_docker import async_docker_call
 from updates.container_validator import ContainerValidator, ValidationResult
+from packaging.version import parse as parse_version, InvalidVersion
 
 # Configure logging
 setup_logging()
@@ -138,6 +140,10 @@ async def lifespan(app: FastAPI):
     monitor.monitoring_task = asyncio.create_task(monitor.monitor_containers())
     monitor.maintenance_task = asyncio.create_task(monitor.run_daily_maintenance())
 
+    # Check for DockMon updates on startup, then periodically every 6 hours
+    asyncio.create_task(monitor.periodic_jobs.check_dockmon_update_once())
+    monitor.dockmon_update_task = asyncio.create_task(monitor.periodic_jobs.check_dockmon_updates_periodic())
+
     # Start blackout window monitoring with WebSocket support
     await monitor.notification_service.blackout_manager.start_monitoring(
         monitor.notification_service,
@@ -202,6 +208,17 @@ async def lifespan(app: FastAPI):
             logger.info("Maintenance task cancelled successfully")
         except Exception as e:
             logger.error(f"Error during maintenance task shutdown: {e}")
+
+    # Cancel DockMon update checker task
+    if hasattr(monitor, 'dockmon_update_task') and monitor.dockmon_update_task:
+        monitor.dockmon_update_task.cancel()
+        try:
+            await monitor.dockmon_update_task
+        except asyncio.CancelledError:
+            logger.info("DockMon update task cancelled successfully")
+        except Exception as e:
+            logger.error(f"Error during DockMon update task shutdown: {e}")
+
     # Stop blackout monitoring
     try:
         await monitor.notification_service.blackout_manager.stop_monitoring()
@@ -1587,8 +1604,40 @@ async def get_security_audit_stats(current_user: dict = Depends(get_current_user
 
 @app.get("/api/settings")
 async def get_settings(current_user: dict = Depends(get_current_user)):
-    """Get global settings"""
+    """Get global settings + user-specific settings"""
+    # Validate username exists in session
+    username = current_user.get('username')
+    if not username:
+        raise HTTPException(status_code=401, detail="Username not found in session")
+
     settings = monitor.db.get_settings()
+    if not settings:
+        logger.error("GlobalSettings not found - database not initialized")
+        raise HTTPException(status_code=500, detail="Server configuration error")
+
+    # Fetch user's dismissed version for update notifications
+    dismissed_dockmon_update_version = None
+    session = monitor.db.get_session()
+    try:
+        user = session.query(User).filter(User.username == username).first()
+        if user:
+            prefs = session.query(UserPrefs).filter(UserPrefs.user_id == user.id).first()
+            if prefs:
+                dismissed_dockmon_update_version = prefs.dismissed_dockmon_update_version
+    finally:
+        session.close()
+
+    # Calculate update_available using semver comparison
+    update_available = False
+    current_version = getattr(settings, 'app_version', '2.0.0')
+    latest_version = getattr(settings, 'latest_available_version', None)
+    if latest_version:
+        try:
+            update_available = parse_version(latest_version) > parse_version(current_version)
+        except InvalidVersion:
+            # Invalid version format, default to False
+            update_available = False
+
     return {
         "max_retries": settings.max_retries,
         "retry_delay": settings.retry_delay,
@@ -1611,7 +1660,16 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
         "alert_retention_days": getattr(settings, 'alert_retention_days', 90),
         "update_check_time": getattr(settings, 'update_check_time', "02:00"),
         "skip_compose_containers": getattr(settings, 'skip_compose_containers', True),
-        "health_check_timeout_seconds": getattr(settings, 'health_check_timeout_seconds', 10)
+        "health_check_timeout_seconds": getattr(settings, 'health_check_timeout_seconds', 10),
+        # DockMon update notifications (v2.0.1+)
+        "app_version": current_version,
+        "latest_available_version": latest_version,
+        "last_dockmon_update_check_at": (
+            settings.last_dockmon_update_check_at.isoformat() + 'Z'
+            if getattr(settings, 'last_dockmon_update_check_at', None) else None
+        ),
+        "dismissed_dockmon_update_version": dismissed_dockmon_update_version,  # User-specific
+        "update_available": update_available  # Server-side semver comparison
     }
 
 @app.post("/api/settings")
@@ -2868,6 +2926,58 @@ async def save_view_mode(request: Request, current_user: dict = Depends(get_curr
         raise
     except Exception as e:
         logger.error(f"Failed to save view mode: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/user/dismiss-dockmon-update")
+async def dismiss_dockmon_update(request: Request, current_user: dict = Depends(get_current_user)):
+    """Dismiss DockMon update notification for current user"""
+    username = current_user.get('username')
+
+    if not username:
+        logger.error(f"No username in current_user: {current_user}")
+        raise HTTPException(status_code=401, detail="Username not found in session")
+
+    try:
+        body = await request.json()
+        version = body.get('version')
+
+        if not version:
+            raise HTTPException(status_code=400, detail="Version is required")
+
+        # Validate version format (semver)
+        try:
+            parse_version(version)
+        except InvalidVersion:
+            raise HTTPException(status_code=400, detail="Invalid version format")
+
+        session = monitor.db.get_session()
+        try:
+            # Get user
+            user = session.query(User).filter(User.username == username).first()
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            # Get or create user prefs
+            prefs = session.query(UserPrefs).filter(UserPrefs.user_id == user.id).first()
+            if not prefs:
+                prefs = UserPrefs(user_id=user.id)
+                session.add(prefs)
+
+            # Update dismissed version
+            prefs.dismissed_dockmon_update_version = version
+            prefs.updated_at = datetime.now(timezone.utc)
+            session.commit()
+
+            logger.info(f"User '{username}' dismissed DockMon update notification for version {version}")
+            return {"success": True, "dismissed_version": version}
+
+        finally:
+            session.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to dismiss DockMon update: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # ==================== Phase 4c: Dashboard Hosts with Stats ====================

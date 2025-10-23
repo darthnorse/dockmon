@@ -306,6 +306,10 @@ class ContainerHttpHealthCheck(Base):
     failure_threshold = Column(Integer, default=3, nullable=False)
     success_threshold = Column(Integer, default=1, nullable=False)  # Consecutive successes to mark healthy
 
+    # Retry configuration (v2.0.2+)
+    max_restart_attempts = Column(Integer, default=3, nullable=False)  # Number of restart attempts per unhealthy episode
+    restart_retry_delay_seconds = Column(Integer, default=120, nullable=False)  # Delay between restart attempts
+
     # Metadata
     created_at = Column(DateTime, default=utcnow, nullable=False)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)

@@ -101,4 +101,6 @@ export interface ContainerHttpHealthCheck {
   auto_restart_on_failure: boolean
   failure_threshold: number
   success_threshold: number
+  max_restart_attempts: number  // v2.0.2+
+  restart_retry_delay_seconds: number  // v2.0.2+
 }

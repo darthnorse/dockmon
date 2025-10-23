@@ -1814,6 +1814,8 @@ async def get_http_health_check(
                 "auto_restart_on_failure": False,
                 "failure_threshold": 3,
                 "success_threshold": 1,
+                "max_restart_attempts": 3,  # v2.0.2+
+                "restart_retry_delay_seconds": 120,  # v2.0.2+
                 "current_status": "unknown",
                 "last_checked_at": None,
                 "last_success_at": None,
@@ -1844,6 +1846,8 @@ async def get_http_health_check(
             "auto_restart_on_failure": check.auto_restart_on_failure,
             "failure_threshold": check.failure_threshold,
             "success_threshold": getattr(check, 'success_threshold', 1),  # Default to 1 for backwards compatibility
+            "max_restart_attempts": getattr(check, 'max_restart_attempts', 3),  # v2.0.2+ (default for backwards compatibility)
+            "restart_retry_delay_seconds": getattr(check, 'restart_retry_delay_seconds', 120),  # v2.0.2+ (default for backwards compatibility)
             "current_status": check.current_status,
             "last_checked_at": format_dt(check.last_checked_at),
             "last_success_at": format_dt(check.last_success_at),
@@ -1885,6 +1889,8 @@ async def update_http_health_check(
             check.auto_restart_on_failure = config.auto_restart_on_failure
             check.failure_threshold = config.failure_threshold
             check.success_threshold = config.success_threshold
+            check.max_restart_attempts = config.max_restart_attempts  # v2.0.2+
+            check.restart_retry_delay_seconds = config.restart_retry_delay_seconds  # v2.0.2+
             check.updated_at = datetime.now(timezone.utc)
         else:
             # Create new
@@ -1901,7 +1907,9 @@ async def update_http_health_check(
                 verify_ssl=config.verify_ssl,
                 auto_restart_on_failure=config.auto_restart_on_failure,
                 failure_threshold=config.failure_threshold,
-                success_threshold=config.success_threshold
+                success_threshold=config.success_threshold,
+                max_restart_attempts=config.max_restart_attempts,  # v2.0.2+
+                restart_retry_delay_seconds=config.restart_retry_delay_seconds  # v2.0.2+
             )
             session.add(check)
 

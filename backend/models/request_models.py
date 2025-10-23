@@ -381,6 +381,8 @@ class HttpHealthCheckConfig(BaseModel):
     auto_restart_on_failure: bool = Field(default=False)
     failure_threshold: int = Field(default=3, ge=1, le=10)
     success_threshold: int = Field(default=1, ge=1, le=10)
+    max_restart_attempts: int = Field(default=3, ge=1, le=10)  # v2.0.2+
+    restart_retry_delay_seconds: int = Field(default=120, ge=30, le=600)  # v2.0.2+
 
     @validator('url')
     def validate_url(cls, v):

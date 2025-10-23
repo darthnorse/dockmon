@@ -106,10 +106,13 @@ function SelectPortalContent({ children }: { children: React.ReactNode }) {
   const menuRef = React.useRef<HTMLDivElement>(null)
   const [position, setPosition] = React.useState({ top: 0, left: 0, width: 0 })
 
+  // Destructure to avoid unnecessary re-runs
+  const { open, setOpen, triggerRef } = context
+
   // Find the trigger button to position the dropdown
   React.useEffect(() => {
-    if (context.open && context.triggerRef?.current) {
-      const trigger = context.triggerRef.current
+    if (open && triggerRef?.current) {
+      const trigger = triggerRef.current
       const rect = trigger.getBoundingClientRect()
       setPosition({
         top: rect.bottom + 4,
@@ -117,7 +120,24 @@ function SelectPortalContent({ children }: { children: React.ReactNode }) {
         width: rect.width,
       })
     }
-  }, [context, context.open])
+  }, [open, triggerRef])
+
+  // Close dropdown on scroll (standard behavior)
+  React.useEffect(() => {
+    const handleScroll = () => {
+      setOpen(false)
+    }
+
+    if (open) {
+      // Use capture phase to catch all scroll events
+      window.addEventListener('scroll', handleScroll, true)
+      return () => {
+        window.removeEventListener('scroll', handleScroll, true)
+      }
+    }
+
+    return undefined
+  }, [open, setOpen])
 
   // Handle click outside
   React.useEffect(() => {
@@ -126,20 +146,24 @@ function SelectPortalContent({ children }: { children: React.ReactNode }) {
         // Check if click is on trigger
         const trigger = (event.target as HTMLElement).closest('button[type="button"]')
         if (!trigger) {
-          context.setOpen(false)
+          setOpen(false)
         }
       }
     }
 
-    if (context.open) {
+    if (open) {
       // Use timeout to avoid immediate close
-      setTimeout(() => {
+      const timeoutId = setTimeout(() => {
         document.addEventListener('mousedown', handleClickOutside)
       }, 0)
-      return () => document.removeEventListener('mousedown', handleClickOutside)
+
+      return () => {
+        clearTimeout(timeoutId)
+        document.removeEventListener('mousedown', handleClickOutside)
+      }
     }
     return undefined
-  }, [context, context.open])
+  }, [open, setOpen])
 
   return createPortal(
     <div

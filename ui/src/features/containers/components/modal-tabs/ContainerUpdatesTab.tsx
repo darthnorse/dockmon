@@ -6,7 +6,7 @@
  */
 
 import { memo, useState, useEffect, useCallback } from 'react'
-import { Package, RefreshCw, Check, Clock, AlertCircle, Download, Shield } from 'lucide-react'
+import { Package, RefreshCw, Check, Clock, AlertCircle, Download, Shield, ExternalLink } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -148,7 +148,7 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
         hostId: container.host_id,
         containerId: container.id,
         autoUpdateEnabled: enabled,
-        floatingTagMode: trackingMode as 'exact' | 'minor' | 'major' | 'latest',
+        floatingTagMode: trackingMode as 'exact' | 'patch' | 'minor' | 'latest',
       })
       toast.success(enabled ? 'Auto-update enabled' : 'Auto-update disabled')
     } catch (error) {
@@ -176,7 +176,7 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
         hostId: container.host_id,
         containerId: container.id,
         autoUpdateEnabled,
-        floatingTagMode: mode as 'exact' | 'minor' | 'major' | 'latest',
+        floatingTagMode: mode as 'exact' | 'patch' | 'minor' | 'latest',
       })
       toast.success('Tracking mode updated')
     } catch (error) {
@@ -302,6 +302,17 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
                 <p className="text-sm text-muted-foreground">
                   A newer version of this container image is available
                 </p>
+                {updateStatus?.changelog_url && (
+                  <a
+                    href={updateStatus.changelog_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-sm text-blue-500 hover:text-blue-600 mt-1"
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                    View Changelog
+                  </a>
+                )}
               </div>
             </>
           ) : (
@@ -567,6 +578,32 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
                 </div>
               </label>
 
+              {/* Patch Updates */}
+              <label
+                className={`flex items-start gap-3 p-4 rounded-lg border-2 cursor-pointer transition-colors ${
+                  trackingMode === 'patch'
+                    ? 'border-primary bg-primary/5'
+                    : 'border-border hover:border-primary/50'
+                } ${updateAutoUpdateConfig.isPending ? 'opacity-50 cursor-not-allowed' : ''}`}
+              >
+                <input
+                  type="radio"
+                  name="tracking-mode"
+                  value="patch"
+                  checked={trackingMode === 'patch'}
+                  onChange={(e) => handleTrackingModeChange(e.target.value)}
+                  disabled={updateAutoUpdateConfig.isPending}
+                  className="mt-0.5 h-4 w-4 text-primary"
+                />
+                <div className="flex-1">
+                  <div className="font-medium text-sm">Patch Updates</div>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Track patch updates only (bug fixes). Example: nginx:1.25.3 → tracks 1.25.x
+                    (will detect 1.25.4, 1.25.99, but not 1.26.0). Most conservative option.
+                  </p>
+                </div>
+              </label>
+
               {/* Minor Updates */}
               <label
                 className={`flex items-start gap-3 p-4 rounded-lg border-2 cursor-pointer transition-colors ${
@@ -585,36 +622,10 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
                   className="mt-0.5 h-4 w-4 text-primary"
                 />
                 <div className="flex-1">
-                  <div className="font-medium text-sm">Minor Updates (X.Y.z)</div>
+                  <div className="font-medium text-sm">Minor Updates</div>
                   <p className="text-xs text-muted-foreground mt-1">
-                    Track patch updates within the same minor version. Example: nginx:1.25.3 → tracks 1.25.x
-                    (will detect 1.25.4, 1.25.5, but not 1.26.0 or 2.0.0)
-                  </p>
-                </div>
-              </label>
-
-              {/* Major Updates */}
-              <label
-                className={`flex items-start gap-3 p-4 rounded-lg border-2 cursor-pointer transition-colors ${
-                  trackingMode === 'major'
-                    ? 'border-primary bg-primary/5'
-                    : 'border-border hover:border-primary/50'
-                } ${updateAutoUpdateConfig.isPending ? 'opacity-50 cursor-not-allowed' : ''}`}
-              >
-                <input
-                  type="radio"
-                  name="tracking-mode"
-                  value="major"
-                  checked={trackingMode === 'major'}
-                  onChange={(e) => handleTrackingModeChange(e.target.value)}
-                  disabled={updateAutoUpdateConfig.isPending}
-                  className="mt-0.5 h-4 w-4 text-primary"
-                />
-                <div className="flex-1">
-                  <div className="font-medium text-sm">Major Updates (X.y.z)</div>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Track all updates within the same major version. Example: nginx:1.25.3 → tracks 1.x
-                    (will detect 1.26.0, 1.99.0, but not 2.0.0)
+                    Track minor and patch updates within the same major version. Example: nginx:1.25.3 → tracks 1.x
+                    (will detect 1.26.0, 1.99.0, but not 2.0.0). Recommended for most users.
                   </p>
                 </div>
               </label>

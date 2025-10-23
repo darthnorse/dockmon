@@ -38,6 +38,16 @@ RUN npm run build
 # Stage 3: Final image with Python + Go binary + built React app
 FROM python:3.13-alpine
 
+# OCI Image labels (https://github.com/opencontainers/image-spec/blob/main/annotations.md)
+LABEL org.opencontainers.image.title="DockMon"
+LABEL org.opencontainers.image.description="Self-hosted Docker monitoring and management platform with multi-host support, container updates, health checks, and alerts"
+LABEL org.opencontainers.image.authors="darthnorse"
+LABEL org.opencontainers.image.source="https://github.com/darthnorse/dockmon"
+LABEL org.opencontainers.image.url="https://github.com/darthnorse/dockmon"
+LABEL org.opencontainers.image.documentation="https://github.com/darthnorse/dockmon"
+LABEL org.opencontainers.image.licenses="MIT"
+LABEL org.opencontainers.image.vendor="darthnorse"
+
 # Install runtime dependencies and build dependencies (temporarily for Python packages with C extensions)
 RUN apk add --no-cache \
     # Runtime dependencies

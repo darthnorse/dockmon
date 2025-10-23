@@ -786,11 +786,11 @@ class NotificationService:
 
 **Container:** `{CONTAINER_NAME}`
 **Host:** {HOST_NAME}
-**Current:** {CURRENT_IMAGE}
-**Latest:** {LATEST_IMAGE}
-**Digest:** {LATEST_DIGEST}
+**Image:** {CURRENT_IMAGE}
+**Current Digest:** {CURRENT_DIGEST}
+**Latest Digest:** {LATEST_DIGEST}
+**Changelog:** {CHANGELOG_URL}
 **Time:** {TIMESTAMP}
-**Update Status:** {UPDATE_STATUS}
 **Rule:** {RULE_NAME}"""
 
         # Health check alerts (Docker native HEALTHCHECK and HTTP/HTTPS checks)
@@ -956,6 +956,7 @@ class NotificationService:
             '{PREVIOUS_IMAGE}': '',
             '{NEW_IMAGE}': '',
             '{ERROR_MESSAGE}': '',
+            '{CHANGELOG_URL}': '',
 
             # Initialize health check variables (will be overridden if event_context_json exists)
             '{HEALTH_CHECK_URL}': '',
@@ -1014,6 +1015,10 @@ class NotificationService:
 
                 variables['{PREVIOUS_IMAGE}'] = previous_img
                 variables['{NEW_IMAGE}'] = new_img
+
+                # Changelog URL (v2.0.1+)
+                changelog_url = event_context.get('changelog_url', '') or ''
+                variables['{CHANGELOG_URL}'] = changelog_url if changelog_url else 'Not found'
 
                 # Format error message with conditional display
                 error_message = event_context.get('error_message', '') or ''

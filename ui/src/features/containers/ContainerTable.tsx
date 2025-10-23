@@ -23,7 +23,7 @@
  * - WebSocket for real-time stats
  */
 
-import { useMemo, useState, useEffect } from 'react'
+import { useMemo, useState, useEffect, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 import {
@@ -387,9 +387,16 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   const [selectedAlertId, setSelectedAlertId] = useState<string | null>(null)
 
   const [batchJobId, setBatchJobId] = useState<string | null>(null)
+  const [showJobPanel, setShowJobPanel] = useState(false)
   const [expandedTagsContainerId, setExpandedTagsContainerId] = useState<string | null>(null)
 
   const queryClient = useQueryClient()
+
+  // Handle batch job completion - clear both states
+  const handleJobComplete = useCallback(() => {
+    setBatchJobId(null)
+    setShowJobPanel(false)
+  }, [])
 
   // Selection handlers
   // containerId should be composite key: {host_id}:{container_id}
@@ -463,6 +470,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         params: { tags },
       })
       setBatchJobId(result.job_id)
+      setShowJobPanel(true)
 
       // Show success toast
       const modeText = mode === 'add' ? 'Adding' : 'Removing'
@@ -487,6 +495,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         params: { enabled },
       })
       setBatchJobId(result.job_id)
+      setShowJobPanel(true)
 
       toast.success(`${enabled ? 'Enabling' : 'Disabling'} auto-restart for ${count} container${count !== 1 ? 's' : ''}...`)
     } catch (error) {
@@ -509,6 +518,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         params: { enabled, floating_tag_mode: floatingTagMode },
       })
       setBatchJobId(result.job_id)
+      setShowJobPanel(true)
 
       const modeText = enabled ? `with ${floatingTagMode} mode` : ''
       toast.success(`${enabled ? 'Enabling' : 'Disabling'} auto-update ${modeText} for ${count} container${count !== 1 ? 's' : ''}...`)
@@ -532,6 +542,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         params: { desired_state: state },
       })
       setBatchJobId(result.job_id)
+      setShowJobPanel(true)
 
       const stateText = state === 'should_run' ? 'Should Run' : 'On-Demand'
       toast.success(`Setting desired state to "${stateText}" for ${count} container${count !== 1 ? 's' : ''}...`)
@@ -578,6 +589,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
       clearSelection()
       // Open batch job progress panel
       setBatchJobId(jobId)
+      setShowJobPanel(true)
       queryClient.invalidateQueries({ queryKey: ['containers'] })
     },
     onError: (error) => {
@@ -1222,7 +1234,9 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
       {/* Batch Job Progress Panel */}
       <BatchJobPanel
         jobId={batchJobId}
-        onClose={() => setBatchJobId(null)}
+        isVisible={showJobPanel}
+        onClose={() => setShowJobPanel(false)}
+        onJobComplete={handleJobComplete}
         bulkActionBarOpen={selectedContainerIds.size > 0}
       />
 

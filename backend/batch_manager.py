@@ -348,7 +348,7 @@ class BatchJobManager:
                 floating_tag_mode = params.get('floating_tag_mode', 'exact')
 
                 # Validate floating_tag_mode
-                if floating_tag_mode not in ['exact', 'minor', 'major', 'latest']:
+                if floating_tag_mode not in ['exact', 'patch', 'minor', 'latest']:
                     return {
                         'status': 'error',
                         'message': f'Invalid floating_tag_mode: {floating_tag_mode}'

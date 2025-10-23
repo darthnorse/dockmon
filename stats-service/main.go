@@ -36,7 +36,9 @@ var config = struct {
 	EventCacheSize:      getEnvInt("EVENT_CACHE_SIZE", 100),
 	CleanupInterval:     getEnvDuration("CLEANUP_INTERVAL", "60s"),
 	MaxRequestBodySize:  getEnvInt64("MAX_REQUEST_BODY_SIZE", 1048576), // 1MB default
-	AllowedOrigins:      getEnv("ALLOWED_ORIGINS", "http://localhost:8080,http://127.0.0.1:8080,http://localhost,http://127.0.0.1"),
+	AllowedOrigins: getEnv("ALLOWED_ORIGINS",
+		"http://localhost:8080,http://localhost:3000,http://localhost,http://127.0.0.1:8080,http://127.0.0.1:3000,http://127.0.0.1,"+
+			"https://localhost:8080,https://localhost:3000,https://localhost,https://127.0.0.1:8080,https://127.0.0.1:3000,https://127.0.0.1"),
 }
 
 // getEnv gets environment variable with fallback

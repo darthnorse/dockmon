@@ -110,7 +110,7 @@ export function useUpdateAutoUpdateConfig() {
       hostId: string
       containerId: string
       autoUpdateEnabled: boolean
-      floatingTagMode: 'exact' | 'minor' | 'major' | 'latest'
+      floatingTagMode: 'exact' | 'patch' | 'minor' | 'latest'
     }) => {
       return await apiClient.put<ContainerUpdateStatus>(
         `/hosts/${hostId}/containers/${containerId}/auto-update-config`,

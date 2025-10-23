@@ -221,6 +221,23 @@ class UpdateExecutor:
             # Get container object for configuration extraction
             old_container = await async_docker_call(docker_client.containers.get, container_id)
 
+            # Priority 0: Block DockMon self-update (ALWAYS, even with force=True)
+            # Defense-in-depth: protect at executor layer in case API layer is bypassed
+            container_name_lower = container_name.lower()
+            if container_name_lower == 'dockmon' or container_name_lower.startswith('dockmon-'):
+                error_message = "DockMon cannot update itself. Please update manually by pulling the new image and restarting the container."
+                logger.warning(f"Blocked self-update attempt for DockMon container '{container_name}' at executor layer")
+
+                # Emit UPDATE_FAILED event
+                await self._emit_update_failed_event(
+                    host_id,
+                    container_id,
+                    container_name,
+                    error_message
+                )
+
+                return False
+
             # Validate update is allowed (unless force=True)
             if not force:
                 container_labels = old_container.labels or {}

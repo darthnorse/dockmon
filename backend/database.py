@@ -249,7 +249,7 @@ class ContainerUpdate(Base):
     update_available = Column(Boolean, default=False, nullable=False)
 
     # Tracking settings
-    floating_tag_mode = Column(Text, default='exact', nullable=False)  # exact|minor|major|latest
+    floating_tag_mode = Column(Text, default='exact', nullable=False)  # exact|patch|minor|latest
     auto_update_enabled = Column(Boolean, default=False, nullable=False)
     update_policy = Column(Text, nullable=True)  # 'allow', 'warn', 'block', or NULL (use global patterns)
     health_check_strategy = Column(Text, default='docker', nullable=False)  # docker|warmup|http
@@ -1359,7 +1359,7 @@ class DatabaseManager:
         Args:
             container_key: Composite key format "host_id:container_id"
             enabled: Whether to enable auto-updates
-            floating_tag_mode: Update tracking mode (exact|minor|major|latest)
+            floating_tag_mode: Update tracking mode (exact|patch|minor|latest)
         """
         with self.get_session() as session:
             try:

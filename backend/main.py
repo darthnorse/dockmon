@@ -946,7 +946,7 @@ async def get_container_update_status(
         - current_digest: str (first 12 chars)
         - latest_image: str
         - latest_digest: str (first 12 chars)
-        - floating_tag_mode: str (exact|minor|major|latest)
+        - floating_tag_mode: str (exact|patch|minor|latest)
         - last_checked_at: datetime
         - auto_update_enabled: bool
         - update_policy: str|null (allow|warn|block|null)
@@ -1204,7 +1204,7 @@ async def update_auto_update_config(
 
     Body should contain:
     - auto_update_enabled: bool
-    - floating_tag_mode: str (exact|minor|major|latest)
+    - floating_tag_mode: str (exact|patch|minor|latest)
     """
 
     # Normalize to short ID
@@ -1217,7 +1217,7 @@ async def update_auto_update_config(
     floating_tag_mode = config.get("floating_tag_mode", "exact")
 
     # Validate floating_tag_mode
-    if floating_tag_mode not in ["exact", "minor", "major", "latest"]:
+    if floating_tag_mode not in ["exact", "patch", "minor", "latest"]:
         raise HTTPException(status_code=400, detail=f"Invalid floating_tag_mode: {floating_tag_mode}")
 
     # Update or create container_update record

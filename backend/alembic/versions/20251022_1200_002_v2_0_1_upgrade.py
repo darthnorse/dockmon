@@ -1,10 +1,11 @@
-"""v2.0.1 upgrade - Changelog URL + Alert retry + DockMon update notifications
+"""v2.0.1 upgrade - Changelog URL + Alert retry + DockMon update notifications + SemVer tracking modes
 
 Revision ID: 002_v2_0_1
 Revises: 001_v2_0_0
 Create Date: 2025-10-22
 
-This migration adds changelog URL resolution, alert retry tracking, and DockMon update notifications.
+This migration adds changelog URL resolution, alert retry tracking, DockMon update notifications,
+and renames floating_tag_mode values to align with SemVer terminology.
 All additions are defensive (checks if columns exist before adding).
 
 CHANGES IN v2.0.1:
@@ -12,6 +13,9 @@ CHANGES IN v2.0.1:
 - alerts_v2: Add last_notification_attempt_at, next_retry_at (exponential backoff)
 - global_settings: Add latest_available_version, last_dockmon_update_check_at
 - user_prefs: Add dismissed_dockmon_update_version
+- container_updates: Rename floating_tag_mode values to match SemVer:
+  - 'major' → 'minor' (tracks X.*, allows MINOR+PATCH updates)
+  - 'minor' → 'patch' (tracks X.Y.*, allows PATCH updates only)
 - global_settings: Update app_version to '2.0.1'
 """
 from alembic import op
@@ -84,6 +88,31 @@ def upgrade() -> None:
         op.add_column('user_prefs',
             sa.Column('dismissed_dockmon_update_version', sa.Text(), nullable=True))
 
+    # ==================== Rename floating_tag_mode enum values (SemVer alignment) ====================
+    # Pure terminology rename - behavior unchanged
+    # 'major' → 'minor' (tracks X.*, allows MINOR+PATCH updates within major version)
+    # 'minor' → 'patch' (tracks X.Y.*, allows PATCH updates only within minor version)
+    #
+    # This aligns DockMon's tracking mode names with industry-standard SemVer terminology.
+    # No behavioral changes - existing containers will continue tracking the same way,
+    # just with clearer, more accurate names.
+
+    # Rename 'minor' → 'patch' first (to avoid conflict during transition)
+    op.execute(
+        sa.text(
+            "UPDATE container_updates SET floating_tag_mode = 'patch' "
+            "WHERE floating_tag_mode = 'minor'"
+        )
+    )
+
+    # Then rename 'major' → 'minor'
+    op.execute(
+        sa.text(
+            "UPDATE container_updates SET floating_tag_mode = 'minor' "
+            "WHERE floating_tag_mode = 'major'"
+        )
+    )
+
     # ==================== global_settings: Update app_version ====================
     op.execute(
         sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
@@ -93,10 +122,27 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """
-    Remove v2.0.1 columns.
+    Remove v2.0.1 columns and revert floating_tag_mode renames.
 
     Note: Downgrade is rarely used in production, but provided for completeness.
     """
+    # Revert floating_tag_mode enum renames (reverse order of upgrade)
+    # 'minor' → 'major'
+    op.execute(
+        sa.text(
+            "UPDATE container_updates SET floating_tag_mode = 'major' "
+            "WHERE floating_tag_mode = 'minor'"
+        )
+    )
+
+    # 'patch' → 'minor'
+    op.execute(
+        sa.text(
+            "UPDATE container_updates SET floating_tag_mode = 'minor' "
+            "WHERE floating_tag_mode = 'patch'"
+        )
+    )
+
     # Remove container_updates changelog columns
     op.drop_column('container_updates', 'changelog_checked_at')
     op.drop_column('container_updates', 'changelog_source')

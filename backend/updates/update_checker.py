@@ -381,7 +381,7 @@ class UpdateChecker:
             composite_key: host_id:container_id
 
         Returns:
-            Tracking mode (exact, minor, major, latest) - defaults to 'exact'
+            Tracking mode (exact, patch, minor, latest) - defaults to 'exact'
         """
         with self.db.get_session() as session:
             record = session.query(ContainerUpdate).filter_by(

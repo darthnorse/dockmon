@@ -783,17 +783,23 @@ class RegistryAdapter:
         """
         Compute the floating tag based on tracking mode.
 
+        Tracking modes aligned with Semantic Versioning (MAJOR.MINOR.PATCH):
+        - exact: Use exact tag from image (no floating)
+        - patch: Track patch updates only (X.Y.*) - bug fixes only
+        - minor: Track minor+patch updates (X.*.*) - new features, no breaking changes
+        - latest: Always track :latest tag
+
         Args:
             image_tag: Original tag (e.g., "nginx:1.25.3")
-            mode: Tracking mode (exact|minor|major|latest)
+            mode: Tracking mode (exact|patch|minor|latest)
 
         Returns:
             Computed tag to track
 
         Examples:
             ("nginx:1.25.3", "exact") → "nginx:1.25.3"
-            ("nginx:1.25.3", "minor") → "nginx:1.25"
-            ("nginx:1.25.3", "major") → "nginx:1"
+            ("nginx:1.25.3", "patch") → "nginx:1.25"
+            ("nginx:1.25.3", "minor") → "nginx:1"
             ("nginx:1.25.3", "latest") → "nginx:latest"
         """
         if mode == "exact":
@@ -815,17 +821,19 @@ class RegistryAdapter:
             # Not a version tag, return as-is
             return image_tag
 
-        major, minor, patch, suffix = version_match.groups()
+        major, minor_ver, patch_ver, suffix = version_match.groups()
 
-        if mode == "major":
-            # Track major version only
+        if mode == "minor":
+            # Track minor+patch updates within major version (X.*)
+            # nginx:1.25.3 → nginx:1 (gets 1.26, 1.99, NOT 2.0)
             return f"{image}:{major}{suffix or ''}"
-        elif mode == "minor":
-            # Track major.minor
-            if minor:
-                return f"{image}:{major}.{minor}{suffix or ''}"
+        elif mode == "patch":
+            # Track patch updates only within minor version (X.Y.*)
+            # nginx:1.25.3 → nginx:1.25 (gets 1.25.4, NOT 1.26)
+            if minor_ver:
+                return f"{image}:{major}.{minor_ver}{suffix or ''}"
             else:
-                # Already major-only tag
+                # Already major-only tag, fallback to minor mode
                 return f"{image}:{major}{suffix or ''}"
 
         return image_tag

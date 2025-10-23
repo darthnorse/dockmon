@@ -59,7 +59,7 @@ export interface ContainerUpdateStatus {
   current_digest: string | null
   latest_image: string | null
   latest_digest: string | null
-  floating_tag_mode: 'exact' | 'minor' | 'major' | 'latest'
+  floating_tag_mode: 'exact' | 'patch' | 'minor' | 'latest'
   last_checked_at: string | null
   auto_update_enabled?: boolean
   update_policy?: 'allow' | 'warn' | 'block' | null

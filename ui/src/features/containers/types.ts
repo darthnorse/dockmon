@@ -59,7 +59,7 @@ export interface ContainerUpdateStatus {
   current_digest: string | null
   latest_image: string | null
   latest_digest: string | null
-  floating_tag_mode: 'exact' | 'minor' | 'major' | 'latest'
+  floating_tag_mode: 'exact' | 'patch' | 'minor' | 'latest'
   last_checked_at: string | null
   auto_update_enabled?: boolean
   update_policy?: 'allow' | 'warn' | 'block' | null
@@ -71,6 +71,7 @@ export interface ContainerUpdateStatus {
   } | null
   is_compose_container?: boolean
   skip_compose_enabled?: boolean
+  changelog_url?: string | null  // v2.0.1+ - GitHub releases URL
 }
 
 export interface ContainerHttpHealthCheck {

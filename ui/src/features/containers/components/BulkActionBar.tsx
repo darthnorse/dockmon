@@ -2,14 +2,14 @@
  * Bulk Action Bar Component
  *
  * Sticky bottom bar that appears when containers are selected
- * Features three collapsible sections side by side:
+ * Features three sections side by side:
  * - Run Actions: Start, Stop, Restart
  * - Manage Policy: Auto-Restart, Auto-Update, Desired State
  * - Tags: Add/Remove tags
  */
 
 import { useState, useRef, useEffect } from 'react'
-import { X, Tag, ChevronDown, ChevronUp, Info } from 'lucide-react'
+import { X, Tag, Info } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { apiClient } from '@/lib/api/client'
 import { debug } from '@/lib/debug'
@@ -30,7 +30,7 @@ interface BulkActionBarProps {
 type TagMode = 'add' | 'remove'
 type AutoRestartMode = 'enable' | 'disable'
 type AutoUpdateMode = 'enable' | 'disable'
-type FloatingTagMode = 'exact' | 'minor' | 'major' | 'latest'
+type FloatingTagMode = 'exact' | 'patch' | 'minor' | 'latest'
 type DesiredStateMode = 'should_run' | 'on_demand'
 
 export function BulkActionBar({
@@ -43,8 +43,6 @@ export function BulkActionBar({
   onAutoUpdateUpdate,
   onDesiredStateUpdate
 }: BulkActionBarProps) {
-  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['run-actions', 'manage-policy', 'tags']))
-
   // Tag state
   const [tagMode, setTagMode] = useState<TagMode>('add')
   const [inputValue, setInputValue] = useState('')
@@ -65,16 +63,6 @@ export function BulkActionBar({
   const [isLoading, setIsLoading] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const suggestionsRef = useRef<HTMLDivElement>(null)
-
-  const toggleSection = (section: string) => {
-    const newExpanded = new Set(expandedSections)
-    if (newExpanded.has(section)) {
-      newExpanded.delete(section)
-    } else {
-      newExpanded.add(section)
-    }
-    setExpandedSections(newExpanded)
-  }
 
   // Get tag suggestions based on mode
   const getTagSuggestions = () => {
@@ -257,71 +245,48 @@ export function BulkActionBar({
           <div className="flex items-start gap-3">
             {/* Run Actions */}
             <div className="border border-border rounded-lg bg-background">
-              <button
-                onClick={() => toggleSection('run-actions')}
-                className="flex items-center gap-2 px-3 py-2 text-sm font-medium hover:bg-muted transition-colors rounded-t-lg w-full"
-                aria-expanded={expandedSections.has('run-actions')}
-                aria-label="Toggle run actions menu"
-              >
-                <span>Run Actions</span>
-                {expandedSections.has('run-actions') ? (
-                  <ChevronUp className="h-3.5 w-3.5" />
-                ) : (
-                  <ChevronDown className="h-3.5 w-3.5" />
-                )}
-              </button>
+              <div className="px-3 py-2 text-sm font-medium border-b border-border">
+                Run Actions
+              </div>
 
-              {expandedSections.has('run-actions') && (
-                <div className="p-3 border-t border-border flex gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => onAction('start')}
-                    disabled={isLoading}
-                    className="text-success hover:text-success hover:bg-success/10"
-                  >
-                    Start
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => onAction('stop')}
-                    disabled={isLoading}
-                    className="text-danger hover:text-danger hover:bg-danger/10"
-                  >
-                    Stop
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => onAction('restart')}
-                    disabled={isLoading}
-                    className="text-info hover:text-info hover:bg-info/10"
-                  >
-                    Restart
-                  </Button>
-                </div>
-              )}
+              <div className="p-3 flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => onAction('start')}
+                  disabled={isLoading}
+                  className="text-success hover:text-success hover:bg-success/10"
+                >
+                  Start
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => onAction('stop')}
+                  disabled={isLoading}
+                  className="text-danger hover:text-danger hover:bg-danger/10"
+                >
+                  Stop
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => onAction('restart')}
+                  disabled={isLoading}
+                  className="text-info hover:text-info hover:bg-info/10"
+                >
+                  Restart
+                </Button>
+              </div>
             </div>
 
             {/* Manage Policy */}
             <div className="border border-border rounded-lg bg-background">
-              <button
-                onClick={() => toggleSection('manage-policy')}
-                className="flex items-center gap-2 px-3 py-2 text-sm font-medium hover:bg-muted transition-colors rounded-t-lg w-full"
-                aria-expanded={expandedSections.has('manage-policy')}
-                aria-label="Toggle manage policy menu"
-              >
-                <span>Manage Policy</span>
-                {expandedSections.has('manage-policy') ? (
-                  <ChevronUp className="h-3.5 w-3.5" />
-                ) : (
-                  <ChevronDown className="h-3.5 w-3.5" />
-                )}
-              </button>
+              <div className="px-3 py-2 text-sm font-medium border-b border-border">
+                Manage Policy
+              </div>
 
-              {expandedSections.has('manage-policy') && (
-                <div className="p-3 border-t border-border space-y-3 min-w-[400px]">
+              <div className="p-3 space-y-3 min-w-[400px]">
                   {/* Auto-Restart */}
                   <div className="space-y-2">
                     <div className="flex items-center gap-1.5">
@@ -409,8 +374,8 @@ export function BulkActionBar({
                         className="px-2 py-1 text-sm rounded border border-border bg-background disabled:opacity-50"
                       >
                         <option value="exact">Respect Tag</option>
+                        <option value="patch">Patch Updates</option>
                         <option value="minor">Minor Updates</option>
-                        <option value="major">Major Updates</option>
                         <option value="latest">Always Latest</option>
                       </select>
                       <Button
@@ -471,27 +436,15 @@ export function BulkActionBar({
                     </div>
                   </div>
                 </div>
-              )}
             </div>
 
             {/* Tags */}
             <div className="border border-border rounded-lg bg-background">
-              <button
-                onClick={() => toggleSection('tags')}
-                className="flex items-center gap-2 px-3 py-2 text-sm font-medium hover:bg-muted transition-colors rounded-t-lg w-full"
-                aria-expanded={expandedSections.has('tags')}
-                aria-label="Toggle tags menu"
-              >
-                <span>Tags</span>
-                {expandedSections.has('tags') ? (
-                  <ChevronUp className="h-3.5 w-3.5" />
-                ) : (
-                  <ChevronDown className="h-3.5 w-3.5" />
-                )}
-              </button>
+              <div className="px-3 py-2 text-sm font-medium border-b border-border">
+                Tags
+              </div>
 
-              {expandedSections.has('tags') && (
-                <div className="p-3 border-t border-border space-y-3 min-w-[500px]">
+              <div className="p-3 space-y-3 min-w-[500px]">
                   {/* Tag mode selector */}
                   <div className="flex items-center gap-3">
                     <span className="text-xs font-medium text-muted-foreground">Action:</span>
@@ -644,7 +597,6 @@ export function BulkActionBar({
                     </div>
                   </div>
                 </div>
-              )}
             </div>
 
             {/* Clear selection button */}

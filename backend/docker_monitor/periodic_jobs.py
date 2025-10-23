@@ -13,6 +13,7 @@ from event_logger import EventLogger, EventSeverity, EventType
 from auth.session_manager import session_manager
 from utils.keys import make_composite_key, parse_composite_key
 from utils.async_docker import async_docker_call
+from updates.dockmon_update_checker import get_dockmon_update_checker
 
 logger = logging.getLogger(__name__)
 
@@ -487,3 +488,64 @@ class PeriodicJobsManager:
         except Exception as e:
             logger.error(f"Error in backup container cleanup: {e}", exc_info=True)
             return removed_count
+
+    async def check_dockmon_update_once(self):
+        """
+        Check for DockMon updates once (called on startup).
+        Does not loop - just runs a single check.
+        """
+        try:
+            logger.info("Checking for DockMon updates on startup...")
+
+            checker = get_dockmon_update_checker(self.db)
+            result = await checker.check_for_update()
+
+            if result.get('update_available'):
+                logger.info(
+                    f"DockMon update available: "
+                    f"{result['current_version']} → {result['latest_version']}"
+                )
+            elif result.get('error'):
+                logger.debug(f"DockMon update check failed: {result['error']}")
+            else:
+                logger.info(f"DockMon is up to date: {result['current_version']}")
+
+        except Exception as e:
+            logger.warning(f"Error checking for DockMon updates on startup: {e}")
+
+    async def check_dockmon_updates_periodic(self):
+        """
+        Periodic task: Check for DockMon application updates from GitHub.
+        Runs every 6 hours (hardcoded).
+
+        This is separate from container update checks (which run daily at configured time).
+        Checks GitHub releases for new DockMon versions and caches result in database.
+        Frontend polls settings to detect updates and show notification banner.
+        """
+        while True:
+            try:
+                logger.debug("Running periodic DockMon update check...")
+
+                checker = get_dockmon_update_checker(self.db)
+                result = await checker.check_for_update()
+
+                if result.get('update_available'):
+                    logger.info(
+                        f"DockMon update available: "
+                        f"{result['current_version']} → {result['latest_version']}"
+                    )
+                    # Frontend will detect via settings polling
+                elif result.get('error'):
+                    logger.warning(f"DockMon update check failed: {result['error']}")
+                else:
+                    logger.debug(
+                        f"DockMon is up to date: {result['current_version']}"
+                    )
+
+                # Sleep for 6 hours before next check
+                await asyncio.sleep(6 * 60 * 60)
+
+            except Exception as e:
+                logger.error(f"Error in DockMon update checker: {e}", exc_info=True)
+                # Wait 1 hour before retrying on error
+                await asyncio.sleep(60 * 60)

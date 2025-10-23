@@ -81,6 +81,22 @@ class ContainerValidator:
             ValidationResponse with result and reason
         """
 
+        # Priority 0: Block DockMon from updating itself (critical safety check)
+        # Prevents the "pulling the rug out" scenario where DockMon stops itself
+        # and cannot complete the update process
+        # Protects: dockmon, dockmon-dev, dockmon-prod, dockmon-backup-*, etc.
+        container_name_lower = container_name.lower()
+        if container_name_lower == 'dockmon' or container_name_lower.startswith('dockmon-'):
+            logger.warning(
+                f"Blocked self-update attempt for DockMon container '{container_name}'. "
+                f"DockMon cannot update itself - please update manually."
+            )
+            return ValidationResponse(
+                result=ValidationResult.BLOCK,
+                reason="DockMon cannot update itself. Please update manually by pulling the new image and restarting the container.",
+                matched_pattern=None
+            )
+
         # Priority 1: Check Docker label
         if self.LABEL_KEY in labels:
             label_value = labels[self.LABEL_KEY].lower()

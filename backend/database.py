@@ -65,6 +65,7 @@ class UserPrefs(Base):
     user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
     theme = Column(String, default="dark")
     defaults_json = Column(Text, nullable=True)  # JSON string of default preferences
+    dismissed_dockmon_update_version = Column(Text, nullable=True)  # Version user dismissed (v2.0.1+)
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
@@ -224,6 +225,10 @@ class GlobalSettings(Base):
     upgrade_notice_dismissed = Column(Boolean, default=True)  # Whether user has seen v2 upgrade notice (False for v1→v2 upgrades set by migration)
     last_viewed_release_notes = Column(String, nullable=True)  # Last version of release notes user viewed
 
+    # DockMon update notifications (v2.0.1+)
+    latest_available_version = Column(Text, nullable=True)  # Latest DockMon version from GitHub
+    last_dockmon_update_check_at = Column(DateTime, nullable=True)  # Last time we checked GitHub
+
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
 class ContainerUpdate(Base):
@@ -244,7 +249,7 @@ class ContainerUpdate(Base):
     update_available = Column(Boolean, default=False, nullable=False)
 
     # Tracking settings
-    floating_tag_mode = Column(Text, default='exact', nullable=False)  # exact|minor|major|latest
+    floating_tag_mode = Column(Text, default='exact', nullable=False)  # exact|patch|minor|latest
     auto_update_enabled = Column(Boolean, default=False, nullable=False)
     update_policy = Column(Text, nullable=True)  # 'allow', 'warn', 'block', or NULL (use global patterns)
     health_check_strategy = Column(Text, default='docker', nullable=False)  # docker|warmup|http
@@ -255,6 +260,11 @@ class ContainerUpdate(Base):
     last_updated_at = Column(DateTime, nullable=True)
     registry_url = Column(Text, nullable=True)
     platform = Column(Text, nullable=True)
+
+    # Changelog URL resolution (v2.0.1+)
+    changelog_url = Column(Text, nullable=True)  # GitHub releases URL or NULL
+    changelog_source = Column(Text, nullable=True)  # 'oci_label', 'ghcr', 'fuzzy_match', 'failed'
+    changelog_checked_at = Column(DateTime, nullable=True)  # When we last checked
 
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
@@ -1349,7 +1359,7 @@ class DatabaseManager:
         Args:
             container_key: Composite key format "host_id:container_id"
             enabled: Whether to enable auto-updates
-            floating_tag_mode: Update tracking mode (exact|minor|major|latest)
+            floating_tag_mode: Update tracking mode (exact|patch|minor|latest)
         """
         with self.get_session() as session:
             try:

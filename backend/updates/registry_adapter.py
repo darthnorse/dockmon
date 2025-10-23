@@ -678,12 +678,10 @@ class RegistryAdapter:
                             "application/vnd.docker.distribution.manifest.list.v2+json",
                             "application/vnd.oci.image.index.v1+json"
                         ]:
-                            # Find platform-specific manifest
-                            logger.debug(f"Manifest is a list, resolving platform-specific manifest for {platform}")
-                            digest = await self._resolve_platform_manifest(
-                                manifest, platform, manifest_url, token
-                            )
-                            logger.debug(f"Resolved platform-specific digest: {digest}")
+                            # Keep the index digest (manifest list digest) for comparison
+                            # This matches Docker CLI behavior and what docker inspect shows in RepoDigests
+                            # Docker uses the index digest as the canonical identifier for multi-platform images
+                            logger.debug(f"Manifest list detected for {platform}, using index digest: {digest}")
 
                         return digest, manifest
 
@@ -711,11 +709,20 @@ class RegistryAdapter:
         token: Optional[str]
     ) -> Optional[str]:
         """
-        Resolve platform-specific digest from manifest list.
+        Resolve platform-specific manifest digest from manifest list.
 
-        Multi-platform images have a manifest list that points to
-        platform-specific manifests. We need to fetch the correct one
-        to get the actual platform-specific digest (not the digest from the list).
+        NOTE: This method is currently NOT used for update detection.
+        Docker CLI uses the manifest list (index) digest as the canonical identifier,
+        not the platform-specific manifest digest. This method is preserved for
+        potential future use cases like layer-level inspection or detailed platform
+        manifest analysis.
+
+        Multi-platform images have a manifest list that points to platform-specific
+        manifests. This method fetches the platform-specific manifest and returns
+        its digest (different from the index digest).
+
+        For update detection, use the index digest from the manifest list instead
+        to match Docker CLI behavior and docker inspect RepoDigests.
         """
         # Parse platform (e.g., "linux/amd64" → os=linux, arch=amd64)
         os_name, arch = platform.split("/") if "/" in platform else ("linux", platform)
@@ -776,17 +783,23 @@ class RegistryAdapter:
         """
         Compute the floating tag based on tracking mode.
 
+        Tracking modes aligned with Semantic Versioning (MAJOR.MINOR.PATCH):
+        - exact: Use exact tag from image (no floating)
+        - patch: Track patch updates only (X.Y.*) - bug fixes only
+        - minor: Track minor+patch updates (X.*.*) - new features, no breaking changes
+        - latest: Always track :latest tag
+
         Args:
             image_tag: Original tag (e.g., "nginx:1.25.3")
-            mode: Tracking mode (exact|minor|major|latest)
+            mode: Tracking mode (exact|patch|minor|latest)
 
         Returns:
             Computed tag to track
 
         Examples:
             ("nginx:1.25.3", "exact") → "nginx:1.25.3"
-            ("nginx:1.25.3", "minor") → "nginx:1.25"
-            ("nginx:1.25.3", "major") → "nginx:1"
+            ("nginx:1.25.3", "patch") → "nginx:1.25"
+            ("nginx:1.25.3", "minor") → "nginx:1"
             ("nginx:1.25.3", "latest") → "nginx:latest"
         """
         if mode == "exact":
@@ -808,17 +821,19 @@ class RegistryAdapter:
             # Not a version tag, return as-is
             return image_tag
 
-        major, minor, patch, suffix = version_match.groups()
+        major, minor_ver, patch_ver, suffix = version_match.groups()
 
-        if mode == "major":
-            # Track major version only
+        if mode == "minor":
+            # Track minor+patch updates within major version (X.*)
+            # nginx:1.25.3 → nginx:1 (gets 1.26, 1.99, NOT 2.0)
             return f"{image}:{major}{suffix or ''}"
-        elif mode == "minor":
-            # Track major.minor
-            if minor:
-                return f"{image}:{major}.{minor}{suffix or ''}"
+        elif mode == "patch":
+            # Track patch updates only within minor version (X.Y.*)
+            # nginx:1.25.3 → nginx:1.25 (gets 1.25.4, NOT 1.26)
+            if minor_ver:
+                return f"{image}:{major}.{minor_ver}{suffix or ''}"
             else:
-                # Already major-only tag
+                # Already major-only tag, fallback to minor mode
                 return f"{image}:{major}{suffix or ''}"
 
         return image_tag

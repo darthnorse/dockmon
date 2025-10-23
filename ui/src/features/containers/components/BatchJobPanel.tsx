@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { X, CheckCircle, XCircle, Clock, Loader2 } from 'lucide-react'
 import { apiClient } from '@/lib/api/client'
 import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
@@ -36,16 +36,19 @@ interface BatchJobItem {
 
 interface BatchJobPanelProps {
   jobId: string | null
+  isVisible: boolean
   onClose: () => void
+  onJobComplete: () => void
   bulkActionBarOpen?: boolean
 }
 
-export function BatchJobPanel({ jobId, onClose, bulkActionBarOpen = false }: BatchJobPanelProps) {
+export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkActionBarOpen = false }: BatchJobPanelProps) {
   const [job, setJob] = useState<BatchJobStatus | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const { addMessageHandler } = useWebSocketContext()
   const queryClient = useQueryClient()
+  const autoCloseTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
   // Fetch initial job status
   useEffect(() => {
@@ -54,20 +57,32 @@ export function BatchJobPanel({ jobId, onClose, bulkActionBarOpen = false }: Bat
       return
     }
 
+    let cancelled = false
+
     const fetchJob = async () => {
       setLoading(true)
       setError(null)
       try {
         const data = await apiClient.get<BatchJobStatus>(`/batch/${jobId}`)
-        setJob(data)
+        if (!cancelled) {
+          setJob(data)
+        }
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to fetch job status')
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : 'Failed to fetch job status')
+        }
       } finally {
-        setLoading(false)
+        if (!cancelled) {
+          setLoading(false)
+        }
       }
     }
 
     fetchJob()
+
+    return () => {
+      cancelled = true
+    }
   }, [jobId])
 
   // Handle WebSocket messages
@@ -84,19 +99,38 @@ export function BatchJobPanel({ jobId, onClose, bulkActionBarOpen = false }: Bat
           const prevStatus = prev?.status
           const updatedJob = prev ? { ...prev, ...data } : null
 
-          // Invalidate queries when job completes
-          if (prevStatus !== 'completed' && newStatus === 'completed') {
+          // Invalidate queries and cleanup when job finishes (completed or failed)
+          // Only trigger on actual state transition from in-progress to finished
+          // This prevents premature cleanup when WebSocket 'completed' arrives before initial fetch
+          const wasInProgress = prevStatus === 'queued' || prevStatus === 'running'
+          const isNowFinished = newStatus === 'completed' || newStatus === 'failed'
+
+          if (wasInProgress && isNowFinished) {
             const action = prev?.action || (data.action as string)
 
-            // Invalidate container list for all actions
+            // Invalidate cache regardless of success/failure (shows current state)
             queryClient.invalidateQueries({ queryKey: ['containers'] })
 
             // For auto-update actions, also invalidate update-status queries
+            // Force refetch even with staleTime: Infinity
             if (action === 'set-auto-update') {
-              queryClient.invalidateQueries({ queryKey: ['container-update-status'] })
+              queryClient.invalidateQueries({
+                queryKey: ['container-update-status'],
+                refetchType: 'active'  // Force active queries to refetch
+              })
             }
 
-            debug.log('BatchJobPanel', `Job ${jobId} completed, invalidated queries for action: ${action}`)
+            debug.log('BatchJobPanel', `Job ${jobId} finished (${newStatus}), invalidated queries for action: ${action}`)
+
+            // Clear any existing timeout before setting new one
+            if (autoCloseTimeoutRef.current) {
+              clearTimeout(autoCloseTimeoutRef.current)
+            }
+
+            // Auto-close panel 3 seconds after completion
+            autoCloseTimeoutRef.current = setTimeout(() => {
+              onJobComplete()
+            }, 3000)
           }
 
           return updatedJob
@@ -121,7 +155,7 @@ export function BatchJobPanel({ jobId, onClose, bulkActionBarOpen = false }: Bat
         })
       }
     }
-  }, [jobId, queryClient])
+  }, [jobId, queryClient, onJobComplete])
 
   // Subscribe to WebSocket messages
   useEffect(() => {
@@ -129,7 +163,33 @@ export function BatchJobPanel({ jobId, onClose, bulkActionBarOpen = false }: Bat
     return unsubscribe
   }, [addMessageHandler, handleMessage])
 
+  // Cleanup timeout on unmount or jobId change
+  useEffect(() => {
+    return () => {
+      if (autoCloseTimeoutRef.current) {
+        clearTimeout(autoCloseTimeoutRef.current)
+        autoCloseTimeoutRef.current = null
+      }
+    }
+  }, [jobId])
+
+  // Handle manual close - clear timeout and cleanup
+  const handleClose = useCallback(() => {
+    if (autoCloseTimeoutRef.current) {
+      clearTimeout(autoCloseTimeoutRef.current)
+      autoCloseTimeoutRef.current = null
+    }
+    onClose()
+  }, [onClose])
+
+  // Only unmount if no job is being tracked
   if (!jobId) return null
+
+  // If job exists but panel is hidden, keep mounted but don't render anything
+  // This ensures WebSocket handler stays alive to receive job completion
+  if (!isVisible) {
+    return null
+  }
 
   const progressPercent = job && job.total_items > 0
     ? Math.round((job.completed_items / job.total_items) * 100)
@@ -152,7 +212,7 @@ export function BatchJobPanel({ jobId, onClose, bulkActionBarOpen = false }: Bat
   return (
     <div
       className={`fixed right-0 w-96 bg-surface-1 border-l border-t border-border shadow-xl flex flex-col max-h-[70vh] z-40 transition-all duration-200 ${
-        bulkActionBarOpen ? 'bottom-[200px]' : 'bottom-0'
+        bulkActionBarOpen ? 'bottom-[280px]' : 'bottom-0'
       }`}
     >
       {/* Header */}
@@ -166,7 +226,7 @@ export function BatchJobPanel({ jobId, onClose, bulkActionBarOpen = false }: Bat
           </p>
         </div>
         <button
-          onClick={onClose}
+          onClick={handleClose}
           className="p-1 hover:bg-surface-2 rounded transition-colors"
           title="Close"
         >

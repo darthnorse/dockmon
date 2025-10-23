@@ -256,8 +256,10 @@ def _handle_fresh_install(engine, alembic_cfg) -> bool:
     Returns:
         True on success, False on failure
     """
-    from database import Base
+    from database import Base, GlobalSettings
     from alembic import command
+    from sqlalchemy.orm import Session
+    import re
 
     logger.info("Fresh installation detected")
 
@@ -269,6 +271,24 @@ def _handle_fresh_install(engine, alembic_cfg) -> bool:
 
         # Get HEAD revision
         head_revision = _get_head_revision(alembic_cfg)
+
+        # Initialize GlobalSettings.app_version to match HEAD revision
+        # Parse version from revision ID (e.g., "002_v2_0_1" -> "2.0.1")
+        version_match = re.search(r'_v(\d+)_(\d+)_(\d+)', head_revision)
+        if version_match:
+            app_version = f"{version_match.group(1)}.{version_match.group(2)}.{version_match.group(3)}"
+            logger.info(f"Initializing app_version to {app_version}")
+
+            with Session(engine) as session:
+                settings = session.query(GlobalSettings).first()
+                if not settings:
+                    settings = GlobalSettings()
+                    session.add(settings)
+                settings.app_version = app_version
+                session.commit()
+                logger.info(f"GlobalSettings.app_version set to {app_version}")
+        else:
+            logger.warning(f"Could not parse version from revision ID: {head_revision}")
 
         # Stamp database as HEAD without running migrations
         logger.info(f"Stamping database at version: {head_revision}")

@@ -778,9 +778,9 @@ class UpdateExecutor:
                     # Status is "starting", continue waiting
                 else:
                     # No health check configured
-                    # If container has been running for 10s, consider it healthy
-                    if time.time() - start_time > 10:
-                        logger.info(f"Container {container_id} has no health check, running for 10s - considering healthy")
+                    # If container has been running for 30s, consider it healthy
+                    if time.time() - start_time > 30:
+                        logger.info(f"Container {container_id} has no health check, running for 30s - considering healthy")
                         return True
 
                 # Wait before next check

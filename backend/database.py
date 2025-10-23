@@ -266,6 +266,10 @@ class ContainerUpdate(Base):
     changelog_source = Column(Text, nullable=True)  # 'oci_label', 'ghcr', 'fuzzy_match', 'failed'
     changelog_checked_at = Column(DateTime, nullable=True)  # When we last checked
 
+    # Registry page URL (v2.0.2+)
+    registry_page_url = Column(Text, nullable=True)  # Manual web URL to registry page or NULL
+    registry_page_source = Column(Text, nullable=True)  # 'manual' or NULL (auto-detect)
+
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 

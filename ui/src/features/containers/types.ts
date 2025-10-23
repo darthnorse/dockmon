@@ -72,6 +72,9 @@ export interface ContainerUpdateStatus {
   is_compose_container?: boolean
   skip_compose_enabled?: boolean
   changelog_url?: string | null  // v2.0.1+ - GitHub releases URL
+  changelog_source?: string | null  // v2.0.2+ - Source of changelog URL (manual, github_auto, oci_label)
+  registry_page_url?: string | null  // v2.0.2+ - Manual registry page URL
+  registry_page_source?: string | null  // v2.0.2+ - 'manual' or null (auto-detect)
 }
 
 export interface ContainerHttpHealthCheck {

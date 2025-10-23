@@ -6,15 +6,17 @@
  */
 
 import { memo, useState, useEffect, useCallback } from 'react'
-import { Package, RefreshCw, Check, Clock, AlertCircle, Download, Shield, ExternalLink } from 'lucide-react'
+import { Package, RefreshCw, Check, AlertCircle, Download, Shield, ExternalLink, Edit2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Input } from '@/components/ui/input'
 import { toast } from 'sonner'
 import { useContainerUpdateStatus, useCheckContainerUpdate, useUpdateAutoUpdateConfig, useExecuteUpdate } from '../../hooks/useContainerUpdates'
 import { useSetContainerUpdatePolicy } from '../../hooks/useUpdatePolicies'
 import { UpdateValidationConfirmModal } from '../UpdateValidationConfirmModal'
 import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
+import { getRegistryUrl, getRegistryName } from '@/lib/utils/registry'
 import type { Container } from '../../types'
 import type { UpdatePolicyValue } from '../../types/updatePolicy'
 import { POLICY_OPTIONS } from '../../types/updatePolicy'
@@ -45,6 +47,14 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
   const [trackingMode, setTrackingMode] = useState<string>(updateStatus?.floating_tag_mode || 'exact')
   const [updatePolicy, setUpdatePolicy] = useState<UpdatePolicyValue>(null)
 
+  // Changelog URL state (v2.0.2+)
+  const [changelogUrl, setChangelogUrl] = useState<string>('')
+  const [isEditingChangelog, setIsEditingChangelog] = useState(false)
+
+  // Registry page URL state (v2.0.2+)
+  const [registryPageUrl, setRegistryPageUrl] = useState<string>('')
+  const [isEditingRegistry, setIsEditingRegistry] = useState(false)
+
   // Update progress state
   const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null)
 
@@ -62,6 +72,8 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
       setAutoUpdateEnabled(updateStatus.auto_update_enabled ?? false)
       setTrackingMode(updateStatus.floating_tag_mode || 'exact')
       setUpdatePolicy(updateStatus.update_policy ?? null)
+      setChangelogUrl(updateStatus.changelog_url || '')  // v2.0.2+
+      setRegistryPageUrl(updateStatus.registry_page_url || '')  // v2.0.2+
     }
   }, [updateStatus])
 
@@ -216,6 +228,88 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
     }
   }
 
+  const handleChangelogSave = async () => {
+    if (!container.host_id) {
+      toast.error('Cannot save changelog URL', {
+        description: 'Container missing host information',
+      })
+      return
+    }
+
+    // Validate URL format if not empty
+    if (changelogUrl.trim()) {
+      try {
+        new URL(changelogUrl.trim())
+      } catch {
+        toast.error('Invalid URL format', {
+          description: 'Please enter a valid URL (e.g., https://github.com/user/repo/releases)',
+        })
+        return
+      }
+    }
+
+    const previousUrl = updateStatus?.changelog_url || ''
+
+    try {
+      await updateAutoUpdateConfig.mutateAsync({
+        hostId: container.host_id,
+        containerId: container.id,
+        autoUpdateEnabled,
+        floatingTagMode: trackingMode as 'exact' | 'patch' | 'minor' | 'latest',
+        changelogUrl: changelogUrl.trim() || null,  // v2.0.2+
+      })
+      toast.success(changelogUrl.trim() ? 'Changelog URL saved' : 'Changelog URL cleared')
+      setIsEditingChangelog(false)
+    } catch (error) {
+      // Revert on error
+      setChangelogUrl(previousUrl)
+      toast.error('Failed to save changelog URL', {
+        description: error instanceof Error ? error.message : 'Unknown error',
+      })
+    }
+  }
+
+  const handleRegistrySave = async () => {
+    if (!container.host_id) {
+      toast.error('Cannot save registry URL', {
+        description: 'Container missing host information',
+      })
+      return
+    }
+
+    // Validate URL format if not empty
+    if (registryPageUrl.trim()) {
+      try {
+        new URL(registryPageUrl.trim())
+      } catch {
+        toast.error('Invalid URL format', {
+          description: 'Please enter a valid URL (e.g., https://hub.docker.com/r/user/image)',
+        })
+        return
+      }
+    }
+
+    const previousUrl = updateStatus?.registry_page_url || ''
+
+    try {
+      await updateAutoUpdateConfig.mutateAsync({
+        hostId: container.host_id,
+        containerId: container.id,
+        autoUpdateEnabled,
+        floatingTagMode: trackingMode as 'exact' | 'patch' | 'minor' | 'latest',
+        registryPageUrl: registryPageUrl.trim() || null,  // v2.0.2+
+      })
+      toast.success(registryPageUrl.trim() ? 'Registry URL saved' : 'Registry URL cleared')
+      setIsEditingRegistry(false)
+    } catch (error) {
+      // Revert on error
+      setRegistryPageUrl(previousUrl)
+      toast.error('Failed to save registry URL', {
+        description: error instanceof Error ? error.message : 'Unknown error',
+      })
+    }
+  }
+
   const handleConfirmUpdate = async () => {
     // User confirmed, proceed with update
     await performUpdate(true)
@@ -254,6 +348,16 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
         setValidationPattern(result.matched_pattern)
         setValidationConfirmOpen(true)
         setUpdateProgress(null)
+        return
+      }
+
+      // Check if update failed (e.g., health check timeout, startup issues)
+      if (result.status === 'failed') {
+        setUpdateProgress(null)
+        toast.error(result.message || 'Container update failed', {
+          description: result.detail || 'The update failed and your container has been automatically restored to its previous state.',
+          duration: 10000, // Longer duration for important failure message
+        })
         return
       }
 
@@ -302,17 +406,6 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
                 <p className="text-sm text-muted-foreground">
                   A newer version of this container image is available
                 </p>
-                {updateStatus?.changelog_url && (
-                  <a
-                    href={updateStatus.changelog_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 text-sm text-blue-500 hover:text-blue-600 mt-1"
-                  >
-                    <ExternalLink className="h-3 w-3" />
-                    View Changelog
-                  </a>
-                )}
               </div>
             </>
           ) : (
@@ -328,43 +421,50 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
           )}
         </div>
 
-        <div className="flex gap-2">
-          {hasUpdate && (
+        <div className="flex flex-col items-end gap-2">
+          <div className="flex gap-2">
+            {hasUpdate && (
+              <Button
+                onClick={handleUpdateNow}
+                disabled={executeUpdate.isPending}
+                variant="default"
+              >
+                {executeUpdate.isPending ? (
+                  <>
+                    <Download className="mr-2 h-4 w-4 animate-spin" />
+                    Updating...
+                  </>
+                ) : (
+                  <>
+                    <Download className="mr-2 h-4 w-4" />
+                    Update Now
+                  </>
+                )}
+              </Button>
+            )}
             <Button
-              onClick={handleUpdateNow}
-              disabled={executeUpdate.isPending}
-              variant="default"
+              onClick={handleCheckNow}
+              disabled={checkUpdate.isPending}
+              variant="outline"
             >
-              {executeUpdate.isPending ? (
+              {checkUpdate.isPending ? (
                 <>
-                  <Download className="mr-2 h-4 w-4 animate-spin" />
-                  Updating...
+                  <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                  Checking...
                 </>
               ) : (
                 <>
-                  <Download className="mr-2 h-4 w-4" />
-                  Update Now
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                  Check Now
                 </>
               )}
             </Button>
+          </div>
+          {updateStatus && (
+            <p className="text-xs text-muted-foreground">
+              Last checked: {lastChecked}
+            </p>
           )}
-          <Button
-            onClick={handleCheckNow}
-            disabled={checkUpdate.isPending}
-            variant="outline"
-          >
-            {checkUpdate.isPending ? (
-              <>
-                <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                Checking...
-              </>
-            ) : (
-              <>
-                <RefreshCw className="mr-2 h-4 w-4" />
-                Check Now
-              </>
-            )}
-          </Button>
         </div>
       </div>
 
@@ -436,39 +536,6 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
         </div>
       )}
 
-      {/* Status Details */}
-      {updateStatus && (
-        <div className="grid grid-cols-3 gap-4">
-          <div className="bg-muted rounded-lg p-4">
-            <div className="flex items-center gap-2 text-muted-foreground mb-1">
-              <Clock className="h-4 w-4" />
-              <span className="text-xs font-medium">Last Checked</span>
-            </div>
-            <p className="text-sm font-medium">{lastChecked}</p>
-          </div>
-
-          {updateStatus.current_digest && (
-            <div className="bg-muted rounded-lg p-4">
-              <div className="flex items-center gap-2 text-muted-foreground mb-1">
-                <AlertCircle className="h-4 w-4" />
-                <span className="text-xs font-medium">Current Digest</span>
-              </div>
-              <p className="text-sm font-mono font-medium">{updateStatus.current_digest}</p>
-            </div>
-          )}
-
-          {hasUpdate && updateStatus.latest_digest && (
-            <div className="bg-amber-500/10 rounded-lg p-4">
-              <div className="flex items-center gap-2 text-amber-500 mb-1">
-                <Package className="h-4 w-4" />
-                <span className="text-xs font-medium">Latest Digest</span>
-              </div>
-              <p className="text-sm font-mono font-medium text-amber-500">{updateStatus.latest_digest}</p>
-            </div>
-          )}
-        </div>
-      )}
-
       {/* Update details */}
       <div className="grid grid-cols-2 gap-6">
         {/* Current Image */}
@@ -514,6 +581,144 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
             </div>
           </div>
         )}
+      </div>
+
+      {/* Changelog & Registry Links (v2.0.2+) */}
+      <div className="border-t pt-6">
+        <h4 className="text-lg font-medium text-foreground mb-4">Resource Links</h4>
+
+        <div className="grid grid-cols-2 gap-6">
+          {/* Changelog URL */}
+          <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <label className="text-sm font-medium">Changelog</label>
+            {updateStatus?.changelog_source === 'manual' && (
+              <span className="text-xs text-blue-400 px-2 py-0.5 bg-blue-400/10 rounded">Manual</span>
+            )}
+            {updateStatus?.changelog_source && updateStatus.changelog_source !== 'manual' && updateStatus.changelog_source !== 'failed' && (
+              <span className="text-xs text-blue-400 px-2 py-0.5 bg-blue-400/10 rounded">Auto-detected</span>
+            )}
+          </div>
+
+          {isEditingChangelog ? (
+            <div className="flex gap-2">
+              <Input
+                value={changelogUrl}
+                onChange={(e) => setChangelogUrl(e.target.value)}
+                placeholder="https://github.com/user/repo/releases"
+                className="flex-1"
+              />
+              <Button onClick={handleChangelogSave} size="sm" disabled={updateAutoUpdateConfig.isPending}>
+                {updateAutoUpdateConfig.isPending ? 'Saving...' : 'Save'}
+              </Button>
+              <Button onClick={() => {
+                setChangelogUrl(updateStatus?.changelog_url || '')
+                setIsEditingChangelog(false)
+              }} size="sm" variant="outline">
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+          ) : (
+            <div className="flex gap-2">
+              {changelogUrl ? (
+                <a
+                  href={changelogUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex-1 flex items-center gap-2 text-sm text-blue-500 hover:text-blue-600 bg-muted rounded-lg p-3 transition-colors"
+                >
+                  <ExternalLink className="h-4 w-4 flex-shrink-0" />
+                  <span className="truncate">{changelogUrl}</span>
+                </a>
+              ) : (
+                <div className="flex-1 text-sm text-muted-foreground bg-muted rounded-lg p-3">
+                  No changelog URL configured
+                </div>
+              )}
+              <Button
+                onClick={() => setIsEditingChangelog(true)}
+                size="sm"
+                variant="outline"
+                className="flex-shrink-0"
+              >
+                <Edit2 className="h-4 w-4 mr-1" />
+                {changelogUrl ? 'Edit' : 'Add'}
+              </Button>
+            </div>
+          )}
+          <p className="text-xs text-muted-foreground">
+            {updateStatus?.changelog_source === 'manual'
+              ? 'Manual URLs are preserved and not overwritten by auto-detection. Clear to re-enable auto-detection.'
+              : 'Auto-detected changelog links can be overridden with a custom URL.'}
+          </p>
+        </div>
+
+          {/* Docker Registry Link */}
+          <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <label className="text-sm font-medium">Docker Registry</label>
+            {updateStatus?.registry_page_source === 'manual' && (
+              <span className="text-xs text-blue-400 px-2 py-0.5 bg-blue-400/10 rounded">Manual</span>
+            )}
+            {!updateStatus?.registry_page_source && (
+              <span className="text-xs text-blue-400 px-2 py-0.5 bg-blue-400/10 rounded">Auto-detected</span>
+            )}
+          </div>
+
+          {isEditingRegistry ? (
+            <div className="flex gap-2">
+              <Input
+                value={registryPageUrl}
+                onChange={(e) => setRegistryPageUrl(e.target.value)}
+                placeholder="https://hub.docker.com/r/user/image"
+                className="flex-1"
+              />
+              <Button onClick={handleRegistrySave} size="sm" disabled={updateAutoUpdateConfig.isPending}>
+                {updateAutoUpdateConfig.isPending ? 'Saving...' : 'Save'}
+              </Button>
+              <Button onClick={() => {
+                setRegistryPageUrl(updateStatus?.registry_page_url || '')
+                setIsEditingRegistry(false)
+              }} size="sm" variant="outline">
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+          ) : (
+            <div className="flex gap-2">
+              {/* Use manual URL if set, otherwise auto-detect */}
+              {(() => {
+                const displayUrl = registryPageUrl || getRegistryUrl(container.image)
+                const displayName = registryPageUrl ? 'View Registry' : `View on ${getRegistryName(container.image)}`
+                return (
+                  <a
+                    href={displayUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex-1 flex items-center gap-2 text-sm text-blue-500 hover:text-blue-600 bg-muted rounded-lg p-3 transition-colors"
+                  >
+                    <ExternalLink className="h-4 w-4 flex-shrink-0" />
+                    <span className="truncate">{displayName}</span>
+                  </a>
+                )
+              })()}
+              <Button
+                onClick={() => setIsEditingRegistry(true)}
+                size="sm"
+                variant="outline"
+                className="flex-shrink-0"
+              >
+                <Edit2 className="h-4 w-4 mr-1" />
+                {registryPageUrl ? 'Edit' : 'Add'}
+              </Button>
+            </div>
+          )}
+          <p className="text-xs text-muted-foreground">
+            {updateStatus?.registry_page_source === 'manual'
+              ? 'Manual URLs are preserved and not overwritten by auto-detection. Clear to re-enable auto-detection.'
+              : 'Auto-detected registry links can be overridden with a custom URL.'}
+          </p>
+          </div>
+        </div>
       </div>
 
       {/* Settings */}

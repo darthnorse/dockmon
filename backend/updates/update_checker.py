@@ -256,17 +256,24 @@ class UpdateChecker:
                 container_id=composite_key
             ).first()
 
-        # Extract manifest labels for OCI label detection
-        manifest_labels = latest_result.get("manifest", {}).get("config", {}).get("Labels", {}) or {}
+        # Check if user has manually set a changelog URL (v2.0.2+)
+        # If manual, skip auto-detection to preserve user's choice
+        if existing_record and existing_record.changelog_source == 'manual':
+            changelog_url = existing_record.changelog_url
+            changelog_source = 'manual'
+            changelog_checked_at = existing_record.changelog_checked_at
+        else:
+            # Extract manifest labels for OCI label detection
+            manifest_labels = latest_result.get("manifest", {}).get("config", {}).get("Labels", {}) or {}
 
-        # Resolve changelog URL with 3-tier strategy
-        changelog_url, changelog_source, changelog_checked_at = await resolve_changelog_url(
-            image_name=floating_tag,
-            manifest_labels=manifest_labels,
-            current_url=existing_record.changelog_url if existing_record else None,
-            current_source=existing_record.changelog_source if existing_record else None,
-            last_checked=existing_record.changelog_checked_at if existing_record else None
-        )
+            # Resolve changelog URL with 3-tier strategy
+            changelog_url, changelog_source, changelog_checked_at = await resolve_changelog_url(
+                image_name=floating_tag,
+                manifest_labels=manifest_labels,
+                current_url=existing_record.changelog_url if existing_record else None,
+                current_source=existing_record.changelog_source if existing_record else None,
+                last_checked=existing_record.changelog_checked_at if existing_record else None
+            )
 
         return {
             "current_image": image,

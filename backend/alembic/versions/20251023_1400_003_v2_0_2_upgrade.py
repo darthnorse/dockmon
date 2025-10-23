@@ -1,4 +1,4 @@
-"""v2.0.2 upgrade - HTTP health check retry configuration
+"""v2.0.2 upgrade - HTTP health check retry configuration and registry URL manual override
 
 Revision ID: 003_v2_0_2
 Revises: 002_v2_0_1
@@ -7,6 +7,8 @@ Create Date: 2025-10-23
 CHANGES IN v2.0.2:
 - Add max_restart_attempts column to container_http_health_checks (default: 3)
 - Add restart_retry_delay_seconds column to container_http_health_checks (default: 120)
+- Add registry_page_url column to container_updates (manual registry page URL)
+- Add registry_page_source column to container_updates ('manual' or NULL for auto-detect)
 - Update app_version to '2.0.2'
 """
 from alembic import op
@@ -53,7 +55,19 @@ def upgrade() -> None:
             op.add_column('container_http_health_checks',
                 sa.Column('restart_retry_delay_seconds', sa.Integer(), server_default='120', nullable=False))
 
-    # Change 3: Update app_version
+    # Change 3: Add registry_page_url column to container_updates
+    if table_exists('container_updates'):
+        if not column_exists('container_updates', 'registry_page_url'):
+            op.add_column('container_updates',
+                sa.Column('registry_page_url', sa.Text(), nullable=True))
+
+    # Change 4: Add registry_page_source column to container_updates
+    if table_exists('container_updates'):
+        if not column_exists('container_updates', 'registry_page_source'):
+            op.add_column('container_updates',
+                sa.Column('registry_page_source', sa.Text(), nullable=True))
+
+    # Change 5: Update app_version
     op.execute(
         sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
         .bindparams(version='2.0.2', id=1)
@@ -67,6 +81,12 @@ def downgrade() -> None:
         sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
         .bindparams(version='2.0.1', id=1)
     )
+
+    if table_exists('container_updates'):
+        if column_exists('container_updates', 'registry_page_source'):
+            op.drop_column('container_updates', 'registry_page_source')
+        if column_exists('container_updates', 'registry_page_url'):
+            op.drop_column('container_updates', 'registry_page_url')
 
     if table_exists('container_http_health_checks'):
         if column_exists('container_http_health_checks', 'restart_retry_delay_seconds'):

@@ -106,17 +106,23 @@ export function useUpdateAutoUpdateConfig() {
       containerId,
       autoUpdateEnabled,
       floatingTagMode,
+      changelogUrl,
+      registryPageUrl,
     }: {
       hostId: string
       containerId: string
       autoUpdateEnabled: boolean
       floatingTagMode: 'exact' | 'patch' | 'minor' | 'latest'
+      changelogUrl?: string | null  // v2.0.2+
+      registryPageUrl?: string | null  // v2.0.2+
     }) => {
       return await apiClient.put<ContainerUpdateStatus>(
         `/hosts/${hostId}/containers/${containerId}/auto-update-config`,
         {
           auto_update_enabled: autoUpdateEnabled,
           floating_tag_mode: floatingTagMode,
+          changelog_url: changelogUrl,  // v2.0.2+
+          registry_page_url: registryPageUrl,  // v2.0.2+
         }
       )
     },
@@ -154,6 +160,7 @@ export function useExecuteUpdate() {
         validation?: 'allow' | 'warn' | 'block'
         reason?: string
         matched_pattern?: string
+        detail?: string  // v2.0.2+ - Detailed error message for failed updates
       }>(`/hosts/${hostId}/containers/${containerId}/execute-update`, null, { params })
     },
     onSuccess: (_data, variables) => {

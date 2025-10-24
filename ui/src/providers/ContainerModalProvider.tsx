@@ -29,6 +29,9 @@ interface ContainerModalContextValue {
   // Close modal
   closeModal: () => void
 
+  // Update container ID (used when container is recreated during updates)
+  updateContainerId: (newCompositeKey: string) => void
+
   // Check if modal is open (useful for debugging)
   isModalOpen: boolean
 }
@@ -58,9 +61,17 @@ export function ContainerModalProvider({ children }: { children: ReactNode }) {
     })
   }
 
+  const updateContainerId = (newCompositeKey: string) => {
+    setState((prev) => ({
+      ...prev,
+      containerId: newCompositeKey,
+    }))
+  }
+
   const contextValue: ContainerModalContextValue = {
     openModal,
     closeModal,
+    updateContainerId,
     isModalOpen: state.isOpen,
   }
 

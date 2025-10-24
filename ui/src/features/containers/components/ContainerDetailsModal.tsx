@@ -9,7 +9,7 @@
  * - Info tab: 2-column layout with status, image, labels, ports, volumes, env vars
  */
 
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import { X, Play, RotateCw, Circle } from 'lucide-react'
 import { Tabs } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
@@ -19,6 +19,8 @@ import { apiClient } from '@/lib/api/client'
 import { useQueryClient } from '@tanstack/react-query'
 import { useStatsContext } from '@/lib/stats/StatsProvider'
 import { parseCompositeKey } from '@/lib/utils/containerKeys'
+import { useContainerModal } from '@/providers/ContainerModalProvider'
+import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
 
 // Import tab content components
 import { ContainerInfoTab } from './modal-tabs/ContainerInfoTab'
@@ -45,6 +47,8 @@ export function ContainerDetailsModal({
 }: ContainerDetailsModalProps) {
   const queryClient = useQueryClient()
   const { containerStats } = useStatsContext()
+  const { updateContainerId } = useContainerModal()
+  const { addMessageHandler } = useWebSocketContext()
   const [activeTab, setActiveTab] = useState(initialTab)
   const [uptime, setUptime] = useState<string>('')
   const [isPerformingAction, setIsPerformingAction] = useState(false)
@@ -116,6 +120,41 @@ export function ContainerDetailsModal({
 
     return () => clearInterval(interval)
   }, [container?.created])
+
+  // Listen for container recreations during updates (new ID, same name)
+  // This prevents the modal from closing when a container is updated
+  const handleContainerUpdate = useCallback(
+    (message: any) => {
+      if (!container || !containerId) return
+
+      // Check if this is a container_update message for the same container name but different ID
+      if (message.type === 'container_update' && message.data) {
+        const updatedContainer = message.data
+
+        // Same host and name, but different ID = container was recreated
+        if (
+          updatedContainer.host_id === container.host_id &&
+          updatedContainer.name === container.name &&
+          updatedContainer.id &&  // Ensure new ID exists before comparing
+          updatedContainer.id !== container.id
+        ) {
+          const newCompositeKey = `${updatedContainer.host_id}:${updatedContainer.id}`
+          console.log(`Container ${container.name} recreated with new ID, updating modal tracking:`, {
+            old: containerId,
+            new: newCompositeKey,
+          })
+          updateContainerId(newCompositeKey)
+        }
+      }
+    },
+    [container, containerId, updateContainerId]
+  )
+
+  useEffect(() => {
+    if (!open || !container) return
+    const cleanup = addMessageHandler(handleContainerUpdate)
+    return cleanup
+  }, [open, container, addMessageHandler, handleContainerUpdate])
 
   // Handle ESC key
   useEffect(() => {

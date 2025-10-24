@@ -383,11 +383,11 @@ class UpdateExecutor:
             # Capture SHORT ID (12 chars) for event emission
             new_container_id = new_container.short_id
 
-            # Step 5: Start new container
+            # Step 5: Start new container (IMMEDIATELY to prevent backup from auto-restarting and stealing ports)
             logger.info(f"Starting new container {container_name}")
-            # Continue using original container_id for broadcasts so frontend can track progress
-            await self._broadcast_progress(host_id, container_id, "starting", 80, "Starting new container")
             await async_docker_call(new_container.start)
+            # Broadcast progress AFTER start completes (eliminates timing gap that allows backup auto-restart)
+            await self._broadcast_progress(host_id, container_id, "starting", 80, "Starting new container")
 
             # Step 6: Wait for health check
             health_check_timeout = 120  # 2 minutes default
@@ -667,14 +667,14 @@ class UpdateExecutor:
         api_client.verify = getattr(client.api, "verify", True)
         return api_client
 
-    async def _pull_image(self, client: docker.DockerClient, image: str, timeout: int = 600):
+    async def _pull_image(self, client: docker.DockerClient, image: str, timeout: int = 1800):
         """
         Pull Docker image with timeout.
 
         Args:
             client: Docker client instance
             image: Image name to pull
-            timeout: Timeout in seconds (default: 600 = 10 minutes)
+            timeout: Timeout in seconds (default: 1800 = 30 minutes)
 
         Raises:
             asyncio.TimeoutError: If pull takes longer than timeout
@@ -701,7 +701,7 @@ class UpdateExecutor:
         image: str,
         host_id: str,
         container_id: str,
-        timeout: int = 600
+        timeout: int = 1800
     ):
         """
         Pull Docker image with layer-by-layer progress tracking.
@@ -931,7 +931,10 @@ class UpdateExecutor:
             cached = sum(1 for l in layer_status.values() if l['status'] == 'Already exists')
 
             # Build summary message with download speed
-            if downloading > 0:
+            if total_layers == 0:
+                # Edge case: image with no layers (manifest-only or unusual image)
+                summary = "Pull complete (manifest only)"
+            elif downloading > 0:
                 speed_text = f" @ {speed_mbps:.1f} MB/s" if speed_mbps > 0 else ""
                 summary = f"Downloading {downloading} of {total_layers} layers ({overall_percent}%){speed_text}"
             elif extracting > 0:

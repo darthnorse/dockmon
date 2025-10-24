@@ -36,7 +36,7 @@ export function ContainerLogsTab({ containerId }: ContainerLogsTabProps) {
         height="calc(100vh - 200px)"
         autoRefreshDefault={true}
         showControls={true}
-        compact={false}
+        logFontSize="xs"
       />
     </div>
   )

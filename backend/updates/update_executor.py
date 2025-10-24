@@ -52,6 +52,7 @@ class UpdateExecutor:
         # Track active image pulls for WebSocket reconnection
         # Format: {"{host_id}:{container_id}": {"overall_progress": 80, "layers": [...], "speed_mbps": 12.5, "updated": timestamp}}
         self._active_pulls: Dict[str, Dict] = {}
+        self._active_pulls_lock = threading.Lock()  # Thread-safe access to _active_pulls (main loop + thread pool)
 
         # Store reference to the main event loop for thread-safe coroutine scheduling
         # CRITICAL: asyncio.get_event_loop() is unreliable in thread pool (Python 3.11+)
@@ -895,9 +896,10 @@ class UpdateExecutor:
             except Exception as cleanup_error:
                 logger.warning(f"Error closing API client: {cleanup_error}")
 
-            # Remove from active pulls tracking
-            if composite_key in self._active_pulls:
-                del self._active_pulls[composite_key]
+            # Remove from active pulls tracking (thread-safe)
+            with self._active_pulls_lock:
+                if composite_key in self._active_pulls:
+                    del self._active_pulls[composite_key]
 
     async def _broadcast_layer_progress(
         self,
@@ -979,19 +981,20 @@ class UpdateExecutor:
             else:
                 layers_to_broadcast = layers
 
-            # Store FULL layer list in active pulls for reconnection
-            # (Not bandwidth-constrained for in-memory storage)
-            self._active_pulls[composite_key] = {
-                'host_id': host_id,
-                'container_id': container_id,
-                'overall_progress': overall_percent,
-                'layers': layers_to_broadcast,  # Trimmed for broadcast
-                'total_layers': total_layer_count,
-                'remaining_layers': remaining_layers,
-                'summary': summary,
-                'speed_mbps': speed_mbps,
-                'updated': time.time()
-            }
+            # Store progress for WebSocket reconnection (thread-safe)
+            # Trimmed to top 20 layers for memory efficiency and network bandwidth
+            with self._active_pulls_lock:
+                self._active_pulls[composite_key] = {
+                    'host_id': host_id,
+                    'container_id': container_id,
+                    'overall_progress': overall_percent,
+                    'layers': layers_to_broadcast,  # Top 20 layers
+                    'total_layers': total_layer_count,
+                    'remaining_layers': remaining_layers,
+                    'summary': summary,
+                    'speed_mbps': speed_mbps,
+                    'updated': time.time()
+                }
 
             # Broadcast NEW message type (detailed layer progress)
             await self.monitor.manager.broadcast({
@@ -1690,15 +1693,19 @@ class UpdateExecutor:
         Remove pull progress older than 10 minutes (pull failed or completed).
 
         Called periodically by monitor to prevent unbounded memory growth of _active_pulls dict.
+        Defense-in-depth: handles edge cases where finally block doesn't run (process crash, etc).
         """
         try:
             cutoff = time.time() - 600  # 10 minutes
-            stale_keys = [
-                key for key, data in self._active_pulls.items()
-                if data['updated'] < cutoff
-            ]
-            for key in stale_keys:
-                del self._active_pulls[key]
+
+            # Thread-safe iteration and deletion
+            with self._active_pulls_lock:
+                stale_keys = [
+                    key for key, data in self._active_pulls.items()
+                    if data['updated'] < cutoff
+                ]
+                for key in stale_keys:
+                    del self._active_pulls[key]
 
             if stale_keys:
                 logger.debug(f"Cleaned up {len(stale_keys)} stale pull progress entries")

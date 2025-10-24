@@ -78,12 +78,18 @@ class ConnectionManager:
         Send current pull progress for all active pulls to newly connected client.
 
         Called when WebSocket connects/reconnects to restore progress state.
+        Thread-safe: uses lock to prevent race with thread pool workers.
         """
         if not self.update_executor or not hasattr(self.update_executor, '_active_pulls'):
             return
 
         try:
-            for composite_key, progress in self.update_executor._active_pulls.items():
+            # Thread-safe: create snapshot while holding lock
+            with self.update_executor._active_pulls_lock:
+                active_pulls_snapshot = dict(self.update_executor._active_pulls)
+
+            # Send messages without holding lock (IO can block)
+            for composite_key, progress in active_pulls_snapshot.items():
                 # Only send if updated within last 10 minutes (still active)
                 if time.time() - progress['updated'] < 600:
                     await websocket.send_text(json.dumps({

@@ -215,7 +215,7 @@ class GlobalSettings(Base):
     update_check_interval_hours = Column(Integer, default=24)  # How often to check for updates (hours)
     update_check_time = Column(Text, default="02:00")  # Time of day to run checks (HH:MM format, 24-hour)
     skip_compose_containers = Column(Boolean, default=True)  # Skip Docker Compose-managed containers
-    health_check_timeout_seconds = Column(Integer, default=10)  # Health check timeout (seconds)
+    health_check_timeout_seconds = Column(Integer, default=60)  # Health check timeout (seconds)
 
     # Alert system settings
     alert_retention_days = Column(Integer, default=90)  # Keep resolved alerts for N days (0 = keep forever)

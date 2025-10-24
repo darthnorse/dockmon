@@ -1371,6 +1371,66 @@ async def get_updates_summary(current_user: dict = Depends(get_current_user)):
         }
 
 
+@app.get("/api/auto-update-configs")
+async def get_all_auto_update_configs(current_user: dict = Depends(get_current_user)):
+    """
+    Get all auto-update configurations for all containers (batch endpoint).
+
+    Returns:
+        Dict mapping container_id (composite key) to auto-update config:
+        {
+            "{host_id}:{container_id}": {
+                "auto_update_enabled": bool,
+                "floating_tag_mode": str
+            }
+        }
+
+    Performance: Single database query instead of N individual queries.
+    """
+
+    with monitor.db.get_session() as session:
+        configs = session.query(ContainerUpdate).all()
+
+        return {
+            record.container_id: {
+                "auto_update_enabled": record.auto_update_enabled,
+                "floating_tag_mode": record.floating_tag_mode,
+            }
+            for record in configs
+        }
+
+
+@app.get("/api/health-check-configs")
+async def get_all_health_check_configs(current_user: dict = Depends(get_current_user)):
+    """
+    Get all HTTP health check configurations for all containers (batch endpoint).
+
+    Returns:
+        Dict mapping container_id (composite key) to health check config:
+        {
+            "{host_id}:{container_id}": {
+                "enabled": bool,
+                "current_status": str,
+                "consecutive_failures": int
+            }
+        }
+
+    Performance: Single database query instead of N individual queries.
+    """
+
+    with monitor.db.get_session() as session:
+        configs = session.query(ContainerHttpHealthCheck).all()
+
+        return {
+            record.container_id: {
+                "enabled": record.enabled,
+                "current_status": record.current_status or "unknown",
+                "consecutive_failures": record.consecutive_failures or 0,
+            }
+            for record in configs
+        }
+
+
 # ==================== Update Policy Endpoints ====================
 
 @app.get("/api/update-policies")
@@ -1604,7 +1664,8 @@ async def create_batch_job(request: BatchJobCreate, current_user: dict = Depends
     """
     Create a batch job for bulk operations on containers
 
-    Currently supports: start, stop, restart
+    Currently supports: start, stop, restart, add-tags, remove-tags,
+    set-auto-restart, set-auto-update, set-desired-state, check-updates
     """
     if not batch_manager:
         raise HTTPException(status_code=500, detail="Batch manager not initialized")

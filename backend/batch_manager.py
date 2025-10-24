@@ -386,6 +386,13 @@ class BatchJobManager:
                 )
                 state_text = 'Should Run' if desired_state == 'should_run' else 'On-Demand'
                 message = f"Desired state set to {state_text}"
+            elif action == 'check-updates':
+                # Check for newer image version
+                from updates.update_checker import get_update_checker
+
+                checker = get_update_checker(self.db, self.monitor)
+                await checker.check_single_container(host_id, short_id)
+                message = 'Update check completed'
             else:
                 return {
                     'status': 'error',

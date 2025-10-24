@@ -190,3 +190,44 @@ export function useUpdatesSummary() {
     refetchInterval: 60000, // Refresh every minute
   })
 }
+
+/**
+ * Hook to get all auto-update configurations for all containers (batch endpoint)
+ *
+ * Performance optimization: Single API call instead of N individual calls.
+ * Used for filtering and displaying policy icons in container table.
+ */
+export function useAllAutoUpdateConfigs() {
+  return useQuery({
+    queryKey: ['all-auto-update-configs'],
+    queryFn: async () => {
+      return await apiClient.get<Record<string, {
+        auto_update_enabled: boolean
+        floating_tag_mode: string
+      }>>('/auto-update-configs')
+    },
+    staleTime: 30000, // Cache for 30s
+    refetchInterval: 60000, // Refresh every minute
+  })
+}
+
+/**
+ * Hook to get all health check configurations for all containers (batch endpoint)
+ *
+ * Performance optimization: Single API call instead of N individual calls.
+ * Used for filtering and displaying policy icons in container table.
+ */
+export function useAllHealthCheckConfigs() {
+  return useQuery({
+    queryKey: ['all-health-check-configs'],
+    queryFn: async () => {
+      return await apiClient.get<Record<string, {
+        enabled: boolean
+        current_status: string
+        consecutive_failures: number
+      }>>('/health-check-configs')
+    },
+    staleTime: 30000, // Cache for 30s
+    refetchInterval: 60000, // Refresh every minute
+  })
+}

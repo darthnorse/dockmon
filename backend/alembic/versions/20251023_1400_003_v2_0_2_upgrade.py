@@ -9,6 +9,7 @@ CHANGES IN v2.0.2:
 - Add restart_retry_delay_seconds column to container_http_health_checks (default: 120)
 - Add registry_page_url column to container_updates (manual registry page URL)
 - Add registry_page_source column to container_updates ('manual' or NULL for auto-detect)
+- Update health_check_timeout_seconds from 10s → 60s (existing users only, if still at default)
 - Update app_version to '2.0.2'
 """
 from alembic import op
@@ -67,7 +68,14 @@ def upgrade() -> None:
             op.add_column('container_updates',
                 sa.Column('registry_page_source', sa.Text(), nullable=True))
 
-    # Change 5: Update app_version
+    # Change 5: Update health_check_timeout_seconds from 10s → 60s (only if user hasn't changed it)
+    # This fixes critical bugs where containers were timing out too quickly
+    if table_exists('global_settings'):
+        op.execute(
+            sa.text("UPDATE global_settings SET health_check_timeout_seconds = 60 WHERE health_check_timeout_seconds = 10")
+        )
+
+    # Change 6: Update app_version
     op.execute(
         sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
         .bindparams(version='2.0.2', id=1)
@@ -81,6 +89,10 @@ def downgrade() -> None:
         sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
         .bindparams(version='2.0.1', id=1)
     )
+
+    # Note: We do NOT downgrade health_check_timeout_seconds from 60s → 10s
+    # because 10s was causing critical bugs (containers timing out too quickly).
+    # Users who downgrade will keep the 60s timeout (safer behavior).
 
     if table_exists('container_updates'):
         if column_exists('container_updates', 'registry_page_source'):

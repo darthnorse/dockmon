@@ -111,13 +111,27 @@ export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkAc
             // Invalidate cache regardless of success/failure (shows current state)
             queryClient.invalidateQueries({ queryKey: ['containers'] })
 
-            // For auto-update actions, also invalidate update-status queries
+            // For auto-update and check-updates actions, also invalidate update-status queries
             // Force refetch even with staleTime: Infinity
-            if (action === 'set-auto-update') {
-              queryClient.invalidateQueries({
-                queryKey: ['container-update-status'],
-                refetchType: 'active'  // Force active queries to refetch
-              })
+            if (action === 'set-auto-update' || action === 'check-updates') {
+              // Get affected containers from job items
+              const items = (prev?.items || data.items) as BatchJobItem[] | undefined
+
+              if (items && items.length > 0) {
+                // Invalidate only the specific containers that were affected
+                items.forEach((item: BatchJobItem) => {
+                  queryClient.invalidateQueries({
+                    queryKey: ['container-update-status', item.host_id, item.container_id],
+                    refetchType: 'active'
+                  })
+                })
+              } else {
+                // Fallback: invalidate all if we don't have item details
+                queryClient.invalidateQueries({
+                  queryKey: ['container-update-status'],
+                  refetchType: 'active'
+                })
+              }
             }
 
             debug.log('BatchJobPanel', `Job ${jobId} finished (${newStatus}), invalidated queries for action: ${action}`)

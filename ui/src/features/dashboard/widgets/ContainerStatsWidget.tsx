@@ -140,14 +140,14 @@ export function ContainerStatsWidget() {
             className="flex items-center justify-between cursor-pointer transition-colors hover:text-muted-foreground rounded px-2 -mx-2 py-1 hover:bg-muted"
             onClick={(e) => {
               e.stopPropagation()
-              navigate('/containers?state=exited')
+              navigate('/containers?state=stopped')
             }}
             role="button"
             tabIndex={0}
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault()
-                navigate('/containers?state=exited')
+                navigate('/containers?state=stopped')
               }
             }}
             aria-label={`View ${stats.stopped} stopped containers`}

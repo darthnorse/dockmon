@@ -134,8 +134,7 @@ export function ContainerLogsPage() {
       <div className="border-b border-border bg-card">
         <div className="flex items-center justify-between p-6">
           <div>
-            <h1 className="text-2xl font-bold text-foreground flex items-center gap-2">
-              <FileText className="w-6 h-6" />
+            <h1 className="text-2xl font-bold text-foreground">
               Container Logs
             </h1>
             <p className="text-sm text-muted-foreground mt-1">

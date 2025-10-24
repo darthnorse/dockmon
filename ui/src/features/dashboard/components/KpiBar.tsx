@@ -111,7 +111,7 @@ export function KpiBar() {
         label="Running"
         value={runningContainers}
         subtitle={totalContainers > 0 ? `${Math.round((runningContainers / totalContainers) * 100)}% of total` : ''}
-        onClick={() => navigate('/containers')}
+        onClick={() => navigate('/containers?state=running')}
         variant={runningContainers > 0 ? 'success' : 'default'}
         data-testid="kpi-running-containers"
       />
@@ -132,7 +132,7 @@ export function KpiBar() {
         label="Updates"
         value={pendingUpdates}
         subtitle={pendingUpdates > 0 ? 'Updates available' : 'Up to date'}
-        onClick={() => navigate('/containers')}
+        onClick={() => navigate('/containers?updates=true')}
         variant={pendingUpdates > 0 ? 'warning' : 'success'}
       />
     </div>

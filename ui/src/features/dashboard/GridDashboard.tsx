@@ -15,8 +15,6 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import GridLayout, { WidthProvider, type Layout } from 'react-grid-layout'
-import { Button } from '@/components/ui/button'
-import { RotateCcw } from 'lucide-react'
 import type { WidgetConfig, DashboardLayout } from './types'
 import { widgetComponents } from './widgets'
 import { useDashboardLayout } from '@/lib/hooks/useUserPreferences'
@@ -144,14 +142,6 @@ export function GridDashboard() {
     }
   }, [])
 
-  // Reset to default layout
-  const handleReset = () => {
-    debug.log('GridDashboard', 'Resetting layout to defaults')
-    setWidgets(defaultLayout)
-    const dashboardLayout: DashboardLayout = { widgets: defaultLayout }
-    setLayout(dashboardLayout)
-  }
-
   // Convert widgets to react-grid-layout format (memoized for performance)
   const layout: Layout[] = useMemo(
     () =>
@@ -171,20 +161,6 @@ export function GridDashboard() {
 
   return (
     <div className="p-6 min-w-[900px] overflow-x-auto">
-      {/* Header */}
-      <div className="mb-6 flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">Dashboard</h1>
-          <p className="text-sm text-muted-foreground">
-            Monitor your Docker containers and hosts
-          </p>
-        </div>
-        <Button variant="outline" size="sm" onClick={handleReset}>
-          <RotateCcw className="mr-2 h-4 w-4" />
-          Reset Layout
-        </Button>
-      </div>
-
       {/* Grid Layout - Responsive width with 900px minimum */}
       <ResponsiveGridLayout
         className="layout"

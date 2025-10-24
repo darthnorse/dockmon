@@ -42,6 +42,17 @@ export interface UserPreferences {
   host_table_sort: Array<{ id: string; desc: boolean }> | null
   container_table_sort: Array<{ id: string; desc: boolean }> | null
 
+  // Container filter preferences
+  container_filters?: {
+    host_ids?: string[]
+    auto_update_enabled?: boolean | null
+    auto_restart_enabled?: boolean | null
+    health_check_enabled?: boolean | null
+    state?: ('running' | 'stopped')[]
+    updates_available?: boolean
+    desired_state?: ('should_run' | 'on_demand' | 'unspecified')[]
+  }
+
   // Dashboard preferences (host container sorts are string-based sort keys)
   hostContainerSorts?: Record<string, string>
 

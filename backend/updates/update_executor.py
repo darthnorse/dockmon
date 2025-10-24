@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from typing import Dict, Optional, Any, Tuple
 import docker
 
-from database import DatabaseManager, ContainerUpdate, AutoRestartConfig, ContainerDesiredState, ContainerHttpHealthCheck
+from database import DatabaseManager, ContainerUpdate, AutoRestartConfig, ContainerDesiredState, ContainerHttpHealthCheck, GlobalSettings
 from event_bus import Event, EventType as BusEventType, get_event_bus
 from utils.async_docker import async_docker_call
 from utils.keys import make_composite_key, parse_composite_key
@@ -75,7 +75,6 @@ class UpdateExecutor:
         # Extract data and close session BEFORE async operations
         updates_data = []
         with self.db.get_session() as session:
-            from database import ContainerUpdate
             updates = session.query(ContainerUpdate).filter_by(
                 auto_update_enabled=True,
                 update_available=True
@@ -370,7 +369,6 @@ class UpdateExecutor:
             # Step 6: Wait for health check
             health_check_timeout = 120  # 2 minutes default
             with self.db.get_session() as session:
-                from database import GlobalSettings
                 settings = session.query(GlobalSettings).first()
                 if settings:
                     health_check_timeout = settings.health_check_timeout_seconds

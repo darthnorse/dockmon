@@ -22,9 +22,13 @@ class EventType(str, Enum):
     """Standard event types in the system"""
     # Container update events
     UPDATE_AVAILABLE = "update_available"
+    UPDATE_STARTED = "update_started"
+    UPDATE_PULL_COMPLETED = "update_pull_completed"
+    BACKUP_CREATED = "backup_created"
     UPDATE_COMPLETED = "update_completed"
     UPDATE_FAILED = "update_failed"
     UPDATE_SKIPPED_VALIDATION = "update_skipped_validation"  # Auto-update skipped due to validation
+    ROLLBACK_COMPLETED = "rollback_completed"
 
     # Container state events
     CONTAINER_STARTED = "container_started"
@@ -176,8 +180,12 @@ class EventBus:
             # Map event types to log event types and categories
             event_type_map = {
                 EventType.UPDATE_AVAILABLE: (LogEventType.ACTION_TAKEN, EventCategory.CONTAINER, EventSeverity.INFO),
+                EventType.UPDATE_STARTED: (LogEventType.ACTION_TAKEN, EventCategory.CONTAINER, EventSeverity.INFO),
+                EventType.UPDATE_PULL_COMPLETED: (LogEventType.ACTION_TAKEN, EventCategory.CONTAINER, EventSeverity.INFO),
+                EventType.BACKUP_CREATED: (LogEventType.ACTION_TAKEN, EventCategory.CONTAINER, EventSeverity.INFO),
                 EventType.UPDATE_COMPLETED: (LogEventType.ACTION_TAKEN, EventCategory.CONTAINER, EventSeverity.INFO),
                 EventType.UPDATE_FAILED: (LogEventType.ERROR, EventCategory.CONTAINER, EventSeverity.ERROR),
+                EventType.ROLLBACK_COMPLETED: (LogEventType.ACTION_TAKEN, EventCategory.CONTAINER, EventSeverity.WARNING),
                 EventType.CONTAINER_STARTED: (LogEventType.STATE_CHANGE, EventCategory.CONTAINER, EventSeverity.INFO),
                 EventType.CONTAINER_RESTARTED: (LogEventType.STATE_CHANGE, EventCategory.CONTAINER, EventSeverity.INFO),
                 EventType.CONTAINER_STOPPED: (LogEventType.STATE_CHANGE, EventCategory.CONTAINER, EventSeverity.WARNING),
@@ -232,8 +240,12 @@ class EventBus:
             # Map our event types to alert evaluation event types
             alert_event_type_map = {
                 EventType.UPDATE_AVAILABLE: 'info',
+                EventType.UPDATE_STARTED: 'action_taken',
+                EventType.UPDATE_PULL_COMPLETED: 'action_taken',
+                EventType.BACKUP_CREATED: 'action_taken',
                 EventType.UPDATE_COMPLETED: 'action_taken',
                 EventType.UPDATE_FAILED: 'error',
+                EventType.ROLLBACK_COMPLETED: 'action_taken',
                 EventType.CONTAINER_STARTED: 'state_change',
                 EventType.CONTAINER_RESTARTED: 'state_change',
                 EventType.CONTAINER_STOPPED: 'state_change',
@@ -311,6 +323,25 @@ class EventBus:
             latest = event.data.get('latest_image', '?')
             message = f"Update available: {current} → {latest}"
 
+        elif event.event_type == EventType.UPDATE_STARTED:
+            title = f"Update Started: {event.scope_name}"
+            target_image = event.data.get('target_image', '?')
+            message = f"Starting container update to {target_image}"
+
+        elif event.event_type == EventType.UPDATE_PULL_COMPLETED:
+            title = f"Image Pull Completed: {event.scope_name}"
+            image = event.data.get('image', '?')
+            size = event.data.get('size_mb')
+            if size:
+                message = f"Successfully pulled {image} ({size:.1f} MB)"
+            else:
+                message = f"Successfully pulled {image}"
+
+        elif event.event_type == EventType.BACKUP_CREATED:
+            title = f"Backup Created: {event.scope_name}"
+            backup_name = event.data.get('backup_name', '?')
+            message = f"Created backup {backup_name} for rollback capability"
+
         elif event.event_type == EventType.UPDATE_COMPLETED:
             title = f"Container Update: {event.scope_name}"
             previous = event.data.get('previous_image', '?')
@@ -321,6 +352,10 @@ class EventBus:
             title = f"Container Update Failed: {event.scope_name}"
             error = event.data.get('error_message', 'Unknown error')
             message = f"Container update failed: {error}"
+
+        elif event.event_type == EventType.ROLLBACK_COMPLETED:
+            title = f"Rollback Completed: {event.scope_name}"
+            message = f"Successfully rolled back {event.scope_name} to previous version"
 
         elif event.event_type == EventType.CONTAINER_STARTED:
             title = f"Container Started: {event.scope_name}"

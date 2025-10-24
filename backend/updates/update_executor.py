@@ -291,10 +291,26 @@ class UpdateExecutor:
             else:
                 logger.info(f"Skipping validation for {container_name} (force=True)")
 
+            # Emit UPDATE_STARTED event (audit trail)
+            await self._emit_update_started_event(
+                host_id,
+                container_id,
+                container_name,
+                update_record.latest_image
+            )
+
             # Step 1: Pull new image
             logger.info(f"Pulling new image: {update_record.latest_image}")
             await self._broadcast_progress(host_id, container_id, "pulling", 20, "Pulling new image")
             await self._pull_image(docker_client, update_record.latest_image)
+
+            # Emit UPDATE_PULL_COMPLETED event (audit trail)
+            await self._emit_update_pull_completed_event(
+                host_id,
+                container_id,
+                container_name,
+                update_record.latest_image
+            )
 
             # Step 2: Get full container configuration
             # (reuse old_container fetched during validation to avoid duplicate API call)
@@ -325,6 +341,14 @@ class UpdateExecutor:
                 return False
 
             logger.info(f"Backup created: {backup_name}")
+
+            # Emit BACKUP_CREATED event (audit trail)
+            await self._emit_backup_created_event(
+                host_id,
+                container_id,
+                container_name,
+                backup_name
+            )
 
             # Step 4: Create new container with updated image
             logger.info(f"Creating new container with image {update_record.latest_image}")
@@ -375,6 +399,13 @@ class UpdateExecutor:
                 if rollback_success:
                     error_message += " - Successfully rolled back to previous version"
                     logger.warning(f"Rollback successful for {container_name}")
+
+                    # Emit ROLLBACK_COMPLETED event (audit trail)
+                    await self._emit_rollback_completed_event(
+                        host_id,
+                        container_id,
+                        container_name
+                    )
                 else:
                     error_message += f" - CRITICAL: Rollback failed, manual intervention required for backup: {backup_name}"
                     logger.critical(f"Rollback failed for {container_name}")
@@ -494,6 +525,13 @@ class UpdateExecutor:
                 if rollback_success:
                     error_message += " - Successfully rolled back to previous version"
                     logger.warning(f"Rollback successful after exception for {container_name}")
+
+                    # Emit ROLLBACK_COMPLETED event (audit trail)
+                    await self._emit_rollback_completed_event(
+                        host_id,
+                        container_id,
+                        container_name
+                    )
                 else:
                     error_message += f" - CRITICAL: Rollback failed, manual intervention required for backup: {backup_name}"
                     logger.critical(f"Rollback failed after exception for {container_name}")
@@ -741,16 +779,18 @@ class UpdateExecutor:
 
         NOTE: The timeout parameter default (10s) is NOT used in practice.
         The caller always explicitly passes settings.health_check_timeout_seconds
-        which is user-configurable via Settings → Container Updates (default: 10s).
+        which is user-configurable via Settings → Container Updates (default: 60s).
         This function default exists only for defensive programming.
 
         Health check logic:
-        1. Container is running
-        2. If container has health check, wait for healthy status (up to timeout)
-        3. If no health check, wait 10s and verify still running
+        1. Wait for container to reach "running" state (up to timeout)
+        2. If container has Docker health check: Poll for "healthy" status (up to timeout)
+           - Short-circuits immediately when "healthy" detected
+        3. If no health check: Wait 3s for stability, verify still running
+           - Short-circuits as soon as container is running + stable
 
         Returns:
-            True if healthy, False if unhealthy or timeout
+            True if healthy/stable, False if unhealthy/crashed/timeout
         """
         start_time = time.time()
 
@@ -762,12 +802,14 @@ class UpdateExecutor:
 
                 # Check if container is running
                 if not state.get("Running", False):
-                    logger.warning(f"Container {container_id} is not running")
-                    return False
+                    # Not running YET - wait and retry (don't fail immediately!)
+                    await asyncio.sleep(1)
+                    continue
 
-                # Check health if health check is configured
+                # Container IS running - now check health status
                 health = state.get("Health")
                 if health:
+                    # Has Docker health check - poll for healthy status
                     status = health.get("Status")
                     if status == "healthy":
                         logger.info(f"Container {container_id} is healthy")
@@ -776,15 +818,22 @@ class UpdateExecutor:
                         logger.error(f"Container {container_id} is unhealthy")
                         return False
                     # Status is "starting", continue waiting
+                    await asyncio.sleep(2)
                 else:
-                    # No health check configured
-                    # If container has been running for 30s, consider it healthy
-                    if time.time() - start_time > 30:
-                        logger.info(f"Container {container_id} has no health check, running for 30s - considering healthy")
-                        return True
+                    # No health check configured - container is running (verified above)
+                    # Wait 3s for stability, then verify still running
+                    logger.info(f"Container {container_id} has no health check, waiting 3s for stability")
+                    await asyncio.sleep(3)
 
-                # Wait before next check
-                await asyncio.sleep(2)
+                    # Check if STILL running (catch quick crashes)
+                    container = await async_docker_call(client.containers.get, container_id)
+                    state = container.attrs["State"]
+                    if state.get("Running", False):
+                        logger.info(f"Container {container_id} stable after 3s, considering healthy")
+                        return True
+                    else:
+                        logger.error(f"Container {container_id} crashed within 3s of starting")
+                        return False
 
             except Exception as e:
                 logger.error(f"Error checking container health: {e}")
@@ -802,6 +851,10 @@ class UpdateExecutor:
         """
         Stop and rename container to backup name for rollback capability.
 
+        Uses Docker's "manually stopped" flag - containers stopped with stop()
+        will NOT auto-restart even with restart: always policy. This is Docker's
+        standard behavior and does not require manipulating restart policies.
+
         Args:
             client: Docker client instance
             container: Container object to backup
@@ -817,16 +870,13 @@ class UpdateExecutor:
 
             logger.info(f"Creating backup: stopping and renaming {original_name} to {backup_name}")
 
-            # Stop container (use async wrapper)
+            # Stop container (sets "manually stopped" flag in Docker)
             await async_docker_call(container.stop, timeout=30)
             logger.info(f"Stopped container {original_name}")
 
-            # Rename to backup (use async wrapper)
+            # Rename to backup (backup stays stopped due to "manually stopped" flag)
             await async_docker_call(container.rename, backup_name)
             logger.info(f"Renamed {original_name} to {backup_name}")
-
-            # Reload container to get updated attributes
-            await async_docker_call(container.reload)
 
             return container, backup_name
 
@@ -846,9 +896,11 @@ class UpdateExecutor:
         Rollback failed update by restoring backup container.
 
         Steps:
-        1. Remove broken new container (if exists)
-        2. Rename backup back to original name
-        3. Start backup container
+        1. Check backup container state (defensive check)
+        2. Stop backup if running (shouldn't happen with "manually stopped" flag)
+        3. Remove broken new container (if exists)
+        4. Rename backup back to original name
+        5. Start restored container
 
         Args:
             client: Docker client instance
@@ -863,7 +915,28 @@ class UpdateExecutor:
         try:
             logger.warning(f"Starting rollback: restoring {backup_name} to {original_name}")
 
-            # Step 1: Remove broken new container if it exists
+            # Step 1: Check backup container state (defensive check)
+            await async_docker_call(backup_container.reload)
+            backup_status = backup_container.status
+            logger.info(f"Backup container {backup_name} status: {backup_status}")
+
+            # Step 2: If backup is running (shouldn't happen), stop it
+            if backup_status == 'running':
+                logger.warning(f"Backup {backup_name} is running (unexpected), stopping before rollback")
+                try:
+                    await async_docker_call(backup_container.stop, timeout=10)
+                    logger.info(f"Stopped backup {backup_name}")
+                except Exception as stop_error:
+                    logger.warning(f"Failed to stop running backup: {stop_error}, attempting force kill")
+                    await async_docker_call(backup_container.kill)
+            elif backup_status in ['restarting', 'dead']:
+                logger.error(f"Backup {backup_name} in bad state: {backup_status}, attempting force stop")
+                try:
+                    await async_docker_call(backup_container.kill)
+                except Exception as kill_error:
+                    logger.warning(f"Failed to kill backup: {kill_error}")
+
+            # Step 3: Remove broken new container if it exists
             if new_container:
                 try:
                     logger.info(f"Removing failed new container")
@@ -873,7 +946,7 @@ class UpdateExecutor:
                     logger.warning(f"Failed to cleanup new container: {cleanup_error}")
                     # Continue with rollback even if cleanup fails
 
-            # Step 2: Remove any container with original name (cleanup edge case)
+            # Step 4: Remove any container with original name (cleanup edge case)
             try:
                 existing = await async_docker_call(client.containers.get, original_name)
                 if existing:
@@ -886,12 +959,12 @@ class UpdateExecutor:
                 logger.warning(f"Error checking for existing container: {e}")
                 # Continue anyway
 
-            # Step 3: Rename backup back to original name
+            # Step 5: Rename backup back to original name
             logger.info(f"Renaming backup {backup_name} back to {original_name}")
             await async_docker_call(backup_container.rename, original_name)
             logger.info(f"Renamed backup to {original_name}")
 
-            # Step 4: Start restored container
+            # Step 6: Start restored container
             logger.info(f"Starting restored container {original_name}")
             await async_docker_call(backup_container.start)
             logger.info(f"Successfully started restored container {original_name}")
@@ -1095,6 +1168,151 @@ class UpdateExecutor:
 
         except Exception as e:
             logger.error(f"Error emitting update failure event: {e}", exc_info=True)
+
+    async def _emit_update_started_event(
+        self,
+        host_id: str,
+        container_id: str,
+        container_name: str,
+        target_image: str
+    ):
+        """
+        Emit UPDATE_STARTED event via EventBus.
+        EventBus handles database logging and alert triggering.
+        """
+        try:
+            logger.info(f"Emitting UPDATE_STARTED event for {container_name}")
+
+            # Get host name
+            host_name = self.monitor.hosts.get(host_id).name if host_id in self.monitor.hosts else host_id
+
+            # Emit event via EventBus
+            event_bus = get_event_bus(self.monitor)
+            await event_bus.emit(Event(
+                event_type=BusEventType.UPDATE_STARTED,
+                scope_type='container',
+                scope_id=make_composite_key(host_id, container_id),
+                scope_name=container_name,
+                host_id=host_id,
+                host_name=host_name,
+                data={
+                    'target_image': target_image,
+                }
+            ))
+
+            logger.debug(f"Emitted UPDATE_STARTED event for {container_name}")
+
+        except Exception as e:
+            logger.error(f"Error emitting update started event: {e}", exc_info=True)
+
+    async def _emit_update_pull_completed_event(
+        self,
+        host_id: str,
+        container_id: str,
+        container_name: str,
+        image: str,
+        size_mb: Optional[float] = None
+    ):
+        """
+        Emit UPDATE_PULL_COMPLETED event via EventBus.
+        EventBus handles database logging and alert triggering.
+        """
+        try:
+            logger.info(f"Emitting UPDATE_PULL_COMPLETED event for {container_name}")
+
+            # Get host name
+            host_name = self.monitor.hosts.get(host_id).name if host_id in self.monitor.hosts else host_id
+
+            # Build data
+            data = {'image': image}
+            if size_mb is not None:
+                data['size_mb'] = size_mb
+
+            # Emit event via EventBus
+            event_bus = get_event_bus(self.monitor)
+            await event_bus.emit(Event(
+                event_type=BusEventType.UPDATE_PULL_COMPLETED,
+                scope_type='container',
+                scope_id=make_composite_key(host_id, container_id),
+                scope_name=container_name,
+                host_id=host_id,
+                host_name=host_name,
+                data=data
+            ))
+
+            logger.debug(f"Emitted UPDATE_PULL_COMPLETED event for {container_name}")
+
+        except Exception as e:
+            logger.error(f"Error emitting update pull completed event: {e}", exc_info=True)
+
+    async def _emit_backup_created_event(
+        self,
+        host_id: str,
+        container_id: str,
+        container_name: str,
+        backup_name: str
+    ):
+        """
+        Emit BACKUP_CREATED event via EventBus.
+        EventBus handles database logging and alert triggering.
+        """
+        try:
+            logger.info(f"Emitting BACKUP_CREATED event for {container_name}")
+
+            # Get host name
+            host_name = self.monitor.hosts.get(host_id).name if host_id in self.monitor.hosts else host_id
+
+            # Emit event via EventBus
+            event_bus = get_event_bus(self.monitor)
+            await event_bus.emit(Event(
+                event_type=BusEventType.BACKUP_CREATED,
+                scope_type='container',
+                scope_id=make_composite_key(host_id, container_id),
+                scope_name=container_name,
+                host_id=host_id,
+                host_name=host_name,
+                data={
+                    'backup_name': backup_name,
+                }
+            ))
+
+            logger.debug(f"Emitted BACKUP_CREATED event for {container_name}")
+
+        except Exception as e:
+            logger.error(f"Error emitting backup created event: {e}", exc_info=True)
+
+    async def _emit_rollback_completed_event(
+        self,
+        host_id: str,
+        container_id: str,
+        container_name: str
+    ):
+        """
+        Emit ROLLBACK_COMPLETED event via EventBus.
+        EventBus handles database logging and alert triggering.
+        """
+        try:
+            logger.info(f"Emitting ROLLBACK_COMPLETED event for {container_name}")
+
+            # Get host name
+            host_name = self.monitor.hosts.get(host_id).name if host_id in self.monitor.hosts else host_id
+
+            # Emit event via EventBus
+            event_bus = get_event_bus(self.monitor)
+            await event_bus.emit(Event(
+                event_type=BusEventType.ROLLBACK_COMPLETED,
+                scope_type='container',
+                scope_id=make_composite_key(host_id, container_id),
+                scope_name=container_name,
+                host_id=host_id,
+                host_name=host_name,
+                data={}
+            ))
+
+            logger.debug(f"Emitted ROLLBACK_COMPLETED event for {container_name}")
+
+        except Exception as e:
+            logger.error(f"Error emitting rollback completed event: {e}", exc_info=True)
 
 
 # Global singleton instance

@@ -135,6 +135,9 @@ class UpdateChecker:
                 update_info = await self._check_container_update(container)
 
                 if update_info:
+                    # Capture old digest BEFORE updating database
+                    previous_digest = self._get_previous_digest(container)
+
                     # Store in database
                     self._store_update_info(container, update_info)
                     stats["checked"] += 1
@@ -143,8 +146,8 @@ class UpdateChecker:
                         stats["updates_found"] += 1
                         logger.info(f"Update available for {container['name']}: {update_info['current_digest'][:12]} → {update_info['latest_digest'][:12]}")
 
-                        # Create event for new update
-                        await self._create_update_event(container, update_info)
+                        # Create event for new update (pass previous_digest for proper comparison)
+                        await self._create_update_event(container, update_info, previous_digest)
 
             except Exception as e:
                 logger.error(f"Error checking container {container.get('name', 'unknown')}: {e}")
@@ -176,13 +179,16 @@ class UpdateChecker:
         update_info = await self._check_container_update(container)
 
         if update_info:
+            # Capture old digest BEFORE updating database
+            previous_digest = self._get_previous_digest(container)
+
             # Store in database
             self._store_update_info(container, update_info)
 
             if update_info["update_available"]:
                 logger.info(f"Update available for {container['name']}")
-                # Create event
-                await self._create_update_event(container, update_info)
+                # Create event (pass previous_digest for proper comparison)
+                await self._create_update_event(container, update_info, previous_digest)
             else:
                 logger.info(f"No update available for {container['name']}")
 
@@ -250,17 +256,24 @@ class UpdateChecker:
                 container_id=composite_key
             ).first()
 
-        # Extract manifest labels for OCI label detection
-        manifest_labels = latest_result.get("manifest", {}).get("config", {}).get("Labels", {}) or {}
+        # Check if user has manually set a changelog URL (v2.0.2+)
+        # If manual, skip auto-detection to preserve user's choice
+        if existing_record and existing_record.changelog_source == 'manual':
+            changelog_url = existing_record.changelog_url
+            changelog_source = 'manual'
+            changelog_checked_at = existing_record.changelog_checked_at
+        else:
+            # Extract manifest labels for OCI label detection
+            manifest_labels = latest_result.get("manifest", {}).get("config", {}).get("Labels", {}) or {}
 
-        # Resolve changelog URL with 3-tier strategy
-        changelog_url, changelog_source, changelog_checked_at = await resolve_changelog_url(
-            image_name=floating_tag,
-            manifest_labels=manifest_labels,
-            current_url=existing_record.changelog_url if existing_record else None,
-            current_source=existing_record.changelog_source if existing_record else None,
-            last_checked=existing_record.changelog_checked_at if existing_record else None
-        )
+            # Resolve changelog URL with 3-tier strategy
+            changelog_url, changelog_source, changelog_checked_at = await resolve_changelog_url(
+                image_name=floating_tag,
+                manifest_labels=manifest_labels,
+                current_url=existing_record.changelog_url if existing_record else None,
+                current_source=existing_record.changelog_source if existing_record else None,
+                last_checked=existing_record.changelog_checked_at if existing_record else None
+            )
 
         return {
             "current_image": image,
@@ -394,6 +407,23 @@ class UpdateChecker:
                 # Default to exact tracking
                 return "exact"
 
+    def _get_previous_digest(self, container: Dict) -> Optional[str]:
+        """
+        Get the previously stored latest_digest before updating.
+
+        Args:
+            container: Container dict with host_id and id
+
+        Returns:
+            Previous latest_digest from database, or None if no record exists (first check)
+        """
+        composite_key = make_composite_key(container['host_id'], container['id'])
+        with self.db.get_session() as session:
+            record = session.query(ContainerUpdate).filter_by(
+                container_id=composite_key
+            ).first()
+            return record.latest_digest if record else None
+
     def _store_update_info(self, container: Dict, update_info: Dict):
         """
         Store or update container update info in database.
@@ -447,38 +477,33 @@ class UpdateChecker:
 
             session.commit()
 
-    async def _create_update_event(self, container: Dict, update_info: Dict):
+    async def _create_update_event(
+        self,
+        container: Dict,
+        update_info: Dict,
+        previous_digest: Optional[str] = None
+    ):
         """
         Emit update_available event via EventBus.
 
-        Only emits if this is a NEW update (not already in DB).
+        Only emits if this is a NEW update (digest changed from previous check).
 
         Args:
             container: Container dict
             update_info: Update info dict
+            previous_digest: Previously stored latest_digest, or None if first check
         """
-        composite_key = make_composite_key(container['host_id'], container['id'])
-
-        # Check if we already created an event for this update
-        # Extract data and close session BEFORE async event emission
+        # Determine if event should be emitted by comparing previous vs new digest
         should_emit_event = False
-        existing_digest = None
 
-        with self.db.get_session() as session:
-            record = session.query(ContainerUpdate).filter_by(
-                container_id=composite_key
-            ).first()
+        if previous_digest is None:
+            # First time checking this container - emit event
+            should_emit_event = True
+        elif previous_digest != update_info["latest_digest"]:
+            # Digest changed (new update available) - emit event
+            should_emit_event = True
 
-            # Only create event if:
-            # 1. No record exists (first time seeing update), OR
-            # 2. Record exists but digest changed (new update available)
-            if not record:
-                should_emit_event = True
-            elif record.latest_digest != update_info["latest_digest"]:
-                should_emit_event = True
-                existing_digest = record.latest_digest
-
-        # Session is now closed - safe to emit events
+        # Emit event if conditions met
         if should_emit_event:
             try:
                 logger.info(f"New update available for {container['name']}: {update_info['latest_image']}")
@@ -491,7 +516,7 @@ class UpdateChecker:
                 await event_bus.emit(Event(
                     event_type=EventType.UPDATE_AVAILABLE,
                     scope_type='container',
-                    scope_id=container["id"],
+                    scope_id=make_composite_key(container["host_id"], container["id"]),
                     scope_name=container["name"],
                     host_id=container["host_id"],
                     host_name=host_name,

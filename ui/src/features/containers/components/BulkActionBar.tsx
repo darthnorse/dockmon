@@ -21,6 +21,7 @@ interface BulkActionBarProps {
   selectedContainers: Container[]
   onClearSelection: () => void
   onAction: (action: 'start' | 'stop' | 'restart') => void
+  onCheckUpdates: () => void
   onTagUpdate: (mode: 'add' | 'remove', tags: string[]) => Promise<void>
   onAutoRestartUpdate?: (enabled: boolean) => Promise<void>
   onAutoUpdateUpdate?: (enabled: boolean, floatingTagMode: string) => Promise<void>
@@ -38,6 +39,7 @@ export function BulkActionBar({
   selectedContainers,
   onClearSelection,
   onAction,
+  onCheckUpdates,
   onTagUpdate,
   onAutoRestartUpdate,
   onAutoUpdateUpdate,
@@ -276,6 +278,15 @@ export function BulkActionBar({
                   className="text-info hover:text-info hover:bg-info/10"
                 >
                   Restart
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={onCheckUpdates}
+                  disabled={isLoading}
+                  className="text-warning hover:text-warning hover:bg-warning/10"
+                >
+                  Check Updates
                 </Button>
               </div>
             </div>

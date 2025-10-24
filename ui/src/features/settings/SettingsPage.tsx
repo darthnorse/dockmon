@@ -35,8 +35,8 @@ export function SettingsPage() {
     <div className="flex h-full flex-col bg-[#0a0e14]">
       {/* Header */}
       <div className="border-b border-gray-800 bg-[#0d1117] px-6 py-4">
-        <h1 className="text-xl font-semibold text-white">Settings</h1>
-        <p className="text-sm text-gray-400">Manage your preferences and configuration</p>
+        <h1 className="text-2xl font-bold text-white">Settings</h1>
+        <p className="text-sm text-gray-400 mt-1">Manage your preferences and configuration</p>
       </div>
 
       {/* Tabs */}

@@ -34,6 +34,9 @@ class HealthCheckFilter(logging.Filter):
             # Update summary polling (happens every 30 seconds)
             if '/api/updates/summary' in message:
                 return False
+            # Settings polling (frontend polls for theme, etc.)
+            if '/api/settings' in message:
+                return False
         return True
 
 

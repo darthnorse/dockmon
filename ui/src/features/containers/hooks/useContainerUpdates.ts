@@ -106,17 +106,23 @@ export function useUpdateAutoUpdateConfig() {
       containerId,
       autoUpdateEnabled,
       floatingTagMode,
+      changelogUrl,
+      registryPageUrl,
     }: {
       hostId: string
       containerId: string
       autoUpdateEnabled: boolean
       floatingTagMode: 'exact' | 'patch' | 'minor' | 'latest'
+      changelogUrl?: string | null  // v2.0.2+
+      registryPageUrl?: string | null  // v2.0.2+
     }) => {
       return await apiClient.put<ContainerUpdateStatus>(
         `/hosts/${hostId}/containers/${containerId}/auto-update-config`,
         {
           auto_update_enabled: autoUpdateEnabled,
           floating_tag_mode: floatingTagMode,
+          changelog_url: changelogUrl,  // v2.0.2+
+          registry_page_url: registryPageUrl,  // v2.0.2+
         }
       )
     },
@@ -154,6 +160,7 @@ export function useExecuteUpdate() {
         validation?: 'allow' | 'warn' | 'block'
         reason?: string
         matched_pattern?: string
+        detail?: string  // v2.0.2+ - Detailed error message for failed updates
       }>(`/hosts/${hostId}/containers/${containerId}/execute-update`, null, { params })
     },
     onSuccess: (_data, variables) => {
@@ -178,6 +185,47 @@ export function useUpdatesSummary() {
         total_updates: number
         containers_with_updates: string[]
       }>('/updates/summary')
+    },
+    staleTime: 30000, // Cache for 30s
+    refetchInterval: 60000, // Refresh every minute
+  })
+}
+
+/**
+ * Hook to get all auto-update configurations for all containers (batch endpoint)
+ *
+ * Performance optimization: Single API call instead of N individual calls.
+ * Used for filtering and displaying policy icons in container table.
+ */
+export function useAllAutoUpdateConfigs() {
+  return useQuery({
+    queryKey: ['all-auto-update-configs'],
+    queryFn: async () => {
+      return await apiClient.get<Record<string, {
+        auto_update_enabled: boolean
+        floating_tag_mode: string
+      }>>('/auto-update-configs')
+    },
+    staleTime: 30000, // Cache for 30s
+    refetchInterval: 60000, // Refresh every minute
+  })
+}
+
+/**
+ * Hook to get all health check configurations for all containers (batch endpoint)
+ *
+ * Performance optimization: Single API call instead of N individual calls.
+ * Used for filtering and displaying policy icons in container table.
+ */
+export function useAllHealthCheckConfigs() {
+  return useQuery({
+    queryKey: ['all-health-check-configs'],
+    queryFn: async () => {
+      return await apiClient.get<Record<string, {
+        enabled: boolean
+        current_status: string
+        consecutive_failures: number
+      }>>('/health-check-configs')
     },
     staleTime: 30000, // Cache for 30s
     refetchInterval: 60000, // Refresh every minute

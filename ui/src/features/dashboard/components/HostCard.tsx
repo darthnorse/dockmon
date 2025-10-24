@@ -14,6 +14,7 @@
  */
 
 import { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Circle, MoreVertical, Container, ChevronDown, Info, Edit, ChevronsUp } from 'lucide-react'
 import { ResponsiveMiniChart } from '@/lib/charts/ResponsiveMiniChart'
 import { TagChip } from '@/components/TagChip'
@@ -121,6 +122,7 @@ function getStateColor(state: string): string {
 type ContainerSortKey = 'name' | 'state' | 'cpu' | 'memory'
 
 export function HostCard({ host, onHostClick, onViewDetails, onEditHost }: HostCardProps) {
+  const navigate = useNavigate()
   const { data: prefs } = useUserPreferences()
   const updatePreferences = useUpdatePreferences()
   const { enabled: simplifiedWorkflow } = useSimplifiedWorkflow()
@@ -397,12 +399,19 @@ export function HostCard({ host, onHostClick, onViewDetails, onEditHost }: HostC
           </div>
         )}
 
-        {/* Updates available */}
+        {/* Updates available - clickable, navigates to containers filtered by this host */}
         {host.updates_available && host.updates_available > 0 && (
-          <div className="flex items-center gap-1 text-info">
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              navigate(`/containers?host=${host.id}`)
+            }}
+            className="flex items-center gap-1 text-info hover:text-info/80 transition-colors"
+            title="View containers with updates on this host"
+          >
             <span>🔄</span>
             <span>{host.updates_available}</span>
-          </div>
+          </button>
         )}
 
         {/* Alerts */}

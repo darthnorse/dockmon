@@ -1207,6 +1207,11 @@ class DockerMonitor:
 
             # Event-driven auto-restart: Check if container needs auto-restart on 'die' events
             if action == 'die':
+                # Skip backup containers (created during updates with -backup- suffix)
+                if '-backup-' in container_name:
+                    logger.debug(f"Skipping auto-restart for {container_name} - backup container")
+                    return
+
                 # Check if container is being updated - skip auto-restart to avoid conflicts
                 is_updating = False
                 try:
@@ -1363,6 +1368,10 @@ class DockerMonitor:
                 # Auto-restart reconciliation (safety net - events handle primary auto-restart)
                 # This catches containers that need restart if 'die' event was missed
                 for container in containers:
+                    # Skip backup containers (created during updates with -backup- suffix)
+                    if '-backup-' in container.name:
+                        continue
+
                     if (container.status == "exited" and
                         self._get_auto_restart_status(container.host_id, container.short_id)):
 

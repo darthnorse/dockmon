@@ -31,7 +31,6 @@ export interface UserPreferences {
   group_by: string | null
   compact_view: boolean
   collapsed_groups: string[]
-  filter_defaults: Record<string, unknown>
 
   // React v2 preferences
   sidebar_collapsed: boolean

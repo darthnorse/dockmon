@@ -26,7 +26,6 @@ var config = struct {
 	Port                string
 	AggregationInterval time.Duration
 	EventCacheSize      int
-	CleanupInterval     time.Duration
 	MaxRequestBodySize  int64
 	AllowedOrigins      string
 }{
@@ -34,7 +33,6 @@ var config = struct {
 	Port:                getEnv("STATS_SERVICE_PORT", "8081"),
 	AggregationInterval: getEnvDuration("AGGREGATION_INTERVAL", "1s"),
 	EventCacheSize:      getEnvInt("EVENT_CACHE_SIZE", 100),
-	CleanupInterval:     getEnvDuration("CLEANUP_INTERVAL", "60s"),
 	MaxRequestBodySize:  getEnvInt64("MAX_REQUEST_BODY_SIZE", 1048576), // 1MB default
 	AllowedOrigins: getEnv("ALLOWED_ORIGINS",
 		"http://localhost:8080,http://localhost:3000,http://localhost,http://127.0.0.1:8080,http://127.0.0.1:3000,http://127.0.0.1,"+
@@ -206,8 +204,8 @@ func main() {
 		log.Fatalf("Failed to write token file: %v", err)
 	}
 	log.Printf("Generated temporary auth token for stats service")
-	log.Printf("Configuration: port=%s, aggregation=%v, cache_size=%d, cleanup=%v",
-		config.Port, config.AggregationInterval, config.EventCacheSize, config.CleanupInterval)
+	log.Printf("Configuration: port=%s, aggregation=%v, cache_size=%d",
+		config.Port, config.AggregationInterval, config.EventCacheSize)
 
 	// Create stats cache
 	cache := NewStatsCache()
@@ -231,6 +229,8 @@ func main() {
 	go aggregator.Start(ctx)
 
 	// Start cleanup routine (remove stale stats every 60 seconds)
+	// Hardcoded at 60s - generous enough to handle network hiccups while
+	// cleaning up stopped containers/disconnected hosts promptly
 	go func() {
 		ticker := time.NewTicker(60 * time.Second)
 		defer ticker.Stop()

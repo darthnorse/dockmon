@@ -1017,6 +1017,9 @@ async def get_container_update_status(
                 "is_compose_container": is_compose,
                 "skip_compose_enabled": skip_compose_enabled,
                 "changelog_url": None,
+                "changelog_source": None,  # v2.0.2+
+                "registry_page_url": None,  # v2.0.2+
+                "registry_page_source": None,  # v2.0.2+
             }
 
         return {
@@ -1033,6 +1036,9 @@ async def get_container_update_status(
             "is_compose_container": is_compose,
             "skip_compose_enabled": skip_compose_enabled,
             "changelog_url": record.changelog_url,
+            "changelog_source": record.changelog_source,  # v2.0.2+
+            "registry_page_url": record.registry_page_url,  # v2.0.2+
+            "registry_page_source": record.registry_page_source,  # v2.0.2+
         }
 
 
@@ -1186,10 +1192,13 @@ async def execute_container_update(
             "new_image": update_record.latest_image,
         }
     else:
-        raise HTTPException(
-            status_code=500,
-            detail="Container update failed. Check events for details."
-        )
+        # Update failed - return proper error response instead of 500
+        # The update_container method automatically rolls back on failure and emits UPDATE_FAILED event
+        return {
+            "status": "failed",
+            "message": "Container update failed (automatically rolled back to previous version)",
+            "detail": "The update failed during execution, possibly due to health check timeout or startup issues. Your container has been automatically restored to its previous working state. Check the Events tab for detailed error information."
+        }
 
 
 @app.put("/api/hosts/{host_id}/containers/{container_id}/auto-update-config")
@@ -1205,6 +1214,7 @@ async def update_auto_update_config(
     Body should contain:
     - auto_update_enabled: bool
     - floating_tag_mode: str (exact|patch|minor|latest)
+    - changelog_url: str (optional, v2.0.2+) - manual changelog URL
     """
 
     # Normalize to short ID
@@ -1231,6 +1241,33 @@ async def update_auto_update_config(
             record.auto_update_enabled = auto_update_enabled
             record.floating_tag_mode = floating_tag_mode
             record.updated_at = datetime.now(timezone.utc)
+
+            # Handle manual changelog URL (v2.0.2+)
+            # Check if key exists in config (not if value is not None, since null is valid for clearing)
+            if "changelog_url" in config:
+                changelog_url = config.get("changelog_url")
+                if changelog_url and changelog_url.strip():
+                    # User provided a URL - set as manual
+                    record.changelog_url = changelog_url.strip()
+                    record.changelog_source = 'manual'
+                    record.changelog_checked_at = datetime.now(timezone.utc)
+                else:
+                    # User cleared the URL (sent null or empty string) - allow auto-detection to resume
+                    record.changelog_url = None
+                    record.changelog_source = None
+                    record.changelog_checked_at = None
+
+            # Handle manual registry page URL (v2.0.2+)
+            if "registry_page_url" in config:
+                registry_page_url = config.get("registry_page_url")
+                if registry_page_url and registry_page_url.strip():
+                    # User provided a URL - set as manual
+                    record.registry_page_url = registry_page_url.strip()
+                    record.registry_page_source = 'manual'
+                else:
+                    # User cleared the URL (sent null or empty string) - allow auto-detection to resume
+                    record.registry_page_url = None
+                    record.registry_page_source = None
         else:
             # Create new record - we need at least minimal info
             # Get container to populate image info
@@ -1250,6 +1287,21 @@ async def update_auto_update_config(
             )
             session.add(record)
 
+            # Handle manual changelog URL for new records (v2.0.2+)
+            if "changelog_url" in config:
+                changelog_url = config.get("changelog_url")
+                if changelog_url and changelog_url.strip():
+                    record.changelog_url = changelog_url.strip()
+                    record.changelog_source = 'manual'
+                    record.changelog_checked_at = datetime.now(timezone.utc)
+
+            # Handle manual registry page URL for new records (v2.0.2+)
+            if "registry_page_url" in config:
+                registry_page_url = config.get("registry_page_url")
+                if registry_page_url and registry_page_url.strip():
+                    record.registry_page_url = registry_page_url.strip()
+                    record.registry_page_source = 'manual'
+
         session.commit()
 
         # Return the updated config
@@ -1262,6 +1314,10 @@ async def update_auto_update_config(
             "floating_tag_mode": record.floating_tag_mode,
             "last_checked_at": record.last_checked_at.isoformat() + 'Z' if record.last_checked_at else None,
             "auto_update_enabled": record.auto_update_enabled,
+            "changelog_url": record.changelog_url,  # v2.0.2+
+            "changelog_source": record.changelog_source,  # v2.0.2+
+            "registry_page_url": record.registry_page_url,  # v2.0.2+
+            "registry_page_source": record.registry_page_source,  # v2.0.2+
         }
 
 
@@ -1312,6 +1368,66 @@ async def get_updates_summary(current_user: dict = Depends(get_current_user)):
         return {
             "total_updates": len(valid_updates),
             "containers_with_updates": [u.container_id for u in valid_updates]
+        }
+
+
+@app.get("/api/auto-update-configs")
+async def get_all_auto_update_configs(current_user: dict = Depends(get_current_user)):
+    """
+    Get all auto-update configurations for all containers (batch endpoint).
+
+    Returns:
+        Dict mapping container_id (composite key) to auto-update config:
+        {
+            "{host_id}:{container_id}": {
+                "auto_update_enabled": bool,
+                "floating_tag_mode": str
+            }
+        }
+
+    Performance: Single database query instead of N individual queries.
+    """
+
+    with monitor.db.get_session() as session:
+        configs = session.query(ContainerUpdate).all()
+
+        return {
+            record.container_id: {
+                "auto_update_enabled": record.auto_update_enabled,
+                "floating_tag_mode": record.floating_tag_mode,
+            }
+            for record in configs
+        }
+
+
+@app.get("/api/health-check-configs")
+async def get_all_health_check_configs(current_user: dict = Depends(get_current_user)):
+    """
+    Get all HTTP health check configurations for all containers (batch endpoint).
+
+    Returns:
+        Dict mapping container_id (composite key) to health check config:
+        {
+            "{host_id}:{container_id}": {
+                "enabled": bool,
+                "current_status": str,
+                "consecutive_failures": int
+            }
+        }
+
+    Performance: Single database query instead of N individual queries.
+    """
+
+    with monitor.db.get_session() as session:
+        configs = session.query(ContainerHttpHealthCheck).all()
+
+        return {
+            record.container_id: {
+                "enabled": record.enabled,
+                "current_status": record.current_status or "unknown",
+                "consecutive_failures": record.consecutive_failures or 0,
+            }
+            for record in configs
         }
 
 
@@ -1548,7 +1664,8 @@ async def create_batch_job(request: BatchJobCreate, current_user: dict = Depends
     """
     Create a batch job for bulk operations on containers
 
-    Currently supports: start, stop, restart
+    Currently supports: start, stop, restart, add-tags, remove-tags,
+    set-auto-restart, set-auto-update, set-desired-state, check-updates
     """
     if not batch_manager:
         raise HTTPException(status_code=500, detail="Batch manager not initialized")
@@ -1814,6 +1931,8 @@ async def get_http_health_check(
                 "auto_restart_on_failure": False,
                 "failure_threshold": 3,
                 "success_threshold": 1,
+                "max_restart_attempts": 3,  # v2.0.2+
+                "restart_retry_delay_seconds": 120,  # v2.0.2+
                 "current_status": "unknown",
                 "last_checked_at": None,
                 "last_success_at": None,
@@ -1844,6 +1963,8 @@ async def get_http_health_check(
             "auto_restart_on_failure": check.auto_restart_on_failure,
             "failure_threshold": check.failure_threshold,
             "success_threshold": getattr(check, 'success_threshold', 1),  # Default to 1 for backwards compatibility
+            "max_restart_attempts": getattr(check, 'max_restart_attempts', 3),  # v2.0.2+ (default for backwards compatibility)
+            "restart_retry_delay_seconds": getattr(check, 'restart_retry_delay_seconds', 120),  # v2.0.2+ (default for backwards compatibility)
             "current_status": check.current_status,
             "last_checked_at": format_dt(check.last_checked_at),
             "last_success_at": format_dt(check.last_success_at),
@@ -1885,6 +2006,8 @@ async def update_http_health_check(
             check.auto_restart_on_failure = config.auto_restart_on_failure
             check.failure_threshold = config.failure_threshold
             check.success_threshold = config.success_threshold
+            check.max_restart_attempts = config.max_restart_attempts  # v2.0.2+
+            check.restart_retry_delay_seconds = config.restart_retry_delay_seconds  # v2.0.2+
             check.updated_at = datetime.now(timezone.utc)
         else:
             # Create new
@@ -1901,7 +2024,9 @@ async def update_http_health_check(
                 verify_ssl=config.verify_ssl,
                 auto_restart_on_failure=config.auto_restart_on_failure,
                 failure_threshold=config.failure_threshold,
-                success_threshold=config.success_threshold
+                success_threshold=config.success_threshold,
+                max_restart_attempts=config.max_restart_attempts,  # v2.0.2+
+                restart_retry_delay_seconds=config.restart_retry_delay_seconds  # v2.0.2+
             )
             session.add(check)
 

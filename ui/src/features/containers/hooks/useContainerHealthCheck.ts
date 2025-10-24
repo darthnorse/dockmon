@@ -48,6 +48,8 @@ export function useContainerHealthCheck(hostId: string | undefined, containerId:
           auto_restart_on_failure: false,
           failure_threshold: 3,
           success_threshold: 1,
+          max_restart_attempts: 3,  // v2.0.2+
+          restart_retry_delay_seconds: 120,  // v2.0.2+
         }
       }
     },

@@ -149,8 +149,8 @@ export function AlertsPage() {
       {/* Header */}
       <div className="flex items-center justify-between border-b border-gray-800 bg-[#0d1117] px-6 py-4">
         <div>
-          <h1 className="text-xl font-semibold text-white">Alerts</h1>
-          <p className="text-sm text-gray-400">Monitor and manage system alerts</p>
+          <h1 className="text-2xl font-bold text-white">Alerts</h1>
+          <p className="text-sm text-gray-400 mt-1">Monitor and manage system alerts</p>
         </div>
 
         {/* Stats KPIs - Centered */}

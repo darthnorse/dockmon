@@ -215,7 +215,7 @@ class GlobalSettings(Base):
     update_check_interval_hours = Column(Integer, default=24)  # How often to check for updates (hours)
     update_check_time = Column(Text, default="02:00")  # Time of day to run checks (HH:MM format, 24-hour)
     skip_compose_containers = Column(Boolean, default=True)  # Skip Docker Compose-managed containers
-    health_check_timeout_seconds = Column(Integer, default=10)  # Health check timeout (seconds)
+    health_check_timeout_seconds = Column(Integer, default=60)  # Health check timeout (seconds)
 
     # Alert system settings
     alert_retention_days = Column(Integer, default=90)  # Keep resolved alerts for N days (0 = keep forever)
@@ -266,6 +266,10 @@ class ContainerUpdate(Base):
     changelog_source = Column(Text, nullable=True)  # 'oci_label', 'ghcr', 'fuzzy_match', 'failed'
     changelog_checked_at = Column(DateTime, nullable=True)  # When we last checked
 
+    # Registry page URL (v2.0.2+)
+    registry_page_url = Column(Text, nullable=True)  # Manual web URL to registry page or NULL
+    registry_page_source = Column(Text, nullable=True)  # 'manual' or NULL (auto-detect)
+
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
@@ -305,6 +309,10 @@ class ContainerHttpHealthCheck(Base):
     auto_restart_on_failure = Column(Boolean, default=False, nullable=False)
     failure_threshold = Column(Integer, default=3, nullable=False)
     success_threshold = Column(Integer, default=1, nullable=False)  # Consecutive successes to mark healthy
+
+    # Retry configuration (v2.0.2+)
+    max_restart_attempts = Column(Integer, default=3, nullable=False)  # Number of restart attempts per unhealthy episode
+    restart_retry_delay_seconds = Column(Integer, default=120, nullable=False)  # Delay between restart attempts
 
     # Metadata
     created_at = Column(DateTime, default=utcnow, nullable=False)

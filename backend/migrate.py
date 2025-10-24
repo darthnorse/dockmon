@@ -206,11 +206,11 @@ def _validate_schema(engine, version: str):
         '002_v2_0_1': {
             'container_updates_columns': ['changelog_url', 'changelog_source', 'changelog_checked_at'],
         },
+        '003_v2_0_2': {
+            'container_updates_columns': ['registry_page_url', 'registry_page_source'],
+            'container_http_health_checks_columns': ['max_restart_attempts', 'restart_retry_delay_seconds'],
+        },
         # Add validations for future versions here:
-        # '003_v2_0_2': {
-        #     'tables': ['backup_configs'],
-        #     'container_updates_columns': ['last_backup_at'],
-        # },
     }
 
     if version in validations:

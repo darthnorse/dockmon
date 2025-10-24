@@ -32,9 +32,17 @@ class HttpHealthChecker:
         self.running = False
         self.check_tasks: Dict[str, asyncio.Task] = {}
 
-        # Track auto-restart attempts to detect restart loops
+        # Track auto-restart attempts to detect restart loops (10-minute window safety net)
         # Format: {container_id: [(timestamp1, timestamp2, ...), ...]}
         self.restart_history: Dict[str, list] = {}
+
+        # Track restart attempts per unhealthy episode (v2.0.2+)
+        # Format: {container_id: attempt_count}
+        self.restart_episode_attempts: Dict[str, int] = {}
+
+        # Track last restart timestamp per container (v2.0.2+)
+        # Format: {container_id: timestamp}
+        self.last_restart_time: Dict[str, float] = {}
 
         # Cache container info to avoid O(n) lookups on every state change
         # Format: {composite_container_id: container_object}
@@ -108,8 +116,10 @@ class HttpHealthChecker:
                 # Use pop() instead of del for safe removal (task may have already removed itself)
                 self.check_tasks.pop(container_id, None)
 
-            # Clean up restart history for this container to prevent memory leaks
+            # Clean up all restart tracking for this container to prevent memory leaks
             self.restart_history.pop(container_id, None)
+            self.restart_episode_attempts.pop(container_id, None)  # v2.0.2+
+            self.last_restart_time.pop(container_id, None)  # v2.0.2+
 
         # Start new checks
         for container_id in enabled_check_ids - current_check_ids:
@@ -149,11 +159,22 @@ class HttpHealthChecker:
                             'auto_restart_on_failure': config.auto_restart_on_failure,
                             'failure_threshold': config.failure_threshold,
                             'success_threshold': getattr(config, 'success_threshold', 1),  # Default to 1 for backwards compatibility
+                            'max_restart_attempts': getattr(config, 'max_restart_attempts', 3),  # v2.0.2+ (default for backwards compatibility)
+                            'restart_retry_delay_seconds': getattr(config, 'restart_retry_delay_seconds', 120),  # v2.0.2+ (default for backwards compatibility)
                             'current_status': config.current_status,
                         }
 
                     # Perform health check
                     await self._perform_check(config_data)
+
+                    # Check if we should retry restart even without state change (v2.0.2+)
+                    # This allows multiple restart attempts for truly broken services
+                    if config_data['current_status'] == 'unhealthy' and config_data['auto_restart_on_failure']:
+                        await self._trigger_auto_restart(
+                            config_data['host_id'],
+                            container_id,
+                            config_data
+                        )
 
                     # Wait for next check interval
                     await asyncio.sleep(config_data['check_interval_seconds'])
@@ -352,6 +373,8 @@ class HttpHealthChecker:
                 'new_status': new_status,
                 'error_message': error_message,
                 'auto_restart_on_failure': check.auto_restart_on_failure,
+                'max_restart_attempts': check.max_restart_attempts,  # v2.0.2+
+                'restart_retry_delay_seconds': check.restart_retry_delay_seconds,  # v2.0.2+
                 'health_check_url': check.url,
                 'consecutive_failures': check.consecutive_failures,
                 'failure_threshold': check.failure_threshold,
@@ -360,12 +383,16 @@ class HttpHealthChecker:
 
         # Session is now closed - safe for async operations
         if old_status != new_status:
+            # Reset episode attempts when service recovers (v2.0.2+)
+            if new_status == 'healthy':
+                self._reset_episode_attempts(container_id)
+
             # Emit event on state change
             await self._emit_health_change_event(event_data)
 
             # Auto-restart on failure
             if new_status == 'unhealthy' and event_data['auto_restart_on_failure']:
-                await self._trigger_auto_restart(event_data['host_id'], container_id)
+                await self._trigger_auto_restart(event_data['host_id'], container_id, event_data)
 
     async def _emit_health_change_event(self, event_data: dict):
         """Emit CONTAINER_HEALTH_CHANGED event"""
@@ -430,9 +457,20 @@ class HttpHealthChecker:
 
         return self._container_cache.get(container_id)
 
-    async def _trigger_auto_restart(self, host_id: str, container_id: str):
-        """Trigger automatic container restart on health failure"""
+    async def _trigger_auto_restart(self, host_id: str, container_id: str, event_data: dict):
+        """
+        Trigger automatic container restart on health failure (v2.0.2+ with retry logic)
+
+        Args:
+            host_id: Docker host ID
+            container_id: Composite container ID (host_id:short_id)
+            event_data: Health check event data including retry configuration
+        """
         try:
+            # Extract configuration from event_data
+            max_attempts = event_data.get('max_restart_attempts', 3)
+            retry_delay = event_data.get('restart_retry_delay_seconds', 120)
+
             # Extract short container ID from composite key
             if ':' not in container_id:
                 logger.error(f"Invalid container_id format (missing colon): {container_id}")
@@ -440,7 +478,7 @@ class HttpHealthChecker:
 
             _, short_id = container_id.split(':', 1)
 
-            # Check for restart loops (>3 restarts in 10 minutes)
+            # Check 10-minute sliding window (safety net - prevents restart storms)
             now = time.time()
             if container_id not in self.restart_history:
                 self.restart_history[container_id] = []
@@ -451,28 +489,71 @@ class HttpHealthChecker:
                 if now - ts < 600
             ]
 
-            # Check if we're in a restart loop
-            if len(self.restart_history[container_id]) >= 3:
+            # Check if we're in a restart loop (10-minute window safety limit)
+            # Limit is 12 to allow max_attempts=10 to work with short retry delays
+            if len(self.restart_history[container_id]) >= 12:
                 logger.error(
                     f"Restart loop detected for {container_id}: "
                     f"{len(self.restart_history[container_id])} restarts in last 10 minutes. "
-                    f"Skipping auto-restart to prevent infinite loop."
+                    f"Skipping auto-restart (safety limit)."
                 )
                 return
 
-            # Record this restart attempt
-            self.restart_history[container_id].append(now)
+            # Check episode-specific attempts (v2.0.2+)
+            episode_attempts = self.restart_episode_attempts.get(container_id, 0)
 
+            if episode_attempts >= max_attempts:
+                logger.warning(
+                    f"Max restart attempts ({max_attempts}) exhausted for {container_id}. "
+                    f"Will retry when service recovers and fails again."
+                )
+                return
+
+            # Check delay since last restart (skip first attempt - restart immediately)
+            if episode_attempts > 0:
+                last_restart = self.last_restart_time.get(container_id, 0)
+                time_since_last = now - last_restart
+
+                if time_since_last < retry_delay:
+                    # Too soon, delay not elapsed yet
+                    logger.debug(
+                        f"Restart attempt {episode_attempts + 1} for {container_id} "
+                        f"delayed: {int(retry_delay - time_since_last)}s remaining"
+                    )
+                    return
+
+            # Perform restart
             logger.info(
                 f"Auto-restarting unhealthy container {container_id} "
-                f"(attempt {len(self.restart_history[container_id])} in last 10min)"
+                f"(episode attempt {episode_attempts + 1}/{max_attempts}, "
+                f"10min window: {len(self.restart_history[container_id]) + 1}/12)"
             )
+
+            # Record this restart attempt
+            self.restart_episode_attempts[container_id] = episode_attempts + 1
+            self.last_restart_time[container_id] = now
+            self.restart_history[container_id].append(now)
 
             # Restart the container (async operation - already runs Docker calls in thread pool)
             await self.monitor.restart_container(host_id, short_id)
 
         except Exception as e:
             logger.error(f"Failed to auto-restart container {container_id}: {e}", exc_info=True)
+
+    def _reset_episode_attempts(self, container_id: str):
+        """
+        Reset restart attempt counter when service recovers (v2.0.2+)
+
+        Called when health check status transitions from unhealthy → healthy.
+        This allows a fresh set of restart attempts for the next unhealthy episode.
+        """
+        if container_id in self.restart_episode_attempts:
+            logger.info(
+                f"Resetting restart episode counter for {container_id} "
+                f"(service recovered after {self.restart_episode_attempts[container_id]} attempts)"
+            )
+            del self.restart_episode_attempts[container_id]
+            self.last_restart_time.pop(container_id, None)
 
     def _parse_status_codes(self, status_codes_str: str) -> set:
         """Parse expected status codes string into set of integers

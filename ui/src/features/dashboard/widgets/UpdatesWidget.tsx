@@ -19,13 +19,13 @@ export function UpdatesWidget() {
   return (
     <Card
       className="h-full cursor-pointer transition-all hover:shadow-md hover:border-info/50"
-      onClick={() => navigate('/containers')}
+      onClick={() => navigate('/containers?updates=true')}
       role="button"
       tabIndex={0}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault()
-          navigate('/containers')
+          navigate('/containers?updates=true')
         }
       }}
       aria-label={`View ${updatesAvailable} container updates available`}

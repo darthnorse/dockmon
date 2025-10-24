@@ -60,6 +60,10 @@ import {
   Package,
   ExternalLink,
   Activity,
+  Filter,
+  X,
+  ChevronDown,
+  Check,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { apiClient } from '@/lib/api/client'
@@ -68,6 +72,7 @@ import { POLLING_CONFIG } from '@/lib/config/polling'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { TagChip } from '@/components/TagChip'
+import { DropdownMenu, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
 import { useAlertCounts, type AlertSeverityCounts } from '@/features/alerts/hooks/useAlerts'
 import { AlertDetailsDrawer } from '@/features/alerts/components/AlertDetailsDrawer'
 import { ContainerDrawer } from './components/ContainerDrawer'
@@ -76,19 +81,32 @@ import { BulkActionConfirmModal } from './components/BulkActionConfirmModal'
 import { BatchJobPanel } from './components/BatchJobPanel'
 import type { Container } from './types'
 import { useSimplifiedWorkflow, useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
-import { useContainerUpdateStatus } from './hooks/useContainerUpdates'
+import { useContainerUpdateStatus, useUpdatesSummary, useAllAutoUpdateConfigs, useAllHealthCheckConfigs } from './hooks/useContainerUpdates'
 import { useContainerActions } from './hooks/useContainerActions'
 import { useContainerHealthCheck } from './hooks/useContainerHealthCheck'
 import { makeCompositeKey } from '@/lib/utils/containerKeys'
 import { useContainerModal } from '@/providers'
+import { useHosts } from '@/features/hosts/hooks/useHosts'
 
 /**
  * Update badge component showing if updates are available
+ *
+ * Performance: Uses batch data from useContainerUpdateStatus (cached) to avoid N+1 queries
  */
-function UpdateBadge({ container, onClick }: { container: Container; onClick?: () => void }) {
-  const { data: updateStatus } = useContainerUpdateStatus(container.host_id, container.id)
+function UpdateBadge({
+  container,
+  onClick,
+  updateStatus
+}: {
+  container: Container
+  onClick?: () => void
+  updateStatus?: { update_available: boolean } | null | undefined
+}) {
+  // Fall back to individual hook if batch data not available (shouldn't happen)
+  const fallbackQuery = useContainerUpdateStatus(container.host_id, container.id)
+  const status = updateStatus ?? fallbackQuery.data
 
-  if (!updateStatus?.update_available) {
+  if (!status?.update_available) {
     return null
   }
 
@@ -111,21 +129,31 @@ function UpdateBadge({ container, onClick }: { container: Container; onClick?: (
 
 /**
  * Policy icons component showing auto-restart, HTTP health check, desired state, and auto-update
+ *
+ * Performance: Uses batch data to avoid N+1 queries. Falls back to individual hooks if needed.
  */
-function PolicyIcons({ container }: { container: Container }) {
+function PolicyIcons({
+  container,
+  autoUpdateConfig,
+  healthCheckConfig
+}: {
+  container: Container
+  autoUpdateConfig?: { auto_update_enabled: boolean; floating_tag_mode: string } | null | undefined
+  healthCheckConfig?: { enabled: boolean; current_status: string; consecutive_failures: number } | null | undefined
+}) {
   const isRunning = container.state === 'running'
   const isExited = container.status === 'exited'
   const desiredState = container.desired_state
   const autoRestart = container.auto_restart
 
-  // Get auto-update status
-  const { data: updateStatus } = useContainerUpdateStatus(container.host_id, container.id)
-  const autoUpdateEnabled = updateStatus?.auto_update_enabled ?? false
+  // Use batch data if available, otherwise fall back to individual hooks
+  const fallbackUpdateStatus = useContainerUpdateStatus(container.host_id, container.id)
+  const fallbackHealthCheck = useContainerHealthCheck(container.host_id, container.id)
 
-  // Get HTTP health check status
-  const { data: healthCheck } = useContainerHealthCheck(container.host_id, container.id)
-  const healthCheckEnabled = healthCheck?.enabled ?? false
-  const healthStatus = healthCheck?.current_status ?? 'unknown'
+  const autoUpdateEnabled = autoUpdateConfig?.auto_update_enabled ?? fallbackUpdateStatus.data?.auto_update_enabled ?? false
+  const healthCheckEnabled = healthCheckConfig?.enabled ?? fallbackHealthCheck.data?.enabled ?? false
+  const healthStatus = healthCheckConfig?.current_status ?? fallbackHealthCheck.data?.current_status ?? 'unknown'
+  const consecutiveFailures = healthCheckConfig?.consecutive_failures ?? fallbackHealthCheck.data?.consecutive_failures
 
   // Determine if we should show warning (desired state is "should_run" but container is exited)
   const showWarning = desiredState === 'should_run' && isExited
@@ -163,8 +191,8 @@ function PolicyIcons({ container }: { container: Container }) {
             {healthStatus === 'unhealthy' && (
               <>
                 HTTP(S) Health Check: Unhealthy
-                {healthCheck?.consecutive_failures && healthCheck.consecutive_failures > 0 && (
-                  <> ({healthCheck.consecutive_failures} consecutive failures)</>
+                {consecutiveFailures && consecutiveFailures > 0 && (
+                  <> ({consecutiveFailures} consecutive failures)</>
                 )}
               </>
             )}
@@ -350,7 +378,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   const [sorting, setSorting] = useState<SortingState>(preferences?.container_table_sort || [])
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
   const [globalFilter, setGlobalFilter] = useState('')
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [selectedContainerId, setSelectedContainerId] = useState<string | null>(null)
   // Use composite keys {host_id}:{container_id} for multi-host support (cloned VMs with same short IDs)
@@ -359,6 +387,33 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   const [pendingAction, setPendingAction] = useState<'start' | 'stop' | 'restart' | null>(null)
   const { enabled: simplifiedWorkflow } = useSimplifiedWorkflow()
   const { openModal } = useContainerModal()
+
+  // Fetch batch configs for filtering and display (replaces N+1 individual queries)
+  const { data: allAutoUpdateConfigs } = useAllAutoUpdateConfigs()
+  const { data: allHealthCheckConfigs } = useAllHealthCheckConfigs()
+
+  // Parse filters directly from URL params (URL is single source of truth)
+  const filters = useMemo(() => {
+    const hostParam = searchParams.get('host')
+    const stateParam = searchParams.get('state')
+    const policyAutoUpdateParam = searchParams.get('policy_auto_update')
+    const policyAutoRestartParam = searchParams.get('policy_auto_restart')
+    const policyHealthCheckParam = searchParams.get('policy_health_check')
+    const updatesParam = searchParams.get('updates')
+    const desiredStateParam = searchParams.get('desired_state')
+
+    return {
+      selectedHostIds: hostParam ? hostParam.split(',').filter(Boolean) : [],
+      selectedStates: stateParam ? stateParam.split(',').filter((s): s is 'running' | 'stopped' => s === 'running' || s === 'stopped') : [] as ('running' | 'stopped')[],
+      autoUpdateEnabled: policyAutoUpdateParam === 'enabled' ? true : policyAutoUpdateParam === 'disabled' ? false : null,
+      autoRestartEnabled: policyAutoRestartParam === 'enabled' ? true : policyAutoRestartParam === 'disabled' ? false : null,
+      healthCheckEnabled: policyHealthCheckParam === 'enabled' ? true : policyHealthCheckParam === 'disabled' ? false : null,
+      showUpdatesAvailable: updatesParam === 'true',
+      selectedDesiredStates: desiredStateParam ? desiredStateParam.split(',').filter((s): s is 'should_run' | 'on_demand' | 'unspecified' =>
+        s === 'should_run' || s === 'on_demand' || s === 'unspecified'
+      ) : [] as ('should_run' | 'on_demand' | 'unspecified')[]
+    }
+  }, [searchParams])
 
   // Initialize sorting from preferences when loaded
   useEffect(() => {
@@ -391,6 +446,12 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   const [expandedTagsContainerId, setExpandedTagsContainerId] = useState<string | null>(null)
 
   const queryClient = useQueryClient()
+
+  // Fetch hosts for filter dropdown
+  const { data: hosts } = useHosts()
+
+  // Fetch updates summary for filtering
+  const { data: updatesSummary } = useUpdatesSummary()
 
   // Handle batch job completion - clear both states
   const handleJobComplete = useCallback(() => {
@@ -453,6 +514,13 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
     })
     setConfirmModalOpen(false)
     setPendingAction(null)
+  }
+
+  const handleCheckUpdates = () => {
+    batchMutation.mutate({
+      action: 'check-updates',
+      containerIds: Array.from(selectedContainerIds),
+    })
   }
 
   const handleBulkTagUpdate = async (mode: 'add' | 'remove', tags: string[]) => {
@@ -552,13 +620,15 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
     }
   }
 
-  // Filter by hostId from prop or URL params if present
+  // Handle legacy propHostId (integrate into new filter system)
   useEffect(() => {
-    const hostId = propHostId || searchParams.get('hostId')
-    if (hostId) {
-      setColumnFilters([{ id: 'host_id', value: hostId }])
+    if (propHostId && !filters.selectedHostIds.includes(propHostId)) {
+      const params = new URLSearchParams(searchParams)
+      params.set('host', propHostId)
+      setSearchParams(params, { replace: true })
     }
-  }, [searchParams, propHostId])
+    // Note: setSearchParams is stable, searchParams changes are captured via filters.selectedHostIds
+  }, [propHostId, filters.selectedHostIds])
 
   // Fetch containers with stats
   const { data, isLoading, error } = useQuery<Container[]>({
@@ -599,6 +669,75 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
       })
     },
   })
+
+  // Apply custom filters to container data
+  // Performance: Uses batch data from useAllAutoUpdateConfigs and useAllHealthCheckConfigs
+  // to avoid N+1 queries (single API call instead of N individual calls)
+  const filteredData = useMemo(() => {
+    if (!data) return []
+
+    return data.filter((container) => {
+      // Host filter (multi-select)
+      if (filters.selectedHostIds.length > 0 && (!container.host_id || !filters.selectedHostIds.includes(container.host_id))) {
+        return false
+      }
+
+      // State filter (multi-select)
+      if (filters.selectedStates.length > 0) {
+        const containerState = container.state === 'running' ? 'running' : 'stopped'
+        if (!filters.selectedStates.includes(containerState)) {
+          return false
+        }
+      }
+
+      // Auto-restart filter (boolean) - directly available on container
+      if (filters.autoRestartEnabled !== null) {
+        const hasAutoRestart = container.auto_restart ?? false
+        if (hasAutoRestart !== filters.autoRestartEnabled) {
+          return false
+        }
+      }
+
+      // Desired State filter (multi-select)
+      if (filters.selectedDesiredStates.length > 0) {
+        const containerDesiredState = container.desired_state || 'unspecified'
+        if (!filters.selectedDesiredStates.includes(containerDesiredState)) {
+          return false
+        }
+      }
+
+      // Updates Available filter
+      if (filters.showUpdatesAvailable) {
+        const compositeKey = makeCompositeKey(container)
+        const hasUpdate = updatesSummary?.containers_with_updates?.includes(compositeKey) ?? false
+        if (!hasUpdate) {
+          return false
+        }
+      }
+
+      // Auto-update filter (uses batch data - no N+1 queries!)
+      if (filters.autoUpdateEnabled !== null && allAutoUpdateConfigs) {
+        const compositeKey = makeCompositeKey(container)
+        const config = allAutoUpdateConfigs[compositeKey]
+        const hasAutoUpdate = config?.auto_update_enabled ?? false
+        if (hasAutoUpdate !== filters.autoUpdateEnabled) {
+          return false
+        }
+      }
+
+      // Health check filter (uses batch data - no N+1 queries!)
+      if (filters.healthCheckEnabled !== null && allHealthCheckConfigs) {
+        const compositeKey = makeCompositeKey(container)
+        const config = allHealthCheckConfigs[compositeKey]
+        const hasHealthCheck = config?.enabled ?? false
+        if (hasHealthCheck !== filters.healthCheckEnabled) {
+          return false
+        }
+      }
+
+      return true
+    })
+  }, [data, filters, updatesSummary, allAutoUpdateConfigs, allHealthCheckConfigs])
 
   // Table columns (Phase 3d UX spec order)
   const columns = useMemo<ColumnDef<Container>[]>(
@@ -770,14 +909,42 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
       {
         id: 'policy',
         header: 'Policy',
-        cell: ({ row }) => <PolicyIcons container={row.original} />,
+        cell: ({ row }) => {
+          const compositeKey = makeCompositeKey(row.original)
+          return (
+            <PolicyIcons
+              container={row.original}
+              autoUpdateConfig={allAutoUpdateConfigs?.[compositeKey]}
+              healthCheckConfig={allHealthCheckConfigs?.[compositeKey]}
+            />
+          )
+        },
         size: 120,
         enableSorting: false,
       },
       // 4. Alerts
       {
         id: 'alerts',
-        header: 'Alerts',
+        header: ({ column }) => {
+          const sortDirection = column.getIsSorted()
+          return (
+            <Button
+              variant="ghost"
+              onClick={() => column.toggleSorting(sortDirection === 'asc')}
+              className="h-8 px-2 hover:bg-surface-2"
+            >
+              Alerts
+              <ArrowUpDown className={`ml-2 h-4 w-4 ${sortDirection ? 'text-primary' : 'text-muted-foreground'}`} />
+            </Button>
+          )
+        },
+        accessorFn: (row) => {
+          // Calculate total alert count for sorting
+          const compositeKey = makeCompositeKey(row)
+          const counts = alertCounts?.get(compositeKey)
+          if (!counts) return 0
+          return counts.critical + counts.error + counts.warning + counts.info
+        },
         cell: ({ row }) => (
           <ContainerAlertSeverityCounts
             container={row.original}
@@ -785,6 +952,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
             onAlertClick={setSelectedAlertId}
           />
         ),
+        enableSorting: true,
       },
       // 5. Updates
       {
@@ -820,7 +988,19 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
       // 7. Uptime (duration)
       {
         accessorKey: 'created',
-        header: 'Uptime',
+        header: ({ column }) => {
+          const sortDirection = column.getIsSorted()
+          return (
+            <Button
+              variant="ghost"
+              onClick={() => column.toggleSorting(sortDirection === 'asc')}
+              className="h-8 px-2 hover:bg-surface-2"
+            >
+              Uptime
+              <ArrowUpDown className={`ml-2 h-4 w-4 ${sortDirection ? 'text-primary' : 'text-muted-foreground'}`} />
+            </Button>
+          )
+        },
         cell: ({ row }) => {
           const container = row.original
 
@@ -858,11 +1038,25 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
             </div>
           )
         },
+        enableSorting: true,
       },
       // 8. CPU%
       {
         id: 'cpu',
-        header: 'CPU%',
+        header: ({ column }) => {
+          const sortDirection = column.getIsSorted()
+          return (
+            <Button
+              variant="ghost"
+              onClick={() => column.toggleSorting(sortDirection === 'asc')}
+              className="h-8 px-2 hover:bg-surface-2"
+            >
+              CPU%
+              <ArrowUpDown className={`ml-2 h-4 w-4 ${sortDirection ? 'text-primary' : 'text-muted-foreground'}`} />
+            </Button>
+          )
+        },
+        accessorFn: (row) => row.cpu_percent ?? -1,
         cell: ({ row }) => {
           const container = row.original
           if (container.cpu_percent !== undefined && container.cpu_percent !== null) {
@@ -874,11 +1068,25 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
           }
           return <span className="text-xs text-muted-foreground">-</span>
         },
+        enableSorting: true,
       },
       // 9. RAM (memory usage)
       {
         id: 'memory',
-        header: 'RAM',
+        header: ({ column }) => {
+          const sortDirection = column.getIsSorted()
+          return (
+            <Button
+              variant="ghost"
+              onClick={() => column.toggleSorting(sortDirection === 'asc')}
+              className="h-8 px-2 hover:bg-surface-2"
+            >
+              RAM
+              <ArrowUpDown className={`ml-2 h-4 w-4 ${sortDirection ? 'text-primary' : 'text-muted-foreground'}`} />
+            </Button>
+          )
+        },
+        accessorFn: (row) => row.memory_usage ?? -1,
         cell: ({ row }) => {
           const container = row.original
 
@@ -904,6 +1112,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
             </span>
           )
         },
+        enableSorting: true,
       },
       // 10. Actions (Start/Stop/Restart/Logs/View details)
       {
@@ -1045,11 +1254,11 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         },
       },
     ],
-    [executeAction, isActionPending, selectedContainerIds, data, toggleContainerSelection, toggleSelectAll, alertCounts]
+    [executeAction, isActionPending, selectedContainerIds, data, toggleContainerSelection, toggleSelectAll, alertCounts, allAutoUpdateConfigs, allHealthCheckConfigs]
   )
 
   const table = useReactTable({
-    data: data || [],
+    data: filteredData || [],
     columns,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
@@ -1090,6 +1299,95 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
     },
   })
 
+  // Filter toggle handlers - update URL directly (URL is source of truth)
+  const toggleHostFilter = (hostId: string) => {
+    const params = new URLSearchParams(searchParams)
+    const current = filters.selectedHostIds
+    const newHosts = current.includes(hostId)
+      ? current.filter(id => id !== hostId)
+      : [...current, hostId]
+
+    if (newHosts.length > 0) {
+      params.set('host', newHosts.join(','))
+    } else {
+      params.delete('host')
+    }
+    setSearchParams(params, { replace: true })
+  }
+
+  const toggleStateFilter = (state: 'running' | 'stopped') => {
+    const params = new URLSearchParams(searchParams)
+    const current = filters.selectedStates
+    const newStates = current.includes(state)
+      ? current.filter(s => s !== state)
+      : [...current, state]
+
+    if (newStates.length > 0) {
+      params.set('state', newStates.join(','))
+    } else {
+      params.delete('state')
+    }
+    setSearchParams(params, { replace: true })
+  }
+
+  const toggleDesiredStateFilter = (state: 'should_run' | 'on_demand' | 'unspecified') => {
+    const params = new URLSearchParams(searchParams)
+    const current = filters.selectedDesiredStates
+    const newStates = current.includes(state)
+      ? current.filter(s => s !== state)
+      : [...current, state]
+
+    if (newStates.length > 0) {
+      params.set('desired_state', newStates.join(','))
+    } else {
+      params.delete('desired_state')
+    }
+    setSearchParams(params, { replace: true })
+  }
+
+  const togglePolicyFilter = (
+    policy: 'auto_update' | 'auto_restart' | 'health_check',
+    value: boolean
+  ) => {
+    const params = new URLSearchParams(searchParams)
+
+    const paramNames = {
+      auto_update: 'policy_auto_update',
+      auto_restart: 'policy_auto_restart',
+      health_check: 'policy_health_check',
+    }
+
+    const currentValues = {
+      auto_update: filters.autoUpdateEnabled,
+      auto_restart: filters.autoRestartEnabled,
+      health_check: filters.healthCheckEnabled,
+    }
+
+    const currentValue = currentValues[policy]
+    const paramName = paramNames[policy]
+
+    // Mutual exclusivity: clicking same value clears, clicking opposite value toggles
+    if (currentValue === value) {
+      params.delete(paramName) // Clear filter
+    } else {
+      params.set(paramName, value ? 'enabled' : 'disabled') // Set to new value
+    }
+    setSearchParams(params, { replace: true })
+  }
+
+  const clearAllFilters = () => {
+    setSearchParams(new URLSearchParams(), { replace: true })
+  }
+
+  const hasActiveFilters =
+    filters.selectedHostIds.length > 0 ||
+    filters.selectedStates.length > 0 ||
+    filters.autoUpdateEnabled !== null ||
+    filters.autoRestartEnabled !== null ||
+    filters.healthCheckEnabled !== null ||
+    filters.showUpdatesAvailable ||
+    filters.selectedDesiredStates.length > 0
+
   if (isLoading) {
     return (
       <div className="space-y-4">
@@ -1114,17 +1412,247 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
 
   return (
     <div className={`space-y-4 ${selectedContainerIds.size > 0 ? 'pb-[280px]' : ''}`}>
-      {/* Search */}
-      <div className="flex items-center gap-4">
-        <Input
-          placeholder="Search containers..."
-          value={globalFilter ?? ''}
-          onChange={(e) => setGlobalFilter(e.target.value)}
-          className="max-w-sm"
-          data-testid="containers-search-input"
-        />
-        <div className="text-sm text-muted-foreground">
-          {table.getFilteredRowModel().rows.length} container(s)
+      {/* Search and Filters */}
+      <div className="flex items-center justify-between gap-4">
+        {/* Left: Search */}
+        <div className="flex items-center gap-4">
+          <Input
+            placeholder="Search containers..."
+            value={globalFilter ?? ''}
+            onChange={(e) => setGlobalFilter(e.target.value)}
+            className="max-w-sm"
+            data-testid="containers-search-input"
+          />
+          <div className="text-sm text-muted-foreground">
+            {table.getFilteredRowModel().rows.length} container(s)
+          </div>
+        </div>
+
+        {/* Right: Filter dropdowns */}
+        <div className="flex items-center gap-2">
+          {/* Clear Filters Button */}
+          {hasActiveFilters && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={clearAllFilters}
+              className="h-9 text-xs"
+            >
+              <X className="h-3.5 w-3.5 mr-1" />
+              Clear Filters
+            </Button>
+          )}
+
+          {/* Hosts Filter */}
+          <DropdownMenu
+            trigger={
+              <Button variant="outline" size="sm" className="h-9">
+                <Filter className="h-3.5 w-3.5 mr-2" />
+                Hosts
+                {filters.selectedHostIds.length > 0 && (
+                  <span className="ml-1.5 px-1.5 py-0.5 text-xs bg-primary/20 text-primary rounded">
+                    {filters.selectedHostIds.length}
+                  </span>
+                )}
+                <ChevronDown className="h-3.5 w-3.5 ml-2" />
+              </Button>
+            }
+            align="end"
+          >
+            <div className="max-h-[300px] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+              {hosts && hosts.length > 0 ? (
+                hosts.map((host) => (
+                  <div
+                    key={host.id}
+                    className="flex items-center gap-2 px-2 py-1.5 hover:bg-muted rounded-sm cursor-pointer"
+                    onClick={() => toggleHostFilter(host.id)}
+                  >
+                    <div className="w-4 h-4 flex items-center justify-center">
+                      {filters.selectedHostIds.includes(host.id) && (
+                        <Check className="h-3.5 w-3.5 text-primary" />
+                      )}
+                    </div>
+                    <span className="text-xs">{host.name}</span>
+                  </div>
+                ))
+              ) : (
+                <div className="px-2 py-2 text-xs text-muted-foreground">No hosts available</div>
+              )}
+            </div>
+          </DropdownMenu>
+
+          {/* Policy Filter */}
+          <DropdownMenu
+            trigger={
+              <Button variant="outline" size="sm" className="h-9">
+                <Filter className="h-3.5 w-3.5 mr-2" />
+                Policy
+                {(filters.autoUpdateEnabled !== null || filters.autoRestartEnabled !== null || filters.healthCheckEnabled !== null || filters.selectedDesiredStates.length > 0) && (
+                  <span className="ml-1.5 px-1.5 py-0.5 text-xs bg-primary/20 text-primary rounded">
+                    {[filters.autoUpdateEnabled, filters.autoRestartEnabled, filters.healthCheckEnabled].filter(v => v !== null).length + filters.selectedDesiredStates.length}
+                  </span>
+                )}
+                <ChevronDown className="h-3.5 w-3.5 ml-2" />
+              </Button>
+            }
+            align="end"
+          >
+            <div onClick={(e) => e.stopPropagation()} className="min-w-[200px]">
+              {/* Auto-update section */}
+              <div className="px-2 py-1 text-xs font-medium text-muted-foreground">Auto-update</div>
+              <div
+                className="flex items-center gap-2 px-2 py-1.5 hover:bg-muted rounded-sm cursor-pointer"
+                onClick={() => togglePolicyFilter('auto_update', true)}
+              >
+                <div className="w-4 h-4 flex items-center justify-center">
+                  {filters.autoUpdateEnabled === true && <Check className="h-3.5 w-3.5 text-primary" />}
+                </div>
+                <span className="text-xs">Enabled</span>
+              </div>
+              <div
+                className="flex items-center gap-2 px-2 py-1.5 hover:bg-muted rounded-sm cursor-pointer"
+                onClick={() => togglePolicyFilter('auto_update', false)}
+              >
+                <div className="w-4 h-4 flex items-center justify-center">
+                  {filters.autoUpdateEnabled === false && <Check className="h-3.5 w-3.5 text-primary" />}
+                </div>
+                <span className="text-xs">Disabled</span>
+              </div>
+
+              <DropdownMenuSeparator />
+
+              {/* Auto-restart section */}
+              <div className="px-2 py-1 text-xs font-medium text-muted-foreground">Auto-restart</div>
+              <div
+                className="flex items-center gap-2 px-2 py-1.5 hover:bg-muted rounded-sm cursor-pointer"
+                onClick={() => togglePolicyFilter('auto_restart', true)}
+              >
+                <div className="w-4 h-4 flex items-center justify-center">
+                  {filters.autoRestartEnabled === true && <Check className="h-3.5 w-3.5 text-primary" />}
+                </div>
+                <span className="text-xs">Enabled</span>
+              </div>
+              <div
+                className="flex items-center gap-2 px-2 py-1.5 hover:bg-muted rounded-sm cursor-pointer"
+                onClick={() => togglePolicyFilter('auto_restart', false)}
+              >
+                <div className="w-4 h-4 flex items-center justify-center">
+                  {filters.autoRestartEnabled === false && <Check className="h-3.5 w-3.5 text-primary" />}
+                </div>
+                <span className="text-xs">Disabled</span>
+              </div>
+
+              <DropdownMenuSeparator />
+
+              {/* Health check section */}
+              <div className="px-2 py-1 text-xs font-medium text-muted-foreground">HTTP/HTTPS Health Check</div>
+              <div
+                className="flex items-center gap-2 px-2 py-1.5 hover:bg-muted rounded-sm cursor-pointer"
+                onClick={() => togglePolicyFilter('health_check', true)}
+              >
+                <div className="w-4 h-4 flex items-center justify-center">
+                  {filters.healthCheckEnabled === true && <Check className="h-3.5 w-3.5 text-primary" />}
+                </div>
+                <span className="text-xs">Enabled</span>
+              </div>
+              <div
+                className="flex items-center gap-2 px-2 py-1.5 hover:bg-muted rounded-sm cursor-pointer"
+                onClick={() => togglePolicyFilter('health_check', false)}
+              >
+                <div className="w-4 h-4 flex items-center justify-center">
+                  {filters.healthCheckEnabled === false && <Check className="h-3.5 w-3.5 text-primary" />}
+                </div>
+                <span className="text-xs">Disabled</span>
+              </div>
+
+              <DropdownMenuSeparator />
+
+              {/* Desired State section */}
+              <div className="px-2 py-1 text-xs font-medium text-muted-foreground">Desired State</div>
+              <div
+                className="flex items-center gap-2 px-2 py-1.5 hover:bg-muted rounded-sm cursor-pointer"
+                onClick={() => toggleDesiredStateFilter('should_run')}
+              >
+                <div className="w-4 h-4 flex items-center justify-center">
+                  {filters.selectedDesiredStates.includes('should_run') && <Check className="h-3.5 w-3.5 text-primary" />}
+                </div>
+                <span className="text-xs">Should Run</span>
+              </div>
+              <div
+                className="flex items-center gap-2 px-2 py-1.5 hover:bg-muted rounded-sm cursor-pointer"
+                onClick={() => toggleDesiredStateFilter('on_demand')}
+              >
+                <div className="w-4 h-4 flex items-center justify-center">
+                  {filters.selectedDesiredStates.includes('on_demand') && <Check className="h-3.5 w-3.5 text-primary" />}
+                </div>
+                <span className="text-xs">On-Demand</span>
+              </div>
+              <div
+                className="flex items-center gap-2 px-2 py-1.5 hover:bg-muted rounded-sm cursor-pointer"
+                onClick={() => toggleDesiredStateFilter('unspecified')}
+              >
+                <div className="w-4 h-4 flex items-center justify-center">
+                  {filters.selectedDesiredStates.includes('unspecified') && <Check className="h-3.5 w-3.5 text-primary" />}
+                </div>
+                <span className="text-xs">Unspecified</span>
+              </div>
+            </div>
+          </DropdownMenu>
+
+          {/* State Filter */}
+          <DropdownMenu
+            trigger={
+              <Button variant="outline" size="sm" className="h-9">
+                <Filter className="h-3.5 w-3.5 mr-2" />
+                State
+                {(filters.selectedStates.length > 0 || filters.showUpdatesAvailable) && (
+                  <span className="ml-1.5 px-1.5 py-0.5 text-xs bg-primary/20 text-primary rounded">
+                    {filters.selectedStates.length + (filters.showUpdatesAvailable ? 1 : 0)}
+                  </span>
+                )}
+                <ChevronDown className="h-3.5 w-3.5 ml-2" />
+              </Button>
+            }
+            align="end"
+          >
+            <div onClick={(e) => e.stopPropagation()}>
+              <div
+                className="flex items-center gap-2 px-2 py-1.5 hover:bg-muted rounded-sm cursor-pointer"
+                onClick={() => toggleStateFilter('running')}
+              >
+                <div className="w-4 h-4 flex items-center justify-center">
+                  {filters.selectedStates.includes('running') && <Check className="h-3.5 w-3.5 text-primary" />}
+                </div>
+                <span className="text-xs">Running</span>
+              </div>
+              <div
+                className="flex items-center gap-2 px-2 py-1.5 hover:bg-muted rounded-sm cursor-pointer"
+                onClick={() => toggleStateFilter('stopped')}
+              >
+                <div className="w-4 h-4 flex items-center justify-center">
+                  {filters.selectedStates.includes('stopped') && <Check className="h-3.5 w-3.5 text-primary" />}
+                </div>
+                <span className="text-xs">Stopped</span>
+              </div>
+              <div
+                className="flex items-center gap-2 px-2 py-1.5 hover:bg-muted rounded-sm cursor-pointer"
+                onClick={() => {
+                  const params = new URLSearchParams(searchParams)
+                  if (filters.showUpdatesAvailable) {
+                    params.delete('updates')
+                  } else {
+                    params.set('updates', 'true')
+                  }
+                  setSearchParams(params, { replace: true })
+                }}
+              >
+                <div className="w-4 h-4 flex items-center justify-center">
+                  {filters.showUpdatesAvailable && <Check className="h-3.5 w-3.5 text-primary" />}
+                </div>
+                <span className="text-xs">Updates available</span>
+              </div>
+            </div>
+          </DropdownMenu>
         </div>
       </div>
 
@@ -1211,6 +1739,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         selectedContainers={data?.filter((c) => selectedContainerIds.has(makeCompositeKey(c))) || []}
         onClearSelection={clearSelection}
         onAction={handleBulkAction}
+        onCheckUpdates={handleCheckUpdates}
         onTagUpdate={handleBulkTagUpdate}
         onAutoRestartUpdate={handleBulkAutoRestartUpdate}
         onAutoUpdateUpdate={handleBulkAutoUpdateUpdate}

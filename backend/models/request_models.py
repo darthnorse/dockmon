@@ -291,7 +291,7 @@ class EventLogFilter(BaseModel):
 class BatchJobCreate(BaseModel):
     """Request model for creating batch jobs"""
     scope: str = Field(..., pattern='^container$')  # Only 'container' for now
-    action: str = Field(..., pattern='^(start|stop|restart|add-tags|remove-tags|set-auto-restart|set-auto-update|set-desired-state)$')  # Container actions
+    action: str = Field(..., pattern='^(start|stop|restart|add-tags|remove-tags|set-auto-restart|set-auto-update|set-desired-state|check-updates)$')  # Container actions
     ids: List[str] = Field(..., min_items=1, max_items=100)  # Container IDs
     params: Optional[Dict[str, Any]] = None  # Optional parameters (e.g., tags, enabled, desired_state)
     dry_run: bool = False  # Not implemented in Phase 1
@@ -306,7 +306,7 @@ class BatchJobCreate(BaseModel):
     @validator('action')
     def validate_action(cls, v):
         """Validate batch job action"""
-        valid_actions = {'start', 'stop', 'restart', 'add-tags', 'remove-tags', 'set-auto-restart', 'set-auto-update', 'set-desired-state'}
+        valid_actions = {'start', 'stop', 'restart', 'add-tags', 'remove-tags', 'set-auto-restart', 'set-auto-update', 'set-desired-state', 'check-updates'}
         if v not in valid_actions:
             raise ValueError(f'Invalid action. Must be one of: {valid_actions}')
         return v
@@ -381,6 +381,8 @@ class HttpHealthCheckConfig(BaseModel):
     auto_restart_on_failure: bool = Field(default=False)
     failure_threshold: int = Field(default=3, ge=1, le=10)
     success_threshold: int = Field(default=1, ge=1, le=10)
+    max_restart_attempts: int = Field(default=3, ge=1, le=10)  # v2.0.2+
+    restart_retry_delay_seconds: int = Field(default=120, ge=30, le=600)  # v2.0.2+
 
     @validator('url')
     def validate_url(cls, v):

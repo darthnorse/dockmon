@@ -44,6 +44,8 @@ function ContainerHealthCheckTabInternal({ container }: ContainerHealthCheckTabP
   const [autoRestartOnFailure, setAutoRestartOnFailure] = useState(false)
   const [failureThreshold, setFailureThreshold] = useState(3)
   const [successThreshold, setSuccessThreshold] = useState(1)
+  const [maxRestartAttempts, setMaxRestartAttempts] = useState(3)  // v2.0.2+
+  const [restartRetryDelaySeconds, setRestartRetryDelaySeconds] = useState(120)  // v2.0.2+
 
   // Sync local state when server data changes
   useEffect(() => {
@@ -59,6 +61,8 @@ function ContainerHealthCheckTabInternal({ container }: ContainerHealthCheckTabP
       setAutoRestartOnFailure(healthCheck.auto_restart_on_failure ?? false)
       setFailureThreshold(healthCheck.failure_threshold ?? 3)
       setSuccessThreshold(healthCheck.success_threshold ?? 1)
+      setMaxRestartAttempts(healthCheck.max_restart_attempts ?? 3)  // v2.0.2+
+      setRestartRetryDelaySeconds(healthCheck.restart_retry_delay_seconds ?? 120)  // v2.0.2+
     }
   }, [healthCheck])
 
@@ -144,6 +148,8 @@ function ContainerHealthCheckTabInternal({ container }: ContainerHealthCheckTabP
           auto_restart_on_failure: autoRestartOnFailure,
           failure_threshold: failureThreshold,
           success_threshold: successThreshold,
+          max_restart_attempts: maxRestartAttempts,  // v2.0.2+
+          restart_retry_delay_seconds: restartRetryDelaySeconds,  // v2.0.2+
         },
       })
       toast.success('Health check configuration saved')
@@ -492,6 +498,47 @@ function ContainerHealthCheckTabInternal({ container }: ContainerHealthCheckTabP
               disabled={!enabled}
             />
           </div>
+
+          {/* Retry configuration (v2.0.2+) - only show when auto-restart is enabled */}
+          {autoRestartOnFailure && (
+            <div className="grid grid-cols-2 gap-4 pl-4 border-l-2 border-muted">
+              <div className="space-y-2">
+                <label htmlFor="max-restart-attempts" className="text-sm font-medium">
+                  Max Restart Attempts
+                </label>
+                <Input
+                  id="max-restart-attempts"
+                  type="number"
+                  min="1"
+                  max="10"
+                  value={maxRestartAttempts}
+                  onChange={(e) => setMaxRestartAttempts(Number(e.target.value))}
+                  disabled={!enabled}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Number of restart attempts per unhealthy episode (resets on recovery)
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <label htmlFor="restart-retry-delay" className="text-sm font-medium">
+                  Retry Delay (seconds)
+                </label>
+                <Input
+                  id="restart-retry-delay"
+                  type="number"
+                  min="30"
+                  max="600"
+                  value={restartRetryDelaySeconds}
+                  onChange={(e) => setRestartRetryDelaySeconds(Number(e.target.value))}
+                  disabled={!enabled}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Delay between restart attempts. Note: 10-minute safety window allows max 12 total restarts (long delays may limit attempts)
+                </p>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

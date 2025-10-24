@@ -80,7 +80,6 @@ class UserPreferences(BaseModel):
     group_by: Optional[str] = Field(default="none", pattern="^(env|region|compose|tags|none)?$")
     compact_view: bool = Field(default=False)
     collapsed_groups: list[str] = Field(default_factory=list)
-    filter_defaults: Dict[str, Any] = Field(default_factory=dict)
 
     # React v2 preferences
     sidebar_collapsed: bool = Field(default=False)
@@ -99,7 +98,6 @@ class PreferencesUpdate(BaseModel):
     group_by: Optional[str] = Field(None, pattern="^(env|region|compose|tags|none)?$")
     compact_view: Optional[bool] = None
     collapsed_groups: Optional[list[str]] = None
-    filter_defaults: Optional[Dict[str, Any]] = None
 
     # React v2 preferences
     sidebar_collapsed: Optional[bool] = None
@@ -222,7 +220,6 @@ async def get_user_preferences(
             group_by=defaults_json.get("group_by", "none"),
             compact_view=defaults_json.get("compact_view", False),
             collapsed_groups=defaults_json.get("collapsed_groups", []),
-            filter_defaults=defaults_json.get("filter_defaults", {}),
             sidebar_collapsed=user_result.sidebar_collapsed if user_result else False,
             dashboard_layout_v2=dashboard_layout_v2,
             dashboard=dashboard,
@@ -280,8 +277,6 @@ async def update_user_preferences(
             existing_defaults["compact_view"] = updates.compact_view
         if updates.collapsed_groups is not None:
             existing_defaults["collapsed_groups"] = updates.collapsed_groups
-        if updates.filter_defaults is not None:
-            existing_defaults["filter_defaults"] = updates.filter_defaults
 
         # SECURITY FIX: Validate JSON depth before serialization to prevent DOS
         try:

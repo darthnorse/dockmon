@@ -37,7 +37,6 @@ export interface UserPreferences {
   group_by: 'env' | 'region' | 'compose' | 'none' | null
   compact_view: boolean
   collapsed_groups: string[]
-  filter_defaults: Record<string, unknown>
 }
 
 export interface PreferencesUpdate {
@@ -45,7 +44,6 @@ export interface PreferencesUpdate {
   group_by?: 'env' | 'region' | 'compose' | 'none'
   compact_view?: boolean
   collapsed_groups?: string[]
-  filter_defaults?: Record<string, unknown>
 }
 
 // ==================== Common ====================

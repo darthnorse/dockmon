@@ -31,7 +31,6 @@ export interface UserPreferences {
   group_by: string | null
   compact_view: boolean
   collapsed_groups: string[]
-  filter_defaults: Record<string, unknown>
 
   // React v2 preferences
   sidebar_collapsed: boolean
@@ -41,17 +40,6 @@ export interface UserPreferences {
   // Table sorting preferences (TanStack Table format)
   host_table_sort: Array<{ id: string; desc: boolean }> | null
   container_table_sort: Array<{ id: string; desc: boolean }> | null
-
-  // Container filter preferences
-  container_filters?: {
-    host_ids?: string[]
-    auto_update_enabled?: boolean | null
-    auto_restart_enabled?: boolean | null
-    health_check_enabled?: boolean | null
-    state?: ('running' | 'stopped')[]
-    updates_available?: boolean
-    desired_state?: ('should_run' | 'on_demand' | 'unspecified')[]
-  }
 
   // Dashboard preferences (host container sorts are string-based sort keys)
   hostContainerSorts?: Record<string, string>

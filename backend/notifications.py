@@ -101,11 +101,16 @@ class NotificationService:
     # _get_default_template, _format_message
     # V2 alert system (AlertEngine) handles all alert processing via send_alert_v2()
 
-    async def _send_telegram(self, config: Dict[str, Any], message: str) -> bool:
+    async def _send_telegram(self, config: Dict[str, Any], message: str, event=None) -> bool:
         """Send notification via Telegram
 
         Uses HTML parse mode instead of Markdown for better compatibility.
         HTML is more forgiving with special characters in container/host names.
+
+        Args:
+            config: Telegram channel configuration
+            message: Message text to send
+            event: Optional event object (unused, for signature consistency)
         """
         try:
             # Support both 'token' and 'bot_token' for backward compatibility
@@ -163,8 +168,14 @@ class NotificationService:
             logger.error(f"Failed to send Telegram notification: {e}")
             return False
 
-    async def _send_discord(self, config: Dict[str, Any], message: str) -> bool:
-        """Send notification via Discord webhook"""
+    async def _send_discord(self, config: Dict[str, Any], message: str, event=None) -> bool:
+        """Send notification via Discord webhook
+
+        Args:
+            config: Discord channel configuration
+            message: Message text to send
+            event: Optional event object (unused, for signature consistency)
+        """
         try:
             webhook_url = config.get('webhook_url')
 

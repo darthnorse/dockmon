@@ -761,6 +761,7 @@ class UpdateExecutor:
         last_speed_check = time.time()
         current_speed_mbps = 0.0
         speed_samples = []  # For moving average smoothing (prevents jittery display)
+        total_bytes = 0  # Initialize to prevent NameError if stream has zero iterations
 
         start_time = time.time()
 

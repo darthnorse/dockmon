@@ -7,7 +7,7 @@ import asyncio
 import json
 import logging
 import time
-from typing import List, Optional
+from typing import List
 
 from fastapi import WebSocket
 

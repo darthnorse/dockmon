@@ -1,0 +1,159 @@
+"""v2.1.0 upgrade - Deployment feature foundation
+
+Revision ID: 005_v2_1_0
+Revises: 004_v2_0_3
+Create Date: 2025-10-25
+
+CHANGES IN v2.1.0:
+- Create deployments table (deployment tracking with state machine)
+- Create deployment_containers table (junction table for stack deployments)
+- Create deployment_templates table (reusable deployment templates)
+- Add indexes for performance (host_id, status, created_at)
+- Add unique constraints (host+name, template name)
+- Update app_version to '2.1.0'
+
+NEW FEATURES:
+- Deploy containers via API with progress tracking
+- Deploy Docker Compose stacks
+- Save and reuse deployment templates
+- Security validation before deployment
+- Rollback support with commitment point tracking
+"""
+from alembic import op
+import sqlalchemy as sa
+from sqlalchemy import inspect
+
+
+# revision identifiers, used by Alembic.
+revision = '005_v2_1_0'
+down_revision = '004_v2_0_3'
+branch_labels = None
+depends_on = None
+
+
+def column_exists(table_name: str, column_name: str) -> bool:
+    """Check if column exists (defensive pattern)"""
+    bind = op.get_bind()
+    inspector = inspect(bind)
+    if table_name not in inspector.get_table_names():
+        return False
+    columns = [col['name'] for col in inspector.get_columns(table_name)]
+    return column_name in columns
+
+
+def table_exists(table_name: str) -> bool:
+    """Check if table exists (defensive pattern)"""
+    bind = op.get_bind()
+    inspector = inspect(bind)
+    return table_name in inspector.get_table_names()
+
+
+def index_exists(table_name: str, index_name: str) -> bool:
+    """Check if index exists (defensive pattern)"""
+    bind = op.get_bind()
+    inspector = inspect(bind)
+    if table_name not in inspector.get_table_names():
+        return False
+    indexes = [idx['name'] for idx in inspector.get_indexes(table_name)]
+    return index_name in indexes
+
+
+def upgrade() -> None:
+    """Add v2.1.0 deployment features"""
+
+    # Change 1: Create deployments table
+    # Tracks deployment operations with state machine and progress tracking
+    if not table_exists('deployments'):
+        op.create_table(
+            'deployments',
+            sa.Column('id', sa.String(), nullable=False),  # Composite: {host_id}:{deployment_short_id}
+            sa.Column('host_id', sa.String(), sa.ForeignKey('docker_hosts.id', ondelete='CASCADE'), nullable=False),
+            sa.Column('deployment_type', sa.String(), nullable=False),  # 'container' | 'stack'
+            sa.Column('name', sa.String(), nullable=False),
+            sa.Column('status', sa.String(), nullable=False, server_default='planning'),  # State machine: planning, executing, completed, failed, rolled_back
+            sa.Column('definition', sa.Text(), nullable=False),  # JSON: container/stack configuration
+            sa.Column('error_message', sa.Text(), nullable=True),
+            sa.Column('progress_percent', sa.Integer(), nullable=False, server_default='0'),  # 0-100
+            sa.Column('current_stage', sa.Text(), nullable=True),  # e.g., 'Pulling image', 'Creating container'
+            sa.Column('created_at', sa.DateTime(), nullable=False),
+            sa.Column('updated_at', sa.DateTime(), nullable=False),
+            sa.Column('started_at', sa.DateTime(), nullable=True),
+            sa.Column('completed_at', sa.DateTime(), nullable=True),
+            sa.Column('committed', sa.Boolean(), nullable=False, server_default='0'),  # Commitment point tracking
+            sa.Column('rollback_on_failure', sa.Boolean(), nullable=False, server_default='1'),
+            sa.PrimaryKeyConstraint('id'),
+            sa.UniqueConstraint('host_id', 'name', name='uq_deployment_host_name'),
+            sqlite_autoincrement=False,
+        )
+
+        # Add indexes for performance
+        op.create_index('idx_deployment_host_id', 'deployments', ['host_id'])
+        op.create_index('idx_deployment_status', 'deployments', ['status'])
+        op.create_index('idx_deployment_created_at', 'deployments', ['created_at'])
+
+    # Change 2: Create deployment_containers table
+    # Junction table linking deployments to containers (supports stack deployments)
+    if not table_exists('deployment_containers'):
+        op.create_table(
+            'deployment_containers',
+            sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
+            sa.Column('deployment_id', sa.String(), sa.ForeignKey('deployments.id', ondelete='CASCADE'), nullable=False),
+            sa.Column('container_id', sa.String(), nullable=False),  # SHORT ID (12 chars)
+            sa.Column('service_name', sa.String(), nullable=True),  # NULL for single containers, service name for stacks
+            sa.Column('created_at', sa.DateTime(), nullable=False),
+        )
+
+    # Change 3: Create deployment_templates table
+    # Reusable deployment templates with variable substitution
+    if not table_exists('deployment_templates'):
+        op.create_table(
+            'deployment_templates',
+            sa.Column('id', sa.String(), primary_key=True),  # e.g., 'tpl_nginx_001'
+            sa.Column('name', sa.String(), nullable=False, unique=True),
+            sa.Column('category', sa.String(), nullable=True),  # e.g., 'web-servers', 'databases'
+            sa.Column('description', sa.Text(), nullable=True),
+            sa.Column('deployment_type', sa.String(), nullable=False),  # 'container' | 'stack'
+            sa.Column('template_definition', sa.Text(), nullable=False),  # JSON with variables like ${PORT}
+            sa.Column('variables', sa.Text(), nullable=True),  # JSON: {"PORT": {"default": 8080, "type": "integer", ...}}
+            sa.Column('is_builtin', sa.Boolean(), nullable=False, server_default='0'),  # System templates vs user templates
+            sa.Column('created_at', sa.DateTime(), nullable=False),
+            sa.Column('updated_at', sa.DateTime(), nullable=False),
+            sqlite_autoincrement=False,
+        )
+
+    # Change 4: Update app_version
+    if table_exists('global_settings'):
+        op.execute(
+            sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
+            .bindparams(version='2.1.0', id=1)
+        )
+
+
+def downgrade() -> None:
+    """Remove v2.1.0 deployment features"""
+
+    # Reverse order of upgrade
+    if table_exists('global_settings'):
+        op.execute(
+            sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
+            .bindparams(version='2.0.3', id=1)
+        )
+
+    # Drop tables in reverse dependency order
+    if table_exists('deployment_templates'):
+        op.drop_table('deployment_templates')
+
+    if table_exists('deployment_containers'):
+        op.drop_table('deployment_containers')
+
+    if table_exists('deployments'):
+        # Drop indexes first
+        if index_exists('deployments', 'idx_deployment_created_at'):
+            op.drop_index('idx_deployment_created_at', 'deployments')
+        if index_exists('deployments', 'idx_deployment_status'):
+            op.drop_index('idx_deployment_status', 'deployments')
+        if index_exists('deployments', 'idx_deployment_host_id'):
+            op.drop_index('idx_deployment_host_id', 'deployments')
+
+        # Drop table
+        op.drop_table('deployments')

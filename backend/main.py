@@ -66,6 +66,7 @@ from utils.encryption import encrypt_password, decrypt_password
 from utils.async_docker import async_docker_call
 from updates.container_validator import ContainerValidator, ValidationResult
 from packaging.version import parse as parse_version, InvalidVersion
+from deployment import routes as deployment_routes, DeploymentExecutor, TemplateManager
 
 # Configure logging
 setup_logging()
@@ -184,6 +185,14 @@ async def lifespan(app: FastAPI):
     monitor.http_health_checker = HttpHealthChecker(monitor, monitor.db)
     asyncio.create_task(monitor.http_health_checker.start())
     logger.info("HTTP health checker started")
+
+    # Initialize deployment services (v2.1)
+    deployment_executor = DeploymentExecutor(monitor.realtime, monitor, monitor.db)
+    template_manager = TemplateManager(monitor.db)
+    deployment_routes.set_deployment_executor(deployment_executor)
+    deployment_routes.set_template_manager(template_manager)
+    deployment_routes.set_database_manager(monitor.db)
+    logger.info("Deployment services initialized")
 
     yield
     # Shutdown
@@ -345,6 +354,8 @@ from api.v2.user import router as user_v2_router
 
 app.include_router(auth_v2_router)  # v2 cookie-based auth
 app.include_router(user_v2_router)  # v2 user preferences
+app.include_router(deployment_routes.router)  # v2.1 deployment endpoints
+app.include_router(deployment_routes.template_router)  # v2.1 template endpoints
 # app.include_router(alerts_router)  # MOVED: Registered after v2 rules routes
 
 @app.get("/")

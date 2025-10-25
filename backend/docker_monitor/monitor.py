@@ -316,6 +316,7 @@ class DockerMonitor:
     def add_host(self, config: DockerHostConfig, existing_id: str = None, skip_db_save: bool = False, suppress_event_loop_errors: bool = False) -> DockerHost:
         """Add a new Docker host to monitor"""
         client = None  # Track client for cleanup on error
+        cert_dir = None  # Track cert directory for cleanup on error
         try:
             # Check if host URL already exists (prevent duplicates)
             if not skip_db_save:  # Only check for new hosts, not when loading from DB
@@ -535,6 +536,15 @@ class DockerMonitor:
                     logger.debug(f"Closed orphaned Docker client for {config.name}")
                 except Exception as close_error:
                     logger.debug(f"Error closing Docker client: {close_error}")
+
+            # SECURITY: Clean up certificate directory if created but host add failed
+            # This prevents private key leaks when TLS handshake or connection fails
+            if cert_dir is not None and os.path.exists(cert_dir):
+                try:
+                    shutil.rmtree(cert_dir)
+                    logger.info(f"Cleaned up certificate directory after failed host add: {cert_dir}")
+                except Exception as cleanup_error:
+                    logger.error(f"Failed to cleanup certificate directory {cert_dir}: {cleanup_error}")
 
             # Suppress event loop errors during first run startup
             if suppress_event_loop_errors and "no running event loop" in str(e):

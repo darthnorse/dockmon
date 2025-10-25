@@ -220,6 +220,13 @@ class PeriodicJobsManager:
                 if self.monitor:
                     await self.monitor.cleanup_stale_container_state()
 
+                # Clean up stale pull progress entries (defense-in-depth for crashed pulls)
+                # Local import to break circular dependency: periodic_jobs ↔ monitor ↔ update_executor
+                from updates.update_executor import get_update_executor
+                update_executor = get_update_executor()
+                if update_executor:
+                    await update_executor.cleanup_stale_pull_progress()
+
                 # Refresh host system info (OS version, Docker version, etc.)
                 if self.monitor:
                     await self.monitor.refresh_all_hosts_system_info()

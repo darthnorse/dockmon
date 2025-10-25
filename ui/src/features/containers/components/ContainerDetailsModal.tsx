@@ -9,7 +9,7 @@
  * - Info tab: 2-column layout with status, image, labels, ports, volumes, env vars
  */
 
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import { X, Play, RotateCw, Circle } from 'lucide-react'
 import { Tabs } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
@@ -19,6 +19,8 @@ import { apiClient } from '@/lib/api/client'
 import { useQueryClient } from '@tanstack/react-query'
 import { useStatsContext } from '@/lib/stats/StatsProvider'
 import { parseCompositeKey } from '@/lib/utils/containerKeys'
+import { useContainerModal } from '@/providers/ContainerModalProvider'
+import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
 
 // Import tab content components
 import { ContainerInfoTab } from './modal-tabs/ContainerInfoTab'
@@ -45,9 +47,12 @@ export function ContainerDetailsModal({
 }: ContainerDetailsModalProps) {
   const queryClient = useQueryClient()
   const { containerStats } = useStatsContext()
+  const { updateContainerId } = useContainerModal()
+  const { addMessageHandler } = useWebSocketContext()
   const [activeTab, setActiveTab] = useState(initialTab)
   const [uptime, setUptime] = useState<string>('')
   const [isPerformingAction, setIsPerformingAction] = useState(false)
+  const [fallbackContainer, setFallbackContainer] = useState<Container | null>(null)
 
   // Self-fetch container if not provided externally
   // This decouples the modal from the provider's data sources
@@ -76,11 +81,18 @@ export function ContainerDetailsModal({
       return stats as Container
     }
 
+    // Use fallback during data gap (container recreated but not yet in cache)
+    // This prevents modal from closing during the 0-2s between container recreation
+    // and the next monitoring poll that updates the caches with the new container ID
+    if (fallbackContainer) {
+      return fallbackContainer
+    }
+
     // Container not found in any source
     // In practice, this should rarely happen since modal is opened
     // from pages that already have the container data loaded
     return null
-  }, [open, containerId, externalContainer, queryClient, containerStats])
+  }, [open, containerId, externalContainer, queryClient, containerStats, fallbackContainer])
 
   // Update active tab when initialTab changes
   useEffect(() => {
@@ -117,6 +129,35 @@ export function ContainerDetailsModal({
     return () => clearInterval(interval)
   }, [container?.created])
 
+  // Listen for container recreations during updates (new ID, same name)
+  // This prevents the modal from closing when a container is updated
+  const handleContainerUpdate = useCallback(
+    (message: any) => {
+      if (!container || !containerId) return
+
+      // Listen for container_recreated event (sent immediately when container gets new ID)
+      if (message.type === 'container_recreated' && message.data) {
+        const { old_composite_key, new_composite_key } = message.data
+
+        // Check if this event is for the container we're currently viewing
+        if (old_composite_key === containerId) {
+          // CRITICAL: Save current container as fallback BEFORE updating ID
+          // This prevents modal from closing during the 0-2s gap until monitoring poll arrives
+          setFallbackContainer(container)
+
+          updateContainerId(new_composite_key)
+        }
+      }
+    },
+    [container, containerId, updateContainerId]
+  )
+
+  useEffect(() => {
+    if (!open || !container) return
+    const cleanup = addMessageHandler(handleContainerUpdate)
+    return cleanup
+  }, [open, container, addMessageHandler, handleContainerUpdate])
+
   // Handle ESC key
   useEffect(() => {
     const handleEscape = (e: KeyboardEvent) => {
@@ -143,7 +184,9 @@ export function ContainerDetailsModal({
   const handleStart = async () => {
     setIsPerformingAction(true)
     try {
-      await apiClient.post(`/hosts/${container.host_id}/containers/${container.id}/start`)
+      // CRITICAL: Use current tracked containerId, not container.id which may be stale from fallback
+      const { hostId, containerId: currentId } = parseCompositeKey(containerId!)
+      await apiClient.post(`/hosts/${hostId}/containers/${currentId}/start`)
       toast.success(`Started ${container.name}`)
     } catch (error) {
       toast.error(`Failed to start container: ${error instanceof Error ? error.message : 'Unknown error'}`)
@@ -155,7 +198,9 @@ export function ContainerDetailsModal({
   const handleStop = async () => {
     setIsPerformingAction(true)
     try {
-      await apiClient.post(`/hosts/${container.host_id}/containers/${container.id}/stop`)
+      // CRITICAL: Use current tracked containerId, not container.id which may be stale from fallback
+      const { hostId, containerId: currentId } = parseCompositeKey(containerId!)
+      await apiClient.post(`/hosts/${hostId}/containers/${currentId}/stop`)
       toast.success(`Stopped ${container.name}`)
     } catch (error) {
       toast.error(`Failed to stop container: ${error instanceof Error ? error.message : 'Unknown error'}`)
@@ -167,7 +212,9 @@ export function ContainerDetailsModal({
   const handleRestart = async () => {
     setIsPerformingAction(true)
     try {
-      await apiClient.post(`/hosts/${container.host_id}/containers/${container.id}/restart`)
+      // CRITICAL: Use current tracked containerId, not container.id which may be stale from fallback
+      const { hostId, containerId: currentId } = parseCompositeKey(containerId!)
+      await apiClient.post(`/hosts/${hostId}/containers/${currentId}/restart`)
       toast.success(`Restarting ${container.name}`)
     } catch (error) {
       toast.error(`Failed to restart container: ${error instanceof Error ? error.message : 'Unknown error'}`)

@@ -53,6 +53,8 @@ interface LogViewerProps {
   showControls?: boolean
   /** Compact mode (smaller padding, fonts) */
   compact?: boolean
+  /** Log font size ('sm' = 14px, 'xs' = 12px) - only affects log text, not controls */
+  logFontSize?: 'sm' | 'xs'
 }
 
 // Container colors (8 distinct colors for color coding)
@@ -74,6 +76,7 @@ export function LogViewer({
   autoRefreshDefault = true,
   showControls = true,
   compact = false,
+  logFontSize = 'sm',
 }: LogViewerProps) {
   const [logs, setLogs] = useState<LogLine[]>([])
   const [filteredLogs, setFilteredLogs] = useState<LogLine[]>([])
@@ -460,7 +463,7 @@ export function LogViewer({
       {/* Log Container */}
       <div
         ref={logContainerRef}
-        className={`flex-1 overflow-y-auto bg-card font-mono ${compact ? 'text-xs' : 'text-sm'}`}
+        className={`flex-1 overflow-y-auto bg-card font-mono text-${logFontSize}`}
         style={{ height }}
         data-testid="logs-content"
       >

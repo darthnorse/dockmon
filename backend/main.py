@@ -641,7 +641,6 @@ async def get_host_metrics(host_id: str, current_user: dict = Depends(get_curren
 
         total_cpu = 0.0
         total_memory_used = 0
-        total_memory_limit = 0
         total_net_rx = 0
         total_net_tx = 0
         container_count = 0
@@ -664,9 +663,7 @@ async def get_host_metrics(host_id: str, current_user: dict = Depends(get_curren
 
                 # Memory
                 mem_usage = stats['memory_stats'].get('usage', 0)
-                mem_limit = stats['memory_stats'].get('limit', 1)
                 total_memory_used += mem_usage
-                total_memory_limit += mem_limit
 
                 # Network I/O
                 networks = stats.get('networks', {})
@@ -681,15 +678,22 @@ async def get_host_metrics(host_id: str, current_user: dict = Depends(get_curren
                 logger.warning(f"Failed to get stats for container {container.short_id}: {e}")
                 continue
 
-        # Calculate percentages
-        avg_cpu = round(total_cpu / container_count, 1) if container_count > 0 else 0.0
-        memory_percent = round((total_memory_used / total_memory_limit) * 100, 1) if total_memory_limit > 0 else 0.0
+        # Get host specs for correct percentage calculations
+        # FIX: Use host CPU count and memory, not container count/limits
+        # This prevents under-reporting when few containers use high CPU,
+        # or when many containers have memory limits set
+        num_host_cpus = host.num_cpus or 1
+        host_total_memory = host.total_memory or 1
+
+        # Calculate actual HOST utilization (0-100%)
+        host_cpu_percent = round(total_cpu / num_host_cpus, 1) if num_host_cpus > 0 else 0.0
+        memory_percent = round((total_memory_used / host_total_memory) * 100, 1) if host_total_memory > 0 else 0.0
 
         return {
-            "cpu_percent": avg_cpu,
+            "cpu_percent": host_cpu_percent,
             "memory_percent": memory_percent,
             "memory_used_bytes": total_memory_used,
-            "memory_limit_bytes": total_memory_limit,
+            "memory_limit_bytes": host_total_memory,
             "network_rx_bytes": total_net_rx,
             "network_tx_bytes": total_net_tx,
             "container_count": container_count,
@@ -3156,8 +3160,10 @@ async def get_dashboard_hosts(
             # Uses EMA smoothing (α = 0.3) and maintains 60-90s of history
             sparklines = monitor.stats_history.get_sparklines(host.id, num_points=30)
 
-            # Calculate current memory percent (TODO: Get actual host total memory from stats service)
-            mem_percent = (total_mem_used / 16 * 100) if running_containers else 0
+            # Get actual host total memory (convert from bytes to GB)
+            # FIX: Use real host memory instead of hard-coded 16 GB
+            host_total_memory_gb = (host.total_memory / (1024 ** 3)) if host.total_memory else 16.0
+            mem_percent = (total_mem_used / host_total_memory_gb * 100) if running_containers and host_total_memory_gb > 0 else 0
 
             # Parse tags
             tags = []
@@ -3186,7 +3192,7 @@ async def get_dashboard_hosts(
                     "cpu_percent": round(sparklines["cpu"][-1] if sparklines["cpu"] else total_cpu, 1),
                     "mem_percent": round(sparklines["mem"][-1] if sparklines["mem"] else mem_percent, 1),
                     "mem_used_gb": round(total_mem_used, 1),
-                    "mem_total_gb": 16.0,  # TODO: Get from host metrics
+                    "mem_total_gb": round(host_total_memory_gb, 1),
                     "net_bytes_per_sec": int(sparklines["net"][-1]) if sparklines["net"] else 0
                 },
                 "sparklines": sparklines,

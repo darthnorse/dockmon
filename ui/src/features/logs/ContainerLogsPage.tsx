@@ -241,7 +241,7 @@ export function ContainerLogsPage() {
             height="calc(100vh - 280px)"
             autoRefreshDefault={true}
             showControls={true}
-            compact={false}
+            logFontSize="xs"
           />
         )}
       </div>

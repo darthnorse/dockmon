@@ -27,7 +27,7 @@ export function ContainerModalLogsTab({ hostId, containerId, containerName }: Co
         height="calc(100vh - 300px)"
         autoRefreshDefault={true}
         showControls={true}
-        compact={false}
+        logFontSize="xs"
       />
     </div>
   )

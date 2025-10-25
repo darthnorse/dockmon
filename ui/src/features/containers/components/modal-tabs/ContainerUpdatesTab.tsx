@@ -17,6 +17,7 @@ import { useSetContainerUpdatePolicy } from '../../hooks/useUpdatePolicies'
 import { UpdateValidationConfirmModal } from '../UpdateValidationConfirmModal'
 import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
 import { getRegistryUrl, getRegistryName } from '@/lib/utils/registry'
+import { cn } from '@/lib/utils'
 import type { Container } from '../../types'
 import type { UpdatePolicyValue } from '../../types/updatePolicy'
 import { POLICY_OPTIONS } from '../../types/updatePolicy'
@@ -27,8 +28,34 @@ interface UpdateProgress {
   message: string
 }
 
+interface LayerProgress {
+  id: string
+  status: string  // "Pulling fs layer" | "Downloading" | "Verifying Checksum" | "Download complete" | "Extracting" | "Pull complete" | "Already exists"
+  current: number  // Bytes
+  total: number    // Bytes
+  percent: number  // 0-100
+}
+
+interface UpdateLayerProgress {
+  overall_progress: number
+  layers: LayerProgress[]
+  total_layers: number  // Total number of layers in the image
+  remaining_layers: number  // Number of layers not included in 'layers' array (for network efficiency)
+  summary: string
+  speed_mbps?: number  // Optional download speed in MB/s
+}
+
 export interface ContainerUpdatesTabProps {
   container: Container
+}
+
+// Helper function to format bytes
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
 }
 
 function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
@@ -57,6 +84,8 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
 
   // Update progress state
   const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null)
+  const [layerProgress, setLayerProgress] = useState<UpdateLayerProgress | null>(null)
+  const [layerDetailsExpanded, setLayerDetailsExpanded] = useState(true)  // Default expanded
 
   // Validation confirmation modal state
   const [validationConfirmOpen, setValidationConfirmOpen] = useState(false)
@@ -81,19 +110,36 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
   const handleProgressMessage = useCallback(
     (message: any) => {
       if (
-        message.type === 'container_update_progress' &&
         message.data?.host_id === container.host_id &&
         message.data?.container_id === container.id
       ) {
-        setUpdateProgress({
-          stage: message.data.stage,
-          progress: message.data.progress,
-          message: message.data.message,
-        })
+        // Handle OLD simple progress (backward compatible)
+        if (message.type === 'container_update_progress') {
+          setUpdateProgress({
+            stage: message.data.stage,
+            progress: message.data.progress,
+            message: message.data.message,
+          })
 
-        // Clear progress when update completes
-        if (message.data.stage === 'completed') {
-          setTimeout(() => setUpdateProgress(null), 3000)
+          // Clear progress when update completes
+          if (message.data.stage === 'completed') {
+            setTimeout(() => {
+              setUpdateProgress(null)
+              setLayerProgress(null)  // Clear layer progress too
+            }, 3000)
+          }
+        }
+
+        // Handle NEW layer progress (enhanced view)
+        if (message.type === 'container_update_layer_progress') {
+          setLayerProgress({
+            overall_progress: message.data.overall_progress,
+            layers: message.data.layers,
+            total_layers: message.data.total_layers,
+            remaining_layers: message.data.remaining_layers,
+            summary: message.data.summary,
+            speed_mbps: message.data.speed_mbps,
+          })
         }
       }
     },
@@ -520,11 +566,14 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
         </div>
       )}
 
-      {/* Update Progress */}
+      {/* Update Progress - Enhanced with layer details */}
       {updateProgress && (
         <div className="space-y-3 rounded-lg border border-blue-500/50 bg-blue-500/10 p-4">
+          {/* Overall progress bar */}
           <div className="flex items-center justify-between text-sm">
-            <span className="font-medium text-blue-400">{updateProgress.message}</span>
+            <span className="font-medium text-blue-400">
+              {layerProgress ? layerProgress.summary : updateProgress.message}
+            </span>
             <span className="text-blue-400">{updateProgress.progress}%</span>
           </div>
           <div className="relative h-2 w-full overflow-hidden rounded-full bg-blue-950">
@@ -533,6 +582,59 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
               style={{ width: `${updateProgress.progress}%` }}
             />
           </div>
+
+          {/* Collapse/Expand toggle (optional polish) */}
+          {layerProgress && layerProgress.layers.length > 0 && (
+            <button
+              onClick={() => setLayerDetailsExpanded(!layerDetailsExpanded)}
+              className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
+            >
+              {layerDetailsExpanded ? '▼ Hide layer details' : '▶ Show layer details'}
+            </button>
+          )}
+
+          {/* Layer-by-layer progress (NEW) */}
+          {layerDetailsExpanded && layerProgress && layerProgress.layers.length > 0 && (
+            <div className="mt-4 space-y-1.5 max-h-48 overflow-y-auto text-xs font-mono">
+              {layerProgress.layers.slice(0, 15).map((layer) => {
+                // Determine status color with CSS transitions
+                let statusColor = 'text-muted-foreground'
+                if (layer.status === 'Pull complete') statusColor = 'text-green-400'
+                else if (layer.status === 'Download complete') statusColor = 'text-green-400'
+                else if (layer.status === 'Already exists') statusColor = 'text-green-400/60'
+                else if (layer.status === 'Downloading') statusColor = 'text-blue-400'
+                else if (layer.status === 'Extracting') statusColor = 'text-yellow-400'
+                else if (layer.status === 'Verifying Checksum') statusColor = 'text-purple-400'
+
+                return (
+                  <div
+                    key={layer.id}
+                    className="flex items-center gap-2 py-0.5 transition-colors duration-300"
+                  >
+                    <span className="text-muted-foreground/60 w-24 truncate">
+                      {layer.id}
+                    </span>
+                    <span className={cn("flex-1 transition-colors duration-300", statusColor)}>
+                      {layer.status}
+                    </span>
+                    {layer.total > 0 && (
+                      <span className="text-muted-foreground/80 text-right w-32">
+                        {layer.percent}% of {formatBytes(layer.total)}
+                      </span>
+                    )}
+                  </div>
+                )
+              })}
+
+              {layerProgress.layers.length > 15 && (
+                <div className="text-muted-foreground/60 text-center pt-2 border-t border-muted-foreground/10">
+                  ... and {layerProgress.remaining_layers > 0
+                    ? layerProgress.remaining_layers + (layerProgress.layers.length - 15)
+                    : layerProgress.layers.length - 15} more layers
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 

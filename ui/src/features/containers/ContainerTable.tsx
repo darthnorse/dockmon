@@ -79,6 +79,7 @@ import { ContainerDrawer } from './components/ContainerDrawer'
 import { BulkActionBar } from './components/BulkActionBar'
 import { BulkActionConfirmModal } from './components/BulkActionConfirmModal'
 import { BatchJobPanel } from './components/BatchJobPanel'
+import { ColumnCustomizationPanel } from './components/ColumnCustomizationPanel'
 import type { Container } from './types'
 import { useSimplifiedWorkflow, useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
 import { useContainerUpdateStatus, useUpdatesSummary, useAllAutoUpdateConfigs, useAllHealthCheckConfigs } from './hooks/useContainerUpdates'
@@ -378,6 +379,8 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   const [sorting, setSorting] = useState<SortingState>(preferences?.container_table_sort || [])
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
   const [globalFilter, setGlobalFilter] = useState('')
+  const [columnVisibility, setColumnVisibility] = useState<Record<string, boolean>>(preferences?.container_table_column_visibility || {})
+  const [columnOrder, setColumnOrder] = useState<string[]>(preferences?.container_table_column_order || [])
   const [searchParams, setSearchParams] = useSearchParams()
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [selectedContainerId, setSelectedContainerId] = useState<string | null>(null)
@@ -434,6 +437,51 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
 
     return () => clearTimeout(timer)
   }, [sorting])
+
+  // Initialize column visibility from preferences when loaded
+  useEffect(() => {
+    if (preferences?.container_table_column_visibility) {
+      setColumnVisibility(preferences.container_table_column_visibility)
+    }
+  }, [preferences?.container_table_column_visibility])
+
+  // Save column visibility changes to preferences
+  useEffect(() => {
+    // Don't save on initial load (empty object)
+    if (Object.keys(columnVisibility).length === 0 && !preferences?.container_table_column_visibility) return
+
+    // Debounce to avoid too many updates
+    const timer = setTimeout(() => {
+      updatePreferences.mutate({ container_table_column_visibility: columnVisibility })
+    }, 500)
+
+    return () => clearTimeout(timer)
+  }, [columnVisibility])
+
+  // Initialize column order from preferences when loaded
+  useEffect(() => {
+    if (preferences?.container_table_column_order && preferences.container_table_column_order.length > 0) {
+      // Always ensure 'select' is first (not customizable, always on left)
+      const orderWithSelect = ['select', ...preferences.container_table_column_order.filter(id => id !== 'select')]
+      setColumnOrder(orderWithSelect)
+    }
+  }, [preferences?.container_table_column_order])
+
+  // Save column order changes to preferences
+  useEffect(() => {
+    // Don't save on initial load (empty array)
+    if (columnOrder.length === 0 && !preferences?.container_table_column_order) return
+
+    // Remove 'select' before saving (we always add it back on load)
+    const orderWithoutSelect = columnOrder.filter(id => id !== 'select')
+
+    // Debounce to avoid too many updates
+    const timer = setTimeout(() => {
+      updatePreferences.mutate({ container_table_column_order: orderWithoutSelect })
+    }, 500)
+
+    return () => clearTimeout(timer)
+  }, [columnOrder])
 
   // Fetch all alert counts in one batched request
   const { data: alertCounts } = useAlertCounts('container')
@@ -985,7 +1033,27 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
           <div className="text-sm">{row.original.host_name || 'localhost'}</div>
         ),
       },
-      // 7. Uptime (duration)
+      // 7. Ports
+      {
+        accessorKey: 'ports',
+        id: 'ports',
+        header: 'Ports',
+        cell: ({ row }) => {
+          const container = row.original
+          if (!container.ports || container.ports.length === 0) {
+            return <span className="text-xs text-muted-foreground">-</span>
+          }
+
+          // Display all ports as comma-separated list
+          return (
+            <div className="text-xs text-muted-foreground">
+              {container.ports.join(', ')}
+            </div>
+          )
+        },
+        enableSorting: false,
+      },
+      // 8. Uptime (duration)
       {
         accessorKey: 'created',
         header: ({ column }) => {
@@ -1040,7 +1108,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         },
         enableSorting: true,
       },
-      // 8. CPU%
+      // 9. CPU%
       {
         id: 'cpu',
         header: ({ column }) => {
@@ -1070,7 +1138,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         },
         enableSorting: true,
       },
-      // 9. RAM (memory usage)
+      // 10. RAM (memory usage)
       {
         id: 'memory',
         header: ({ column }) => {
@@ -1114,7 +1182,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         },
         enableSorting: true,
       },
-      // 10. Actions (Start/Stop/Restart/Logs/View details)
+      // 11. Actions (Start/Stop/Restart/Logs/View details)
       {
         id: 'actions',
         header: 'Actions',
@@ -1266,6 +1334,8 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
     onSortingChange: setSorting,
     onColumnFiltersChange: setColumnFilters,
     onGlobalFilterChange: setGlobalFilter,
+    onColumnVisibilityChange: setColumnVisibility,
+    onColumnOrderChange: setColumnOrder,
     globalFilterFn: (row, _columnId, filterValue) => {
       const searchValue = String(filterValue).toLowerCase()
       const container = row.original
@@ -1296,6 +1366,8 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
       sorting,
       columnFilters,
       globalFilter,
+      columnVisibility,
+      columnOrder,
     },
   })
 
@@ -1423,7 +1495,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
             className="max-w-sm"
             data-testid="containers-search-input"
           />
-          <div className="text-sm text-muted-foreground">
+          <div className="text-sm text-muted-foreground whitespace-nowrap">
             {table.getFilteredRowModel().rows.length} container(s)
           </div>
         </div>
@@ -1653,6 +1725,9 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
               </div>
             </div>
           </DropdownMenu>
+
+          {/* Column Customization */}
+          <ColumnCustomizationPanel table={table} />
         </div>
       </div>
 

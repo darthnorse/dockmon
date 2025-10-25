@@ -37,6 +37,12 @@ class HealthCheckFilter(logging.Filter):
             # Settings polling (frontend polls for theme, etc.)
             if '/api/settings' in message:
                 return False
+            # User preferences polling (React Query polls for preferences)
+            if '/api/v2/user/preferences' in message:
+                return False
+            # Auto-update configs polling (dashboard polls for each container)
+            if '/api/auto-update-configs' in message:
+                return False
         return True
 
 

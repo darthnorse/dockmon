@@ -91,6 +91,10 @@ class UserPreferences(BaseModel):
     host_table_sort: Optional[list[Dict[str, Any]]] = Field(default=None)
     container_table_sort: Optional[list[Dict[str, Any]]] = Field(default=None)
 
+    # Table column customization preferences
+    container_table_column_visibility: Optional[Dict[str, bool]] = Field(default=None)  # { column_id: visible }
+    container_table_column_order: Optional[list[str]] = Field(default=None)  # ['column_id1', 'column_id2', ...]
+
 
 class PreferencesUpdate(BaseModel):
     """Partial update to preferences"""
@@ -108,6 +112,10 @@ class PreferencesUpdate(BaseModel):
     # Table sorting preferences
     host_table_sort: Optional[list[Dict[str, Any]]] = None
     container_table_sort: Optional[list[Dict[str, Any]]] = None
+
+    # Table column customization preferences
+    container_table_column_visibility: Optional[Dict[str, bool]] = None
+    container_table_column_order: Optional[list[str]] = None
 
 
 @router.get("/preferences", response_model=UserPreferences)
@@ -225,7 +233,9 @@ async def get_user_preferences(
             dashboard=dashboard,
             simplified_workflow=user_result.simplified_workflow if user_result and hasattr(user_result, 'simplified_workflow') else True,
             host_table_sort=prefs_data.get("host_table_sort"),
-            container_table_sort=prefs_data.get("container_table_sort")
+            container_table_sort=prefs_data.get("container_table_sort"),
+            container_table_column_visibility=prefs_data.get("container_table_column_visibility"),
+            container_table_column_order=prefs_data.get("container_table_column_order")
         )
 
 
@@ -352,7 +362,9 @@ async def update_user_preferences(
         needs_prefs_update = (
             updates.dashboard is not None or
             updates.host_table_sort is not None or
-            updates.container_table_sort is not None
+            updates.container_table_sort is not None or
+            updates.container_table_column_visibility is not None or
+            updates.container_table_column_order is not None
         )
 
         if needs_prefs_update:
@@ -381,6 +393,13 @@ async def update_user_preferences(
 
             if updates.container_table_sort is not None:
                 existing_prefs["container_table_sort"] = updates.container_table_sort
+
+            # Update column customization preferences
+            if updates.container_table_column_visibility is not None:
+                existing_prefs["container_table_column_visibility"] = updates.container_table_column_visibility
+
+            if updates.container_table_column_order is not None:
+                existing_prefs["container_table_column_order"] = updates.container_table_column_order
 
             # SECURITY FIX: Validate JSON depth before serialization
             try:
@@ -424,7 +443,8 @@ async def update_user_preferences(
 
         session.commit()
 
-    logger.info(f"Preferences updated for user {user_id}")
+    # Note: Removed noisy log - preferences update frequently from frontend (column changes, etc.)
+    # Only log errors/warnings for this endpoint
 
     return {"status": "ok", "message": "Preferences updated successfully"}
 

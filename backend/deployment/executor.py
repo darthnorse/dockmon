@@ -15,6 +15,7 @@ Usage:
     await executor.execute_deployment(deployment_id)
 """
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -26,6 +27,7 @@ from database import Deployment, DeploymentContainer, DatabaseManager
 from .state_machine import DeploymentStateMachine
 from .security_validator import SecurityValidator, SecurityLevel
 from utils.async_docker import async_docker_call
+from utils.image_pull_progress import ImagePullProgress
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +57,15 @@ class DeploymentExecutor:
         self.db = database_manager
         self.state_machine = DeploymentStateMachine()
         self.security_validator = SecurityValidator()
+
+        # Store event loop for layer progress tracker (thread-safe coroutine execution)
+        self.loop = asyncio.get_event_loop()
+
+        # Initialize image pull progress tracker (shared with update system)
+        self.image_pull_tracker = ImagePullProgress(
+            self.loop,
+            docker_monitor.manager if hasattr(docker_monitor, 'manager') else None
+        )
 
     def _generate_deployment_id(self, host_id: str) -> str:
         """
@@ -230,7 +241,7 @@ class DeploymentExecutor:
         if not client:
             raise ValueError(f"Docker client not found for host {host_id}")
 
-        # Stage 1: Pull image (10-50%)
+        # Stage 1: Pull image with layer-by-layer progress (10-50%)
         image = definition.get('image')
         if not image:
             raise ValueError("Container definition missing 'image' field")
@@ -238,7 +249,16 @@ class DeploymentExecutor:
         await self._update_progress(session, deployment, 10, f'Pulling image {image}')
         session.commit()
 
-        await async_docker_call(client.images.pull, image)
+        # Use shared ImagePullProgress for detailed layer tracking
+        # Broadcasts real-time layer progress via WebSocket (same as update system)
+        await self.image_pull_tracker.pull_with_progress(
+            client,
+            image,
+            host_id,
+            deployment.id,  # Use deployment ID as entity_id
+            event_type="deployment_layer_progress",
+            timeout=1800  # 30 minutes
+        )
         logger.info(f"Pulled image {image} for deployment {deployment.id}")
 
         # Stage 2: Create container (50-70%)

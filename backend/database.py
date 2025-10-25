@@ -640,6 +640,138 @@ class RegistryCredential(Base):
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
 
 
+class Deployment(Base):
+    """
+    Deployment records for container lifecycle operations.
+
+    Tracks container deployments and stacks with state machine support
+    and commitment point tracking for rollback safety.
+
+    Deployment Types:
+        - container: Single container deployment
+        - stack: Multi-container stack deployment
+
+    Status Flow:
+        pending -> running -> completed
+                          |-> failed
+                          |-> rolled_back
+
+    Commitment Point:
+        - committed=False: Operation not yet committed to database, safe to rollback
+        - committed=True: Operation committed, rollback would destroy committed state
+
+    CRITICAL STANDARDS:
+        - id: Composite key format {host_id}:{deployment_short_id}
+        - deployment_short_id: SHORT ID (12 chars), never full 64-char ID
+        - Composite key prevents collisions across multiple hosts
+    """
+    __tablename__ = "deployments"
+
+    id = Column(String, primary_key=True)  # Composite: {host_id}:{deployment_short_id}
+    host_id = Column(String, ForeignKey("docker_hosts.id", ondelete="CASCADE"), nullable=False)
+    deployment_type = Column(String, nullable=False)  # 'container' | 'stack'
+    name = Column(String, nullable=False)
+    status = Column(String, nullable=False, default='pending')  # pending, running, completed, failed, rolled_back
+    definition = Column(Text, nullable=False)  # JSON: container/stack configuration
+    error_message = Column(Text, nullable=True)
+    progress_percent = Column(Integer, default=0, nullable=False)  # Deployment progress 0-100%
+    progress_message = Column(Text, nullable=True)  # Current progress status message
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    committed = Column(Boolean, default=False, nullable=False)  # Commitment point tracking
+    rollback_on_failure = Column(Boolean, default=True, nullable=False)
+
+    # Relationships
+    host = relationship("DockerHostDB")
+    containers = relationship("DeploymentContainer", back_populates="deployment", cascade="all, delete-orphan")
+
+    # Indexes and constraints
+    __table_args__ = (
+        UniqueConstraint('host_id', 'name', name='uq_deployment_host_name'),  # Unique name per host
+        Index('idx_deployment_host_id', 'host_id'),
+        Index('idx_deployment_status', 'status'),
+        Index('idx_deployment_created_at', 'created_at'),
+        {"sqlite_autoincrement": False},
+    )
+
+
+class DeploymentContainer(Base):
+    """
+    Container participation in a deployment.
+
+    Junction table linking deployments to containers. For single container
+    deployments, service_name is NULL. For stack deployments, service_name
+    identifies the role (e.g., 'web', 'db', 'redis').
+
+    CRITICAL STANDARDS:
+        - container_id: SHORT ID (12 chars), never full 64-char ID
+        - service_name: NULL for single containers, name for stack services
+    """
+    __tablename__ = "deployment_containers"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    deployment_id = Column(String, ForeignKey("deployments.id", ondelete="CASCADE"), nullable=False)
+    container_id = Column(String, nullable=False)  # SHORT ID (12 chars)
+    service_name = Column(String, nullable=True)  # NULL for single containers, service name for stacks
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+
+    # Relationships
+    deployment = relationship("Deployment", back_populates="containers")
+
+    # Indexes
+    __table_args__ = (
+        Index('idx_deployment_container_deployment', 'deployment_id'),
+        Index('idx_deployment_container_container', 'container_id'),
+        {"sqlite_autoincrement": True},
+    )
+
+
+class DeploymentTemplate(Base):
+    """
+    Saved deployment templates for reusable container configurations.
+
+    Allows users to save and reuse container configurations as templates.
+    Templates are categorized for organization (e.g., 'web', 'database', 'monitoring').
+
+    Template Variables:
+        Templates can include variables like ${PORT} that are substituted at deployment time.
+        Variables are defined in the 'variables' JSON field with default values and types.
+
+    Template Structure (template_definition):
+        Single container (deployment_type='container'):
+            {"container": {"image": "nginx:latest", "ports": {"80/tcp": "${PORT}"}, ...}}
+
+        Stack (deployment_type='stack'):
+            {
+                "services": {
+                    "web": {"image": "nginx:latest", ...},
+                    "db": {"image": "postgres:15", ...}
+                }
+            }
+    """
+    __tablename__ = "deployment_templates"
+
+    id = Column(String, primary_key=True)  # e.g., 'tpl_nginx_001'
+    name = Column(String, nullable=False, unique=True)
+    category = Column(String, nullable=True)  # e.g., 'web', 'database', 'monitoring'
+    description = Column(Text, nullable=True)
+    deployment_type = Column(String, nullable=False)  # 'container' | 'stack'
+    template_definition = Column(Text, nullable=False)  # JSON: container/stack configuration with variables
+    variables = Column(Text, nullable=True)  # JSON: {"PORT": {"default": 8080, "type": "integer", "description": "..."}}
+    is_builtin = Column(Boolean, default=False, nullable=False)  # Built-in vs user-created template
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+    # Indexes
+    __table_args__ = (
+        Index('idx_deployment_template_name', 'name'),
+        Index('idx_deployment_template_category', 'category'),
+        {"sqlite_autoincrement": False},
+    )
+
+
 class DatabaseManager:
     """
     Database management and operations (Singleton)

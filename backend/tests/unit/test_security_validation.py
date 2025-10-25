@@ -18,17 +18,27 @@ from backend.deployment.security_validator import (
 )
 
 
+def get_secure_base_config():
+    """
+    Returns a baseline secure container config with no violations.
+    Tests can override specific fields to test individual security issues.
+    """
+    return {
+        "image": "nginx:1.25.3",  # Specific tag (not :latest)
+        "mem_limit": "512m",  # Memory limit set
+        "cpus": "1.0",  # CPU limit set
+    }
+
+
 @pytest.mark.unit
 class TestDangerousMounts:
     """Test detection of dangerous volume mounts."""
 
     def test_detect_docker_socket_mount(self, test_db):
         """Should detect mounting of /var/run/docker.sock as CRITICAL."""
-        config = {
-            "image": "nginx:latest",
-            "volumes": {
-                "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "rw"}
-            }
+        config = get_secure_base_config()
+        config["volumes"] = {
+            "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "rw"}
         }
 
         validator = SecurityValidator()
@@ -42,11 +52,9 @@ class TestDangerousMounts:
 
     def test_detect_root_filesystem_mount(self, test_db):
         """Should detect mounting of root filesystem as CRITICAL."""
-        config = {
-            "image": "nginx:latest",
-            "volumes": {
-                "/": {"bind": "/host", "mode": "ro"}
-            }
+        config = get_secure_base_config()
+        config["volumes"] = {
+            "/": {"bind": "/host", "mode": "rw"}  # rw to maintain CRITICAL level
         }
 
         validator = SecurityValidator()
@@ -58,11 +66,9 @@ class TestDangerousMounts:
 
     def test_detect_etc_mount(self, test_db):
         """Should detect mounting of /etc as HIGH severity."""
-        config = {
-            "image": "nginx:latest",
-            "volumes": {
-                "/etc": {"bind": "/host-etc", "mode": "ro"}
-            }
+        config = get_secure_base_config()
+        config["volumes"] = {
+            "/etc": {"bind": "/host-etc", "mode": "rw"}  # rw to maintain HIGH level
         }
 
         validator = SecurityValidator()
@@ -74,11 +80,9 @@ class TestDangerousMounts:
 
     def test_detect_proc_mount(self, test_db):
         """Should detect mounting of /proc as HIGH severity."""
-        config = {
-            "image": "nginx:latest",
-            "volumes": {
-                "/proc": {"bind": "/host-proc", "mode": "ro"}
-            }
+        config = get_secure_base_config()
+        config["volumes"] = {
+            "/proc": {"bind": "/host-proc", "mode": "rw"}  # rw to maintain HIGH level
         }
 
         validator = SecurityValidator()
@@ -89,11 +93,9 @@ class TestDangerousMounts:
 
     def test_detect_sys_mount(self, test_db):
         """Should detect mounting of /sys as HIGH severity."""
-        config = {
-            "image": "nginx:latest",
-            "volumes": {
-                "/sys": {"bind": "/host-sys", "mode": "ro"}
-            }
+        config = get_secure_base_config()
+        config["volumes"] = {
+            "/sys": {"bind": "/host-sys", "mode": "rw"}  # rw to maintain HIGH level
         }
 
         validator = SecurityValidator()
@@ -104,18 +106,14 @@ class TestDangerousMounts:
 
     def test_readonly_mount_reduces_severity(self, test_db):
         """Read-only mounts should be less severe than read-write."""
-        rw_config = {
-            "image": "nginx:latest",
-            "volumes": {
-                "/etc": {"bind": "/host-etc", "mode": "rw"}
-            }
+        rw_config = get_secure_base_config()
+        rw_config["volumes"] = {
+            "/etc": {"bind": "/host-etc", "mode": "rw"}
         }
 
-        ro_config = {
-            "image": "nginx:latest",
-            "volumes": {
-                "/etc": {"bind": "/host-etc", "mode": "ro"}
-            }
+        ro_config = get_secure_base_config()
+        ro_config["volumes"] = {
+            "/etc": {"bind": "/host-etc", "mode": "ro"}
         }
 
         validator = SecurityValidator()
@@ -127,12 +125,10 @@ class TestDangerousMounts:
 
     def test_safe_volume_mounts_pass(self, test_db):
         """Normal volume mounts should not trigger violations."""
-        config = {
-            "image": "nginx:latest",
-            "volumes": {
-                "/app/data": {"bind": "/data", "mode": "rw"},
-                "/var/log/nginx": {"bind": "/logs", "mode": "rw"}
-            }
+        config = get_secure_base_config()
+        config["volumes"] = {
+            "/app/data": {"bind": "/data", "mode": "rw"},
+            "/var/log/nginx": {"bind": "/logs", "mode": "rw"}
         }
 
         validator = SecurityValidator()
@@ -142,13 +138,11 @@ class TestDangerousMounts:
 
     def test_multiple_dangerous_mounts(self, test_db):
         """Should detect multiple dangerous mounts."""
-        config = {
-            "image": "nginx:latest",
-            "volumes": {
-                "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "rw"},
-                "/etc": {"bind": "/host-etc", "mode": "ro"},
-                "/proc": {"bind": "/host-proc", "mode": "ro"}
-            }
+        config = get_secure_base_config()
+        config["volumes"] = {
+            "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "rw"},
+            "/etc": {"bind": "/host-etc", "mode": "ro"},
+            "/proc": {"bind": "/host-proc", "mode": "ro"}
         }
 
         validator = SecurityValidator()
@@ -164,10 +158,8 @@ class TestPrivilegedContainers:
 
     def test_detect_privileged_flag(self, test_db):
         """Should detect privileged=true as CRITICAL."""
-        config = {
-            "image": "nginx:latest",
-            "privileged": True
-        }
+        config = get_secure_base_config()
+        config["privileged"] = True
 
         validator = SecurityValidator()
         violations = validator.validate_container_config(config)
@@ -179,10 +171,8 @@ class TestPrivilegedContainers:
 
     def test_privileged_false_passes(self, test_db):
         """Privileged=false should not trigger violation."""
-        config = {
-            "image": "nginx:latest",
-            "privileged": False
-        }
+        config = get_secure_base_config()
+        config["privileged"] = False
 
         validator = SecurityValidator()
         violations = validator.validate_container_config(config)
@@ -196,10 +186,8 @@ class TestHostNetworkMode:
 
     def test_detect_host_network_mode(self, test_db):
         """Should detect network_mode=host as HIGH severity."""
-        config = {
-            "image": "nginx:latest",
-            "network_mode": "host"
-        }
+        config = get_secure_base_config()
+        config["network_mode"] = "host"
 
         validator = SecurityValidator()
         violations = validator.validate_container_config(config)
@@ -211,10 +199,8 @@ class TestHostNetworkMode:
 
     def test_bridge_network_mode_passes(self, test_db):
         """Bridge network mode should not trigger violation."""
-        config = {
-            "image": "nginx:latest",
-            "network_mode": "bridge"
-        }
+        config = get_secure_base_config()
+        config["network_mode"] = "bridge"
 
         validator = SecurityValidator()
         violations = validator.validate_container_config(config)
@@ -223,10 +209,8 @@ class TestHostNetworkMode:
 
     def test_custom_network_passes(self, test_db):
         """Custom networks should not trigger violation."""
-        config = {
-            "image": "nginx:latest",
-            "network_mode": "my-custom-network"
-        }
+        config = get_secure_base_config()
+        config["network_mode"] = "my-custom-network"
 
         validator = SecurityValidator()
         violations = validator.validate_container_config(config)
@@ -240,10 +224,8 @@ class TestDangerousCapabilities:
 
     def test_detect_sys_admin_capability(self, test_db):
         """Should detect CAP_SYS_ADMIN as HIGH severity."""
-        config = {
-            "image": "nginx:latest",
-            "cap_add": ["SYS_ADMIN"]
-        }
+        config = get_secure_base_config()
+        config["cap_add"] = ["SYS_ADMIN"]
 
         validator = SecurityValidator()
         violations = validator.validate_container_config(config)
@@ -254,10 +236,8 @@ class TestDangerousCapabilities:
 
     def test_detect_net_admin_capability(self, test_db):
         """Should detect CAP_NET_ADMIN as MEDIUM severity."""
-        config = {
-            "image": "nginx:latest",
-            "cap_add": ["NET_ADMIN"]
-        }
+        config = get_secure_base_config()
+        config["cap_add"] = ["NET_ADMIN"]
 
         validator = SecurityValidator()
         violations = validator.validate_container_config(config)
@@ -267,10 +247,8 @@ class TestDangerousCapabilities:
 
     def test_detect_sys_module_capability(self, test_db):
         """Should detect CAP_SYS_MODULE as HIGH severity."""
-        config = {
-            "image": "nginx:latest",
-            "cap_add": ["SYS_MODULE"]
-        }
+        config = get_secure_base_config()
+        config["cap_add"] = ["SYS_MODULE"]
 
         validator = SecurityValidator()
         violations = validator.validate_container_config(config)
@@ -280,10 +258,8 @@ class TestDangerousCapabilities:
 
     def test_safe_capabilities_pass(self, test_db):
         """Safe capabilities should not trigger violations."""
-        config = {
-            "image": "nginx:latest",
-            "cap_add": ["NET_BIND_SERVICE", "CHOWN"]
-        }
+        config = get_secure_base_config()
+        config["cap_add"] = ["NET_BIND_SERVICE", "CHOWN"]
 
         validator = SecurityValidator()
         violations = validator.validate_container_config(config)
@@ -292,10 +268,8 @@ class TestDangerousCapabilities:
 
     def test_dropping_capabilities_passes(self, test_db):
         """Dropping capabilities should not trigger violations."""
-        config = {
-            "image": "nginx:latest",
-            "cap_drop": ["ALL"]
-        }
+        config = get_secure_base_config()
+        config["cap_drop"] = ["ALL"]
 
         validator = SecurityValidator()
         violations = validator.validate_container_config(config)
@@ -304,10 +278,8 @@ class TestDangerousCapabilities:
 
     def test_multiple_dangerous_capabilities(self, test_db):
         """Should detect multiple dangerous capabilities."""
-        config = {
-            "image": "nginx:latest",
-            "cap_add": ["SYS_ADMIN", "SYS_MODULE", "NET_ADMIN"]
-        }
+        config = get_secure_base_config()
+        config["cap_add"] = ["SYS_ADMIN", "SYS_MODULE", "NET_ADMIN"]
 
         validator = SecurityValidator()
         violations = validator.validate_container_config(config)

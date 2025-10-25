@@ -675,7 +675,7 @@ class Deployment(Base):
     definition = Column(Text, nullable=False)  # JSON: container/stack configuration
     error_message = Column(Text, nullable=True)
     progress_percent = Column(Integer, default=0, nullable=False)  # Deployment progress 0-100%
-    progress_message = Column(Text, nullable=True)  # Current progress status message
+    current_stage = Column(Text, nullable=True)  # Current deployment stage (e.g., 'Pulling image', 'Creating container')
     created_at = Column(DateTime, default=utcnow, nullable=False)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
     started_at = Column(DateTime, nullable=True)

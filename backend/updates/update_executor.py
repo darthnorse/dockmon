@@ -518,8 +518,7 @@ class UpdateExecutor:
             await self._cleanup_backup_container(docker_client, backup_container, backup_name)
 
             logger.info(f"Successfully updated container {container_name}")
-            # Use original container_id for final broadcast so frontend receives it
-            await self._broadcast_progress(host_id, container_id, "completed", 100, "Update completed successfully")
+            await self._broadcast_progress(host_id, new_container_id, "completed", 100, "Update completed successfully")
             return True
 
         except Exception as e:

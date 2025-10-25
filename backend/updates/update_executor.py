@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Dict, Optional, Any, Tuple
 import docker
 from docker import APIClient
+import docker.tls
 
 from database import DatabaseManager, ContainerUpdate, AutoRestartConfig, ContainerDesiredState, ContainerHttpHealthCheck, GlobalSettings
 from event_bus import Event, EventType as BusEventType, get_event_bus
@@ -653,7 +654,8 @@ class UpdateExecutor:
         This safely copies TLS certificates, headers, and verification settings from the
         high-level Docker client to a low-level APIClient for streaming operations.
 
-        Safe and future-proof - uses only stable public APIs with defensive getattr().
+        CRITICAL: TLS config must be passed to APIClient constructor, not set after.
+        The constructor validates the connection immediately, so certs must be present.
 
         Args:
             client: High-level Docker client
@@ -661,10 +663,48 @@ class UpdateExecutor:
         Returns:
             Low-level APIClient configured with same connection settings
         """
-        api_client = APIClient(base_url=client.api.base_url)
+        # Extract TLS configuration from high-level client
+        cert = getattr(client.api, "cert", None)
+        verify = getattr(client.api, "verify", True)
+
+        # Build TLS config for APIClient constructor
+        # If client cert exists, create TLSConfig object with proper mTLS settings
+        if cert:
+            # cert is tuple: (client_cert_path, client_key_path)
+            # verify is either bool or string path to CA cert
+            if isinstance(verify, str):
+                # mTLS with CA certificate path
+                tls_config = docker.tls.TLSConfig(
+                    client_cert=cert,
+                    ca_cert=verify,
+                    verify=True
+                )
+            else:
+                # TLS with client cert but no CA (unusual but supported)
+                tls_config = docker.tls.TLSConfig(
+                    client_cert=cert,
+                    verify=verify
+                )
+        else:
+            # No client cert
+            if isinstance(verify, str):
+                # TLS with server validation: CA cert but no client cert
+                # This validates the server's certificate against a custom CA
+                tls_config = docker.tls.TLSConfig(ca_cert=verify, verify=True)
+            else:
+                # Plain connection: no certs, just bool verify (True/False)
+                tls_config = verify
+
+        # Create APIClient with TLS config passed to constructor
+        # This ensures the constructor's /version check uses the correct certs
+        api_client = APIClient(
+            base_url=client.api.base_url,
+            tls=tls_config
+        )
+
+        # Copy headers (auth tokens, user-agent, etc.)
         api_client.headers = getattr(client.api, "headers", {})
-        api_client.cert = getattr(client.api, "cert", None)
-        api_client.verify = getattr(client.api, "verify", True)
+
         return api_client
 
     async def _pull_image(self, client: docker.DockerClient, image: str, timeout: int = 1800):

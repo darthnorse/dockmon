@@ -494,6 +494,14 @@ class UpdateExecutor:
                         f"ContainerUpdate, AutoRestartConfig, ContainerDesiredState, ContainerHttpHealthCheck"
                     )
 
+            # Notify frontend that container ID changed (keeps modal open during updates)
+            await self._broadcast_container_recreated(
+                host_id,
+                old_composite_key,
+                new_composite_key,
+                container_name
+            )
+
             # Step 8: Emit update completion event via EventBus (which handles database logging)
             await self._emit_update_completed_event(
                 host_id,
@@ -1469,6 +1477,48 @@ class UpdateExecutor:
 
         except Exception as e:
             logger.error(f"Error re-evaluating alerts after update: {e}", exc_info=True)
+
+    async def _broadcast_container_recreated(
+        self,
+        host_id: str,
+        old_composite_key: str,
+        new_composite_key: str,
+        container_name: str
+    ):
+        """
+        Broadcast container_recreated event to keep frontend modal open during updates.
+
+        When a container is updated, it gets a new Docker ID. This notifies the frontend
+        so modals/views tracking the old ID can update to track the new ID seamlessly.
+
+        Args:
+            host_id: Host UUID
+            old_composite_key: Old composite key (host_id:old_container_id)
+            new_composite_key: New composite key (host_id:new_container_id)
+            container_name: Container name (for logging/debugging)
+        """
+        try:
+            if not self.monitor or not hasattr(self.monitor, 'manager'):
+                logger.warning("No WebSocket manager available for container_recreated broadcast")
+                return
+
+            logger.info(f"Broadcasting container_recreated event for {container_name}: {old_composite_key} → {new_composite_key}")
+
+            await self.monitor.manager.broadcast({
+                "type": "container_recreated",
+                "data": {
+                    "host_id": host_id,
+                    "old_composite_key": old_composite_key,
+                    "new_composite_key": new_composite_key,
+                    "container_name": container_name
+                }
+            })
+
+            logger.debug(f"Broadcast container_recreated event for {container_name}")
+
+        except Exception as e:
+            # Non-critical error - modal may close but update succeeded
+            logger.error(f"Error broadcasting container_recreated event: {e}", exc_info=True)
 
     async def _emit_update_completed_event(
         self,

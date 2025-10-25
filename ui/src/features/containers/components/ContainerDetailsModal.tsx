@@ -52,6 +52,7 @@ export function ContainerDetailsModal({
   const [activeTab, setActiveTab] = useState(initialTab)
   const [uptime, setUptime] = useState<string>('')
   const [isPerformingAction, setIsPerformingAction] = useState(false)
+  const [fallbackContainer, setFallbackContainer] = useState<Container | null>(null)
 
   // Self-fetch container if not provided externally
   // This decouples the modal from the provider's data sources
@@ -80,11 +81,18 @@ export function ContainerDetailsModal({
       return stats as Container
     }
 
+    // Use fallback during data gap (container recreated but not yet in cache)
+    // This prevents modal from closing during the 0-2s between container recreation
+    // and the next monitoring poll that updates the caches with the new container ID
+    if (fallbackContainer) {
+      return fallbackContainer
+    }
+
     // Container not found in any source
     // In practice, this should rarely happen since modal is opened
     // from pages that already have the container data loaded
     return null
-  }, [open, containerId, externalContainer, queryClient, containerStats])
+  }, [open, containerId, externalContainer, queryClient, containerStats, fallbackContainer])
 
   // Update active tab when initialTab changes
   useEffect(() => {
@@ -127,23 +135,17 @@ export function ContainerDetailsModal({
     (message: any) => {
       if (!container || !containerId) return
 
-      // Check if this is a container_update message for the same container name but different ID
-      if (message.type === 'container_update' && message.data) {
-        const updatedContainer = message.data
+      // Listen for container_recreated event (sent immediately when container gets new ID)
+      if (message.type === 'container_recreated' && message.data) {
+        const { old_composite_key, new_composite_key } = message.data
 
-        // Same host and name, but different ID = container was recreated
-        if (
-          updatedContainer.host_id === container.host_id &&
-          updatedContainer.name === container.name &&
-          updatedContainer.id &&  // Ensure new ID exists before comparing
-          updatedContainer.id !== container.id
-        ) {
-          const newCompositeKey = `${updatedContainer.host_id}:${updatedContainer.id}`
-          console.log(`Container ${container.name} recreated with new ID, updating modal tracking:`, {
-            old: containerId,
-            new: newCompositeKey,
-          })
-          updateContainerId(newCompositeKey)
+        // Check if this event is for the container we're currently viewing
+        if (old_composite_key === containerId) {
+          // CRITICAL: Save current container as fallback BEFORE updating ID
+          // This prevents modal from closing during the 0-2s gap until monitoring poll arrives
+          setFallbackContainer(container)
+
+          updateContainerId(new_composite_key)
         }
       }
     },
@@ -182,7 +184,9 @@ export function ContainerDetailsModal({
   const handleStart = async () => {
     setIsPerformingAction(true)
     try {
-      await apiClient.post(`/hosts/${container.host_id}/containers/${container.id}/start`)
+      // CRITICAL: Use current tracked containerId, not container.id which may be stale from fallback
+      const { hostId, containerId: currentId } = parseCompositeKey(containerId!)
+      await apiClient.post(`/hosts/${hostId}/containers/${currentId}/start`)
       toast.success(`Started ${container.name}`)
     } catch (error) {
       toast.error(`Failed to start container: ${error instanceof Error ? error.message : 'Unknown error'}`)
@@ -194,7 +198,9 @@ export function ContainerDetailsModal({
   const handleStop = async () => {
     setIsPerformingAction(true)
     try {
-      await apiClient.post(`/hosts/${container.host_id}/containers/${container.id}/stop`)
+      // CRITICAL: Use current tracked containerId, not container.id which may be stale from fallback
+      const { hostId, containerId: currentId } = parseCompositeKey(containerId!)
+      await apiClient.post(`/hosts/${hostId}/containers/${currentId}/stop`)
       toast.success(`Stopped ${container.name}`)
     } catch (error) {
       toast.error(`Failed to stop container: ${error instanceof Error ? error.message : 'Unknown error'}`)
@@ -206,7 +212,9 @@ export function ContainerDetailsModal({
   const handleRestart = async () => {
     setIsPerformingAction(true)
     try {
-      await apiClient.post(`/hosts/${container.host_id}/containers/${container.id}/restart`)
+      // CRITICAL: Use current tracked containerId, not container.id which may be stale from fallback
+      const { hostId, containerId: currentId } = parseCompositeKey(containerId!)
+      await apiClient.post(`/hosts/${hostId}/containers/${currentId}/restart`)
       toast.success(`Restarting ${container.name}`)
     } catch (error) {
       toast.error(`Failed to restart container: ${error instanceof Error ? error.message : 'Unknown error'}`)

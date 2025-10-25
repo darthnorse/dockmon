@@ -210,6 +210,7 @@ def _validate_schema(engine, version: str):
             'container_updates_columns': ['registry_page_url', 'registry_page_source'],
             'container_http_health_checks_columns': ['max_restart_attempts', 'restart_retry_delay_seconds'],
         },
+        # '004_v2_0_3': No schema changes - security/correctness fixes only (app_version update)
         # Add validations for future versions here:
     }
 

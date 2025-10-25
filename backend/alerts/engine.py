@@ -248,20 +248,20 @@ class AlertEngine:
                 AlertRuleV2.scope == context.scope_type
             ).all()
 
-            logger.info(f"Engine: Found {len(rules)} event-driven rules for scope={context.scope_type}")
+            logger.debug(f"Engine: Found {len(rules)} event-driven rules for scope={context.scope_type}")
 
             for rule in rules:
-                logger.info(f"Engine: Checking rule '{rule.name}' (kind={rule.kind}) against event_type={event_type}")
+                logger.debug(f"Engine: Checking rule '{rule.name}' (kind={rule.kind}) against event_type={event_type}")
 
                 # Check if rule matches this event type
                 matches_event = self._rule_matches_event(rule, event_type, context, event_data)
-                logger.info(f"Engine: Rule '{rule.name}' matches event: {matches_event}")
+                logger.debug(f"Engine: Rule '{rule.name}' matches event: {matches_event}")
                 if not matches_event:
                     continue
 
                 # Check selectors
                 matches_selectors = self._check_selectors(rule, context)
-                logger.info(f"Engine: Rule '{rule.name}' matches selectors: {matches_selectors}")
+                logger.debug(f"Engine: Rule '{rule.name}' matches selectors: {matches_selectors}")
                 if not matches_selectors:
                     continue
 
@@ -278,11 +278,11 @@ class AlertEngine:
 
                 # Generate dedup key (includes rule_id to allow multiple rules for same condition)
                 dedup_key = self._make_dedup_key(rule.id, rule.kind, context.scope_type, context.scope_id)
-                logger.info(f"Engine: Dedup key: {dedup_key}")
+                logger.debug(f"Engine: Dedup key: {dedup_key}")
 
                 # Get or create alert (pass event_data for template variables)
                 alert, is_new = self._get_or_create_alert(dedup_key, rule, context, event_data=event_data)
-                logger.info(f"Engine: Alert {alert.id} - is_new={is_new}")
+                logger.debug(f"Engine: Alert {alert.id} - is_new={is_new}")
 
                 # Check cooldown
                 if not is_new and self._check_cooldown(alert, rule.cooldown_seconds):
@@ -294,14 +294,14 @@ class AlertEngine:
                 # Update alert
                 if not is_new:
                     alert = self._update_alert(alert, event_data=event_data)
-                    logger.info(f"Engine: Updated existing alert {alert.id}")
+                    logger.debug(f"Engine: Updated existing alert {alert.id}")
 
                 alerts_changed.append(alert)
-                logger.info(f"Engine: Added alert {alert.id} to alerts_changed list (count={len(alerts_changed)})")
+                logger.debug(f"Engine: Added alert {alert.id} to alerts_changed list (count={len(alerts_changed)})")
                 logger.info(f"Engine: Alert {alert.id} ready for notification")
 
         if alerts_changed:
-            logger.info(f"Engine: evaluate_event returning {len(alerts_changed)} alerts")
+            logger.debug(f"Engine: evaluate_event returning {len(alerts_changed)} alerts")
         return alerts_changed
 
     def _rule_matches_event(

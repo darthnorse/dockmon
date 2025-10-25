@@ -41,6 +41,10 @@ export interface UserPreferences {
   host_table_sort: Array<{ id: string; desc: boolean }> | null
   container_table_sort: Array<{ id: string; desc: boolean }> | null
 
+  // Table column customization preferences
+  container_table_column_visibility: Record<string, boolean> | null
+  container_table_column_order: string[] | null
+
   // Dashboard preferences (host container sorts are string-based sort keys)
   hostContainerSorts?: Record<string, string>
 

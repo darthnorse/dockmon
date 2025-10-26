@@ -9,8 +9,11 @@
  * - Delete deployments
  */
 
-import { useState } from 'react'
-import { Package, Plus, Trash2, Play, Edit, AlertCircle, CheckCircle, XCircle, Loader2 } from 'lucide-react'
+import { useState, useEffect, useCallback } from 'react'
+import { Plus, Trash2, Play, Edit, AlertCircle, CheckCircle, XCircle, Loader2, Layers, Bookmark } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { useQueryClient, useQuery } from '@tanstack/react-query'
+import { apiClient } from '@/lib/api/client'
 import { Button } from '@/components/ui/button'
 import {
   Table,
@@ -40,20 +43,65 @@ import {
 } from '@/components/ui/alert-dialog'
 import { useDeployments, useExecuteDeployment, useDeleteDeployment } from './hooks/useDeployments'
 import { DeploymentForm } from './components/DeploymentForm'
+import { SaveAsTemplateDialog } from './components/SaveAsTemplateDialog'
 import { LayerProgressDisplay } from '@/components/shared/LayerProgressDisplay'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
+import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
+import { useContainerModal } from '@/providers/ContainerModalProvider'
+import { makeCompositeKeyFrom } from '@/lib/utils/containerKeys'
+import { HostDetailsModal } from '@/features/hosts/components/HostDetailsModal'
 import type { Deployment, DeploymentStatus, DeploymentFilters } from './types'
 
 export function DeploymentsPage() {
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
+  const { addMessageHandler } = useWebSocketContext()
+  const { openModal: openContainerModal } = useContainerModal()
+
   const [filters, setFilters] = useState<DeploymentFilters>({})
   const [showNewDeploymentForm, setShowNewDeploymentForm] = useState(false)
   const [deploymentToEdit, setDeploymentToEdit] = useState<Deployment | null>(null)
   const [deploymentToDelete, setDeploymentToDelete] = useState<Deployment | null>(null)
+  const [deploymentToSave, setDeploymentToSave] = useState<Deployment | null>(null)
+  const [hostModalOpen, setHostModalOpen] = useState(false)
+  const [selectedHostId, setSelectedHostId] = useState<string | null>(null)
 
   const { data: deployments, isLoading, error} = useDeployments(filters)
   const { data: hosts } = useHosts()
+  const { data: containers } = useQuery<any[]>({
+    queryKey: ['containers'],
+    queryFn: () => apiClient.get('/containers'),
+  })
   const executeDeployment = useExecuteDeployment()
   const deleteDeployment = useDeleteDeployment()
+
+  // WebSocket: Listen for real-time deployment progress updates
+  const handleDeploymentUpdate = useCallback((message: any) => {
+    if (message.type === 'deployment_progress') {
+      const { deployment_id, status, progress } = message
+
+      // Update React Query cache directly for instant UI update
+      queryClient.setQueryData<Deployment[]>(['deployments', filters], (old) => {
+        if (!old) return old
+
+        return old.map((dep) =>
+          dep.id === deployment_id
+            ? {
+                ...dep,
+                status: status,
+                progress_percent: progress?.overall_percent || dep.progress_percent,
+                current_stage: progress?.stage || dep.current_stage,
+              }
+            : dep
+        )
+      })
+    }
+  }, [queryClient, filters])
+
+  useEffect(() => {
+    const cleanup = addMessageHandler(handleDeploymentUpdate)
+    return cleanup
+  }, [addMessageHandler, handleDeploymentUpdate])
 
   const handleExecute = (deployment: Deployment) => {
     if (deployment.status !== 'planning' && deployment.status !== 'failed' && deployment.status !== 'rolled_back') {
@@ -86,28 +134,52 @@ export function DeploymentsPage() {
     }
   }
 
+  const handleSaveAsTemplate = (deployment: Deployment) => {
+    setDeploymentToSave(deployment)
+  }
+
+  const handleOpenHost = (hostId: string) => {
+    setSelectedHostId(hostId)
+    setHostModalOpen(true)
+  }
+
+  const handleOpenContainer = (hostId: string, containerId: string) => {
+    // Open container modal with composite key
+    const compositeKey = makeCompositeKeyFrom(hostId, containerId)
+    openContainerModal(compositeKey, 'info')
+  }
+
   return (
     <div className="p-6 space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold flex items-center gap-2">
-            <Package className="h-8 w-8" />
-            Deployments
-          </h1>
-          <p className="text-muted-foreground mt-1">
+          <h1 className="text-2xl font-bold">Deployments</h1>
+          <p className="text-sm text-muted-foreground mt-1">
             Deploy and manage containers across your Docker hosts
           </p>
         </div>
 
-        <Button
-          data-testid="new-deployment-button"
-          onClick={() => setShowNewDeploymentForm(true)}
-          className="gap-2"
-        >
-          <Plus className="h-4 w-4" />
-          New Deployment
-        </Button>
+        <div className="flex gap-3">
+          <Button
+            variant="outline"
+            onClick={() => navigate('/templates')}
+            className="gap-2"
+            data-testid="manage-templates-button"
+          >
+            <Layers className="h-4 w-4" />
+            Templates
+          </Button>
+
+          <Button
+            data-testid="new-deployment-button"
+            onClick={() => setShowNewDeploymentForm(true)}
+            className="gap-2"
+          >
+            <Plus className="h-4 w-4" />
+            New Deployment
+          </Button>
+        </div>
       </div>
 
       {/* Filters */}
@@ -163,6 +235,7 @@ export function DeploymentsPage() {
               <TableRow>
                 <TableHead>Name</TableHead>
                 <TableHead>Host</TableHead>
+                <TableHead>Container</TableHead>
                 <TableHead>Type</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Progress</TableHead>
@@ -173,7 +246,7 @@ export function DeploymentsPage() {
             <TableBody>
               {deployments?.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center py-12 text-muted-foreground">
+                  <TableCell colSpan={8} className="text-center py-12 text-muted-foreground">
                     No deployments found. Create your first deployment to get started.
                   </TableCell>
                 </TableRow>
@@ -181,11 +254,54 @@ export function DeploymentsPage() {
 
               {deployments?.map((deployment) => (
                 <TableRow key={deployment.id} data-testid={`deployment-${deployment.name}`}>
-                  {/* Name */}
-                  <TableCell className="font-medium">{deployment.name}</TableCell>
+                    {/* Name */}
+                  <TableCell className="font-medium">
+                    {deployment.name}
+                  </TableCell>
 
-                  {/* Host */}
-                  <TableCell>{deployment.host_name || deployment.host_id.slice(0, 8)}</TableCell>
+                  {/* Host (clickable) */}
+                  <TableCell>
+                    <button
+                      onClick={() => handleOpenHost(deployment.host_id)}
+                      className="font-medium text-foreground hover:text-primary transition-colors text-left"
+                      title="View host details"
+                    >
+                      {deployment.host_name || deployment.host_id.slice(0, 8)}
+                    </button>
+                  </TableCell>
+
+                  {/* Container (clickable if running) */}
+                  <TableCell>
+                    {deployment.container_ids && deployment.container_ids.length > 0 ? (
+                      <div className="flex flex-col gap-1">
+                        {deployment.container_ids.map((containerId) => {
+                          // Find the container name from the containers list
+                          const container = containers?.find(c =>
+                            c.id === containerId && c.host_id === deployment.host_id
+                          )
+                          const displayName = container?.name || containerId
+
+                          return (
+                            <button
+                              key={containerId}
+                              onClick={() => handleOpenContainer(deployment.host_id, containerId)}
+                              className="text-foreground hover:text-primary transition-colors text-left"
+                              title={container ? `Container: ${container.name}` : 'View container details'}
+                            >
+                              {displayName}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    ) : (
+                      <span
+                        className="text-xs text-muted-foreground italic"
+                        title="Container tracking not available for deployments created before v2.1. Create a new deployment to see container links."
+                      >
+                        Legacy deployment
+                      </span>
+                    )}
+                  </TableCell>
 
                   {/* Type */}
                   <TableCell className="capitalize">{deployment.type}</TableCell>
@@ -269,6 +385,19 @@ export function DeploymentsPage() {
                       </Button>
                     )}
 
+                    {deployment.status === 'running' && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleSaveAsTemplate(deployment)}
+                        data-testid="save-as-template"
+                        title="Save as Template"
+                      >
+                        <Bookmark className="h-3 w-3 mr-1" />
+                        Save as Template
+                      </Button>
+                    )}
+
                     {(deployment.status === 'running' || deployment.status === 'failed' || deployment.status === 'rolled_back' || deployment.status === 'planning') && (
                       <Button
                         variant="ghost"
@@ -327,6 +456,24 @@ export function DeploymentsPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Save as Template Dialog */}
+      <SaveAsTemplateDialog
+        deployment={deploymentToSave}
+        isOpen={!!deploymentToSave}
+        onClose={() => setDeploymentToSave(null)}
+      />
+
+      {/* Host Details Modal */}
+      <HostDetailsModal
+        hostId={selectedHostId}
+        host={hosts?.find(h => h.id === selectedHostId)}
+        open={hostModalOpen}
+        onClose={() => {
+          setHostModalOpen(false)
+          setSelectedHostId(null)
+        }}
+      />
     </div>
   )
 }

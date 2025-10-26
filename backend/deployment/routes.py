@@ -9,13 +9,14 @@ Provides REST endpoints for:
 
 import json
 import logging
+import uuid
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from database import Deployment, DatabaseManager, GlobalSettings
+from database import Deployment, DeploymentTemplate, DatabaseManager, GlobalSettings
 from deployment import DeploymentExecutor, TemplateManager, SecurityException, SecurityValidator
 from auth.v2_routes import get_current_user
 
@@ -60,6 +61,7 @@ class DeploymentResponse(BaseModel):
     definition: Optional[Dict[str, Any]] = None
     updated_at: Optional[str] = None
     host_name: Optional[str] = None
+    container_ids: Optional[List[str]] = None  # List of SHORT container IDs (12 chars) from deployment_metadata
 
 
 class TemplateCreate(BaseModel):
@@ -84,6 +86,13 @@ class TemplateUpdate(BaseModel):
 class TemplateRenderRequest(BaseModel):
     """Render template request."""
     values: Dict[str, Any]
+
+
+class SaveAsTemplateRequest(BaseModel):
+    """Request to save deployment as reusable template."""
+    name: str
+    category: Optional[str] = None
+    description: Optional[str] = None
 
 
 # ==================== Dependency Injection ====================
@@ -381,6 +390,89 @@ async def delete_deployment(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/{deployment_id}/save-as-template", status_code=200)
+async def save_deployment_as_template(
+    deployment_id: str,
+    request: SaveAsTemplateRequest,
+    current_user=Depends(get_current_user),
+):
+    """
+    Convert a successful deployment into a reusable template.
+
+    This allows users to save working configurations as templates for future deployments.
+
+    Requirements:
+    - Deployment must exist
+    - Template name must be unique
+
+    The endpoint:
+    1. Fetches the deployment
+    2. Extracts its configuration (definition JSON)
+    3. Creates a new template with the same deployment type and definition
+    4. Returns the created template ID
+
+    This enables the workflow:
+    1. User creates and tests a deployment
+    2. User saves it as template: POST /api/deployments/{id}/save-as-template
+    3. User can now deploy from template to other hosts
+    """
+    try:
+        db = get_database_manager()
+
+        with db.get_session() as session:
+            # Fetch deployment
+            deployment = session.query(Deployment).filter_by(id=deployment_id).first()
+
+            if not deployment:
+                raise HTTPException(status_code=404, detail="Deployment not found")
+
+            # Check for duplicate template name
+            existing = session.query(DeploymentTemplate).filter_by(name=request.name).first()
+            if existing:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Template with name '{request.name}' already exists"
+                )
+
+            # Generate template ID
+            template_id = str(uuid.uuid4())
+
+            # Use provided description or generate default
+            description = request.description or f"Template created from deployment '{deployment.name}'"
+
+            # Create template from deployment config
+            template = DeploymentTemplate(
+                id=template_id,
+                name=request.name,
+                category=request.category,
+                description=description,
+                deployment_type=deployment.deployment_type,
+                template_definition=deployment.definition,
+                variables=None,  # TODO: Add variable extraction from definition
+                is_builtin=False,
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+
+            session.add(template)
+            session.commit()
+
+            logger.info(f"Created template '{template.name}' from deployment '{deployment.name}'")
+
+            return {
+                "id": template.id,
+                "name": template.name,
+                "category": template.category,
+                "deployment_type": template.deployment_type
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to save deployment as template: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ==================== Template Endpoints ====================
 
 @template_router.post("", status_code=201)
@@ -545,6 +637,28 @@ async def render_template(
 
 def _deployment_to_response(deployment: Deployment) -> DeploymentResponse:
     """Convert deployment model to response."""
+    from database import DeploymentMetadata
+    from utils.keys import parse_composite_key
+
+    # Get current container IDs from deployment_metadata
+    # These are kept up-to-date when containers are recreated during updates
+    container_ids = []
+
+    # Query deployment_metadata for containers linked to this deployment
+    db = get_database_manager()
+    with db.get_session() as session:
+        metadata_records = session.query(DeploymentMetadata).filter_by(deployment_id=deployment.id).all()
+
+        for record in metadata_records:
+            # Extract SHORT container ID (12 chars) from composite key
+            try:
+                _, container_id = parse_composite_key(record.container_id)
+                container_ids.append(container_id)
+            except ValueError:
+                # Invalid composite key format, skip
+                logger.warning(f"Failed to parse composite key: {record.container_id}")
+                pass
+
     return DeploymentResponse(
         id=deployment.id,
         host_id=deployment.host_id,
@@ -562,4 +676,5 @@ def _deployment_to_response(deployment: Deployment) -> DeploymentResponse:
         definition=json.loads(deployment.definition) if deployment.definition else None,
         updated_at=deployment.updated_at.isoformat() + 'Z' if deployment.updated_at else None,
         host_name=deployment.host.name if deployment.host and deployment.host.name else None,
+        container_ids=container_ids if container_ids else None,
     )

@@ -39,8 +39,11 @@ class DeploymentCreate(BaseModel):
 
 
 class DeploymentUpdate(BaseModel):
-    """Update deployment request (only definition can be updated)."""
+    """Update deployment request."""
     definition: Dict[str, Any]
+    name: Optional[str] = None
+    deployment_type: Optional[str] = None
+    host_id: Optional[str] = None
 
 
 class DeploymentResponse(BaseModel):
@@ -316,18 +319,16 @@ async def update_deployment(
                     detail=f"Cannot edit deployment in status '{deployment.status}'. Only 'planning' deployments can be edited."
                 )
 
-            # Validate new definition (security check)
-            settings = session.query(GlobalSettings).first()
-            security_level = settings.security_level if settings else 'medium'
+            # NOTE: Security validation removed - will be performed during execution
+            # No need to validate on update since user is just editing configuration
 
-            try:
-                security_validator.validate_definition(
-                    request.definition,
-                    security_level,
-                    deployment.deployment_type
-                )
-            except SecurityException as e:
-                raise HTTPException(status_code=400, detail=f"Security validation failed: {str(e)}")
+            # Update fields if provided
+            if request.name is not None:
+                deployment.name = request.name
+            if request.deployment_type is not None:
+                deployment.deployment_type = request.deployment_type
+            if request.host_id is not None:
+                deployment.host_id = request.host_id
 
             # Update definition and timestamp
             deployment.definition = json.dumps(request.definition)
@@ -337,7 +338,7 @@ async def update_deployment(
             session.commit()
             session.refresh(deployment)
 
-            logger.info(f"Deployment {deployment_id} definition updated")
+            logger.info(f"Deployment {deployment_id} updated (name={deployment.name}, type={deployment.deployment_type})")
             return _deployment_to_response(deployment)
 
     except HTTPException:

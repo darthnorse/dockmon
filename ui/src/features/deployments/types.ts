@@ -29,7 +29,7 @@ export type DeploymentType = 'container' | 'stack'
 export interface Deployment {
   id: string                    // Composite key: {host_id}:{deployment_short_id}
   name: string                  // User-friendly name (unique per host)
-  type: DeploymentType          // 'container' or 'stack'
+  deployment_type: DeploymentType  // 'container' or 'stack' (backend field name)
   status: DeploymentStatus      // Current state in state machine
   host_id: string               // UUID of target Docker host
   host_name?: string            // Optional: host display name

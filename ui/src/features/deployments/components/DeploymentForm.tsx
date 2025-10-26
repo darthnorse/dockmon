@@ -8,7 +8,7 @@
  * - Field validation
  */
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { AlertTriangle, Layers } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -27,6 +27,7 @@ import { useCreateDeployment, useUpdateDeployment } from '../hooks/useDeployment
 import { useRenderTemplate, useCreateTemplate } from '../hooks/useTemplates'
 import { TemplateSelector } from './TemplateSelector'
 import { VariableInputDialog } from './VariableInputDialog'
+import { ConfigurationEditor, ConfigurationEditorHandle } from './ConfigurationEditor'
 import type { DeploymentType, DeploymentDefinition, DeploymentTemplate, Deployment } from '../types'
 
 interface DeploymentFormProps {
@@ -80,7 +81,10 @@ export function DeploymentForm({ isOpen, onClose, hosts = [], deployment }: Depl
   // Security warnings
   const [securityWarnings, setSecurityWarnings] = useState<string[]>([])
 
-  // Reset form when closed
+  // Ref to ConfigurationEditor for validation
+  const configEditorRef = useRef<ConfigurationEditorHandle>(null)
+
+  // Reset form when closed (but not when opening in edit mode)
   useEffect(() => {
     if (!isOpen) {
       setName('')
@@ -110,21 +114,26 @@ export function DeploymentForm({ isOpen, onClose, hosts = [], deployment }: Depl
     }
   }, [isOpen])
 
-  // Set default host if only one available
+  // Populate form when in edit mode - MUST run when dialog opens
   useEffect(() => {
-    if (hosts && hosts.length === 1 && !hostId && hosts[0]) {
-      setHostId(hosts[0].id)
-    }
-  }, [hosts, hostId])
+    if (isOpen && isEditMode && deployment && deployment.definition) {
+      console.log('[DeploymentForm] Populating form for edit mode:', {
+        name: deployment.name,
+        type: deployment.deployment_type,
+        definition: deployment.definition
+      })
 
-  // Populate form when in edit mode
-  useEffect(() => {
-    if (isEditMode && deployment && deployment.definition) {
       setName(deployment.name)
-      setType(deployment.type)
+      setType(deployment.deployment_type)  // This sets type to 'stack'
       setHostId(deployment.host_id)
 
       const def = deployment.definition as DeploymentDefinition
+
+      // Stack fields (check first so we set the YAML before rendering)
+      if (def.compose_yaml) {
+        console.log('[DeploymentForm] Setting compose YAML:', def.compose_yaml.substring(0, 100))
+        setComposeYaml(def.compose_yaml)
+      }
 
       // Container fields
       if (def.image) setImage(def.image)
@@ -144,11 +153,15 @@ export function DeploymentForm({ isOpen, onClose, hosts = [], deployment }: Depl
       if (def.memory_limit) setMemoryLimit(def.memory_limit)
       if (def.cpu_limit) setCpuLimit(def.cpu_limit)
       if (def.restart_policy) setRestartPolicy(def.restart_policy)
-
-      // Stack fields
-      if (def.compose_yaml) setComposeYaml(def.compose_yaml)
     }
-  }, [isEditMode, deployment])
+  }, [isOpen, isEditMode, deployment])
+
+  // Set default host if only one available
+  useEffect(() => {
+    if (hosts && hosts.length === 1 && !hostId && hosts[0]) {
+      setHostId(hosts[0].id)
+    }
+  }, [hosts, hostId])
 
   // Check for security issues
   useEffect(() => {
@@ -294,6 +307,18 @@ export function DeploymentForm({ isOpen, onClose, hosts = [], deployment }: Depl
       return
     }
 
+    // Validate YAML configuration before saving (for stack deployments)
+    if (type === 'stack' && configEditorRef.current && composeYaml.trim()) {
+      const validation = configEditorRef.current.validate()
+      if (!validation.valid) {
+        setErrors({
+          ...errors,
+          compose_yaml: validation.error || 'Invalid YAML format. Please fix errors before saving.',
+        })
+        return
+      }
+    }
+
     try {
       // Build deployment definition
       let definition: DeploymentDefinition
@@ -371,9 +396,12 @@ export function DeploymentForm({ isOpen, onClose, hosts = [], deployment }: Depl
 
       // Create or update deployment
       if (isEditMode && deployment) {
-        // Update existing deployment (no template creation in edit mode)
+        // Update existing deployment (overwrites the existing one)
         await updateDeployment.mutateAsync({
           deploymentId: deployment.id,
+          name: name.trim(),
+          type,
+          host_id: hostId,
           definition,
         })
         onClose()
@@ -468,7 +496,6 @@ export function DeploymentForm({ isOpen, onClose, hosts = [], deployment }: Depl
                 onChange={(e) => setName(e.target.value)}
                 placeholder="my-web-server"
                 className={errors.name ? 'border-destructive' : ''}
-                disabled={isEditMode}
               />
               {errors.name && (
                 <p className="text-sm text-destructive">{errors.name}</p>
@@ -478,7 +505,7 @@ export function DeploymentForm({ isOpen, onClose, hosts = [], deployment }: Depl
             {/* Deployment Type */}
             <div className="space-y-2">
               <Label htmlFor="type">Deployment Type</Label>
-              <Select value={type} onValueChange={(value) => setType(value as DeploymentType)} disabled={isEditMode}>
+              <Select value={type} onValueChange={(value) => setType(value as DeploymentType)}>
                 <SelectTrigger id="type">
                   <SelectValue>
                     {type === 'container' ? 'Container' : 'Docker Compose Stack'}
@@ -507,7 +534,7 @@ export function DeploymentForm({ isOpen, onClose, hosts = [], deployment }: Depl
             {/* Host Selection */}
             <div className="space-y-2">
               <Label htmlFor="host">Target Host *</Label>
-              <Select value={hostId} onValueChange={setHostId} disabled={isEditMode}>
+              <Select value={hostId} onValueChange={setHostId}>
                 <SelectTrigger id="host" className={errors.hostId ? 'border-destructive' : ''}>
                   <SelectValue>
                     {hosts.find(h => h.id === hostId)?.name || 'Select a host'}
@@ -535,33 +562,14 @@ export function DeploymentForm({ isOpen, onClose, hosts = [], deployment }: Depl
               {/* Compose YAML */}
               <div className="space-y-2">
                 <Label htmlFor="compose_yaml">Docker Compose YAML *</Label>
-                <Textarea
-                  id="compose_yaml"
-                  name="compose_yaml"
-                  data-testid="stack-yaml-input"
+                <ConfigurationEditor
+                  ref={configEditorRef}
+                  type="stack"
                   value={composeYaml}
-                  onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setComposeYaml(e.target.value)}
-                  placeholder={`version: '3.8'
-services:
-  web:
-    image: nginx:latest
-    ports:
-      - "8080:80"
-    volumes:
-      - ./html:/usr/share/nginx/html
-  db:
-    image: postgres:15
-    environment:
-      POSTGRES_PASSWORD: example`}
+                  onChange={setComposeYaml}
+                  error={errors.compose_yaml}
                   rows={15}
-                  className={`font-mono text-sm ${errors.compose_yaml ? 'border-destructive' : ''}`}
                 />
-                <p className="text-xs text-muted-foreground">
-                  Paste your docker-compose.yml content here
-                </p>
-                {errors.compose_yaml && (
-                  <p className="text-sm text-destructive">{errors.compose_yaml}</p>
-                )}
               </div>
             </div>
           )}

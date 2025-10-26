@@ -11,6 +11,7 @@ import type {
   Deployment,
   DeploymentFilters,
   CreateDeploymentRequest,
+  DeploymentType,
 } from '../types'
 
 const API_BASE = '/api'
@@ -151,14 +152,31 @@ export function useUpdateDeployment() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async ({ deploymentId, definition }: { deploymentId: string; definition: any }) => {
+    mutationFn: async ({
+      deploymentId,
+      name,
+      type,
+      host_id,
+      definition
+    }: {
+      deploymentId: string;
+      name?: string;
+      type?: DeploymentType;
+      host_id?: string;
+      definition: any
+    }) => {
+      const body: any = { definition }
+      if (name) body.name = name
+      if (type) body.type = type
+      if (host_id) body.host_id = host_id
+
       const response = await fetch(`${API_BASE}/deployments/${deploymentId}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
         },
         credentials: 'include',
-        body: JSON.stringify({ definition }),
+        body: JSON.stringify(body),
       })
 
       if (!response.ok) {

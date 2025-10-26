@@ -88,7 +88,7 @@ export function DeploymentsPage() {
       return (
         deployment.name?.toLowerCase().includes(query) ||
         deployment.host_name?.toLowerCase().includes(query) ||
-        deployment.type?.toLowerCase().includes(query)
+        deployment.deployment_type?.toLowerCase().includes(query)
       )
     })
   }, [deploymentsData, searchQuery])
@@ -338,18 +338,26 @@ export function DeploymentsPage() {
                           )
                         })}
                       </div>
-                    ) : (
+                    ) : deployment.status === 'planning' ? (
+                      <span className="text-xs text-muted-foreground">
+                        -
+                      </span>
+                    ) : deployment.status === 'running' ? (
                       <span
                         className="text-xs text-muted-foreground italic"
                         title="Container tracking not available for deployments created before v2.1. Create a new deployment to see container links."
                       >
                         Legacy deployment
                       </span>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">
+                        -
+                      </span>
                     )}
                   </TableCell>
 
                   {/* Type */}
-                  <TableCell className="capitalize">{deployment.type}</TableCell>
+                  <TableCell className="capitalize">{deployment.deployment_type}</TableCell>
 
                   {/* Status */}
                   <TableCell>

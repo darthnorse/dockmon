@@ -8,7 +8,7 @@
  * - Form validation
  */
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -28,7 +28,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { useCreateTemplate, useUpdateTemplate } from '../hooks/useTemplates'
-import { ConfigurationEditor } from './ConfigurationEditor'
+import { ConfigurationEditor, ConfigurationEditorHandle } from './ConfigurationEditor'
 import type { DeploymentTemplate, DeploymentDefinition } from '../types'
 
 interface TemplateFormProps {
@@ -52,6 +52,9 @@ export function TemplateForm({ isOpen, onClose, template }: TemplateFormProps) {
 
   // Validation errors
   const [errors, setErrors] = useState<Record<string, string>>({})
+
+  // Ref to ConfigurationEditor for validation
+  const configEditorRef = useRef<ConfigurationEditorHandle>(null)
 
   // Load template data in edit mode
   useEffect(() => {
@@ -116,6 +119,18 @@ export function TemplateForm({ isOpen, onClose, template }: TemplateFormProps) {
 
     if (!validateForm()) {
       return
+    }
+
+    // Validate YAML/JSON configuration before saving
+    if (configEditorRef.current && definition.trim()) {
+      const validation = configEditorRef.current.validate()
+      if (!validation.valid) {
+        setErrors({
+          ...errors,
+          definition: validation.error || 'Invalid format. Please fix errors before saving.',
+        })
+        return
+      }
     }
 
     try {
@@ -249,6 +264,7 @@ export function TemplateForm({ isOpen, onClose, template }: TemplateFormProps) {
               {deploymentType === 'stack' ? 'Compose YAML *' : 'Template Definition (JSON) *'}
             </Label>
             <ConfigurationEditor
+              ref={configEditorRef}
               type={deploymentType}
               value={definition}
               onChange={setDefinition}

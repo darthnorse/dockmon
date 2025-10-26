@@ -258,7 +258,28 @@ class ImagePullProgress:
                 self.loop
             ).result()
 
-            logger.info(f"Successfully pulled {image} with {len(layer_status)} layers ({total_bytes / (1024 * 1024):.1f} MB)")
+            # CRITICAL: Verify image exists after pull completes
+            # Stream ending doesn't guarantee image is committed to Docker's image store
+            # This prevents race conditions where containers fail with "image not found"
+            # Use retry with exponential backoff to handle commit delays
+            max_retries = 5
+            retry_delay = 0.5  # Start with 500ms
+
+            for attempt in range(max_retries):
+                try:
+                    client.images.get(image)
+                    logger.info(f"Successfully pulled {image} with {len(layer_status)} layers ({total_bytes / (1024 * 1024):.1f} MB)")
+                    break  # Image verified, exit retry loop
+                except docker.errors.ImageNotFound:
+                    if attempt < max_retries - 1:
+                        # Not the last attempt, retry after delay
+                        logger.warning(f"Image {image} not yet available in Docker image store (attempt {attempt + 1}/{max_retries}), retrying in {retry_delay}s...")
+                        time.sleep(retry_delay)
+                        retry_delay *= 2  # Exponential backoff: 0.5s, 1s, 2s, 4s
+                    else:
+                        # Last attempt failed, raise error
+                        logger.error(f"Image pull stream completed but image {image} not found in Docker image store after {max_retries} retries (race condition)")
+                        raise RuntimeError(f"Image {image} pull appeared successful but image not available after {max_retries} verification attempts")
 
         except TimeoutError:
             logger.error(f"Image pull timed out after {timeout}s for {image}")

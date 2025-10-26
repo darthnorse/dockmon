@@ -236,7 +236,8 @@ class PeriodicJobsManager:
                     ContainerUpdate,
                     ContainerHttpHealthCheck,
                     AutoRestartConfig,
-                    ContainerDesiredState
+                    ContainerDesiredState,
+                    DeploymentMetadata
                 )
                 containers = await self.monitor.get_containers()
                 current_container_keys = {make_composite_key(c.host_id, c.short_id) for c in containers}
@@ -301,6 +302,17 @@ class PeriodicJobsManager:
                     if total_cleaned > 0:
                         session.commit()
                         logger.info(f"Cleaned up {total_cleaned} total stale container-related database entries")
+
+                # Clean up orphaned deployment metadata (for containers deleted outside DockMon)
+                # Part of deployment v2.1 remediation (Phase 1.6)
+                deployment_metadata_cleaned = self.db.cleanup_orphaned_deployment_metadata(current_container_keys)
+                if deployment_metadata_cleaned > 0:
+                    self.event_logger.log_system_event(
+                        "Deployment Metadata Cleanup",
+                        f"Cleaned up {deployment_metadata_cleaned} orphaned deployment metadata entries",
+                        EventSeverity.INFO,
+                        EventType.STARTUP
+                    )
 
                 # Clean up orphaned RuleRuntime entries (for deleted containers)
                 runtime_cleaned = self.db.cleanup_orphaned_rule_runtime(current_container_keys)

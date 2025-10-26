@@ -168,7 +168,8 @@ function SelectPortalContent({ children }: { children: React.ReactNode }) {
   return createPortal(
     <div
       ref={menuRef}
-      className="fixed z-[9999] rounded-md border border-border bg-popover text-popover-foreground p-1 shadow-xl max-h-[300px] overflow-auto"
+      role="listbox"
+      className="fixed z-[99999] rounded-md border border-border bg-popover text-popover-foreground p-1 shadow-xl max-h-[300px] overflow-auto pointer-events-auto"
       style={{
         top: `${position.top}px`,
         left: `${position.left}px`,
@@ -199,6 +200,8 @@ export function SelectItem({ value, children }: SelectItemProps) {
 
   return (
     <button
+      role="option"
+      aria-selected={isSelected}
       onClick={handleClick}
       className={cn(
         'relative flex w-full cursor-pointer select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none transition-colors',

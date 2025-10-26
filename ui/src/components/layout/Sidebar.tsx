@@ -19,6 +19,7 @@ import { NavLink } from 'react-router-dom'
 import {
   LayoutDashboard,
   Container,
+  Package,
   Server,
   Activity,
   Bell,
@@ -48,6 +49,7 @@ const navigationItems: NavItem[] = [
   { label: 'Dashboard', icon: LayoutDashboard, path: '/' },
   { label: 'Hosts', icon: Server, path: '/hosts' },
   { label: 'Containers', icon: Container, path: '/containers' },
+  { label: 'Deployments', icon: Package, path: '/deployments' },
   { label: 'Container Logs', icon: FileText, path: '/logs' },
   { label: 'Events', icon: Activity, path: '/events' },
   { label: 'Alerts', icon: Bell, path: '/alerts' },
@@ -124,6 +126,7 @@ export function Sidebar() {
             <NavLink
               key={item.path}
               to={item.path}
+              data-testid={`nav-${item.label.toLowerCase().replace(/\s+/g, '-')}`}
               className={({ isActive }) =>
                 cn(
                   'group relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors',

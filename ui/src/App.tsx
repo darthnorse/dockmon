@@ -27,6 +27,8 @@ import { AlertRulesPage } from '@/features/alerts/AlertRulesPage'
 import { ContainerLogsPage } from '@/features/logs/ContainerLogsPage'
 import { SettingsPage } from '@/features/settings/SettingsPage'
 import { ChangePasswordModal } from '@/features/auth/ChangePasswordModal'
+import { DeploymentsPage } from '@/features/deployments/DeploymentsPage'
+import { TemplatesPage } from '@/features/deployments/TemplatesPage'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { LoadingSkeleton } from '@/components/layout/LoadingSkeleton'
 import { useState, useEffect } from 'react'
@@ -102,6 +104,8 @@ function AppRoutes() {
       >
         <Route path="/" element={<DashboardPage />} />
         <Route path="/containers" element={<ContainersPage />} />
+        <Route path="/deployments" element={<DeploymentsPage />} />
+        <Route path="/templates" element={<TemplatesPage />} />
         <Route path="/hosts" element={<HostsPage />} />
         <Route path="/logs" element={<ContainerLogsPage />} />
         <Route path="/events" element={<EventsPage />} />

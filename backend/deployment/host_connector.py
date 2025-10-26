@@ -13,6 +13,10 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional, Callable
 import logging
 
+from utils.async_docker import async_docker_call
+from utils.container_health import wait_for_container_health
+from utils.image_pull_progress import ImagePullProgress
+
 logger = logging.getLogger(__name__)
 
 
@@ -297,8 +301,6 @@ class DirectDockerConnector(HostConnector):
     async def ping(self) -> bool:
         """Test Docker daemon connectivity"""
         try:
-            from utils.async_docker import async_docker_call
-
             client = self._get_client()
             result = await async_docker_call(client.ping)
             return result is True
@@ -316,8 +318,6 @@ class DirectDockerConnector(HostConnector):
 
         Returns SHORT ID (12 chars) - CRITICAL for DockMon standards.
         """
-        from utils.async_docker import async_docker_call
-
         client = self._get_client()
 
         # Merge labels into config
@@ -337,32 +337,24 @@ class DirectDockerConnector(HostConnector):
 
     async def start_container(self, container_id: str) -> None:
         """Start container by SHORT ID"""
-        from utils.async_docker import async_docker_call
-
         client = self._get_client()
         container = await async_docker_call(client.containers.get, container_id)
         await async_docker_call(container.start)
 
     async def stop_container(self, container_id: str, timeout: int = 10) -> None:
         """Stop container by SHORT ID"""
-        from utils.async_docker import async_docker_call
-
         client = self._get_client()
         container = await async_docker_call(client.containers.get, container_id)
         await async_docker_call(container.stop, timeout=timeout)
 
     async def remove_container(self, container_id: str, force: bool = False) -> None:
         """Remove container by SHORT ID"""
-        from utils.async_docker import async_docker_call
-
         client = self._get_client()
         container = await async_docker_call(client.containers.get, container_id)
         await async_docker_call(container.remove, force=force)
 
     async def get_container_status(self, container_id: str) -> str:
         """Get container status"""
-        from utils.async_docker import async_docker_call
-
         client = self._get_client()
         container = await async_docker_call(client.containers.get, container_id)
         await async_docker_call(container.reload)
@@ -375,8 +367,6 @@ class DirectDockerConnector(HostConnector):
         since: Optional[str] = None
     ) -> str:
         """Get container logs"""
-        from utils.async_docker import async_docker_call
-
         client = self._get_client()
         container = await async_docker_call(client.containers.get, container_id)
 
@@ -419,7 +409,6 @@ class DirectDockerConnector(HostConnector):
             }
         """
         import asyncio
-        from utils.image_pull_progress import ImagePullProgress
 
         client = self._get_client()
 
@@ -450,13 +439,10 @@ class DirectDockerConnector(HostConnector):
             )
         else:
             # Fallback: Simple pull without progress (for backward compatibility)
-            from utils.async_docker import async_docker_call
             await async_docker_call(client.images.pull, image)
 
     async def list_networks(self) -> List[Dict[str, Any]]:
         """List Docker networks"""
-        from utils.async_docker import async_docker_call
-
         client = self._get_client()
         networks = await async_docker_call(client.networks.list)
 
@@ -472,16 +458,12 @@ class DirectDockerConnector(HostConnector):
 
     async def create_network(self, name: str, driver: str = "bridge") -> str:
         """Create Docker network"""
-        from utils.async_docker import async_docker_call
-
         client = self._get_client()
         network = await async_docker_call(client.networks.create, name, driver=driver)
         return network.id
 
     async def list_volumes(self) -> List[Dict[str, Any]]:
         """List Docker volumes"""
-        from utils.async_docker import async_docker_call
-
         client = self._get_client()
         volumes = await async_docker_call(client.volumes.list)
 
@@ -496,8 +478,6 @@ class DirectDockerConnector(HostConnector):
 
     async def create_volume(self, name: str) -> str:
         """Create Docker volume"""
-        from utils.async_docker import async_docker_call
-
         client = self._get_client()
         volume = await async_docker_call(client.volumes.create, name)
         return volume.name
@@ -508,8 +488,6 @@ class DirectDockerConnector(HostConnector):
 
         Raises ValidationError if any port is in use.
         """
-        from utils.async_docker import async_docker_call
-
         client = self._get_client()
         containers = await async_docker_call(client.containers.list)
 
@@ -541,8 +519,6 @@ class DirectDockerConnector(HostConnector):
         Returns:
             True if container is healthy/stable, False otherwise
         """
-        from utils.container_health import wait_for_container_health
-
         try:
             client = self._get_client()
             return await wait_for_container_health(

@@ -17,10 +17,16 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   workers: 1,  // Single worker to avoid race conditions
   reporter: 'html',
+
+  // Global setup: authenticate once and save session
+  globalSetup: './tests/global-setup.ts',
+
   use: {
-    baseURL: 'http://localhost:3000',
+    baseURL: 'http://localhost:3001',  // Use 3001 to avoid conflicts
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
+    // Use saved authentication state from global setup
+    storageState: './tests/.auth/user.json',
   },
 
   projects: [
@@ -31,8 +37,8 @@ export default defineConfig({
   ],
 
   webServer: {
-    command: 'npm run dev',
-    url: 'http://localhost:3000',
+    command: 'VITE_PORT=3001 npm run dev',  // Force Vite to use port 3001
+    url: 'http://localhost:3001',
     reuseExistingServer: !process.env.CI,
     timeout: 120000,
   },

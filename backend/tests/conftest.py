@@ -40,6 +40,14 @@ def test_db():
     db_fd, db_path = tempfile.mkstemp(suffix='.db')
     engine = create_engine(f'sqlite:///{db_path}')
 
+    # Enable foreign key constraints in SQLite (required for CASCADE/SET NULL)
+    from sqlalchemy import event
+    @event.listens_for(engine, "connect")
+    def set_sqlite_pragma(dbapi_conn, connection_record):
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
     # Create all tables
     Base.metadata.create_all(engine)
 
@@ -53,6 +61,27 @@ def test_db():
     session.close()
     os.close(db_fd)
     os.unlink(db_path)
+
+
+@pytest.fixture
+def test_database_manager(test_db):
+    """
+    Create a mock DatabaseManager for testing.
+
+    Wraps the test_db session in an object that implements DatabaseManager interface.
+    """
+    from unittest.mock import Mock
+    from contextlib import contextmanager
+
+    mock_db = Mock()
+
+    # get_session() should return a context manager that yields the test session
+    @contextmanager
+    def get_session_cm():
+        yield test_db
+
+    mock_db.get_session = get_session_cm
+    return mock_db
 
 
 @pytest.fixture
@@ -303,6 +332,23 @@ def managed_container_data(test_host):
 # ============================================================================
 
 @pytest.fixture
+def mock_event_bus():
+    """Mock EventBus for deployment executor testing"""
+    bus = MagicMock()
+    bus.emit = AsyncMock()
+    return bus
+
+
+@pytest.fixture
+def mock_docker_monitor(mock_docker_client):
+    """Mock DockerMonitor for deployment executor testing"""
+    monitor = MagicMock()
+    monitor.clients = {}
+    monitor.manager = MagicMock()
+    monitor.manager.broadcast = AsyncMock()
+    return monitor
+
+@pytest.fixture
 def test_deployment(test_db: Session, test_host):
     """
     Create a test Deployment in the database.
@@ -439,3 +485,48 @@ def test_stack_deployment(test_db: Session, test_host):
     test_db.refresh(deployment)
 
     return deployment
+
+@pytest.fixture
+def client(test_db, monkeypatch):
+    """
+    FastAPI TestClient for API endpoint testing.
+
+    Uses test_db fixture and overrides database dependency to use in-memory test database.
+    Enables integration testing of API endpoints without real database.
+    """
+    from fastapi.testclient import TestClient
+    from contextlib import contextmanager
+
+    # Import main app
+    import main
+
+    # Override get_db dependency to use test_db
+    @contextmanager
+    def override_get_db():
+        yield test_db
+
+    # Mock DatabaseManager for the app
+    mock_db_manager = MagicMock()
+    mock_db_manager.get_session = override_get_db
+
+    # Replace app's database manager with test database (if it exists)
+    if hasattr(main, "db"):
+        monkeypatch.setattr(main, "db", mock_db_manager)
+
+    # Also override deployment routes' database manager dependency
+    from deployment import routes as deployment_routes
+    monkeypatch.setattr(deployment_routes, "_database_manager", mock_db_manager)
+
+    # Bypass authentication for tests
+    from auth.v2_routes import get_current_user
+    def mock_get_current_user():
+        return {"username": "test_user"}
+
+    main.app.dependency_overrides[get_current_user] = mock_get_current_user
+
+    # Create test client
+    with TestClient(main.app) as test_client:
+        yield test_client
+
+    # Clean up overrides
+    main.app.dependency_overrides.clear()

@@ -656,6 +656,16 @@ class Deployment(Base):
                           |-> failed
                           |-> rolled_back
 
+    Progress Tracking (Dual-Level):
+        - progress_percent: Overall deployment progress (0-100%)
+          Example: "Deployment is 40% complete"
+
+        - stage_percent: Stage-specific progress (0-100%)
+          Example: "Currently pulling image: layer 4 of 7 (60% complete)"
+
+        Together they provide granular progress visibility:
+          Overall: 40% | Stage: pulling_image 60%
+
     Commitment Point:
         - committed=False: Operation not yet committed to database, safe to rollback
         - committed=True: Operation committed, rollback would destroy committed state
@@ -671,6 +681,7 @@ class Deployment(Base):
     host_id = Column(String, ForeignKey("docker_hosts.id", ondelete="CASCADE"), nullable=False)
     deployment_type = Column(String, nullable=False)  # 'container' | 'stack'
     name = Column(String, nullable=False)
+    display_name = Column(String, nullable=True)  # User-friendly name (from design spec line 116)
     status = Column(String, nullable=False, default='pending')  # pending, running, completed, failed, rolled_back
     definition = Column(Text, nullable=False)  # JSON: container/stack configuration
     error_message = Column(Text, nullable=True)
@@ -680,8 +691,10 @@ class Deployment(Base):
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
+    created_by = Column(String, nullable=True)  # Username who created deployment (from design spec line 124)
     committed = Column(Boolean, default=False, nullable=False)  # Commitment point tracking
     rollback_on_failure = Column(Boolean, default=True, nullable=False)
+    stage_percent = Column(Integer, default=0, nullable=False)  # Stage-level progress (0-100), e.g., "60% through pulling_image"
 
     # Relationships
     host = relationship("DockerHostDB")
@@ -768,6 +781,53 @@ class DeploymentTemplate(Base):
     __table_args__ = (
         Index('idx_deployment_template_name', 'name'),
         Index('idx_deployment_template_category', 'category'),
+        {"sqlite_autoincrement": False},
+    )
+
+
+class DeploymentMetadata(Base):
+    """
+    Deployment metadata for containers created via deployments.
+
+    Tracks which containers were created by deployments to enable:
+    - Deployment status display (show which containers belong to a deployment)
+    - Deployment filtering (filter containers by deployment)
+    - Cleanup tracking (know which containers to clean up on rollback)
+    - Stack service tracking (identify service roles in multi-container deployments)
+
+    ARCHITECTURE:
+    This table follows DockMon's existing metadata pattern where containers themselves
+    are ephemeral (fetched from Docker API) and metadata is persisted separately.
+    Similar to: container_desired_states, container_updates, container_http_health_checks.
+
+    CRITICAL STANDARDS:
+        - container_id: Composite key format {host_id}:{container_short_id} (12 chars)
+        - deployment_id: NULL if container not created by deployment system
+        - is_managed: True if created by deployment, False otherwise
+        - service_name: NULL for single containers, service name for stack deployments
+
+    Foreign Key Behavior:
+        - host_id CASCADE: If host deleted, delete all deployment metadata for that host
+        - deployment_id SET NULL: If deployment deleted, keep metadata but clear deployment link
+    """
+    __tablename__ = "deployment_metadata"
+
+    container_id = Column(Text, primary_key=True)  # Composite: {host_id}:{container_short_id}
+    host_id = Column(Text, ForeignKey("docker_hosts.id", ondelete="CASCADE"), nullable=False)
+    deployment_id = Column(String, ForeignKey("deployments.id", ondelete="SET NULL"), nullable=True)
+    is_managed = Column(Boolean, default=False, nullable=False)  # True if created by deployment system
+    service_name = Column(String, nullable=True)  # NULL for single containers, service name for stacks (e.g., 'web', 'db')
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+    # Relationships
+    host = relationship("DockerHostDB")
+    deployment = relationship("Deployment")
+
+    # Indexes
+    __table_args__ = (
+        Index('idx_deployment_metadata_host', 'host_id'),
+        Index('idx_deployment_metadata_deployment', 'deployment_id'),
         {"sqlite_autoincrement": False},
     )
 
@@ -1937,6 +1997,53 @@ class DatabaseManager:
 
             if total_deleted > 0:
                 logger.info(f"Cleaned up {total_deleted} orphaned tag assignments")
+
+            return total_deleted
+
+    def cleanup_orphaned_deployment_metadata(self, existing_container_keys: set, batch_size: int = 1000) -> int:
+        """
+        Clean up deployment metadata for containers that no longer exist.
+
+        Args:
+            existing_container_keys: Set of container composite keys that currently exist
+                                    (format: {host_id}:{container_short_id})
+            batch_size: Maximum number of records to delete in one batch
+
+        Returns:
+            Number of metadata records removed
+        """
+        with self.get_session() as session:
+            # Find all deployment metadata entries
+            total_deleted = 0
+            while True:
+                # Get batch of metadata records
+                metadata_batch = session.query(DeploymentMetadata).limit(batch_size).all()
+
+                if not metadata_batch:
+                    break
+
+                # Check which ones are orphaned (container no longer exists)
+                orphaned = []
+                for metadata in metadata_batch:
+                    if metadata.container_id not in existing_container_keys:
+                        orphaned.append(metadata)
+
+                # Delete orphaned metadata
+                for metadata in orphaned:
+                    session.delete(metadata)
+
+                if orphaned:
+                    session.commit()
+                    batch_count = len(orphaned)
+                    total_deleted += batch_count
+                    logger.debug(f"Deleted batch of {batch_count} orphaned deployment metadata records")
+
+                # If we processed fewer than batch_size, we're done
+                if len(metadata_batch) < batch_size:
+                    break
+
+            if total_deleted > 0:
+                logger.info(f"Cleaned up {total_deleted} orphaned deployment metadata records")
 
             return total_deleted
 

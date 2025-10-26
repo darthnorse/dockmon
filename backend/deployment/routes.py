@@ -7,14 +7,16 @@ Provides REST endpoints for:
 - Tracking deployment progress
 """
 
+import json
 import logging
+from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from database import Deployment, DatabaseManager
-from deployment import DeploymentExecutor, TemplateManager, SecurityException
+from database import Deployment, DatabaseManager, GlobalSettings
+from deployment import DeploymentExecutor, TemplateManager, SecurityException, SecurityValidator
 from auth.v2_routes import get_current_user
 
 logger = logging.getLogger(__name__)
@@ -35,6 +37,11 @@ class DeploymentCreate(BaseModel):
     rollback_on_failure: bool = True
 
 
+class DeploymentUpdate(BaseModel):
+    """Update deployment request (only definition can be updated)."""
+    definition: Dict[str, Any]
+
+
 class DeploymentResponse(BaseModel):
     """Deployment response."""
     id: str
@@ -50,6 +57,9 @@ class DeploymentResponse(BaseModel):
     completed_at: Optional[str]
     committed: bool
     rollback_on_failure: bool
+    definition: Optional[Dict[str, Any]] = None
+    updated_at: Optional[str] = None
+    host_name: Optional[str] = None
 
 
 class TemplateCreate(BaseModel):
@@ -180,16 +190,27 @@ async def execute_deployment(
     - DEPLOYMENT_ROLLED_BACK (rollback after failure)
     """
     try:
-        # Execute deployment in background
-        background_tasks.add_task(executor.execute_deployment, deployment_id)
-
-        # Return current deployment state
+        # Check deployment status before executing
         db = get_database_manager()
         with db.get_session() as session:
             deployment = session.query(Deployment).filter_by(id=deployment_id).first()
             if not deployment:
                 raise HTTPException(status_code=404, detail="Deployment not found")
 
+            # Only allow execution from 'planning' status
+            # Terminal states (completed, failed, rolled_back) cannot be re-executed
+            if deployment.status != 'planning':
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Cannot execute deployment in status '{deployment.status}'. Only 'planning' deployments can be executed."
+                )
+
+        # Execute deployment in background
+        background_tasks.add_task(executor.execute_deployment, deployment_id)
+
+        # Return updated deployment state
+        with db.get_session() as session:
+            deployment = session.query(Deployment).filter_by(id=deployment_id).first()
             return _deployment_to_response(deployment)
 
     except ValueError as e:
@@ -257,6 +278,68 @@ async def get_deployment(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.put("/{deployment_id}", response_model=DeploymentResponse)
+async def update_deployment(
+    deployment_id: str,
+    request: DeploymentUpdate,
+    current_user=Depends(get_current_user),
+):
+    """
+    Update a deployment's definition (only allowed in 'planning' state).
+
+    This allows users to review and modify deployment configuration
+    before execution.
+    """
+    try:
+        db = get_database_manager()
+        security_validator = SecurityValidator()
+
+        with db.get_session() as session:
+            # Fetch deployment
+            deployment = session.query(Deployment).filter_by(id=deployment_id).first()
+            if not deployment:
+                raise HTTPException(status_code=404, detail="Deployment not found")
+
+            # Only allow editing in 'planning' state
+            if deployment.status != 'planning':
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Cannot edit deployment in status '{deployment.status}'. Only 'planning' deployments can be edited."
+                )
+
+            # Validate new definition (security check)
+            settings = session.query(GlobalSettings).first()
+            security_level = settings.security_level if settings else 'medium'
+
+            try:
+                security_validator.validate_definition(
+                    request.definition,
+                    security_level,
+                    deployment.deployment_type
+                )
+            except SecurityException as e:
+                raise HTTPException(status_code=400, detail=f"Security validation failed: {str(e)}")
+
+            # Update definition and timestamp
+            deployment.definition = json.dumps(request.definition)
+            deployment.updated_at = datetime.now(timezone.utc)
+
+            # Commit changes
+            session.commit()
+            session.refresh(deployment)
+
+            logger.info(f"Deployment {deployment_id} definition updated")
+            return _deployment_to_response(deployment)
+
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to update deployment: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.delete("/{deployment_id}")
 async def delete_deployment(
     deployment_id: str,
@@ -276,11 +359,12 @@ async def delete_deployment(
             if not deployment:
                 raise HTTPException(status_code=404, detail="Deployment not found")
 
-            # Prevent deletion of active deployments
-            if deployment.status not in ('completed', 'failed', 'rolled_back'):
+            # Prevent deletion of EXECUTING deployments only
+            # Allow deletion of: planning, completed, failed, rolled_back
+            if deployment.status == 'executing':
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Cannot delete deployment in status '{deployment.status}'"
+                    detail=f"Cannot delete deployment while it is executing. Wait for completion or failure."
                 )
 
             session.delete(deployment)
@@ -475,4 +559,7 @@ def _deployment_to_response(deployment: Deployment) -> DeploymentResponse:
         completed_at=deployment.completed_at.isoformat() + 'Z' if deployment.completed_at else None,
         committed=deployment.committed,
         rollback_on_failure=deployment.rollback_on_failure,
+        definition=json.loads(deployment.definition) if deployment.definition else None,
+        updated_at=deployment.updated_at.isoformat() + 'Z' if deployment.updated_at else None,
+        host_name=deployment.host.name if deployment.host and deployment.host.name else None,
     )

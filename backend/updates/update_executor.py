@@ -17,9 +17,10 @@ from datetime import datetime, timezone
 from typing import Dict, Optional, Any, Tuple
 import docker
 
-from database import DatabaseManager, ContainerUpdate, AutoRestartConfig, ContainerDesiredState, ContainerHttpHealthCheck, GlobalSettings
+from database import DatabaseManager, ContainerUpdate, AutoRestartConfig, ContainerDesiredState, ContainerHttpHealthCheck, GlobalSettings, DeploymentMetadata
 from event_bus import Event, EventType as BusEventType, get_event_bus
 from utils.async_docker import async_docker_call
+from utils.container_health import wait_for_container_health
 from utils.image_pull_progress import ImagePullProgress
 from utils.keys import make_composite_key, parse_composite_key
 from updates.container_validator import ContainerValidator, ValidationResult
@@ -422,7 +423,7 @@ class UpdateExecutor:
 
             logger.info(f"Waiting for health check (timeout: {health_check_timeout}s)")
             await self._broadcast_progress(host_id, container_id, "health_check", 90, "Waiting for health check")
-            is_healthy = await self._wait_for_health(
+            is_healthy = await wait_for_container_health(
                 docker_client,
                 new_container_id,  # Use SHORT ID (12 chars) for consistency
                 timeout=health_check_timeout
@@ -510,11 +511,21 @@ class UpdateExecutor:
                         "container_id": new_composite_key  # NEW composite key
                     })
 
+                    # Update 5: DeploymentMetadata table (uses COMPOSITE KEY)
+                    # Part of deployment v2.1 remediation (Phase 1.5)
+                    # When a container is recreated during update, preserve its deployment linkage
+                    session.query(DeploymentMetadata).filter_by(
+                        container_id=old_composite_key  # OLD composite key
+                    ).update({
+                        "container_id": new_composite_key,  # NEW composite key
+                        "updated_at": datetime.now(timezone.utc)
+                    })
+
                     session.commit()
                     update_committed = True  # Mark update as committed
                     logger.debug(
                         f"Updated database records from {old_composite_key} to {new_composite_key}: "
-                        f"ContainerUpdate, AutoRestartConfig, ContainerDesiredState, ContainerHttpHealthCheck"
+                        f"ContainerUpdate, AutoRestartConfig, ContainerDesiredState, ContainerHttpHealthCheck, DeploymentMetadata"
                     )
 
             # Notify frontend that container ID changed (keeps modal open during updates)
@@ -819,80 +830,6 @@ class UpdateExecutor:
         except Exception as e:
             logger.error(f"Error creating container: {e}")
             raise
-
-    async def _wait_for_health(
-        self,
-        client: docker.DockerClient,
-        container_id: str,
-        timeout: int = 10  # NOTE: This default is never used - caller always passes settings.health_check_timeout_seconds
-    ) -> bool:
-        """
-        Wait for container to become healthy.
-
-        NOTE: The timeout parameter default (10s) is NOT used in practice.
-        The caller always explicitly passes settings.health_check_timeout_seconds
-        which is user-configurable via Settings → Container Updates (default: 60s).
-        This function default exists only for defensive programming.
-
-        Health check logic:
-        1. Wait for container to reach "running" state (up to timeout)
-        2. If container has Docker health check: Poll for "healthy" status (up to timeout)
-           - Short-circuits immediately when "healthy" detected
-        3. If no health check: Wait 3s for stability, verify still running
-           - Short-circuits as soon as container is running + stable
-
-        Returns:
-            True if healthy/stable, False if unhealthy/crashed/timeout
-        """
-        start_time = time.time()
-
-        while time.time() - start_time < timeout:
-            try:
-                # Use async wrapper to prevent event loop blocking
-                container = await async_docker_call(client.containers.get, container_id)
-                state = container.attrs["State"]
-
-                # Check if container is running
-                if not state.get("Running", False):
-                    # Not running YET - wait and retry (don't fail immediately!)
-                    await asyncio.sleep(1)
-                    continue
-
-                # Container IS running - now check health status
-                health = state.get("Health")
-                if health:
-                    # Has Docker health check - poll for healthy status
-                    status = health.get("Status")
-                    if status == "healthy":
-                        logger.info(f"Container {container_id} is healthy")
-                        return True
-                    elif status == "unhealthy":
-                        logger.error(f"Container {container_id} is unhealthy")
-                        return False
-                    # Status is "starting", continue waiting
-                    await asyncio.sleep(2)
-                else:
-                    # No health check configured - container is running (verified above)
-                    # Wait 3s for stability, then verify still running
-                    logger.info(f"Container {container_id} has no health check, waiting 3s for stability")
-                    await asyncio.sleep(3)
-
-                    # Check if STILL running (catch quick crashes)
-                    container = await async_docker_call(client.containers.get, container_id)
-                    state = container.attrs["State"]
-                    if state.get("Running", False):
-                        logger.info(f"Container {container_id} stable after 3s, considering healthy")
-                        return True
-                    else:
-                        logger.error(f"Container {container_id} crashed within 3s of starting")
-                        return False
-
-            except Exception as e:
-                logger.error(f"Error checking container health: {e}")
-                return False
-
-        logger.error(f"Health check timeout after {timeout}s for container {container_id}")
-        return False
 
     async def _rename_container_to_backup(
         self,

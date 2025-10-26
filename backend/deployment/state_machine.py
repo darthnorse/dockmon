@@ -1,13 +1,27 @@
 """
-Deployment state machine for DockMon v2.1
+Deployment state machine for DockMon v2.1 (7-state flow)
 
-Manages deployment state transitions and commitment point tracking to ensure
-safe rollback operations that don't destroy committed database state.
+Manages deployment state transitions with granular states for precise debugging
+and progress tracking. Implements commitment point tracking to ensure safe
+rollback operations that don't destroy committed database state.
 
-State Flow:
-    planning -> executing -> completed
-                         |-> failed -> rolled_back
-                         |-> rolled_back
+State Flow (Spec-Compliant):
+    planning -> validating -> pulling_image -> creating -> starting -> running
+                    |              |             |           |
+                    +---> failed <-+-------------+-----------+
+                             |
+                             v
+                        rolled_back
+
+State Semantics:
+    - planning: Deployment created, not started
+    - validating: Security validation in progress
+    - pulling_image: Downloading container image (0-40% progress)
+    - creating: Creating container in Docker (40-60% progress)
+    - starting: Starting container (60-80% progress)
+    - running: Container healthy and running (100% progress)
+    - failed: Error occurred, see error_message
+    - rolled_back: Failed deployment cleaned up
 
 Commitment Point Pattern:
     When a deployment commits to the database (e.g., container created in Docker),
@@ -17,11 +31,14 @@ Commitment Point Pattern:
 Usage:
     sm = DeploymentStateMachine()
 
-    # Check if transition is valid
-    if sm.can_transition(deployment.status, 'executing'):
-        sm.transition(deployment, 'executing')
+    # Granular state progression
+    sm.transition(deployment, 'validating')
+    sm.transition(deployment, 'pulling_image')
+    sm.transition(deployment, 'creating')
+    sm.transition(deployment, 'starting')
+    sm.transition(deployment, 'running')
 
-    # Mark commitment point
+    # Mark commitment point (after container created)
     container = docker_client.containers.create(...)
     sm.mark_committed(deployment)
 
@@ -46,16 +63,29 @@ class DeploymentStateMachine:
     """
 
     # Valid state transitions (from_state -> to_state)
+    # Spec-compliant 7-state flow with granular progression
     VALID_TRANSITIONS = {
-        'planning': ['executing'],
-        'executing': ['completed', 'failed', 'rolled_back'],
+        'planning': ['validating'],
+        'validating': ['pulling_image', 'failed'],
+        'pulling_image': ['creating', 'failed'],
+        'creating': ['starting', 'failed'],
+        'starting': ['running', 'failed'],
+        'running': [],  # Terminal state (success)
         'failed': ['rolled_back'],
-        'completed': [],  # Terminal state
-        'rolled_back': [],  # Terminal state
+        'rolled_back': [],  # Terminal state (cleanup complete)
     }
 
-    # Valid deployment states
-    VALID_STATES = {'planning', 'executing', 'completed', 'failed', 'rolled_back'}
+    # Valid deployment states (7 states from spec)
+    VALID_STATES = {
+        'planning',      # Deployment created, not started
+        'validating',    # Security validation in progress
+        'pulling_image', # Downloading container image
+        'creating',      # Creating container in Docker
+        'starting',      # Starting container
+        'running',       # Container healthy and running
+        'failed',        # Error occurred
+        'rolled_back'    # Failed deployment cleaned up
+    }
 
     def can_transition(self, from_state: str, to_state: str) -> bool:
         """
@@ -70,11 +100,11 @@ class DeploymentStateMachine:
 
         Examples:
             >>> sm = DeploymentStateMachine()
-            >>> sm.can_transition('planning', 'executing')
+            >>> sm.can_transition('planning', 'validating')
             True
-            >>> sm.can_transition('planning', 'completed')
-            False
-            >>> sm.can_transition('completed', 'failed')
+            >>> sm.can_transition('planning', 'running')
+            False  # Cannot skip states
+            >>> sm.can_transition('running', 'failed')
             False  # Terminal state
         """
         if from_state not in self.VALID_STATES:
@@ -103,17 +133,17 @@ class DeploymentStateMachine:
 
         Side Effects:
             - Updates deployment.status
-            - Sets started_at when transitioning to 'executing'
+            - Sets started_at when transitioning to 'validating'
             - Sets completed_at when transitioning to terminal states
             - Logs state transitions
 
         Examples:
             >>> sm = DeploymentStateMachine()
             >>> deployment.status = 'planning'
-            >>> sm.transition(deployment, 'executing')
+            >>> sm.transition(deployment, 'validating')
             True
             >>> deployment.status
-            'executing'
+            'validating'
             >>> deployment.started_at
             datetime(...)
         """
@@ -133,10 +163,12 @@ class DeploymentStateMachine:
         # Update timestamps based on state
         utcnow = datetime.now(timezone.utc)
 
-        if to_state == 'executing' and not deployment.started_at:
+        # Set started_at when deployment begins execution (validating is first state)
+        if to_state == 'validating' and not deployment.started_at:
             deployment.started_at = utcnow
 
-        if to_state in {'completed', 'failed', 'rolled_back'} and not deployment.completed_at:
+        # Set completed_at when reaching terminal states
+        if to_state in {'running', 'failed', 'rolled_back'} and not deployment.completed_at:
             deployment.completed_at = utcnow
 
         logger.info(
@@ -209,7 +241,7 @@ class DeploymentStateMachine:
 
         Examples:
             >>> sm = DeploymentStateMachine()
-            >>> deployment.status = 'executing'
+            >>> deployment.status = 'creating'
             >>> deployment.committed = False
             >>> deployment.rollback_on_failure = True
             >>> sm.should_rollback(deployment)
@@ -236,8 +268,10 @@ class DeploymentStateMachine:
             )
             return False
 
-        # Only rollback from certain states
-        rollback_eligible_states = {'executing', 'failed'}
+        # Only rollback from certain states (intermediate execution states + failed)
+        rollback_eligible_states = {
+            'validating', 'pulling_image', 'creating', 'starting', 'failed'
+        }
         if deployment.status not in rollback_eligible_states:
             logger.debug(
                 f"Deployment {deployment.id}: status '{deployment.status}' "
@@ -260,7 +294,7 @@ class DeploymentStateMachine:
 
         Examples:
             >>> sm = DeploymentStateMachine()
-            >>> sm.validate_state('executing')
+            >>> sm.validate_state('validating')
             True
             >>> sm.validate_state('invalid_state')
             False
@@ -280,10 +314,10 @@ class DeploymentStateMachine:
         Examples:
             >>> sm = DeploymentStateMachine()
             >>> sm.get_valid_next_states('planning')
-            ['executing']
-            >>> sm.get_valid_next_states('executing')
-            ['completed', 'failed', 'rolled_back']
-            >>> sm.get_valid_next_states('completed')
+            ['validating']
+            >>> sm.get_valid_next_states('validating')
+            ['pulling_image', 'failed']
+            >>> sm.get_valid_next_states('running')
             []  # Terminal state
         """
         return self.VALID_TRANSITIONS.get(current_state, [])

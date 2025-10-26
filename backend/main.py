@@ -35,6 +35,7 @@ from database import (
     UpdatePolicy,
     ContainerDesiredState,
     ContainerHttpHealthCheck,
+    DeploymentMetadata,
     User,
     UserPrefs,
     DockerHostDB,
@@ -1412,6 +1413,44 @@ async def get_all_auto_update_configs(current_user: dict = Depends(get_current_u
                 "floating_tag_mode": record.floating_tag_mode,
             }
             for record in configs
+        }
+
+
+@app.get("/api/deployment-metadata")
+async def get_all_deployment_metadata(current_user: dict = Depends(get_current_user)):
+    """
+    Get deployment metadata for all containers (batch endpoint).
+
+    Returns:
+        Dict mapping container_id (composite key) to deployment metadata:
+        {
+            "{host_id}:{container_id}": {
+                "host_id": str,
+                "deployment_id": str | null,
+                "is_managed": bool,
+                "service_name": str | null,
+                "created_at": str,
+                "updated_at": str
+            }
+        }
+
+    Performance: Single database query instead of N individual queries.
+    Following DockMon pattern established by /api/auto-update-configs.
+    """
+
+    with monitor.db.get_session() as session:
+        metadata_records = session.query(DeploymentMetadata).all()
+
+        return {
+            record.container_id: {
+                "host_id": record.host_id,
+                "deployment_id": record.deployment_id,
+                "is_managed": record.is_managed,
+                "service_name": record.service_name,
+                "created_at": record.created_at.isoformat() + 'Z' if record.created_at else None,
+                "updated_at": record.updated_at.isoformat() + 'Z' if record.updated_at else None,
+            }
+            for record in metadata_records
         }
 
 

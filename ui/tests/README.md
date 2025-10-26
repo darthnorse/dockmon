@@ -7,12 +7,43 @@ End-to-end tests for DockMon user interface using Playwright.
 ```
 tests/
 ├── e2e/
-│   ├── auth.spec.ts          # Authentication workflows
-│   ├── containers.spec.ts    # Container management
-│   └── updates.spec.ts       # Update workflows
+│   ├── auth.spec.ts                    # Authentication workflows
+│   ├── containers.spec.ts              # Container management
+│   ├── updates.spec.ts                 # Update workflows
+│   ├── deployments.spec.ts             # Deployment feature tests
+│   ├── deployment-concurrent.spec.ts   # Concurrent deployment tests
+│   └── templates.spec.ts               # Template management tests
 └── fixtures/
-    ├── auth.ts               # Authentication helpers
-    └── testData.ts           # Sample test data
+    ├── auth.ts                         # Authentication helpers (login/logout)
+    └── testData.ts                     # Sample test data
+```
+
+## Test Credentials
+
+### Default Admin Credentials
+For E2E tests, use these credentials:
+- **Username:** `admin`
+- **Password:** `test1234`
+
+**Note:** The default admin password on FIRST login is `dockmon123`, but the system forces a password change. For local development testing, the password should be set to `test1234`.
+
+### Configuration File
+Test credentials can be configured in `.env.test` (gitignored):
+```bash
+cp .env.test.example .env.test
+```
+
+Default values in `.env.test.example`:
+```env
+TEST_USERNAME=admin
+TEST_PASSWORD=test1234
+VITE_PORT=3001  # Tests use port 3001 to avoid conflicts
+```
+
+### Resetting Test Password
+If authentication fails during tests, reset the admin password:
+```bash
+DOCKER_HOST= docker exec dockmon python3 /app/backend/reset_password.py admin --password test1234
 ```
 
 ## Running Tests

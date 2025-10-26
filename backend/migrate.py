@@ -211,6 +211,10 @@ def _validate_schema(engine, version: str):
             'container_http_health_checks_columns': ['max_restart_attempts', 'restart_retry_delay_seconds'],
         },
         # '004_v2_0_3': No schema changes - security/correctness fixes only (app_version update)
+        '005_v2_1_0': {
+            'tables': ['deployments', 'deployment_containers', 'deployment_templates', 'deployment_metadata'],
+            'deployments_columns': ['stage_percent'],
+        },
         # Add validations for future versions here:
     }
 

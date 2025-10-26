@@ -9,12 +9,13 @@
  * - Delete deployments
  */
 
-import { useState, useEffect, useCallback } from 'react'
-import { Plus, Trash2, Play, Edit, AlertCircle, CheckCircle, XCircle, Loader2, Layers, Bookmark } from 'lucide-react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import { Plus, Trash2, Play, Edit, AlertCircle, CheckCircle, XCircle, Loader2, Layers, Bookmark, Search } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useQueryClient, useQuery } from '@tanstack/react-query'
 import { apiClient } from '@/lib/api/client'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import {
   Table,
   TableBody,
@@ -59,6 +60,7 @@ export function DeploymentsPage() {
   const { openModal: openContainerModal } = useContainerModal()
 
   const [filters, setFilters] = useState<DeploymentFilters>({})
+  const [searchQuery, setSearchQuery] = useState('')
   const [showNewDeploymentForm, setShowNewDeploymentForm] = useState(false)
   const [deploymentToEdit, setDeploymentToEdit] = useState<Deployment | null>(null)
   const [deploymentToDelete, setDeploymentToDelete] = useState<Deployment | null>(null)
@@ -66,7 +68,7 @@ export function DeploymentsPage() {
   const [hostModalOpen, setHostModalOpen] = useState(false)
   const [selectedHostId, setSelectedHostId] = useState<string | null>(null)
 
-  const { data: deployments, isLoading, error} = useDeployments(filters)
+  const { data: deploymentsData, isLoading, error} = useDeployments(filters)
   const { data: hosts } = useHosts()
   const { data: containers } = useQuery<any[]>({
     queryKey: ['containers'],
@@ -74,6 +76,34 @@ export function DeploymentsPage() {
   })
   const executeDeployment = useExecuteDeployment()
   const deleteDeployment = useDeleteDeployment()
+
+  // Client-side search filtering
+  const deployments = useMemo(() => {
+    if (!deploymentsData) return []
+    if (!searchQuery.trim()) return deploymentsData
+
+    const query = searchQuery.toLowerCase()
+    return deploymentsData.filter((deployment) => {
+      // Search in deployment name, host name, and type
+      return (
+        deployment.name?.toLowerCase().includes(query) ||
+        deployment.host_name?.toLowerCase().includes(query) ||
+        deployment.type?.toLowerCase().includes(query)
+      )
+    })
+  }, [deploymentsData, searchQuery])
+
+  // Status label mapping
+  const statusLabels: Record<DeploymentStatus, string> = {
+    planning: 'Planning',
+    validating: 'Validating',
+    pulling_image: 'Pulling Image',
+    creating: 'Creating',
+    starting: 'Starting',
+    running: 'Running',
+    failed: 'Failed',
+    rolled_back: 'Rolled Back',
+  }
 
   // WebSocket: Listen for real-time deployment progress updates
   const handleDeploymentUpdate = useCallback((message: any) => {
@@ -182,8 +212,21 @@ export function DeploymentsPage() {
         </div>
       </div>
 
-      {/* Filters */}
+      {/* Search and Filters */}
       <div className="flex gap-4">
+        {/* Search */}
+        <div className="relative flex-1 max-w-md">
+          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            placeholder="Search deployments..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="pl-9"
+            data-testid="search-deployments"
+          />
+        </div>
+
+        {/* Status Filter */}
         <Select
           value={filters.status || 'all'}
           onValueChange={(value) => {
@@ -196,20 +239,22 @@ export function DeploymentsPage() {
           }}
         >
           <SelectTrigger className="w-[200px]" data-testid="filter-status">
-            <SelectValue placeholder="Filter by status" />
+            <SelectValue>
+              {filters.status ? statusLabels[filters.status] : 'All Statuses'}
+            </SelectValue>
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All Statuses</SelectItem>
             <SelectItem value="planning">Planning</SelectItem>
             <SelectItem value="validating">Validating</SelectItem>
-            <SelectItem value="executing">Executing</SelectItem>
-            <SelectItem value="completed">Completed</SelectItem>
+            <SelectItem value="pulling_image">Pulling Image</SelectItem>
+            <SelectItem value="creating">Creating</SelectItem>
+            <SelectItem value="starting">Starting</SelectItem>
+            <SelectItem value="running">Running</SelectItem>
             <SelectItem value="failed">Failed</SelectItem>
             <SelectItem value="rolled_back">Rolled Back</SelectItem>
           </SelectContent>
         </Select>
-
-        {/* Host filter would go here - needs host data */}
       </div>
 
       {/* Loading State */}
@@ -358,7 +403,7 @@ export function DeploymentsPage() {
                           data-testid={`edit-deployment-${deployment.name}`}
                           title="Edit"
                         >
-                          <Edit className="h-3 w-3" />
+                          <Edit className="h-4 w-4" />
                         </Button>
                         <Button
                           variant="outline"
@@ -367,7 +412,7 @@ export function DeploymentsPage() {
                           disabled={executeDeployment.isPending}
                           data-testid={`execute-deployment-${deployment.name}`}
                         >
-                          <Play className="h-3 w-3 mr-1" />
+                          <Play className="h-4 w-4 mr-1" />
                           Execute
                         </Button>
                       </>
@@ -380,7 +425,7 @@ export function DeploymentsPage() {
                         disabled={executeDeployment.isPending}
                         data-testid={`execute-deployment-${deployment.name}`}
                       >
-                        <Play className="h-3 w-3 mr-1" />
+                        <Play className="h-4 w-4 mr-1" />
                         Execute
                       </Button>
                     )}
@@ -393,7 +438,7 @@ export function DeploymentsPage() {
                         data-testid="save-as-template"
                         title="Save as Template"
                       >
-                        <Bookmark className="h-3 w-3 mr-1" />
+                        <Bookmark className="h-4 w-4 mr-1" />
                         Save as Template
                       </Button>
                     )}
@@ -407,7 +452,7 @@ export function DeploymentsPage() {
                         title="Delete"
                         data-testid={`delete-deployment-${deployment.name}`}
                       >
-                        <Trash2 className="h-3 w-3 text-destructive" />
+                        <Trash2 className="h-4 w-4 text-destructive" />
                       </Button>
                     )}
                   </TableCell>

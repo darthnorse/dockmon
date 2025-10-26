@@ -83,8 +83,9 @@ export function LayerProgressDisplay({
   const [layerProgress, setLayerProgress] = useState<LayerProgressData | null>(null)
   const [layerDetailsExpanded, setLayerDetailsExpanded] = useState(true)  // Default expanded
 
-  // Store completion timeout ID for cleanup (prevents memory leak)
+  // Store completion timeout IDs for cleanup (prevents memory leak)
   const [completionTimeoutId, setCompletionTimeoutId] = useState<NodeJS.Timeout | null>(null)
+  const [collapseTimeoutId, setCollapseTimeoutId] = useState<NodeJS.Timeout | null>(null)
 
   // Listen for WebSocket progress messages
   const handleProgressMessage = useCallback(
@@ -141,12 +142,33 @@ export function LayerProgressDisplay({
     return () => {
       cleanup()
 
-      // Clear timeout if component unmounts (prevents memory leak)
+      // Clear timeouts if component unmounts (prevents memory leak)
       if (completionTimeoutId) {
         clearTimeout(completionTimeoutId)
       }
+      if (collapseTimeoutId) {
+        clearTimeout(collapseTimeoutId)
+      }
     }
-  }, [addMessageHandler, handleProgressMessage, completionTimeoutId])
+  }, [addMessageHandler, handleProgressMessage, completionTimeoutId, collapseTimeoutId])
+
+  // Auto-collapse layer details 2 seconds after reaching 100%
+  useEffect(() => {
+    if (layerProgress && layerProgress.overall_progress === 100 && layerDetailsExpanded) {
+      // Clear any existing collapse timeout
+      if (collapseTimeoutId) {
+        clearTimeout(collapseTimeoutId)
+      }
+
+      // Set new timeout to collapse after 2 seconds
+      const timeoutId = setTimeout(() => {
+        setLayerDetailsExpanded(false)
+        setCollapseTimeoutId(null)
+      }, 2000)
+
+      setCollapseTimeoutId(timeoutId)
+    }
+  }, [layerProgress?.overall_progress, layerDetailsExpanded, collapseTimeoutId])
 
   // Don't render if no progress data
   if (!updateProgress && !layerProgress) {

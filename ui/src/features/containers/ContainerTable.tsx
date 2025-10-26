@@ -1360,6 +1360,11 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         return true
       }
 
+      // Search in ports array (e.g., ["8080:80/tcp", "443:443/tcp"])
+      if (container.ports?.some(port => port.toLowerCase().includes(searchValue))) {
+        return true
+      }
+
       return false
     },
     state: {
@@ -1492,7 +1497,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
             placeholder="Search containers..."
             value={globalFilter ?? ''}
             onChange={(e) => setGlobalFilter(e.target.value)}
-            className="max-w-sm"
+            className="max-w-md"
             data-testid="containers-search-input"
           />
           <div className="text-sm text-muted-foreground whitespace-nowrap">

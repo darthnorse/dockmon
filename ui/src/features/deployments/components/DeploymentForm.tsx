@@ -10,6 +10,7 @@
 
 import { useState, useEffect } from 'react'
 import { AlertTriangle, Layers } from 'lucide-react'
+import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -23,7 +24,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { useCreateDeployment, useUpdateDeployment } from '../hooks/useDeployments'
-import { useRenderTemplate } from '../hooks/useTemplates'
+import { useRenderTemplate, useCreateTemplate } from '../hooks/useTemplates'
 import { TemplateSelector } from './TemplateSelector'
 import { VariableInputDialog } from './VariableInputDialog'
 import type { DeploymentType, DeploymentDefinition, DeploymentTemplate, Deployment } from '../types'
@@ -39,6 +40,7 @@ export function DeploymentForm({ isOpen, onClose, hosts = [], deployment }: Depl
   const createDeployment = useCreateDeployment()
   const updateDeployment = useUpdateDeployment()
   const renderTemplate = useRenderTemplate()
+  const createTemplate = useCreateTemplate()
 
   const isEditMode = !!deployment
 
@@ -65,6 +67,12 @@ export function DeploymentForm({ isOpen, onClose, hosts = [], deployment }: Depl
   const [showTemplateSelector, setShowTemplateSelector] = useState(false)
   const [showVariableInput, setShowVariableInput] = useState(false)
   const [selectedTemplate, setSelectedTemplate] = useState<DeploymentTemplate | null>(null)
+
+  // Save as Template state
+  const [saveAsTemplate, setSaveAsTemplate] = useState(false)
+  const [templateName, setTemplateName] = useState('')
+  const [templateCategory, setTemplateCategory] = useState('')
+  const [templateDescription, setTemplateDescription] = useState('')
 
   // Validation errors
   const [errors, setErrors] = useState<Record<string, string>>({})
@@ -95,6 +103,10 @@ export function DeploymentForm({ isOpen, onClose, hosts = [], deployment }: Depl
       setSelectedTemplate(null)
       setShowTemplateSelector(false)
       setShowVariableInput(false)
+      setSaveAsTemplate(false)
+      setTemplateName('')
+      setTemplateCategory('')
+      setTemplateDescription('')
     }
   }, [isOpen])
 
@@ -202,6 +214,11 @@ export function DeploymentForm({ isOpen, onClose, hosts = [], deployment }: Depl
       }
     }
 
+    // Validate template name if "Save as Template" is enabled
+    if (saveAsTemplate && !templateName.trim()) {
+      newErrors.templateName = 'Template name is required when saving as template'
+    }
+
     setErrors(newErrors)
     return Object.keys(newErrors).length === 0
   }
@@ -239,6 +256,14 @@ export function DeploymentForm({ isOpen, onClose, hosts = [], deployment }: Depl
 
   // Apply deployment definition to form fields
   const applyTemplateToForm = (definition: DeploymentDefinition) => {
+    // Stack fields
+    if (definition.compose_yaml) {
+      setComposeYaml(definition.compose_yaml)
+      setType('stack')  // Ensure type is set to stack
+      return  // Stack templates only need compose_yaml
+    }
+
+    // Container fields
     if (definition.image) setImage(definition.image)
     if (definition.ports) setPorts(definition.ports.join(', '))
     if (definition.volumes) setVolumes(definition.volumes.join(', '))
@@ -346,11 +371,12 @@ export function DeploymentForm({ isOpen, onClose, hosts = [], deployment }: Depl
 
       // Create or update deployment
       if (isEditMode && deployment) {
-        // Update existing deployment
+        // Update existing deployment (no template creation in edit mode)
         await updateDeployment.mutateAsync({
           deploymentId: deployment.id,
           definition,
         })
+        onClose()
       } else {
         // Create new deployment
         await createDeployment.mutateAsync({
@@ -359,12 +385,44 @@ export function DeploymentForm({ isOpen, onClose, hosts = [], deployment }: Depl
           host_id: hostId,
           definition,
         })
-      }
 
-      onClose()
-    } catch (error) {
-      // Error is handled by the mutation (toast)
+        // If "Save as Template" is enabled, create template
+        if (saveAsTemplate) {
+          try {
+            await createTemplate.mutateAsync({
+              name: templateName.trim(),
+              deployment_type: type,
+              template_definition: definition,
+              category: templateCategory.trim() || null,
+              description: templateDescription.trim() || null,
+            })
+            toast.success('Deployment and template created successfully')
+          } catch (templateError: any) {
+            // Check if it's a duplicate name error
+            if (templateError.message && templateError.message.includes('already exists')) {
+              // Show inline error on template name field, don't close form
+              setErrors(prev => ({
+                ...prev,
+                templateName: 'A template with this name already exists. Please choose a different name.',
+              }))
+              toast.error('Template name already exists')
+              return // Don't close form - let user fix the error
+            } else {
+              // Other template error - deployment succeeded but template failed
+              toast.warning(`Deployment created, but failed to save template: ${templateError.message}`)
+            }
+          }
+        } else {
+          // No template, just show deployment success
+          toast.success('Deployment created successfully')
+        }
+
+        onClose()
+      }
+    } catch (error: any) {
+      // Deployment creation failed - show error
       console.error(`Failed to ${isEditMode ? 'update' : 'create'} deployment:`, error)
+      toast.error(`Failed to ${isEditMode ? 'update' : 'create'} deployment: ${error.message || 'Unknown error'}`)
     }
   }
 
@@ -431,6 +489,19 @@ export function DeploymentForm({ isOpen, onClose, hosts = [], deployment }: Depl
                   <SelectItem value="stack">Docker Compose Stack</SelectItem>
                 </SelectContent>
               </Select>
+              <p className="text-xs text-muted-foreground">
+                {type === 'container' ? (
+                  <>
+                    <strong>Container:</strong> Deploy a single service (e.g., Nginx, Radarr, PostgreSQL).
+                    Specify image, ports, and environment variables below.
+                  </>
+                ) : (
+                  <>
+                    <strong>Stack:</strong> Deploy multiple services with Docker Compose (e.g., WordPress + MySQL + Redis).
+                    Provide a complete Compose YAML file with 'services' section.
+                  </>
+                )}
+              </p>
             </div>
 
             {/* Host Selection */}
@@ -619,6 +690,67 @@ services:
                   <li key={i}>{warning}</li>
                 ))}
               </ul>
+            </div>
+          )}
+
+          {/* Save as Template Section (only in create mode) */}
+          {!isEditMode && (
+            <div className="space-y-4 pt-6 border-t">
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="saveAsTemplate"
+                  checked={saveAsTemplate}
+                  onChange={(e) => setSaveAsTemplate(e.target.checked)}
+                  className="h-4 w-4 rounded border-gray-600 bg-gray-800 text-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-0"
+                />
+                <Label htmlFor="saveAsTemplate" className="cursor-pointer">
+                  Save as Template
+                </Label>
+              </div>
+
+              {saveAsTemplate && (
+                <div className="space-y-4 pl-6">
+                  <p className="text-sm text-muted-foreground">
+                    Save this configuration as a reusable template for future deployments
+                  </p>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="templateName">Template Name *</Label>
+                    <Input
+                      id="templateName"
+                      value={templateName}
+                      onChange={(e) => setTemplateName(e.target.value)}
+                      placeholder="e.g., Nginx Reverse Proxy"
+                      className={errors.templateName ? 'border-destructive' : ''}
+                    />
+                    {errors.templateName && (
+                      <p className="text-sm text-destructive">{errors.templateName}</p>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="templateCategory">Category (optional)</Label>
+                    <Input
+                      id="templateCategory"
+                      value={templateCategory}
+                      onChange={(e) => setTemplateCategory(e.target.value)}
+                      placeholder="e.g., Web Servers, Databases"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="templateDescription">Description (optional)</Label>
+                    <Textarea
+                      id="templateDescription"
+                      value={templateDescription}
+                      onChange={(e) => setTemplateDescription(e.target.value)}
+                      placeholder="Describe what this template does..."
+                      rows={3}
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

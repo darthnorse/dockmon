@@ -116,6 +116,35 @@ class DeploymentExecutor:
             if deployment_type not in ('container', 'stack'):
                 raise ValueError(f"Invalid deployment_type: {deployment_type}. Must be 'container' or 'stack'")
 
+            # Validate definition structure matches deployment type
+            if deployment_type == 'container':
+                # Container deployments require 'image' at root level
+                if 'image' not in definition:
+                    raise ValueError(
+                        "Container deployments require an 'image' field at root level. "
+                        "Example: {\"image\": \"nginx:alpine\", \"ports\": [\"80:80\"]}"
+                    )
+                # Prevent using Compose YAML in container deployments
+                if 'compose_yaml' in definition or 'services' in definition:
+                    raise ValueError(
+                        "Container deployments cannot use 'compose_yaml' or 'services'. "
+                        "Use deployment_type='stack' for Docker Compose multi-service deployments."
+                    )
+
+            elif deployment_type == 'stack':
+                # Stack deployments require 'compose_yaml' field
+                if 'compose_yaml' not in definition:
+                    raise ValueError(
+                        "Stack deployments require a 'compose_yaml' field with Docker Compose YAML. "
+                        "Example: {\"compose_yaml\": \"services:\\n  nginx:\\n    image: nginx:alpine\"}"
+                    )
+                # Prevent using single-container fields in stack deployments
+                if 'image' in definition:
+                    raise ValueError(
+                        "Stack deployments use 'compose_yaml' with 'services', not a root-level 'image'. "
+                        "Use deployment_type='container' for single-container deployments."
+                    )
+
             # Check for duplicate name on this host
             existing = session.query(Deployment).filter_by(
                 host_id=host_id,

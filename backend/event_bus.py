@@ -35,6 +35,7 @@ class EventType(str, Enum):
     CONTAINER_STOPPED = "container_stopped"
     CONTAINER_RESTARTED = "container_restarted"
     CONTAINER_DIED = "container_died"
+    CONTAINER_DELETED = "container_deleted"
     CONTAINER_HEALTH_CHANGED = "container_health_changed"
 
     # Host events
@@ -190,6 +191,7 @@ class EventBus:
                 EventType.CONTAINER_RESTARTED: (LogEventType.STATE_CHANGE, EventCategory.CONTAINER, EventSeverity.INFO),
                 EventType.CONTAINER_STOPPED: (LogEventType.STATE_CHANGE, EventCategory.CONTAINER, EventSeverity.WARNING),
                 EventType.CONTAINER_DIED: (LogEventType.STATE_CHANGE, EventCategory.CONTAINER, EventSeverity.ERROR),
+                EventType.CONTAINER_DELETED: (LogEventType.ACTION_TAKEN, EventCategory.CONTAINER, EventSeverity.WARNING),
                 EventType.CONTAINER_HEALTH_CHANGED: (LogEventType.STATE_CHANGE, EventCategory.HEALTH_CHECK, EventSeverity.WARNING),
                 EventType.HOST_CONNECTED: (LogEventType.CONNECTION, EventCategory.HOST, EventSeverity.INFO),
                 EventType.HOST_DISCONNECTED: (LogEventType.DISCONNECTION, EventCategory.HOST, EventSeverity.ERROR),
@@ -250,6 +252,7 @@ class EventBus:
                 EventType.CONTAINER_RESTARTED: 'state_change',
                 EventType.CONTAINER_STOPPED: 'state_change',
                 EventType.CONTAINER_DIED: 'state_change',
+                EventType.CONTAINER_DELETED: 'action_taken',
                 EventType.CONTAINER_HEALTH_CHANGED: 'state_change',
                 EventType.HOST_CONNECTED: 'connection',
                 EventType.HOST_DISCONNECTED: 'disconnection',
@@ -378,6 +381,14 @@ class EventBus:
                 message = f"Container {event.scope_name} died with exit code {exit_code}"
             else:
                 message = f"Container {event.scope_name} died"
+
+        elif event.event_type == EventType.CONTAINER_DELETED:
+            title = f"Container Deleted: {event.scope_name}"
+            removed_volumes = event.data.get('removed_volumes', False)
+            if removed_volumes:
+                message = f"Container {event.scope_name} deleted (volumes removed)"
+            else:
+                message = f"Container {event.scope_name} deleted"
 
         elif event.event_type == EventType.CONTAINER_HEALTH_CHANGED:
             title = f"Container Health Changed: {event.scope_name}"

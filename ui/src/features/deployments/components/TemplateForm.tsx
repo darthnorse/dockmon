@@ -28,6 +28,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { useCreateTemplate, useUpdateTemplate } from '../hooks/useTemplates'
+import { ConfigurationEditor } from './ConfigurationEditor'
 import type { DeploymentTemplate, DeploymentDefinition } from '../types'
 
 interface TemplateFormProps {
@@ -59,7 +60,19 @@ export function TemplateForm({ isOpen, onClose, template }: TemplateFormProps) {
       setCategory(template.category || '')
       setDescription(template.description || '')
       setDeploymentType(template.deployment_type as 'container' | 'stack')
-      setDefinition(JSON.stringify(template.template_definition, null, 2))
+
+      // Format the definition for display
+      let formatted: string
+      if (template.deployment_type === 'stack' && 'compose_yaml' in template.template_definition && template.template_definition.compose_yaml) {
+        // For stacks: show the YAML directly (not wrapped in JSON)
+        // This makes it much easier to read and edit
+        formatted = template.template_definition.compose_yaml
+      } else {
+        // For containers: show as formatted JSON
+        formatted = JSON.stringify(template.template_definition, null, 2)
+      }
+
+      setDefinition(formatted)
     }
   }, [template, isOpen])
 
@@ -84,14 +97,15 @@ export function TemplateForm({ isOpen, onClose, template }: TemplateFormProps) {
 
     if (!definition.trim()) {
       newErrors.definition = 'Template definition is required'
-    } else {
-      // Validate JSON
+    } else if (deploymentType === 'container') {
+      // For containers: validate JSON format
       try {
         JSON.parse(definition)
       } catch (e) {
         newErrors.definition = 'Invalid JSON format'
       }
     }
+    // For stacks: no validation needed - raw YAML is accepted
 
     setErrors(newErrors)
     return Object.keys(newErrors).length === 0
@@ -105,7 +119,16 @@ export function TemplateForm({ isOpen, onClose, template }: TemplateFormProps) {
     }
 
     try {
-      const parsedDefinition = JSON.parse(definition) as DeploymentDefinition
+      // Parse the definition based on deployment type
+      let parsedDefinition: DeploymentDefinition
+
+      if (deploymentType === 'stack') {
+        // For stacks: the definition field contains raw YAML, wrap it
+        parsedDefinition = { compose_yaml: definition }
+      } else {
+        // For containers: the definition field contains JSON, parse it
+        parsedDefinition = JSON.parse(definition) as DeploymentDefinition
+      }
 
       if (isEditMode && template) {
         // Update existing template
@@ -130,8 +153,17 @@ export function TemplateForm({ isOpen, onClose, template }: TemplateFormProps) {
       }
 
       onClose()
-    } catch (error) {
-      // Error handling is done in hooks (toast notifications)
+    } catch (error: any) {
+      // Check for duplicate name error
+      if (error.message && error.message.includes('already exists')) {
+        setErrors({
+          ...errors,
+          name: 'A template with this name already exists. Please choose a different name.',
+        })
+        return // Keep form open so user can fix the error
+      }
+
+      // Other errors - log and let hooks handle toast
       console.error('Template save failed:', error)
     }
   }
@@ -211,22 +243,18 @@ export function TemplateForm({ isOpen, onClose, template }: TemplateFormProps) {
             </div>
           )}
 
-          {/* Template Definition (JSON) */}
+          {/* Template Definition */}
           <div>
-            <Label htmlFor="definition">Template Definition (JSON) *</Label>
-            <Textarea
-              id="definition"
-              name="definition"
+            <Label htmlFor="definition">
+              {deploymentType === 'stack' ? 'Compose YAML *' : 'Template Definition (JSON) *'}
+            </Label>
+            <ConfigurationEditor
+              type={deploymentType}
               value={definition}
-              onChange={(e) => setDefinition(e.target.value)}
-              placeholder='{"image": "nginx:latest", "ports": ["80:80"]}'
-              rows={12}
-              className={`font-mono text-sm ${errors.definition ? 'border-destructive' : ''}`}
-              data-testid="template-definition"
+              onChange={setDefinition}
+              mode="json"
+              error={errors.definition || undefined}
             />
-            {errors.definition && (
-              <p className="text-sm text-destructive mt-1">{errors.definition}</p>
-            )}
             <p className="text-xs text-muted-foreground mt-1">
               Use ${`{VARIABLE_NAME}`} for variable placeholders
             </p>

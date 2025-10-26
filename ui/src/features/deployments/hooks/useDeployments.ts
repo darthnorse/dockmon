@@ -210,3 +210,48 @@ export function useDeleteDeployment() {
     },
   })
 }
+
+// Save as Template mutation
+interface SaveAsTemplateRequest {
+  deploymentId: string
+  name: string
+  category: string | null
+  description: string | null
+}
+
+export function useSaveAsTemplate() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (request: SaveAsTemplateRequest) => {
+      const response = await fetch(
+        `${API_BASE}/deployments/${request.deploymentId}/save-as-template`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({
+            name: request.name,
+            category: request.category,
+            description: request.description,
+          }),
+        }
+      )
+
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.detail || 'Failed to save template')
+      }
+
+      return response.json()
+    },
+    onSuccess: () => {
+      // Invalidate templates cache to show new template
+      queryClient.invalidateQueries({ queryKey: ['templates'] })
+      toast.success('Template created successfully')
+    },
+    onError: (error: Error) => {
+      toast.error(`Failed to save template: ${error.message}`)
+    },
+  })
+}

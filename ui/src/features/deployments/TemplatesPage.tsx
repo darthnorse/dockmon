@@ -10,7 +10,8 @@
  */
 
 import { useState } from 'react'
-import { FileText, Plus, Edit, Trash2, AlertCircle } from 'lucide-react'
+import { Plus, Edit, Trash2, AlertCircle, ArrowLeft } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import {
   Table,
@@ -28,14 +29,26 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { useTemplates, useDeleteTemplate } from './hooks/useTemplates'
 import { TemplateForm } from './components/TemplateForm'
 import type { DeploymentTemplate } from './types'
 
 export function TemplatesPage() {
+  const navigate = useNavigate()
   const [categoryFilter, setCategoryFilter] = useState<string | null>(null)
   const [showTemplateForm, setShowTemplateForm] = useState(false)
   const [editingTemplate, setEditingTemplate] = useState<DeploymentTemplate | null>(null)
+  const [templateToDelete, setTemplateToDelete] = useState<DeploymentTemplate | null>(null)
 
   const { data: templates, isLoading, error } = useTemplates()
   const deleteTemplate = useDeleteTemplate()
@@ -61,9 +74,13 @@ export function TemplatesPage() {
     if (template.is_builtin) {
       return // Built-in templates can't be deleted
     }
+    setTemplateToDelete(template)
+  }
 
-    if (confirm(`Are you sure you want to delete template "${template.name}"?`)) {
-      deleteTemplate.mutate(template.id)
+  const confirmDelete = () => {
+    if (templateToDelete) {
+      deleteTemplate.mutate(templateToDelete.id)
+      setTemplateToDelete(null)
     }
   }
 
@@ -74,14 +91,22 @@ export function TemplatesPage() {
 
   return (
     <div className="p-6 space-y-6">
+      {/* Back to Deployments */}
+      <Button
+        variant="ghost"
+        onClick={() => navigate('/deployments')}
+        className="gap-2 -ml-2"
+        data-testid="back-to-deployments"
+      >
+        <ArrowLeft className="h-4 w-4" />
+        Back to Deployments
+      </Button>
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold flex items-center gap-2">
-            <FileText className="h-8 w-8" />
-            Deployment Templates
-          </h1>
-          <p className="text-muted-foreground mt-1">
+          <h1 className="text-2xl font-bold">Deployment Templates</h1>
+          <p className="text-sm text-muted-foreground mt-1">
             Reusable configurations for quick deployments
           </p>
         </div>
@@ -229,6 +254,28 @@ export function TemplatesPage() {
         onClose={handleCloseForm}
         template={editingTemplate}
       />
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={!!templateToDelete} onOpenChange={(open) => !open && setTemplateToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Template</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete template "<strong>{templateToDelete?.name}</strong>"?
+              This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmDelete}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

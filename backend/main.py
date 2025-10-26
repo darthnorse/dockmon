@@ -36,16 +36,22 @@ from database import (
     ContainerDesiredState,
     ContainerHttpHealthCheck,
     DeploymentMetadata,
+    TagAssignment,
     User,
     UserPrefs,
     DockerHostDB,
     RegistryCredential,
     NotificationChannel,
-    AlertRuleV2
+    AlertRuleV2,
+    AutoRestartConfig,
+    BatchJobItem,
+    DeploymentContainer
 )
 from realtime import RealtimeMonitor
 from notifications import NotificationService
-from event_logger import EventLogger, EventContext, EventCategory, EventType, EventSeverity, PerformanceTimer
+from event_logger import EventLogger, EventContext, EventCategory, EventSeverity, PerformanceTimer
+from event_logger import EventType as LogEventType
+from event_bus import Event, EventType, get_event_bus
 
 # Import extracted modules
 from config.settings import AppConfig, get_cors_origins, setup_logging, HealthCheckFilter
@@ -135,7 +141,7 @@ async def lifespan(app: FastAPI):
     # This ensures timestamps are always displayed in the user's local timezone
 
     await monitor.event_logger.start()
-    monitor.event_logger.log_system_event("DockMon Backend Starting", "DockMon backend is initializing", EventSeverity.INFO, EventType.STARTUP)
+    monitor.event_logger.log_system_event("DockMon Backend Starting", "DockMon backend is initializing", EventSeverity.INFO, EventType.SYSTEM_STARTUP)
 
     # Connect security audit logger to event logger
     security_audit.set_event_logger(monitor.event_logger)
@@ -740,6 +746,40 @@ async def start_container(host_id: str, container_id: str, current_user: dict = 
     """Start a container"""
     success = await monitor.start_container(host_id, container_id)
     return {"status": "success" if success else "failed"}
+
+@app.delete("/api/hosts/{host_id}/containers/{container_id}")
+async def delete_container(
+    host_id: str,
+    container_id: str,
+    removeVolumes: bool = False,
+    current_user: dict = Depends(get_current_user),
+    rate_limit_check: bool = rate_limit_containers
+):
+    """
+    Delete a container permanently.
+
+    CRITICAL SAFETY: DockMon cannot delete itself.
+
+    Args:
+        host_id: Host UUID
+        container_id: Container SHORT ID (12 chars)
+        removeVolumes: If True, also remove anonymous/non-persistent volumes
+
+    Returns:
+        {"success": True, "message": "Container deleted"}
+
+    Raises:
+        403: Attempting to delete DockMon itself
+        404: Container or host not found
+        500: Docker API failure
+    """
+    # Get container name for logging (operations module will re-fetch it)
+    containers = await monitor.get_containers()
+    container = next((c for c in containers if c.id == container_id and c.host_id == host_id), None)
+    container_name = container.name if container else container_id
+
+    # Delegate to monitor (which delegates to operations module)
+    return await monitor.delete_container(host_id, container_id, container_name, removeVolumes)
 
 @app.get("/api/hosts/{host_id}/containers/{container_id}/logs")
 async def get_container_logs(
@@ -3443,7 +3483,7 @@ async def cleanup_old_events(days: int = 30, current_user: dict = Depends(get_cu
             "Event Cleanup Completed",
             f"Cleaned up {deleted_count} events older than {days} days",
             EventSeverity.INFO,
-            EventType.STARTUP
+            EventType.SYSTEM_STARTUP
         )
 
         return {

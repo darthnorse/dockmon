@@ -158,6 +158,9 @@ class ImagePullProgress:
                 if not layer_id:
                     continue
 
+                # Log all layer status events at INFO level for extraction visibility debugging
+                logger.info(f"Layer {layer_id[:12]}: {status}")
+
                 # Handle cached layers (critical for correct progress calculation)
                 if status in ['Already exists', 'Pull complete']:
                     # For cached layers, mark as complete with no download

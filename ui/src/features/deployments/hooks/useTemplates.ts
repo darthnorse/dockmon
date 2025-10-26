@@ -64,6 +64,7 @@ export function useTemplate(templateId: string | null) {
 
 /**
  * Create a new template
+ * Note: Does NOT show toast automatically - caller must handle success/error messages
  */
 export function useCreateTemplate() {
   const queryClient = useQueryClient()
@@ -88,11 +89,9 @@ export function useCreateTemplate() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['templates'] })
-      toast.success('Template created successfully')
+      // No automatic toast - caller handles it
     },
-    onError: (error: Error) => {
-      toast.error(`Failed to create template: ${error.message}`)
-    },
+    // No automatic error toast - caller handles it
   })
 }
 

@@ -166,6 +166,57 @@ test.describe('Deployments - Create Deployment', () => {
     await expect(deploymentItem).toBeVisible({ timeout: 2000 });
   });
 
+  test('should show "From Template" button in deployment form', async ({ page }) => {
+    // Open deployment form
+    const newDeploymentButton = page.locator('[data-testid="new-deployment-button"]').first();
+    await newDeploymentButton.click();
+
+    // Should have "From Template" button
+    const fromTemplateButton = page.locator('[data-testid="select-template"]').or(
+      page.locator('button:has-text("From Template")')
+    );
+
+    await expect(fromTemplateButton).toBeVisible();
+
+    // Close modal
+    await page.keyboard.press('Escape');
+    await waitForModalClose(page);
+  });
+
+  test('should open template selector when "From Template" button is clicked', async ({ page }) => {
+    // Open deployment form
+    const newDeploymentButton = page.locator('[data-testid="new-deployment-button"]').first();
+    await newDeploymentButton.click();
+
+    // Click "From Template" button
+    const fromTemplateButton = page.locator('[data-testid="select-template"]').first();
+    await fromTemplateButton.click();
+
+    // Template selector modal should appear
+    const templateSelector = page.locator('[data-testid="template-selector"]').or(
+      page.locator('[role="dialog"]:has-text("Select Template")').or(
+        page.locator('[role="dialog"]:has-text("Templates")')
+      )
+    );
+
+    await expect(templateSelector.first()).toBeVisible({ timeout: 2000 });
+
+    // Close modals
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(300);
+    await page.keyboard.press('Escape');
+    await waitForModalClose(page);
+  });
+
+  test.skip('should pre-fill deployment form when template is selected', async ({ page }) => {
+    // SKIPPED: Requires creating a test template first and complex modal interactions
+    // This would verify that selecting a template from TemplateSelector
+    // pre-fills the deployment form fields
+    // Manual testing is easier for this workflow
+
+    await expect(true).toBe(true);
+  });
+
   test.skip('should reject duplicate deployment names', async ({ page }) => {
     // SKIPPED: Requires dropdown interaction (host select)
     // Create first deployment using helper
@@ -513,5 +564,172 @@ test.describe('Deployments - Cleanup', () => {
         continue;
       }
     }
+  });
+});
+
+test.describe('Deployments - Save as Template', () => {
+  test('[TDD RED] should show "Save as Template" button for completed deployments', async ({ page }) => {
+    /**
+     * RED PHASE: This test will FAIL until UI is implemented.
+     *
+     * User Story: As a user, I want to save a successful deployment as a reusable template
+     * so I can quickly deploy the same configuration to other hosts.
+     *
+     * Expected: "Save as Template" button visible for running deployments (terminal success state)
+     */
+    await page.goto('/deployments');
+
+    // Look for a running deployment in the list (terminal success state)
+    const deploymentRow = page.locator('[data-testid^="deployment-row-"]').or(
+      page.locator('tr:has-text("running")').or(
+        page.locator('[role="row"]:has-text("running")')
+      )
+    ).first();
+
+    // Wait for deployments to load
+    await page.waitForTimeout(1000);
+
+    // Look for "Save as Template" button
+    const saveAsTemplateButton = page.locator('[data-testid="save-as-template"]').or(
+      page.locator('button:has-text("Save as Template")').or(
+        page.locator('[aria-label="Save as Template"]')
+      )
+    ).first();
+
+    // THIS WILL FAIL - button doesn't exist yet (RED phase)
+    await expect(saveAsTemplateButton).toBeVisible({ timeout: 2000 });
+  });
+
+  test('[TDD RED] should open "Save as Template" dialog when button clicked', async ({ page }) => {
+    /**
+     * RED PHASE: This test will FAIL until UI is implemented.
+     *
+     * Expected: Clicking "Save as Template" opens a dialog with:
+     * - Template Name input (required)
+     * - Category input (optional)
+     * - Description textarea (optional)
+     * - Save button
+     * - Cancel button
+     */
+    await page.goto('/deployments');
+    await page.waitForTimeout(1000);
+
+    // Click "Save as Template" button
+    const saveAsTemplateButton = page.locator('[data-testid="save-as-template"]').or(
+      page.locator('button:has-text("Save as Template")')
+    ).first();
+
+    await saveAsTemplateButton.click();
+
+    // Dialog should open
+    const dialog = page.locator('[data-testid="save-as-template-dialog"]').or(
+      page.locator('[role="dialog"]:has-text("Save as Template")').or(
+        page.locator('.modal:has-text("Save as Template")')
+      )
+    );
+
+    // THIS WILL FAIL - dialog doesn't exist yet (RED phase)
+    await expect(dialog).toBeVisible({ timeout: 2000 });
+
+    // Verify dialog fields exist
+    const nameInput = dialog.locator('[data-testid="template-name"]').or(
+      dialog.locator('input[name="name"]')
+    );
+    const categoryInput = dialog.locator('[data-testid="template-category"]').or(
+      dialog.locator('input[name="category"]')
+    );
+    const descriptionInput = dialog.locator('[data-testid="template-description"]').or(
+      dialog.locator('textarea[name="description"]')
+    );
+
+    await expect(nameInput).toBeVisible();
+    await expect(categoryInput).toBeVisible();
+    await expect(descriptionInput).toBeVisible();
+  });
+
+  test('[TDD RED] should create template when form submitted', async ({ page }) => {
+    /**
+     * RED PHASE: This test will FAIL until UI is implemented.
+     *
+     * User Flow:
+     * 1. Click "Save as Template" on a deployment
+     * 2. Fill in template name, category, description
+     * 3. Click Save
+     * 4. Template should be created
+     * 5. Success message should appear
+     * 6. Dialog should close
+     * 7. New template should appear in /templates page
+     */
+    await page.goto('/deployments');
+    await page.waitForTimeout(1000);
+
+    // Click "Save as Template"
+    const saveAsTemplateButton = page.locator('button:has-text("Save as Template")').first();
+    await saveAsTemplateButton.click();
+
+    // Fill in form
+    const dialog = page.locator('[role="dialog"]:has-text("Save as Template")');
+    await dialog.locator('input[name="name"]').fill('my-nginx-template');
+    await dialog.locator('input[name="category"]').fill('web-servers');
+    await dialog.locator('textarea[name="description"]').fill('Production-ready nginx configuration');
+
+    // Submit form
+    const saveButton = dialog.locator('button:has-text("Save Template")').or(
+      dialog.locator('[data-testid="save-template-button"]')
+    );
+    await saveButton.click();
+
+    // Success message should appear
+    const successMessage = page.locator(':has-text("Template created successfully")').or(
+      page.locator('[role="alert"]:has-text("Template")')
+    );
+
+    // THIS WILL FAIL - functionality doesn't exist yet (RED phase)
+    await expect(successMessage).toBeVisible({ timeout: 3000 });
+
+    // Dialog should close
+    await expect(dialog).not.toBeVisible({ timeout: 2000 });
+
+    // Navigate to templates and verify it exists
+    await page.goto('/templates');
+    await page.waitForTimeout(1000);
+
+    const newTemplate = page.locator(':has-text("my-nginx-template")');
+    await expect(newTemplate).toBeVisible({ timeout: 2000 });
+  });
+
+  test('[TDD RED] should show error if template name already exists', async ({ page }) => {
+    /**
+     * RED PHASE: This test will FAIL until UI is implemented.
+     *
+     * Expected: If user tries to save with a duplicate template name,
+     * show error message and keep dialog open for correction.
+     */
+    await page.goto('/deployments');
+    await page.waitForTimeout(1000);
+
+    // Click "Save as Template"
+    const saveAsTemplateButton = page.locator('button:has-text("Save as Template")').first();
+    await saveAsTemplateButton.click();
+
+    // Try to create template with duplicate name (assuming one exists from previous test)
+    const dialog = page.locator('[role="dialog"]:has-text("Save as Template")');
+    await dialog.locator('input[name="name"]').fill('my-nginx-template');
+
+    const saveButton = dialog.locator('button:has-text("Save Template")');
+    await saveButton.click();
+
+    // Error message should appear
+    const errorMessage = page.locator(':has-text("already exists")').or(
+      page.locator('[role="alert"]:has-text("exists")').or(
+        page.locator('.error:has-text("exists")')
+      )
+    );
+
+    // THIS WILL FAIL - error handling doesn't exist yet (RED phase)
+    await expect(errorMessage).toBeVisible({ timeout: 2000 });
+
+    // Dialog should stay open
+    await expect(dialog).toBeVisible();
   });
 });

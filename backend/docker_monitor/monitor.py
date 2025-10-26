@@ -307,7 +307,7 @@ class DockerMonitor:
         self.state_manager.restart_attempts = self.restart_attempts
         self.state_manager.restarting_containers = self.restarting_containers
 
-        self.operations = ContainerOperations(self.hosts, self.clients, self.event_logger, self._recent_user_actions)
+        self.operations = ContainerOperations(self.hosts, self.clients, self.event_logger, self._recent_user_actions, self.db, self)
         self.periodic_jobs = PeriodicJobsManager(self.db, self.event_logger)
         self.periodic_jobs.monitor = self  # Set monitor reference for auto-resolve
 
@@ -1079,6 +1079,10 @@ class DockerMonitor:
     async def start_container(self, host_id: str, container_id: str) -> bool:
         """Start a specific container"""
         return await self.operations.start_container(host_id, container_id)
+
+    async def delete_container(self, host_id: str, container_id: str, container_name: str, remove_volumes: bool = False) -> dict:
+        """Delete a specific container"""
+        return await self.operations.delete_container(host_id, container_id, container_name, remove_volumes)
 
     def toggle_auto_restart(self, host_id: str, container_id: str, container_name: str, enabled: bool):
         """Toggle auto-restart for a container"""

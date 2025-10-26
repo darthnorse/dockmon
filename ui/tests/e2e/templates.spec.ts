@@ -60,11 +60,13 @@ test.describe('Templates - Navigation & List', () => {
 
 test.describe('Templates - Create Template', () => {
   test.beforeEach(async ({ page }) => {
-    await login(page);
+    // Auth is handled globally via storageState
     await page.goto('/deployments');
 
     // Try to open templates view
-    const templatesButton = page.locator('[data-testid="templates-link"]').first();
+    const templatesButton = page.locator('[data-testid="manage-templates-button"]').or(
+      page.locator('[data-testid="templates-link"]')
+    );
     if (await templatesButton.isVisible({ timeout: 1000 })) {
       await templatesButton.click();
       await page.waitForTimeout(300);
@@ -91,6 +93,97 @@ test.describe('Templates - Create Template', () => {
     }
 
     expect(true).toBe(true);
+  });
+
+  test('[TDD RED] should show container-specific placeholder when Container type selected', async ({ page }) => {
+    const newTemplateButton = page.locator('[data-testid="new-template-button"]').first();
+
+    if (await newTemplateButton.isVisible({ timeout: 1000 })) {
+      await newTemplateButton.click();
+
+      // Select Container deployment type (should be default)
+      const typeSelector = page.locator('select[name="deployment_type"]').or(
+        page.locator('#deployment-type')
+      );
+
+      if (await typeSelector.isVisible({ timeout: 1000 })) {
+        await typeSelector.selectOption('container');
+      }
+
+      // Configuration textarea should show container-specific placeholder
+      const definitionField = page.locator('textarea[name="definition"]').or(
+        page.locator('#definition')
+      );
+
+      // Should contain container format example (image, ports, etc.)
+      const placeholder = await definitionField.getAttribute('placeholder');
+      expect(placeholder).toContain('image');
+      expect(placeholder).toContain('ports');
+
+      // Should NOT contain stack/compose format (services)
+      expect(placeholder).not.toContain('services');
+    }
+  });
+
+  test('[TDD RED] should show stack-specific placeholder when Stack type selected', async ({ page }) => {
+    const newTemplateButton = page.locator('[data-testid="new-template-button"]').first();
+
+    if (await newTemplateButton.isVisible({ timeout: 1000 })) {
+      await newTemplateButton.click();
+
+      // Select Stack deployment type
+      const typeSelector = page.locator('select[name="deployment_type"]').or(
+        page.locator('#deployment-type')
+      );
+
+      if (await typeSelector.isVisible({ timeout: 1000 })) {
+        await typeSelector.selectOption('stack');
+      }
+
+      // Configuration textarea should show stack-specific placeholder
+      const definitionField = page.locator('textarea[name="definition"]').or(
+        page.locator('#definition')
+      );
+
+      // Should contain stack/compose format example (services)
+      const placeholder = await definitionField.getAttribute('placeholder');
+      expect(placeholder).toContain('services');
+    }
+  });
+
+  test('[TDD RED] should dynamically update placeholder when switching between types', async ({ page }) => {
+    const newTemplateButton = page.locator('[data-testid="new-template-button"]').first();
+
+    if (await newTemplateButton.isVisible({ timeout: 1000 })) {
+      await newTemplateButton.click();
+
+      const typeSelector = page.locator('select[name="deployment_type"]').or(
+        page.locator('#deployment-type')
+      );
+      const definitionField = page.locator('textarea[name="definition"]').or(
+        page.locator('#definition')
+      );
+
+      if (await typeSelector.isVisible({ timeout: 1000 })) {
+        // Start with Container
+        await typeSelector.selectOption('container');
+        const containerPlaceholder = await definitionField.getAttribute('placeholder');
+        expect(containerPlaceholder).toContain('image');
+
+        // Switch to Stack
+        await typeSelector.selectOption('stack');
+        const stackPlaceholder = await definitionField.getAttribute('placeholder');
+        expect(stackPlaceholder).toContain('services');
+
+        // Verify it changed
+        expect(stackPlaceholder).not.toEqual(containerPlaceholder);
+
+        // Switch back to Container
+        await typeSelector.selectOption('container');
+        const containerPlaceholder2 = await definitionField.getAttribute('placeholder');
+        expect(containerPlaceholder2).toEqual(containerPlaceholder);
+      }
+    }
   });
 
   test('should create simple template without variables', async ({ page }) => {

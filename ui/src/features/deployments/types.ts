@@ -45,6 +45,9 @@ export interface Deployment {
   // State machine metadata
   committed: boolean            // Whether commitment point was reached
 
+  // Container tracking
+  container_ids?: string[]      // SHORT container IDs (12 chars) for running deployments (from deployment_metadata)
+
   // Timestamps
   created_at: string            // ISO timestamp with 'Z' suffix
   updated_at: string            // ISO timestamp with 'Z' suffix

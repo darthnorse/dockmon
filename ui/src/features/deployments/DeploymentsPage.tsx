@@ -436,10 +436,10 @@ export function DeploymentsPage() {
                         size="sm"
                         onClick={() => handleSaveAsTemplate(deployment)}
                         data-testid="save-as-template"
-                        title="Save as Template"
+                        title="Save as New Template"
                       >
                         <Bookmark className="h-4 w-4 mr-1" />
-                        Save as Template
+                        Save as New Template
                       </Button>
                     )}
 

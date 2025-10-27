@@ -475,7 +475,7 @@ class DeploymentExecutor:
         # Health check passed
         logger.info(f"Container {container_id} is healthy")
         await self._update_progress(session, deployment, 100, 'Deployment completed')
-        # Note: state transition to 'completed' happens in execute_deployment() after this returns
+        # Note: state transition to 'running' (terminal state) happens in execute_deployment() after this returns
         session.commit()
 
     async def _execute_stack_deployment(

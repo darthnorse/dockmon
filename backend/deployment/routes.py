@@ -244,7 +244,7 @@ async def list_deployments(
 
     Filters:
     - host_id: Filter by host
-    - status: Filter by status (planning, executing, completed, failed, rolled_back)
+    - status: Filter by status (planning, validating, pulling_image, creating, starting, running, failed, rolled_back)
     - limit: Max results (default: 100)
     """
     try:
@@ -359,7 +359,8 @@ async def delete_deployment(
     Delete a deployment record.
 
     Only deletes the deployment record, does not affect created containers.
-    Can only delete deployments in terminal states (completed, failed, rolled_back).
+    Cannot delete deployments that are currently executing (validating, pulling_image, creating, starting).
+    Can delete: planning (not started), running (completed), failed, rolled_back (terminal states).
     """
     try:
         db = get_database_manager()
@@ -369,9 +370,10 @@ async def delete_deployment(
             if not deployment:
                 raise HTTPException(status_code=404, detail="Deployment not found")
 
-            # Prevent deletion of EXECUTING deployments only
-            # Allow deletion of: planning, completed, failed, rolled_back
-            if deployment.status == 'executing':
+            # Prevent deletion of deployments that are actively executing
+            # These states indicate the deployment is in progress: validating, pulling_image, creating, starting
+            in_progress_states = {'validating', 'pulling_image', 'creating', 'starting'}
+            if deployment.status in in_progress_states:
                 raise HTTPException(
                     status_code=400,
                     detail=f"Cannot delete deployment while it is executing. Wait for completion or failure."

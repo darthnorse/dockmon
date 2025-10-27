@@ -231,7 +231,7 @@ class DeploymentStateMachine:
         Checks:
             1. Deployment has rollback_on_failure enabled
             2. Deployment is NOT in a committed state (safe to rollback)
-            3. Deployment is in a rollback-eligible state (executing, failed)
+            3. Deployment is in a rollback-eligible state (validating, pulling_image, creating, starting, or failed)
 
         Args:
             deployment: Deployment model instance

@@ -134,6 +134,7 @@ export function ContainerUpdatesSettings() {
         toast.success('Image retention count updated')
       } catch (error) {
         toast.error('Failed to update retention count')
+        setImageRetentionCount(settings?.image_retention_count ?? 2) // Rollback on error
       }
     }
   }
@@ -151,6 +152,7 @@ export function ContainerUpdatesSettings() {
         toast.success('Grace period updated')
       } catch (error) {
         toast.error('Failed to update grace period')
+        setImagePruneGraceHours(settings?.image_prune_grace_hours ?? 48) // Rollback on error
       }
     }
   }

@@ -89,7 +89,7 @@ def upgrade() -> None:
             sa.Column('deployment_type', sa.String(), nullable=False),  # 'container' | 'stack'
             sa.Column('name', sa.String(), nullable=False),
             sa.Column('display_name', sa.String(), nullable=True),  # User-friendly name (design spec line 116)
-            sa.Column('status', sa.String(), nullable=False, server_default='pending'),  # State machine: pending, running, completed, failed, rolled_back
+            sa.Column('status', sa.String(), nullable=False, server_default='planning'),  # State machine: planning → validating → pulling_image → creating → starting → running → completed/failed/rolled_back
             sa.Column('definition', sa.Text(), nullable=False),  # JSON: container/stack configuration
             sa.Column('error_message', sa.Text(), nullable=True),
             sa.Column('progress_percent', sa.Integer(), nullable=False, server_default='0'),  # 0-100 overall

@@ -656,10 +656,10 @@ class Deployment(Base):
         - container: Single container deployment
         - stack: Multi-container stack deployment
 
-    Status Flow:
-        pending -> running -> completed
-                          |-> failed
-                          |-> rolled_back
+    Status Flow (7-state machine):
+        planning -> validating -> pulling_image -> creating -> starting -> running -> completed
+                                                                                    |-> failed
+                                                                                    |-> rolled_back
 
     Progress Tracking (Dual-Level):
         - progress_percent: Overall deployment progress (0-100%)
@@ -687,7 +687,7 @@ class Deployment(Base):
     deployment_type = Column(String, nullable=False)  # 'container' | 'stack'
     name = Column(String, nullable=False)
     display_name = Column(String, nullable=True)  # User-friendly name (from design spec line 116)
-    status = Column(String, nullable=False, default='pending')  # pending, running, completed, failed, rolled_back
+    status = Column(String, nullable=False, default='planning')  # planning, validating, pulling_image, creating, starting, running, failed, rolled_back
     definition = Column(Text, nullable=False)  # JSON: container/stack configuration
     error_message = Column(Text, nullable=True)
     progress_percent = Column(Integer, default=0, nullable=False)  # Deployment progress 0-100%

@@ -38,11 +38,11 @@ print_system() {
 }
 
 # Detect if running as root
-EUID=$(id -u)
+USER_ID=$(id -u)
 
 # Helper function to run commands with sudo only if needed
 run_as_root() {
-    if [ "$EUID" -ne 0 ]; then
+    if [ "$USER_ID" -ne 0 ]; then
         sudo "$@"
     else
         "$@"
@@ -488,7 +488,7 @@ EOF
                     echo "    --tlskey=$CERT_DIR/client-key.pem \\"
                     echo "    -H=tcp://$HOST_IP:2376 version"
                 else
-                    if [ "$EUID" -ne 0 ]; then
+                    if [ "$USER_ID" -ne 0 ]; then
                         print_error "Failed to connect. Check logs: sudo journalctl -u docker -n 50"
                     else
                         print_error "Failed to connect. Check logs: journalctl -u docker -n 50"

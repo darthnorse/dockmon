@@ -1390,6 +1390,23 @@ async def check_all_updates(current_user: dict = Depends(get_current_user)):
     return stats
 
 
+@app.post("/api/images/prune")
+async def prune_images(current_user: dict = Depends(get_current_user)):
+    """
+    Manually trigger Docker image pruning.
+
+    Removes unused images based on retention policy settings:
+    - Dangling images (<none>:<none>)
+    - Old versions beyond retention count
+
+    Returns count of images removed.
+    """
+    logger.info(f"User {current_user.get('username')} triggered manual image prune")
+
+    removed_count = await monitor.periodic_jobs.cleanup_old_images()
+    return {"removed": removed_count}
+
+
 @app.get("/api/updates/summary")
 async def get_updates_summary(current_user: dict = Depends(get_current_user)):
     """
@@ -1871,6 +1888,10 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
         "update_check_time": getattr(settings, 'update_check_time', "02:00"),
         "skip_compose_containers": getattr(settings, 'skip_compose_containers', True),
         "health_check_timeout_seconds": getattr(settings, 'health_check_timeout_seconds', 10),
+        # Image pruning settings (v2.1+)
+        "prune_images_enabled": getattr(settings, 'prune_images_enabled', True),
+        "image_retention_count": getattr(settings, 'image_retention_count', 2),
+        "image_prune_grace_hours": getattr(settings, 'image_prune_grace_hours', 48),
         # DockMon update notifications (v2.0.1+)
         "app_version": current_version,
         "latest_available_version": latest_version,
@@ -1949,7 +1970,11 @@ async def update_settings(
         "alert_retention_days": getattr(updated, 'alert_retention_days', 90),
         "update_check_time": getattr(updated, 'update_check_time', "02:00"),
         "skip_compose_containers": getattr(updated, 'skip_compose_containers', True),
-        "health_check_timeout_seconds": getattr(updated, 'health_check_timeout_seconds', 10)
+        "health_check_timeout_seconds": getattr(updated, 'health_check_timeout_seconds', 10),
+        # Image pruning settings (v2.1+)
+        "prune_images_enabled": getattr(updated, 'prune_images_enabled', True),
+        "image_retention_count": getattr(updated, 'image_retention_count', 2),
+        "image_prune_grace_hours": getattr(updated, 'image_prune_grace_hours', 48)
     }
 
 

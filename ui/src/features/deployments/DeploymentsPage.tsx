@@ -93,14 +93,14 @@ export function DeploymentsPage() {
     })
   }, [deploymentsData, searchQuery])
 
-  // Status label mapping
+  // Status label mapping (user-facing labels for display)
   const statusLabels: Record<DeploymentStatus, string> = {
     planning: 'Planning',
     validating: 'Validating',
     pulling_image: 'Pulling Image',
     creating: 'Creating',
     starting: 'Starting',
-    running: 'Running',
+    running: 'Deployed',
     failed: 'Failed',
     rolled_back: 'Rolled Back',
   }
@@ -250,7 +250,7 @@ export function DeploymentsPage() {
             <SelectItem value="pulling_image">Pulling Image</SelectItem>
             <SelectItem value="creating">Creating</SelectItem>
             <SelectItem value="starting">Starting</SelectItem>
-            <SelectItem value="running">Running</SelectItem>
+            <SelectItem value="running">Deployed</SelectItem>
             <SelectItem value="failed">Failed</SelectItem>
             <SelectItem value="rolled_back">Rolled Back</SelectItem>
           </SelectContent>
@@ -535,47 +535,55 @@ export function DeploymentsPage() {
  * Status badge with appropriate styling
  */
 function StatusBadge({ status }: { status: DeploymentStatus }) {
-  const variants: Record<DeploymentStatus, { variant: 'default' | 'secondary' | 'destructive' | 'outline'; icon: React.ReactNode }> = {
+  const variants: Record<DeploymentStatus, { variant: 'default' | 'secondary' | 'destructive' | 'outline'; icon: React.ReactNode; label: string }> = {
     planning: {
       variant: 'secondary',
       icon: <AlertCircle className="h-3 w-3" />,
+      label: 'Planning',
     },
     validating: {
       variant: 'outline',
       icon: <Loader2 className="h-3 w-3 animate-spin" />,
+      label: 'Validating',
     },
     pulling_image: {
       variant: 'outline',
       icon: <Loader2 className="h-3 w-3 animate-spin" />,
+      label: 'Pulling Image',
     },
     creating: {
       variant: 'outline',
       icon: <Loader2 className="h-3 w-3 animate-spin" />,
+      label: 'Creating',
     },
     starting: {
       variant: 'outline',
       icon: <Loader2 className="h-3 w-3 animate-spin" />,
+      label: 'Starting',
     },
     running: {
       variant: 'default',
       icon: <CheckCircle className="h-3 w-3" />,
+      label: 'Deployed',
     },
     failed: {
       variant: 'destructive',
       icon: <XCircle className="h-3 w-3" />,
+      label: 'Failed',
     },
     rolled_back: {
       variant: 'secondary',
       icon: <XCircle className="h-3 w-3" />,
+      label: 'Rolled Back',
     },
   }
 
-  const { variant, icon } = variants[status]
+  const { variant, icon, label } = variants[status]
 
   return (
     <Badge variant={variant} className="gap-1">
       {icon}
-      {status.replace(/_/g, ' ')}
+      {label}
     </Badge>
   )
 }

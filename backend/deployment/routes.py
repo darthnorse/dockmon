@@ -169,7 +169,7 @@ async def create_deployment(
             deployment_type=request.deployment_type,
             definition=request.definition,
             rollback_on_failure=request.rollback_on_failure,
-            created_by=current_user.username,
+            created_by=current_user['username'],
         )
 
         # Fetch created deployment

@@ -518,6 +518,29 @@ class PeriodicJobsManager:
             logger.error(f"Error in backup container cleanup: {e}", exc_info=True)
             return removed_count
 
+    def _parse_image_created_time(self, image_attrs: dict) -> datetime:
+        """
+        Parse Created timestamp from image attributes.
+
+        Defaults to current time if timestamp is missing or invalid.
+        This ensures images without proper metadata are protected by grace period.
+
+        Args:
+            image_attrs: Docker image attributes dict
+
+        Returns:
+            Parsed datetime or current time if missing
+        """
+        created_str = image_attrs.get('Created', '')
+        if created_str:
+            try:
+                return datetime.fromisoformat(created_str.replace('Z', '+00:00'))
+            except (ValueError, TypeError):
+                logger.debug(f"Failed to parse image created time: {created_str}")
+                return datetime.now(timezone.utc)
+        else:
+            return datetime.now(timezone.utc)
+
     async def cleanup_old_images(self) -> int:
         """
         Remove unused Docker images based on retention policy.
@@ -582,16 +605,11 @@ class PeriodicJobsManager:
                             images_by_repo[repo_name] = []
 
                         # Parse created timestamp
-                        created_str = image.attrs.get('Created', '')
-                        if created_str:
-                            created_dt = datetime.fromisoformat(created_str.replace('Z', '+00:00'))
-                        else:
-                            created_dt = datetime.now(timezone.utc)
+                        created_dt = self._parse_image_created_time(image.attrs)
 
                         images_by_repo[repo_name].append({
                             'image': image,
                             'created': created_dt,
-                            'id': image.id,
                             'tags': image.tags
                         })
 
@@ -633,11 +651,11 @@ class PeriodicJobsManager:
                             continue
 
                         # Parse created timestamp
-                        created_str = image.attrs.get('Created', '')
-                        if created_str:
-                            created_dt = datetime.fromisoformat(created_str.replace('Z', '+00:00'))
-                            if created_dt >= cutoff_time:
-                                continue
+                        created_dt = self._parse_image_created_time(image.attrs)
+
+                        # Check grace period
+                        if created_dt >= cutoff_time:
+                            continue
 
                         # Safe to remove
                         try:

@@ -44,21 +44,18 @@ def upgrade() -> None:
         op.add_column('global_settings',
             sa.Column('prune_images_enabled', sa.Boolean(), server_default='1', nullable=False)
         )
-        print("✓ Added prune_images_enabled column")
 
     # Add image_retention_count column (default: 2)
     if not column_exists('global_settings', 'image_retention_count'):
         op.add_column('global_settings',
             sa.Column('image_retention_count', sa.Integer(), server_default='2', nullable=False)
         )
-        print("✓ Added image_retention_count column")
 
     # Add image_prune_grace_hours column (default: 48)
     if not column_exists('global_settings', 'image_prune_grace_hours'):
         op.add_column('global_settings',
             sa.Column('image_prune_grace_hours', sa.Integer(), server_default='48', nullable=False)
         )
-        print("✓ Added image_prune_grace_hours column")
 
 
 def downgrade() -> None:
@@ -66,12 +63,9 @@ def downgrade() -> None:
 
     if column_exists('global_settings', 'image_prune_grace_hours'):
         op.drop_column('global_settings', 'image_prune_grace_hours')
-        print("✓ Dropped image_prune_grace_hours column")
 
     if column_exists('global_settings', 'image_retention_count'):
         op.drop_column('global_settings', 'image_retention_count')
-        print("✓ Dropped image_retention_count column")
 
     if column_exists('global_settings', 'prune_images_enabled'):
         op.drop_column('global_settings', 'prune_images_enabled')
-        print("✓ Dropped prune_images_enabled column")

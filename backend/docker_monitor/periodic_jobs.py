@@ -334,6 +334,16 @@ class PeriodicJobsManager:
                         EventType.STARTUP
                     )
 
+                # Clean up old Docker images (based on retention policy)
+                images_cleaned = await self.cleanup_old_images()
+                if images_cleaned > 0:
+                    self.event_logger.log_system_event(
+                        "Image Cleanup",
+                        f"Removed {images_cleaned} old/dangling Docker images",
+                        EventSeverity.INFO,
+                        EventType.STARTUP
+                    )
+
                 # Note: Timezone offset is auto-synced from the browser, not from server
                 # This ensures DST changes are handled automatically on the client side
 
@@ -506,6 +516,148 @@ class PeriodicJobsManager:
 
         except Exception as e:
             logger.error(f"Error in backup container cleanup: {e}", exc_info=True)
+            return removed_count
+
+    async def cleanup_old_images(self) -> int:
+        """
+        Remove unused Docker images based on retention policy.
+
+        Removes:
+        - Dangling images (<none>:<none>) older than grace period
+        - Old versions of images (keeps last N versions per repository)
+
+        Safety checks:
+        - Never removes images with running/stopped containers
+        - Respects grace period (won't remove images newer than N hours)
+        - Respects retention count (keeps at least N versions per image)
+
+        Returns:
+            Number of images removed
+        """
+        if not self.monitor:
+            logger.warning("No monitor available for image cleanup")
+            return 0
+
+        settings = self.db.get_settings()
+
+        # Check if image pruning is enabled
+        if not settings.prune_images_enabled:
+            logger.debug("Image pruning is disabled")
+            return 0
+
+        removed_count = 0
+        retention_count = settings.image_retention_count
+        grace_hours = settings.image_prune_grace_hours
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=grace_hours)
+
+        try:
+            # Process each host
+            for host_id, client in self.monitor.clients.items():
+                try:
+                    # Get all containers (including stopped) to check which images are in use
+                    containers = await async_docker_call(client.containers.list, all=True)
+                    images_in_use = {c.image.id for c in containers}
+                    logger.debug(f"Host {host_id}: Found {len(images_in_use)} images in use by containers")
+
+                    # Get all images on this host
+                    all_images = await async_docker_call(client.images.list, all=True)
+                    logger.debug(f"Host {host_id}: Found {len(all_images)} total images")
+
+                    # Group images by repository name (e.g., "nginx", "postgres")
+                    images_by_repo = {}
+                    dangling_images = []
+
+                    for image in all_images:
+                        # Check if dangling image (<none>:<none>)
+                        if not image.tags:
+                            dangling_images.append(image)
+                            continue
+
+                        # Extract repository name from first tag
+                        # Tag format: "repo:tag" or "registry/repo:tag"
+                        tag = image.tags[0]
+                        repo_name = tag.rsplit(':', 1)[0]  # Remove :tag
+
+                        if repo_name not in images_by_repo:
+                            images_by_repo[repo_name] = []
+
+                        # Parse created timestamp
+                        created_str = image.attrs.get('Created', '')
+                        if created_str:
+                            created_dt = datetime.fromisoformat(created_str.replace('Z', '+00:00'))
+                        else:
+                            created_dt = datetime.now(timezone.utc)
+
+                        images_by_repo[repo_name].append({
+                            'image': image,
+                            'created': created_dt,
+                            'id': image.id,
+                            'tags': image.tags
+                        })
+
+                    # Remove old versions (keep last N per repository)
+                    for repo_name, images_list in images_by_repo.items():
+                        # Sort by created date (newest first)
+                        images_list.sort(key=lambda x: x['created'], reverse=True)
+
+                        # Skip if we have retention_count or fewer versions
+                        if len(images_list) <= retention_count:
+                            continue
+
+                        # Remove old versions beyond retention count
+                        for img_data in images_list[retention_count:]:
+                            image = img_data['image']
+                            created_dt = img_data['created']
+
+                            # Safety checks
+                            if image.id in images_in_use:
+                                logger.debug(f"Skipping {repo_name} - image in use by container")
+                                continue
+
+                            if created_dt >= cutoff_time:
+                                logger.debug(f"Skipping {repo_name} - within grace period ({grace_hours}h)")
+                                continue
+
+                            # Safe to remove
+                            try:
+                                logger.info(f"Removing old image: {repo_name} (created {created_dt.isoformat()}, age: {(datetime.now(timezone.utc) - created_dt).days} days)")
+                                await async_docker_call(image.remove, force=False)
+                                removed_count += 1
+                            except Exception as e:
+                                logger.warning(f"Failed to remove image {repo_name}: {e}")
+
+                    # Remove dangling images older than grace period
+                    for image in dangling_images:
+                        # Safety check: in use?
+                        if image.id in images_in_use:
+                            continue
+
+                        # Parse created timestamp
+                        created_str = image.attrs.get('Created', '')
+                        if created_str:
+                            created_dt = datetime.fromisoformat(created_str.replace('Z', '+00:00'))
+                            if created_dt >= cutoff_time:
+                                continue
+
+                        # Safe to remove
+                        try:
+                            logger.info(f"Removing dangling image: {image.short_id}")
+                            await async_docker_call(image.remove, force=False)
+                            removed_count += 1
+                        except Exception as e:
+                            logger.debug(f"Failed to remove dangling image {image.short_id}: {e}")
+
+                except Exception as e:
+                    logger.error(f"Error cleaning images on host {host_id}: {e}", exc_info=True)
+                    continue
+
+            if removed_count > 0:
+                logger.info(f"Image cleanup: Removed {removed_count} old/dangling images (retention: {retention_count} versions, grace: {grace_hours}h)")
+
+            return removed_count
+
+        except Exception as e:
+            logger.error(f"Error in image cleanup: {e}", exc_info=True)
             return removed_count
 
     async def check_dockmon_update_once(self):

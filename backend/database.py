@@ -217,6 +217,11 @@ class GlobalSettings(Base):
     skip_compose_containers = Column(Boolean, default=True)  # Skip Docker Compose-managed containers
     health_check_timeout_seconds = Column(Integer, default=60)  # Health check timeout (seconds)
 
+    # Image pruning settings (v2.1+)
+    prune_images_enabled = Column(Boolean, default=True)  # Enable automatic image pruning
+    image_retention_count = Column(Integer, default=2)  # Keep last N versions per image (1-10)
+    image_prune_grace_hours = Column(Integer, default=48)  # Don't remove images newer than N hours (1-168)
+
     # Alert system settings
     alert_retention_days = Column(Integer, default=90)  # Keep resolved alerts for N days (0 = keep forever)
 

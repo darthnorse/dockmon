@@ -29,7 +29,8 @@ import {
 } from '@/components/ui/select'
 import { useCreateTemplate, useUpdateTemplate } from '../hooks/useTemplates'
 import { ConfigurationEditor, ConfigurationEditorHandle } from './ConfigurationEditor'
-import type { DeploymentTemplate, DeploymentDefinition } from '../types'
+import { VariableDefinitionEditor } from './VariableDefinitionEditor'
+import type { DeploymentTemplate, DeploymentDefinition, TemplateVariableConfig } from '../types'
 
 interface TemplateFormProps {
   isOpen: boolean
@@ -49,6 +50,7 @@ export function TemplateForm({ isOpen, onClose, template }: TemplateFormProps) {
   const [description, setDescription] = useState('')
   const [deploymentType, setDeploymentType] = useState<'container' | 'stack'>('container')
   const [definition, setDefinition] = useState('')
+  const [variables, setVariables] = useState<Record<string, TemplateVariableConfig>>({})
 
   // Validation errors
   const [errors, setErrors] = useState<Record<string, string>>({})
@@ -76,6 +78,9 @@ export function TemplateForm({ isOpen, onClose, template }: TemplateFormProps) {
       }
 
       setDefinition(formatted)
+
+      // Load variables
+      setVariables(template.variables || {})
     }
   }, [template, isOpen])
 
@@ -87,6 +92,7 @@ export function TemplateForm({ isOpen, onClose, template }: TemplateFormProps) {
       setDescription('')
       setDeploymentType('container')
       setDefinition('')
+      setVariables({})
       setErrors({})
     }
   }, [isOpen])
@@ -145,6 +151,8 @@ export function TemplateForm({ isOpen, onClose, template }: TemplateFormProps) {
         parsedDefinition = JSON.parse(definition) as DeploymentDefinition
       }
 
+      const variablesToSend = Object.keys(variables).length > 0 ? variables : null
+
       if (isEditMode && template) {
         // Update existing template
         await updateTemplate.mutateAsync({
@@ -153,7 +161,7 @@ export function TemplateForm({ isOpen, onClose, template }: TemplateFormProps) {
           category: category.trim() || null,
           description: description.trim() || null,
           template_definition: parsedDefinition,
-          variables: null,  // TODO: Add variable editor
+          variables: variablesToSend,
         })
       } else {
         // Create new template
@@ -163,7 +171,7 @@ export function TemplateForm({ isOpen, onClose, template }: TemplateFormProps) {
           template_definition: parsedDefinition,
           category: category.trim() || null,
           description: description.trim() || null,
-          variables: null,  // TODO: Add variable editor
+          variables: variablesToSend,
         })
       }
 
@@ -274,6 +282,15 @@ export function TemplateForm({ isOpen, onClose, template }: TemplateFormProps) {
             <p className="text-xs text-muted-foreground mt-1">
               Use ${`{VARIABLE_NAME}`} for variable placeholders
             </p>
+          </div>
+
+          {/* Variable Definition Editor */}
+          <div>
+            <VariableDefinitionEditor
+              variables={variables}
+              onChange={setVariables}
+              definitionText={definition}
+            />
           </div>
 
           {/* Actions */}

@@ -93,6 +93,7 @@ class DeploymentExecutor:
         deployment_type: str,
         definition: Dict[str, Any],
         rollback_on_failure: bool = True,
+        created_by: Optional[str] = None,
     ) -> str:
         """
         Create a new deployment record.
@@ -103,6 +104,7 @@ class DeploymentExecutor:
             deployment_type: 'container' or 'stack'
             definition: Container/stack configuration dictionary
             rollback_on_failure: Whether to rollback on failure (default: True)
+            created_by: Username who created the deployment (for audit tracking)
 
         Returns:
             Deployment composite ID: {host_id}:{deployment_id}
@@ -181,6 +183,7 @@ class DeploymentExecutor:
                 progress_percent=0,
                 created_at=utcnow,
                 updated_at=utcnow,
+                created_by=created_by,
                 committed=False,
                 rollback_on_failure=rollback_on_failure,
             )

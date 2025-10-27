@@ -686,7 +686,6 @@ class Deployment(Base):
     host_id = Column(String, ForeignKey("docker_hosts.id", ondelete="CASCADE"), nullable=False)
     deployment_type = Column(String, nullable=False)  # 'container' | 'stack'
     name = Column(String, nullable=False)
-    display_name = Column(String, nullable=True)  # User-friendly name (from design spec line 116)
     status = Column(String, nullable=False, default='planning')  # planning, validating, pulling_image, creating, starting, running, failed, rolled_back
     definition = Column(Text, nullable=False)  # JSON: container/stack configuration
     error_message = Column(Text, nullable=True)
@@ -699,7 +698,6 @@ class Deployment(Base):
     created_by = Column(String, nullable=True)  # Username who created deployment (from design spec line 124)
     committed = Column(Boolean, default=False, nullable=False)  # Commitment point tracking
     rollback_on_failure = Column(Boolean, default=True, nullable=False)
-    stage_percent = Column(Integer, default=0, nullable=False)  # Stage-level progress (0-100), e.g., "60% through pulling_image"
 
     # Relationships
     host = relationship("DockerHostDB")

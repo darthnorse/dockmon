@@ -59,6 +59,7 @@ class DeploymentResponse(BaseModel):
     created_at: str
     started_at: Optional[str]
     completed_at: Optional[str]
+    created_by: Optional[str] = None  # Username who created deployment
     committed: bool
     rollback_on_failure: bool
     definition: Optional[Dict[str, Any]] = None
@@ -168,6 +169,7 @@ async def create_deployment(
             deployment_type=request.deployment_type,
             definition=request.definition,
             rollback_on_failure=request.rollback_on_failure,
+            created_by=current_user.username,
         )
 
         # Fetch created deployment
@@ -674,6 +676,7 @@ def _deployment_to_response(deployment: Deployment) -> DeploymentResponse:
         created_at=deployment.created_at.isoformat() + 'Z' if deployment.created_at else None,
         started_at=deployment.started_at.isoformat() + 'Z' if deployment.started_at else None,
         completed_at=deployment.completed_at.isoformat() + 'Z' if deployment.completed_at else None,
+        created_by=deployment.created_by,
         committed=deployment.committed,
         rollback_on_failure=deployment.rollback_on_failure,
         definition=json.loads(deployment.definition) if deployment.definition else None,

@@ -6,9 +6,7 @@ Create Date: 2025-10-25
 
 CHANGES IN v2.1.0:
 - Create deployments table (deployment tracking with state machine)
-  - Includes display_name (user-friendly name, design spec line 116)
   - Includes created_by (username who created deployment, design spec line 124)
-  - Includes stage_percent (granular progress within each stage, 0-100)
 - Create deployment_containers table (junction table for stack deployments)
 - Create deployment_templates table (reusable deployment templates)
 - Create deployment_metadata table (track deployment-created containers)
@@ -32,7 +30,6 @@ NEW FEATURES:
 - Rollback support with commitment point tracking
 - Track deployment ownership of containers
 - Layer-by-layer image pull progress
-- Nested progress structure: {overall_percent, stage, stage_percent}
 - Automatic Docker image pruning to free disk space
 - Configurable retention policies (keep last N versions, grace period)
 - Manual prune trigger via API
@@ -88,12 +85,10 @@ def upgrade() -> None:
             sa.Column('host_id', sa.String(), sa.ForeignKey('docker_hosts.id', ondelete='CASCADE'), nullable=False),
             sa.Column('deployment_type', sa.String(), nullable=False),  # 'container' | 'stack'
             sa.Column('name', sa.String(), nullable=False),
-            sa.Column('display_name', sa.String(), nullable=True),  # User-friendly name (design spec line 116)
             sa.Column('status', sa.String(), nullable=False, server_default='planning'),  # State machine: planning → validating → pulling_image → creating → starting → running → completed/failed/rolled_back
             sa.Column('definition', sa.Text(), nullable=False),  # JSON: container/stack configuration
             sa.Column('error_message', sa.Text(), nullable=True),
             sa.Column('progress_percent', sa.Integer(), nullable=False, server_default='0'),  # 0-100 overall
-            sa.Column('stage_percent', sa.Integer(), nullable=False, server_default='0'),  # 0-100 within current stage
             sa.Column('current_stage', sa.Text(), nullable=True),  # e.g., 'Pulling image', 'Creating container'
             sa.Column('created_at', sa.DateTime(), nullable=False),
             sa.Column('updated_at', sa.DateTime(), nullable=False),

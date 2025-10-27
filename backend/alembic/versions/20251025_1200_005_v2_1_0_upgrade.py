@@ -18,6 +18,10 @@ CHANGES IN v2.1.0:
   - Follows existing metadata pattern (like container_desired_states, container_updates)
 - Add indexes for performance (host_id, status, created_at)
 - Add unique constraints (host+name, template name)
+- Add image pruning settings to global_settings:
+  - prune_images_enabled (default: True)
+  - image_retention_count (default: 2, keeps last N versions per image)
+  - image_prune_grace_hours (default: 48, grace period in hours)
 - Update app_version to '2.1.0'
 
 NEW FEATURES:
@@ -29,6 +33,9 @@ NEW FEATURES:
 - Track deployment ownership of containers
 - Layer-by-layer image pull progress
 - Nested progress structure: {overall_percent, stage, stage_percent}
+- Automatic Docker image pruning to free disk space
+- Configurable retention policies (keep last N versions, grace period)
+- Manual prune trigger via API
 """
 from alembic import op
 import sqlalchemy as sa
@@ -158,7 +165,27 @@ def upgrade() -> None:
         if not index_exists('deployment_metadata', 'idx_deployment_metadata_deployment'):
             op.create_index('idx_deployment_metadata_deployment', 'deployment_metadata', ['deployment_id'])
 
-    # Change 5: Update app_version
+    # Change 5: Add image pruning settings to global_settings
+    if table_exists('global_settings'):
+        # Add prune_images_enabled column (default: True)
+        if not column_exists('global_settings', 'prune_images_enabled'):
+            op.add_column('global_settings',
+                sa.Column('prune_images_enabled', sa.Boolean(), server_default='1', nullable=False)
+            )
+
+        # Add image_retention_count column (default: 2)
+        if not column_exists('global_settings', 'image_retention_count'):
+            op.add_column('global_settings',
+                sa.Column('image_retention_count', sa.Integer(), server_default='2', nullable=False)
+            )
+
+        # Add image_prune_grace_hours column (default: 48)
+        if not column_exists('global_settings', 'image_prune_grace_hours'):
+            op.add_column('global_settings',
+                sa.Column('image_prune_grace_hours', sa.Integer(), server_default='48', nullable=False)
+            )
+
+    # Change 6: Update app_version
     if table_exists('global_settings'):
         op.execute(
             sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
@@ -167,7 +194,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Remove v2.1.0 deployment features"""
+    """Remove v2.1.0 deployment and image pruning features"""
 
     # Reverse order of upgrade
     if table_exists('global_settings'):
@@ -175,6 +202,16 @@ def downgrade() -> None:
             sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
             .bindparams(version='2.0.3', id=1)
         )
+
+        # Remove image pruning columns
+        if column_exists('global_settings', 'image_prune_grace_hours'):
+            op.drop_column('global_settings', 'image_prune_grace_hours')
+
+        if column_exists('global_settings', 'image_retention_count'):
+            op.drop_column('global_settings', 'image_retention_count')
+
+        if column_exists('global_settings', 'prune_images_enabled'):
+            op.drop_column('global_settings', 'prune_images_enabled')
 
     # Drop tables in reverse dependency order
     if table_exists('deployment_metadata'):

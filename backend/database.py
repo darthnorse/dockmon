@@ -2119,7 +2119,9 @@ class DatabaseManager:
                     'blackout_windows', 'timezone_offset', 'show_host_stats',
                     'show_container_stats', 'show_container_alerts_on_hosts',
                     'auto_update_enabled_default', 'update_check_interval_hours',
-                    'update_check_time', 'skip_compose_containers', 'health_check_timeout_seconds'
+                    'update_check_time', 'skip_compose_containers', 'health_check_timeout_seconds',
+                    # Image pruning settings (v2.1+)
+                    'prune_images_enabled', 'image_retention_count', 'image_prune_grace_hours'
                 }
 
                 for key, value in updates.items():

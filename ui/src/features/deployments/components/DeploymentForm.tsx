@@ -541,7 +541,7 @@ export function DeploymentForm({ isOpen, onClose, hosts = [], deployment }: Depl
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
-                  {hosts.map((host) => (
+                  {[...hosts].sort((a, b) => a.name.localeCompare(b.name)).map((host) => (
                     <SelectItem key={host.id} value={host.id}>
                       {host.name || host.id}
                     </SelectItem>

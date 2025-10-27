@@ -37,6 +37,18 @@ print_system() {
     echo -e "${BLUE}[SYSTEM]${NC} $1"
 }
 
+# Detect if running as root
+EUID=$(id -u)
+
+# Helper function to run commands with sudo only if needed
+run_as_root() {
+    if [ "$EUID" -ne 0 ]; then
+        sudo "$@"
+    else
+        "$@"
+    fi
+}
+
 # Detect system type
 detect_system() {
     print_info "Detecting system type..."
@@ -423,7 +435,7 @@ if [ "$SYSTEM_TYPE" != "manual" ] && command -v docker &> /dev/null; then
                     print_warn "Existing Docker daemon override configuration found!"
                     echo ""
                     echo "Current configuration:"
-                    sudo cat /etc/systemd/system/docker.service.d/override.conf | head -15
+                    run_as_root cat /etc/systemd/system/docker.service.d/override.conf | head -15
                     echo ""
                     read -p "This will be REPLACED with mTLS configuration. Continue? (y/N): " -n 1 -r
                     echo ""
@@ -433,17 +445,17 @@ if [ "$SYSTEM_TYPE" != "manual" ] && command -v docker &> /dev/null; then
                     fi
 
                     BACKUP_FILE="/etc/systemd/system/docker.service.d/override.conf.backup-$(date +%Y%m%d-%H%M%S)"
-                    sudo cp /etc/systemd/system/docker.service.d/override.conf "$BACKUP_FILE"
+                    run_as_root cp /etc/systemd/system/docker.service.d/override.conf "$BACKUP_FILE"
                     print_info "Backed up existing override.conf to: $BACKUP_FILE"
                 fi
 
-                sudo mkdir -p /etc/docker/certs
-                sudo cp "$CERT_DIR"/{ca.pem,server-cert.pem,server-key.pem} /etc/docker/certs/
-                sudo chmod 400 /etc/docker/certs/*-key.pem
-                sudo chmod 444 /etc/docker/certs/*.pem
+                run_as_root mkdir -p /etc/docker/certs
+                run_as_root cp "$CERT_DIR"/{ca.pem,server-cert.pem,server-key.pem} /etc/docker/certs/
+                run_as_root chmod 400 /etc/docker/certs/*-key.pem
+                run_as_root chmod 444 /etc/docker/certs/*.pem
 
-                sudo mkdir -p /etc/systemd/system/docker.service.d/
-                cat <<EOF | sudo tee /etc/systemd/system/docker.service.d/override.conf > /dev/null
+                run_as_root mkdir -p /etc/systemd/system/docker.service.d/
+                cat <<EOF | run_as_root tee /etc/systemd/system/docker.service.d/override.conf > /dev/null
 [Service]
 ExecStart=
 ExecStart=/usr/bin/dockerd \\
@@ -456,8 +468,8 @@ ExecStart=/usr/bin/dockerd \\
 EOF
 
                 print_info "Restarting Docker daemon..."
-                sudo systemctl daemon-reload
-                sudo systemctl restart docker
+                run_as_root systemctl daemon-reload
+                run_as_root systemctl restart docker
 
                 sleep 3
 
@@ -476,7 +488,11 @@ EOF
                     echo "    --tlskey=$CERT_DIR/client-key.pem \\"
                     echo "    -H=tcp://$HOST_IP:2376 version"
                 else
-                    print_error "Failed to connect. Check logs: sudo journalctl -u docker -n 50"
+                    if [ "$EUID" -ne 0 ]; then
+                        print_error "Failed to connect. Check logs: sudo journalctl -u docker -n 50"
+                    else
+                        print_error "Failed to connect. Check logs: journalctl -u docker -n 50"
+                    fi
                 fi
                 ;;
             *)

@@ -6,6 +6,8 @@ Manages background tasks that run at regular intervals
 import asyncio
 import logging
 import time as time_module
+import subprocess
+import os
 from datetime import datetime, time as dt_time, timezone, timedelta
 
 from database import DatabaseManager
@@ -344,6 +346,11 @@ class PeriodicJobsManager:
                         EventType.STARTUP
                     )
 
+                # Check SSL certificate expiry and regenerate if needed
+                cert_regenerated = await self.check_certificate_expiry()
+                if cert_regenerated:
+                    logger.info("Certificate was regenerated during maintenance")
+
                 # Note: Timezone offset is auto-synced from the browser, not from server
                 # This ensures DST changes are handled automatically on the client side
 
@@ -677,6 +684,132 @@ class PeriodicJobsManager:
         except Exception as e:
             logger.error(f"Error in image cleanup: {e}", exc_info=True)
             return removed_count
+
+    async def check_certificate_expiry(self) -> bool:
+        """
+        Check SSL certificate expiry and regenerate if approaching expiration.
+
+        Certificates need to be regenerated if they expire in less than 41 days
+        to comply with Apple's browser certificate policy (47-day maximum validity).
+
+        Returns:
+            True if certificate was regenerated, False otherwise
+        """
+        try:
+            # Check if certificate exists
+            cert_path = "/etc/nginx/certs/dockmon.crt"
+            if not os.path.exists(cert_path):
+                logger.debug(f"Certificate not found at {cert_path}, skipping expiry check")
+                return False
+
+            # Get certificate expiry date using openssl
+            try:
+                result = subprocess.run(
+                    ["openssl", "x509", "-enddate", "-noout", "-in", cert_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+
+                if result.returncode != 0:
+                    logger.warning(f"Failed to read certificate expiry: {result.stderr}")
+                    return False
+
+                # Parse expiry date from output: "notAfter=Oct 12 10:23:45 2025 GMT"
+                expiry_str = result.stdout.strip()
+                if not expiry_str.startswith("notAfter="):
+                    logger.warning(f"Unexpected openssl output: {expiry_str}")
+                    return False
+
+                # Parse the date string
+                date_part = expiry_str.replace("notAfter=", "")
+                # Format: "Oct 12 10:23:45 2025 GMT"
+                expiry_dt = datetime.strptime(date_part, "%b %d %H:%M:%S %Y %Z")
+                # Make timezone aware (GMT = UTC)
+                expiry_dt = expiry_dt.replace(tzinfo=timezone.utc)
+
+                # Check if expiry is within 41 days
+                days_until_expiry = (expiry_dt - datetime.now(timezone.utc)).days
+                logger.debug(f"Certificate expires in {days_until_expiry} days ({expiry_dt.isoformat()})")
+
+                if days_until_expiry > 41:
+                    logger.debug(f"Certificate is healthy ({days_until_expiry} days remaining)")
+                    return False
+
+                # Certificate is expiring soon - regenerate
+                logger.warning(f"Certificate expires in {days_until_expiry} days, regenerating...")
+                return await self._regenerate_certificate()
+
+            except subprocess.TimeoutExpired:
+                logger.error("Timeout reading certificate expiry date")
+                return False
+            except ValueError as e:
+                logger.warning(f"Failed to parse certificate expiry date: {e}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Error checking certificate expiry: {e}", exc_info=True)
+            return False
+
+    async def _regenerate_certificate(self) -> bool:
+        """
+        Regenerate the SSL certificate using OpenSSL.
+
+        Generates a self-signed certificate with 47-day validity to comply
+        with Apple's browser certificate policy.
+
+        Returns:
+            True if regeneration succeeded, False otherwise
+        """
+        try:
+            cert_dir = "/etc/nginx/certs"
+            key_path = f"{cert_dir}/dockmon.key"
+            cert_path = f"{cert_dir}/dockmon.crt"
+
+            # Ensure cert directory exists
+            os.makedirs(cert_dir, exist_ok=True)
+
+            # Generate private key and self-signed certificate
+            # 47-day validity to comply with Apple's browser certificate policy
+            result = subprocess.run(
+                [
+                    "openssl", "req", "-x509", "-nodes", "-days", "47",
+                    "-newkey", "rsa:2048",
+                    "-keyout", key_path,
+                    "-out", cert_path,
+                    "-subj", "/C=US/ST=State/L=City/O=DockMon/CN=localhost"
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+
+            if result.returncode != 0:
+                logger.error(f"Certificate generation failed: {result.stderr}")
+                return False
+
+            # Set appropriate permissions
+            os.chmod(key_path, 0o600)
+            os.chmod(cert_path, 0o644)
+
+            logger.info("SSL certificate successfully regenerated with 47-day validity")
+            self.event_logger.log_system_event(
+                "Certificate Regeneration",
+                "SSL certificate was regenerated due to approaching expiration (47-day validity)",
+                EventSeverity.INFO,
+                EventType.STARTUP
+            )
+            return True
+
+        except subprocess.TimeoutExpired:
+            logger.error("Timeout regenerating certificate")
+            return False
+        except OSError as e:
+            logger.error(f"Error creating cert directory or setting permissions: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Error regenerating certificate: {e}", exc_info=True)
+            return False
 
     async def check_dockmon_update_once(self):
         """

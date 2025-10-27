@@ -4,7 +4,7 @@
 # These certificates are for development/internal use only
 
 CERT_DIR="./docker/certs"
-CERT_DAYS=3650  # 10 years
+CERT_DAYS=47  # 47 days - complies with Apple browser certificate policy
 
 # Create certificate directory
 mkdir -p "$CERT_DIR"

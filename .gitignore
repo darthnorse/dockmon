@@ -83,5 +83,11 @@ docker/logs/
 htmlcov/
 .env.local
 
+# Editor backup files (IDE-generated duplicates)
+* 2.py
+* 3.py
+* copy.py
+*backup.py
+
 # V1 Frontend (removed - use ui/ React app instead)
 /src/

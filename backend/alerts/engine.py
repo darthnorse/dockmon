@@ -175,7 +175,7 @@ class AlertEngine:
                 new_digest = event_data.get('latest_digest')
 
                 # If digest changed (new version available), clear notified_at to re-notify
-                if old_digest and new_digest and old_digest != new_digest:
+                if old_digest is not None and new_digest is not None and old_digest != new_digest:
                     alert.notified_at = None
                     logger.info(
                         f"New version available for alert {alert.id} "

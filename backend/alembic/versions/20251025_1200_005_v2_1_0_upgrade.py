@@ -89,7 +89,7 @@ def upgrade() -> None:
             sa.Column('deployment_type', sa.String(), nullable=False),  # 'container' | 'stack'
             sa.Column('name', sa.String(), nullable=False),
             sa.Column('display_name', sa.String(), nullable=True),  # User-friendly name (design spec line 116)
-            sa.Column('status', sa.String(), nullable=False, server_default='planning'),  # State machine: planning, executing, completed, failed, rolled_back
+            sa.Column('status', sa.String(), nullable=False, server_default='pending'),  # State machine: pending, running, completed, failed, rolled_back
             sa.Column('definition', sa.Text(), nullable=False),  # JSON: container/stack configuration
             sa.Column('error_message', sa.Text(), nullable=True),
             sa.Column('progress_percent', sa.Integer(), nullable=False, server_default='0'),  # 0-100 overall
@@ -124,6 +124,10 @@ def upgrade() -> None:
             sa.Column('created_at', sa.DateTime(), nullable=False),
         )
 
+        # Add indexes for performance
+        op.create_index('idx_deployment_container_deployment', 'deployment_containers', ['deployment_id'])
+        op.create_index('idx_deployment_container_container', 'deployment_containers', ['container_id'])
+
     # Change 3: Create deployment_templates table
     # Reusable deployment templates with variable substitution
     if not table_exists('deployment_templates'):
@@ -141,6 +145,10 @@ def upgrade() -> None:
             sa.Column('updated_at', sa.DateTime(), nullable=False),
             sqlite_autoincrement=False,
         )
+
+        # Add indexes for performance
+        op.create_index('idx_deployment_template_name', 'deployment_templates', ['name'])
+        op.create_index('idx_deployment_template_category', 'deployment_templates', ['category'])
 
     # Change 4: Create deployment_metadata table
     # Tracks which containers were created by deployments following existing metadata pattern
@@ -224,9 +232,21 @@ def downgrade() -> None:
         op.drop_table('deployment_metadata')
 
     if table_exists('deployment_templates'):
+        # Drop indexes first
+        if index_exists('deployment_templates', 'idx_deployment_template_category'):
+            op.drop_index('idx_deployment_template_category', 'deployment_templates')
+        if index_exists('deployment_templates', 'idx_deployment_template_name'):
+            op.drop_index('idx_deployment_template_name', 'deployment_templates')
+        # Drop table
         op.drop_table('deployment_templates')
 
     if table_exists('deployment_containers'):
+        # Drop indexes first
+        if index_exists('deployment_containers', 'idx_deployment_container_container'):
+            op.drop_index('idx_deployment_container_container', 'deployment_containers')
+        if index_exists('deployment_containers', 'idx_deployment_container_deployment'):
+            op.drop_index('idx_deployment_container_deployment', 'deployment_containers')
+        # Drop table
         op.drop_table('deployment_containers')
 
     if table_exists('deployments'):

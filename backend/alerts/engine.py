@@ -159,6 +159,29 @@ class AlertEngine:
                 alert.notified_at = None  # Clear notification timestamp so alert gets re-sent
                 logger.info(f"Reopened previously resolved alert {alert.id}")
 
+            # For update_available alerts, clear notified_at if digest changed (new version available)
+            # This ensures users get notified when a newer version is released, not just the first time
+            if alert.kind == "update_available" and event_data:
+                # Get old digest from existing alert context
+                old_digest = None
+                if alert.event_context_json:
+                    try:
+                        existing_context = json.loads(alert.event_context_json)
+                        old_digest = existing_context.get('latest_digest')
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+                # Get new digest from incoming event
+                new_digest = event_data.get('latest_digest')
+
+                # If digest changed (new version available), clear notified_at to re-notify
+                if old_digest and new_digest and old_digest != new_digest:
+                    alert.notified_at = None
+                    logger.info(
+                        f"New version available for alert {alert.id} "
+                        f"(digest: {old_digest[:12]}... -> {new_digest[:12]}...), will re-notify"
+                    )
+
             alert.last_seen = datetime.now(timezone.utc)
             if increment_occurrences:
                 alert.occurrences += 1

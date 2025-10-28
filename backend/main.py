@@ -141,7 +141,7 @@ async def lifespan(app: FastAPI):
     # This ensures timestamps are always displayed in the user's local timezone
 
     await monitor.event_logger.start()
-    monitor.event_logger.log_system_event("DockMon Backend Starting", "DockMon backend is initializing", EventSeverity.INFO, EventType.SYSTEM_STARTUP)
+    monitor.event_logger.log_system_event("DockMon Backend Starting", "DockMon backend is initializing", EventSeverity.INFO, LogEventType.STARTUP)
 
     # Connect security audit logger to event logger
     security_audit.set_event_logger(monitor.event_logger)
@@ -204,7 +204,7 @@ async def lifespan(app: FastAPI):
     yield
     # Shutdown
     logger.info("Shutting down DockMon backend...")
-    monitor.event_logger.log_system_event("DockMon Backend Shutting Down", "DockMon backend is shutting down", EventSeverity.INFO, EventType.SHUTDOWN)
+    monitor.event_logger.log_system_event("DockMon Backend Shutting Down", "DockMon backend is shutting down", EventSeverity.INFO, LogEventType.SHUTDOWN)
 
     # Cancel and await background tasks to ensure clean shutdown
     if monitor.monitoring_task:

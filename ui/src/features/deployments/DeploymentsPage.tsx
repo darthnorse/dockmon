@@ -110,23 +110,35 @@ export function DeploymentsPage() {
     if (message.type === 'deployment_progress') {
       const { deployment_id, status, progress } = message
 
-      // Update React Query cache directly for instant UI update
-      queryClient.setQueryData<Deployment[]>(['deployments', filters], (old) => {
-        if (!old) return old
+      // Update ALL deployment queries (all filter combinations) to avoid race condition
+      // if filters change while message is being processed
+      // Use setQueriesData (plural) instead of setQueryData to update all matching queries
+      queryClient.setQueriesData(
+        { queryKey: ['deployments'] },
+        (old: any) => {
+          if (!Array.isArray(old)) return old
 
-        return old.map((dep) =>
-          dep.id === deployment_id
-            ? {
-                ...dep,
-                status: status,
-                progress_percent: progress?.overall_percent || dep.progress_percent,
-                current_stage: progress?.stage || dep.current_stage,
-              }
-            : dep
-        )
-      })
+          return old.map((dep: Deployment) =>
+            dep.id === deployment_id
+              ? {
+                  ...dep,
+                  status: status,
+                  progress_percent: progress?.overall_percent ?? dep.progress_percent,
+                  current_stage: progress?.stage ?? dep.current_stage,
+                }
+              : dep
+          )
+        }
+      )
+
+      // When deployment completes, refetch to get container_ids and other final data
+      // Use prefix matching (['deployments']) to ensure all deployment queries are invalidated
+      // regardless of filter state changes
+      if (status === 'running' || status === 'failed' || status === 'rolled_back') {
+        queryClient.invalidateQueries({ queryKey: ['deployments'] })
+      }
     }
-  }, [queryClient, filters])
+  }, [queryClient])
 
   useEffect(() => {
     const cleanup = addMessageHandler(handleDeploymentUpdate)
@@ -141,8 +153,8 @@ export function DeploymentsPage() {
   }
 
   const handleEdit = (deployment: Deployment) => {
-    // Only allow editing in planning state
-    if (deployment.status !== 'planning') {
+    // Allow editing in planning, failed, and rolled_back states
+    if (deployment.status !== 'planning' && deployment.status !== 'failed' && deployment.status !== 'rolled_back') {
       return
     }
     setDeploymentToEdit(deployment)
@@ -375,6 +387,7 @@ export function DeploymentsPage() {
                           simpleProgressEventType="deployment_progress"
                           initialProgress={deployment.progress_percent}
                           initialMessage={deployment.current_stage || 'Processing...'}
+                          disableAutoCollapse={true}
                         />
                       </div>
                     )}
@@ -384,11 +397,16 @@ export function DeploymentsPage() {
                       </span>
                     )}
                     {deployment.status === 'failed' && deployment.error_message && (
-                      <p className="text-xs text-destructive" data-testid="deployment-error">
-                        {deployment.error_message.slice(0, 50)}...
-                      </p>
+                      <div className="text-sm text-destructive font-medium max-w-sm" data-testid="deployment-error">
+                        {deployment.error_message}
+                      </div>
                     )}
-                    {deployment.status === 'rolled_back' && (
+                    {deployment.status === 'rolled_back' && deployment.error_message && (
+                      <div className="text-sm text-yellow-600 font-medium max-w-sm" data-testid="deployment-error">
+                        {deployment.error_message}
+                      </div>
+                    )}
+                    {deployment.status === 'rolled_back' && !deployment.error_message && (
                       <span className="text-xs text-yellow-600" data-testid="deployment-rolled-back">
                         Rolled back
                       </span>
@@ -426,16 +444,27 @@ export function DeploymentsPage() {
                       </>
                     )}
                     {(deployment.status === 'failed' || deployment.status === 'rolled_back') && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleExecute(deployment)}
-                        disabled={executeDeployment.isPending}
-                        data-testid={`execute-deployment-${deployment.name}`}
-                      >
-                        <Play className="h-4 w-4 mr-1" />
-                        Execute
-                      </Button>
+                      <>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleEdit(deployment)}
+                          data-testid={`edit-deployment-${deployment.name}`}
+                          title="Edit and retry"
+                        >
+                          <Edit className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleExecute(deployment)}
+                          disabled={executeDeployment.isPending}
+                          data-testid={`execute-deployment-${deployment.name}`}
+                        >
+                          <Play className="h-4 w-4 mr-1" />
+                          Execute
+                        </Button>
+                      </>
                     )}
 
                     {deployment.status === 'running' && (

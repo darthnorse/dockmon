@@ -9,7 +9,7 @@
  */
 
 import { useState, useEffect, useRef } from 'react'
-import { AlertTriangle, Layers } from 'lucide-react'
+import { AlertTriangle, AlertCircle, Layers } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -191,6 +191,8 @@ export function DeploymentForm({ isOpen, onClose, hosts = [], deployment }: Depl
 
     if (!name.trim()) {
       newErrors.name = 'Deployment name is required'
+    } else if (name.includes(' ')) {
+      newErrors.name = 'Deployment name cannot contain spaces'
     }
 
     if (!hostId) {
@@ -262,8 +264,10 @@ export function DeploymentForm({ isOpen, onClose, hosts = [], deployment }: Depl
 
       // Apply rendered definition to form
       applyTemplateToForm(rendered as DeploymentDefinition)
-    } catch (error) {
+      setShowVariableInput(false)
+    } catch (error: any) {
       console.error('Failed to render template:', error)
+      toast.error(`Failed to render template: ${error.message || 'Unknown error'}`)
     }
   }
 
@@ -307,13 +311,27 @@ export function DeploymentForm({ isOpen, onClose, hosts = [], deployment }: Depl
       return
     }
 
-    // Validate YAML configuration before saving (for stack deployments)
-    if (type === 'stack' && configEditorRef.current && composeYaml.trim()) {
+    // For stacks, run format & validate (same as Format & Validate button)
+    let yamlToUse = composeYaml
+    if (type === 'stack' && configEditorRef.current) {
+      // Try to format/auto-fix first
+      const formatted = configEditorRef.current.format()
+      if (formatted) {
+        yamlToUse = formatted
+      }
+    }
+
+    // Validate configuration before saving
+    if (configEditorRef.current) {
       const validation = configEditorRef.current.validate()
       if (!validation.valid) {
+        const fieldName = type === 'stack' ? 'compose_yaml' : 'definition'
+        const errorMessage = type === 'stack'
+          ? 'Invalid YAML format. Please fix errors before saving.'
+          : 'Invalid JSON format. Please fix errors before saving.'
         setErrors({
           ...errors,
-          compose_yaml: validation.error || 'Invalid YAML format. Please fix errors before saving.',
+          [fieldName]: validation.error || errorMessage,
         })
         return
       }
@@ -326,12 +344,13 @@ export function DeploymentForm({ isOpen, onClose, hosts = [], deployment }: Depl
       if (type === 'stack') {
         // For stacks, the definition is the YAML string
         definition = {
-          compose_yaml: composeYaml.trim(),
+          compose_yaml: yamlToUse.trim(),
         }
       } else {
         // For containers, build from form fields
         definition = {
           image: image.trim(),
+          name: name.trim(),
         }
 
       // Add optional fields
@@ -482,6 +501,20 @@ export function DeploymentForm({ isOpen, onClose, hosts = [], deployment }: Depl
         )}
 
         <form onSubmit={handleSubmit} className="space-y-6">
+          {/* Error Banner (when editing failed/rolled_back deployment) */}
+          {isEditMode && deployment && (deployment.status === 'failed' || deployment.status === 'rolled_back') && deployment.error_message && (
+            <div className="bg-destructive/10 border border-destructive rounded-lg p-4">
+              <div className="flex gap-3">
+                <AlertCircle className="h-5 w-5 text-destructive flex-shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <h4 className="font-semibold text-destructive">Previous Deployment Failed</h4>
+                  <p className="text-sm text-destructive/80 mt-1">{deployment.error_message}</p>
+                  <p className="text-xs text-muted-foreground mt-2">Edit the configuration below to fix the issue and retry.</p>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Basic Information */}
           <div className="space-y-4">
             <h3 className="text-lg font-semibold">Basic Information</h3>
@@ -507,7 +540,7 @@ export function DeploymentForm({ isOpen, onClose, hosts = [], deployment }: Depl
               <Label htmlFor="type">Deployment Type</Label>
               <Select value={type} onValueChange={(value) => setType(value as DeploymentType)}>
                 <SelectTrigger id="type">
-                  <SelectValue>
+                  <SelectValue placeholder="Select deployment type">
                     {type === 'container' ? 'Container' : 'Docker Compose Stack'}
                   </SelectValue>
                 </SelectTrigger>

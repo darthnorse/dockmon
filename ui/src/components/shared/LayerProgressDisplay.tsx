@@ -47,6 +47,7 @@ interface LayerProgressDisplayProps {
   simpleProgressEventType?: 'container_update_progress' | 'deployment_progress'
   initialProgress?: number
   initialMessage?: string
+  disableAutoCollapse?: boolean  // Disable auto-collapse for multi-service deployments
 }
 
 // Helper function to format bytes
@@ -69,6 +70,7 @@ export function LayerProgressDisplay({
   simpleProgressEventType,
   initialProgress = 0,
   initialMessage = 'Starting...',
+  disableAutoCollapse = false,
 }: LayerProgressDisplayProps) {
   const { addMessageHandler } = useWebSocketContext()
 
@@ -152,8 +154,10 @@ export function LayerProgressDisplay({
     }
   }, [addMessageHandler, handleProgressMessage, completionTimeoutId, collapseTimeoutId])
 
-  // Auto-collapse layer details 2 seconds after reaching 100%
+  // Auto-collapse layer details 2 seconds after reaching 100% (unless disabled)
   useEffect(() => {
+    if (disableAutoCollapse) return
+
     if (layerProgress && layerProgress.overall_progress === 100 && layerDetailsExpanded) {
       // Clear any existing collapse timeout
       if (collapseTimeoutId) {
@@ -168,7 +172,7 @@ export function LayerProgressDisplay({
 
       setCollapseTimeoutId(timeoutId)
     }
-  }, [layerProgress?.overall_progress, layerDetailsExpanded, collapseTimeoutId])
+  }, [layerProgress?.overall_progress, layerDetailsExpanded, collapseTimeoutId, disableAutoCollapse])
 
   // Don't render if no progress data
   if (!updateProgress && !layerProgress) {

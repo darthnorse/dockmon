@@ -44,13 +44,16 @@ export interface Deployment {
 
   // State machine metadata
   committed: boolean            // Whether commitment point was reached
+  rollback_on_failure: boolean  // Auto-rollback on deployment failure
+  created_by?: string | null    // Username who created deployment (from design spec)
 
   // Container tracking
   container_ids?: string[]      // SHORT container IDs (12 chars) for running deployments (from deployment_metadata)
 
   // Timestamps
   created_at: string            // ISO timestamp with 'Z' suffix
-  updated_at: string            // ISO timestamp with 'Z' suffix
+  updated_at: string | null     // ISO timestamp with 'Z' suffix, updated on each state change
+  started_at?: string | null    // ISO timestamp with 'Z' suffix when deployment execution started
   completed_at: string | null   // ISO timestamp with 'Z' suffix when completed/failed
 }
 
@@ -130,7 +133,7 @@ export interface DeploymentTemplate {
 
   // Timestamps
   created_at: string             // ISO timestamp with 'Z' suffix
-  updated_at: string             // ISO timestamp with 'Z' suffix
+  updated_at: string | null      // ISO timestamp with 'Z' suffix
 }
 
 /**

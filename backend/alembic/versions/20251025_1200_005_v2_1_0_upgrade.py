@@ -1,4 +1,4 @@
-"""v2.1.0 upgrade - Complete deployment feature system
+"""v2.1.0 upgrade - Complete deployment feature system with integrity constraints
 
 Revision ID: 005_v2_1_0
 Revises: 004_v2_0_3
@@ -16,6 +16,14 @@ CHANGES IN v2.1.0:
   - Follows existing metadata pattern (like container_desired_states, container_updates)
 - Add indexes for performance (host_id, status, created_at)
 - Add unique constraints (host+name, template name)
+- Add CHECK constraints for data validation:
+  - deployments.status must be one of 7 valid states
+  - deployment_metadata.is_managed must be boolean
+- Add composite indexes for common queries:
+  - deployments(host_id, status) for deployment filtering by host
+  - deployment_containers(deployment_id, service_name) for service lookup
+  - deployment_metadata(host_id, deployment_id) for deployment ownership tracking
+- Add unique constraint on deployment_containers(deployment_id, container_id) to prevent duplicates
 - Add image pruning settings to global_settings:
   - prune_images_enabled (default: True)
   - image_retention_count (default: 2, keeps last N versions per image)
@@ -73,6 +81,16 @@ def index_exists(table_name: str, index_name: str) -> bool:
     return index_name in indexes
 
 
+def constraint_exists(table_name: str, constraint_name: str) -> bool:
+    """Check if constraint exists (defensive pattern)"""
+    bind = op.get_bind()
+    inspector = inspect(bind)
+    if table_name not in inspector.get_table_names():
+        return False
+    constraints = [c['name'] for c in inspector.get_check_constraints(table_name)]
+    return constraint_name in constraints
+
+
 def upgrade() -> None:
     """Add v2.1.0 deployment features"""
 
@@ -83,6 +101,7 @@ def upgrade() -> None:
             'deployments',
             sa.Column('id', sa.String(), nullable=False),  # Composite: {host_id}:{deployment_short_id}
             sa.Column('host_id', sa.String(), sa.ForeignKey('docker_hosts.id', ondelete='CASCADE'), nullable=False),
+            sa.Column('user_id', sa.Integer(), sa.ForeignKey('users.id', ondelete='CASCADE'), nullable=False),  # User who created deployment (for authorization)
             sa.Column('deployment_type', sa.String(), nullable=False),  # 'container' | 'stack'
             sa.Column('name', sa.String(), nullable=False),
             sa.Column('status', sa.String(), nullable=False, server_default='planning'),  # State machine: planning → validating → pulling_image → creating → starting → running → completed/failed/rolled_back
@@ -102,10 +121,12 @@ def upgrade() -> None:
             sqlite_autoincrement=False,
         )
 
-        # Add indexes for performance
+        # Add indexes for performance and authorization
+        op.create_index('idx_deployment_user_id', 'deployments', ['user_id'])  # Authorization: filter by user
         op.create_index('idx_deployment_host_id', 'deployments', ['host_id'])
         op.create_index('idx_deployment_status', 'deployments', ['status'])
         op.create_index('idx_deployment_created_at', 'deployments', ['created_at'])
+        op.create_index('idx_deployment_user_host', 'deployments', ['user_id', 'host_id'])  # User's deployments on specific host
 
     # Change 2: Create deployment_containers table
     # Junction table linking deployments to containers (supports stack deployments)
@@ -168,6 +189,61 @@ def upgrade() -> None:
         if not index_exists('deployment_metadata', 'idx_deployment_metadata_deployment'):
             op.create_index('idx_deployment_metadata_deployment', 'deployment_metadata', ['deployment_id'])
 
+    # Change 4b: Add additional constraints and indexes for data integrity (v2.1.1 enhancements)
+    # These provide better data consistency and query performance
+    # Defensive checks ensure they work for both fresh installs and upgrades
+
+    # Add status validation constraint to deployments table
+    if table_exists('deployments') and not constraint_exists('deployments', 'ck_deployment_valid_status'):
+        op.create_check_constraint(
+            'ck_deployment_valid_status',
+            'deployments',
+            "status IN ('planning', 'validating', 'pulling_image', 'creating', 'starting', 'running', 'failed', 'rolled_back')"
+        )
+
+    # Add composite index for host_id + status (common filter combination)
+    if table_exists('deployments') and not index_exists('deployments', 'idx_deployment_host_status'):
+        op.create_index('idx_deployment_host_status', 'deployments', ['host_id', 'status'])
+
+    # Add unique constraint on deployment_containers to prevent duplicates
+    if table_exists('deployment_containers'):
+        bind = op.get_bind()
+        inspector = inspect(bind)
+        constraints = {c['name'] for c in inspector.get_unique_constraints('deployment_containers')}
+
+        if 'uq_deployment_container_link' not in constraints:
+            op.create_unique_constraint(
+                'uq_deployment_container_link',
+                'deployment_containers',
+                ['deployment_id', 'container_id']
+            )
+
+        # Add composite index for deployment + service_name lookup
+        if not index_exists('deployment_containers', 'idx_deployment_container_deployment_service'):
+            op.create_index(
+                'idx_deployment_container_deployment_service',
+                'deployment_containers',
+                ['deployment_id', 'service_name']
+            )
+
+    # Add constraints and indexes to deployment_metadata
+    if table_exists('deployment_metadata'):
+        # Add is_managed check constraint
+        if not constraint_exists('deployment_metadata', 'ck_deployment_metadata_managed'):
+            op.create_check_constraint(
+                'ck_deployment_metadata_managed',
+                'deployment_metadata',
+                "is_managed IN (0, 1)"
+            )
+
+        # Add composite index for host + deployment lookup
+        if not index_exists('deployment_metadata', 'idx_deployment_metadata_host_deployment'):
+            op.create_index(
+                'idx_deployment_metadata_host_deployment',
+                'deployment_metadata',
+                ['host_id', 'deployment_id']
+            )
+
     # Change 5: Add image pruning settings to global_settings
     if table_exists('global_settings'):
         # Add prune_images_enabled column (default: True)
@@ -218,7 +294,11 @@ def downgrade() -> None:
 
     # Drop tables in reverse dependency order
     if table_exists('deployment_metadata'):
-        # Drop indexes first
+        # Drop indexes and constraints in reverse order
+        if index_exists('deployment_metadata', 'idx_deployment_metadata_host_deployment'):
+            op.drop_index('idx_deployment_metadata_host_deployment', 'deployment_metadata')
+        if constraint_exists('deployment_metadata', 'ck_deployment_metadata_managed'):
+            op.drop_constraint('ck_deployment_metadata_managed', 'deployment_metadata', type_='check')
         if index_exists('deployment_metadata', 'idx_deployment_metadata_deployment'):
             op.drop_index('idx_deployment_metadata_deployment', 'deployment_metadata')
         if index_exists('deployment_metadata', 'idx_deployment_metadata_host'):
@@ -236,7 +316,14 @@ def downgrade() -> None:
         op.drop_table('deployment_templates')
 
     if table_exists('deployment_containers'):
-        # Drop indexes first
+        # Drop indexes and constraints in reverse order
+        if index_exists('deployment_containers', 'idx_deployment_container_deployment_service'):
+            op.drop_index('idx_deployment_container_deployment_service', 'deployment_containers')
+        bind = op.get_bind()
+        inspector = inspect(bind)
+        constraints = {c['name'] for c in inspector.get_unique_constraints('deployment_containers')}
+        if 'uq_deployment_container_link' in constraints:
+            op.drop_constraint('uq_deployment_container_link', 'deployment_containers', type_='unique')
         if index_exists('deployment_containers', 'idx_deployment_container_container'):
             op.drop_index('idx_deployment_container_container', 'deployment_containers')
         if index_exists('deployment_containers', 'idx_deployment_container_deployment'):
@@ -245,13 +332,21 @@ def downgrade() -> None:
         op.drop_table('deployment_containers')
 
     if table_exists('deployments'):
-        # Drop indexes first
+        # Drop indexes and constraints in reverse order
+        if index_exists('deployments', 'idx_deployment_user_host'):
+            op.drop_index('idx_deployment_user_host', 'deployments')
+        if index_exists('deployments', 'idx_deployment_host_status'):
+            op.drop_index('idx_deployment_host_status', 'deployments')
+        if constraint_exists('deployments', 'ck_deployment_valid_status'):
+            op.drop_constraint('ck_deployment_valid_status', 'deployments', type_='check')
         if index_exists('deployments', 'idx_deployment_created_at'):
             op.drop_index('idx_deployment_created_at', 'deployments')
         if index_exists('deployments', 'idx_deployment_status'):
             op.drop_index('idx_deployment_status', 'deployments')
         if index_exists('deployments', 'idx_deployment_host_id'):
             op.drop_index('idx_deployment_host_id', 'deployments')
+        if index_exists('deployments', 'idx_deployment_user_id'):
+            op.drop_index('idx_deployment_user_id', 'deployments')
 
         # Drop table
         op.drop_table('deployments')

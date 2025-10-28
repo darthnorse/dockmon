@@ -33,6 +33,9 @@ export interface GlobalSettings {
   update_check_time: string
   skip_compose_containers: boolean
   health_check_timeout_seconds: number
+  prune_images_enabled: boolean
+  image_retention_count: number
+  image_prune_grace_hours: number
 }
 
 export interface TemplateVariable {

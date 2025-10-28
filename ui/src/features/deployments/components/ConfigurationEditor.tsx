@@ -27,6 +27,7 @@ interface ConfigurationEditorProps {
 
 export interface ConfigurationEditorHandle {
   validate: () => { valid: boolean; error: string | null }
+  format: () => string | null  // Returns formatted content, or null if format failed
 }
 
 /**
@@ -52,6 +53,7 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
   /**
    * Validate content without formatting
    * Returns validation result for form submission
+   * Note: Use format() function for auto-fix with corrected content
    */
   const validateContent = (): { valid: boolean; error: string | null } => {
     if (!value.trim()) {
@@ -73,7 +75,7 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
             if (fixedYaml) {
               try {
                 yaml.load(fixedYaml)
-                return { valid: true, error: null } // Auto-fix would work
+                return { valid: true, error: null }
               } catch (secondErr: any) {
                 return { valid: false, error: firstErr.message }
               }
@@ -91,9 +93,66 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
     }
   }
 
-  // Expose validate function to parent via ref
+  // Format content (auto-fix + prettify) - returns formatted content or null if failed
+  const formatContent = (): string | null => {
+    if (!value.trim()) {
+      return null
+    }
+
+    try {
+      if (type === 'stack') {
+        let contentToFormat = value
+
+        // First attempt: Parse as-is
+        try {
+          const parsed = yaml.load(contentToFormat)
+          const formatted = yaml.dump(parsed, {
+            indent: 2,
+            lineWidth: -1,
+            noRefs: true,
+            sortKeys: false
+          })
+
+          return formatted
+        } catch (firstErr: any) {
+          // If parsing failed with indentation error, try auto-fix
+          if (firstErr.message?.includes('bad indentation') ||
+              firstErr.message?.includes('expected <block end>')) {
+            const fixedYaml = autoFixYamlIndentation(contentToFormat)
+
+            if (fixedYaml) {
+              try {
+                const parsed = yaml.load(fixedYaml)
+                const formatted = yaml.dump(parsed, {
+                  indent: 2,
+                  lineWidth: -1,
+                  noRefs: true,
+                  sortKeys: false
+                })
+
+                return formatted
+              } catch (secondErr: any) {
+                return null
+              }
+            }
+          }
+          return null
+        }
+      } else {
+        // Parse and format JSON
+        const parsed = JSON.parse(value)
+        const formatted = JSON.stringify(parsed, null, 2)
+        return formatted
+      }
+    } catch (err: any) {
+      return null
+    }
+  }
+
+  // Expose validate and format functions to parent via ref
   useImperativeHandle(ref, () => ({
-    validate: validateContent
+    validate: validateContent,
+    format: formatContent
   }))
 
   /**
@@ -139,7 +198,7 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i]
-      if (line === undefined) continue
+      if (line === undefined) continue  // Type safety guard (split() should not produce undefined)
 
       const trimmed = line.trim()
       const currentIndent = line.match(/^(\s*)/)?.[1]?.length || 0
@@ -199,94 +258,33 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
    * For YAML: Attempts auto-fix of common indentation issues before validation
    */
   const handleFormat = () => {
-    if (!value.trim()) {
-      setValidationError('No content to format')
+    const formatted = formatContent()
+
+    if (formatted) {
+      onChange(formatted)
+      setValidationError(null)
+      setFormatStatus('success')
+      setTimeout(() => setFormatStatus('idle'), 2000)
+    } else {
+      setValidationError('Invalid format - could not auto-fix')
       setFormatStatus('error')
       setTimeout(() => setFormatStatus('idle'), 2000)
-      return
-    }
 
-    try {
+      // Show helpful message for YAML errors
       if (type === 'stack') {
-        let contentToFormat = value
-
-        // First attempt: Parse as-is
-        try {
-          const parsed = yaml.load(contentToFormat)
-          const formatted = yaml.dump(parsed, {
-            indent: 2,
-            lineWidth: -1,
-            noRefs: true,
-            sortKeys: false
-          })
-
-          onChange(formatted)
-          setValidationError(null)
-          setFormatStatus('success')
-          setTimeout(() => setFormatStatus('idle'), 2000)
-          return
-        } catch (firstErr: any) {
-          // If parsing failed with indentation error, try auto-fix
-          if (firstErr.message?.includes('bad indentation') ||
-              firstErr.message?.includes('expected <block end>')) {
-            const fixedYaml = autoFixYamlIndentation(contentToFormat)
-
-            if (fixedYaml) {
-              // Try parsing the fixed version
-              try {
-                const parsed = yaml.load(fixedYaml)
-                const formatted = yaml.dump(parsed, {
-                  indent: 2,
-                  lineWidth: -1,
-                  noRefs: true,
-                  sortKeys: false
-                })
-
-                onChange(formatted)
-                setValidationError(null)
-                setFormatStatus('success')
-                setTimeout(() => setFormatStatus('idle'), 2000)
-                return
-              } catch (secondErr: any) {
-                // Auto-fix didn't help, throw original error
-                throw firstErr
-              }
-            } else {
-              // No auto-fix applied, throw original error
-              throw firstErr
-            }
-          } else {
-            // Not an indentation error, throw it
-            throw firstErr
-          }
-        }
-      } else {
-        // Parse and format JSON
-        const parsed = JSON.parse(value)
-        const formatted = JSON.stringify(parsed, null, 2)
-
-        onChange(formatted)
-        setValidationError(null)
-        setFormatStatus('success')
-        setTimeout(() => setFormatStatus('idle'), 2000)
-      }
-    } catch (err: any) {
-      // All auto-fix attempts failed, show error
-      if (type === 'stack') {
-        let helpfulMessage = err.message || 'Invalid format'
+        let helpfulMessage = 'Invalid YAML format'
 
         // Check for common YAML indentation errors
-        if (helpfulMessage.includes('bad indentation')) {
-          helpfulMessage += '\n\nTip: Root-level keys (services, volumes, networks) must have NO indentation (column 0).'
+        try {
+          yaml.load(value)
+        } catch (err: any) {
+          if (err.message?.includes('bad indentation')) {
+            helpfulMessage += '\n\nTip: Root-level keys (services, volumes, networks) must have NO indentation (column 0).'
+          }
         }
 
         setValidationError(helpfulMessage)
-      } else {
-        setValidationError(err.message || 'Invalid format')
       }
-
-      setFormatStatus('error')
-      setTimeout(() => setFormatStatus('idle'), 5000)
     }
   }
 

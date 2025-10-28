@@ -102,6 +102,8 @@ export function TemplateForm({ isOpen, onClose, template }: TemplateFormProps) {
 
     if (!name.trim()) {
       newErrors.name = 'Template name is required'
+    } else if (name.includes(' ')) {
+      newErrors.name = 'Template name cannot contain spaces'
     }
 
     if (!definition.trim()) {
@@ -256,7 +258,9 @@ export function TemplateForm({ isOpen, onClose, template }: TemplateFormProps) {
                 onValueChange={(value) => setDeploymentType(value as 'container' | 'stack')}
               >
                 <SelectTrigger id="deployment-type">
-                  <SelectValue />
+                  <SelectValue>
+                    {deploymentType === 'container' ? 'Container' : 'Stack (Compose)'}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="container">Container</SelectItem>
@@ -276,7 +280,6 @@ export function TemplateForm({ isOpen, onClose, template }: TemplateFormProps) {
               type={deploymentType}
               value={definition}
               onChange={setDefinition}
-              mode="json"
               error={errors.definition || undefined}
             />
             <p className="text-xs text-muted-foreground mt-1">

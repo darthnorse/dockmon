@@ -171,6 +171,9 @@ class DeploymentStateMachine:
         if to_state in {'running', 'failed', 'rolled_back'} and not deployment.completed_at:
             deployment.completed_at = utcnow
 
+        # Always update updated_at on state transitions (ensures API returns current timestamp)
+        deployment.updated_at = utcnow
+
         logger.info(
             f"Deployment {deployment.id} transitioned: {from_state} -> {to_state}"
         )

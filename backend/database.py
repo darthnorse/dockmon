@@ -684,6 +684,7 @@ class Deployment(Base):
 
     id = Column(String, primary_key=True)  # Composite: {host_id}:{deployment_short_id}
     host_id = Column(String, ForeignKey("docker_hosts.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)  # User who created deployment (for authorization)
     deployment_type = Column(String, nullable=False)  # 'container' | 'stack'
     name = Column(String, nullable=False)
     status = Column(String, nullable=False, default='planning')  # planning, validating, pulling_image, creating, starting, running, failed, rolled_back
@@ -701,14 +702,23 @@ class Deployment(Base):
 
     # Relationships
     host = relationship("DockerHostDB")
+    user = relationship("User")
     containers = relationship("DeploymentContainer", back_populates="deployment", cascade="all, delete-orphan")
 
     # Indexes and constraints
     __table_args__ = (
         UniqueConstraint('host_id', 'name', name='uq_deployment_host_name'),  # Unique name per host
+        # Status must be one of the valid deployment states
+        CheckConstraint(
+            "status IN ('planning', 'validating', 'pulling_image', 'creating', 'starting', 'running', 'failed', 'rolled_back')",
+            name='ck_deployment_valid_status'
+        ),
+        Index('idx_deployment_user_id', 'user_id'),  # Filter deployments by user (authorization checks)
         Index('idx_deployment_host_id', 'host_id'),
         Index('idx_deployment_status', 'status'),
         Index('idx_deployment_created_at', 'created_at'),
+        Index('idx_deployment_host_status', ['host_id', 'status']),  # Common filter: deployments for host with status
+        Index('idx_deployment_user_host', ['user_id', 'host_id']),  # User's deployments on specific host
         {"sqlite_autoincrement": False},
     )
 
@@ -736,10 +746,15 @@ class DeploymentContainer(Base):
     # Relationships
     deployment = relationship("Deployment", back_populates="containers")
 
-    # Indexes
+    # Indexes and constraints
     __table_args__ = (
+        # Unique constraint prevents duplicate container entries in same deployment
+        # For stacks: unique per (deployment, service_name) - each service appears once
+        # For containers: unique per deployment (service_name is NULL)
+        UniqueConstraint('deployment_id', 'container_id', name='uq_deployment_container_link'),
         Index('idx_deployment_container_deployment', 'deployment_id'),
         Index('idx_deployment_container_container', 'container_id'),
+        Index('idx_deployment_container_deployment_service', ['deployment_id', 'service_name']),  # Stack service lookup
         {"sqlite_autoincrement": True},
     )
 
@@ -827,10 +842,13 @@ class DeploymentMetadata(Base):
     host = relationship("DockerHostDB")
     deployment = relationship("Deployment")
 
-    # Indexes
+    # Indexes and constraints
     __table_args__ = (
+        # is_managed must be boolean
+        CheckConstraint("is_managed IN (0, 1)", name='ck_deployment_metadata_managed'),
         Index('idx_deployment_metadata_host', 'host_id'),
         Index('idx_deployment_metadata_deployment', 'deployment_id'),
+        Index('idx_deployment_metadata_host_deployment', ['host_id', 'deployment_id']),  # Common lookup for deployments on host
         {"sqlite_autoincrement": False},
     )
 

@@ -213,7 +213,8 @@ def _validate_schema(engine, version: str):
         # '004_v2_0_3': No schema changes - security/correctness fixes only (app_version update)
         '005_v2_1_0': {
             'tables': ['deployments', 'deployment_containers', 'deployment_templates', 'deployment_metadata'],
-            'deployments_columns': ['stage_percent'],
+            # Note: deployments table columns validated implicitly via table existence
+            # stage_percent is not a column - docstring comment only, replaced by current_stage + progress_percent
         },
         # Add validations for future versions here:
     }

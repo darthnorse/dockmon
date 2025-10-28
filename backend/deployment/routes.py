@@ -168,6 +168,7 @@ async def create_deployment(
             name=request.name,
             deployment_type=request.deployment_type,
             definition=request.definition,
+            user_id=current_user['user_id'],
             rollback_on_failure=request.rollback_on_failure,
             created_by=current_user['username'],
         )
@@ -204,29 +205,41 @@ async def execute_deployment(
     - DEPLOYMENT_ROLLED_BACK (rollback after failure)
     """
     try:
-        # Check deployment status before executing
+        # Check deployment status before executing with row-level lock
+        # This prevents race condition where multiple concurrent requests execute same deployment
         db = get_database_manager()
         with db.get_session() as session:
-            deployment = session.query(Deployment).filter_by(id=deployment_id).first()
+            # Use with_for_update() to acquire row lock (prevents concurrent modifications)
+            deployment = session.query(Deployment).filter_by(
+                id=deployment_id,
+                user_id=current_user['user_id']
+            ).with_for_update().first()
             if not deployment:
                 raise HTTPException(status_code=404, detail="Deployment not found")
 
-            # Only allow execution from 'planning' status
-            # Terminal states (completed, failed, rolled_back) cannot be re-executed
-            if deployment.status != 'planning':
+            # Only allow execution from 'planning', 'failed', or 'rolled_back' status
+            # These are the states where a new execution attempt makes sense
+            # In-progress states (validating, pulling_image, creating, starting) cannot be re-executed
+            # Terminal success state (running) cannot be re-executed
+            if deployment.status not in ('planning', 'failed', 'rolled_back'):
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Cannot execute deployment in status '{deployment.status}'. Only 'planning' deployments can be executed."
+                    detail=f"Cannot execute deployment in status '{deployment.status}'. Only 'planning', 'failed', or 'rolled_back' deployments can be executed."
                 )
 
-        # Execute deployment in background
-        background_tasks.add_task(executor.execute_deployment, deployment_id)
+            # Lock is held during this critical section - prevents other threads from modifying
+            # Row lock is released when session closes (after this with block)
 
-        # Return updated deployment state
-        with db.get_session() as session:
-            deployment = session.query(Deployment).filter_by(id=deployment_id).first()
+            # Execute deployment in background
+            background_tasks.add_task(executor.execute_deployment, deployment_id)
+
+            # Return updated deployment state
+            # Note: We DON'T need another query here - we already have the locked row
             return _deployment_to_response(deployment)
 
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is (don't log as error)
+        raise
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -239,6 +252,7 @@ async def list_deployments(
     host_id: Optional[str] = None,
     status: Optional[str] = None,
     limit: int = 100,
+    offset: int = 0,
     current_user=Depends(get_current_user),
 ):
     """
@@ -247,12 +261,29 @@ async def list_deployments(
     Filters:
     - host_id: Filter by host
     - status: Filter by status (planning, validating, pulling_image, creating, starting, running, failed, rolled_back)
-    - limit: Max results (default: 100)
+    - limit: Max results (default: 100, max: 1000)
+    - offset: Skip first N results (default: 0)
     """
     try:
+        # Validate pagination parameters (prevent DoS via unlimited queries)
+        if limit < 1:
+            raise HTTPException(status_code=400, detail="limit must be at least 1")
+        if limit > 1000:
+            raise HTTPException(status_code=400, detail="limit cannot exceed 1000")
+        if offset < 0:
+            raise HTTPException(status_code=400, detail="offset cannot be negative")
+
+        # Validate status if provided
+        valid_statuses = {'planning', 'validating', 'pulling_image', 'creating', 'starting', 'running', 'failed', 'rolled_back'}
+        if status and status not in valid_statuses:
+            raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {', '.join(valid_statuses)}")
+
         db = get_database_manager()
         with db.get_session() as session:
             query = session.query(Deployment)
+
+            # CRITICAL: Filter by user_id to prevent users from seeing other users' deployments
+            query = query.filter_by(user_id=current_user['user_id'])
 
             if host_id:
                 query = query.filter_by(host_id=host_id)
@@ -260,7 +291,7 @@ async def list_deployments(
             if status:
                 query = query.filter_by(status=status)
 
-            deployments = query.order_by(Deployment.created_at.desc()).limit(limit).all()
+            deployments = query.order_by(Deployment.created_at.desc()).offset(offset).limit(limit).all()
 
             return [_deployment_to_response(d) for d in deployments]
 
@@ -278,7 +309,10 @@ async def get_deployment(
     try:
         db = get_database_manager()
         with db.get_session() as session:
-            deployment = session.query(Deployment).filter_by(id=deployment_id).first()
+            deployment = session.query(Deployment).filter_by(
+                id=deployment_id,
+                user_id=current_user['user_id']
+            ).first()
 
             if not deployment:
                 raise HTTPException(status_code=404, detail="Deployment not found")
@@ -299,30 +333,43 @@ async def update_deployment(
     current_user=Depends(get_current_user),
 ):
     """
-    Update a deployment's definition (only allowed in 'planning' state).
+    Update a deployment's definition (allowed in 'planning', 'failed', or 'rolled_back' states).
 
-    This allows users to review and modify deployment configuration
-    before execution.
+    This allows users to:
+    - Review and modify deployment configuration before execution ('planning')
+    - Edit and retry failed deployments ('failed')
+    - Edit and retry rolled back deployments ('rolled_back')
     """
     try:
         db = get_database_manager()
         security_validator = SecurityValidator()
 
         with db.get_session() as session:
-            # Fetch deployment
-            deployment = session.query(Deployment).filter_by(id=deployment_id).first()
+            # Fetch deployment (with authorization check)
+            deployment = session.query(Deployment).filter_by(
+                id=deployment_id,
+                user_id=current_user['user_id']
+            ).first()
             if not deployment:
                 raise HTTPException(status_code=404, detail="Deployment not found")
 
-            # Only allow editing in 'planning' state
-            if deployment.status != 'planning':
+            # Allow editing in 'planning', 'failed', or 'rolled_back' states
+            editable_statuses = ['planning', 'failed', 'rolled_back']
+            if deployment.status not in editable_statuses:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Cannot edit deployment in status '{deployment.status}'. Only 'planning' deployments can be edited."
+                    detail=f"Cannot edit deployment in status '{deployment.status}'. Only {editable_statuses} deployments can be edited."
                 )
 
             # NOTE: Security validation removed - will be performed during execution
             # No need to validate on update since user is just editing configuration
+
+            # If retrying a failed/rolled_back deployment, reset error state and progress
+            if deployment.status in ['failed', 'rolled_back']:
+                deployment.status = 'planning'  # Reset to planning for retry
+                deployment.error_message = None  # Clear previous error
+                deployment.progress_percent = 0  # Reset progress indicator
+                logger.info(f"Deployment {deployment_id} being retried (was {deployment.status})")
 
             # Update fields if provided
             if request.name is not None:
@@ -367,7 +414,10 @@ async def delete_deployment(
     try:
         db = get_database_manager()
         with db.get_session() as session:
-            deployment = session.query(Deployment).filter_by(id=deployment_id).first()
+            deployment = session.query(Deployment).filter_by(
+                id=deployment_id,
+                user_id=current_user['user_id']
+            ).first()
 
             if not deployment:
                 raise HTTPException(status_code=404, detail="Deployment not found")

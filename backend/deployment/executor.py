@@ -28,6 +28,7 @@ from .state_machine import DeploymentStateMachine
 from .security_validator import SecurityValidator, SecurityLevel
 from .host_connector import get_host_connector
 from .compose_parser import ComposeParser, ComposeParseError
+from .container_validator import ContainerValidator, ContainerValidationError
 from .compose_validator import ComposeValidator
 from .stack_orchestrator import StackOrchestrator, StackOrchestrationError
 from utils.async_docker import async_docker_call
@@ -92,6 +93,7 @@ class DeploymentExecutor:
         name: str,
         deployment_type: str,
         definition: Dict[str, Any],
+        user_id: int,
         rollback_on_failure: bool = True,
         created_by: Optional[str] = None,
     ) -> str:
@@ -103,6 +105,7 @@ class DeploymentExecutor:
             name: Deployment name (must be unique per host)
             deployment_type: 'container' or 'stack'
             definition: Container/stack configuration dictionary
+            user_id: User ID of creator (for authorization and audit)
             rollback_on_failure: Whether to rollback on failure (default: True)
             created_by: Username who created the deployment (for audit tracking)
 
@@ -176,6 +179,7 @@ class DeploymentExecutor:
             deployment = Deployment(
                 id=deployment_id,
                 host_id=host_id,
+                user_id=user_id,
                 deployment_type=deployment_type,
                 name=name,
                 status='planning',
@@ -244,8 +248,8 @@ class DeploymentExecutor:
                 definition = json.loads(deployment.definition)
 
                 if deployment.deployment_type == 'container':
-                    container_config = definition.get('container', {})
-                    await self._execute_container_deployment(session, deployment, container_config)
+                    # Definition is the container config directly (no 'container' wrapper)
+                    await self._execute_container_deployment(session, deployment, definition)
                 elif deployment.deployment_type == 'stack':
                     await self._execute_stack_deployment(session, deployment, definition)
                 else:
@@ -388,9 +392,11 @@ class DeploymentExecutor:
 
         logger.info(f"Created container {container_id} for deployment {deployment.id}")
 
+        # CRITICAL: All three operations must be in ONE transaction to prevent inconsistent state
+        # If crash occurs between transactions, database becomes inconsistent with Docker state
+
         # COMMITMENT POINT - container created in Docker
         self.state_machine.mark_committed(deployment)
-        session.commit()
 
         # Link deployment to container
         link = DeploymentContainer(
@@ -411,6 +417,9 @@ class DeploymentExecutor:
             service_name=None  # Single container (not stack)
         )
 
+        # SINGLE COMMIT - ensures all database changes happen atomically
+        # If commit fails, entire transaction rolls back (Docker container remains untracked)
+        # If commit succeeds, deployment is committed AND linked
         session.commit()
 
         # STATE: starting
@@ -425,20 +434,19 @@ class DeploymentExecutor:
         await self._update_progress(session, deployment, 90, 'Verifying container is running')
         session.commit()
 
-        # Get container status
-        status = await connector.get_container_status(container_id)
-        is_running = status.get('State', {}).get('Running', False)
+        # Get container status (returns string like "running", "exited", etc.)
+        status_str = await connector.get_container_status(container_id)
+        is_running = status_str == 'running'
 
         if not is_running:
-            container_state = status.get('State', {}).get('Status', 'unknown')
-            logger.error(f"Container {container_id} crashed during startup (status: {container_state})")
-            # Cleanup: remove crashed container
+            logger.error(f"Container {container_id} failed to start (status: {status_str})")
+            # Cleanup: remove failed container
             try:
                 await connector.remove_container(container_id, force=True)
-                logger.info(f"Removed crashed container {container_id}")
+                logger.info(f"Removed failed container {container_id}")
             except Exception as e:
-                logger.error(f"Error removing crashed container: {e}")
-            raise RuntimeError(f"Container {container_id} not running (status: {container_state})")
+                logger.error(f"Error removing failed container: {e}")
+            raise RuntimeError(f"Container {container_id} not running (status: {status_str})")
 
         logger.info(f"Container {container_id} verified running")
 
@@ -467,9 +475,10 @@ class DeploymentExecutor:
             except Exception as e:
                 logger.error(f"Error cleaning up failed container: {e}")
 
-            # Mark deployment as failed
-            await self._update_progress(session, deployment, deployment.progress_percent, 'Health check failed')
-            deployment.status = 'failed'
+            # Mark deployment as failed using state machine (validates transition, sets completed_at)
+            # Set progress to 100% to indicate the process is complete (failure is terminal)
+            await self._update_progress(session, deployment, 100, 'Health check failed')
+            self.state_machine.transition(deployment, 'failed')
             deployment.error_message = f"Container health check failed after {health_check_timeout}s"
             session.commit()
 
@@ -676,30 +685,25 @@ class DeploymentExecutor:
 
         except Exception as e:
             logger.error(f"Stack deployment {deployment.id} failed: {e}")
-
-            # Rollback if not committed
-            if not deployment.committed:
-                logger.warning(f"Rolling back stack deployment {deployment.id}")
-
-                # Remove created services
-                for service_name in reversed(created_services):
-                    if service_name in container_ids:
-                        try:
-                            container_id = container_ids[service_name]
-                            await connector.stop_container(container_id, timeout=10)
-                            await connector.remove_container(container_id, force=True)
-                            logger.info(f"Rolled back service: {service_name}")
-                        except Exception as rollback_error:
-                            logger.error(f"Failed to rollback service {service_name}: {rollback_error}")
-
+            # Note: Rollback will be handled by execute_deployment's exception handler
+            # to ensure consistent state transitions and event emission
             raise
+
 
     def _build_container_create_args(self, definition: Dict[str, Any]) -> Dict[str, Any]:
         """
         Build Docker SDK container.create() arguments from definition.
 
         Maps DockMon definition format to Docker SDK parameters.
+        Validates all fields before building.
         """
+        # Validate definition format
+        validator = ContainerValidator()
+        try:
+            validator.validate_definition(definition)
+        except ContainerValidationError as e:
+            raise ValueError(f"Invalid container configuration: {str(e)}")
+
         args = {}
 
         # Required
@@ -719,17 +723,135 @@ class DeploymentExecutor:
         if 'working_dir' in definition:
             args['working_dir'] = definition['working_dir']
 
-        # Environment variables
+        # Environment variables - validate format and keys
         if 'environment' in definition:
-            args['environment'] = definition['environment']
+            environment = definition['environment']
+            if isinstance(environment, dict):
+                validated_env = {}
+                for key, value in environment.items():
+                    # Validate environment variable key is valid
+                    # Keys should be alphanumeric + underscore, starting with letter or underscore
+                    if not key:
+                        logger.warning(f"Empty environment variable key, skipping.")
+                        continue
 
-        # Ports
+                    # Check if key matches pattern: starts with letter/underscore, then alphanumeric/underscore
+                    if not (key[0].isalpha() or key[0] == '_'):
+                        logger.warning(f"Invalid environment variable key: '{key}'. Must start with letter or underscore, skipping.")
+                        continue
+
+                    if not all(c.isalnum() or c == '_' for c in key):
+                        logger.warning(f"Invalid environment variable key: '{key}'. Must contain only alphanumeric characters and underscores, skipping.")
+                        continue
+
+                    # Validate value is a string
+                    if not isinstance(value, (str, int, float, bool)):
+                        logger.warning(f"Invalid environment variable value for '{key}': expected string/int/float/bool, got {type(value).__name__}, skipping.")
+                        continue
+
+                    # Convert to string
+                    validated_env[key] = str(value)
+
+                args['environment'] = validated_env if validated_env else None
+            else:
+                logger.warning(f"Invalid environment format: expected dict, got {type(environment).__name__}, ignoring environment variables.")
+                args['environment'] = None
+
+        # Ports - convert from list format ["8080:80"] to Docker SDK format
         if 'ports' in definition:
-            args['ports'] = definition['ports']
+            ports = definition['ports']
+            if isinstance(ports, list):
+                # Convert list of port strings to proper Docker SDK format
+                # ["8080:80"] -> {80: 8080} (container_port: host_port)
+                port_bindings = {}
+                for port_spec in ports:
+                    try:
+                        if ':' in str(port_spec):
+                            # Handle "host:container" or "host:container/protocol" format
+                            parts = str(port_spec).split(':')
+                            if len(parts) != 2:
+                                logger.warning(f"Invalid port format: {port_spec}. Expected 'host:container', skipping.")
+                                continue
 
-        # Volumes
+                            host_port_str, container_port_str = parts
+                            # Remove protocol suffix if present (e.g., "80/tcp" -> "80")
+                            if '/' in container_port_str:
+                                container_port_str = container_port_str.split('/')[0]
+
+                            container_port_int = int(container_port_str)
+                            host_port_int = int(host_port_str)
+
+                            # Validate port ranges (1-65535)
+                            if not (1 <= container_port_int <= 65535 and 1 <= host_port_int <= 65535):
+                                logger.warning(f"Port out of valid range (1-65535): {port_spec}, skipping.")
+                                continue
+
+                            # Docker SDK format: {container_port: host_port}
+                            port_bindings[container_port_int] = host_port_int
+                        else:
+                            # Just container port, expose without binding to host
+                            container_port_int = int(str(port_spec))
+
+                            # Validate port range
+                            if not (1 <= container_port_int <= 65535):
+                                logger.warning(f"Port out of valid range (1-65535): {port_spec}, skipping.")
+                                continue
+
+                            port_bindings[container_port_int] = None
+                    except (ValueError, AttributeError) as e:
+                        logger.warning(f"Failed to parse port '{port_spec}': {e}, skipping.")
+                        continue
+
+                args['ports'] = port_bindings if port_bindings else None
+            else:
+                # If it's already a dict or tuple format, use as-is
+                args['ports'] = ports
+
+        # Volumes - can be list of strings ["source:dest", "source:dest:ro"] or dict format
         if 'volumes' in definition:
-            args['volumes'] = definition['volumes']
+            volumes = definition['volumes']
+            if isinstance(volumes, list):
+                # Convert list to dict format that Docker SDK expects
+                # ["source:dest"] -> {"source": {"bind": "dest", "mode": "rw"}}
+                volume_dict = {}
+                for vol_spec in volumes:
+                    try:
+                        vol_str = str(vol_spec).strip()
+                        if not vol_str:
+                            logger.warning(f"Empty volume specification, skipping.")
+                            continue
+
+                        if ':' not in vol_str:
+                            logger.warning(f"Invalid volume format: '{vol_spec}'. Expected 'source:dest' or 'source:dest:mode', skipping.")
+                            continue
+
+                        parts = vol_str.split(':')
+                        if len(parts) not in (2, 3):
+                            logger.warning(f"Invalid volume format: '{vol_spec}'. Expected 'source:dest' (2 parts) or 'source:dest:mode' (3 parts), got {len(parts)}, skipping.")
+                            continue
+
+                        source, dest = parts[0], parts[1]
+                        mode = parts[2] if len(parts) == 3 else 'rw'
+
+                        # Validate source and dest are non-empty
+                        if not source or not dest:
+                            logger.warning(f"Invalid volume specification: source and dest cannot be empty. Got '{vol_spec}', skipping.")
+                            continue
+
+                        # Validate mode is one of the valid Docker modes
+                        if mode not in ('rw', 'ro', 'z', 'Z', 'rprivate', 'shared', 'rslave'):
+                            logger.warning(f"Invalid volume mode: '{mode}'. Expected 'rw', 'ro', 'z', 'Z', 'rprivate', 'shared', or 'rslave', skipping.")
+                            continue
+
+                        volume_dict[source] = {'bind': dest, 'mode': mode}
+                    except (ValueError, AttributeError, IndexError) as e:
+                        logger.warning(f"Failed to parse volume '{vol_spec}': {e}, skipping.")
+                        continue
+
+                args['volumes'] = volume_dict if volume_dict else None
+            else:
+                # If it's already a dict format, use as-is
+                args['volumes'] = volumes
 
         # Network
         if 'network_mode' in definition:
@@ -746,15 +868,23 @@ class DeploymentExecutor:
             args['cap_drop'] = definition['cap_drop']
 
         # Resource limits
-        if 'mem_limit' in definition:
+        # Support both 'memory_limit' (frontend) and 'mem_limit' (Docker SDK)
+        if 'memory_limit' in definition:
+            args['mem_limit'] = definition['memory_limit']
+        elif 'mem_limit' in definition:
             args['mem_limit'] = definition['mem_limit']
+
         if 'memswap_limit' in definition:
             args['memswap_limit'] = definition['memswap_limit']
         if 'cpu_shares' in definition:
             args['cpu_shares'] = definition['cpu_shares']
         if 'cpuset_cpus' in definition:
             args['cpuset_cpus'] = definition['cpuset_cpus']
-        if 'cpus' in definition:
+
+        # Support both 'cpu_limit' (frontend) and 'cpus' (Docker SDK)
+        if 'cpu_limit' in definition:
+            args['nano_cpus'] = int(float(definition['cpu_limit']) * 1e9)
+        elif 'cpus' in definition:
             args['nano_cpus'] = int(float(definition['cpus']) * 1e9)
 
         # Restart policy
@@ -834,8 +964,8 @@ class DeploymentExecutor:
         """
         Emit deployment event for WebSocket broadcasting.
 
-        Event structure follows spec Section 6.2 (lines 1116-1145):
-        - Nested 'progress' object with overall_percent, stage, stage_percent
+        Event structure follows spec Section 6.2:
+        - Nested 'progress' object with overall_percent and stage
         - Optional 'error' field for failures
         - Timestamps with 'Z' suffix for UTC
 
@@ -843,11 +973,10 @@ class DeploymentExecutor:
             deployment: Deployment instance
             event_type: Event type (DEPLOYMENT_CREATED, DEPLOYMENT_PROGRESS, etc.)
         """
-        # Build nested progress object (spec-compliant)
+        # Build nested progress object
         progress = {
             'overall_percent': deployment.progress_percent,
             'stage': deployment.current_stage,
-            'stage_percent': deployment.stage_percent  # Stage-level progress (0-100)
         }
 
         # Base payload structure

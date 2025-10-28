@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from typing import Dict, Optional, Any, Tuple
 import docker
 
-from database import DatabaseManager, ContainerUpdate, AutoRestartConfig, ContainerDesiredState, ContainerHttpHealthCheck, GlobalSettings, DeploymentMetadata
+from database import DatabaseManager, ContainerUpdate, AutoRestartConfig, ContainerDesiredState, ContainerHttpHealthCheck, GlobalSettings, DeploymentMetadata, TagAssignment
 from event_bus import Event, EventType as BusEventType, get_event_bus
 from utils.async_docker import async_docker_call
 from utils.container_health import wait_for_container_health
@@ -521,11 +521,21 @@ class UpdateExecutor:
                         "updated_at": datetime.now(timezone.utc)
                     })
 
+                    # Update 6: TagAssignment table (uses subject_id as composite key for containers)
+                    # When a container is recreated during update, preserve its tag assignments
+                    session.query(TagAssignment).filter(
+                        TagAssignment.subject_type == 'container',
+                        TagAssignment.subject_id == old_composite_key  # OLD composite key
+                    ).update({
+                        "subject_id": new_composite_key,  # NEW composite key
+                        "last_seen_at": datetime.now(timezone.utc)
+                    })
+
                     session.commit()
                     update_committed = True  # Mark update as committed
                     logger.debug(
                         f"Updated database records from {old_composite_key} to {new_composite_key}: "
-                        f"ContainerUpdate, AutoRestartConfig, ContainerDesiredState, ContainerHttpHealthCheck, DeploymentMetadata"
+                        f"ContainerUpdate, AutoRestartConfig, ContainerDesiredState, ContainerHttpHealthCheck, DeploymentMetadata, TagAssignment"
                     )
 
             # Notify frontend that container ID changed (keeps modal open during updates)

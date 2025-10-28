@@ -717,8 +717,8 @@ class Deployment(Base):
         Index('idx_deployment_host_id', 'host_id'),
         Index('idx_deployment_status', 'status'),
         Index('idx_deployment_created_at', 'created_at'),
-        Index('idx_deployment_host_status', ['host_id', 'status']),  # Common filter: deployments for host with status
-        Index('idx_deployment_user_host', ['user_id', 'host_id']),  # User's deployments on specific host
+        Index('idx_deployment_host_status', 'host_id', 'status'),  # Common filter: deployments for host with status
+        Index('idx_deployment_user_host', 'user_id', 'host_id'),  # User's deployments on specific host
         {"sqlite_autoincrement": False},
     )
 
@@ -754,7 +754,7 @@ class DeploymentContainer(Base):
         UniqueConstraint('deployment_id', 'container_id', name='uq_deployment_container_link'),
         Index('idx_deployment_container_deployment', 'deployment_id'),
         Index('idx_deployment_container_container', 'container_id'),
-        Index('idx_deployment_container_deployment_service', ['deployment_id', 'service_name']),  # Stack service lookup
+        Index('idx_deployment_container_deployment_service', 'deployment_id', 'service_name'),  # Stack service lookup
         {"sqlite_autoincrement": True},
     )
 
@@ -848,7 +848,7 @@ class DeploymentMetadata(Base):
         CheckConstraint("is_managed IN (0, 1)", name='ck_deployment_metadata_managed'),
         Index('idx_deployment_metadata_host', 'host_id'),
         Index('idx_deployment_metadata_deployment', 'deployment_id'),
-        Index('idx_deployment_metadata_host_deployment', ['host_id', 'deployment_id']),  # Common lookup for deployments on host
+        Index('idx_deployment_metadata_host_deployment', 'host_id', 'deployment_id'),  # Common lookup for deployments on host
         {"sqlite_autoincrement": False},
     )
 

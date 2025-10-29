@@ -16,6 +16,7 @@ export function DashboardSettings() {
   const showKpiBar = prefs?.dashboard?.showKpiBar ?? true
   const showStatsWidgets = prefs?.dashboard?.showStatsWidgets ?? false
   const optimizedLoading = prefs?.dashboard?.optimizedLoading ?? true
+  const showContainerStats = prefs?.dashboard?.showContainerStats ?? false
 
   const handleToggleKpiBar = (checked: boolean) => {
     updatePreferences.mutate({
@@ -47,6 +48,16 @@ export function DashboardSettings() {
     toast.success(checked ? 'Optimized loading enabled' : 'Optimized loading disabled')
   }
 
+  const handleToggleContainerStats = (checked: boolean) => {
+    updatePreferences.mutate({
+      dashboard: {
+        ...prefs?.dashboard,
+        showContainerStats: checked
+      }
+    })
+    toast.success(checked ? 'Container statistics enabled' : 'Container statistics disabled')
+  }
+
   const handleToggleSimplifiedWorkflow = (checked: boolean) => {
     setSimplifiedWorkflow(checked)
     toast.success(checked ? 'Simplified workflow enabled - drawers skipped' : 'Simplified workflow disabled - drawers shown')
@@ -76,6 +87,13 @@ export function DashboardSettings() {
             description="Display detailed statistics widgets on the dashboard"
             checked={showStatsWidgets}
             onChange={handleToggleStatsWidgets}
+          />
+          <ToggleSwitch
+            id="show-container-stats"
+            label="Show CPU/RAM statistics per container"
+            description="Display CPU usage and memory consumption for each running container in the expanded view"
+            checked={showContainerStats}
+            onChange={handleToggleContainerStats}
           />
         </div>
       </div>

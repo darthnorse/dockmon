@@ -52,6 +52,7 @@ export interface UserPreferences {
   dashboard?: {
     showKpiBar?: boolean
     showStatsWidgets?: boolean
+    showContainerStats?: boolean
     optimizedLoading?: boolean
     compactHostOrder?: string[]
     hostCardLayout?: HostCardLayout[]

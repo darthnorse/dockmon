@@ -378,9 +378,14 @@ export function HostCard({ host, onHostClick, onViewDetails, onEditHost }: HostC
                     [{container.state}]
                   </span>
                 </div>
-                <span className="text-muted-foreground font-mono text-xs ml-2">
-                  {container.cpu_percent.toFixed(1)}%
-                </span>
+                {prefs?.dashboard?.showContainerStats && container.state === 'running' && (
+                  <div className="flex items-center gap-2 flex-shrink-0 text-muted-foreground font-mono text-xs">
+                    <span>
+                      {container.memory_percent !== undefined ? `${container.memory_percent.toFixed(0)}MB` : '—'}
+                    </span>
+                    <span>{container.cpu_percent.toFixed(1)}%</span>
+                  </div>
+                )}
               </div>
             ))}
           </div>

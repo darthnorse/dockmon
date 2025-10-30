@@ -88,16 +88,25 @@ class EventLogger:
         self._event_queue = asyncio.Queue(maxsize=10000)  # Prevent unbounded memory growth
         self._processing_task: Optional[asyncio.Task] = None
         self._active_correlations: Dict[str, List[str]] = {}
+        self._correlation_timestamps: Dict[str, datetime] = {}  # Track correlation age (Issue #2 fix)
+        self._correlation_cleanup_task: Optional[asyncio.Task] = None  # Periodic cleanup task (Issue #2 fix)
         self._dropped_events_count = 0  # Track dropped events for monitoring
         self._recent_events: Dict[str, float] = {}  # Cache for event deduplication: {dedup_key: timestamp}
         self.MAX_RECENT_EVENTS = 5000  # Hard limit to prevent memory leak
         self.RECENT_EVENTS_TTL = 300  # 5 minutes
+        self.MAX_CORRELATIONS = 1000  # Hard limit for active correlations (Issue #2 fix)
+        self.CORRELATION_TTL = 3600  # 1 hour in seconds (Issue #2 fix)
 
     async def start(self):
         """Start the event processing task"""
         if not self._processing_task:
             self._processing_task = asyncio.create_task(self._process_events())
             logger.info("Event logger started")
+
+        # Start correlation cleanup task (Issue #2 fix)
+        if not self._correlation_cleanup_task:
+            self._correlation_cleanup_task = asyncio.create_task(self._correlation_cleanup_loop())
+            logger.info("Correlation cleanup task started")
 
     async def stop(self):
         """Stop the event processing task"""
@@ -116,7 +125,18 @@ class EventLogger:
                 except Exception:
                     break
 
+            self._processing_task = None
             logger.info("Event logger stopped")
+
+        # Stop correlation cleanup task (Issue #2 fix)
+        if self._correlation_cleanup_task:
+            self._correlation_cleanup_task.cancel()
+            try:
+                await self._correlation_cleanup_task
+            except asyncio.CancelledError:
+                pass
+            self._correlation_cleanup_task = None
+            logger.info("Correlation cleanup task stopped")
 
     def log_event(self,
                   category: EventCategory,
@@ -215,12 +235,97 @@ class EventLogger:
         """Create a new correlation ID for linking related events"""
         correlation_id = str(uuid.uuid4())
         self._active_correlations[correlation_id] = []
+        self._correlation_timestamps[correlation_id] = datetime.now(timezone.utc)  # Track creation time (Issue #2 fix)
         return correlation_id
 
     def end_correlation(self, correlation_id: str):
         """End a correlation session"""
         if correlation_id in self._active_correlations:
             del self._active_correlations[correlation_id]
+        if correlation_id in self._correlation_timestamps:  # Clean up timestamp (Issue #2 fix)
+            del self._correlation_timestamps[correlation_id]
+
+    async def _correlation_cleanup_loop(self):
+        """
+        Periodic cleanup of stale correlations (Issue #2 fix).
+
+        Runs every 5 minutes to prevent unbounded memory growth.
+        """
+        while True:
+            try:
+                await asyncio.sleep(300)  # Run every 5 minutes
+                await self._cleanup_stale_correlations()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in correlation cleanup loop: {e}", exc_info=True)
+
+    async def _cleanup_stale_correlations(self):
+        """
+        Clean up stale correlations based on TTL and size limit (Issue #2 fix).
+
+        Removes correlations older than CORRELATION_TTL (1 hour) and enforces
+        MAX_CORRELATIONS limit via LRU eviction.
+        """
+        try:
+            now = datetime.now(timezone.utc)
+
+            # Find stale correlations (older than TTL)
+            stale_correlations = []
+            for cid, ts in list(self._correlation_timestamps.items()):
+                try:
+                    if isinstance(ts, datetime):
+                        age_seconds = (now - ts).total_seconds()
+                        if age_seconds > self.CORRELATION_TTL:
+                            stale_correlations.append(cid)
+                    else:
+                        # Invalid timestamp (corrupted data), remove it
+                        stale_correlations.append(cid)
+                        logger.warning(f"Invalid correlation timestamp for {cid}, removing")
+                except Exception as e:
+                    logger.error(f"Error checking correlation {cid} age: {e}")
+                    stale_correlations.append(cid)  # Remove corrupted entry
+
+            # Remove stale correlations
+            for cid in stale_correlations:
+                if cid in self._active_correlations:
+                    del self._active_correlations[cid]
+                if cid in self._correlation_timestamps:
+                    del self._correlation_timestamps[cid]
+
+            if stale_correlations:
+                logger.info(
+                    f"Cleaned up {len(stale_correlations)} stale correlations "
+                    f"(older than {self.CORRELATION_TTL}s)"
+                )
+
+            # LRU eviction if over size limit
+            if len(self._active_correlations) > self.MAX_CORRELATIONS:
+                # Sort by timestamp, oldest first
+                sorted_correlations = sorted(
+                    [(cid, ts) for cid, ts in self._correlation_timestamps.items() if isinstance(ts, datetime)],
+                    key=lambda x: x[1]
+                )
+
+                # Calculate how many to remove
+                excess = len(self._active_correlations) - self.MAX_CORRELATIONS
+                to_remove_count = min(excess + 100, len(sorted_correlations))  # Remove extra 100 for headroom
+
+                # Remove oldest entries
+                to_remove = sorted_correlations[:to_remove_count]
+                for cid, _ in to_remove:
+                    if cid in self._active_correlations:
+                        del self._active_correlations[cid]
+                    if cid in self._correlation_timestamps:
+                        del self._correlation_timestamps[cid]
+
+                logger.warning(
+                    f"Correlation cache exceeded limit ({self.MAX_CORRELATIONS}), "
+                    f"evicted {len(to_remove)} oldest entries via LRU"
+                )
+
+        except Exception as e:
+            logger.error(f"Error cleaning up correlations: {e}", exc_info=True)
 
     async def _process_events(self):
         """Process events from the queue"""

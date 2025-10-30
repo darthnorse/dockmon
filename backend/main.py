@@ -140,6 +140,16 @@ async def lifespan(app: FastAPI):
     # Note: Timezone offset is auto-synced from the browser when the UI loads
     # This ensures timestamps are always displayed in the user's local timezone
 
+    # Define task exception handler for background tasks
+    def _handle_task_exception(task: asyncio.Task):
+        """Handle exceptions from background tasks"""
+        try:
+            task.result()  # Raises exception if task failed
+        except asyncio.CancelledError:
+            pass  # Normal shutdown, don't log
+        except Exception as e:
+            logger.error(f"Background task failed: {e}", exc_info=True)
+
     await monitor.event_logger.start()
     monitor.event_logger.log_system_event("DockMon Backend Starting", "DockMon backend is initializing", EventSeverity.INFO, LogEventType.STARTUP)
 
@@ -149,7 +159,11 @@ async def lifespan(app: FastAPI):
     monitor.maintenance_task = asyncio.create_task(monitor.run_daily_maintenance())
 
     # Check for DockMon updates on startup, then periodically every 6 hours
-    asyncio.create_task(monitor.periodic_jobs.check_dockmon_update_once())
+    # Store task reference and add error callback (Issue #1 fix)
+    monitor.update_check_task = asyncio.create_task(monitor.periodic_jobs.check_dockmon_update_once())
+    monitor.update_check_task.add_done_callback(_handle_task_exception)
+    logger.info("Started DockMon update checker task")
+
     monitor.dockmon_update_task = asyncio.create_task(monitor.periodic_jobs.check_dockmon_updates_periodic())
 
     # Start blackout window monitoring with WebSocket support
@@ -190,8 +204,10 @@ async def lifespan(app: FastAPI):
     # Initialize HTTP health checker
     from health_check.http_checker import HttpHealthChecker
     monitor.http_health_checker = HttpHealthChecker(monitor, monitor.db)
-    asyncio.create_task(monitor.http_health_checker.start())
-    logger.info("HTTP health checker started")
+    # Store task reference and add error callback (Issue #1 fix)
+    monitor.http_health_check_task = asyncio.create_task(monitor.http_health_checker.start())
+    monitor.http_health_check_task.add_done_callback(_handle_task_exception)
+    logger.info("HTTP health checker task started")
 
     # Initialize deployment services (v2.1)
     deployment_executor = DeploymentExecutor(monitor.realtime, monitor, monitor.db)
@@ -225,6 +241,17 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"Error during maintenance task shutdown: {e}")
 
+    # Cancel one-time update check task (Issue #1 fix)
+    if hasattr(monitor, 'update_check_task') and monitor.update_check_task:
+        if not monitor.update_check_task.done():
+            monitor.update_check_task.cancel()
+            try:
+                await monitor.update_check_task
+            except asyncio.CancelledError:
+                logger.info("Update check task cancelled successfully")
+            except Exception as e:
+                logger.error(f"Error during update check task shutdown: {e}")
+
     # Cancel DockMon update checker task
     if hasattr(monitor, 'dockmon_update_task') and monitor.dockmon_update_task:
         monitor.dockmon_update_task.cancel()
@@ -256,6 +283,17 @@ async def lifespan(app: FastAPI):
             logger.info("Alert evaluation service stopped")
     except Exception as e:
         logger.error(f"Error stopping alert evaluation service: {e}")
+
+    # Cancel HTTP health checker task (Issue #1 fix)
+    if hasattr(monitor, 'http_health_check_task') and monitor.http_health_check_task:
+        if not monitor.http_health_check_task.done():
+            monitor.http_health_check_task.cancel()
+            try:
+                await monitor.http_health_check_task
+            except asyncio.CancelledError:
+                logger.info("HTTP health check task cancelled successfully")
+            except Exception as e:
+                logger.error(f"Error during HTTP health check task shutdown: {e}")
 
     # Stop HTTP health checker
     try:

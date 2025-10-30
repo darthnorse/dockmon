@@ -228,76 +228,141 @@ def upgrade() -> None:
     # These provide better data consistency and query performance
     # Defensive checks ensure they work for both fresh installs and upgrades
 
+    logger.info("Starting Change 4b: Adding constraints and indexes...")
+
     # Add status validation constraint to deployments table
-    if table_exists('deployments') and not constraint_exists('deployments', 'ck_deployment_valid_status'):
-        op.create_check_constraint(
-            'ck_deployment_valid_status',
-            'deployments',
-            "status IN ('planning', 'validating', 'pulling_image', 'creating', 'starting', 'running', 'failed', 'rolled_back')"
-        )
+    try:
+        if table_exists('deployments') and not constraint_exists('deployments', 'ck_deployment_valid_status'):
+            logger.info("Adding status validation constraint to deployments...")
+            op.create_check_constraint(
+                'ck_deployment_valid_status',
+                'deployments',
+                "status IN ('planning', 'validating', 'pulling_image', 'creating', 'starting', 'running', 'failed', 'rolled_back')"
+            )
+            logger.info("Status validation constraint added")
+        else:
+            logger.info("Status validation constraint already exists or table missing")
+    except Exception as e:
+        logger.error(f"Failed to add status validation constraint: {e}")
+        raise
 
     # Add composite index for host_id + status (common filter combination)
-    if table_exists('deployments') and not index_exists('deployments', 'idx_deployment_host_status'):
-        op.create_index('idx_deployment_host_status', 'deployments', ['host_id', 'status'])
+    try:
+        if table_exists('deployments') and not index_exists('deployments', 'idx_deployment_host_status'):
+            logger.info("Adding composite index idx_deployment_host_status...")
+            op.create_index('idx_deployment_host_status', 'deployments', ['host_id', 'status'])
+            logger.info("Composite index added")
+        else:
+            logger.info("Composite index idx_deployment_host_status already exists or table missing")
+    except Exception as e:
+        logger.error(f"Failed to add composite index: {e}")
+        raise
 
     # Add unique constraint on deployment_containers to prevent duplicates
+    logger.info("Adding constraints to deployment_containers...")
     if table_exists('deployment_containers'):
-        bind = op.get_bind()
-        inspector = inspect(bind)
-        constraints = {c['name'] for c in inspector.get_unique_constraints('deployment_containers')}
+        try:
+            bind = op.get_bind()
+            inspector = inspect(bind)
+            constraints = {c['name'] for c in inspector.get_unique_constraints('deployment_containers')}
 
-        if 'uq_deployment_container_link' not in constraints:
-            op.create_unique_constraint(
-                'uq_deployment_container_link',
-                'deployment_containers',
-                ['deployment_id', 'container_id']
-            )
+            if 'uq_deployment_container_link' not in constraints:
+                logger.info("Adding unique constraint uq_deployment_container_link...")
+                op.create_unique_constraint(
+                    'uq_deployment_container_link',
+                    'deployment_containers',
+                    ['deployment_id', 'container_id']
+                )
+                logger.info("Unique constraint added")
+            else:
+                logger.info("Unique constraint uq_deployment_container_link already exists")
 
-        # Add composite index for deployment + service_name lookup
-        if not index_exists('deployment_containers', 'idx_deployment_container_deployment_service'):
-            op.create_index(
-                'idx_deployment_container_deployment_service',
-                'deployment_containers',
-                ['deployment_id', 'service_name']
-            )
+            # Add composite index for deployment + service_name lookup
+            if not index_exists('deployment_containers', 'idx_deployment_container_deployment_service'):
+                logger.info("Adding index idx_deployment_container_deployment_service...")
+                op.create_index(
+                    'idx_deployment_container_deployment_service',
+                    'deployment_containers',
+                    ['deployment_id', 'service_name']
+                )
+                logger.info("Index added")
+            else:
+                logger.info("Index idx_deployment_container_deployment_service already exists")
+        except Exception as e:
+            logger.error(f"Failed to add deployment_containers constraints: {e}")
+            raise
 
     # Add constraints and indexes to deployment_metadata
+    logger.info("Adding constraints to deployment_metadata...")
     if table_exists('deployment_metadata'):
-        # Add is_managed check constraint
-        if not constraint_exists('deployment_metadata', 'ck_deployment_metadata_managed'):
-            op.create_check_constraint(
-                'ck_deployment_metadata_managed',
-                'deployment_metadata',
-                "is_managed IN (0, 1)"
-            )
+        try:
+            # Add is_managed check constraint
+            if not constraint_exists('deployment_metadata', 'ck_deployment_metadata_managed'):
+                logger.info("Adding check constraint ck_deployment_metadata_managed...")
+                op.create_check_constraint(
+                    'ck_deployment_metadata_managed',
+                    'deployment_metadata',
+                    "is_managed IN (0, 1)"
+                )
+                logger.info("Check constraint added")
+            else:
+                logger.info("Check constraint ck_deployment_metadata_managed already exists")
 
-        # Add composite index for host + deployment lookup
-        if not index_exists('deployment_metadata', 'idx_deployment_metadata_host_deployment'):
-            op.create_index(
-                'idx_deployment_metadata_host_deployment',
-                'deployment_metadata',
-                ['host_id', 'deployment_id']
-            )
+            # Add composite index for host + deployment lookup
+            if not index_exists('deployment_metadata', 'idx_deployment_metadata_host_deployment'):
+                logger.info("Adding index idx_deployment_metadata_host_deployment...")
+                op.create_index(
+                    'idx_deployment_metadata_host_deployment',
+                    'deployment_metadata',
+                    ['host_id', 'deployment_id']
+                )
+                logger.info("Index added")
+            else:
+                logger.info("Index idx_deployment_metadata_host_deployment already exists")
+        except Exception as e:
+            logger.error(f"Failed to add deployment_metadata constraints: {e}")
+            raise
+
+    logger.info("Change 4b completed successfully")
 
     # Change 5: Add image pruning settings to global_settings
+    logger.info("Starting Change 5: Adding image pruning settings...")
     if table_exists('global_settings'):
         # Add prune_images_enabled column (default: True)
-        if not column_exists('global_settings', 'prune_images_enabled'):
-            op.add_column('global_settings',
-                sa.Column('prune_images_enabled', sa.Boolean(), server_default='1', nullable=False)
-            )
+        try:
+            if not column_exists('global_settings', 'prune_images_enabled'):
+                logger.info("Adding prune_images_enabled column...")
+                op.add_column('global_settings',
+                    sa.Column('prune_images_enabled', sa.Boolean(), server_default='1', nullable=False)
+                )
+                logger.info("prune_images_enabled column added")
+        except Exception as e:
+            logger.error(f"Failed to add prune_images_enabled column: {e}")
+            raise
 
         # Add image_retention_count column (default: 2)
-        if not column_exists('global_settings', 'image_retention_count'):
-            op.add_column('global_settings',
-                sa.Column('image_retention_count', sa.Integer(), server_default='2', nullable=False)
-            )
+        try:
+            if not column_exists('global_settings', 'image_retention_count'):
+                logger.info("Adding image_retention_count column...")
+                op.add_column('global_settings',
+                    sa.Column('image_retention_count', sa.Integer(), server_default='2', nullable=False)
+                )
+                logger.info("image_retention_count column added")
+        except Exception as e:
+            logger.error(f"Failed to add image_retention_count column: {e}")
+            raise
 
         # Add image_prune_grace_hours column (default: 48)
-        if not column_exists('global_settings', 'image_prune_grace_hours'):
-            op.add_column('global_settings',
-                sa.Column('image_prune_grace_hours', sa.Integer(), server_default='48', nullable=False)
-            )
+        try:
+            if not column_exists('global_settings', 'image_prune_grace_hours'):
+                logger.info("Adding image_prune_grace_hours column...")
+                op.add_column('global_settings',
+                    sa.Column('image_prune_grace_hours', sa.Integer(), server_default='48', nullable=False)
+                )
+                logger.info("image_prune_grace_hours column added")
+        except Exception as e:
+            logger.error(f"Failed to add image_prune_grace_hours column: {e}")
+            raise
 
     # Change 6: Update app_version
     if table_exists('global_settings'):

@@ -93,28 +93,10 @@ def constraint_exists(table_name: str, constraint_name: str) -> bool:
 
 def upgrade() -> None:
     """Add v2.1.0 deployment features"""
-    import logging
-    logger = logging.getLogger('alembic.migration')
-
-    logger.info("Starting v2.1.0 migration...")
-
-    # Verify prerequisite tables exist
-    bind = op.get_bind()
-    inspector = inspect(bind)
-    existing_tables = inspector.get_table_names()
-    logger.info(f"Existing tables: {existing_tables}")
-
-    required_tables = ['docker_hosts', 'users', 'global_settings']
-    missing_tables = [t for t in required_tables if t not in existing_tables]
-    if missing_tables:
-        raise RuntimeError(f"Cannot run v2.1.0 migration: Missing required tables: {missing_tables}")
-
-    logger.info("All prerequisite tables exist, proceeding with migration...")
 
     # Change 1: Create deployments table
     # Tracks deployment operations with state machine and progress tracking
     if not table_exists('deployments'):
-        logger.info("Creating deployments table...")
         op.create_table(
             'deployments',
             sa.Column('id', sa.String(), nullable=False),  # Composite: {host_id}:{deployment_short_id}
@@ -140,20 +122,15 @@ def upgrade() -> None:
         )
 
         # Add indexes for performance and authorization
-        logger.info("Creating indexes for deployments table...")
         op.create_index('idx_deployment_user_id', 'deployments', ['user_id'])  # Authorization: filter by user
         op.create_index('idx_deployment_host_id', 'deployments', ['host_id'])
         op.create_index('idx_deployment_status', 'deployments', ['status'])
         op.create_index('idx_deployment_created_at', 'deployments', ['created_at'])
         op.create_index('idx_deployment_user_host', 'deployments', ['user_id', 'host_id'])  # User's deployments on specific host
-        logger.info("Deployments table created successfully")
-    else:
-        logger.info("Deployments table already exists, skipping creation")
 
     # Change 2: Create deployment_containers table
     # Junction table linking deployments to containers (supports stack deployments)
     if not table_exists('deployment_containers'):
-        logger.info("Creating deployment_containers table...")
         op.create_table(
             'deployment_containers',
             sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
@@ -166,14 +143,10 @@ def upgrade() -> None:
         # Add indexes for performance
         op.create_index('idx_deployment_container_deployment', 'deployment_containers', ['deployment_id'])
         op.create_index('idx_deployment_container_container', 'deployment_containers', ['container_id'])
-        logger.info("Deployment_containers table created successfully")
-    else:
-        logger.info("Deployment_containers table already exists, skipping creation")
 
     # Change 3: Create deployment_templates table
     # Reusable deployment templates with variable substitution
     if not table_exists('deployment_templates'):
-        logger.info("Creating deployment_templates table...")
         op.create_table(
             'deployment_templates',
             sa.Column('id', sa.String(), primary_key=True),  # e.g., 'tpl_nginx_001'
@@ -192,14 +165,10 @@ def upgrade() -> None:
         # Add indexes for performance
         op.create_index('idx_deployment_template_name', 'deployment_templates', ['name'])
         op.create_index('idx_deployment_template_category', 'deployment_templates', ['category'])
-        logger.info("Deployment_templates table created successfully")
-    else:
-        logger.info("Deployment_templates table already exists, skipping creation")
 
     # Change 4: Create deployment_metadata table
     # Tracks which containers were created by deployments following existing metadata pattern
     if not table_exists('deployment_metadata'):
-        logger.info("Creating deployment_metadata table...")
         op.create_table(
             'deployment_metadata',
             sa.Column('container_id', sa.Text(), nullable=False),  # Composite: {host_id}:{container_short_id}
@@ -220,124 +189,49 @@ def upgrade() -> None:
         if not index_exists('deployment_metadata', 'idx_deployment_metadata_deployment'):
             op.create_index('idx_deployment_metadata_deployment', 'deployment_metadata', ['deployment_id'])
 
-        logger.info("Deployment_metadata table created successfully")
-    else:
-        logger.info("Deployment_metadata table already exists, skipping creation")
-
-    # Change 4b: Add additional constraints and indexes for data integrity (v2.1.1 enhancements)
-    # These provide better data consistency and query performance
-    # Defensive checks ensure they work for both fresh installs and upgrades
-
-    logger.info("Starting Change 4b: Adding constraints and indexes...")
-
-    # Note: Constraints (CHECK, UNIQUE, etc.) cannot be added to existing tables in SQLite
-    # They must be part of the initial CREATE TABLE statement
-    # For upgrades, we skip them (they're optional validation, not critical for functionality)
-    # For fresh installs, they're included in the CREATE TABLE statements above
-    # Only indexes can be added after table creation in SQLite
-    logger.info("Skipping constraint additions (CHECK, UNIQUE) - not supported in SQLite for existing tables")
+    # Change 4b: Add additional indexes for data integrity
+    # Note: Constraints (CHECK, UNIQUE) cannot be added to existing tables in SQLite
+    # They must be part of CREATE TABLE. For upgrades, we skip them (rely on app validation)
+    # Fresh installs get full constraints in CREATE TABLE statements above
 
     # Add composite index for host_id + status (common filter combination)
-    try:
-        if table_exists('deployments') and not index_exists('deployments', 'idx_deployment_host_status'):
-            logger.info("Adding composite index idx_deployment_host_status...")
-            op.create_index('idx_deployment_host_status', 'deployments', ['host_id', 'status'])
-            logger.info("Composite index added")
-        else:
-            logger.info("Composite index idx_deployment_host_status already exists or table missing")
-    except Exception as e:
-        logger.error(f"Failed to add composite index: {e}")
-        raise
+    if table_exists('deployments') and not index_exists('deployments', 'idx_deployment_host_status'):
+        op.create_index('idx_deployment_host_status', 'deployments', ['host_id', 'status'])
 
-    # Add indexes to deployment_containers (skip UNIQUE constraint - see note above)
-    logger.info("Adding indexes to deployment_containers...")
-    if table_exists('deployment_containers'):
-        try:
-            # Add composite index for deployment + service_name lookup
-            if not index_exists('deployment_containers', 'idx_deployment_container_deployment_service'):
-                logger.info("Adding index idx_deployment_container_deployment_service...")
-                op.create_index(
-                    'idx_deployment_container_deployment_service',
-                    'deployment_containers',
-                    ['deployment_id', 'service_name']
-                )
-                logger.info("Index added")
-            else:
-                logger.info("Index idx_deployment_container_deployment_service already exists")
-        except Exception as e:
-            logger.error(f"Failed to add deployment_containers indexes: {e}")
-            raise
+    # Add composite index for deployment + service_name lookup
+    if table_exists('deployment_containers') and not index_exists('deployment_containers', 'idx_deployment_container_deployment_service'):
+        op.create_index('idx_deployment_container_deployment_service', 'deployment_containers', ['deployment_id', 'service_name'])
 
-    # Add indexes to deployment_metadata (skip CHECK constraints - see note above)
-    logger.info("Adding indexes to deployment_metadata...")
-    if table_exists('deployment_metadata'):
-        try:
-            # Add composite index for host + deployment lookup
-            if not index_exists('deployment_metadata', 'idx_deployment_metadata_host_deployment'):
-                logger.info("Adding index idx_deployment_metadata_host_deployment...")
-                op.create_index(
-                    'idx_deployment_metadata_host_deployment',
-                    'deployment_metadata',
-                    ['host_id', 'deployment_id']
-                )
-                logger.info("Index added")
-            else:
-                logger.info("Index idx_deployment_metadata_host_deployment already exists")
-        except Exception as e:
-            logger.error(f"Failed to add deployment_metadata indexes: {e}")
-            raise
-
-    logger.info("Change 4b completed successfully")
+    # Add composite index for host + deployment lookup
+    if table_exists('deployment_metadata') and not index_exists('deployment_metadata', 'idx_deployment_metadata_host_deployment'):
+        op.create_index('idx_deployment_metadata_host_deployment', 'deployment_metadata', ['host_id', 'deployment_id'])
 
     # Change 5: Add image pruning settings to global_settings
-    logger.info("Starting Change 5: Adding image pruning settings...")
     if table_exists('global_settings'):
         # Add prune_images_enabled column (default: True)
-        try:
-            if not column_exists('global_settings', 'prune_images_enabled'):
-                logger.info("Adding prune_images_enabled column...")
-                op.add_column('global_settings',
-                    sa.Column('prune_images_enabled', sa.Boolean(), server_default='1', nullable=False)
-                )
-                logger.info("prune_images_enabled column added")
-        except Exception as e:
-            logger.error(f"Failed to add prune_images_enabled column: {e}")
-            raise
+        if not column_exists('global_settings', 'prune_images_enabled'):
+            op.add_column('global_settings',
+                sa.Column('prune_images_enabled', sa.Boolean(), server_default='1', nullable=False)
+            )
 
         # Add image_retention_count column (default: 2)
-        try:
-            if not column_exists('global_settings', 'image_retention_count'):
-                logger.info("Adding image_retention_count column...")
-                op.add_column('global_settings',
-                    sa.Column('image_retention_count', sa.Integer(), server_default='2', nullable=False)
-                )
-                logger.info("image_retention_count column added")
-        except Exception as e:
-            logger.error(f"Failed to add image_retention_count column: {e}")
-            raise
+        if not column_exists('global_settings', 'image_retention_count'):
+            op.add_column('global_settings',
+                sa.Column('image_retention_count', sa.Integer(), server_default='2', nullable=False)
+            )
 
         # Add image_prune_grace_hours column (default: 48)
-        try:
-            if not column_exists('global_settings', 'image_prune_grace_hours'):
-                logger.info("Adding image_prune_grace_hours column...")
-                op.add_column('global_settings',
-                    sa.Column('image_prune_grace_hours', sa.Integer(), server_default='48', nullable=False)
-                )
-                logger.info("image_prune_grace_hours column added")
-        except Exception as e:
-            logger.error(f"Failed to add image_prune_grace_hours column: {e}")
-            raise
+        if not column_exists('global_settings', 'image_prune_grace_hours'):
+            op.add_column('global_settings',
+                sa.Column('image_prune_grace_hours', sa.Integer(), server_default='48', nullable=False)
+            )
 
     # Change 6: Update app_version
     if table_exists('global_settings'):
-        logger.info("Updating app_version to 2.1.0...")
         op.execute(
             sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
             .bindparams(version='2.1.0', id=1)
         )
-        logger.info("App version updated successfully")
-
-    logger.info("v2.1.0 migration completed successfully!")
 
 
 def downgrade() -> None:

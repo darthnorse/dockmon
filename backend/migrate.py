@@ -435,17 +435,10 @@ def _handle_upgrade(engine, alembic_cfg, db_path: str) -> bool:
         # Run migrations
         logger.info("Applying migrations...")
         try:
-            # Wrap in explicit transaction to catch rollbacks
-            import sys
-            logger.info(f"Python version: {sys.version}")
-            logger.info(f"Starting Alembic upgrade from {current_version} to {head_version}")
-
             command.upgrade(alembic_cfg, "head")
 
-            # Verify the version was actually updated
+            # Verify the version was actually updated (catches silent rollbacks)
             final_version = _get_current_version(engine)
-            logger.info(f"After upgrade, database version: {final_version}")
-
             if final_version != head_version:
                 raise RuntimeError(
                     f"Migration appeared to succeed but version not updated! "
@@ -453,15 +446,10 @@ def _handle_upgrade(engine, alembic_cfg, db_path: str) -> bool:
                     f"This usually means the migration rolled back due to a constraint violation or error."
                 )
 
-            logger.info("Migrations completed successfully")
-
             # Validate schema
-            logger.info("Validating schema...")
             _validate_schema(engine, head_version)
-            logger.info("Schema validation passed")
 
             # Clean up V1 alert tables (legacy cleanup)
-            logger.info("Cleaning up legacy tables...")
             _cleanup_v1_tables(engine)
 
             # Clean up backup on success
@@ -472,20 +460,13 @@ def _handle_upgrade(engine, alembic_cfg, db_path: str) -> bool:
                 logger.warning(f"Could not remove backup: {e}")
                 logger.info(f"Manual cleanup: rm {backup_path}")
 
+            logger.info("Migrations completed successfully")
             return True
 
         except Exception as e:
             logger.error(f"Migration failed: {e}", exc_info=True)
             logger.error(f"Backup preserved at: {backup_path}")
             logger.error(f"To restore: docker cp {backup_path} dockmon:/app/data/dockmon.db")
-
-            # Try to get more details about what failed
-            try:
-                final_version = _get_current_version(engine)
-                logger.error(f"Database version after failure: {final_version}")
-            except:
-                pass
-
             return False
 
     except Exception as e:

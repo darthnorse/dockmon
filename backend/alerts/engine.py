@@ -359,8 +359,11 @@ class AlertEngine:
 
         if rule.kind == "update_completed":
             # Container update completed successfully
-            # Update events are logged as ACTION_TAKEN
-            return event_type == "action_taken" and context.scope_type == "container"
+            # Update events are logged as ACTION_TAKEN with update_completed flag
+            return (event_type == "action_taken" and
+                    context.scope_type == "container" and
+                    event_data and
+                    event_data.get("update_completed") == True)
 
         if rule.kind == "update_available":
             # New update detected for container

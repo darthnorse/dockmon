@@ -281,6 +281,8 @@ class EventBus:
                 event_data['update_detected'] = True
             elif event.event_type == EventType.UPDATE_FAILED:
                 event_data['update_failure'] = True
+            elif event.event_type == EventType.UPDATE_COMPLETED:
+                event_data['update_completed'] = True
 
             # Call alert evaluation service based on scope
             if event.scope_type == 'container':

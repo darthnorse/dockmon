@@ -259,8 +259,10 @@ class DeploymentExecutor:
                         raise ValueError(f"Unknown deployment_type: {deployment.deployment_type}")
 
                     # Success - transition to running (terminal state)
-                    # Re-fetch deployment from database
+                    # Re-fetch deployment from database (expire first to get fresh state)
                     deployment = session.query(Deployment).filter_by(id=deployment_id).first()
+                    session.expire(deployment)  # Force refresh from database
+                    session.refresh(deployment)  # Reload current state
                     self.state_machine.transition(deployment, 'running')
                     await self._update_progress(session, deployment, 100, 'Deployment completed - container running')
                     session.commit()
@@ -274,6 +276,8 @@ class DeploymentExecutor:
 
                 # Mark as failed with timeout message
                 deployment = session.query(Deployment).filter_by(id=deployment_id).first()
+                session.expire(deployment)  # Force refresh from database
+                session.refresh(deployment)  # Reload current state
                 self.state_machine.transition(deployment, 'failed')
                 deployment.error_message = "Deployment timed out after 30 minutes"
                 session.commit()
@@ -292,7 +296,10 @@ class DeploymentExecutor:
             except Exception as e:
                 logger.error(f"Deployment {deployment_id} failed: {e}", exc_info=True)
 
-                # Mark as failed
+                # Mark as failed (refresh deployment state first)
+                deployment = session.query(Deployment).filter_by(id=deployment_id).first()
+                session.expire(deployment)  # Force refresh from database
+                session.refresh(deployment)  # Reload current state
                 self.state_machine.transition(deployment, 'failed')
                 deployment.error_message = str(e)
                 session.commit()

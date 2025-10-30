@@ -307,9 +307,10 @@ class EventLogger:
                     key=lambda x: x[1]
                 )
 
-                # Calculate how many to remove
+                # Calculate how many to remove (excess + 50% headroom to avoid frequent cleanup)
                 excess = len(self._active_correlations) - self.MAX_CORRELATIONS
-                to_remove_count = min(excess + 100, len(sorted_correlations))  # Remove extra 100 for headroom
+                headroom = min(50, excess)  # Add up to 50 entries headroom
+                to_remove_count = min(excess + headroom, len(sorted_correlations))
 
                 # Remove oldest entries
                 to_remove = sorted_correlations[:to_remove_count]

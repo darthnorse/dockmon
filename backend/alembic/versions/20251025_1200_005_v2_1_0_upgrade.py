@@ -230,11 +230,12 @@ def upgrade() -> None:
 
     logger.info("Starting Change 4b: Adding constraints and indexes...")
 
-    # Note: CHECK constraints cannot be added to existing tables in SQLite
+    # Note: Constraints (CHECK, UNIQUE, etc.) cannot be added to existing tables in SQLite
     # They must be part of the initial CREATE TABLE statement
     # For upgrades, we skip them (they're optional validation, not critical for functionality)
     # For fresh installs, they're included in the CREATE TABLE statements above
-    logger.info("Skipping CHECK constraint additions (not supported in SQLite for existing tables)")
+    # Only indexes can be added after table creation in SQLite
+    logger.info("Skipping constraint additions (CHECK, UNIQUE) - not supported in SQLite for existing tables")
 
     # Add composite index for host_id + status (common filter combination)
     try:
@@ -248,25 +249,10 @@ def upgrade() -> None:
         logger.error(f"Failed to add composite index: {e}")
         raise
 
-    # Add unique constraint on deployment_containers to prevent duplicates
-    logger.info("Adding constraints to deployment_containers...")
+    # Add indexes to deployment_containers (skip UNIQUE constraint - see note above)
+    logger.info("Adding indexes to deployment_containers...")
     if table_exists('deployment_containers'):
         try:
-            bind = op.get_bind()
-            inspector = inspect(bind)
-            constraints = {c['name'] for c in inspector.get_unique_constraints('deployment_containers')}
-
-            if 'uq_deployment_container_link' not in constraints:
-                logger.info("Adding unique constraint uq_deployment_container_link...")
-                op.create_unique_constraint(
-                    'uq_deployment_container_link',
-                    'deployment_containers',
-                    ['deployment_id', 'container_id']
-                )
-                logger.info("Unique constraint added")
-            else:
-                logger.info("Unique constraint uq_deployment_container_link already exists")
-
             # Add composite index for deployment + service_name lookup
             if not index_exists('deployment_containers', 'idx_deployment_container_deployment_service'):
                 logger.info("Adding index idx_deployment_container_deployment_service...")
@@ -279,7 +265,7 @@ def upgrade() -> None:
             else:
                 logger.info("Index idx_deployment_container_deployment_service already exists")
         except Exception as e:
-            logger.error(f"Failed to add deployment_containers constraints: {e}")
+            logger.error(f"Failed to add deployment_containers indexes: {e}")
             raise
 
     # Add indexes to deployment_metadata (skip CHECK constraints - see note above)
@@ -396,14 +382,9 @@ def downgrade() -> None:
         op.drop_table('deployment_templates')
 
     if table_exists('deployment_containers'):
-        # Drop indexes and constraints in reverse order
+        # Drop indexes (skip UNIQUE constraint - it was never added in upgrade due to SQLite limitation)
         if index_exists('deployment_containers', 'idx_deployment_container_deployment_service'):
             op.drop_index('idx_deployment_container_deployment_service', 'deployment_containers')
-        bind = op.get_bind()
-        inspector = inspect(bind)
-        constraints = {c['name'] for c in inspector.get_unique_constraints('deployment_containers')}
-        if 'uq_deployment_container_link' in constraints:
-            op.drop_constraint('uq_deployment_container_link', 'deployment_containers', type_='unique')
         if index_exists('deployment_containers', 'idx_deployment_container_container'):
             op.drop_index('idx_deployment_container_container', 'deployment_containers')
         if index_exists('deployment_containers', 'idx_deployment_container_deployment'):

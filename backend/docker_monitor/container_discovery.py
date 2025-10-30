@@ -479,6 +479,12 @@ class ContainerDiscovery:
                     logger.warning(f"Skipping container {dc.name if hasattr(dc, 'name') else 'unknown'} on {host.name} due to error: {container_error}")
                     continue
 
+        except docker.errors.NotFound as e:
+            # Container was deleted between list() and attribute access - this is normal during bulk deletions
+            logger.debug(f"Container not found on {host.name} (likely deleted during discovery): {e}")
+            # Don't mark host as offline for missing containers
+            return containers
+
         except Exception as e:
             logger.error(f"Error getting containers from {host.name}: {e}")
 

@@ -244,28 +244,50 @@ class DeploymentExecutor:
             session.commit()
 
             try:
-                # Parse definition
-                definition = json.loads(deployment.definition)
+                # 30-minute timeout for entire deployment to prevent stuck operations
+                async with asyncio.timeout(1800):  # 1800 seconds = 30 minutes
+                    # Parse definition
+                    definition = json.loads(deployment.definition)
 
-                if deployment.deployment_type == 'container':
-                    # Definition is the container config directly (no 'container' wrapper)
-                    # ISSUE #4 FIX: Pass deployment_id instead of session
-                    await self._execute_container_deployment(deployment_id, definition)
-                elif deployment.deployment_type == 'stack':
-                    await self._execute_stack_deployment(session, deployment, definition)
-                else:
-                    raise ValueError(f"Unknown deployment_type: {deployment.deployment_type}")
+                    if deployment.deployment_type == 'container':
+                        # Definition is the container config directly (no 'container' wrapper)
+                        # ISSUE #4 FIX: Pass deployment_id instead of session
+                        await self._execute_container_deployment(deployment_id, definition)
+                    elif deployment.deployment_type == 'stack':
+                        await self._execute_stack_deployment(session, deployment, definition)
+                    else:
+                        raise ValueError(f"Unknown deployment_type: {deployment.deployment_type}")
 
-                # Success - transition to running (terminal state)
-                # Re-fetch deployment from database
+                    # Success - transition to running (terminal state)
+                    # Re-fetch deployment from database
+                    deployment = session.query(Deployment).filter_by(id=deployment_id).first()
+                    self.state_machine.transition(deployment, 'running')
+                    await self._update_progress(session, deployment, 100, 'Deployment completed - container running')
+                    session.commit()
+
+                    logger.info(f"Deployment {deployment_id} completed successfully - container running")
+                    await self._emit_deployment_event(deployment, 'DEPLOYMENT_COMPLETED')
+                    return True
+
+            except asyncio.TimeoutError:
+                logger.error(f"Deployment {deployment_id} timed out after 30 minutes")
+
+                # Mark as failed with timeout message
                 deployment = session.query(Deployment).filter_by(id=deployment_id).first()
-                self.state_machine.transition(deployment, 'running')
-                await self._update_progress(session, deployment, 100, 'Deployment completed - container running')
+                self.state_machine.transition(deployment, 'failed')
+                deployment.error_message = "Deployment timed out after 30 minutes"
                 session.commit()
 
-                logger.info(f"Deployment {deployment_id} completed successfully - container running")
-                await self._emit_deployment_event(deployment, 'DEPLOYMENT_COMPLETED')
-                return True
+                await self._emit_deployment_event(deployment, 'DEPLOYMENT_FAILED')
+
+                # Check if rollback needed
+                if self.state_machine.should_rollback(deployment):
+                    logger.info(f"Rolling back deployment {deployment_id} after timeout")
+                    await self._rollback_deployment(session, deployment)
+                else:
+                    logger.info(f"Rollback not needed for deployment {deployment_id} (committed={deployment.committed})")
+
+                return False
 
             except Exception as e:
                 logger.error(f"Deployment {deployment_id} failed: {e}", exc_info=True)

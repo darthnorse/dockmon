@@ -249,13 +249,16 @@ class DeploymentExecutor:
 
                 if deployment.deployment_type == 'container':
                     # Definition is the container config directly (no 'container' wrapper)
-                    await self._execute_container_deployment(session, deployment, definition)
+                    # ISSUE #4 FIX: Pass deployment_id instead of session
+                    await self._execute_container_deployment(deployment_id, definition)
                 elif deployment.deployment_type == 'stack':
                     await self._execute_stack_deployment(session, deployment, definition)
                 else:
                     raise ValueError(f"Unknown deployment_type: {deployment.deployment_type}")
 
                 # Success - transition to running (terminal state)
+                # Re-fetch deployment from database
+                deployment = session.query(Deployment).filter_by(id=deployment_id).first()
                 self.state_machine.transition(deployment, 'running')
                 await self._update_progress(session, deployment, 100, 'Deployment completed - container running')
                 session.commit()
@@ -285,43 +288,52 @@ class DeploymentExecutor:
 
     async def _execute_container_deployment(
         self,
-        session: Session,
-        deployment: Deployment,
+        deployment_id: str,
         definition: Dict[str, Any]
     ) -> None:
         """
         Execute single container deployment with granular state transitions.
 
         State flow: validating → pulling_image → creating → starting → running
+
+        ISSUE #4 FIX: Database sessions are opened only for updates, then closed
+        before long-running async operations (image pull, health checks).
+        This prevents connection pool exhaustion during concurrent deployments.
         """
-        host_id = deployment.host_id
+        # Extract data needed for deployment (no session held)
+        with self.db.get_session() as session:
+            deployment = session.query(Deployment).filter_by(id=deployment_id).first()
+            if not deployment:
+                raise ValueError(f"Deployment {deployment_id} not found")
+            host_id = deployment.host_id
+            # session auto-closes here
 
         # Get HostConnector abstraction (v2.1: DirectDockerConnector, v2.2: AgentRPCConnector)
         connector = get_host_connector(host_id, self.docker_monitor)
 
         # STATE: pulling_image
         # Transition to pulling_image before image pull (10-50%)
-        self.state_machine.transition(deployment, 'pulling_image')
-        session.commit()
+        # ISSUE #4 FIX: Use helper that opens/closes session immediately
+        await self._transition_and_update(deployment_id, 'pulling_image', 10, 'Starting image pull')
 
         image = definition.get('image')
         if not image:
             raise ValueError("Container definition missing 'image' field")
 
-        await self._update_progress(session, deployment, 10, f'Pulling image {image}')
-        session.commit()
+        await self._transition_and_update(deployment_id, None, 10, f'Pulling image {image}')
 
         # Pull image via connector with layer-by-layer progress tracking
+        # ISSUE #4 FIX: No session held during image pull (can take 30+ seconds)
         # Passing deployment.id enables real-time WebSocket progress events
-        await connector.pull_image(image, deployment_id=deployment.id)
-        logger.info(f"Pulled image {image} for deployment {deployment.id}")
+        await connector.pull_image(image, deployment_id=deployment_id)
+        logger.info(f"Pulled image {image} for deployment {deployment_id}")
 
         # Stage 2: Create container (50-70%)
-        await self._update_progress(session, deployment, 50, 'Preparing resources')
-        session.commit()
+        await self._transition_and_update(deployment_id, None, 50, 'Preparing resources')
 
         # Validate networks exist, fallback to 'bridge' if missing
         # Spec Section 9.5: Pre-deployment validation warns user, falls back to 'bridge'
+        # ISSUE #4 FIX: No session held during network validation
         if 'networks' in definition and definition['networks']:
             networks = definition['networks']
             if isinstance(networks, list):
@@ -338,7 +350,7 @@ class DeploymentExecutor:
                     else:
                         # Spec Section 9.5: Fallback to 'bridge', log warning
                         logger.warning(
-                            f"Network '{network_name}' not found on host {deployment.host_id}, "
+                            f"Network '{network_name}' not found on host {host_id}, "
                             f"using 'bridge' instead. Create the network manually if needed."
                         )
                         validated_networks.append('bridge')
@@ -347,6 +359,7 @@ class DeploymentExecutor:
                 definition['networks'] = validated_networks
 
         # Ensure named volumes exist (auto-create if needed)
+        # ISSUE #4 FIX: No session held during volume operations
         if 'volumes' in definition and definition['volumes']:
             volumes = definition['volumes']
             if isinstance(volumes, list):
@@ -370,9 +383,7 @@ class DeploymentExecutor:
 
         # STATE: creating
         # Transition to creating before container creation (50-70%)
-        self.state_machine.transition(deployment, 'creating')
-        await self._update_progress(session, deployment, 55, 'Creating container')
-        session.commit()
+        await self._transition_and_update(deployment_id, 'creating', 55, 'Creating container')
 
         # Build container create args
         create_args = self._build_container_create_args(definition)
@@ -384,57 +395,63 @@ class DeploymentExecutor:
         labels = {
             **user_labels,
             "dockmon.deployed_by": "deployment",
-            "dockmon.deployment_id": deployment.id
+            "dockmon.deployment_id": deployment_id
         }
 
         # Create container via connector (returns SHORT ID - 12 chars)
+        # ISSUE #4 FIX: No session held during container creation
         container_id = await connector.create_container(create_args, labels)
 
-        logger.info(f"Created container {container_id} for deployment {deployment.id}")
+        logger.info(f"Created container {container_id} for deployment {deployment_id}")
 
         # CRITICAL: All three operations must be in ONE transaction to prevent inconsistent state
         # If crash occurs between transactions, database becomes inconsistent with Docker state
+        # ISSUE #4 FIX: Open session only for this atomic commit, then close immediately
+        with self.db.get_session() as session:
+            deployment = session.query(Deployment).filter_by(id=deployment_id).first()
+            if not deployment:
+                raise ValueError(f"Deployment {deployment_id} not found for commitment")
 
-        # COMMITMENT POINT - container created in Docker
-        self.state_machine.mark_committed(deployment)
+            # COMMITMENT POINT - container created in Docker
+            self.state_machine.mark_committed(deployment)
 
-        # Link deployment to container
-        link = DeploymentContainer(
-            deployment_id=deployment.id,
-            container_id=container_id,
-            service_name=None,  # NULL for single containers
-            created_at=datetime.now(timezone.utc)
-        )
-        session.add(link)
+            # Link deployment to container
+            link = DeploymentContainer(
+                deployment_id=deployment_id,
+                container_id=container_id,
+                service_name=None,  # NULL for single containers
+                created_at=datetime.now(timezone.utc)
+            )
+            session.add(link)
 
-        # Create deployment metadata (v2.1.1 - Phase 1.3)
-        # Tracks deployment ownership for containers
-        self._create_deployment_metadata(
-            session=session,
-            deployment_id=deployment.id,
-            host_id=deployment.host_id,
-            container_short_id=container_id,  # Already SHORT ID (12 chars)
-            service_name=None  # Single container (not stack)
-        )
+            # Create deployment metadata (v2.1.1 - Phase 1.3)
+            # Tracks deployment ownership for containers
+            self._create_deployment_metadata(
+                session=session,
+                deployment_id=deployment_id,
+                host_id=host_id,
+                container_short_id=container_id,  # Already SHORT ID (12 chars)
+                service_name=None  # Single container (not stack)
+            )
 
-        # SINGLE COMMIT - ensures all database changes happen atomically
-        # If commit fails, entire transaction rolls back (Docker container remains untracked)
-        # If commit succeeds, deployment is committed AND linked
-        session.commit()
+            # SINGLE COMMIT - ensures all database changes happen atomically
+            # If commit fails, entire transaction rolls back (Docker container remains untracked)
+            # If commit succeeds, deployment is committed AND linked
+            session.commit()
+            # Session auto-closes here
 
         # STATE: starting
         # Transition to starting before starting container (70-100%)
-        self.state_machine.transition(deployment, 'starting')
-        await self._update_progress(session, deployment, 70, 'Starting container')
-        session.commit()
+        await self._transition_and_update(deployment_id, 'starting', 70, 'Starting container')
 
+        # ISSUE #4 FIX: No session held during container start
         await connector.start_container(container_id)
-        logger.info(f"Started container {container_id} for deployment {deployment.id}")
+        logger.info(f"Started container {container_id} for deployment {deployment_id}")
 
-        await self._update_progress(session, deployment, 90, 'Verifying container is running')
-        session.commit()
+        await self._transition_and_update(deployment_id, None, 90, 'Verifying container is running')
 
         # Get container status (returns string like "running", "exited", etc.)
+        # ISSUE #4 FIX: No session held during status check
         status_str = await connector.get_container_status(container_id)
         is_running = status_str == 'running'
 
@@ -453,21 +470,23 @@ class DeploymentExecutor:
         # Stage 4: Wait for health check (90-100%)
         # Get configured timeout from settings
         health_check_timeout = 60  # Default
-        settings = session.query(GlobalSettings).first()
-        if settings:
-            health_check_timeout = settings.health_check_timeout_seconds
+        with self.db.get_session() as session:
+            settings = session.query(GlobalSettings).first()
+            if settings:
+                health_check_timeout = settings.health_check_timeout_seconds
+            # Session auto-closes here
 
-        await self._update_progress(session, deployment, 95, 'Waiting for health check')
-        session.commit()
+        await self._transition_and_update(deployment_id, None, 95, 'Waiting for health check')
 
         logger.info(f"Waiting for health check (timeout: {health_check_timeout}s)")
+        # ISSUE #4 FIX: No session held during health check (can take 60+ seconds)
         is_healthy = await connector.verify_container_running(
             container_id,
             max_wait_seconds=health_check_timeout
         )
 
         if not is_healthy:
-            logger.error(f"Health check failed for deployment {deployment.id}")
+            logger.error(f"Health check failed for deployment {deployment_id}")
             # Cleanup: stop and remove failed container
             try:
                 await connector.stop_container(container_id, timeout=10)
@@ -477,18 +496,20 @@ class DeploymentExecutor:
 
             # Mark deployment as failed using state machine (validates transition, sets completed_at)
             # Set progress to 100% to indicate the process is complete (failure is terminal)
-            await self._update_progress(session, deployment, 100, 'Health check failed')
-            self.state_machine.transition(deployment, 'failed')
-            deployment.error_message = f"Container health check failed after {health_check_timeout}s"
-            session.commit()
+            with self.db.get_session() as session:
+                deployment = session.query(Deployment).filter_by(id=deployment_id).first()
+                if deployment:
+                    await self._update_progress(session, deployment, 100, 'Health check failed')
+                    self.state_machine.transition(deployment, 'failed')
+                    deployment.error_message = f"Container health check failed after {health_check_timeout}s"
+                    session.commit()
 
             raise RuntimeError(f"Deployment failed: health check timeout after {health_check_timeout}s")
 
         # Health check passed
         logger.info(f"Container {container_id} is healthy")
-        await self._update_progress(session, deployment, 100, 'Deployment completed')
+        await self._transition_and_update(deployment_id, None, 100, 'Deployment completed')
         # Note: state transition to 'running' (terminal state) happens in execute_deployment() after this returns
-        session.commit()
 
     async def _execute_stack_deployment(
         self,
@@ -943,6 +964,51 @@ class DeploymentExecutor:
 
         await self._emit_deployment_event(deployment, 'DEPLOYMENT_ROLLED_BACK')
 
+    async def _transition_and_update(
+        self,
+        deployment_id: str,
+        new_state: Optional[str],
+        progress_percent: int,
+        stage: str
+    ) -> None:
+        """
+        Helper for Issue #4 fix: Update deployment state/progress with short-lived session.
+
+        Opens session, updates deployment, commits, and closes session immediately.
+        Use this instead of holding session across async operations.
+
+        Args:
+            deployment_id: Deployment composite key
+            new_state: New state to transition to (or None to skip state change)
+            progress_percent: Progress percentage (0-100)
+            stage: Progress stage description
+        """
+        with self.db.get_session() as session:
+            deployment = session.query(Deployment).filter_by(id=deployment_id).first()
+            if not deployment:
+                logger.error(f"Deployment {deployment_id} not found for state update")
+                return
+
+            # Transition state if requested
+            if new_state:
+                if not self.state_machine.transition(deployment, new_state):
+                    logger.warning(
+                        f"Invalid state transition for {deployment_id}: "
+                        f"{deployment.status} -> {new_state}"
+                    )
+
+            # Update progress
+            deployment.progress_percent = progress_percent
+            deployment.current_stage = stage
+            deployment.updated_at = datetime.now(timezone.utc)
+
+            session.commit()
+
+            logger.debug(f"Deployment {deployment_id}: {progress_percent}% - {stage}")
+
+            # Emit progress event
+            await self._emit_deployment_event(deployment, 'DEPLOYMENT_PROGRESS')
+
     async def _update_progress(
         self,
         session: Session,
@@ -1058,6 +1124,21 @@ class DeploymentExecutor:
         return metadata
 
     # ========== Network and Volume Helpers ==========
+
+    def _is_named_volume(self, path: str) -> bool:
+        """
+        Check if volume is a named volume (not a bind mount).
+
+        Named volumes: 'my_volume', 'db_data'
+        Bind mounts: '/host/path', './relative/path', '../parent/path'
+
+        Args:
+            path: Volume source path
+
+        Returns:
+            True if named volume, False if bind mount
+        """
+        return not (path.startswith('/') or path.startswith('.'))
 
     # Network and volume helper methods removed - volumes are now created directly via connector.create_volume()
     # Networks fallback to 'bridge' network if requested network doesn't exist (per spec Section 9.5)

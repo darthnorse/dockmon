@@ -531,12 +531,21 @@ class UpdateExecutor:
                         "last_seen_at": datetime.now(timezone.utc)
                     })
 
-                    session.commit()
-                    update_committed = True  # Mark update as committed
-                    logger.debug(
-                        f"Updated database records from {old_composite_key} to {new_composite_key}: "
-                        f"ContainerUpdate, AutoRestartConfig, ContainerDesiredState, ContainerHttpHealthCheck, DeploymentMetadata, TagAssignment"
-                    )
+                    # Set commit flag BEFORE commit to prevent race condition (Issue #6 fix)
+                    # If exception occurs after commit but before flag setting, rollback would incorrectly execute
+                    update_committed = True
+
+                    try:
+                        session.commit()
+                        logger.debug(
+                            f"Updated database records from {old_composite_key} to {new_composite_key}: "
+                            f"ContainerUpdate, AutoRestartConfig, ContainerDesiredState, ContainerHttpHealthCheck, DeploymentMetadata, TagAssignment"
+                        )
+                    except Exception as commit_error:
+                        # Clear flag if commit failed - rollback should execute
+                        update_committed = False
+                        logger.error(f"Database commit failed for {container_name}: {commit_error}", exc_info=True)
+                        raise  # Re-raise to trigger rollback in outer exception handler
 
             # Notify frontend that container ID changed (keeps modal open during updates)
             await self._broadcast_container_recreated(

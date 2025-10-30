@@ -331,7 +331,7 @@ class BatchJobManager:
                 tags_to_add = tags if action == 'add-tags' else []
                 tags_to_remove = tags if action == 'remove-tags' else []
 
-                result = self.monitor.update_container_tags(
+                result = await self.monitor.update_container_tags(
                     host_id,
                     short_id,
                     container_name,

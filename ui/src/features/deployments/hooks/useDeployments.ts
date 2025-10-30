@@ -167,7 +167,7 @@ export function useUpdateDeployment() {
     }) => {
       const body: any = { definition }
       if (name) body.name = name
-      if (type) body.type = type
+      if (type) body.deployment_type = type
       if (host_id) body.host_id = host_id
 
       const response = await fetch(`${API_BASE}/deployments/${deploymentId}`, {

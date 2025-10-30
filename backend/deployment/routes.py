@@ -16,9 +16,10 @@ from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from database import Deployment, DeploymentTemplate, DatabaseManager, GlobalSettings
+from database import Deployment, DeploymentTemplate, DatabaseManager, GlobalSettings, DeploymentMetadata
 from deployment import DeploymentExecutor, TemplateManager, SecurityException, SecurityValidator
 from auth.v2_routes import get_current_user
+from utils.keys import parse_composite_key
 
 logger = logging.getLogger(__name__)
 
@@ -342,7 +343,6 @@ async def update_deployment(
     """
     try:
         db = get_database_manager()
-        security_validator = SecurityValidator()
 
         with db.get_session() as session:
             # Fetch deployment (with authorization check)
@@ -692,9 +692,6 @@ async def render_template(
 
 def _deployment_to_response(deployment: Deployment) -> DeploymentResponse:
     """Convert deployment model to response."""
-    from database import DeploymentMetadata
-    from utils.keys import parse_composite_key
-
     # Get current container IDs from deployment_metadata
     # These are kept up-to-date when containers are recreated during updates
     container_ids = []

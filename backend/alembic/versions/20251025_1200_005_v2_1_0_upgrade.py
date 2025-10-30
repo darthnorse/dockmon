@@ -230,21 +230,11 @@ def upgrade() -> None:
 
     logger.info("Starting Change 4b: Adding constraints and indexes...")
 
-    # Add status validation constraint to deployments table
-    try:
-        if table_exists('deployments') and not constraint_exists('deployments', 'ck_deployment_valid_status'):
-            logger.info("Adding status validation constraint to deployments...")
-            op.create_check_constraint(
-                'ck_deployment_valid_status',
-                'deployments',
-                "status IN ('planning', 'validating', 'pulling_image', 'creating', 'starting', 'running', 'failed', 'rolled_back')"
-            )
-            logger.info("Status validation constraint added")
-        else:
-            logger.info("Status validation constraint already exists or table missing")
-    except Exception as e:
-        logger.error(f"Failed to add status validation constraint: {e}")
-        raise
+    # Note: CHECK constraints cannot be added to existing tables in SQLite
+    # They must be part of the initial CREATE TABLE statement
+    # For upgrades, we skip them (they're optional validation, not critical for functionality)
+    # For fresh installs, they're included in the CREATE TABLE statements above
+    logger.info("Skipping CHECK constraint additions (not supported in SQLite for existing tables)")
 
     # Add composite index for host_id + status (common filter combination)
     try:
@@ -292,22 +282,10 @@ def upgrade() -> None:
             logger.error(f"Failed to add deployment_containers constraints: {e}")
             raise
 
-    # Add constraints and indexes to deployment_metadata
-    logger.info("Adding constraints to deployment_metadata...")
+    # Add indexes to deployment_metadata (skip CHECK constraints - see note above)
+    logger.info("Adding indexes to deployment_metadata...")
     if table_exists('deployment_metadata'):
         try:
-            # Add is_managed check constraint
-            if not constraint_exists('deployment_metadata', 'ck_deployment_metadata_managed'):
-                logger.info("Adding check constraint ck_deployment_metadata_managed...")
-                op.create_check_constraint(
-                    'ck_deployment_metadata_managed',
-                    'deployment_metadata',
-                    "is_managed IN (0, 1)"
-                )
-                logger.info("Check constraint added")
-            else:
-                logger.info("Check constraint ck_deployment_metadata_managed already exists")
-
             # Add composite index for host + deployment lookup
             if not index_exists('deployment_metadata', 'idx_deployment_metadata_host_deployment'):
                 logger.info("Adding index idx_deployment_metadata_host_deployment...")
@@ -320,7 +298,7 @@ def upgrade() -> None:
             else:
                 logger.info("Index idx_deployment_metadata_host_deployment already exists")
         except Exception as e:
-            logger.error(f"Failed to add deployment_metadata constraints: {e}")
+            logger.error(f"Failed to add deployment_metadata indexes: {e}")
             raise
 
     logger.info("Change 4b completed successfully")
@@ -398,11 +376,9 @@ def downgrade() -> None:
 
     # Drop tables in reverse dependency order
     if table_exists('deployment_metadata'):
-        # Drop indexes and constraints in reverse order
+        # Drop indexes (skip CHECK constraints - they were never added in upgrade due to SQLite limitation)
         if index_exists('deployment_metadata', 'idx_deployment_metadata_host_deployment'):
             op.drop_index('idx_deployment_metadata_host_deployment', 'deployment_metadata')
-        if constraint_exists('deployment_metadata', 'ck_deployment_metadata_managed'):
-            op.drop_constraint('ck_deployment_metadata_managed', 'deployment_metadata', type_='check')
         if index_exists('deployment_metadata', 'idx_deployment_metadata_deployment'):
             op.drop_index('idx_deployment_metadata_deployment', 'deployment_metadata')
         if index_exists('deployment_metadata', 'idx_deployment_metadata_host'):
@@ -436,13 +412,11 @@ def downgrade() -> None:
         op.drop_table('deployment_containers')
 
     if table_exists('deployments'):
-        # Drop indexes and constraints in reverse order
+        # Drop indexes (skip CHECK constraint - it was never added in upgrade due to SQLite limitation)
         if index_exists('deployments', 'idx_deployment_user_host'):
             op.drop_index('idx_deployment_user_host', 'deployments')
         if index_exists('deployments', 'idx_deployment_host_status'):
             op.drop_index('idx_deployment_host_status', 'deployments')
-        if constraint_exists('deployments', 'ck_deployment_valid_status'):
-            op.drop_constraint('ck_deployment_valid_status', 'deployments', type_='check')
         if index_exists('deployments', 'idx_deployment_created_at'):
             op.drop_index('idx_deployment_created_at', 'deployments')
         if index_exists('deployments', 'idx_deployment_status'):

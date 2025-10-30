@@ -105,9 +105,18 @@ export function DeploymentsPage() {
     rolled_back: 'Rolled Back',
   }
 
-  // WebSocket: Listen for real-time deployment progress updates
+  // WebSocket: Listen for real-time deployment updates
   const handleDeploymentUpdate = useCallback((message: any) => {
-    if (message.type === 'deployment_progress') {
+    // Handle all deployment event types
+    const deploymentEventTypes = [
+      'deployment_created',
+      'deployment_progress',
+      'deployment_completed',
+      'deployment_failed',
+      'deployment_rolled_back',
+    ]
+
+    if (deploymentEventTypes.includes(message.type)) {
       const { deployment_id, status, progress } = message
 
       // Update ALL deployment queries (all filter combinations) to avoid race condition
@@ -131,7 +140,7 @@ export function DeploymentsPage() {
         }
       )
 
-      // When deployment completes, refetch to get container_ids and other final data
+      // When deployment reaches a final state, refetch to get container_ids and other final data
       // Use prefix matching (['deployments']) to ensure all deployment queries are invalidated
       // regardless of filter state changes
       if (status === 'running' || status === 'failed' || status === 'rolled_back') {

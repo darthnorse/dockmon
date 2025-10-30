@@ -285,29 +285,33 @@ class BatchJobManager:
             # Normalize to short ID (12 chars) for consistency across the system
             short_id = container_id[:12] if len(container_id) > 12 else container_id
 
-            # Get current container state
-            containers = await self.monitor.get_containers(host_id)
-            container = next((c for c in containers if c.short_id == container_id), None)
+            # For delete operations, skip the cache check - just attempt deletion directly
+            # This prevents race conditions during bulk deletions where containers might be
+            # removed from cache by discovery before we process them
+            if action not in ['delete-containers']:
+                # Get current container state for non-delete operations
+                containers = await self.monitor.get_containers(host_id)
+                container = next((c for c in containers if c.short_id == container_id), None)
 
-            if not container:
-                return {
-                    'status': 'error',
-                    'message': 'Container not found'
-                }
+                if not container:
+                    return {
+                        'status': 'error',
+                        'message': 'Container not found'
+                    }
 
-            # Check if action is needed (idempotency)
-            if action == 'start':
-                if container.state == 'running':
-                    return {
-                        'status': 'skipped',
-                        'message': 'Already running'
-                    }
-            elif action == 'stop':
-                if container.state in ['exited', 'stopped', 'created']:
-                    return {
-                        'status': 'skipped',
-                        'message': 'Already stopped'
-                    }
+                # Check if action is needed (idempotency)
+                if action == 'start':
+                    if container.state == 'running':
+                        return {
+                            'status': 'skipped',
+                            'message': 'Already running'
+                        }
+                elif action == 'stop':
+                    if container.state in ['exited', 'stopped', 'created']:
+                        return {
+                            'status': 'skipped',
+                            'message': 'Already stopped'
+                        }
 
             # Execute the action via monitor (using short_id for consistency)
             if action == 'start':

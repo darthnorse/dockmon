@@ -329,11 +329,8 @@ class ContainerOperations:
                 # Delete deployment metadata for this container
                 deleted_metadata = session.query(DeploymentMetadata).filter_by(container_id=composite_key).delete()
 
-                # Delete from batch_job_items (if container is in any batch jobs)
-                deleted_batch = session.query(BatchJobItem).filter(
-                    BatchJobItem.host_id == host_id,
-                    BatchJobItem.container_id == container_id
-                ).delete()
+                # NOTE: We do NOT delete batch_job_items - they are audit records and should be preserved
+                # even after the container is deleted
 
                 # Delete from deployment_containers junction table
                 deleted_deploy_containers = session.query(DeploymentContainer).filter_by(container_id=container_id).delete()
@@ -344,7 +341,7 @@ class ContainerOperations:
                     f"Cleaned up database records for container {actual_container_name} ({composite_key}): "
                     f"updates={deleted_updates}, states={deleted_states}, restart={deleted_restart}, "
                     f"health={deleted_health}, tags={deleted_tags}, metadata={deleted_metadata}, "
-                    f"batch_items={deleted_batch}, deployment_containers={deleted_deploy_containers}"
+                    f"deployment_containers={deleted_deploy_containers}"
                 )
 
             # Emit CONTAINER_DELETED event to event bus

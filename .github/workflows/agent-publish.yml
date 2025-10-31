@@ -82,8 +82,9 @@ jobs:
           build-args: |
             VERSION=${{ steps.version.outputs.version }}
             COMMIT=${{ steps.version.outputs.commit }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Caching disabled - monitoring tool needs guaranteed fresh builds
+          # cache-from: type=gha
+          # cache-to: type=gha,mode=max
 
       # Attestation disabled - requires additional repository permissions
       # - name: Generate artifact attestation

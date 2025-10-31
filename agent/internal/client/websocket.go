@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -194,13 +195,14 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 		token = c.cfg.RegistrationToken
 	}
 
-	// Build registration request
-	req := types.RegistrationRequest{
-		Token:        token,
-		EngineID:     c.engineID,
-		Version:      c.cfg.AgentVersion,
-		ProtoVersion: c.cfg.ProtoVersion,
-		Capabilities: map[string]bool{
+	// Build registration request as flat JSON (backend expects flat format)
+	regMsg := map[string]interface{}{
+		"type":          "register",
+		"token":         token,
+		"engine_id":     c.engineID,
+		"version":       c.cfg.AgentVersion,
+		"proto_version": c.cfg.ProtoVersion,
+		"capabilities": map[string]bool{
 			"container_operations": true,
 			"container_updates":    true,
 			"event_streaming":      true,
@@ -209,13 +211,13 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 		},
 	}
 
-	// Send registration message
-	msg := &types.Message{
-		Type:    "register",
-		Payload: req,
+	// Send registration message as raw JSON
+	data, err := json.Marshal(regMsg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal registration: %w", err)
 	}
 
-	if err := c.sendMessage(msg); err != nil {
+	if err := c.conn.WriteMessage(websocket.TextMessage, data); err != nil {
 		return fmt.Errorf("failed to send registration: %w", err)
 	}
 
@@ -223,35 +225,40 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 	c.conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	defer c.conn.SetReadDeadline(time.Time{})
 
-	_, data, err := c.conn.ReadMessage()
+	_, respData, err := c.conn.ReadMessage()
 	if err != nil {
 		return fmt.Errorf("failed to read registration response: %w", err)
 	}
 
-	respMsg, err := protocol.DecodeMessage(data)
-	if err != nil {
+	// Parse flat response from backend (not wrapped in Message envelope)
+	var respMap map[string]interface{}
+	if err := json.Unmarshal(respData, &respMap); err != nil {
 		return fmt.Errorf("failed to decode registration response: %w", err)
 	}
 
-	if respMsg.Error != "" {
-		return fmt.Errorf("registration rejected: %s", respMsg.Error)
+	// Check for error response
+	if respType, ok := respMap["type"].(string); ok && respType == "auth_error" {
+		if errMsg, ok := respMap["error"].(string); ok {
+			return fmt.Errorf("registration rejected: %s", errMsg)
+		}
+		return fmt.Errorf("registration rejected: unknown error")
 	}
 
-	// Parse registration response
-	var resp types.RegistrationResponse
-	if err := protocol.ParseCommand(respMsg, &resp); err != nil {
-		return fmt.Errorf("failed to parse registration response: %w", err)
+	// Extract agent_id and host_id from flat response
+	agentID, ok1 := respMap["agent_id"].(string)
+	hostID, ok2 := respMap["host_id"].(string)
+	if !ok1 || !ok2 {
+		return fmt.Errorf("invalid registration response: missing agent_id or host_id")
 	}
 
 	// Store agent info
-	c.agentID = resp.AgentID
-	c.hostID = resp.HostID
+	c.agentID = agentID
+	c.hostID = hostID
 	c.registered = true
 
-	// If we got a permanent token, we should store it
-	// (In production, this would be persisted to disk)
-	if resp.PermanentToken != "" {
-		c.cfg.PermanentToken = resp.PermanentToken
+	// Check for permanent token
+	if permanentToken, ok := respMap["permanent_token"].(string); ok && permanentToken != "" {
+		c.cfg.PermanentToken = permanentToken
 		c.log.Info("Received permanent token (should be persisted)")
 	}
 

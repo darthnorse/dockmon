@@ -211,6 +211,11 @@ def _validate_schema(engine, version: str):
             'container_http_health_checks_columns': ['max_restart_attempts', 'restart_retry_delay_seconds'],
         },
         # '004_v2_0_3': No schema changes - security/correctness fixes only (app_version update)
+        '005_v2_1_0': {
+            'tables': ['deployments', 'deployment_containers', 'deployment_templates', 'deployment_metadata'],
+            # Note: deployments table columns validated implicitly via table existence
+            # stage_percent is not a column - docstring comment only, replaced by current_stage + progress_percent
+        },
         # Add validations for future versions here:
     }
 
@@ -431,7 +436,15 @@ def _handle_upgrade(engine, alembic_cfg, db_path: str) -> bool:
         logger.info("Applying migrations...")
         try:
             command.upgrade(alembic_cfg, "head")
-            logger.info("Migrations completed successfully")
+
+            # Verify the version was actually updated (catches silent rollbacks)
+            final_version = _get_current_version(engine)
+            if final_version != head_version:
+                raise RuntimeError(
+                    f"Migration appeared to succeed but version not updated! "
+                    f"Expected {head_version}, got {final_version}. "
+                    f"This usually means the migration rolled back due to a constraint violation or error."
+                )
 
             # Validate schema
             _validate_schema(engine, head_version)
@@ -447,6 +460,7 @@ def _handle_upgrade(engine, alembic_cfg, db_path: str) -> bool:
                 logger.warning(f"Could not remove backup: {e}")
                 logger.info(f"Manual cleanup: rm {backup_path}")
 
+            logger.info("Migrations completed successfully")
             return True
 
         except Exception as e:

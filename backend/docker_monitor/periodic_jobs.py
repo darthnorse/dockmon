@@ -6,6 +6,8 @@ Manages background tasks that run at regular intervals
 import asyncio
 import logging
 import time as time_module
+import subprocess
+import os
 from datetime import datetime, time as dt_time, timezone, timedelta
 
 from database import DatabaseManager
@@ -236,7 +238,8 @@ class PeriodicJobsManager:
                     ContainerUpdate,
                     ContainerHttpHealthCheck,
                     AutoRestartConfig,
-                    ContainerDesiredState
+                    ContainerDesiredState,
+                    DeploymentMetadata
                 )
                 containers = await self.monitor.get_containers()
                 current_container_keys = {make_composite_key(c.host_id, c.short_id) for c in containers}
@@ -302,6 +305,17 @@ class PeriodicJobsManager:
                         session.commit()
                         logger.info(f"Cleaned up {total_cleaned} total stale container-related database entries")
 
+                # Clean up orphaned deployment metadata (for containers deleted outside DockMon)
+                # Part of deployment v2.1 remediation (Phase 1.6)
+                deployment_metadata_cleaned = self.db.cleanup_orphaned_deployment_metadata(current_container_keys)
+                if deployment_metadata_cleaned > 0:
+                    self.event_logger.log_system_event(
+                        "Deployment Metadata Cleanup",
+                        f"Cleaned up {deployment_metadata_cleaned} orphaned deployment metadata entries",
+                        EventSeverity.INFO,
+                        EventType.STARTUP
+                    )
+
                 # Clean up orphaned RuleRuntime entries (for deleted containers)
                 runtime_cleaned = self.db.cleanup_orphaned_rule_runtime(current_container_keys)
                 if runtime_cleaned > 0:
@@ -321,6 +335,21 @@ class PeriodicJobsManager:
                         EventSeverity.INFO,
                         EventType.STARTUP
                     )
+
+                # Clean up old Docker images (based on retention policy)
+                images_cleaned = await self.cleanup_old_images()
+                if images_cleaned > 0:
+                    self.event_logger.log_system_event(
+                        "Image Cleanup",
+                        f"Removed {images_cleaned} old/dangling Docker images",
+                        EventSeverity.INFO,
+                        EventType.STARTUP
+                    )
+
+                # Check SSL certificate expiry and regenerate if needed
+                cert_regenerated = await self.check_certificate_expiry()
+                if cert_regenerated:
+                    logger.info("Certificate was regenerated during maintenance")
 
                 # Note: Timezone offset is auto-synced from the browser, not from server
                 # This ensures DST changes are handled automatically on the client side
@@ -495,6 +524,292 @@ class PeriodicJobsManager:
         except Exception as e:
             logger.error(f"Error in backup container cleanup: {e}", exc_info=True)
             return removed_count
+
+    def _parse_image_created_time(self, image_attrs: dict) -> datetime:
+        """
+        Parse Created timestamp from image attributes.
+
+        Defaults to current time if timestamp is missing or invalid.
+        This ensures images without proper metadata are protected by grace period.
+
+        Args:
+            image_attrs: Docker image attributes dict
+
+        Returns:
+            Parsed datetime or current time if missing
+        """
+        created_str = image_attrs.get('Created', '')
+        if created_str:
+            try:
+                return datetime.fromisoformat(created_str.replace('Z', '+00:00'))
+            except (ValueError, TypeError):
+                logger.debug(f"Failed to parse image created time: {created_str}")
+                return datetime.now(timezone.utc)
+        else:
+            return datetime.now(timezone.utc)
+
+    async def cleanup_old_images(self) -> int:
+        """
+        Remove unused Docker images based on retention policy.
+
+        Removes:
+        - Dangling images (<none>:<none>) older than grace period
+        - Old versions of images (keeps last N versions per repository)
+
+        Safety checks:
+        - Never removes images with running/stopped containers
+        - Respects grace period (won't remove images newer than N hours)
+        - Respects retention count (keeps at least N versions per image)
+
+        Returns:
+            Number of images removed
+        """
+        if not self.monitor:
+            logger.warning("No monitor available for image cleanup")
+            return 0
+
+        settings = self.db.get_settings()
+
+        # Check if image pruning is enabled
+        if not settings.prune_images_enabled:
+            logger.debug("Image pruning is disabled")
+            return 0
+
+        removed_count = 0
+        retention_count = settings.image_retention_count
+        grace_hours = settings.image_prune_grace_hours
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=grace_hours)
+
+        try:
+            # Process each host
+            for host_id, client in self.monitor.clients.items():
+                try:
+                    # Get all containers (including stopped) to check which images are in use
+                    containers = await async_docker_call(client.containers.list, all=True)
+                    images_in_use = {c.image.id for c in containers}
+                    logger.debug(f"Host {host_id}: Found {len(images_in_use)} images in use by containers")
+
+                    # Get all images on this host
+                    all_images = await async_docker_call(client.images.list, all=True)
+                    logger.debug(f"Host {host_id}: Found {len(all_images)} total images")
+
+                    # Group images by repository name (e.g., "nginx", "postgres")
+                    images_by_repo = {}
+                    dangling_images = []
+
+                    for image in all_images:
+                        # Check if dangling image (<none>:<none>)
+                        if not image.tags:
+                            dangling_images.append(image)
+                            continue
+
+                        # Extract repository name from first tag
+                        # Tag format: "repo:tag" or "registry/repo:tag"
+                        tag = image.tags[0]
+                        repo_name = tag.rsplit(':', 1)[0]  # Remove :tag
+
+                        if repo_name not in images_by_repo:
+                            images_by_repo[repo_name] = []
+
+                        # Parse created timestamp
+                        created_dt = self._parse_image_created_time(image.attrs)
+
+                        images_by_repo[repo_name].append({
+                            'image': image,
+                            'created': created_dt,
+                            'tags': image.tags
+                        })
+
+                    # Remove old versions (keep last N per repository)
+                    for repo_name, images_list in images_by_repo.items():
+                        # Sort by created date (newest first)
+                        images_list.sort(key=lambda x: x['created'], reverse=True)
+
+                        # Skip if we have retention_count or fewer versions
+                        if len(images_list) <= retention_count:
+                            continue
+
+                        # Remove old versions beyond retention count
+                        for img_data in images_list[retention_count:]:
+                            image = img_data['image']
+                            created_dt = img_data['created']
+
+                            # Safety checks
+                            if image.id in images_in_use:
+                                logger.debug(f"Skipping {repo_name} - image in use by container")
+                                continue
+
+                            if created_dt >= cutoff_time:
+                                logger.debug(f"Skipping {repo_name} - within grace period ({grace_hours}h)")
+                                continue
+
+                            # Safe to remove
+                            try:
+                                logger.info(f"Removing old image: {repo_name} (created {created_dt.isoformat()}, age: {(datetime.now(timezone.utc) - created_dt).days} days)")
+                                await async_docker_call(image.remove, force=False)
+                                removed_count += 1
+                            except Exception as e:
+                                logger.warning(f"Failed to remove image {repo_name}: {e}")
+
+                    # Remove dangling images older than grace period
+                    for image in dangling_images:
+                        # Safety check: in use?
+                        if image.id in images_in_use:
+                            continue
+
+                        # Parse created timestamp
+                        created_dt = self._parse_image_created_time(image.attrs)
+
+                        # Check grace period
+                        if created_dt >= cutoff_time:
+                            continue
+
+                        # Safe to remove
+                        try:
+                            logger.info(f"Removing dangling image: {image.short_id}")
+                            await async_docker_call(image.remove, force=False)
+                            removed_count += 1
+                        except Exception as e:
+                            logger.debug(f"Failed to remove dangling image {image.short_id}: {e}")
+
+                except Exception as e:
+                    logger.error(f"Error cleaning images on host {host_id}: {e}", exc_info=True)
+                    continue
+
+            if removed_count > 0:
+                logger.info(f"Image cleanup: Removed {removed_count} old/dangling images (retention: {retention_count} versions, grace: {grace_hours}h)")
+
+            return removed_count
+
+        except Exception as e:
+            logger.error(f"Error in image cleanup: {e}", exc_info=True)
+            return removed_count
+
+    async def check_certificate_expiry(self) -> bool:
+        """
+        Check SSL certificate expiry and regenerate if approaching expiration.
+
+        Certificates need to be regenerated if they expire in less than 41 days
+        to comply with Apple's browser certificate policy (47-day maximum validity).
+
+        Returns:
+            True if certificate was regenerated, False otherwise
+        """
+        try:
+            # Check if certificate exists
+            cert_path = "/etc/nginx/certs/dockmon.crt"
+            if not os.path.exists(cert_path):
+                logger.debug(f"Certificate not found at {cert_path}, skipping expiry check")
+                return False
+
+            # Get certificate expiry date using openssl
+            try:
+                result = subprocess.run(
+                    ["openssl", "x509", "-enddate", "-noout", "-in", cert_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+
+                if result.returncode != 0:
+                    logger.warning(f"Failed to read certificate expiry: {result.stderr}")
+                    return False
+
+                # Parse expiry date from output: "notAfter=Oct 12 10:23:45 2025 GMT"
+                expiry_str = result.stdout.strip()
+                if not expiry_str.startswith("notAfter="):
+                    logger.warning(f"Unexpected openssl output: {expiry_str}")
+                    return False
+
+                # Parse the date string
+                date_part = expiry_str.replace("notAfter=", "")
+                # Format: "Oct 12 10:23:45 2025 GMT"
+                expiry_dt = datetime.strptime(date_part, "%b %d %H:%M:%S %Y %Z")
+                # Make timezone aware (GMT = UTC)
+                expiry_dt = expiry_dt.replace(tzinfo=timezone.utc)
+
+                # Check if expiry is within 41 days
+                days_until_expiry = (expiry_dt - datetime.now(timezone.utc)).days
+                logger.debug(f"Certificate expires in {days_until_expiry} days ({expiry_dt.isoformat()})")
+
+                if days_until_expiry > 41:
+                    logger.debug(f"Certificate is healthy ({days_until_expiry} days remaining)")
+                    return False
+
+                # Certificate is expiring soon - regenerate
+                logger.warning(f"Certificate expires in {days_until_expiry} days, regenerating...")
+                return await self._regenerate_certificate()
+
+            except subprocess.TimeoutExpired:
+                logger.error("Timeout reading certificate expiry date")
+                return False
+            except ValueError as e:
+                logger.warning(f"Failed to parse certificate expiry date: {e}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Error checking certificate expiry: {e}", exc_info=True)
+            return False
+
+    async def _regenerate_certificate(self) -> bool:
+        """
+        Regenerate the SSL certificate using OpenSSL.
+
+        Generates a self-signed certificate with 47-day validity to comply
+        with Apple's browser certificate policy.
+
+        Returns:
+            True if regeneration succeeded, False otherwise
+        """
+        try:
+            cert_dir = "/etc/nginx/certs"
+            key_path = f"{cert_dir}/dockmon.key"
+            cert_path = f"{cert_dir}/dockmon.crt"
+
+            # Ensure cert directory exists
+            os.makedirs(cert_dir, exist_ok=True)
+
+            # Generate private key and self-signed certificate
+            # 47-day validity to comply with Apple's browser certificate policy
+            result = subprocess.run(
+                [
+                    "openssl", "req", "-x509", "-nodes", "-days", "47",
+                    "-newkey", "rsa:2048",
+                    "-keyout", key_path,
+                    "-out", cert_path,
+                    "-subj", "/C=US/ST=State/L=City/O=DockMon/CN=localhost"
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+
+            if result.returncode != 0:
+                logger.error(f"Certificate generation failed: {result.stderr}")
+                return False
+
+            # Set appropriate permissions
+            os.chmod(key_path, 0o600)
+            os.chmod(cert_path, 0o644)
+
+            logger.info("SSL certificate successfully regenerated with 47-day validity")
+            self.event_logger.log_system_event(
+                "Certificate Regeneration",
+                "SSL certificate was regenerated due to approaching expiration (47-day validity)",
+                EventSeverity.INFO,
+                EventType.STARTUP
+            )
+            return True
+
+        except subprocess.TimeoutExpired:
+            logger.error("Timeout regenerating certificate")
+            return False
+        except OSError as e:
+            logger.error(f"Error creating cert directory or setting permissions: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Error regenerating certificate: {e}", exc_info=True)
+            return False
 
     async def check_dockmon_update_once(self):
         """

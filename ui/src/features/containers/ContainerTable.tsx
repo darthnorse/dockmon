@@ -78,6 +78,8 @@ import { AlertDetailsDrawer } from '@/features/alerts/components/AlertDetailsDra
 import { ContainerDrawer } from './components/ContainerDrawer'
 import { BulkActionBar } from './components/BulkActionBar'
 import { BulkActionConfirmModal } from './components/BulkActionConfirmModal'
+import { DeleteConfirmModal } from './components/DeleteConfirmModal'
+import { UpdateConfirmModal } from './components/UpdateConfirmModal'
 import { BatchJobPanel } from './components/BatchJobPanel'
 import { ColumnCustomizationPanel } from './components/ColumnCustomizationPanel'
 import type { Container } from './types'
@@ -388,6 +390,8 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   const [selectedContainerIds, setSelectedContainerIds] = useState<Set<string>>(new Set())
   const [confirmModalOpen, setConfirmModalOpen] = useState(false)
   const [pendingAction, setPendingAction] = useState<'start' | 'stop' | 'restart' | null>(null)
+  const [deleteConfirmModalOpen, setDeleteConfirmModalOpen] = useState(false)
+  const [updateConfirmModalOpen, setUpdateConfirmModalOpen] = useState(false)
   const { enabled: simplifiedWorkflow } = useSimplifiedWorkflow()
   const { openModal } = useContainerModal()
 
@@ -665,6 +669,61 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
     } catch (error) {
       toast.error(`Failed to update desired state: ${error instanceof Error ? error.message : 'Unknown error'}`)
       throw error
+    }
+  }
+
+  const handleDeleteContainers = () => {
+    setDeleteConfirmModalOpen(true)
+  }
+
+  const handleConfirmDeleteContainers = async (removeVolumes: boolean) => {
+    if (!data) return
+
+    const count = selectedContainerIds.size
+
+    try {
+      // Create batch job for container deletion
+      const result = await apiClient.post<{ job_id: string }>('/batch', {
+        scope: 'container',
+        action: 'delete-containers',
+        ids: Array.from(selectedContainerIds),
+        params: { remove_volumes: removeVolumes },
+      })
+      setBatchJobId(result.job_id)
+      setShowJobPanel(true)
+      setDeleteConfirmModalOpen(false)
+
+      toast.success(`Deleting ${count} container${count !== 1 ? 's' : ''}...`)
+      clearSelection()
+    } catch (error) {
+      toast.error(`Failed to delete containers: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    }
+  }
+
+  const handleUpdateContainers = () => {
+    setUpdateConfirmModalOpen(true)
+  }
+
+  const handleConfirmUpdateContainers = async () => {
+    if (!data) return
+
+    const count = selectedContainerIds.size
+
+    try {
+      // Create batch job for container updates
+      const result = await apiClient.post<{ job_id: string }>('/batch', {
+        scope: 'container',
+        action: 'update-containers',
+        ids: Array.from(selectedContainerIds),
+      })
+      setBatchJobId(result.job_id)
+      setShowJobPanel(true)
+      setUpdateConfirmModalOpen(false)
+
+      toast.success(`Updating ${count} container${count !== 1 ? 's' : ''}...`)
+      clearSelection()
+    } catch (error) {
+      toast.error(`Failed to update containers: ${error instanceof Error ? error.message : 'Unknown error'}`)
     }
   }
 
@@ -1360,6 +1419,11 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         return true
       }
 
+      // Search in ports array (e.g., ["8080:80/tcp", "443:443/tcp"])
+      if (container.ports?.some(port => port.toLowerCase().includes(searchValue))) {
+        return true
+      }
+
       return false
     },
     state: {
@@ -1492,7 +1556,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
             placeholder="Search containers..."
             value={globalFilter ?? ''}
             onChange={(e) => setGlobalFilter(e.target.value)}
-            className="max-w-sm"
+            className="max-w-md"
             data-testid="containers-search-input"
           />
           <div className="text-sm text-muted-foreground whitespace-nowrap">
@@ -1815,6 +1879,8 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         onClearSelection={clearSelection}
         onAction={handleBulkAction}
         onCheckUpdates={handleCheckUpdates}
+        onDelete={handleDeleteContainers}
+        onUpdateContainers={handleUpdateContainers}
         onTagUpdate={handleBulkTagUpdate}
         onAutoRestartUpdate={handleBulkAutoRestartUpdate}
         onAutoUpdateUpdate={handleBulkAutoUpdateUpdate}
@@ -1830,6 +1896,26 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         }}
         onConfirm={handleConfirmBulkAction}
         action={pendingAction || 'start'}
+        containers={
+          data?.filter((c) => selectedContainerIds.has(makeCompositeKey(c))) || []
+        }
+      />
+
+      {/* Delete Confirmation Modal */}
+      <DeleteConfirmModal
+        isOpen={deleteConfirmModalOpen}
+        onClose={() => setDeleteConfirmModalOpen(false)}
+        onConfirm={handleConfirmDeleteContainers}
+        containers={
+          data?.filter((c) => selectedContainerIds.has(makeCompositeKey(c))) || []
+        }
+      />
+
+      {/* Update Confirmation Modal */}
+      <UpdateConfirmModal
+        isOpen={updateConfirmModalOpen}
+        onClose={() => setUpdateConfirmModalOpen(false)}
+        onConfirm={handleConfirmUpdateContainers}
         containers={
           data?.filter((c) => selectedContainerIds.has(makeCompositeKey(c))) || []
         }

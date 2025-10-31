@@ -456,6 +456,15 @@ export function ExpandedHostCard({ host, cardRef, onHostClick, onViewDetails, on
                       {container.state.toUpperCase()}
                     </span>
 
+                    {/* Container Stats (CPU/RAM) - only for running containers when enabled */}
+                    {prefs?.dashboard?.showContainerStats && container.state === 'running' && (
+                      <span className="text-xs font-mono text-muted-foreground flex-shrink-0 whitespace-nowrap">
+                        {container.cpu_percent !== null ? `${container.cpu_percent.toFixed(1)}%` : '—'}
+                        {' / '}
+                        {container.memory_percent !== null ? `${container.memory_percent.toFixed(0)}MB` : '—'}
+                      </span>
+                    )}
+
                     {/* Container Kebab Menu */}
                     <div onClick={(e) => e.stopPropagation()}>
                       <DropdownMenu

@@ -10,7 +10,7 @@
  */
 
 import { useState, useEffect, useMemo, useCallback } from 'react'
-import { X, Play, RotateCw, Circle } from 'lucide-react'
+import { X, Play, RotateCw, Circle, Trash2 } from 'lucide-react'
 import { Tabs } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
 import type { Container } from '../types'
@@ -29,6 +29,7 @@ import { ContainerModalLogsTab } from './modal-tabs/ContainerModalLogsTab'
 import { ContainerModalAlertsTab } from './modal-tabs/ContainerModalAlertsTab'
 import { ContainerUpdatesTab } from './modal-tabs/ContainerUpdatesTab'
 import { ContainerHealthCheckTab } from './modal-tabs/ContainerHealthCheckTab'
+import { DeleteContainerDialog } from './DeleteContainerDialog'
 
 export interface ContainerDetailsModalProps {
   containerId: string | null
@@ -53,6 +54,7 @@ export function ContainerDetailsModal({
   const [uptime, setUptime] = useState<string>('')
   const [isPerformingAction, setIsPerformingAction] = useState(false)
   const [fallbackContainer, setFallbackContainer] = useState<Container | null>(null)
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false)
 
   // Self-fetch container if not provided externally
   // This decouples the modal from the provider's data sources
@@ -223,6 +225,23 @@ export function ContainerDetailsModal({
     }
   }
 
+  const handleDelete = async (removeVolumes: boolean) => {
+    setIsPerformingAction(true)
+    try {
+      const { hostId, containerId: currentId } = parseCompositeKey(containerId!)
+      await apiClient.delete(`/hosts/${hostId}/containers/${currentId}`, {
+        params: { removeVolumes },
+      })
+      toast.success(`Container ${container.name} deleted successfully`)
+      // Close modal after successful deletion
+      onClose()
+    } catch (error) {
+      toast.error(`Failed to delete container: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    } finally {
+      setIsPerformingAction(false)
+    }
+  }
+
 
   const getStatusColor = () => {
     switch (container.state.toLowerCase()) {
@@ -336,10 +355,11 @@ export function ContainerDetailsModal({
               </Button>
             ) : (
               <Button
-                variant="destructive"
+                variant="outline"
                 size="sm"
                 onClick={handleStop}
                 disabled={isPerformingAction}
+                className="border-red-500/50 text-red-400 hover:bg-red-500/10"
               >
                 <Circle className="w-4 h-4 mr-2" />
                 Stop
@@ -353,6 +373,16 @@ export function ContainerDetailsModal({
             >
               <RotateCw className="w-4 h-4 mr-2" />
               Restart
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => setShowDeleteDialog(true)}
+              disabled={isPerformingAction || container.name.toLowerCase() === 'dockmon' || container.name.toLowerCase().startsWith('dockmon-')}
+              className="bg-red-600 hover:bg-red-700 text-white"
+            >
+              <Trash2 className="w-4 h-4 mr-2" />
+              Delete
             </Button>
             <Button
               variant="ghost"
@@ -372,6 +402,16 @@ export function ContainerDetailsModal({
         />
         </div>
       </div>
+
+      {/* Delete Confirmation Dialog */}
+      <DeleteContainerDialog
+        isOpen={showDeleteDialog}
+        onClose={() => setShowDeleteDialog(false)}
+        onConfirm={handleDelete}
+        containerName={container.name}
+        containerImage={container.image}
+        isDockMon={container.name.toLowerCase() === 'dockmon' || container.name.toLowerCase().startsWith('dockmon-')}
+      />
     </>
   )
 }

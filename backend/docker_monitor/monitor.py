@@ -39,6 +39,10 @@ from utils.keys import make_composite_key
 
 logger = logging.getLogger(__name__)
 
+# State update race condition prevention (Issue #3 fix)
+# Reject polling updates within this window if recent event exists
+STATE_UPDATE_STALE_THRESHOLD = 2.0  # seconds
+
 
 def parse_container_ports(port_bindings: dict) -> list[str]:
     """
@@ -266,6 +270,8 @@ class DockerMonitor:
         self.event_logger = EventLogger(self.db, self.manager)  # Event logging service with WebSocket support
         self.notification_service = NotificationService(self.db, self.event_logger)  # Notification service (v1 - for channels only)
         self._container_states: Dict[str, str] = {}  # Track container states for change detection
+        self._container_state_timestamps: Dict[str, datetime] = {}  # Track when state last updated (Issue #3 fix)
+        self._container_state_sources: Dict[str, str] = {}  # Track update source: 'event' or 'poll' (Issue #3 fix)
         self._last_containers: List = []  # Cache of containers from last monitor cycle (for alert evaluation)
         self._recent_user_actions: Dict[str, float] = {}  # Track recent user actions: {container_key: timestamp}
         self.alert_evaluation_service = None  # Will be set by main.py after initialization
@@ -307,7 +313,7 @@ class DockerMonitor:
         self.state_manager.restart_attempts = self.restart_attempts
         self.state_manager.restarting_containers = self.restarting_containers
 
-        self.operations = ContainerOperations(self.hosts, self.clients, self.event_logger, self._recent_user_actions)
+        self.operations = ContainerOperations(self.hosts, self.clients, self.event_logger, self._recent_user_actions, self.db, self)
         self.periodic_jobs = PeriodicJobsManager(self.db, self.event_logger)
         self.periodic_jobs.monitor = self  # Set monitor reference for auto-resolve
 
@@ -1080,6 +1086,10 @@ class DockerMonitor:
         """Start a specific container"""
         return await self.operations.start_container(host_id, container_id)
 
+    async def delete_container(self, host_id: str, container_id: str, container_name: str, remove_volumes: bool = False) -> dict:
+        """Delete a specific container"""
+        return await self.operations.delete_container(host_id, container_id, container_name, remove_volumes)
+
     def toggle_auto_restart(self, host_id: str, container_id: str, container_name: str, enabled: bool):
         """Toggle auto-restart for a container"""
         return self.state_manager.toggle_auto_restart(host_id, container_id, container_name, enabled)
@@ -1102,9 +1112,9 @@ class DockerMonitor:
         """Alias for set_container_desired_state - used by batch operations"""
         return self.set_container_desired_state(host_id, container_id, container_name, desired_state, web_ui_url)
 
-    def update_container_tags(self, host_id: str, container_id: str, container_name: str, tags_to_add: list[str], tags_to_remove: list[str]) -> dict:
+    async def update_container_tags(self, host_id: str, container_id: str, container_name: str, tags_to_add: list[str], tags_to_remove: list[str]) -> dict:
         """Update container custom tags in database"""
-        return self.state_manager.update_container_tags(host_id, container_id, container_name, tags_to_add, tags_to_remove)
+        return await self.state_manager.update_container_tags(host_id, container_id, container_name, tags_to_add, tags_to_remove)
 
 
     async def _handle_docker_event(self, event: dict):
@@ -1188,7 +1198,10 @@ class DockerMonitor:
                     old_state = self._container_states.get(container_key)
                     # Update state tracking immediately so polling loop doesn't think there's drift
                     if new_state:
+                        # Update state with timestamp and source tracking (Issue #3 fix)
                         self._container_states[container_key] = new_state
+                        self._container_state_timestamps[container_key] = datetime.now(timezone.utc)
+                        self._container_state_sources[container_key] = 'event'
 
                 # Get host name
                 host_name = self.hosts.get(host_id).name if host_id in self.hosts else host_id
@@ -1362,6 +1375,21 @@ class DockerMonitor:
                     async with self._state_lock:
                         previous_state = self._container_states.get(container_key)
 
+                        # Check if update is stale (Issue #3 fix)
+                        if container_key in self._container_state_timestamps:
+                            last_update = self._container_state_timestamps[container_key]
+                            last_source = self._container_state_sources.get(container_key)
+                            time_since_update = (datetime.now(timezone.utc) - last_update).total_seconds()
+
+                            # Reject stale polling update if recent event exists
+                            if time_since_update < STATE_UPDATE_STALE_THRESHOLD and last_source == 'event':
+                                logger.debug(
+                                    f"Rejecting stale polling update for {container.name}: "
+                                    f"state={current_state}, last_event={previous_state} "
+                                    f"({time_since_update:.1f}s ago). Event-driven state is authoritative."
+                                )
+                                continue  # Skip this container's state update
+
                         # Detect state drift (state changed but we didn't get an event)
                         if previous_state is not None and previous_state != current_state:
                             # This should be rare - events should have caught this
@@ -1374,6 +1402,8 @@ class DockerMonitor:
 
                         # Always update tracked state to stay in sync with Docker reality
                         self._container_states[container_key] = current_state
+                        self._container_state_timestamps[container_key] = datetime.now(timezone.utc)
+                        self._container_state_sources[container_key] = 'poll'
 
                 # Auto-restart reconciliation (safety net - events handle primary auto-restart)
                 # This catches containers that need restart if 'die' event was missed
@@ -1758,11 +1788,16 @@ class DockerMonitor:
                 make_composite_key(c.host_id, c.short_id) for c in containers
             }
 
-            # Clean up _container_states
+            # Clean up _container_states and timestamps/sources (Issue #3 fix)
             async with self._state_lock:
                 stale_keys = [k for k in self._container_states.keys() if k not in current_container_keys]
                 for key in stale_keys:
                     del self._container_states[key]
+                    # Also clean up timestamps and sources (Issue #3 fix)
+                    if key in self._container_state_timestamps:
+                        del self._container_state_timestamps[key]
+                    if key in self._container_state_sources:
+                        del self._container_state_sources[key]
                 if stale_keys:
                     logger.info(f"Cleaned up {len(stale_keys)} stale entries from _container_states")
 

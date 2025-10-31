@@ -23,6 +23,8 @@
  * - host_status_changed: Host online/offline status changed
  * - auto_restart_success/auto_restart_failed: Auto-restart events
  * - blackout_status_changed: Notification blackout toggled
+ * - deployment_progress: Deployment execution progress update
+ * - deployment_layer_progress: Layer-by-layer image pull progress for deployments
  * - pong: Heartbeat response
  */
 
@@ -47,6 +49,8 @@ export type WebSocketMessage =
   | { type: 'blackout_status_changed'; data: unknown }
   | { type: 'batch_job_update'; data: unknown }
   | { type: 'batch_item_update'; data: unknown }
+  | { type: 'deployment_progress'; deployment_id: string; host_id: string; name: string; status: string; progress: { overall_percent: number; stage: string }; created_at: string | null; completed_at: string | null; error?: string }
+  | { type: 'deployment_layer_progress'; data: { host_id: string; entity_id: string; overall_progress: number; layers: Array<any>; total_layers: number; remaining_layers: number; summary: string; speed_mbps?: number } }
   | { type: 'pong'; data?: unknown }
 
 export type WebSocketStatus = 'connecting' | 'connected' | 'disconnected' | 'error'

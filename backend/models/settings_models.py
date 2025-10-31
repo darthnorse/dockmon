@@ -204,6 +204,11 @@ class GlobalSettingsUpdate(BaseModel):
     skip_compose_containers: Optional[bool] = None
     health_check_timeout_seconds: Optional[int] = Field(None, ge=5, le=600, description="Health check timeout (5-600)")
 
+    # Image pruning settings (v2.1+)
+    prune_images_enabled: Optional[bool] = Field(None, description="Enable automatic image pruning")
+    image_retention_count: Optional[int] = Field(None, ge=1, le=10, description="Keep last N versions per image (1-10)")
+    image_prune_grace_hours: Optional[int] = Field(None, ge=1, le=168, description="Don't remove images newer than N hours (1-168)")
+
     class Config:
         extra = "forbid"  # Reject unknown keys (typos, attacks)
 

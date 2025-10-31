@@ -22,6 +22,8 @@ interface BulkActionBarProps {
   onClearSelection: () => void
   onAction: (action: 'start' | 'stop' | 'restart') => void
   onCheckUpdates: () => void
+  onDelete: () => void
+  onUpdateContainers: () => void
   onTagUpdate: (mode: 'add' | 'remove', tags: string[]) => Promise<void>
   onAutoRestartUpdate?: (enabled: boolean) => Promise<void>
   onAutoUpdateUpdate?: (enabled: boolean, floatingTagMode: string) => Promise<void>
@@ -40,6 +42,8 @@ export function BulkActionBar({
   onClearSelection,
   onAction,
   onCheckUpdates,
+  onDelete,
+  onUpdateContainers,
   onTagUpdate,
   onAutoRestartUpdate,
   onAutoUpdateUpdate,
@@ -245,49 +249,77 @@ export function BulkActionBar({
 
           {/* Right: Action sections and close button */}
           <div className="flex items-start gap-3">
-            {/* Run Actions */}
+            {/* Actions */}
             <div className="border border-border rounded-lg bg-background">
               <div className="px-3 py-2 text-sm font-medium border-b border-border">
-                Run Actions
+                Actions
               </div>
 
-              <div className="p-3 flex gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => onAction('start')}
-                  disabled={isLoading}
-                  className="text-success hover:text-success hover:bg-success/10"
-                >
-                  Start
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => onAction('stop')}
-                  disabled={isLoading}
-                  className="text-danger hover:text-danger hover:bg-danger/10"
-                >
-                  Stop
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => onAction('restart')}
-                  disabled={isLoading}
-                  className="text-info hover:text-info hover:bg-info/10"
-                >
-                  Restart
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={onCheckUpdates}
-                  disabled={isLoading}
-                  className="text-warning hover:text-warning hover:bg-warning/10"
-                >
-                  Check Updates
-                </Button>
+              <div className="p-3 space-y-3">
+                {/* Row 1: Start, Stop, Restart, Delete */}
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => onAction('start')}
+                    disabled={isLoading}
+                    className="text-success hover:text-success hover:bg-success/10"
+                  >
+                    Start
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => onAction('stop')}
+                    disabled={isLoading}
+                    className="text-danger hover:text-danger hover:bg-danger/10"
+                  >
+                    Stop
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => onAction('restart')}
+                    disabled={isLoading}
+                    className="text-info hover:text-info hover:bg-info/10"
+                  >
+                    Restart
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={onDelete}
+                    disabled={isLoading}
+                    className="text-danger-foreground bg-danger hover:bg-danger/90"
+                  >
+                    Delete
+                  </Button>
+                </div>
+
+                {/* Separator */}
+                <div className="h-px bg-border" />
+
+                {/* Row 2: Check Updates, Update Containers */}
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={onCheckUpdates}
+                    disabled={isLoading}
+                    className="text-warning hover:text-warning hover:bg-warning/10"
+                  >
+                    Check Updates
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={onUpdateContainers}
+                    disabled={isLoading}
+                    className="text-info hover:text-info hover:bg-info/10"
+                  >
+                    Update Containers
+                  </Button>
+                </div>
               </div>
             </div>
 

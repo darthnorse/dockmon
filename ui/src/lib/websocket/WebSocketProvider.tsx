@@ -142,6 +142,11 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
           // These are handled by the BatchJobPanel component via addMessageHandler
           break
 
+        // Deployment events - handled by DeploymentsPage and other components via addMessageHandler
+        case 'deployment_progress':
+        case 'deployment_layer_progress':
+          break
+
         // Heartbeat response (no action needed)
         case 'pong':
           break

@@ -11,8 +11,12 @@ from datetime import datetime, timezone
 from typing import List, Dict, Optional, Callable
 from collections import defaultdict
 
-from database import DatabaseManager, BatchJob, BatchJobItem
+from database import DatabaseManager, BatchJob, BatchJobItem, ContainerUpdate
 from websocket.connection import ConnectionManager
+from event_bus import Event, EventType, get_event_bus
+from updates.update_checker import get_update_checker
+from updates.update_executor import get_update_executor
+from utils.keys import make_composite_key
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +120,9 @@ class BatchJobManager:
             # Broadcast job started
             await self._broadcast_job_update(job_id, 'running', None)
 
+            # Emit BATCH_JOB_STARTED event
+            await self._emit_batch_job_event(job_id, EventType.BATCH_JOB_STARTED, job.action, job.total_items)
+
             # Process items with rate limiting per host
             tasks = []
             for item_id, container_id, container_name, host_id, status in items_list:
@@ -130,9 +137,13 @@ class BatchJobManager:
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
 
-            # Update final job status
-            # Extract status and close session BEFORE WebSocket broadcast
+            # Update final job status and extract all needed values in one session
             final_status = None
+            action = None
+            total_items = 0
+            success_items = 0
+            error_items = 0
+
             with self.db.get_session() as session:
                 job = session.query(BatchJob).filter_by(id=job_id).first()
                 if job:
@@ -146,13 +157,22 @@ class BatchJobManager:
                     else:
                         job.status = 'completed'
 
+                    # Extract all values before session closes
                     final_status = job.status
+                    action = job.action
+                    total_items = job.total_items
+                    success_items = job.success_items
+                    error_items = job.error_items
                     session.commit()
 
-            # Session is now closed - safe for WebSocket broadcast
+            # Session is now closed - safe for WebSocket broadcast and event emission
             if final_status:
                 await self._broadcast_job_update(job_id, final_status, None)
                 logger.info(f"Job {job_id} completed: {final_status}")
+
+                # Emit BATCH_JOB_COMPLETED or BATCH_JOB_FAILED event (no redundant query needed)
+                event_type = EventType.BATCH_JOB_COMPLETED if final_status == 'completed' else EventType.BATCH_JOB_FAILED
+                await self._emit_batch_job_event(job_id, event_type, action, total_items, success_items, error_items)
 
         except Exception as e:
             logger.error(f"Error processing job {job_id}: {e}")
@@ -162,6 +182,9 @@ class BatchJobManager:
                     job.status = 'failed'
                     job.completed_at = datetime.now(timezone.utc)
                     session.commit()
+
+                    # Emit BATCH_JOB_FAILED event for exception handling
+                    await self._emit_batch_job_event(job_id, EventType.BATCH_JOB_FAILED, job.action, job.total_items, job.success_items, job.error_items)
         finally:
             # Clean up
             if job_id in self.active_jobs:
@@ -262,29 +285,33 @@ class BatchJobManager:
             # Normalize to short ID (12 chars) for consistency across the system
             short_id = container_id[:12] if len(container_id) > 12 else container_id
 
-            # Get current container state
-            containers = await self.monitor.get_containers(host_id)
-            container = next((c for c in containers if c.short_id == container_id), None)
+            # For delete operations, skip the cache check - just attempt deletion directly
+            # This prevents race conditions during bulk deletions where containers might be
+            # removed from cache by discovery before we process them
+            if action not in ['delete-containers']:
+                # Get current container state for non-delete operations
+                containers = await self.monitor.get_containers(host_id)
+                container = next((c for c in containers if c.short_id == container_id), None)
 
-            if not container:
-                return {
-                    'status': 'error',
-                    'message': 'Container not found'
-                }
+                if not container:
+                    return {
+                        'status': 'error',
+                        'message': 'Container not found'
+                    }
 
-            # Check if action is needed (idempotency)
-            if action == 'start':
-                if container.state == 'running':
-                    return {
-                        'status': 'skipped',
-                        'message': 'Already running'
-                    }
-            elif action == 'stop':
-                if container.state in ['exited', 'stopped', 'created']:
-                    return {
-                        'status': 'skipped',
-                        'message': 'Already stopped'
-                    }
+                # Check if action is needed (idempotency)
+                if action == 'start':
+                    if container.state == 'running':
+                        return {
+                            'status': 'skipped',
+                            'message': 'Already running'
+                        }
+                elif action == 'stop':
+                    if container.state in ['exited', 'stopped', 'created']:
+                        return {
+                            'status': 'skipped',
+                            'message': 'Already stopped'
+                        }
 
             # Execute the action via monitor (using short_id for consistency)
             if action == 'start':
@@ -308,7 +335,7 @@ class BatchJobManager:
                 tags_to_add = tags if action == 'add-tags' else []
                 tags_to_remove = tags if action == 'remove-tags' else []
 
-                result = self.monitor.update_container_tags(
+                result = await self.monitor.update_container_tags(
                     host_id,
                     short_id,
                     container_name,
@@ -388,11 +415,41 @@ class BatchJobManager:
                 message = f"Desired state set to {state_text}"
             elif action == 'check-updates':
                 # Check for newer image version
-                from updates.update_checker import get_update_checker
-
                 checker = get_update_checker(self.db, self.monitor)
                 await checker.check_single_container(host_id, short_id)
                 message = 'Update check completed'
+            elif action == 'delete-containers':
+                # Delete container and clean up database records
+                remove_volumes = params.get('remove_volumes', False) if params else False
+                await self._delete_container(host_id, short_id, container_name, remove_volumes)
+                message = 'Deleted successfully'
+            elif action == 'update-containers':
+                # Update container with new image version
+                # Get update record from database
+                update_record = None
+                with self.db.get_session() as session:
+                    composite_key = make_composite_key(host_id, short_id)
+                    update_record = session.query(ContainerUpdate).filter_by(
+                        container_id=composite_key
+                    ).first()
+
+                    if not update_record:
+                        return {
+                            'status': 'error',
+                            'message': 'No update available for this container'
+                        }
+
+                # Use update executor to handle the layered progress
+                executor = get_update_executor(self.db, self.monitor)
+                success = await executor.update_container(host_id, short_id, update_record, force=False)
+
+                if success:
+                    message = 'Update completed successfully'
+                else:
+                    return {
+                        'status': 'error',
+                        'message': 'Container update failed'
+                    }
             else:
                 return {
                     'status': 'error',
@@ -410,6 +467,30 @@ class BatchJobManager:
                 'status': 'error',
                 'message': str(e)
             }
+
+    async def _delete_container(self, host_id: str, container_id: str, container_name: str, remove_volumes: bool = False) -> None:
+        """
+        Delete a container and clean up all associated database records.
+
+        This method delegates to operations.delete_container which:
+        1. Verifies container exists and prevents DockMon self-deletion
+        2. Removes container from Docker (with force=True for running containers)
+        3. Cleans up ALL database records (updates, configs, tags, metadata, etc.)
+        4. Emits CONTAINER_DELETED event
+
+        Args:
+            host_id: Host UUID
+            container_id: Container short ID (12 chars)
+            container_name: Container name for logging
+            remove_volumes: Whether to remove anonymous volumes associated with the container
+
+        Raises:
+            HTTPException: If deletion fails (host not found, container not found, etc.)
+        """
+        # Call monitor's delete operation which handles everything
+        # (Docker removal + complete database cleanup + event emission)
+        await self.monitor.delete_container(host_id, container_id, container_name, remove_volumes)
+        logger.info(f"Deleted container {container_name} ({container_id}) successfully")
 
     async def _broadcast_job_update(self, job_id: str, status: str, message: Optional[str]):
         """Broadcast job status update via WebSocket"""
@@ -470,6 +551,49 @@ class BatchJobManager:
                 'message': message
             }
         })
+
+    async def _emit_batch_job_event(
+        self,
+        job_id: str,
+        event_type: EventType,
+        action: str,
+        total_items: int,
+        success_items: int = 0,
+        error_items: int = 0
+    ):
+        """
+        Emit a batch job event to the event bus for audit logging and alerts.
+
+        Args:
+            job_id: Unique batch job identifier
+            event_type: EventType.BATCH_JOB_STARTED, COMPLETED, or FAILED
+            action: The batch action (e.g., 'delete-containers', 'update-containers')
+            total_items: Total number of items in the batch
+            success_items: Number of successfully completed items
+            error_items: Number of failed items
+        """
+        try:
+            logger.info(f"Emitting {event_type} event for batch job {job_id}")
+
+            # Emit event via EventBus
+            event_bus = get_event_bus(self.monitor)
+            await event_bus.emit(Event(
+                event_type=event_type,
+                scope_type='batch_job',
+                scope_id=job_id,
+                scope_name=f"Batch {action}",
+                data={
+                    'action': action,
+                    'total_items': total_items,
+                    'success_items': success_items,
+                    'error_items': error_items,
+                }
+            ))
+
+            logger.debug(f"Emitted {event_type} event for batch job {job_id}")
+
+        except Exception as e:
+            logger.error(f"Error emitting batch job event: {e}", exc_info=True)
 
     def get_job_status(self, job_id: str) -> Optional[Dict]:
         """Get current status of a batch job"""

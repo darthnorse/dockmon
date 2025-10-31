@@ -116,12 +116,12 @@ RUN echo '#!/bin/bash' > /startup.sh && \
     echo '# Ensure certificates exist (generate if missing)' >> /startup.sh && \
     echo 'if [ ! -f /etc/nginx/certs/dockmon.crt ]; then' >> /startup.sh && \
     echo '  mkdir -p /etc/nginx/certs' >> /startup.sh && \
-    echo '  echo "Generating SSL certificates..."' >> /startup.sh && \
-    echo '  openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \' >> /startup.sh && \
+    echo '  echo "Generating SSL certificates (47-day validity for Apple browser compliance)..."' >> /startup.sh && \
+    echo '  openssl req -x509 -nodes -days 47 -newkey rsa:2048 \' >> /startup.sh && \
     echo '    -keyout /etc/nginx/certs/dockmon.key \' >> /startup.sh && \
     echo '    -out /etc/nginx/certs/dockmon.crt \' >> /startup.sh && \
     echo '    -subj "/C=US/ST=State/L=City/O=DockMon/CN=localhost" > /dev/null 2>&1' >> /startup.sh && \
-    echo '  echo "SSL certificates generated successfully"' >> /startup.sh && \
+    echo '  echo "SSL certificates generated successfully with 47-day validity"' >> /startup.sh && \
     echo '  chmod 600 /etc/nginx/certs/dockmon.key' >> /startup.sh && \
     echo '  chmod 644 /etc/nginx/certs/dockmon.crt' >> /startup.sh && \
     echo 'fi' >> /startup.sh && \

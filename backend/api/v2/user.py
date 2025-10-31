@@ -67,6 +67,7 @@ class DashboardPreferences(BaseModel):
     groupLayouts: Dict[str, Any] = Field(default_factory=dict)  # Dynamic group layouts/orders: supports both Layout[] and string[]
     showKpiBar: bool = Field(default=True)
     showStatsWidgets: bool = Field(default=False)
+    showContainerStats: bool = Field(default=False)
     optimizedLoading: bool = Field(default=True)
 
 
@@ -220,6 +221,7 @@ async def get_user_preferences(
             groupLayouts=dashboard_prefs.get("groupLayouts", {}),
             showKpiBar=dashboard_prefs.get("showKpiBar", True),
             showStatsWidgets=dashboard_prefs.get("showStatsWidgets", False),
+            showContainerStats=dashboard_prefs.get("showContainerStats", False),
             optimizedLoading=dashboard_prefs.get("optimizedLoading", True)
         )
 

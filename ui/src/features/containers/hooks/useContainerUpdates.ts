@@ -231,3 +231,29 @@ export function useAllHealthCheckConfigs() {
     refetchInterval: 60000, // Refresh every minute
   })
 }
+
+/**
+ * Hook to get all deployment metadata for all containers (batch endpoint)
+ *
+ * Performance optimization: Single API call instead of N individual calls.
+ * Used for displaying deployment information in container table.
+ * Part of deployment v2.1 remediation (Phase 1.4).
+ */
+export function useAllDeploymentMetadata() {
+  return useQuery({
+    queryKey: ['all-deployment-metadata'],
+    queryFn: async () => {
+      return await apiClient.get<Record<string, {
+        container_id: string
+        host_id: string
+        deployment_id: string | null
+        is_managed: boolean
+        service_name: string | null
+        created_at: string
+        updated_at: string
+      }>>('/deployment-metadata')
+    },
+    staleTime: 30000, // Cache for 30s
+    refetchInterval: 60000, // Refresh every minute
+  })
+}

@@ -35,16 +35,23 @@ from database import (
     UpdatePolicy,
     ContainerDesiredState,
     ContainerHttpHealthCheck,
+    DeploymentMetadata,
+    TagAssignment,
     User,
     UserPrefs,
     DockerHostDB,
     RegistryCredential,
     NotificationChannel,
-    AlertRuleV2
+    AlertRuleV2,
+    AutoRestartConfig,
+    BatchJobItem,
+    DeploymentContainer
 )
 from realtime import RealtimeMonitor
 from notifications import NotificationService
-from event_logger import EventLogger, EventContext, EventCategory, EventType, EventSeverity, PerformanceTimer
+from event_logger import EventLogger, EventContext, EventCategory, EventSeverity, PerformanceTimer
+from event_logger import EventType as LogEventType
+from event_bus import Event, EventType, get_event_bus
 
 # Import extracted modules
 from config.settings import AppConfig, get_cors_origins, setup_logging, HealthCheckFilter
@@ -66,6 +73,7 @@ from utils.encryption import encrypt_password, decrypt_password
 from utils.async_docker import async_docker_call
 from updates.container_validator import ContainerValidator, ValidationResult
 from packaging.version import parse as parse_version, InvalidVersion
+from deployment import routes as deployment_routes, DeploymentExecutor, TemplateManager
 
 # Configure logging
 setup_logging()
@@ -132,8 +140,18 @@ async def lifespan(app: FastAPI):
     # Note: Timezone offset is auto-synced from the browser when the UI loads
     # This ensures timestamps are always displayed in the user's local timezone
 
+    # Define task exception handler for background tasks
+    def _handle_task_exception(task: asyncio.Task):
+        """Handle exceptions from background tasks"""
+        try:
+            task.result()  # Raises exception if task failed
+        except asyncio.CancelledError:
+            pass  # Normal shutdown, don't log
+        except Exception as e:
+            logger.error(f"Background task failed: {e}", exc_info=True)
+
     await monitor.event_logger.start()
-    monitor.event_logger.log_system_event("DockMon Backend Starting", "DockMon backend is initializing", EventSeverity.INFO, EventType.STARTUP)
+    monitor.event_logger.log_system_event("DockMon Backend Starting", "DockMon backend is initializing", EventSeverity.INFO, LogEventType.STARTUP)
 
     # Connect security audit logger to event logger
     security_audit.set_event_logger(monitor.event_logger)
@@ -141,7 +159,11 @@ async def lifespan(app: FastAPI):
     monitor.maintenance_task = asyncio.create_task(monitor.run_daily_maintenance())
 
     # Check for DockMon updates on startup, then periodically every 6 hours
-    asyncio.create_task(monitor.periodic_jobs.check_dockmon_update_once())
+    # Store task reference and add error callback (Issue #1 fix)
+    monitor.update_check_task = asyncio.create_task(monitor.periodic_jobs.check_dockmon_update_once())
+    monitor.update_check_task.add_done_callback(_handle_task_exception)
+    logger.info("Started DockMon update checker task")
+
     monitor.dockmon_update_task = asyncio.create_task(monitor.periodic_jobs.check_dockmon_updates_periodic())
 
     # Start blackout window monitoring with WebSocket support
@@ -182,13 +204,23 @@ async def lifespan(app: FastAPI):
     # Initialize HTTP health checker
     from health_check.http_checker import HttpHealthChecker
     monitor.http_health_checker = HttpHealthChecker(monitor, monitor.db)
-    asyncio.create_task(monitor.http_health_checker.start())
-    logger.info("HTTP health checker started")
+    # Store task reference and add error callback (Issue #1 fix)
+    monitor.http_health_check_task = asyncio.create_task(monitor.http_health_checker.start())
+    monitor.http_health_check_task.add_done_callback(_handle_task_exception)
+    logger.info("HTTP health checker task started")
+
+    # Initialize deployment services (v2.1)
+    deployment_executor = DeploymentExecutor(monitor.realtime, monitor, monitor.db)
+    template_manager = TemplateManager(monitor.db)
+    deployment_routes.set_deployment_executor(deployment_executor)
+    deployment_routes.set_template_manager(template_manager)
+    deployment_routes.set_database_manager(monitor.db)
+    logger.info("Deployment services initialized")
 
     yield
     # Shutdown
     logger.info("Shutting down DockMon backend...")
-    monitor.event_logger.log_system_event("DockMon Backend Shutting Down", "DockMon backend is shutting down", EventSeverity.INFO, EventType.SHUTDOWN)
+    monitor.event_logger.log_system_event("DockMon Backend Shutting Down", "DockMon backend is shutting down", EventSeverity.INFO, LogEventType.SHUTDOWN)
 
     # Cancel and await background tasks to ensure clean shutdown
     if monitor.monitoring_task:
@@ -208,6 +240,17 @@ async def lifespan(app: FastAPI):
             logger.info("Maintenance task cancelled successfully")
         except Exception as e:
             logger.error(f"Error during maintenance task shutdown: {e}")
+
+    # Cancel one-time update check task (Issue #1 fix)
+    if hasattr(monitor, 'update_check_task') and monitor.update_check_task:
+        if not monitor.update_check_task.done():
+            monitor.update_check_task.cancel()
+            try:
+                await monitor.update_check_task
+            except asyncio.CancelledError:
+                logger.info("Update check task cancelled successfully")
+            except Exception as e:
+                logger.error(f"Error during update check task shutdown: {e}")
 
     # Cancel DockMon update checker task
     if hasattr(monitor, 'dockmon_update_task') and monitor.dockmon_update_task:
@@ -240,6 +283,17 @@ async def lifespan(app: FastAPI):
             logger.info("Alert evaluation service stopped")
     except Exception as e:
         logger.error(f"Error stopping alert evaluation service: {e}")
+
+    # Cancel HTTP health checker task (Issue #1 fix)
+    if hasattr(monitor, 'http_health_check_task') and monitor.http_health_check_task:
+        if not monitor.http_health_check_task.done():
+            monitor.http_health_check_task.cancel()
+            try:
+                await monitor.http_health_check_task
+            except asyncio.CancelledError:
+                logger.info("HTTP health check task cancelled successfully")
+            except Exception as e:
+                logger.error(f"Error during HTTP health check task shutdown: {e}")
 
     # Stop HTTP health checker
     try:
@@ -345,6 +399,8 @@ from api.v2.user import router as user_v2_router
 
 app.include_router(auth_v2_router)  # v2 cookie-based auth
 app.include_router(user_v2_router)  # v2 user preferences
+app.include_router(deployment_routes.router)  # v2.1 deployment endpoints
+app.include_router(deployment_routes.template_router)  # v2.1 template endpoints
 # app.include_router(alerts_router)  # MOVED: Registered after v2 rules routes
 
 @app.get("/")
@@ -728,6 +784,40 @@ async def start_container(host_id: str, container_id: str, current_user: dict = 
     """Start a container"""
     success = await monitor.start_container(host_id, container_id)
     return {"status": "success" if success else "failed"}
+
+@app.delete("/api/hosts/{host_id}/containers/{container_id}")
+async def delete_container(
+    host_id: str,
+    container_id: str,
+    removeVolumes: bool = False,
+    current_user: dict = Depends(get_current_user),
+    rate_limit_check: bool = rate_limit_containers
+):
+    """
+    Delete a container permanently.
+
+    CRITICAL SAFETY: DockMon cannot delete itself.
+
+    Args:
+        host_id: Host UUID
+        container_id: Container SHORT ID (12 chars)
+        removeVolumes: If True, also remove anonymous/non-persistent volumes
+
+    Returns:
+        {"success": True, "message": "Container deleted"}
+
+    Raises:
+        403: Attempting to delete DockMon itself
+        404: Container or host not found
+        500: Docker API failure
+    """
+    # Get container name for logging (operations module will re-fetch it)
+    containers = await monitor.get_containers()
+    container = next((c for c in containers if c.id == container_id and c.host_id == host_id), None)
+    container_name = container.name if container else container_id
+
+    # Delegate to monitor (which delegates to operations module)
+    return await monitor.delete_container(host_id, container_id, container_name, removeVolumes)
 
 @app.get("/api/hosts/{host_id}/containers/{container_id}/logs")
 async def get_container_logs(
@@ -1338,6 +1428,23 @@ async def check_all_updates(current_user: dict = Depends(get_current_user)):
     return stats
 
 
+@app.post("/api/images/prune")
+async def prune_images(current_user: dict = Depends(get_current_user)):
+    """
+    Manually trigger Docker image pruning.
+
+    Removes unused images based on retention policy settings:
+    - Dangling images (<none>:<none>)
+    - Old versions beyond retention count
+
+    Returns count of images removed.
+    """
+    logger.info(f"User {current_user.get('username')} triggered manual image prune")
+
+    removed_count = await monitor.periodic_jobs.cleanup_old_images()
+    return {"removed": removed_count}
+
+
 @app.get("/api/updates/summary")
 async def get_updates_summary(current_user: dict = Depends(get_current_user)):
     """
@@ -1401,6 +1508,44 @@ async def get_all_auto_update_configs(current_user: dict = Depends(get_current_u
                 "floating_tag_mode": record.floating_tag_mode,
             }
             for record in configs
+        }
+
+
+@app.get("/api/deployment-metadata")
+async def get_all_deployment_metadata(current_user: dict = Depends(get_current_user)):
+    """
+    Get deployment metadata for all containers (batch endpoint).
+
+    Returns:
+        Dict mapping container_id (composite key) to deployment metadata:
+        {
+            "{host_id}:{container_id}": {
+                "host_id": str,
+                "deployment_id": str | null,
+                "is_managed": bool,
+                "service_name": str | null,
+                "created_at": str,
+                "updated_at": str
+            }
+        }
+
+    Performance: Single database query instead of N individual queries.
+    Following DockMon pattern established by /api/auto-update-configs.
+    """
+
+    with monitor.db.get_session() as session:
+        metadata_records = session.query(DeploymentMetadata).all()
+
+        return {
+            record.container_id: {
+                "host_id": record.host_id,
+                "deployment_id": record.deployment_id,
+                "is_managed": record.is_managed,
+                "service_name": record.service_name,
+                "created_at": record.created_at.isoformat() + 'Z' if record.created_at else None,
+                "updated_at": record.updated_at.isoformat() + 'Z' if record.updated_at else None,
+            }
+            for record in metadata_records
         }
 
 
@@ -1781,6 +1926,10 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
         "update_check_time": getattr(settings, 'update_check_time', "02:00"),
         "skip_compose_containers": getattr(settings, 'skip_compose_containers', True),
         "health_check_timeout_seconds": getattr(settings, 'health_check_timeout_seconds', 10),
+        # Image pruning settings (v2.1+)
+        "prune_images_enabled": getattr(settings, 'prune_images_enabled', True),
+        "image_retention_count": getattr(settings, 'image_retention_count', 2),
+        "image_prune_grace_hours": getattr(settings, 'image_prune_grace_hours', 48),
         # DockMon update notifications (v2.0.1+)
         "app_version": current_version,
         "latest_available_version": latest_version,
@@ -1859,7 +2008,11 @@ async def update_settings(
         "alert_retention_days": getattr(updated, 'alert_retention_days', 90),
         "update_check_time": getattr(updated, 'update_check_time', "02:00"),
         "skip_compose_containers": getattr(updated, 'skip_compose_containers', True),
-        "health_check_timeout_seconds": getattr(updated, 'health_check_timeout_seconds', 10)
+        "health_check_timeout_seconds": getattr(updated, 'health_check_timeout_seconds', 10),
+        # Image pruning settings (v2.1+)
+        "prune_images_enabled": getattr(updated, 'prune_images_enabled', True),
+        "image_retention_count": getattr(updated, 'image_retention_count', 2),
+        "image_prune_grace_hours": getattr(updated, 'image_prune_grace_hours', 48)
     }
 
 
@@ -3393,7 +3546,7 @@ async def cleanup_old_events(days: int = 30, current_user: dict = Depends(get_cu
             "Event Cleanup Completed",
             f"Cleaned up {deleted_count} events older than {days} days",
             EventSeverity.INFO,
-            EventType.STARTUP
+            EventType.SYSTEM_STARTUP
         )
 
         return {

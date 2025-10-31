@@ -217,6 +217,11 @@ class GlobalSettings(Base):
     skip_compose_containers = Column(Boolean, default=True)  # Skip Docker Compose-managed containers
     health_check_timeout_seconds = Column(Integer, default=60)  # Health check timeout (seconds)
 
+    # Image pruning settings (v2.1+)
+    prune_images_enabled = Column(Boolean, default=True)  # Enable automatic image pruning
+    image_retention_count = Column(Integer, default=2)  # Keep last N versions per image (1-10)
+    image_prune_grace_hours = Column(Integer, default=48)  # Don't remove images newer than N hours (1-168)
+
     # Alert system settings
     alert_retention_days = Column(Integer, default=90)  # Keep resolved alerts for N days (0 = keep forever)
 
@@ -638,6 +643,214 @@ class RegistryCredential(Base):
     password_encrypted = Column(Text, nullable=False)  # Fernet-encrypted password
     created_at = Column(DateTime, default=utcnow, nullable=False)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class Deployment(Base):
+    """
+    Deployment records for container lifecycle operations.
+
+    Tracks container deployments and stacks with state machine support
+    and commitment point tracking for rollback safety.
+
+    Deployment Types:
+        - container: Single container deployment
+        - stack: Multi-container stack deployment
+
+    Status Flow (7-state machine):
+        planning -> validating -> pulling_image -> creating -> starting -> running -> completed
+                                                                                    |-> failed
+                                                                                    |-> rolled_back
+
+    Progress Tracking (Dual-Level):
+        - progress_percent: Overall deployment progress (0-100%)
+          Example: "Deployment is 40% complete"
+
+        - stage_percent: Stage-specific progress (0-100%)
+          Example: "Currently pulling image: layer 4 of 7 (60% complete)"
+
+        Together they provide granular progress visibility:
+          Overall: 40% | Stage: pulling_image 60%
+
+    Commitment Point:
+        - committed=False: Operation not yet committed to database, safe to rollback
+        - committed=True: Operation committed, rollback would destroy committed state
+
+    CRITICAL STANDARDS:
+        - id: Composite key format {host_id}:{deployment_short_id}
+        - deployment_short_id: SHORT ID (12 chars), never full 64-char ID
+        - Composite key prevents collisions across multiple hosts
+    """
+    __tablename__ = "deployments"
+
+    id = Column(String, primary_key=True)  # Composite: {host_id}:{deployment_short_id}
+    host_id = Column(String, ForeignKey("docker_hosts.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)  # User who created deployment (for authorization)
+    deployment_type = Column(String, nullable=False)  # 'container' | 'stack'
+    name = Column(String, nullable=False)
+    status = Column(String, nullable=False, default='planning')  # planning, validating, pulling_image, creating, starting, running, failed, rolled_back
+    definition = Column(Text, nullable=False)  # JSON: container/stack configuration
+    error_message = Column(Text, nullable=True)
+    progress_percent = Column(Integer, default=0, nullable=False)  # Deployment progress 0-100%
+    current_stage = Column(Text, nullable=True)  # Current deployment stage (e.g., 'Pulling image', 'Creating container')
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    created_by = Column(String, nullable=True)  # Username who created deployment (from design spec line 124)
+    committed = Column(Boolean, default=False, nullable=False)  # Commitment point tracking
+    rollback_on_failure = Column(Boolean, default=True, nullable=False)
+
+    # Relationships
+    host = relationship("DockerHostDB")
+    user = relationship("User")
+    containers = relationship("DeploymentContainer", back_populates="deployment", cascade="all, delete-orphan")
+
+    # Indexes and constraints
+    __table_args__ = (
+        UniqueConstraint('host_id', 'name', name='uq_deployment_host_name'),  # Unique name per host
+        # Status must be one of the valid deployment states
+        CheckConstraint(
+            "status IN ('planning', 'validating', 'pulling_image', 'creating', 'starting', 'running', 'failed', 'rolled_back')",
+            name='ck_deployment_valid_status'
+        ),
+        Index('idx_deployment_user_id', 'user_id'),  # Filter deployments by user (authorization checks)
+        Index('idx_deployment_host_id', 'host_id'),
+        Index('idx_deployment_status', 'status'),
+        Index('idx_deployment_created_at', 'created_at'),
+        Index('idx_deployment_host_status', 'host_id', 'status'),  # Common filter: deployments for host with status
+        Index('idx_deployment_user_host', 'user_id', 'host_id'),  # User's deployments on specific host
+        {"sqlite_autoincrement": False},
+    )
+
+
+class DeploymentContainer(Base):
+    """
+    Container participation in a deployment.
+
+    Junction table linking deployments to containers. For single container
+    deployments, service_name is NULL. For stack deployments, service_name
+    identifies the role (e.g., 'web', 'db', 'redis').
+
+    CRITICAL STANDARDS:
+        - container_id: SHORT ID (12 chars), never full 64-char ID
+        - service_name: NULL for single containers, name for stack services
+    """
+    __tablename__ = "deployment_containers"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    deployment_id = Column(String, ForeignKey("deployments.id", ondelete="CASCADE"), nullable=False)
+    container_id = Column(String, nullable=False)  # SHORT ID (12 chars)
+    service_name = Column(String, nullable=True)  # NULL for single containers, service name for stacks
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+
+    # Relationships
+    deployment = relationship("Deployment", back_populates="containers")
+
+    # Indexes and constraints
+    __table_args__ = (
+        # Unique constraint prevents duplicate container entries in same deployment
+        # For stacks: unique per (deployment, service_name) - each service appears once
+        # For containers: unique per deployment (service_name is NULL)
+        UniqueConstraint('deployment_id', 'container_id', name='uq_deployment_container_link'),
+        Index('idx_deployment_container_deployment', 'deployment_id'),
+        Index('idx_deployment_container_container', 'container_id'),
+        Index('idx_deployment_container_deployment_service', 'deployment_id', 'service_name'),  # Stack service lookup
+        {"sqlite_autoincrement": True},
+    )
+
+
+class DeploymentTemplate(Base):
+    """
+    Saved deployment templates for reusable container configurations.
+
+    Allows users to save and reuse container configurations as templates.
+    Templates are categorized for organization (e.g., 'web', 'database', 'monitoring').
+
+    Template Variables:
+        Templates can include variables like ${PORT} that are substituted at deployment time.
+        Variables are defined in the 'variables' JSON field with default values and types.
+
+    Template Structure (template_definition):
+        Single container (deployment_type='container'):
+            {"container": {"image": "nginx:latest", "ports": {"80/tcp": "${PORT}"}, ...}}
+
+        Stack (deployment_type='stack'):
+            {
+                "services": {
+                    "web": {"image": "nginx:latest", ...},
+                    "db": {"image": "postgres:15", ...}
+                }
+            }
+    """
+    __tablename__ = "deployment_templates"
+
+    id = Column(String, primary_key=True)  # e.g., 'tpl_nginx_001'
+    name = Column(String, nullable=False, unique=True)
+    category = Column(String, nullable=True)  # e.g., 'web', 'database', 'monitoring'
+    description = Column(Text, nullable=True)
+    deployment_type = Column(String, nullable=False)  # 'container' | 'stack'
+    template_definition = Column(Text, nullable=False)  # JSON: container/stack configuration with variables
+    variables = Column(Text, nullable=True)  # JSON: {"PORT": {"default": 8080, "type": "integer", "description": "..."}}
+    is_builtin = Column(Boolean, default=False, nullable=False)  # Built-in vs user-created template
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+    # Indexes
+    __table_args__ = (
+        Index('idx_deployment_template_name', 'name'),
+        Index('idx_deployment_template_category', 'category'),
+        {"sqlite_autoincrement": False},
+    )
+
+
+class DeploymentMetadata(Base):
+    """
+    Deployment metadata for containers created via deployments.
+
+    Tracks which containers were created by deployments to enable:
+    - Deployment status display (show which containers belong to a deployment)
+    - Deployment filtering (filter containers by deployment)
+    - Cleanup tracking (know which containers to clean up on rollback)
+    - Stack service tracking (identify service roles in multi-container deployments)
+
+    ARCHITECTURE:
+    This table follows DockMon's existing metadata pattern where containers themselves
+    are ephemeral (fetched from Docker API) and metadata is persisted separately.
+    Similar to: container_desired_states, container_updates, container_http_health_checks.
+
+    CRITICAL STANDARDS:
+        - container_id: Composite key format {host_id}:{container_short_id} (12 chars)
+        - deployment_id: NULL if container not created by deployment system
+        - is_managed: True if created by deployment, False otherwise
+        - service_name: NULL for single containers, service name for stack deployments
+
+    Foreign Key Behavior:
+        - host_id CASCADE: If host deleted, delete all deployment metadata for that host
+        - deployment_id SET NULL: If deployment deleted, keep metadata but clear deployment link
+    """
+    __tablename__ = "deployment_metadata"
+
+    container_id = Column(Text, primary_key=True)  # Composite: {host_id}:{container_short_id}
+    host_id = Column(Text, ForeignKey("docker_hosts.id", ondelete="CASCADE"), nullable=False)
+    deployment_id = Column(String, ForeignKey("deployments.id", ondelete="SET NULL"), nullable=True)
+    is_managed = Column(Boolean, default=False, nullable=False)  # True if created by deployment system
+    service_name = Column(String, nullable=True)  # NULL for single containers, service name for stacks (e.g., 'web', 'db')
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+    # Relationships
+    host = relationship("DockerHostDB")
+    deployment = relationship("Deployment")
+
+    # Indexes and constraints
+    __table_args__ = (
+        # is_managed must be boolean
+        CheckConstraint("is_managed IN (0, 1)", name='ck_deployment_metadata_managed'),
+        Index('idx_deployment_metadata_host', 'host_id'),
+        Index('idx_deployment_metadata_deployment', 'deployment_id'),
+        Index('idx_deployment_metadata_host_deployment', 'host_id', 'deployment_id'),  # Common lookup for deployments on host
+        {"sqlite_autoincrement": False},
+    )
 
 
 class DatabaseManager:
@@ -1808,6 +2021,53 @@ class DatabaseManager:
 
             return total_deleted
 
+    def cleanup_orphaned_deployment_metadata(self, existing_container_keys: set, batch_size: int = 1000) -> int:
+        """
+        Clean up deployment metadata for containers that no longer exist.
+
+        Args:
+            existing_container_keys: Set of container composite keys that currently exist
+                                    (format: {host_id}:{container_short_id})
+            batch_size: Maximum number of records to delete in one batch
+
+        Returns:
+            Number of metadata records removed
+        """
+        with self.get_session() as session:
+            # Find all deployment metadata entries
+            total_deleted = 0
+            while True:
+                # Get batch of metadata records
+                metadata_batch = session.query(DeploymentMetadata).limit(batch_size).all()
+
+                if not metadata_batch:
+                    break
+
+                # Check which ones are orphaned (container no longer exists)
+                orphaned = []
+                for metadata in metadata_batch:
+                    if metadata.container_id not in existing_container_keys:
+                        orphaned.append(metadata)
+
+                # Delete orphaned metadata
+                for metadata in orphaned:
+                    session.delete(metadata)
+
+                if orphaned:
+                    session.commit()
+                    batch_count = len(orphaned)
+                    total_deleted += batch_count
+                    logger.debug(f"Deleted batch of {batch_count} orphaned deployment metadata records")
+
+                # If we processed fewer than batch_size, we're done
+                if len(metadata_batch) < batch_size:
+                    break
+
+            if total_deleted > 0:
+                logger.info(f"Cleaned up {total_deleted} orphaned deployment metadata records")
+
+            return total_deleted
+
     def cleanup_unused_tags(self, days_unused: int = 30) -> int:
         """
         Clean up tags that have not been used (assigned to anything) for N days.
@@ -1875,7 +2135,9 @@ class DatabaseManager:
                     'blackout_windows', 'timezone_offset', 'show_host_stats',
                     'show_container_stats', 'show_container_alerts_on_hosts',
                     'auto_update_enabled_default', 'update_check_interval_hours',
-                    'update_check_time', 'skip_compose_containers', 'health_check_timeout_seconds'
+                    'update_check_time', 'skip_compose_containers', 'health_check_timeout_seconds',
+                    # Image pruning settings (v2.1+)
+                    'prune_images_enabled', 'image_retention_count', 'image_prune_grace_hours'
                 }
 
                 for key, value in updates.items():

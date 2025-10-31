@@ -81,8 +81,9 @@ jobs:
           build-args: |
             VERSION=${{ steps.version.outputs.version }}
             COMMIT=${{ steps.version.outputs.commit }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Caching disabled - monitoring tool needs guaranteed fresh builds
+          # cache-from: type=gha
+          # cache-to: type=gha,mode=max
 
       - name: Generate artifact attestation
         if: github.event_name != 'pull_request'

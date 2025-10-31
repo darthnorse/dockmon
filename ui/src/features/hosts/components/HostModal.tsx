@@ -163,6 +163,37 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
     }
   }, [host, isOpen, reset])
 
+  const token = generateToken.data?.token
+  const expiresAt = generateToken.data?.expires_at
+
+  const handleCopy = async (text: string) => {
+    await navigator.clipboard.writeText(text)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  // Auto-detect DockMon URL from current browser location
+  const dockmonUrl = `${window.location.protocol}//${window.location.host}`
+  const isHttps = window.location.protocol === 'https:'
+
+  const installCommand = token
+    ? `docker run -d \\
+  --name dockmon-agent \\
+  --restart unless-stopped \\
+  -v /var/run/docker.sock:/var/run/docker.sock:ro \\
+  -e DOCKMON_URL=${dockmonUrl} \\
+  -e REGISTRATION_TOKEN=${token} \\${isHttps ? '\n  -e INSECURE_SKIP_VERIFY=true \\' : ''}
+  ghcr.io/darthnorse/dockmon-agent:latest`
+    : ''
+
+  const formatExpiry = (isoString: string) => {
+    const date = new Date(isoString)
+    const now = new Date()
+    const diff = date.getTime() - now.getTime()
+    const minutes = Math.floor(diff / 60000)
+    return `${minutes} minute${minutes !== 1 ? 's' : ''}`
+  }
+
   const testConnection = async () => {
     const formData = watch()
 

@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"sync"
 	"time"
@@ -149,8 +150,16 @@ func (c *WebSocketClient) connect(ctx context.Context) error {
 	}
 	wsURL = wsURL + "/api/agent/ws"
 
-	// Connect
+	// Configure dialer with TLS settings
 	dialer := websocket.DefaultDialer
+	if c.cfg.InsecureSkipVerify {
+		dialer.TLSClientConfig = &tls.Config{
+			InsecureSkipVerify: true,
+		}
+		c.log.Warn("TLS certificate verification disabled (INSECURE_SKIP_VERIFY=true)")
+	}
+
+	// Connect
 	conn, _, err := dialer.DialContext(ctx, wsURL, nil)
 	if err != nil {
 		return fmt.Errorf("failed to dial: %w", err)

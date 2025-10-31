@@ -10,9 +10,10 @@ import (
 // Config holds all agent configuration
 type Config struct {
 	// DockMon connection
-	DockMonURL       string
-	RegistrationToken string
-	PermanentToken    string
+	DockMonURL         string
+	RegistrationToken  string
+	PermanentToken     string
+	InsecureSkipVerify bool
 
 	// Docker connection
 	DockerHost       string
@@ -41,9 +42,10 @@ type Config struct {
 func LoadFromEnv() (*Config, error) {
 	cfg := &Config{
 		// Required
-		DockMonURL:       os.Getenv("DOCKMON_URL"),
-		RegistrationToken: os.Getenv("REGISTRATION_TOKEN"),
-		PermanentToken:   os.Getenv("PERMANENT_TOKEN"),
+		DockMonURL:         os.Getenv("DOCKMON_URL"),
+		RegistrationToken:  os.Getenv("REGISTRATION_TOKEN"),
+		PermanentToken:     os.Getenv("PERMANENT_TOKEN"),
+		InsecureSkipVerify: getEnvBool("INSECURE_SKIP_VERIFY", false),
 
 		// Docker (defaults work for standard socket)
 		DockerHost:       getEnvOrDefault("DOCKER_HOST", "unix:///var/run/docker.sock"),

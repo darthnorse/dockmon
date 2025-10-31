@@ -2559,6 +2559,41 @@ class DatabaseManager:
             session.commit()
             return deleted_count
 
+    def cleanup_old_registration_tokens(self, days: int = 7) -> int:
+        """
+        Clean up old/expired agent registration tokens (v2.2.0).
+
+        Deletes:
+        - All expired tokens (past expires_at timestamp)
+        - Used tokens older than retention period
+
+        Args:
+            days: Number of days to keep used tokens (default 7 for audit trail)
+
+        Returns:
+            Number of tokens deleted
+        """
+        with self.get_session() as session:
+            now = datetime.utcnow()  # Naive UTC for SQLite compatibility
+            cutoff_date = now - timedelta(days=days)
+
+            # Delete expired tokens (regardless of used status)
+            deleted_count = session.query(RegistrationToken).filter(
+                RegistrationToken.expires_at < now
+            ).delete()
+
+            # Delete used tokens older than retention period
+            old_used_count = session.query(RegistrationToken).filter(
+                RegistrationToken.used == True,
+                RegistrationToken.used_at < cutoff_date
+            ).delete()
+
+            deleted_count += old_used_count
+            session.commit()
+
+            logger.info(f"Cleaned up {deleted_count} registration tokens (expired or old/used)")
+            return deleted_count
+
     def cleanup_old_alerts(self, retention_days: int) -> int:
         """
         Delete resolved alerts older than retention_days

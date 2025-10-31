@@ -17,6 +17,7 @@ Message Types:
 import asyncio
 import json
 import logging
+from datetime import datetime
 from typing import Optional
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -24,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from agent.manager import AgentManager
 from agent.connection_manager import agent_connection_manager
+from database import Agent
 
 logger = logging.getLogger(__name__)
 
@@ -218,10 +220,8 @@ class AgentWebSocketHandler:
 
         elif msg_type == "heartbeat":
             # Update last_seen_at
-            from database import Agent
             agent = self.db.query(Agent).filter_by(id=self.agent_id).first()
             if agent:
-                from datetime import datetime
                 agent.last_seen_at = datetime.utcnow()
                 self.db.commit()
 

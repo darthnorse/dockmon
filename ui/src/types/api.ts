@@ -75,6 +75,19 @@ export interface Host {
   // System resources
   total_memory?: number | null  // Total memory in bytes
   num_cpus?: number | null  // Number of CPUs
+  // Connection type (v2.2.0)
+  connection_type?: 'agent' | 'remote'
+  agent?: {
+    agent_id: string
+    engine_id: string
+    version: string
+    proto_version: number
+    capabilities: Record<string, unknown>
+    status: string
+    connected: boolean
+    last_seen_at: string | null  // ISO timestamp
+    registered_at: string | null  // ISO timestamp
+  } | null
 }
 
 // ==================== Containers ====================

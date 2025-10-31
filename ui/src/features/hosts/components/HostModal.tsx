@@ -185,12 +185,15 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
     setTimeout(() => setCopied(false), 2000)
   }
 
+  // Auto-detect DockMon URL from current browser location
+  const dockmonUrl = `${window.location.protocol}//${window.location.host}`
+
   const installCommand = token
     ? `docker run -d \\
   --name dockmon-agent \\
   --restart unless-stopped \\
   -v /var/run/docker.sock:/var/run/docker.sock:ro \\
-  -e DOCKMON_URL=http://YOUR_DOCKMON_HOST:8080 \\
+  -e DOCKMON_URL=${dockmonUrl} \\
   -e REGISTRATION_TOKEN=${token} \\
   ghcr.io/darthnorse/dockmon-agent:latest`
     : ''
@@ -386,8 +389,8 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
 
           <Alert>
             <AlertDescription className="text-sm">
-              <strong>Note:</strong> Replace <code>YOUR_DOCKMON_HOST</code> with your DockMon
-              server's hostname or IP address. The agent will connect via WebSocket and appear in your hosts list automatically.
+              <strong>Note:</strong> If the <code>DOCKMON_URL</code> is not correct, please change it to the correct URL before running the command on the remote host.
+              The agent will connect via WebSocket and appear in your hosts list automatically.
             </AlertDescription>
           </Alert>
 

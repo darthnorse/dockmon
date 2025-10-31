@@ -167,6 +167,11 @@ class PeriodicJobsManager:
                 if expired_count > 0:
                     logger.info(f"Cleaned up {expired_count} expired sessions")
 
+                # Clean up old registration tokens (v2.2.0)
+                tokens_deleted = self.db.cleanup_old_registration_tokens(days=7)
+                if tokens_deleted > 0:
+                    logger.info(f"Cleaned up {tokens_deleted} old/expired registration tokens")
+
                 # Clean up orphaned tag assignments (containers not seen in 30 days)
                 orphaned_tags = self.db.cleanup_orphaned_tag_assignments(days_old=30)
                 if orphaned_tags > 0:

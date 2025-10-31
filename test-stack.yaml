@@ -1,0 +1,78 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: appdb
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: secretpassword123
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 3
+
+  api:
+    image: node:20-alpine
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      DATABASE_URL: postgresql://admin:secretpassword123@postgres:5432/appdb
+      REDIS_URL: redis://redis:6379
+      NODE_ENV: production
+    command: sh -c "sleep 3600"
+    networks:
+      - backend
+      - frontend
+
+  nginx:
+    image: nginx:alpine
+    depends_on:
+      - api
+    ports:
+      - "8080:80"
+    networks:
+      - frontend
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:80"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  adminer:
+    image: adminer:latest
+    depends_on:
+      - postgres
+    ports:
+      - "8081:8080"
+    networks:
+      - backend
+      - frontend
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+
+networks:
+  backend:
+    driver: bridge
+  frontend:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local

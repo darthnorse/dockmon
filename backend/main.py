@@ -45,7 +45,8 @@ from database import (
     AlertRuleV2,
     AutoRestartConfig,
     BatchJobItem,
-    DeploymentContainer
+    DeploymentContainer,
+    Agent
 )
 from realtime import RealtimeMonitor
 from notifications import NotificationService
@@ -74,6 +75,9 @@ from utils.async_docker import async_docker_call
 from updates.container_validator import ContainerValidator, ValidationResult
 from packaging.version import parse as parse_version, InvalidVersion
 from deployment import routes as deployment_routes, DeploymentExecutor, TemplateManager
+from agent.manager import AgentManager
+from agent.connection_manager import agent_connection_manager
+from agent.websocket_handler import handle_agent_websocket
 
 # Configure logging
 setup_logging()
@@ -111,6 +115,22 @@ monitor = DockerMonitor()
 
 # Global instances (initialized in lifespan)
 batch_manager: Optional[BatchJobManager] = None
+
+
+# ==================== Database Helper ====================
+
+def get_db_context():
+    """
+    Get a database session context manager.
+
+    Returns:
+        Session context manager that can be used with 'with' statement
+
+    Example:
+        with get_db_context() as db:
+            user = db.query(User).first()
+    """
+    return monitor.db.get_session()
 
 
 # ==================== Authentication ====================
@@ -458,8 +478,51 @@ async def verify_session_auth(request: Request):
 
 @app.get("/api/hosts")
 async def get_hosts(current_user: dict = Depends(get_current_user)):
-    """Get all configured Docker hosts"""
-    return list(monitor.hosts.values())
+    """
+    Get all configured Docker hosts with agent information.
+
+    For hosts connected via agents, includes:
+    - connection_type: "agent" or "remote"
+    - agent: {id, version, capabilities, status, connected, last_seen_at, registered_at}
+    """
+    hosts = list(monitor.hosts.values())
+
+    # Enrich hosts with agent information
+    with get_db_context() as db:
+        # Get all agents with their host associations
+        agents = db.query(Agent).all()
+        agent_by_host = {agent.host_id: agent for agent in agents}
+
+        # Enhance host data with agent info
+        enriched_hosts = []
+        for host in hosts:
+            host_dict = host.dict() if hasattr(host, 'dict') else host
+
+            # Check if this host has an agent
+            agent = agent_by_host.get(host_dict.get('id'))
+
+            if agent:
+                # Host is connected via agent
+                host_dict['connection_type'] = 'agent'
+                host_dict['agent'] = {
+                    'agent_id': agent.id,
+                    'engine_id': agent.engine_id,
+                    'version': agent.version,
+                    'proto_version': agent.proto_version,
+                    'capabilities': json.loads(agent.capabilities) if agent.capabilities else {},
+                    'status': agent.status,
+                    'connected': agent_connection_manager.is_connected(agent.id),
+                    'last_seen_at': agent.last_seen_at.isoformat() + 'Z' if agent.last_seen_at else None,
+                    'registered_at': agent.registered_at.isoformat() + 'Z' if agent.registered_at else None
+                }
+            else:
+                # Host is connected via remote Docker (TCP/socket)
+                host_dict['connection_type'] = 'remote'
+                host_dict['agent'] = None
+
+            enriched_hosts.append(host_dict)
+
+        return enriched_hosts
 
 @app.post("/api/hosts")
 async def add_host(config: DockerHostConfig, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_hosts, request: Request = None):
@@ -3811,12 +3874,10 @@ async def generate_agent_registration_token(
     Token expires after 15 minutes and can only be used once.
     """
     try:
-        from agent.manager import AgentManager
-
         with get_db_context() as db:
             agent_manager = AgentManager(db)
             token_record = agent_manager.generate_registration_token(
-                user_id=current_user["id"]
+                user_id=current_user["user_id"]
             )
 
             return {
@@ -3830,90 +3891,9 @@ async def generate_agent_registration_token(
         raise HTTPException(status_code=500, detail=f"Failed to generate token: {str(e)}")
 
 
-@app.get("/api/agent/list")
-async def list_agents(
-    request: Request,
-    current_user: dict = Depends(get_current_user)
-):
-    """
-    List all registered agents with their status and metadata.
-    """
-    try:
-        from database import Agent, DockerHostDB
-        from agent.connection_manager import agent_connection_manager
-
-        with get_db_context() as db:
-            agents = db.query(Agent).join(DockerHostDB).all()
-
-            agents_data = []
-            for agent in agents:
-                agents_data.append({
-                    "agent_id": agent.id,
-                    "host_id": agent.host_id,
-                    "host_name": agent.host.name if agent.host else None,
-                    "engine_id": agent.engine_id,
-                    "version": agent.version,
-                    "proto_version": agent.proto_version,
-                    "capabilities": json.loads(agent.capabilities) if agent.capabilities else {},
-                    "status": agent.status,
-                    "connected": agent_connection_manager.is_connected(agent.id),
-                    "last_seen_at": agent.last_seen_at.isoformat() + 'Z' if agent.last_seen_at else None,
-                    "registered_at": agent.registered_at.isoformat() + 'Z' if agent.registered_at else None
-                })
-
-            return {
-                "success": True,
-                "agents": agents_data,
-                "total": len(agents_data),
-                "connected_count": agent_connection_manager.get_connection_count()
-            }
-
-    except Exception as e:
-        logger.error(f"Failed to list agents: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to list agents: {str(e)}")
-
-
-@app.get("/api/agent/{agent_id}/status")
-async def get_agent_status(
-    agent_id: str,
-    request: Request,
-    current_user: dict = Depends(get_current_user)
-):
-    """
-    Get detailed status of a specific agent.
-    """
-    try:
-        from database import Agent, DockerHostDB
-        from agent.connection_manager import agent_connection_manager
-
-        with get_db_context() as db:
-            agent = db.query(Agent).filter_by(id=agent_id).first()
-
-            if not agent:
-                raise HTTPException(status_code=404, detail="Agent not found")
-
-            return {
-                "success": True,
-                "agent": {
-                    "agent_id": agent.id,
-                    "host_id": agent.host_id,
-                    "host_name": agent.host.name if agent.host else None,
-                    "engine_id": agent.engine_id,
-                    "version": agent.version,
-                    "proto_version": agent.proto_version,
-                    "capabilities": json.loads(agent.capabilities) if agent.capabilities else {},
-                    "status": agent.status,
-                    "connected": agent_connection_manager.is_connected(agent.id),
-                    "last_seen_at": agent.last_seen_at.isoformat() + 'Z' if agent.last_seen_at else None,
-                    "registered_at": agent.registered_at.isoformat() + 'Z' if agent.registered_at else None
-                }
-            }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get agent status: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to get agent status: {str(e)}")
+# Agent listing removed - agents are now part of hosts
+# Use GET /api/hosts to see all hosts (including agent-connected hosts)
+# Agent-specific information is embedded in the host data
 
 
 @app.websocket("/api/agent/ws")
@@ -3928,8 +3908,6 @@ async def agent_websocket_endpoint(websocket: WebSocket):
     4. Bidirectional message exchange
     5. Agent disconnects
     """
-    from agent.websocket_handler import handle_agent_websocket
-
     # Use dependency injection context for database session
     with get_db_context() as db:
         await handle_agent_websocket(websocket, db)

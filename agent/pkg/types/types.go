@@ -26,11 +26,20 @@ type Message struct {
 
 // RegistrationRequest is sent by agent during initial connection
 type RegistrationRequest struct {
-	Token        string          `json:"token"`
-	EngineID     string          `json:"engine_id"`
-	Version      string          `json:"version"`
-	ProtoVersion string          `json:"proto_version"`
-	Capabilities map[string]bool `json:"capabilities"`
+	Token          string          `json:"token"`
+	EngineID       string          `json:"engine_id"`
+	Hostname       string          `json:"hostname,omitempty"`        // System hostname
+	Version        string          `json:"version"`
+	ProtoVersion   string          `json:"proto_version"`
+	Capabilities   map[string]bool `json:"capabilities"`
+	// System information (v2.2.0+)
+	OSType         string `json:"os_type,omitempty"`          // "linux", "windows", etc.
+	OSVersion      string `json:"os_version,omitempty"`       // e.g., "Ubuntu 22.04.3 LTS"
+	KernelVersion  string `json:"kernel_version,omitempty"`   // e.g., "5.15.0-88-generic"
+	DockerVersion  string `json:"docker_version,omitempty"`   // e.g., "24.0.6"
+	DaemonStartedAt string `json:"daemon_started_at,omitempty"` // ISO timestamp when Docker daemon started
+	TotalMemory    int64  `json:"total_memory,omitempty"`     // Total memory in bytes
+	NumCPUs        int    `json:"num_cpus,omitempty"`         // Number of CPUs
 }
 
 // RegistrationResponse is returned by DockMon after successful registration

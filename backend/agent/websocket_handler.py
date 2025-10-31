@@ -20,9 +20,11 @@ import logging
 from typing import Optional
 
 from fastapi import WebSocket, WebSocketDisconnect
+from pydantic import ValidationError
 
 from agent.manager import AgentManager
 from agent.connection_manager import agent_connection_manager
+from agent.models import AgentRegistrationRequest
 from database import Agent, DatabaseManager
 
 logger = logging.getLogger(__name__)
@@ -134,14 +136,31 @@ class AgentWebSocketHandler:
         msg_type = message.get("type")
 
         if msg_type == "register":
-            # New agent registration with token (pass entire message for system info)
-            result = self.agent_manager.register_agent(message)
+            # New agent registration with token
+            try:
+                # Validate registration data (prevents XSS, type confusion, DoS)
+                validated_data = AgentRegistrationRequest(**message)
 
-            if result["success"]:
-                self.agent_id = result["agent_id"]
-                self.authenticated = True
+                # Pass validated data to registration manager
+                result = self.agent_manager.register_agent(validated_data.model_dump())
 
-            return result
+                if result["success"]:
+                    self.agent_id = result["agent_id"]
+                    self.authenticated = True
+
+                return result
+
+            except ValidationError as e:
+                # Return clear error message for invalid data
+                error_details = e.errors()[0]
+                logger.warning(
+                    f"Agent registration validation failed: {error_details['msg']} "
+                    f"(field: {error_details['loc']}, value: {error_details.get('input', 'N/A')})"
+                )
+                return {
+                    "success": False,
+                    "error": f"Invalid registration data: {error_details['msg']} (field: {error_details['loc'][0]})"
+                }
 
         elif msg_type == "reconnect":
             # Existing agent reconnection

@@ -3,6 +3,7 @@ Container Operations Module for DockMon
 Handles container start, stop, restart operations
 """
 
+import asyncio
 import logging
 import time
 from typing import Dict
@@ -65,6 +66,18 @@ class ContainerOperations:
             client = self.clients[host_id]
             container = await async_docker_call(client.containers.get, container_id)
             container_name = container.name
+
+            # CRITICAL SAFETY CHECK: Prevent restarting DockMon itself
+            container_name_lower = container_name.lower().lstrip('/')
+            if container_name_lower == 'dockmon' or container_name_lower.startswith('dockmon-'):
+                logger.warning(
+                    f"Blocked attempt to restart DockMon container '{container_name}'. "
+                    f"DockMon cannot restart itself."
+                )
+                raise HTTPException(
+                    status_code=403,
+                    detail="Cannot restart DockMon itself. Please restart manually via Docker CLI or another tool."
+                )
 
             await async_container_restart(container, timeout=10)
             duration_ms = int((time.time() - start_time) * 1000)
@@ -130,6 +143,18 @@ class ContainerOperations:
             client = self.clients[host_id]
             container = await async_docker_call(client.containers.get, container_id)
             container_name = container.name
+
+            # CRITICAL SAFETY CHECK: Prevent stopping DockMon itself
+            container_name_lower = container_name.lower().lstrip('/')
+            if container_name_lower == 'dockmon' or container_name_lower.startswith('dockmon-'):
+                logger.warning(
+                    f"Blocked attempt to stop DockMon container '{container_name}'. "
+                    f"DockMon cannot stop itself."
+                )
+                raise HTTPException(
+                    status_code=403,
+                    detail="Cannot stop DockMon itself. Please stop manually via Docker CLI or another tool."
+                )
 
             await async_container_stop(container, timeout=10)
             duration_ms = int((time.time() - start_time) * 1000)
@@ -202,6 +227,24 @@ class ContainerOperations:
             container_name = container.name
 
             await async_container_start(container)
+
+            # Wait briefly and verify container is actually running
+            # (containers can crash immediately after start)
+            await asyncio.sleep(0.5)
+            await async_docker_call(container.reload)
+
+            if container.status != 'running':
+                # Container started but crashed immediately
+                error_msg = f"Container started but exited with status '{container.status}'"
+                if container.status in ['exited', 'dead']:
+                    # Try to get exit code
+                    try:
+                        exit_code = container.attrs.get('State', {}).get('ExitCode', 'unknown')
+                        error_msg += f" (exit code {exit_code})"
+                    except:
+                        pass
+                raise Exception(error_msg)
+
             duration_ms = int((time.time() - start_time) * 1000)
 
             logger.info(f"Started container '{container_name}' on host '{host_name}'")

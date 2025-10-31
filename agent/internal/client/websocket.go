@@ -206,6 +206,7 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 
 	// Collect system information (matches legacy host data structure)
 	// This information is sent during registration to populate the DockerHost record
+	c.log.Info("Collecting system information for registration")
 	systemInfo, err := c.docker.GetSystemInfo(ctx)
 	if err != nil {
 		c.log.WithError(err).Warn("Failed to collect system info, continuing without it")

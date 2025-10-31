@@ -493,13 +493,21 @@ async def get_hosts(current_user: dict = Depends(get_current_user)):
         agents = db.query(Agent).all()
         agent_by_host = {agent.host_id: agent for agent in agents}
 
+        # Get all agent-type hosts from database
+        agent_hosts_db = db.query(DockerHostDB).filter_by(connection_type='agent').all()
+
+        # Track which host IDs we've seen from monitor.hosts
+        seen_host_ids = set()
+
         # Enhance host data with agent info
         enriched_hosts = []
         for host in hosts:
             host_dict = host.dict() if hasattr(host, 'dict') else host
+            host_id = host_dict.get('id')
+            seen_host_ids.add(host_id)
 
             # Check if this host has an agent
-            agent = agent_by_host.get(host_dict.get('id'))
+            agent = agent_by_host.get(host_id)
 
             if agent:
                 # Host is connected via agent
@@ -521,6 +529,38 @@ async def get_hosts(current_user: dict = Depends(get_current_user)):
                 host_dict['agent'] = None
 
             enriched_hosts.append(host_dict)
+
+        # Add agent-only hosts that aren't in monitor.hosts
+        for agent_host in agent_hosts_db:
+            if agent_host.id not in seen_host_ids:
+                agent = agent_by_host.get(agent_host.id)
+
+                host_dict = {
+                    'id': agent_host.id,
+                    'name': agent_host.name,
+                    'url': agent_host.url,
+                    'connection_type': 'agent',
+                    'description': agent_host.description or '',
+                    'created_at': agent_host.created_at.isoformat() + 'Z' if agent_host.created_at else None,
+                    'updated_at': agent_host.updated_at.isoformat() + 'Z' if agent_host.updated_at else None,
+                }
+
+                if agent:
+                    host_dict['agent'] = {
+                        'agent_id': agent.id,
+                        'engine_id': agent.engine_id,
+                        'version': agent.version,
+                        'proto_version': agent.proto_version,
+                        'capabilities': json.loads(agent.capabilities) if agent.capabilities else {},
+                        'status': agent.status,
+                        'connected': agent_connection_manager.is_connected(agent.id),
+                        'last_seen_at': agent.last_seen_at.isoformat() + 'Z' if agent.last_seen_at else None,
+                        'registered_at': agent.registered_at.isoformat() + 'Z' if agent.registered_at else None
+                    }
+                else:
+                    host_dict['agent'] = None
+
+                enriched_hosts.append(host_dict)
 
         return enriched_hosts
 

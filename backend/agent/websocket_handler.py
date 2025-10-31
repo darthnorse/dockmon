@@ -81,7 +81,8 @@ class AgentWebSocketHandler:
             await self.websocket.send_json({
                 "type": "auth_success",
                 "agent_id": self.agent_id,
-                "host_id": auth_result.get("host_id")
+                "host_id": auth_result.get("host_id"),
+                "permanent_token": auth_result.get("permanent_token")
             })
 
             # Register connection

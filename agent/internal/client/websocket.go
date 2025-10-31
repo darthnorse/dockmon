@@ -5,6 +5,9 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -195,11 +198,19 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 		token = c.cfg.RegistrationToken
 	}
 
+	// Get hostname for agent identification
+	hostname, err := os.Hostname()
+	if err != nil {
+		c.log.WithError(err).Warn("Failed to get hostname, using engine ID")
+		hostname = c.engineID[:12]
+	}
+
 	// Build registration request as flat JSON (backend expects flat format)
 	regMsg := map[string]interface{}{
 		"type":          "register",
 		"token":         token,
 		"engine_id":     c.engineID,
+		"hostname":      hostname,
 		"version":       c.cfg.AgentVersion,
 		"proto_version": c.cfg.ProtoVersion,
 		"capabilities": map[string]bool{
@@ -256,10 +267,17 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 	c.hostID = hostID
 	c.registered = true
 
-	// Check for permanent token
+	// Check for permanent token and persist it
 	if permanentToken, ok := respMap["permanent_token"].(string); ok && permanentToken != "" {
 		c.cfg.PermanentToken = permanentToken
-		c.log.Info("Received permanent token (should be persisted)")
+
+		// Persist token to disk with restricted permissions (0600 = owner read/write only)
+		tokenPath := filepath.Join(c.cfg.DataPath, "permanent_token")
+		if err := os.WriteFile(tokenPath, []byte(permanentToken), 0600); err != nil {
+			c.log.WithError(err).Error("Failed to persist permanent token")
+		} else {
+			c.log.WithField("path", tokenPath).Info("Permanent token persisted securely")
+		}
 	}
 
 	return nil

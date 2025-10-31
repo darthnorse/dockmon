@@ -121,6 +121,7 @@ class AgentManager:
         """
         token = registration_data.get("token")
         engine_id = registration_data.get("engine_id")
+        hostname = registration_data.get("hostname")
         version = registration_data.get("version")
         proto_version = registration_data.get("proto_version")
         capabilities = registration_data.get("capabilities", {})
@@ -170,10 +171,11 @@ class AgentManager:
             host_id = str(uuid.uuid4())
             now = datetime.utcnow()  # Naive UTC datetime
 
-            # Create host record
+            # Create host record with hostname (fallback to engine_id if not provided)
+            agent_name = hostname if hostname else f"Agent-{engine_id[:12]}"
             host = DockerHostDB(
                 id=host_id,
-                name=f"Agent-{engine_id[:12]}",  # Use short engine ID
+                name=agent_name,
                 url="agent://",  # Placeholder URL for agent connections (not used for WebSocket)
                 connection_type="agent",
                 created_at=now,

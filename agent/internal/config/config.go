@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -75,6 +76,14 @@ func LoadFromEnv() (*Config, error) {
 	// Validation
 	if cfg.DockMonURL == "" {
 		return nil, fmt.Errorf("DOCKMON_URL is required")
+	}
+
+	// Try to load permanent token from persisted file
+	if cfg.PermanentToken == "" {
+		tokenPath := cfg.DataPath + "/permanent_token"
+		if data, err := os.ReadFile(tokenPath); err == nil {
+			cfg.PermanentToken = strings.TrimSpace(string(data))
+		}
 	}
 
 	if cfg.RegistrationToken == "" && cfg.PermanentToken == "" {

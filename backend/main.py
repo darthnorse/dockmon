@@ -614,6 +614,17 @@ async def get_hosts(current_user: dict = Depends(get_current_user)):
                     'description': agent_host.description or '',
                     'created_at': agent_host.created_at.isoformat() + 'Z' if agent_host.created_at else None,
                     'updated_at': agent_host.updated_at.isoformat() + 'Z' if agent_host.updated_at else None,
+                    # System information (collected from agent during registration)
+                    'os_type': agent_host.os_type,
+                    'os_version': agent_host.os_version,
+                    'kernel_version': agent_host.kernel_version,
+                    'docker_version': agent_host.docker_version,
+                    'daemon_started_at': agent_host.daemon_started_at,
+                    'total_memory': agent_host.total_memory,
+                    'num_cpus': agent_host.num_cpus,
+                    'tags': agent_host.tags or [],
+                    'container_count': 0,  # Will be populated by stats
+                    'last_checked': agent_host.updated_at.isoformat() + 'Z' if agent_host.updated_at else None,
                 }
 
                 if agent:

@@ -54,6 +54,17 @@ func (c *Client) Close() error {
 	return c.cli.Close()
 }
 
+// SystemInfo contains Docker host system information
+type SystemInfo struct {
+	OSType          string
+	OSVersion       string
+	KernelVersion   string
+	DockerVersion   string
+	DaemonStartedAt string
+	TotalMemory     int64
+	NumCPUs         int
+}
+
 // GetEngineID returns the unique Docker engine ID
 func (c *Client) GetEngineID(ctx context.Context) (string, error) {
 	info, err := c.cli.Info(ctx)
@@ -61,6 +72,46 @@ func (c *Client) GetEngineID(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("failed to get Docker info: %w", err)
 	}
 	return info.ID, nil
+}
+
+// GetSystemInfo collects system information from Docker daemon
+// Matches the data collected by legacy hosts in monitor.py
+func (c *Client) GetSystemInfo(ctx context.Context) (*SystemInfo, error) {
+	// Get system info from Docker
+	info, err := c.cli.Info(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get Docker info: %w", err)
+	}
+
+	// Get version info
+	version, err := c.cli.ServerVersion(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get Docker version: %w", err)
+	}
+
+	sysInfo := &SystemInfo{
+		OSType:        info.OSType,
+		OSVersion:     info.OperatingSystem,
+		KernelVersion: info.KernelVersion,
+		DockerVersion: version.Version,
+		TotalMemory:   info.MemTotal,
+		NumCPUs:       info.NCPU,
+	}
+
+	// Get daemon start time from bridge network creation time
+	// This matches the approach in monitor.py
+	networks, err := c.cli.NetworkList(ctx, types.NetworkListOptions{})
+	if err == nil {
+		for _, network := range networks {
+			if network.Name == "bridge" {
+				sysInfo.DaemonStartedAt = network.Created.Format("2006-01-02T15:04:05.999999999Z07:00")
+				break
+			}
+		}
+	}
+	// Silently ignore network errors - daemon_started_at is optional
+
+	return sysInfo, nil
 }
 
 // GetMyContainerID attempts to determine the agent's own container ID

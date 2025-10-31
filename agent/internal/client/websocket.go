@@ -204,6 +204,13 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 		hostname = c.engineID[:12]
 	}
 
+	// Collect system information (matches legacy host data structure)
+	systemInfo, err := c.docker.GetSystemInfo(ctx)
+	if err != nil {
+		c.log.WithError(err).Warn("Failed to collect system info, continuing without it")
+		systemInfo = nil
+	}
+
 	// Build registration request as flat JSON (backend expects flat format)
 	regMsg := map[string]interface{}{
 		"type":          "register",
@@ -219,6 +226,17 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 			"stats_collection":     true,
 			"self_update":          c.myContainerID != "",
 		},
+	}
+
+	// Add system information if available (aligns with DockerHostDB schema)
+	if systemInfo != nil {
+		regMsg["os_type"] = systemInfo.OSType
+		regMsg["os_version"] = systemInfo.OSVersion
+		regMsg["kernel_version"] = systemInfo.KernelVersion
+		regMsg["docker_version"] = systemInfo.DockerVersion
+		regMsg["daemon_started_at"] = systemInfo.DaemonStartedAt
+		regMsg["total_memory"] = systemInfo.TotalMemory
+		regMsg["num_cpus"] = systemInfo.NumCPUs
 	}
 
 	// Send registration message as raw JSON
@@ -356,6 +374,22 @@ func (c *WebSocketClient) handleMessage(ctx context.Context, msg *types.Message)
 	switch msg.Command {
 	case "ping":
 		result = map[string]string{"status": "pong"}
+
+	case "get_system_info":
+		// Return fresh system information (for periodic refresh)
+		var sysInfo *docker.SystemInfo
+		sysInfo, err = c.docker.GetSystemInfo(ctx)
+		if err == nil {
+			result = map[string]interface{}{
+				"os_type":           sysInfo.OSType,
+				"os_version":        sysInfo.OSVersion,
+				"kernel_version":    sysInfo.KernelVersion,
+				"docker_version":    sysInfo.DockerVersion,
+				"daemon_started_at": sysInfo.DaemonStartedAt,
+				"total_memory":      sysInfo.TotalMemory,
+				"num_cpus":          sysInfo.NumCPUs,
+			}
+		}
 
 	case "list_containers":
 		result, err = c.docker.ListContainers(ctx)

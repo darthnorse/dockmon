@@ -18,7 +18,7 @@ from docker import DockerClient
 from fastapi import HTTPException
 
 from config.paths import DATABASE_PATH, CERTS_DIR
-from database import DatabaseManager, AutoRestartConfig, GlobalSettings, DockerHostDB
+from database import DatabaseManager, AutoRestartConfig, GlobalSettings, DockerHostDB, Agent
 from models.docker_models import DockerHost, DockerHostConfig, Container
 from models.settings_models import AlertRule, NotificationSettings
 from websocket.connection import ConnectionManager
@@ -1984,14 +1984,21 @@ class DockerMonitor:
 
         Called by periodic maintenance job (daily) to keep host info current.
         Updates both in-memory DockerHost objects and database records.
+        Supports both legacy hosts (via Docker API) and agent hosts (via WebSocket command).
         """
-        if not self.hosts or not self.clients:
+        if not self.hosts:
             logger.debug("No hosts to refresh system info for")
             return
 
         updated_count = 0
         failed_count = 0
 
+        # Also refresh agent hosts (separate from legacy hosts)
+        from agent.agent_connection_manager import agent_connection_manager
+        agent_hosts_refreshed = await self._refresh_agent_hosts_system_info()
+        updated_count += agent_hosts_refreshed
+
+        # Refresh legacy hosts (existing logic)
         for host_id, host in list(self.hosts.items()):  # Use list() to avoid dict iteration issues
             try:
                 # Get client for this host
@@ -2060,3 +2067,85 @@ class DockerMonitor:
             logger.info(f"Host system info refresh complete: {updated_count} updated, {failed_count} failed")
         else:
             logger.debug("Host system info refresh complete: no changes detected")
+
+    async def _refresh_agent_hosts_system_info(self) -> int:
+        """
+        Refresh system information for all connected agent hosts.
+
+        Sends "get_system_info" command to each connected agent and updates database.
+        Aligns with legacy host refresh behavior (daily updates).
+
+        Returns:
+            Number of agent hosts successfully refreshed
+        """
+        from agent.agent_connection_manager import agent_connection_manager
+
+        updated_count = 0
+
+        # Get all agents from database
+        with self.db.get_session() as session:
+            agents = session.query(Agent).all()
+            agent_data = [(a.id, a.host_id) for a in agents]
+
+        for agent_id, host_id in agent_data:
+            try:
+                # Check if agent is connected
+                if not agent_connection_manager.is_connected(agent_id):
+                    logger.debug(f"Agent {agent_id[:8]}... not connected, skipping system info refresh")
+                    continue
+
+                # Send get_system_info command
+                response = await agent_connection_manager.send_command(
+                    agent_id,
+                    "get_system_info",
+                    {},
+                    timeout=10
+                )
+
+                if response.get("error"):
+                    logger.warning(f"Agent {agent_id[:8]}... returned error for system info: {response['error']}")
+                    continue
+
+                # Extract system info from response
+                sys_info = response.get("result", {})
+                if not sys_info:
+                    logger.warning(f"Agent {agent_id[:8]}... returned empty system info")
+                    continue
+
+                # Update database host record
+                with self.db.get_session() as session:
+                    db_host = session.query(DockerHostDB).filter(DockerHostDB.id == host_id).first()
+                    if db_host:
+                        # Check if anything changed (avoid unnecessary writes)
+                        changed = (
+                            sys_info.get('os_type') != db_host.os_type or
+                            sys_info.get('os_version') != db_host.os_version or
+                            sys_info.get('kernel_version') != db_host.kernel_version or
+                            sys_info.get('docker_version') != db_host.docker_version or
+                            sys_info.get('daemon_started_at') != db_host.daemon_started_at or
+                            sys_info.get('total_memory') != db_host.total_memory or
+                            sys_info.get('num_cpus') != db_host.num_cpus
+                        )
+
+                        if changed:
+                            db_host.os_type = sys_info.get('os_type')
+                            db_host.os_version = sys_info.get('os_version')
+                            db_host.kernel_version = sys_info.get('kernel_version')
+                            db_host.docker_version = sys_info.get('docker_version')
+                            db_host.daemon_started_at = sys_info.get('daemon_started_at')
+                            db_host.total_memory = sys_info.get('total_memory')
+                            db_host.num_cpus = sys_info.get('num_cpus')
+                            session.commit()
+
+                            logger.info(f"Refreshed system info for agent host {db_host.name} ({host_id[:8]}): {sys_info.get('os_version')} / Docker {sys_info.get('docker_version')}")
+                            updated_count += 1
+                        else:
+                            logger.debug(f"System info unchanged for agent host {db_host.name} ({host_id[:8]})")
+
+            except Exception as e:
+                logger.error(f"Failed to refresh system info for agent {agent_id[:8]}...: {e}")
+
+        if updated_count > 0:
+            logger.info(f"Agent host system info refresh: {updated_count} updated")
+
+        return updated_count

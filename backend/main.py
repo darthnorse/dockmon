@@ -576,7 +576,12 @@ async def get_hosts(current_user: dict = Depends(get_current_user)):
             agent = agent_by_host.get(host_id)
 
             if agent:
-                # Host is connected via agent
+                # Host is connected via agent - use real-time connection status
+                is_connected = agent_connection_manager.is_connected(agent.id)
+                logger.info(f"Agent {agent.id[:8]}... - DB status: {agent.status}, connection_manager.is_connected: {is_connected}, total connections: {agent_connection_manager.get_connection_count()}")
+
+                # Override status with real-time connection state
+                host_dict['status'] = 'online' if is_connected else 'offline'
                 host_dict['connection_type'] = 'agent'
                 host_dict['agent'] = {
                     'agent_id': agent.id,
@@ -585,7 +590,7 @@ async def get_hosts(current_user: dict = Depends(get_current_user)):
                     'proto_version': agent.proto_version,
                     'capabilities': json.loads(agent.capabilities) if agent.capabilities else {},
                     'status': agent.status,
-                    'connected': agent_connection_manager.is_connected(agent.id),
+                    'connected': is_connected,
                     'last_seen_at': agent.last_seen_at.isoformat() + 'Z' if agent.last_seen_at else None,
                     'registered_at': agent.registered_at.isoformat() + 'Z' if agent.registered_at else None
                 }
@@ -612,6 +617,11 @@ async def get_hosts(current_user: dict = Depends(get_current_user)):
                 }
 
                 if agent:
+                    is_connected = agent_connection_manager.is_connected(agent.id)
+                    logger.info(f"Agent-only host: Agent {agent.id[:8]}... - DB status: {agent.status}, connection_manager.is_connected: {is_connected}")
+
+                    # Set real-time connection status
+                    host_dict['status'] = 'online' if is_connected else 'offline'
                     host_dict['agent'] = {
                         'agent_id': agent.id,
                         'engine_id': agent.engine_id,
@@ -619,11 +629,13 @@ async def get_hosts(current_user: dict = Depends(get_current_user)):
                         'proto_version': agent.proto_version,
                         'capabilities': json.loads(agent.capabilities) if agent.capabilities else {},
                         'status': agent.status,
-                        'connected': agent_connection_manager.is_connected(agent.id),
+                        'connected': is_connected,
                         'last_seen_at': agent.last_seen_at.isoformat() + 'Z' if agent.last_seen_at else None,
                         'registered_at': agent.registered_at.isoformat() + 'Z' if agent.registered_at else None
                     }
                 else:
+                    # No agent found for agent-only host - mark as offline
+                    host_dict['status'] = 'offline'
                     host_dict['agent'] = None
 
                 enriched_hosts.append(host_dict)

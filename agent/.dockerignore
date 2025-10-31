@@ -1,0 +1,24 @@
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Build artifacts
+dockmon-agent
+*.exe
+
+# Documentation
+*.md
+!README.md
+
+# Test files
+*_test.go
+testdata/
+
+# CI/CD
+.github/

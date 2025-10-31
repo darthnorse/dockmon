@@ -216,6 +216,10 @@ def _validate_schema(engine, version: str):
             # Note: deployments table columns validated implicitly via table existence
             # stage_percent is not a column - docstring comment only, replaced by current_stage + progress_percent
         },
+        '006_v2_2_0': {
+            'tables': ['registration_tokens', 'agents'],
+            'docker_hosts_columns': ['connection_type'],
+        },
         # Add validations for future versions here:
     }
 

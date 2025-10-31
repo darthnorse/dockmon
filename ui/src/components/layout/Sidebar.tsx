@@ -29,6 +29,7 @@ import {
   ChevronRight,
   Wifi,
   WifiOff,
+  Radio,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -48,6 +49,7 @@ interface NavItem {
 const navigationItems: NavItem[] = [
   { label: 'Dashboard', icon: LayoutDashboard, path: '/' },
   { label: 'Hosts', icon: Server, path: '/hosts' },
+  { label: 'Agents', icon: Radio, path: '/agents' },
   { label: 'Containers', icon: Container, path: '/containers' },
   { label: 'Deployments', icon: Package, path: '/deployments' },
   { label: 'Container Logs', icon: FileText, path: '/logs' },

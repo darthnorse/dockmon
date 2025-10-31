@@ -149,6 +149,30 @@ class AgentManager:
                 existing_agent.capabilities = json.dumps(capabilities)
                 existing_agent.status = "online"
                 existing_agent.last_seen_at = datetime.utcnow()
+
+                # Update host record with fresh system information
+                host = self.db.query(DockerHostDB).filter_by(id=existing_agent.host_id).first()
+                if host:
+                    host.updated_at = datetime.utcnow()
+                    # Update hostname if provided (agent may have been updated)
+                    if hostname:
+                        host.name = hostname
+                    # Update system information (keep data fresh on reconnection)
+                    if registration_data.get("os_type"):
+                        host.os_type = registration_data.get("os_type")
+                    if registration_data.get("os_version"):
+                        host.os_version = registration_data.get("os_version")
+                    if registration_data.get("kernel_version"):
+                        host.kernel_version = registration_data.get("kernel_version")
+                    if registration_data.get("docker_version"):
+                        host.docker_version = registration_data.get("docker_version")
+                    if registration_data.get("daemon_started_at"):
+                        host.daemon_started_at = registration_data.get("daemon_started_at")
+                    if registration_data.get("total_memory"):
+                        host.total_memory = registration_data.get("total_memory")
+                    if registration_data.get("num_cpus"):
+                        host.num_cpus = registration_data.get("num_cpus")
+
                 self.db.commit()
 
                 return {
@@ -179,7 +203,15 @@ class AgentManager:
                 url="agent://",  # Placeholder URL for agent connections (not used for WebSocket)
                 connection_type="agent",
                 created_at=now,
-                updated_at=now
+                updated_at=now,
+                # System information (aligned with legacy host schema)
+                os_type=registration_data.get("os_type"),
+                os_version=registration_data.get("os_version"),
+                kernel_version=registration_data.get("kernel_version"),
+                docker_version=registration_data.get("docker_version"),
+                daemon_started_at=registration_data.get("daemon_started_at"),
+                total_memory=registration_data.get("total_memory"),
+                num_cpus=registration_data.get("num_cpus")
             )
             self.db.add(host)
             self.db.flush()  # Ensure host exists before creating agent

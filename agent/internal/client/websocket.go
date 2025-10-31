@@ -211,6 +211,16 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 	if err != nil {
 		c.log.WithError(err).Warn("Failed to collect system info, continuing without it")
 		systemInfo = nil
+	} else if systemInfo != nil {
+		c.log.WithFields(logrus.Fields{
+			"os_type":        systemInfo.OSType,
+			"os_version":     systemInfo.OSVersion,
+			"docker_version": systemInfo.DockerVersion,
+			"total_memory":   systemInfo.TotalMemory,
+			"num_cpus":       systemInfo.NumCPUs,
+		}).Info("System information collected successfully")
+	} else {
+		c.log.Warn("GetSystemInfo returned nil without error")
 	}
 
 	// Build registration request as flat JSON (backend expects flat format)
@@ -239,6 +249,9 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 		regMsg["daemon_started_at"] = systemInfo.DaemonStartedAt
 		regMsg["total_memory"] = systemInfo.TotalMemory
 		regMsg["num_cpus"] = systemInfo.NumCPUs
+		c.log.Info("Added system information to registration message")
+	} else {
+		c.log.Warn("Skipping system information - systemInfo is nil")
 	}
 
 	// Send registration message as raw JSON

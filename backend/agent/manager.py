@@ -144,6 +144,7 @@ class AgentManager:
 
         # Log what we received for debugging
         logger.info(f"Registration data keys: {list(registration_data.keys())}")
+        logger.info(f"Full registration data: {registration_data}")
         logger.info(f"Hostname: {hostname}, Engine ID: {engine_id[:12]}...")
 
         # Check if token is a permanent token (agent_id for reconnection)

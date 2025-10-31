@@ -899,7 +899,7 @@ class DatabaseManager:
     Thread-safe: Uses threading.Lock to prevent race conditions during initialization.
     """
 
-    def __new__(cls, db_path: str = "data/dockmon.db"):
+    def __new__(cls, db_path: str = "/app/data/dockmon.db"):
         """
         Singleton implementation using __new__.
 
@@ -929,7 +929,7 @@ class DatabaseManager:
             _database_manager_instance = instance
             return instance
 
-    def __init__(self, db_path: str = "data/dockmon.db"):
+    def __init__(self, db_path: str = "/app/data/dockmon.db"):
         """
         Initialize database connection (only runs once for singleton).
 

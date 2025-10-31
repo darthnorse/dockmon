@@ -2,7 +2,7 @@
 
 A comprehensive Docker container monitoring and management platform with real-time monitoring, intelligent auto-restart, multi-channel alerting, and complete event logging.
 
-![DockMon](https://img.shields.io/badge/DockMon-v2.0.0-blue.svg)
+![DockMon](https://img.shields.io/badge/DockMon-v2.1.0-blue.svg)
 ![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)
 ![React](https://img.shields.io/badge/React-18.3-61DAFB?logo=react&logoColor=white)
@@ -25,6 +25,7 @@ A comprehensive Docker container monitoring and management platform with real-ti
 - **Advanced Alerting** - Discord, Slack, Telegram, Pushover, Gotify, SMTP with customizable templates
 - **Container Tagging** - Automatic tag derivation from Docker labels with user-defined tags
 - **Bulk Operations** - Start, stop, restart multiple containers simultaneously with progress tracking
+- **Container Deployments** - Deploy containers to local and remote hosts. Supports Docker Run style deployments as well as Docker Compose, including the ability to create templates for repeated deployments
 - **Automatic Updates** - Detect and execute container image updates on schedule
 - **HTTP/HTTPS Health Checks** - Custom endpoint monitoring with auto-restart on failure
 - **Blackout Windows** - Schedule maintenance periods to suppress alerts
@@ -51,45 +52,6 @@ A comprehensive Docker container monitoring and management platform with real-ti
 - **[Wiki](https://github.com/darthnorse/dockmon/wiki)** - Complete documentation
 - **[Star on GitHub](https://github.com/darthnorse/dockmon)** - Show your support!
 - **[Buy Me A Coffee](https://buymeacoffee.com/darthnorse)** - Support the project
-
-## Roadmap
-
-### Completed (v1.0)
-- [x] Full backend API with FastAPI
-- [x] WebSocket real-time updates
-- [x] Multi-channel notifications
-- [x] Comprehensive event logging
-- [x] Event log viewer with filtering and search
-- [x] Real-time container logs viewer (multi-container support)
-- [x] Drag-and-drop dashboard
-- [x] Auto-restart with retry logic
-
-### Completed (v1.1)
-- [x] Real-time performance metrics (CPU, memory, network, disk I/O)
-- [x] Host-level and container-level statistics
-- [x] TLS/mTLS support for secure remote Docker connections
-- [x] Optimized streaming architecture with Go backend
-
-### Completed (v2.0) - Complete Rewrite
-- [x] Modern React 18 frontend with TypeScript
-- [x] Container tagging system with auto-derivation from Docker labels
-- [x] Bulk operations (start/stop/restart multiple containers)
-- [x] Automatic container updates with version tracking and scheduling
-- [x] HTTP/HTTPS health checks with auto-restart on failure
-- [x] Blackout windows for maintenance periods
-- [x] Advanced alert rule engine with metric and event triggers
-- [x] Alpine Linux base image with OpenSSL 3.x
-- [x] Go 1.23 stats service for high-performance metrics streaming
-- [x] Enhanced security and modern architecture
-
-### Planned (v2.1+)
-- [ ] Historical metrics graphs with trend analysis
-- [ ] Configuration export/import
-- [ ] Mobile-friendly responsive UI
-- [ ] DockMon Agent for remote Docker hosts (avoid exposing Docker socket)
-- [ ] Advanced RBAC and multi-user permissions
-
-See the [full roadmap](https://github.com/darthnorse/dockmon/wiki/Roadmap) for details.
 
 ## Technology Stack
 

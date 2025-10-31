@@ -773,12 +773,11 @@ class DockerMonitor:
 
             # Disconnect agent if this is an agent-based host (v2.2.0+)
             if host.connection_type == "agent":
-                # Find and disconnect the agent by host_id
                 from agent.connection_manager import agent_connection_manager
                 from database import Agent
 
-                # Query agent by host_id
                 with self.db.get_session() as session:
+                    # Find and disconnect the agent by host_id
                     agent = session.query(Agent).filter_by(host_id=host_id).first()
                     if agent:
                         agent_id = agent.id
@@ -1757,6 +1756,7 @@ class DockerMonitor:
                         id=db_host.id,
                         name=db_host.name,
                         url=db_host.url,
+                        connection_type=db_host.connection_type or "remote",  # v2.2.0+ agent support
                         status="offline",
                         client=None,
                         tags=tags,

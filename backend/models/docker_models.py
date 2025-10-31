@@ -202,6 +202,7 @@ class DockerHost(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     url: str
+    connection_type: str = "remote"  # "remote" (local/mTLS) or "agent" (v2.2.0+)
     status: str = "offline"
     security_status: Optional[str] = None  # "secure", "insecure", "unknown"
     last_checked: datetime = Field(default_factory=datetime.now)

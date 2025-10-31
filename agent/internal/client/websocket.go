@@ -140,8 +140,14 @@ func (c *WebSocketClient) Stop() {
 func (c *WebSocketClient) connect(ctx context.Context) error {
 	c.log.WithField("url", c.cfg.DockMonURL).Info("Connecting to DockMon")
 
-	// Build WebSocket URL
-	wsURL := c.cfg.DockMonURL + "/api/agent/ws"
+	// Build WebSocket URL (convert http:// to ws:// and https:// to wss://)
+	wsURL := c.cfg.DockMonURL
+	if len(wsURL) > 7 && wsURL[:7] == "http://" {
+		wsURL = "ws://" + wsURL[7:]
+	} else if len(wsURL) > 8 && wsURL[:8] == "https://" {
+		wsURL = "wss://" + wsURL[8:]
+	}
+	wsURL = wsURL + "/api/agent/ws"
 
 	// Connect
 	dialer := websocket.DefaultDialer

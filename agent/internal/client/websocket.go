@@ -260,6 +260,8 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 		return fmt.Errorf("failed to marshal registration: %w", err)
 	}
 
+	c.log.WithField("message", string(data)).Info("Sending registration message to backend")
+
 	if err := c.conn.WriteMessage(websocket.TextMessage, data); err != nil {
 		return fmt.Errorf("failed to send registration: %w", err)
 	}

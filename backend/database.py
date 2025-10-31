@@ -1530,7 +1530,17 @@ class DatabaseManager:
         if alerts_updated > 0:
             logger.info(f"  ✓ Resolved {alerts_updated} open alert(s)")
 
-        # 4. Keep EventLog records (for audit trail)
+        # 4. Delete Agent records for this host (v2.2.0+)
+        # Agent connections should be cleaned up when host is removed
+        # Note: CASCADE delete is set up, but we delete explicitly for logging
+        agent_count = session.query(Agent).filter(
+            Agent.host_id == host_id
+        ).delete(synchronize_session=False)
+        cleanup_stats['agents_deleted'] = agent_count
+        if agent_count > 0:
+            logger.info(f"  ✓ Deleted {agent_count} agent record(s)")
+
+        # 5. Keep EventLog records (for audit trail)
         # Events preserve historical data and show the original host_name
         event_count = session.query(EventLog).filter(EventLog.host_id == host_id).count()
         cleanup_stats['events_kept'] = event_count

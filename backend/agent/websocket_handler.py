@@ -134,14 +134,8 @@ class AgentWebSocketHandler:
         msg_type = message.get("type")
 
         if msg_type == "register":
-            # New agent registration with token
-            result = self.agent_manager.register_agent({
-                "token": message.get("token"),
-                "engine_id": message.get("engine_id"),
-                "version": message.get("version"),
-                "proto_version": message.get("proto_version"),
-                "capabilities": message.get("capabilities", {})
-            })
+            # New agent registration with token (pass entire message for system info)
+            result = self.agent_manager.register_agent(message)
 
             if result["success"]:
                 self.agent_id = result["agent_id"]

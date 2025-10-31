@@ -56,6 +56,7 @@ func (c *Client) Close() error {
 
 // SystemInfo contains Docker host system information
 type SystemInfo struct {
+	Hostname        string  // Docker host's hostname (not container hostname)
 	OSType          string
 	OSVersion       string
 	KernelVersion   string
@@ -90,6 +91,7 @@ func (c *Client) GetSystemInfo(ctx context.Context) (*SystemInfo, error) {
 	}
 
 	sysInfo := &SystemInfo{
+		Hostname:      info.Name,  // Docker host's actual hostname
 		OSType:        info.OSType,
 		OSVersion:     info.OperatingSystem,
 		KernelVersion: info.KernelVersion,

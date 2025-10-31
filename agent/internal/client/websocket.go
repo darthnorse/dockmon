@@ -197,13 +197,6 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 		token = c.cfg.RegistrationToken
 	}
 
-	// Get hostname for agent identification
-	hostname, err := os.Hostname()
-	if err != nil {
-		c.log.WithError(err).Warn("Failed to get hostname, using engine ID")
-		hostname = c.engineID[:12]
-	}
-
 	// Collect system information (matches legacy host data structure)
 	// This information is sent during registration to populate the DockerHost record
 	c.log.Info("Collecting system information for registration")
@@ -213,6 +206,7 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 		systemInfo = nil
 	} else if systemInfo != nil {
 		c.log.WithFields(logrus.Fields{
+			"hostname":       systemInfo.Hostname,
 			"os_type":        systemInfo.OSType,
 			"os_version":     systemInfo.OSVersion,
 			"docker_version": systemInfo.DockerVersion,
@@ -221,6 +215,19 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 		}).Info("System information collected successfully")
 	} else {
 		c.log.Warn("GetSystemInfo returned nil without error")
+	}
+
+	// Determine hostname: prefer Docker host's hostname from systemInfo
+	hostname := ""
+	if systemInfo != nil && systemInfo.Hostname != "" {
+		hostname = systemInfo.Hostname
+	} else {
+		// Fallback to container hostname (will be container ID)
+		hostname, err = os.Hostname()
+		if err != nil {
+			c.log.WithError(err).Warn("Failed to get hostname, using engine ID")
+			hostname = c.engineID[:12]
+		}
 	}
 
 	// Build registration request as flat JSON (backend expects flat format)

@@ -17,9 +17,8 @@ from typing import Dict, Optional
 from datetime import datetime
 
 from fastapi import WebSocket
-from sqlalchemy.orm import Session
 
-from database import Agent
+from database import Agent, DatabaseManager
 
 logger = logging.getLogger(__name__)
 
@@ -48,17 +47,17 @@ class AgentConnectionManager:
 
         self.connections: Dict[str, WebSocket] = {}  # agent_id -> WebSocket
         self._connection_lock = asyncio.Lock()
+        self.db_manager = DatabaseManager()  # For creating short-lived sessions
         self._initialized = True
         logger.info("AgentConnectionManager initialized")
 
-    async def register_connection(self, agent_id: str, websocket: WebSocket, db: Session):
+    async def register_connection(self, agent_id: str, websocket: WebSocket):
         """
         Register a new agent WebSocket connection.
 
         Args:
             agent_id: Agent UUID
             websocket: WebSocket connection
-            db: Database session for updating agent status
         """
         async with self._connection_lock:
             # Close existing connection if any
@@ -72,33 +71,34 @@ class AgentConnectionManager:
             # Register new connection
             self.connections[agent_id] = websocket
 
-        # Update agent status in database
-        agent = db.query(Agent).filter_by(id=agent_id).first()
-        if agent:
-            agent.status = "online"
-            agent.last_seen_at = datetime.utcnow()
-            db.commit()
+        # Update agent status in database (short-lived session)
+        with self.db_manager.get_session() as session:
+            agent = session.query(Agent).filter_by(id=agent_id).first()
+            if agent:
+                agent.status = "online"
+                agent.last_seen_at = datetime.utcnow()
+                session.commit()
 
         logger.info(f"Agent {agent_id} connected. Total agents: {len(self.connections)}")
 
-    async def unregister_connection(self, agent_id: str, db: Session):
+    async def unregister_connection(self, agent_id: str):
         """
         Unregister an agent WebSocket connection.
 
         Args:
             agent_id: Agent UUID
-            db: Database session for updating agent status
         """
         async with self._connection_lock:
             if agent_id in self.connections:
                 del self.connections[agent_id]
 
-        # Update agent status in database
-        agent = db.query(Agent).filter_by(id=agent_id).first()
-        if agent:
-            agent.status = "offline"
-            agent.last_seen_at = datetime.utcnow()
-            db.commit()
+        # Update agent status in database (short-lived session)
+        with self.db_manager.get_session() as session:
+            agent = session.query(Agent).filter_by(id=agent_id).first()
+            if agent:
+                agent.status = "offline"
+                agent.last_seen_at = datetime.utcnow()
+                session.commit()
 
         logger.info(f"Agent {agent_id} disconnected. Total agents: {len(self.connections)}")
 

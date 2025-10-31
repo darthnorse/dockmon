@@ -8,6 +8,7 @@ Handles:
 - Host creation for agent-based connections
 """
 import json
+import logging
 import uuid
 from datetime import datetime, timedelta
 from typing import Dict, Any
@@ -15,7 +16,9 @@ from typing import Dict, Any
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
-from database import RegistrationToken, Agent, DockerHostDB
+from database import RegistrationToken, Agent, DockerHostDB, DatabaseManager
+
+logger = logging.getLogger(__name__)
 
 
 class AgentManager:
@@ -139,6 +142,10 @@ class AgentManager:
         proto_version = registration_data.get("proto_version")
         capabilities = registration_data.get("capabilities", {})
 
+        # Log what we received for debugging
+        logger.info(f"Registration data keys: {list(registration_data.keys())}")
+        logger.info(f"Hostname: {hostname}, Engine ID: {engine_id[:12]}...")
+
         # Check if token is a permanent token (agent_id for reconnection)
         is_permanent_token = self.validate_permanent_token(token)
 
@@ -205,67 +212,80 @@ class AgentManager:
             if existing_agent:
                 return {"success": False, "error": "Agent with this engine_id is already registered"}
 
-        try:
-            # Generate IDs
-            agent_id = str(uuid.uuid4())
-            host_id = str(uuid.uuid4())
-            now = datetime.utcnow()  # Naive UTC datetime
+        # Generate IDs
+        agent_id = str(uuid.uuid4())
+        host_id = str(uuid.uuid4())
+        now = datetime.utcnow()  # Naive UTC datetime
 
-            # Create host record with hostname (fallback to engine_id if not provided)
-            agent_name = hostname if hostname else f"Agent-{engine_id[:12]}"
-            host = DockerHostDB(
-                id=host_id,
-                name=agent_name,
-                url="agent://",  # Placeholder URL for agent connections (not used for WebSocket)
-                connection_type="agent",
-                created_at=now,
-                updated_at=now,
-                # System information (aligned with legacy host schema)
-                os_type=registration_data.get("os_type"),
-                os_version=registration_data.get("os_version"),
-                kernel_version=registration_data.get("kernel_version"),
-                docker_version=registration_data.get("docker_version"),
-                daemon_started_at=registration_data.get("daemon_started_at"),
-                total_memory=registration_data.get("total_memory"),
-                num_cpus=registration_data.get("num_cpus")
-            )
-            self.db.add(host)
-            self.db.flush()  # Ensure host exists before creating agent
+        logger.info(f"Registering new agent {agent_id[:8]}... with engine_id {engine_id[:12]}...")
+        logger.info(f"System info - OS: {registration_data.get('os_type')} {registration_data.get('os_version')}, "
+                    f"Docker: {registration_data.get('docker_version')}, "
+                    f"Memory: {registration_data.get('total_memory')}, CPUs: {registration_data.get('num_cpus')}")
 
-            # Create agent record
-            agent = Agent(
-                id=agent_id,
-                host_id=host_id,
-                engine_id=engine_id,
-                version=version,
-                proto_version=proto_version,
-                capabilities=json.dumps(capabilities),  # Store as JSON string
-                status="online",
-                last_seen_at=now,
-                registered_at=now
-            )
-            self.db.add(agent)
+        # Use a NEW dedicated session for registration to ensure immediate commit
+        # The WebSocket session stays open for the connection lifetime, preventing visibility
+        with self.db_manager.get_session() as reg_session:
+            try:
+                # Create host record with hostname (fallback to engine_id if not provided)
+                agent_name = hostname if hostname else f"Agent-{engine_id[:12]}"
+                host = DockerHostDB(
+                    id=host_id,
+                    name=agent_name,
+                    url="agent://",  # Placeholder URL for agent connections (not used for WebSocket)
+                    connection_type="agent",
+                    created_at=now,
+                    updated_at=now,
+                    # System information (aligned with legacy host schema)
+                    os_type=registration_data.get("os_type"),
+                    os_version=registration_data.get("os_version"),
+                    kernel_version=registration_data.get("kernel_version"),
+                    docker_version=registration_data.get("docker_version"),
+                    daemon_started_at=registration_data.get("daemon_started_at"),
+                    total_memory=registration_data.get("total_memory"),
+                    num_cpus=registration_data.get("num_cpus")
+                )
+                reg_session.add(host)
+                reg_session.flush()  # Ensure host exists before creating agent
+                logger.info(f"Created host record: {agent_name} ({host_id[:8]}...)")
 
-            # Mark token as used
-            token_record = self.db.query(RegistrationToken).filter_by(token=token).first()
-            token_record.used = True
-            token_record.used_at = now
+                # Create agent record
+                agent = Agent(
+                    id=agent_id,
+                    host_id=host_id,
+                    engine_id=engine_id,
+                    version=version,
+                    proto_version=proto_version,
+                    capabilities=json.dumps(capabilities),  # Store as JSON string
+                    status="online",
+                    last_seen_at=now,
+                    registered_at=now
+                )
+                reg_session.add(agent)
+                logger.info(f"Created agent record: {agent_id[:8]}...")
 
-            self.db.commit()
+                # Mark token as used
+                token_record = reg_session.query(RegistrationToken).filter_by(token=token).first()
+                if token_record:
+                    token_record.used = True
+                    token_record.used_at = now
 
-            return {
-                "success": True,
-                "agent_id": agent_id,
-                "host_id": host_id,
-                "permanent_token": agent_id  # Use agent_id as permanent token for reconnection
-            }
+                # Commit in the dedicated session (context manager will close it)
+                reg_session.commit()
+                logger.info(f"Successfully registered agent {agent_id[:8]}... (host: {agent_name}, host_id: {host_id[:8]}...)")
 
-        except IntegrityError as e:
-            self.db.rollback()
-            return {"success": False, "error": f"Database integrity error: {str(e)}"}
-        except Exception as e:
-            self.db.rollback()
-            return {"success": False, "error": f"Registration failed: {str(e)}"}
+                return {
+                    "success": True,
+                    "agent_id": agent_id,
+                    "host_id": host_id,
+                    "permanent_token": agent_id  # Use agent_id as permanent token for reconnection
+                }
+
+            except IntegrityError as e:
+                reg_session.rollback()
+                return {"success": False, "error": f"Database integrity error: {str(e)}"}
+            except Exception as e:
+                reg_session.rollback()
+                return {"success": False, "error": f"Registration failed: {str(e)}"}
 
     def reconnect_agent(self, reconnect_data: Dict[str, Any]) -> Dict[str, Any]:
         """

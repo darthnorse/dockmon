@@ -187,6 +187,7 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
 
   // Auto-detect DockMon URL from current browser location
   const dockmonUrl = `${window.location.protocol}//${window.location.host}`
+  const isHttps = window.location.protocol === 'https:'
 
   const installCommand = token
     ? `docker run -d \\
@@ -194,7 +195,7 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
   --restart unless-stopped \\
   -v /var/run/docker.sock:/var/run/docker.sock:ro \\
   -e DOCKMON_URL=${dockmonUrl} \\
-  -e REGISTRATION_TOKEN=${token} \\
+  -e REGISTRATION_TOKEN=${token} \\${isHttps ? '\n  -e INSECURE_SKIP_VERIFY=true \\' : ''}
   ghcr.io/darthnorse/dockmon-agent:latest`
     : ''
 

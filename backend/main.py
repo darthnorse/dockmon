@@ -3926,17 +3926,16 @@ async def generate_agent_registration_token(
     Token expires after 15 minutes and can only be used once.
     """
     try:
-        with get_db_context() as db:
-            agent_manager = AgentManager(db)
-            token_record = agent_manager.generate_registration_token(
-                user_id=current_user["user_id"]
-            )
+        agent_manager = AgentManager()  # Creates short-lived sessions internally
+        token_record = agent_manager.generate_registration_token(
+            user_id=current_user["user_id"]
+        )
 
-            return {
-                "success": True,
-                "token": token_record.token,
-                "expires_at": token_record.expires_at.isoformat() + 'Z'
-            }
+        return {
+            "success": True,
+            "token": token_record.token,
+            "expires_at": token_record.expires_at.isoformat() + 'Z'
+        }
 
     except Exception as e:
         logger.error(f"Failed to generate agent registration token: {e}", exc_info=True)
@@ -3959,10 +3958,12 @@ async def agent_websocket_endpoint(websocket: WebSocket):
     3. Backend validates and responds
     4. Bidirectional message exchange
     5. Agent disconnects
+
+    Note: This endpoint does NOT use a persistent database session.
+    Each database operation creates a short-lived session following the
+    pattern used throughout DockMon (auto-restart, desired state, etc.).
     """
-    # Use dependency injection context for database session
-    with get_db_context() as db:
-        await handle_agent_websocket(websocket, db)
+    await handle_agent_websocket(websocket)
 
 
 @app.websocket("/ws")

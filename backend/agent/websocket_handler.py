@@ -21,11 +21,10 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import WebSocket, WebSocketDisconnect
-from sqlalchemy.orm import Session
 
 from agent.manager import AgentManager
 from agent.connection_manager import agent_connection_manager
-from database import Agent
+from database import Agent, DatabaseManager
 
 logger = logging.getLogger(__name__)
 
@@ -33,17 +32,16 @@ logger = logging.getLogger(__name__)
 class AgentWebSocketHandler:
     """Handles WebSocket connections from agents"""
 
-    def __init__(self, websocket: WebSocket, db: Session):
+    def __init__(self, websocket: WebSocket):
         """
         Initialize handler.
 
         Args:
             websocket: FastAPI WebSocket connection
-            db: Database session
         """
         self.websocket = websocket
-        self.db = db
-        self.agent_manager = AgentManager(db)
+        self.agent_manager = AgentManager()  # Creates short-lived sessions internally
+        self.db_manager = DatabaseManager()  # For heartbeat updates
         self.agent_id: Optional[str] = None
         self.authenticated = False
 
@@ -88,8 +86,7 @@ class AgentWebSocketHandler:
             # Register connection
             await agent_connection_manager.register_connection(
                 self.agent_id,
-                self.websocket,
-                self.db
+                self.websocket
             )
 
             logger.info(f"Agent {self.agent_id} authenticated successfully")
@@ -122,8 +119,7 @@ class AgentWebSocketHandler:
             # Clean up connection
             if self.agent_id:
                 await agent_connection_manager.unregister_connection(
-                    self.agent_id,
-                    self.db
+                    self.agent_id
                 )
 
     async def authenticate(self, message: dict) -> dict:
@@ -220,11 +216,12 @@ class AgentWebSocketHandler:
             logger.error(f"Agent {self.agent_id} error: {message.get('error')}")
 
         elif msg_type == "heartbeat":
-            # Update last_seen_at
-            agent = self.db.query(Agent).filter_by(id=self.agent_id).first()
-            if agent:
-                agent.last_seen_at = datetime.utcnow()
-                self.db.commit()
+            # Update last_seen_at (short-lived session)
+            with self.db_manager.get_session() as session:
+                agent = session.query(Agent).filter_by(id=self.agent_id).first()
+                if agent:
+                    agent.last_seen_at = datetime.utcnow()
+                    session.commit()
 
         elif msg_type == "event":
             # Handle agent events (container events, stats, etc.)
@@ -248,18 +245,17 @@ class AgentWebSocketHandler:
             logger.warning(f"Unknown message type from agent {self.agent_id}: {msg_type}")
 
 
-async def handle_agent_websocket(websocket: WebSocket, db: Session):
+async def handle_agent_websocket(websocket: WebSocket):
     """
     FastAPI endpoint handler for agent WebSocket connections.
 
     Usage in main.py:
         @app.websocket("/api/agent/ws")
-        async def agent_websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_db)):
-            await handle_agent_websocket(websocket, db)
+        async def agent_websocket_endpoint(websocket: WebSocket):
+            await handle_agent_websocket(websocket)
 
     Args:
         websocket: FastAPI WebSocket connection
-        db: Database session (from dependency injection)
     """
-    handler = AgentWebSocketHandler(websocket, db)
+    handler = AgentWebSocketHandler(websocket)
     await handler.handle_connection()

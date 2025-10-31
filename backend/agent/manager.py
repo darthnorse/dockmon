@@ -24,15 +24,14 @@ logger = logging.getLogger(__name__)
 class AgentManager:
     """Manages agent registration and lifecycle"""
 
-    def __init__(self, db_session: Session):
+    def __init__(self):
         """
         Initialize AgentManager.
 
-        Args:
-            db_session: SQLAlchemy database session
+        Creates short-lived database sessions for each operation instead of
+        using a persistent session (following the pattern used throughout DockMon).
         """
-        self.db = db_session
-        self.db_manager = DatabaseManager()  # For creating new sessions
+        self.db_manager = DatabaseManager()  # Creates sessions as needed
 
     def generate_registration_token(self, user_id: int) -> RegistrationToken:
         """
@@ -47,20 +46,25 @@ class AgentManager:
         now = datetime.utcnow()  # Naive UTC datetime (SQLite compatible)
         token = str(uuid.uuid4())  # 36 characters with hyphens (e.g., 550e8400-e29b-41d4-a716-446655440000)
 
-        token_record = RegistrationToken(
-            token=token,
-            created_by_user_id=user_id,
-            created_at=now,
-            expires_at=now + timedelta(minutes=15),
-            used=False,
-            used_at=None
-        )
+        logger.info(f"Generating registration token for user {user_id}: {token[:8]}...")
 
-        self.db.add(token_record)
-        self.db.commit()
-        self.db.refresh(token_record)
+        with self.db_manager.get_session() as session:
+            token_record = RegistrationToken(
+                token=token,
+                created_by_user_id=user_id,
+                created_at=now,
+                expires_at=now + timedelta(minutes=15),
+                used=False,
+                used_at=None
+            )
 
-        return token_record
+            session.add(token_record)
+            session.commit()
+            session.refresh(token_record)
+
+            logger.info(f"Successfully created registration token {token[:8]}... (expires: {token_record.expires_at})")
+
+            return token_record
 
     def validate_registration_token(self, token: str) -> bool:
         """
@@ -72,19 +76,26 @@ class AgentManager:
         Returns:
             bool: True if valid, False otherwise
         """
-        token_record = self.db.query(RegistrationToken).filter_by(token=token).first()
+        logger.info(f"Validating registration token {token[:8]}...")
 
-        if not token_record:
-            return False
+        with self.db_manager.get_session() as session:
+            token_record = session.query(RegistrationToken).filter_by(token=token).first()
 
-        if token_record.used:
-            return False
+            if not token_record:
+                logger.warning(f"Token {token[:8]}... not found in database")
+                return False
 
-        now = datetime.utcnow()  # Naive UTC datetime for comparison with SQLite datetime
-        if token_record.expires_at <= now:
-            return False
+            if token_record.used:
+                logger.warning(f"Token {token[:8]}... already used")
+                return False
 
-        return True
+            now = datetime.utcnow()  # Naive UTC datetime for comparison with SQLite datetime
+            if token_record.expires_at <= now:
+                logger.warning(f"Token {token[:8]}... expired at {token_record.expires_at}")
+                return False
+
+            logger.info(f"Token {token[:8]}... is valid")
+            return True
 
     def validate_permanent_token(self, token: str) -> bool:
         """
@@ -96,8 +107,9 @@ class AgentManager:
         Returns:
             bool: True if valid agent_id exists, False otherwise
         """
-        agent = self.db.query(Agent).filter_by(id=token).first()
-        return agent is not None
+        with self.db_manager.get_session() as session:
+            agent = session.query(Agent).filter_by(id=token).first()
+            return agent is not None
 
     def register_agent(self, registration_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -139,63 +151,66 @@ class AgentManager:
 
         # Validate token (either registration token or permanent token)
         if not is_permanent_token and not self.validate_registration_token(token):
-            token_record = self.db.query(RegistrationToken).filter_by(token=token).first()
-            if token_record and token_record.expires_at <= datetime.utcnow():
-                return {"success": False, "error": "Registration token has expired"}
-            elif token_record and token_record.used:
-                return {"success": False, "error": "Registration token has already been used"}
-            else:
-                return {"success": False, "error": "Invalid registration token"}
+            with self.db_manager.get_session() as session:
+                token_record = session.query(RegistrationToken).filter_by(token=token).first()
+                if token_record and token_record.expires_at <= datetime.utcnow():
+                    return {"success": False, "error": "Registration token has expired"}
+                elif token_record and token_record.used:
+                    return {"success": False, "error": "Registration token has already been used"}
+                else:
+                    return {"success": False, "error": "Invalid registration token"}
 
         # If using permanent token, find existing agent
         if is_permanent_token:
-            existing_agent = self.db.query(Agent).filter_by(id=token).first()
-            if existing_agent and existing_agent.engine_id == engine_id:
-                # Update existing agent with new version/capabilities
-                existing_agent.version = version
-                existing_agent.proto_version = proto_version
-                existing_agent.capabilities = json.dumps(capabilities)
-                existing_agent.status = "online"
-                existing_agent.last_seen_at = datetime.utcnow()
+            with self.db_manager.get_session() as session:
+                existing_agent = session.query(Agent).filter_by(id=token).first()
+                if existing_agent and existing_agent.engine_id == engine_id:
+                    # Update existing agent with new version/capabilities
+                    existing_agent.version = version
+                    existing_agent.proto_version = proto_version
+                    existing_agent.capabilities = json.dumps(capabilities)
+                    existing_agent.status = "online"
+                    existing_agent.last_seen_at = datetime.utcnow()
 
-                # Update host record with fresh system information
-                host = self.db.query(DockerHostDB).filter_by(id=existing_agent.host_id).first()
-                if host:
-                    host.updated_at = datetime.utcnow()
-                    # Update hostname if provided (agent may have been updated)
-                    if hostname:
-                        host.name = hostname
-                    # Update system information (keep data fresh on reconnection)
-                    if registration_data.get("os_type"):
-                        host.os_type = registration_data.get("os_type")
-                    if registration_data.get("os_version"):
-                        host.os_version = registration_data.get("os_version")
-                    if registration_data.get("kernel_version"):
-                        host.kernel_version = registration_data.get("kernel_version")
-                    if registration_data.get("docker_version"):
-                        host.docker_version = registration_data.get("docker_version")
-                    if registration_data.get("daemon_started_at"):
-                        host.daemon_started_at = registration_data.get("daemon_started_at")
-                    if registration_data.get("total_memory"):
-                        host.total_memory = registration_data.get("total_memory")
-                    if registration_data.get("num_cpus"):
-                        host.num_cpus = registration_data.get("num_cpus")
+                    # Update host record with fresh system information
+                    host = session.query(DockerHostDB).filter_by(id=existing_agent.host_id).first()
+                    if host:
+                        host.updated_at = datetime.utcnow()
+                        # Update hostname if provided (agent may have been updated)
+                        if hostname:
+                            host.name = hostname
+                        # Update system information (keep data fresh on reconnection)
+                        if registration_data.get("os_type"):
+                            host.os_type = registration_data.get("os_type")
+                        if registration_data.get("os_version"):
+                            host.os_version = registration_data.get("os_version")
+                        if registration_data.get("kernel_version"):
+                            host.kernel_version = registration_data.get("kernel_version")
+                        if registration_data.get("docker_version"):
+                            host.docker_version = registration_data.get("docker_version")
+                        if registration_data.get("daemon_started_at"):
+                            host.daemon_started_at = registration_data.get("daemon_started_at")
+                        if registration_data.get("total_memory"):
+                            host.total_memory = registration_data.get("total_memory")
+                        if registration_data.get("num_cpus"):
+                            host.num_cpus = registration_data.get("num_cpus")
 
-                self.db.commit()
+                    session.commit()
 
-                return {
-                    "success": True,
-                    "agent_id": existing_agent.id,
-                    "host_id": existing_agent.host_id,
-                    "permanent_token": existing_agent.id
-                }
-            else:
-                return {"success": False, "error": "Permanent token does not match engine_id"}
+                    return {
+                        "success": True,
+                        "agent_id": existing_agent.id,
+                        "host_id": existing_agent.host_id,
+                        "permanent_token": existing_agent.id
+                    }
+                else:
+                    return {"success": False, "error": "Permanent token does not match engine_id"}
 
-        # Check if engine_id already registered (use long-lived session for read)
-        existing_agent = self.db.query(Agent).filter_by(engine_id=engine_id).first()
-        if existing_agent:
-            return {"success": False, "error": "Agent with this engine_id is already registered"}
+        # Check if engine_id already registered
+        with self.db_manager.get_session() as session:
+            existing_agent = session.query(Agent).filter_by(engine_id=engine_id).first()
+            if existing_agent:
+                return {"success": False, "error": "Agent with this engine_id is already registered"}
 
         # Generate IDs
         agent_id = str(uuid.uuid4())
@@ -292,22 +307,23 @@ class AgentManager:
         agent_id = reconnect_data.get("agent_id")
         engine_id = reconnect_data.get("engine_id")
 
-        # Find agent
-        agent = self.db.query(Agent).filter_by(id=agent_id).first()
+        with self.db_manager.get_session() as session:
+            # Find agent
+            agent = session.query(Agent).filter_by(id=agent_id).first()
 
-        if not agent:
-            return {"success": False, "error": "Agent not found"}
+            if not agent:
+                return {"success": False, "error": "Agent not found"}
 
-        # Validate engine_id matches
-        if agent.engine_id != engine_id:
-            return {"success": False, "error": "Engine_id mismatch: agent verification failed"}
+            # Validate engine_id matches
+            if agent.engine_id != engine_id:
+                return {"success": False, "error": "Engine_id mismatch: agent verification failed"}
 
-        # Update last_seen_at
-        agent.last_seen_at = datetime.utcnow()  # Naive UTC datetime
-        agent.status = "online"
-        self.db.commit()
+            # Update last_seen_at
+            agent.last_seen_at = datetime.utcnow()  # Naive UTC datetime
+            agent.status = "online"
+            session.commit()
 
-        return {
-            "success": True,
-            "agent_id": agent_id
-        }
+            return {
+                "success": True,
+                "agent_id": agent_id
+            }

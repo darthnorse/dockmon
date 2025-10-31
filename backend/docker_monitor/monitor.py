@@ -777,13 +777,14 @@ class DockerMonitor:
                 from database import Agent
 
                 with self.db.get_session() as session:
-                    # Find and disconnect the agent by host_id
+                    # Find the agent by host_id
                     agent = session.query(Agent).filter_by(host_id=host_id).first()
                     if agent:
                         agent_id = agent.id
-                        # Close the agent's WebSocket connection
-                        await agent_connection_manager.unregister_connection(agent_id, session)
-                        logger.info(f"Disconnected agent {agent_id[:8]}... for host {host_name}")
+
+                # Close the agent's WebSocket connection (creates its own session)
+                await agent_connection_manager.unregister_connection(agent_id)
+                logger.info(f"Disconnected agent {agent_id[:8]}... for host {host_name}")
 
             del self.hosts[host_id]
             if host_id in self.clients:

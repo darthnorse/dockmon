@@ -1861,7 +1861,7 @@ class DockerMonitor:
         failed_count = 0
 
         # Also refresh agent hosts (separate from legacy hosts)
-        from agent.agent_connection_manager import agent_connection_manager
+        from agent.connection_manager import agent_connection_manager
         agent_hosts_refreshed = await self._refresh_agent_hosts_system_info()
         updated_count += agent_hosts_refreshed
 
@@ -1941,7 +1941,7 @@ class DockerMonitor:
         Returns:
             Number of agent hosts successfully refreshed
         """
-        from agent.agent_connection_manager import agent_connection_manager
+        from agent.connection_manager import agent_connection_manager
 
         updated_count = 0
 

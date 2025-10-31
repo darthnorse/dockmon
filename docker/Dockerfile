@@ -6,6 +6,9 @@ FROM golang:1.23-alpine AS go-builder
 
 WORKDIR /build
 
+# Copy shared module first (needed by stats-service)
+COPY shared/ /shared/
+
 # Copy go mod files
 COPY stats-service/go.mod stats-service/go.sum* ./
 

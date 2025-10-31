@@ -291,10 +291,9 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 		// Persist token to disk with restricted permissions (0600 = owner read/write only)
 		tokenPath := filepath.Join(c.cfg.DataPath, "permanent_token")
 		if err := os.WriteFile(tokenPath, []byte(permanentToken), 0600); err != nil {
-			c.log.WithError(err).Error("Failed to persist permanent token")
-		} else {
-			c.log.WithField("path", tokenPath).Info("Permanent token persisted securely")
+			c.log.WithError(err).Fatalf("CRITICAL: Failed to persist permanent token to %s - agent will lose identity on restart! Ensure volume is mounted: -v agent-data:/data", tokenPath)
 		}
+		c.log.WithField("path", tokenPath).Info("Permanent token persisted securely")
 	}
 
 	return nil

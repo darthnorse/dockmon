@@ -322,6 +322,9 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
           <p className="text-sm text-muted-foreground">
             Deploy a lightweight agent on your remote Docker host. The agent connects to DockMon via WebSocket - no need to expose Docker ports or configure mTLS certificates.
           </p>
+          <p className="text-sm font-medium text-green-600 dark:text-green-500">
+            ✓ Recommended: This is the preferred and most secure method
+          </p>
           <Button
             onClick={() => generateToken.mutate()}
             disabled={generateToken.isPending}

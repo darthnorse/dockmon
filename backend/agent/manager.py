@@ -82,6 +82,19 @@ class AgentManager:
 
         return True
 
+    def validate_permanent_token(self, token: str) -> bool:
+        """
+        Validate permanent token (agent_id) exists.
+
+        Args:
+            token: Permanent token (agent_id)
+
+        Returns:
+            bool: True if valid agent_id exists, False otherwise
+        """
+        agent = self.db.query(Agent).filter_by(id=token).first()
+        return agent is not None
+
     def register_agent(self, registration_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Register a new agent with token-based authentication.
@@ -112,8 +125,11 @@ class AgentManager:
         proto_version = registration_data.get("proto_version")
         capabilities = registration_data.get("capabilities", {})
 
-        # Validate token
-        if not self.validate_registration_token(token):
+        # Check if token is a permanent token (agent_id for reconnection)
+        is_permanent_token = self.validate_permanent_token(token)
+
+        # Validate token (either registration token or permanent token)
+        if not is_permanent_token and not self.validate_registration_token(token):
             token_record = self.db.query(RegistrationToken).filter_by(token=token).first()
             if token_record and token_record.expires_at <= datetime.utcnow():
                 return {"success": False, "error": "Registration token has expired"}
@@ -121,6 +137,27 @@ class AgentManager:
                 return {"success": False, "error": "Registration token has already been used"}
             else:
                 return {"success": False, "error": "Invalid registration token"}
+
+        # If using permanent token, find existing agent
+        if is_permanent_token:
+            existing_agent = self.db.query(Agent).filter_by(id=token).first()
+            if existing_agent and existing_agent.engine_id == engine_id:
+                # Update existing agent with new version/capabilities
+                existing_agent.version = version
+                existing_agent.proto_version = proto_version
+                existing_agent.capabilities = json.dumps(capabilities)
+                existing_agent.status = "online"
+                existing_agent.last_seen_at = datetime.utcnow()
+                self.db.commit()
+
+                return {
+                    "success": True,
+                    "agent_id": existing_agent.id,
+                    "host_id": existing_agent.host_id,
+                    "permanent_token": existing_agent.id
+                }
+            else:
+                return {"success": False, "error": "Permanent token does not match engine_id"}
 
         # Check if engine_id already registered
         existing_agent = self.db.query(Agent).filter_by(engine_id=engine_id).first()
@@ -169,7 +206,8 @@ class AgentManager:
             return {
                 "success": True,
                 "agent_id": agent_id,
-                "host_id": host_id
+                "host_id": host_id,
+                "permanent_token": agent_id  # Use agent_id as permanent token for reconnection
             }
 
         except IntegrityError as e:

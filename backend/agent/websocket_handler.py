@@ -225,6 +225,24 @@ class AgentWebSocketHandler:
                 agent.last_seen_at = datetime.utcnow()
                 self.db.commit()
 
+        elif msg_type == "event":
+            # Handle agent events (container events, stats, etc.)
+            event_type = message.get("command")
+            payload = message.get("payload", {})
+
+            if event_type == "container_event":
+                # Container lifecycle event (start, stop, die, etc.)
+                logger.info(f"Agent {self.agent_id} container event: {payload.get('action')} for {payload.get('container_name')}")
+                # TODO: Store event in database, trigger alerts, broadcast to UI
+
+            elif event_type == "container_stats":
+                # Real-time container stats
+                logger.debug(f"Agent {self.agent_id} container stats for {payload.get('container_id')}")
+                # TODO: Store in container_stats_history, broadcast to UI
+
+            else:
+                logger.warning(f"Unknown event type from agent {self.agent_id}: {event_type}")
+
         else:
             logger.warning(f"Unknown message type from agent {self.agent_id}: {msg_type}")
 

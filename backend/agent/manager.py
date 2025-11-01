@@ -430,7 +430,7 @@ class AgentManager:
         Returns:
             Dict with success, agent_id, host_id, migration_detected, migrated_from
         """
-        from database import AutoRestartConfig, ContainerTag, ContainerDesiredState
+        from database import AutoRestartConfig, TagAssignment, ContainerDesiredState
 
         old_host_id = existing_host.id
         old_host_name = existing_host.name
@@ -510,25 +510,32 @@ class AgentManager:
                         session.delete(ar)
 
                 # Transfer container tags
-                tags = session.query(ContainerTag).filter(
-                    ContainerTag.container_id.like(f"{old_host_id}:%")
+                tag_assignments = session.query(TagAssignment).filter(
+                    TagAssignment.subject_type == 'container',
+                    TagAssignment.subject_id.like(f"{old_host_id}:%")
                 ).all()
-                for tag in tags:
+                for tag_assignment in tag_assignments:
                     # Extract short container ID from composite key
-                    old_composite = tag.container_id
+                    old_composite = tag_assignment.subject_id
                     if ':' in old_composite:
                         _, short_container_id = old_composite.split(':', 1)
                         new_composite = f"{new_host_id}:{short_container_id}"
 
-                        # Create new record with updated composite key
-                        new_tag = ContainerTag(
-                            container_id=new_composite,
-                            tag=tag.tag
+                        # Create new assignment with updated composite key
+                        new_assignment = TagAssignment(
+                            tag_id=tag_assignment.tag_id,
+                            subject_type='container',
+                            subject_id=new_composite,
+                            compose_project=tag_assignment.compose_project,
+                            compose_service=tag_assignment.compose_service,
+                            host_id_at_attach=new_host_id,
+                            container_name_at_attach=tag_assignment.container_name_at_attach
                         )
-                        session.add(new_tag)
+                        session.add(new_assignment)
+                        transferred_count += 1
 
-                        # Delete old record
-                        session.delete(tag)
+                        # Delete old assignment
+                        session.delete(tag_assignment)
 
                 # Transfer desired states
                 desired_states = session.query(ContainerDesiredState).filter_by(host_id=old_host_id).all()

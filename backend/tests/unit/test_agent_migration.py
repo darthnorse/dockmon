@@ -124,22 +124,35 @@ def test_agent_migration_preserves_settings(agent_manager, registration_token, e
     """
     # Create container settings for old host
     with db_manager.get_session() as session:
-        from database import ContainerAutoRestart, ContainerTag, ContainerDesiredState
+        from database import AutoRestartConfig, Tag, TagAssignment, ContainerDesiredState
+        import uuid
 
         # Auto-restart config
-        auto_restart = ContainerAutoRestart(
+        auto_restart = AutoRestartConfig(
             container_id="existing-host-id:abc123456789",  # Composite key
             host_id="existing-host-id",
             enabled=True
         )
         session.add(auto_restart)
 
-        # Container tag
-        tag = ContainerTag(
-            container_id="existing-host-id:abc123456789",
-            tag="production"
+        # Container tag (create Tag and TagAssignment)
+        tag = Tag(
+            id=str(uuid.uuid4()),
+            name="production",
+            color="#ff0000",
+            kind="user"
         )
         session.add(tag)
+        session.flush()  # Ensure tag has an ID
+
+        tag_assignment = TagAssignment(
+            tag_id=tag.id,
+            subject_type="container",
+            subject_id="existing-host-id:abc123456789",
+            host_id_at_attach="existing-host-id",
+            container_name_at_attach="test_container"
+        )
+        session.add(tag_assignment)
 
         # Desired state
         desired_state = ContainerDesiredState(
@@ -169,21 +182,25 @@ def test_agent_migration_preserves_settings(agent_manager, registration_token, e
 
     # Verify settings were migrated with new composite keys
     with db_manager.get_session() as session:
-        from database import ContainerAutoRestart, ContainerTag, ContainerDesiredState
+        from database import AutoRestartConfig, TagAssignment, ContainerDesiredState
 
         # Auto-restart should use new host_id in composite key
-        auto_restart = session.query(ContainerAutoRestart).filter_by(
+        auto_restart = session.query(AutoRestartConfig).filter_by(
             container_id=f"{new_host_id}:abc123456789"
         ).first()
         assert auto_restart is not None
         assert auto_restart.enabled is True
 
-        # Tag should use new composite key
-        tag = session.query(ContainerTag).filter_by(
-            container_id=f"{new_host_id}:abc123456789"
+        # Tag assignment should use new composite key
+        tag_assignment = session.query(TagAssignment).filter_by(
+            subject_type="container",
+            subject_id=f"{new_host_id}:abc123456789"
         ).first()
-        assert tag is not None
-        assert tag.tag == "production"
+        assert tag_assignment is not None
+        # Verify the tag itself still exists and has the right name
+        from database import Tag
+        tag = session.query(Tag).filter_by(id=tag_assignment.tag_id).first()
+        assert tag.name == "production"
 
         # Desired state should use new composite key
         desired_state = session.query(ContainerDesiredState).filter_by(
@@ -193,7 +210,7 @@ def test_agent_migration_preserves_settings(agent_manager, registration_token, e
         assert desired_state.desired_state == "should_run"
 
         # Old settings should be deleted
-        old_auto_restart = session.query(ContainerAutoRestart).filter_by(
+        old_auto_restart = session.query(AutoRestartConfig).filter_by(
             container_id="existing-host-id:abc123456789"
         ).first()
         assert old_auto_restart is None

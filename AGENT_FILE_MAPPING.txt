@@ -1,0 +1,320 @@
+DOCKMON AGENT CODEBASE - COMPLETE FILE MAPPING
+================================================
+
+AGENT (Go) - /root/dockmon/agent (Total: 1,965 lines of code)
+==============================================================
+
+ENTRY POINT:
+- /root/dockmon/agent/cmd/agent/main.go (127 lines)
+  Purpose: Initialize agent, load config, connect to Docker, establish WebSocket
+  Entry: main()
+  Key: config.LoadFromEnv() → docker.NewClient() → wsClient.Run()
+
+CONFIGURATION:
+- /root/dockmon/agent/internal/config/config.go (123 lines)
+  Purpose: Environment variable loading, validation, token management
+  Key: LoadFromEnv() → validates DOCKMON_URL, REGISTRATION_TOKEN/PERMANENT_TOKEN
+  Persistent: /data/permanent_token (0600 perms)
+
+MESSAGE TYPES:
+- /root/dockmon/agent/pkg/types/types.go (101 lines)
+  Purpose: Strongly-typed WebSocket message definitions
+  Key: Message{Type, ID, Command, Payload}, RegistrationRequest, ContainerStats
+  Contains: SelfUpdateCommand, UpdateLock, ContainerEvent
+
+CORE COMMUNICATION:
+- /root/dockmon/agent/internal/client/websocket.go (729 lines)
+  Purpose: Main communication engine with auto-reconnect
+  Key: WebSocketClient class, connection lifecycle management
+  Features: register(), handleMessage(), handleContainerOperation(), streamEvents()
+  Handlers: StatsHandler, UpdateHandler, SelfUpdateHandler (dependency injection)
+  Concerns: Token persistence, reconnection backoff (1s→60s)
+
+PROTOCOL:
+- /root/dockmon/agent/internal/protocol/protocol.go (59 lines)
+  Purpose: Message encoding/decoding utilities
+  Key: EncodeMessage(), DecodeMessage(), NewCommandResponse(), ParseCommand()
+
+DOCKER INTEGRATION:
+- /root/dockmon/agent/internal/docker/client.go (329 lines)
+  Purpose: Docker API abstraction for agents
+  Key: GetEngineID(), GetSystemInfo(), GetMyContainerID(), ListContainers()
+  Container Ops: StartContainer(), StopContainer(), RestartContainer(), RemoveContainer()
+  Streaming: WatchEvents(), ContainerStats()
+  Image Ops: PullImage(), CreateContainer()
+  Parsing: parseContainerIDFromCgroup() - parses /proc/self/cgroup
+
+HANDLERS (Async Operations):
+- /root/dockmon/agent/internal/handlers/stats.go (170 lines)
+  Purpose: Real-time container metrics collection
+  Key: StatsHandler class, per-container goroutines
+  Flow: StartStatsCollection() → StartContainerStats() → collectStats() → processStats()
+  Metrics: CPU%, memory, network I/O, disk I/O
+  Uses: sharedDocker.CalculateStats() (consistent with stats-service)
+
+- /root/dockmon/agent/internal/handlers/update.go (279 lines)
+  Purpose: Rolling container updates with health checks
+  Key: UpdateHandler class
+  Flow: Inspect → Pull → Create → Start → HealthCheck → StopOld → RemoveOld
+  Rollback: On health check failure, removes new container and keeps old running
+  Health: Monitors Docker health status or waits 5s if no healthcheck
+
+- /root/dockmon/agent/internal/handlers/selfupdate.go (283 lines)
+  Purpose: In-place agent binary updates
+  Key: SelfUpdateHandler class, two-phase update
+  Phase 1: Download to /data/agent-new, write /data/update.lock
+  Phase 2 (startup): Apply update by replacing /app/agent binary
+  Issues: No checksum verification (TODO), not atomic, no auto-rollback
+  Backup: Creates /app/agent.backup before replacing
+
+BUILD CONFIGURATION:
+- /root/dockmon/agent/go.mod (Dependencies)
+  - github.com/gorilla/websocket v1.5.1 (WebSocket)
+  - github.com/docker/docker v24.0.7 (Docker API)
+  - github.com/sirupsen/logrus v1.9.3 (Logging)
+  - github.com/darthnorse/dockmon-shared (Shared Docker utilities)
+
+- /root/dockmon/agent/Dockerfile (Container image)
+- /root/dockmon/agent/Dockerfile.local (Local development)
+- /root/dockmon/agent/Dockerfile.multiarch (Multi-architecture build)
+
+
+BACKEND (Python) - /root/dockmon/backend (Agent-specific)
+===========================================================
+
+AGENT MANAGER:
+- /root/dockmon/backend/agent/manager.py (345 lines)
+  Purpose: Registration, authentication, token validation
+  Key Methods:
+    - generate_registration_token(user_id) → Creates 15-min token
+    - validate_registration_token(token) → Checks valid/unused/not expired
+    - validate_permanent_token(token) → Checks agent_id exists
+    - register_agent(data) → Creates Agent + DockerHostDB records
+    - reconnect_agent(data) → Updates existing agent, validates engine_id
+    - get_agent_for_host(host_id) → Lookup agent by host_id
+  Database: Uses short-lived sessions (new session per operation)
+  Key: Handles both first-time registration and reconnection
+
+VALIDATION MODELS:
+- /root/dockmon/backend/agent/models.py (111 lines)
+  Purpose: Pydantic input validation, XSS prevention
+  Key: AgentRegistrationRequest model
+  Validation:
+    - HTML sanitization (remove <>, non-printable chars)
+    - ID validation (alphanumeric + hyphens/underscores only)
+    - Length limits (prevent DoS)
+    - Type enforcement (prevent type confusion)
+  Security: extra='forbid' to prevent injection
+
+CONNECTION MANAGER:
+- /root/dockmon/backend/agent/connection_manager.py (147 lines)
+  Purpose: Track active WebSocket connections to agents
+  Key: AgentConnectionManager (singleton pattern)
+  Architecture: Dict[agent_id → WebSocket]
+  Key Methods:
+    - register_connection(agent_id, ws) → Store connection, mark online
+    - unregister_connection(agent_id) → Remove connection, mark offline
+    - send_command(agent_id, cmd) → Send command to agent
+    - is_connected(agent_id) → Check connection status
+    - get_connected_agent_ids() → List all connected agents
+  Thread-safe: asyncio.Lock() for all operations
+
+WEBSOCKET HANDLER:
+- /root/dockmon/backend/agent/websocket_handler.py (275 lines)
+  Purpose: Handle WebSocket connections from agents
+  Entry: handle_agent_websocket() → called from main.py @app.websocket("/api/agent/ws")
+  Key: AgentWebSocketHandler class
+  Lifecycle:
+    1. Accept connection
+    2. Wait for auth message (30s timeout)
+    3. Authenticate via AgentManager
+    4. Send auth_success or auth_error
+    5. Register in ConnectionManager
+    6. Message loop until disconnect
+  Message Handling:
+    - stats: Container statistics (TODO: forward to monitoring)
+    - progress: Operation progress (TODO: forward to UI)
+    - error: Operation error (TODO: notify user)
+    - heartbeat: Keep-alive (updates last_seen_at)
+    - event: Container events and stats
+
+COMMAND EXECUTOR:
+- /root/dockmon/backend/agent/command_executor.py (297 lines)
+  Purpose: Send commands to agents, wait for responses
+  Key: AgentCommandExecutor class
+  Pattern: Request/Response with Correlation IDs
+  Flow:
+    1. Generate correlation_id (UUID)
+    2. Register asyncio.Future() for correlation_id
+    3. Send command via ConnectionManager
+    4. Wait for response with timeout (default 30s)
+    5. Clean up pending command
+  CommandResult: {status, success, response, error, duration_seconds}
+  Cleanup: Auto-cleanup of expired commands (>5 min age)
+
+CONTAINER OPERATIONS:
+- /root/dockmon/backend/agent/container_operations.py (509 lines)
+  Purpose: High-level container management via agents
+  Key: AgentContainerOperations class
+  Methods:
+    - start_container(host_id, container_id)
+    - stop_container(host_id, container_id, timeout=10)
+    - restart_container(host_id, container_id)
+    - remove_container(host_id, container_id, force=False)
+    - get_container_logs(host_id, container_id, tail=100)
+    - inspect_container(host_id, container_id)
+  Flow: Lookup agent → Build command → Execute → Parse response
+  Safety: Prevents stopping/restarting/removing DockMon itself
+  Error: HTTPException (404, 500, 504)
+
+DATABASE MODELS:
+- /root/dockmon/backend/database.py (Partial - see lines 72-132)
+  RegistrationToken table: token, created_by_user_id, created_at, expires_at, used, used_at
+  Agent table: id, host_id (FK), engine_id, version, proto_version, capabilities, status, last_seen_at
+  DockerHostDB table (v2.2.0 extensions):
+    - connection_type: 'local', 'mtls', 'agent'
+    - os_type, os_version, kernel_version, docker_version, daemon_started_at
+    - total_memory, num_cpus
+  Relationships: Agent ↔ DockerHostDB (1:1)
+
+MAIN APPLICATION:
+- /root/dockmon/backend/main.py (line 3973+)
+  Imports: from agent.websocket_handler import handle_agent_websocket
+  Endpoint: @app.websocket("/api/agent/ws")
+  Handler: agent_websocket_endpoint(websocket)
+
+WEBSOCKET INFRASTRUCTURE (Shared, not Agent-specific):
+- /root/dockmon/backend/websocket/connection.py (100 lines)
+  Purpose: UI WebSocket management (NOT agent WebSocket)
+  Key: ConnectionManager class (different from agent ConnectionManager)
+  Features: Broadcast, connection tracking (for UI updates)
+
+
+TEST FILES (Unit & Integration)
+===============================
+
+- /root/dockmon/backend/tests/unit/test_agent_container_operations.py
+- /root/dockmon/backend/tests/unit/test_agent_command_executor.py
+- /root/dockmon/backend/tests/unit/test_agent_self_update.py
+- /root/dockmon/backend/tests/unit/test_agent_registration.py
+- /root/dockmon/backend/tests/integration/test_websocket_infrastructure.py
+
+
+DEPENDENCIES & SHARED CODE
+===========================
+
+Shared Package:
+- /root/dockmon/shared/docker/ (Docker utilities)
+  Key: CreateLocalClient(), CreateRemoteClient(), CalculateStats()
+
+Internal Go Modules:
+- Module: github.com/darthnorse/dockmon-agent
+- Main: github.com/gorilla/websocket (WebSocket)
+- Main: github.com/docker/docker (Docker API)
+- Main: github.com/sirupsen/logrus (Logging)
+
+
+CRITICAL PATHS & ENTRY POINTS
+==============================
+
+Agent Startup Flow:
+1. main.go:main()
+2. config.LoadFromEnv()
+3. docker.NewClient()
+4. docker.GetEngineID()
+5. docker.GetMyContainerID()
+6. client.NewWebSocketClient()
+7. wsClient.CheckPendingUpdate()
+8. wsClient.Run(ctx) [background]
+9. Wait for signals, graceful shutdown
+
+Registration Flow:
+1. Agent connects to wss://backend/api/agent/ws
+2. Agent sends RegistrationRequest {type: "register", token, engine_id, ...}
+3. Backend: websocket_handler.py handle_connection()
+4. Manager: register_agent() validates token, creates Agent/DockerHost
+5. Response: {type: "auth_success", agent_id, host_id, permanent_token}
+6. Agent persists permanent_token to /data/permanent_token
+7. ConnectionManager: register_connection(agent_id, ws)
+
+Container Operation Flow:
+1. Backend sends {type: "container_operation", action, container_id, correlation_id}
+2. Agent: websocket_handler.handleContainerOperation()
+3. Agent: docker.{StartContainer|StopContainer|...}()
+4. Agent responds: {correlation_id, success, result}
+5. Backend: CommandExecutor.handle_agent_response() resolves future
+6. Execute_command() returns CommandResult to API handler
+
+Self-Update Flow:
+1. Backend sends {type: "command", command: "self_update", ...}
+2. Agent: selfUpdateHandler.PerformSelfUpdate()
+3. Agent downloads new binary to /data/agent-new
+4. Agent writes /data/update.lock
+5. Agent signals shutdown (close(stopChan))
+6. Main loop exits, container stops
+7. Docker/orchestrator restarts container
+8. main.go runs again
+9. selfUpdateHandler.CheckAndApplyUpdate() on startup
+10. Replaces /app/agent with /data/agent-new
+11. Removes /data/update.lock
+12. Normal operation resumes
+
+Stats Collection Flow:
+1. Agent: statsHandler.StartStatsCollection()
+2. For each running container: StartContainerStats(containerID, name)
+3. Per-container goroutine: collectStats() reads from docker.ContainerStats()
+4. processStats() sends event: {type: "event", command: "container_stats", payload}
+5. Backend: websocket_handler.handle_agent_message() logs (TODO: store/broadcast)
+
+Event Streaming Flow:
+1. Agent: streamEvents() listens to docker.WatchEvents()
+2. Filter container events
+3. Convert to ContainerEvent type
+4. Update stats collection lifecycle (start on "start" event, stop on "die"/"stop"/"kill")
+5. Send event: {type: "event", command: "container_event", payload}
+6. Backend: websocket_handler logs (TODO: store/trigger alerts/broadcast)
+
+
+CONFIGURATION ENVIRONMENT VARIABLES
+====================================
+
+Agent (Go):
+- DOCKMON_URL (required): wss://backend/api (or http://)
+- REGISTRATION_TOKEN (first connection): Single-use UUID from UI
+- PERMANENT_TOKEN (reconnection): Agent ID persisted locally
+- DOCKER_HOST (optional): unix:///var/run/docker.sock (default)
+- DOCKER_TLS_VERIFY (optional): false (default)
+- DOCKER_CERT_PATH (optional): Certificate path for TLS
+- LOG_LEVEL (optional): INFO (default)
+- LOG_JSON (optional): true (default) for JSON logging
+- RECONNECT_INITIAL (optional): 1s (exponential backoff start)
+- RECONNECT_MAX (optional): 60s (exponential backoff max)
+- DATA_PATH (optional): /data (default, for persistent token/updates)
+- UPDATE_TIMEOUT (optional): 120s (default)
+
+Volume Mounts (Docker):
+- -v agent-data:/data (CRITICAL: persist token and updates)
+- -v /var/run/docker.sock:/var/run/docker.sock (Docker socket)
+
+Backend (Python):
+- DATABASE_URL: SQLite path (connects to agents/registration_tokens tables)
+
+
+SECURITY ASSUMPTIONS & CONCERNS
+================================
+
+Trust Assumptions:
+1. Agent trust: Backend trusts agent's registration with valid token
+2. Token security: Permanent tokens stored in container /data volume
+3. TLS: INSECURE_SKIP_VERIFY available for self-signed certs (insecure)
+
+Known Issues:
+1. No checksum verification in self-update
+2. Unencrypted permanent token storage
+3. No TLS for remote Docker hosts
+4. No command ACL/authorization
+5. No response size limits
+6. WebSocket timeout only during registration
+7. No agent-initiated heartbeat
+8. Potential concurrent map race in StatsHandler
+

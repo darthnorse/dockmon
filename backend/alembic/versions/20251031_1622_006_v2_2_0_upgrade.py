@@ -16,8 +16,15 @@ CHANGES IN v2.2.0:
   - Status tracking (online/offline/degraded)
   - JSON capabilities field for feature flags
 - Add connection_type column to docker_hosts
-  - Values: 'local', 'mtls', 'agent'
+  - Values: 'local', 'remote', 'agent'
   - Differentiates connection methods for hosts
+- Add engine_id column to docker_hosts (for migration detection)
+  - Enables automatic migration from mTLS to agent connection
+  - Detects when agent registers with same Docker engine as existing host
+- Add replaced_by_host_id column to docker_hosts (migration tracking)
+  - Foreign key to docker_hosts.id
+  - Tracks which host replaced this one during migration
+  - Enables audit trail of host migrations
 - Add indexes for performance (engine_id, host_id, status)
 - Update app_version to '2.2.0'
 
@@ -121,14 +128,35 @@ def upgrade() -> None:
             op.create_index('idx_agent_last_seen', 'agents', ['last_seen_at'])
 
     # Change 3: Add connection_type column to docker_hosts
-    # Differentiates: 'local' (Docker socket), 'mtls' (Docker API), 'agent' (DockMon agent)
+    # Differentiates: 'local' (Docker socket), 'remote' (mTLS/Docker API), 'agent' (DockMon agent)
     if table_exists('docker_hosts'):
         if not column_exists('docker_hosts', 'connection_type'):
             op.add_column('docker_hosts',
                 sa.Column('connection_type', sa.String(), server_default='local', nullable=False)
             )
 
-    # Change 4: Update app_version
+    # Change 4: Add engine_id column to docker_hosts (for migration detection)
+    # Enables detection of duplicate registrations (same Docker engine, different connection method)
+    if table_exists('docker_hosts'):
+        if not column_exists('docker_hosts', 'engine_id'):
+            op.add_column('docker_hosts',
+                sa.Column('engine_id', sa.String(), nullable=True)
+            )
+        # Add index for efficient duplicate detection
+        if not index_exists('docker_hosts', 'idx_docker_hosts_engine_id'):
+            op.create_index('idx_docker_hosts_engine_id', 'docker_hosts', ['engine_id'])
+
+    # Change 5: Add replaced_by_host_id column to docker_hosts (migration tracking)
+    # Tracks which host replaced this one during mTLS→agent migration
+    if table_exists('docker_hosts'):
+        if not column_exists('docker_hosts', 'replaced_by_host_id'):
+            op.add_column('docker_hosts',
+                sa.Column('replaced_by_host_id', sa.String(),
+                          sa.ForeignKey('docker_hosts.id', ondelete='SET NULL'),
+                          nullable=True)
+            )
+
+    # Change 6: Update app_version
     if table_exists('global_settings'):
         op.execute(
             sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
@@ -145,6 +173,18 @@ def downgrade() -> None:
             sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
             .bindparams(version='2.1.0', id=1)
         )
+
+    # Remove replaced_by_host_id column from docker_hosts
+    if table_exists('docker_hosts'):
+        if column_exists('docker_hosts', 'replaced_by_host_id'):
+            op.drop_column('docker_hosts', 'replaced_by_host_id')
+
+    # Remove engine_id column and index from docker_hosts
+    if table_exists('docker_hosts'):
+        if index_exists('docker_hosts', 'idx_docker_hosts_engine_id'):
+            op.drop_index('idx_docker_hosts_engine_id', 'docker_hosts')
+        if column_exists('docker_hosts', 'engine_id'):
+            op.drop_column('docker_hosts', 'engine_id')
 
     # Remove connection_type column from docker_hosts
     if table_exists('docker_hosts'):

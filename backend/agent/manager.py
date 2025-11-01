@@ -10,7 +10,7 @@ Handles:
 import json
 import logging
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any
 
 from sqlalchemy.orm import Session
@@ -43,7 +43,7 @@ class AgentManager:
         Returns:
             RegistrationToken: Created token record
         """
-        now = datetime.utcnow()  # Naive UTC datetime (SQLite compatible)
+        now = datetime.now(timezone.utc)
         token = str(uuid.uuid4())  # 36 characters with hyphens (e.g., 550e8400-e29b-41d4-a716-446655440000)
 
         logger.info(f"Generating registration token for user {user_id}: {token[:8]}...")
@@ -89,8 +89,10 @@ class AgentManager:
                 logger.warning(f"Token {token[:8]}... already used")
                 return False
 
-            now = datetime.utcnow()  # Naive UTC datetime for comparison with SQLite datetime
-            if token_record.expires_at <= now:
+            now = datetime.now(timezone.utc)
+            # SQLite stores datetimes as naive, so we need to make expires_at timezone-aware for comparison
+            expires_at = token_record.expires_at.replace(tzinfo=timezone.utc) if token_record.expires_at.tzinfo is None else token_record.expires_at
+            if expires_at <= now:
                 logger.warning(f"Token {token[:8]}... expired at {token_record.expires_at}")
                 return False
 
@@ -154,8 +156,11 @@ class AgentManager:
         if not is_permanent_token and not self.validate_registration_token(token):
             with self.db_manager.get_session() as session:
                 token_record = session.query(RegistrationToken).filter_by(token=token).first()
-                if token_record and token_record.expires_at <= datetime.utcnow():
-                    return {"success": False, "error": "Registration token has expired"}
+                if token_record:
+                    # SQLite stores datetimes as naive, make it timezone-aware for comparison
+                    expires_at = token_record.expires_at.replace(tzinfo=timezone.utc) if token_record.expires_at.tzinfo is None else token_record.expires_at
+                    if expires_at <= datetime.now(timezone.utc):
+                        return {"success": False, "error": "Registration token has expired"}
                 elif token_record and token_record.used:
                     return {"success": False, "error": "Registration token has already been used"}
                 else:
@@ -171,12 +176,12 @@ class AgentManager:
                     existing_agent.proto_version = proto_version
                     existing_agent.capabilities = json.dumps(capabilities)
                     existing_agent.status = "online"
-                    existing_agent.last_seen_at = datetime.utcnow()
+                    existing_agent.last_seen_at = datetime.now(timezone.utc)
 
                     # Update host record with fresh system information
                     host = session.query(DockerHostDB).filter_by(id=existing_agent.host_id).first()
                     if host:
-                        host.updated_at = datetime.utcnow()
+                        host.updated_at = datetime.now(timezone.utc)
                         # Update hostname if provided (agent may have been updated)
                         if hostname:
                             host.name = hostname
@@ -207,16 +212,64 @@ class AgentManager:
                 else:
                     return {"success": False, "error": "Permanent token does not match engine_id"}
 
-        # Check if engine_id already registered
+        # Check if engine_id already registered as agent
         with self.db_manager.get_session() as session:
             existing_agent = session.query(Agent).filter_by(engine_id=engine_id).first()
             if existing_agent:
                 return {"success": False, "error": "Agent with this engine_id is already registered"}
 
+            # Check for migration: engine_id matches existing host
+            existing_host = session.query(DockerHostDB).filter_by(engine_id=engine_id).first()
+            if existing_host:
+                # Migration detected - but we need to validate connection type
+                logger.info(f"Duplicate engine_id detected: {engine_id[:12]}... matches existing host {existing_host.name} ({existing_host.id[:8]}...), connection_type={existing_host.connection_type}")
+
+                # REJECT migration for local connections
+                # Local Docker socket is the ONLY way to manage localhost
+                # Agents are ONLY for remote hosts
+                if existing_host.connection_type == 'local':
+                    logger.warning(f"Migration rejected: Cannot migrate local Docker socket connection to agent. "
+                                  f"Host '{existing_host.name}' uses local socket - agents are only for remote hosts.")
+                    return {
+                        "success": False,
+                        "error": "Migration not supported for local Docker connections. "
+                                "Agents are only for remote hosts. "
+                                "Local Docker monitoring via socket is the preferred method for localhost."
+                    }
+
+                # ALLOW migration for remote connections only
+                if existing_host.connection_type == 'remote':
+                    # Reject if host already migrated (has replaced_by_host_id set)
+                    if existing_host.replaced_by_host_id is not None:
+                        logger.warning(f"Migration rejected: Host {existing_host.name} has already been migrated")
+                        return {"success": False, "error": f"Host with this engine_id has already been migrated"}
+
+                    # Perform migration
+                    logger.info(f"Migration allowed: remote host {existing_host.name} → agent")
+                    migration_result = self._migrate_host_to_agent(
+                        existing_host=existing_host,
+                        engine_id=engine_id,
+                        hostname=hostname,
+                        version=version,
+                        proto_version=proto_version,
+                        capabilities=capabilities,
+                        registration_data=registration_data,
+                        token=token
+                    )
+
+                    return migration_result
+
+                # For any other connection type (including 'agent'), reject
+                logger.error(f"Unexpected connection type '{existing_host.connection_type}' for engine_id {engine_id[:12]}...")
+                return {
+                    "success": False,
+                    "error": f"Host with this engine_id already exists with connection type '{existing_host.connection_type}'"
+                }
+
         # Generate IDs
         agent_id = str(uuid.uuid4())
         host_id = str(uuid.uuid4())
-        now = datetime.utcnow()  # Naive UTC datetime
+        now = datetime.now(timezone.utc)  # Naive UTC datetime
 
         logger.info(f"Registering new agent {agent_id[:8]}... with engine_id {engine_id[:12]}...")
         logger.info(f"System info - OS: {registration_data.get('os_type')} {registration_data.get('os_version')}, "
@@ -320,7 +373,7 @@ class AgentManager:
                 return {"success": False, "error": "Engine_id mismatch: agent verification failed"}
 
             # Update last_seen_at
-            agent.last_seen_at = datetime.utcnow()  # Naive UTC datetime
+            agent.last_seen_at = datetime.now(timezone.utc)  # Naive UTC datetime
             agent.status = "online"
             session.commit()
 
@@ -342,3 +395,198 @@ class AgentManager:
         with self.db_manager.get_session() as session:
             agent = session.query(Agent).filter_by(host_id=host_id).first()
             return agent.id if agent else None
+
+    def _migrate_host_to_agent(
+        self,
+        existing_host: DockerHostDB,
+        engine_id: str,
+        hostname: str,
+        version: str,
+        proto_version: str,
+        capabilities: dict,
+        registration_data: dict,
+        token: str
+    ) -> dict:
+        """
+        Migrate an existing mTLS/remote host to agent-based connection.
+
+        This performs:
+        1. Create new agent-based host
+        2. Transfer container settings (auto-restart, tags, desired states)
+        3. Mark old host as inactive (is_active=False, replaced_by_host_id set)
+        4. Return migration info (WebSocket handler broadcasts notification)
+
+        Args:
+            existing_host: Existing DockerHostDB record to migrate from
+            engine_id: Docker engine ID
+            hostname: Agent hostname
+            version: Agent version
+            proto_version: Protocol version
+            capabilities: Agent capabilities
+            registration_data: Full registration data
+            token: Registration token
+
+        Returns:
+            Dict with success, agent_id, host_id, migration_detected, migrated_from
+        """
+        from database import ContainerAutoRestart, ContainerTag, ContainerDesiredState
+
+        old_host_id = existing_host.id
+        old_host_name = existing_host.name
+
+        # Generate new IDs
+        agent_id = str(uuid.uuid4())
+        new_host_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc)
+
+        logger.info(f"Starting migration: {old_host_name} ({old_host_id[:8]}...) → agent {hostname} ({new_host_id[:8]}...)")
+
+        # Use dedicated session for migration (atomic transaction)
+        with self.db_manager.get_session() as session:
+            try:
+                # Step 1: Create new agent host
+                agent_name = hostname if hostname else f"Agent-{engine_id[:12]}"
+                new_host = DockerHostDB(
+                    id=new_host_id,
+                    name=agent_name,
+                    url="agent://",
+                    connection_type="agent",
+                    engine_id=engine_id,
+                    created_at=now,
+                    updated_at=now,
+                    # Copy system information from existing host
+                    os_type=registration_data.get("os_type") or existing_host.os_type,
+                    os_version=registration_data.get("os_version") or existing_host.os_version,
+                    kernel_version=registration_data.get("kernel_version") or existing_host.kernel_version,
+                    docker_version=registration_data.get("docker_version") or existing_host.docker_version,
+                    daemon_started_at=registration_data.get("daemon_started_at") or existing_host.daemon_started_at,
+                    total_memory=registration_data.get("total_memory") or existing_host.total_memory,
+                    num_cpus=registration_data.get("num_cpus") or existing_host.num_cpus
+                )
+                session.add(new_host)
+                session.flush()
+                logger.info(f"Created new agent host: {agent_name} ({new_host_id[:8]}...)")
+
+                # Step 2: Create agent record
+                agent = Agent(
+                    id=agent_id,
+                    host_id=new_host_id,
+                    engine_id=engine_id,
+                    version=version,
+                    proto_version=proto_version,
+                    capabilities=json.dumps(capabilities),
+                    status="online",
+                    last_seen_at=now,
+                    registered_at=now
+                )
+                session.add(agent)
+                logger.info(f"Created agent record: {agent_id[:8]}...")
+
+                # Step 3: Transfer container settings
+                # Get all containers for old host (extract short container ID from composite key)
+                # Composite key format: {host_id}:{container_id_12char}
+                transferred_count = 0
+
+                # Transfer auto-restart configs
+                auto_restarts = session.query(ContainerAutoRestart).filter_by(host_id=old_host_id).all()
+                for ar in auto_restarts:
+                    # Extract short container ID from composite key
+                    old_composite = ar.container_id
+                    if ':' in old_composite:
+                        _, short_container_id = old_composite.split(':', 1)
+                        new_composite = f"{new_host_id}:{short_container_id}"
+
+                        # Create new record with updated composite key
+                        new_ar = ContainerAutoRestart(
+                            container_id=new_composite,
+                            host_id=new_host_id,
+                            enabled=ar.enabled
+                        )
+                        session.add(new_ar)
+                        transferred_count += 1
+
+                        # Delete old record
+                        session.delete(ar)
+
+                # Transfer container tags
+                tags = session.query(ContainerTag).filter(
+                    ContainerTag.container_id.like(f"{old_host_id}:%")
+                ).all()
+                for tag in tags:
+                    # Extract short container ID from composite key
+                    old_composite = tag.container_id
+                    if ':' in old_composite:
+                        _, short_container_id = old_composite.split(':', 1)
+                        new_composite = f"{new_host_id}:{short_container_id}"
+
+                        # Create new record with updated composite key
+                        new_tag = ContainerTag(
+                            container_id=new_composite,
+                            tag=tag.tag
+                        )
+                        session.add(new_tag)
+
+                        # Delete old record
+                        session.delete(tag)
+
+                # Transfer desired states
+                desired_states = session.query(ContainerDesiredState).filter_by(host_id=old_host_id).all()
+                for ds in desired_states:
+                    # Extract short container ID from composite key
+                    old_composite = ds.container_id
+                    if ':' in old_composite:
+                        _, short_container_id = old_composite.split(':', 1)
+                        new_composite = f"{new_host_id}:{short_container_id}"
+
+                        # Create new record with updated composite key
+                        new_ds = ContainerDesiredState(
+                            container_id=new_composite,
+                            host_id=new_host_id,
+                            container_name=ds.container_name,
+                            desired_state=ds.desired_state,
+                            custom_tags=ds.custom_tags,
+                            web_ui_url=ds.web_ui_url
+                        )
+                        session.add(new_ds)
+
+                        # Delete old record
+                        session.delete(ds)
+
+                logger.info(f"Transferred {transferred_count} container settings from {old_host_name} to {agent_name}")
+
+                # Step 4: Mark old host as migrated (set replaced_by_host_id and is_active=False)
+                existing_host.replaced_by_host_id = new_host_id
+                existing_host.is_active = False
+                existing_host.updated_at = now
+                logger.info(f"Marked old host {old_host_name} as migrated")
+
+                # Step 5: Mark token as used
+                token_record = session.query(RegistrationToken).filter_by(token=token).first()
+                if token_record:
+                    token_record.used = True
+                    token_record.used_at = now
+
+                # Commit all changes atomically
+                session.commit()
+                session.refresh(new_host)
+                session.refresh(agent)
+
+                logger.info(f"Migration completed successfully: {old_host_name} → {agent_name}")
+
+                # Return success with migration info
+                return {
+                    "success": True,
+                    "agent_id": agent_id,
+                    "host_id": new_host_id,
+                    "permanent_token": agent_id,
+                    "migration_detected": True,
+                    "migrated_from": {
+                        "host_id": old_host_id,
+                        "host_name": old_host_name
+                    }
+                }
+
+            except Exception as e:
+                session.rollback()
+                logger.error(f"Migration failed: {e}", exc_info=True)
+                return {"success": False, "error": f"Migration failed: {str(e)}"}

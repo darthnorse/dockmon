@@ -24,6 +24,7 @@ export interface GlobalSettings {
     days: number[]
   }> | null
   timezone_offset: number
+  timezone: string
   show_host_stats: boolean
   show_container_stats: boolean
   show_container_alerts_on_hosts: boolean

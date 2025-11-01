@@ -1,0 +1,310 @@
+DOCKMON AGENT CODEBASE - COMPREHENSIVE REVIEW SUMMARY
+======================================================
+
+DOCUMENTATION GENERATED: October 31, 2025
+REVIEW SCOPE: Complete agent architecture analysis for security/design review
+CODEBASE: v2.2.0 with distributed agent support
+
+DOCUMENTS CREATED:
+- AGENT_ARCHITECTURE_REVIEW.md (37 KB) - Detailed analysis
+- AGENT_FILE_MAPPING.txt (14 KB) - File reference
+- AGENT_CODEBASE_SUMMARY.txt (this file) - Quick reference
+
+
+AGENT (Go - /root/dockmon/agent)
+Total: 1,965 lines of code
+
+Key Files:
+- cmd/agent/main.go (127 lines) - Entry point
+- internal/client/websocket.go (729 lines) - Core communication
+- internal/handlers/stats.go (170 lines) - Metrics collection
+- internal/handlers/update.go (279 lines) - Container updates
+- internal/handlers/selfupdate.go (283 lines) - Agent self-update
+- internal/docker/client.go (329 lines) - Docker API wrapper
+- internal/config/config.go (123 lines) - Configuration
+- internal/protocol/protocol.go (59 lines) - Protocol utilities
+- pkg/types/types.go (101 lines) - Message definitions
+
+
+BACKEND (Python - /root/dockmon/backend/agent)
+
+Key Files:
+- agent/manager.py (345 lines) - Registration and auth
+- agent/websocket_handler.py (275 lines) - WebSocket endpoint
+- agent/command_executor.py (297 lines) - Command execution
+- agent/container_operations.py (509 lines) - High-level ops
+- agent/connection_manager.py (147 lines) - Connection tracking
+- agent/models.py (111 lines) - Input validation
+- database.py - Database models (Agent, RegistrationToken, DockerHostDB)
+
+
+CRITICAL SECURITY ISSUES (HIGH SEVERITY)
+=========================================
+
+1. MISSING CHECKSUM VERIFICATION
+   Location: agent/handlers/selfupdate.go:77-81
+   Risk: MITM attack - arbitrary binary execution
+   Fix: Implement SHA256 checksum validation
+
+2. UNENCRYPTED TOKEN STORAGE
+   Location: agent/internal/client/websocket.go:317
+   Risk: Container breakout → impersonate agent
+   Fix: Encrypt storage, rotate tokens, implement invalidation
+
+3. NO TLS FOR REMOTE AGENTS
+   Location: agent/internal/docker/client.go:33-36
+   Risk: Unencrypted remote Docker communication
+   Fix: Complete TLS with certificate validation
+
+4. ARBITRARY COMMAND EXECUTION
+   Location: agent/internal/client/websocket.go:403-494
+   Risk: Backend compromise → any container operation
+   Fix: Implement command ACL, rate limiting, audit logging
+
+
+MEDIUM SEVERITY ISSUES
+======================
+
+5. NO RESPONSE SIZE LIMITS
+   Risk: OOM from large responses (container logs)
+   Fix: Enforce max_length on responses (10MB)
+
+6. WEBSOCKET TIMEOUT ONLY DURING REGISTRATION
+   Risk: Slow-read attack from backend
+   Fix: Set read timeout during message loop (5 min)
+
+7. NO AGENT-INITIATED HEARTBEAT
+   Risk: Dead connections and resource leaks
+   Fix: Agent sends heartbeat every 30 seconds
+
+8. CONCURRENT MAP RACE IN STATS HANDLER
+   Risk: Data race during stats collection
+   Fix: Review lock usage in goroutines
+
+9. SELF-UPDATE NOT ATOMIC
+   Risk: Binary corruption if process crashes
+   Fix: Use atomic swap or transactional operations
+
+10. FRAGILE CGROUP PARSING
+    Risk: Container ID misparsing
+    Fix: Use cgroups library for robust parsing
+
+
+WEBSOCKET PROTOCOL OVERVIEW
+============================
+
+Endpoint: wss://backend/api/agent/ws
+Auth: Registration token (15-min) or Permanent token (agent_id)
+Message Format: JSON with type field
+Correlation: Requests include correlation_id for response matching
+
+Message Types:
+- register: Initial registration with token
+- auth_success: Backend confirms registration
+- auth_error: Authentication failed
+- container_operation: Backend command to agent
+- event: Agent sends stats, progress, container events
+- heartbeat: Keep-alive (agent → backend)
+
+
+AGENT LIFECYCLE
+===============
+
+Startup:
+1. Load config from environment variables
+2. Create Docker client
+3. Get Docker engine ID (unique daemon identifier)
+4. Detect own container ID (for self-update)
+5. Create WebSocket client with handlers
+6. Check for pending self-updates
+7. Run WebSocket in background with auto-reconnect
+8. Handle OS signals for graceful shutdown
+
+Registration:
+1. Agent sends RegistrationRequest with token
+2. Backend validates token (15-minute expiry)
+3. Backend creates Agent record (backend-assigned UUID)
+4. Backend creates DockerHostDB record (connection_type='agent')
+5. Backend returns permanent_token (= agent_id)
+6. Agent persists permanent_token to /data/permanent_token
+
+Reconnection (after restart):
+1. Agent loads permanent_token from /data/permanent_token
+2. Agent sends token (now acting as persistent identifier)
+3. Backend validates agent_id exists
+4. Backend validates engine_id matches (security check)
+5. Backend updates system info and status='online'
+
+Container Operation:
+1. Backend sends container_operation with correlation_id
+2. Agent executes Docker operation
+3. Agent responds with correlation_id for matching
+4. Backend awaits response with timeout (default 30s)
+
+
+CONFIGURATION REFERENCE
+=======================
+
+Required:
+- DOCKMON_URL: wss://backend or ws://backend
+- REGISTRATION_TOKEN (first time) or PERMANENT_TOKEN (reconnect)
+
+Optional:
+- DOCKER_HOST: unix:///var/run/docker.sock (default)
+- DOCKER_TLS_VERIFY: false (default)
+- LOG_LEVEL: info (default)
+- LOG_JSON: true (default)
+- RECONNECT_INITIAL: 1s (exponential backoff)
+- RECONNECT_MAX: 60s (exponential backoff max)
+- DATA_PATH: /data (for token/updates)
+- UPDATE_TIMEOUT: 120s (self-update timeout)
+
+Volume Mounts (CRITICAL):
+- -v agent-data:/data (Token and update persistence - REQUIRED)
+- -v /var/run/docker.sock:/var/run/docker.sock (Docker socket)
+
+
+DATABASE SCHEMA (v2.2.0)
+========================
+
+RegistrationToken:
+- id INTEGER PRIMARY KEY
+- token VARCHAR UNIQUE (UUID)
+- created_by_user_id INTEGER (FK users.id)
+- created_at DATETIME
+- expires_at DATETIME (15-minute expiry)
+- used BOOLEAN (default False)
+- used_at DATETIME
+
+Agent:
+- id VARCHAR PRIMARY KEY (backend UUID)
+- host_id VARCHAR UNIQUE (FK docker_hosts.id)
+- engine_id VARCHAR UNIQUE (immutable - Docker daemon ID)
+- version VARCHAR
+- proto_version VARCHAR
+- capabilities JSON
+- status VARCHAR (online/offline/degraded)
+- last_seen_at DATETIME
+- registered_at DATETIME
+
+DockerHostDB (extended):
+- connection_type VARCHAR (local/mtls/agent)
+- os_type, os_version, kernel_version VARCHAR
+- docker_version VARCHAR
+- daemon_started_at VARCHAR (ISO timestamp)
+- total_memory BIGINT (bytes)
+- num_cpus INTEGER
+
+
+DEPENDENCIES
+============
+
+Go:
+- github.com/gorilla/websocket (WebSocket)
+- github.com/docker/docker (Docker API)
+- github.com/sirupsen/logrus (Logging)
+- github.com/darthnorse/dockmon-shared (Shared utilities)
+
+Python:
+- FastAPI, SQLAlchemy, Pydantic
+
+
+FOR CODE REVIEW - PRIORITY FILES
+=================================
+
+1. agent/internal/client/websocket.go (729 lines)
+   - Connection lifecycle
+   - Command dispatch
+   - Token persistence
+   - Error handling
+
+2. agent/internal/handlers/selfupdate.go (283 lines)
+   - Self-update mechanism
+   - File operations
+   - Missing checksum verification
+
+3. agent/cmd/agent/main.go (127 lines)
+   - Startup sequence
+   - Signal handling
+
+4. backend/agent/manager.py (345 lines)
+   - Token validation
+   - Agent registration
+   - Database sessions
+
+5. backend/agent/command_executor.py (297 lines)
+   - Request/response correlation
+   - Timeout handling
+
+6. backend/agent/websocket_handler.py (275 lines)
+   - Authentication protocol
+   - Message dispatch
+
+
+TESTING STRATEGY
+================
+
+Unit Tests:
+- Token validation and expiration
+- Message encoding/decoding
+- Docker client mocking
+- Stats calculation
+
+Integration Tests:
+- WebSocket connection
+- Registration flow
+- Reconnection with persistent token
+- Container operations (start/stop/restart/remove)
+- Stats streaming
+- Event streaming
+- Self-update flow
+
+Security Tests:
+- Token expiration enforcement
+- Prevent token reuse
+- Engine_id validation on reconnection
+- XSS prevention in registration
+- Response size limits
+
+
+QUICK FACTS
+===========
+
+Codebase Size:
+- Agent: 1,965 lines Go
+- Backend: 2,000+ lines Python (agent-specific)
+
+Message Format: JSON over WebSocket
+Protocol Version: 1.0
+Agent Version: 2.2.0
+
+Reconnection: Exponential backoff (1s → 60s)
+Token TTL: 15 minutes (registration token)
+Command Timeout: 30 seconds (configurable)
+Health Check Timeout: 30 seconds (container update)
+Container Stop Timeout: 10 seconds (default)
+
+Unique Constraints:
+- Agent.id (backend UUID)
+- Agent.engine_id (Docker daemon ID)
+- Agent.host_id (one-to-one with host)
+- RegistrationToken.token (single-use)
+
+Key Design Patterns:
+- Singleton: AgentConnectionManager
+- Dependency Injection: Handler callbacks
+- Correlation ID: Request/response matching
+- Two-phase Update: Self-update with lock file
+- Short-lived Sessions: Database access pattern
+
+
+COMPLETE DOCUMENTATION AVAILABLE
+=================================
+
+See:
+- AGENT_ARCHITECTURE_REVIEW.md (detailed analysis)
+- AGENT_FILE_MAPPING.txt (file reference)
+- AGENT_CODEBASE_SUMMARY.txt (this file)
+
+For specific security concerns, see Part 4 of
+AGENT_ARCHITECTURE_REVIEW.md

@@ -36,6 +36,12 @@ docker run -d \
   ghcr.io/darthnorse/dockmon-agent:2.2.0
 ```
 
+**Important**: The `-v dockmon-agent-data:/data` named volume is **required** for:
+- Persisting the permanent authentication token across restarts
+- Enabling remote self-update functionality (agent updates itself in-place)
+
+Do **not** use bind mounts or omit this volume, as it will break agent persistence and self-update.
+
 3. The agent will automatically register with DockMon and appear in your hosts list
 
 ## Configuration
@@ -106,6 +112,8 @@ docker build -t dockmon-agent:dev \
 - Docker socket access required (inherent security consideration)
 - Registration token is one-time use
 - Permanent token stored in `/data` volume (should be protected)
+- Self-update mechanism validates images and maintains container ID stability
+- Updates are initiated via authenticated WebSocket commands from DockMon
 
 ## Troubleshooting
 

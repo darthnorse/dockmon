@@ -12,6 +12,7 @@ import { useState, useEffect } from 'react'
 import { Outlet } from 'react-router-dom'
 import { Sidebar } from './Sidebar'
 import { BlackoutBanner } from './BlackoutBanner'
+import { MigrationBanner } from './MigrationBanner'
 import { UpgradeWelcomeModal } from '@/components/UpgradeWelcomeModal'
 import { AppVersionProvider } from '@/lib/contexts/AppVersionContext'
 import { cn } from '@/lib/utils'
@@ -79,6 +80,9 @@ export function AppLayout() {
       <div className="min-h-screen bg-background">
         {/* Blackout window notification banner */}
         <BlackoutBanner />
+
+        {/* Host migration notification banner */}
+        <MigrationBanner />
 
         <Sidebar />
 

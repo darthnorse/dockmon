@@ -125,7 +125,9 @@ class DockerHostDB(Base):
     total_memory = Column(BigInteger, nullable=True)  # Total memory in bytes
     num_cpus = Column(Integer, nullable=True)  # Number of CPUs
     # v2.2.0 - Agent support
-    connection_type = Column(String, nullable=False, server_default='local')  # 'local', 'mtls', 'agent'
+    connection_type = Column(String, nullable=False, server_default='local')  # 'local', 'remote', 'agent'
+    engine_id = Column(String, nullable=True, index=True)  # Docker engine ID for migration detection
+    replaced_by_host_id = Column(String, ForeignKey('docker_hosts.id', ondelete='SET NULL'), nullable=True)  # Migration tracking
 
     # Relationships
     auto_restart_configs = relationship("AutoRestartConfig", back_populates="host", cascade="all, delete-orphan")

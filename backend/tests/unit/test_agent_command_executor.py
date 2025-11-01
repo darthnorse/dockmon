@@ -298,13 +298,14 @@ class TestResponseHandling:
     @pytest.mark.asyncio
     async def test_cleanup_expired_pending_commands(self, executor):
         """Should clean up pending commands that have exceeded max timeout"""
+        from datetime import timezone
         # Create expired pending command (started 2 minutes ago)
         expired_correlation_id = "expired-123"
         expired_future = asyncio.Future()
         executor._pending_commands[expired_correlation_id] = {
             "future": expired_future,
             "agent_id": "agent-123",
-            "started_at": datetime.utcnow() - timedelta(minutes=2)
+            "started_at": datetime.now(timezone.utc) - timedelta(minutes=2)
         }
 
         # Create recent pending command (started 5 seconds ago)
@@ -313,11 +314,11 @@ class TestResponseHandling:
         executor._pending_commands[recent_correlation_id] = {
             "future": recent_future,
             "agent_id": "agent-456",
-            "started_at": datetime.utcnow() - timedelta(seconds=5)
+            "started_at": datetime.now(timezone.utc) - timedelta(seconds=5)
         }
 
-        # Cleanup with max_age of 60 seconds
-        executor.cleanup_expired_pending_commands(max_age_seconds=60)
+        # Cleanup with max_age of 60 seconds (now async)
+        await executor.cleanup_expired_pending_commands(max_age_seconds=60)
 
         # Expired command should be removed
         assert expired_correlation_id not in executor._pending_commands

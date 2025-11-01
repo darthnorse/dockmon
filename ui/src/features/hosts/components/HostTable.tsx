@@ -41,6 +41,7 @@ import {
   ShieldCheck,
   Shield,
   Maximize2,
+  Radio,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -114,6 +115,18 @@ function SecurityIndicator({ url, securityStatus }: { url: string; securityStatu
   }
 
   // Default - no indicator
+  return null
+}
+
+// Agent indicator component for agent-based connections
+function AgentIndicator({ connectionType }: { connectionType?: 'agent' | 'remote' | null | undefined }) {
+  if (connectionType === 'agent') {
+    return (
+      <div title="Agent Connection (WebSocket)">
+        <Radio className="h-4 w-4 text-[--accent] opacity-80" />
+      </div>
+    )
+  }
   return null
 }
 
@@ -455,6 +468,7 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
                 >
                   {host.name}
                 </button>
+                <AgentIndicator connectionType={host.connection_type} />
                 <SecurityIndicator url={host.url} securityStatus={host.security_status} />
               </div>
               {host.tags && host.tags.length > 0 && (

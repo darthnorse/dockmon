@@ -30,6 +30,7 @@ from agent.models import AgentRegistrationRequest
 from database import Agent, DatabaseManager
 from event_bus import Event, EventType, get_event_bus
 from event_logger import EventCategory, EventType as LogEventType, EventSeverity, EventContext
+from utils.keys import make_composite_key
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,23 @@ class AgentWebSocketHandler:
         self.agent_hostname: Optional[str] = None  # For event logging
         self.host_id: Optional[str] = None  # For mapping agent to host
         self.authenticated = False
+
+    def _truncate_container_id(self, container_id: Optional[str]) -> str:
+        """
+        Truncate container ID to 12 characters (short ID format).
+
+        Agent sends full 64-char Docker IDs, but DockMon uses 12-char short IDs
+        consistently throughout the codebase for composite keys and database storage.
+
+        Args:
+            container_id: Container ID (12 or 64 characters)
+
+        Returns:
+            Short container ID (12 characters) or empty string if invalid
+        """
+        if not container_id:
+            return ""
+        return container_id[:12] if len(container_id) > 12 else container_id
 
     async def handle_connection(self):
         """
@@ -315,13 +333,16 @@ class AgentWebSocketHandler:
                 logger.debug(f"WebSocket manager not available for agent {self.agent_id}")
                 return
 
+            # Truncate container ID to short format (12 chars)
+            container_id = self._truncate_container_id(message.get("container_id"))
+
             # Forward progress to UI via WebSocket
             await self.monitor.manager.broadcast({
                 "type": "agent_update_progress",
                 "data": {
                     "agent_id": self.agent_id,
                     "host_id": self.host_id or self.agent_id,
-                    "container_id": message.get("container_id"),
+                    "container_id": container_id,
                     "stage": message.get("stage"),
                     "progress": message.get("percent"),
                     "message": message.get("message"),
@@ -349,11 +370,14 @@ class AgentWebSocketHandler:
             error_msg = message.get("error", "Unknown error")
             details = message.get("details")
 
+            # Truncate container ID if present (optional field)
+            container_id = self._truncate_container_id(message.get("container_id"))
+
             # Log via EventLogger (stores in database + broadcasts to UI)
             context = EventContext(
                 host_id=self.host_id or self.agent_id,
                 host_name=self.agent_hostname or self.agent_id,
-                container_id=message.get("container_id")
+                container_id=container_id if container_id else None
             )
 
             self.monitor.event_logger.log_event(
@@ -382,8 +406,13 @@ class AgentWebSocketHandler:
                 return
 
             action = payload.get("action")  # 'start', 'stop', 'die', 'restart', 'destroy'
-            container_id = payload.get("container_id")
+            container_id = self._truncate_container_id(payload.get("container_id"))
             container_name = payload.get("container_name")
+
+            # Validate required fields
+            if not container_id:
+                logger.warning(f"Container event missing container_id from agent {self.agent_id}")
+                return
 
             # Map Docker actions to EventBus event types
             event_type_map = {
@@ -399,11 +428,14 @@ class AgentWebSocketHandler:
                 logger.debug(f"No event mapping for action '{action}' from agent {self.agent_id}")
                 return
 
+            # Create composite key using utility function (validates 12-char format)
+            composite_key = make_composite_key(self.host_id, container_id)
+
             # Emit via EventBus (automatic: database, alerts, UI broadcast)
             event = Event(
                 event_type=event_type,
                 scope_type='container',
-                scope_id=f"{self.host_id}:{container_id}",  # Composite key
+                scope_id=composite_key,
                 scope_name=container_name,
                 host_id=self.host_id or self.agent_id,
                 host_name=self.agent_hostname or self.agent_id,
@@ -429,8 +461,16 @@ class AgentWebSocketHandler:
                 logger.debug(f"Monitor not available for container stats from agent {self.agent_id}")
                 return
 
-            container_id = payload.get("container_id")
+            container_id = self._truncate_container_id(payload.get("container_id"))
             stats = payload.get("stats", {})
+
+            # Validate required fields
+            if not container_id:
+                logger.debug(f"Container stats missing container_id from agent {self.agent_id}")
+                return
+
+            # Create composite key for stats storage (validates 12-char format)
+            container_key = make_composite_key(self.host_id, container_id)
 
             # Store in circular buffer (no database)
             if hasattr(self.monitor, 'container_stats_history'):
@@ -439,7 +479,7 @@ class AgentWebSocketHandler:
                 net = stats.get("net_bytes_per_sec", 0.0)
 
                 self.monitor.container_stats_history.add_stats(
-                    container_id=container_id,
+                    container_key=container_key,
                     cpu=cpu,
                     mem=mem,
                     net=net

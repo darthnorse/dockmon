@@ -3986,7 +3986,7 @@ async def agent_websocket_endpoint(websocket: WebSocket):
     Each database operation creates a short-lived session following the
     pattern used throughout DockMon (auto-restart, desired state, etc.).
     """
-    await handle_agent_websocket(websocket)
+    await handle_agent_websocket(websocket, monitor)
 
 
 @app.websocket("/ws")

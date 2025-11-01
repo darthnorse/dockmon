@@ -47,7 +47,8 @@ class ContainerOperations:
         self.agent_operations = AgentContainerOperations(
             command_executor=self.agent_command_executor,
             db=db,
-            agent_manager=self.agent_manager
+            agent_manager=self.agent_manager,
+            event_logger=monitor.event_logger if monitor else None
         )
 
     async def restart_container(self, host_id: str, container_id: str) -> bool:

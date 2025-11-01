@@ -987,3 +987,97 @@ class PeriodicJobsManager:
         except Exception as e:
             logger.error(f"Error cleaning expired image cache: {e}", exc_info=True)
             return 0
+
+    async def validate_engine_ids_periodic(self):
+        """
+        Periodic task: Validate and populate missing engine_ids for all hosts.
+        Runs every 6 hours.
+
+        This ensures:
+        - New hosts from v2.1.0 get engine_id populated
+        - Offline hosts get engine_id when they come online
+        - Engine ID changes are detected (VM cloning, Docker data migration)
+
+        Note: engine_id is also populated on host connect/reconnect (immediate),
+        this periodic check is a safety net for edge cases.
+        """
+        # Wait 5 minutes after startup before first check (let hosts connect first)
+        await asyncio.sleep(5 * 60)
+
+        while True:
+            try:
+                logger.debug("Running periodic engine_id validation...")
+
+                # Get all non-agent hosts that need engine_id check
+                hosts_to_check = []
+                with self.db.get_session() as session:
+                    from database import DockerHostDB
+                    # Get hosts where engine_id is NULL or host is active (to detect changes)
+                    hosts = session.query(DockerHostDB).filter(
+                        DockerHostDB.connection_type.in_(['local', 'remote']),  # Skip agent hosts
+                        DockerHostDB.is_active == True
+                    ).all()
+
+                    for host in hosts:
+                        hosts_to_check.append({
+                            'id': host.id,
+                            'name': host.name,
+                            'url': host.url,
+                            'connection_type': host.connection_type,
+                            'current_engine_id': host.engine_id
+                        })
+
+                # Check each host's engine_id
+                updated_count = 0
+                for host_data in hosts_to_check:
+                    try:
+                        # Get Docker client from monitor
+                        if not self.monitor:
+                            continue
+
+                        client = self.monitor.clients.get(host_data['id'])
+                        if not client:
+                            # Host offline, skip
+                            continue
+
+                        # Fetch current engine_id from Docker
+                        info = await async_docker_call(client.info)
+                        actual_engine_id = info.get('ID')
+
+                        if not actual_engine_id:
+                            continue
+
+                        # Update if NULL or changed (VM clone detection)
+                        if actual_engine_id != host_data['current_engine_id']:
+                            with self.db.get_session() as session:
+                                from database import DockerHostDB
+                                db_host = session.query(DockerHostDB).filter_by(id=host_data['id']).first()
+                                if db_host:
+                                    old_value = db_host.engine_id
+                                    db_host.engine_id = actual_engine_id
+                                    session.commit()
+                                    updated_count += 1
+
+                                    if old_value is None:
+                                        logger.info(f"Populated engine_id for {host_data['name']}: {actual_engine_id[:12]}...")
+                                    else:
+                                        logger.warning(
+                                            f"Engine ID changed for {host_data['name']}! "
+                                            f"Old: {old_value[:12]}..., New: {actual_engine_id[:12]}... "
+                                            f"(Possible VM clone or Docker data migration)"
+                                        )
+
+                    except Exception as e:
+                        logger.debug(f"Failed to check engine_id for {host_data['name']}: {e}")
+                        continue
+
+                if updated_count > 0:
+                    logger.info(f"Engine ID validation: {updated_count} hosts updated")
+
+                # Sleep for 6 hours before next check
+                await asyncio.sleep(6 * 60 * 60)
+
+            except Exception as e:
+                logger.error(f"Error in engine_id validation: {e}", exc_info=True)
+                # Wait 1 hour before retrying on error
+                await asyncio.sleep(60 * 60)

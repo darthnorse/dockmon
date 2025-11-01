@@ -286,6 +286,7 @@ class AgentManager:
                     name=agent_name,
                     url="agent://",  # Placeholder URL for agent connections (not used for WebSocket)
                     connection_type="agent",
+                    engine_id=engine_id,  # Required for migration detection
                     created_at=now,
                     updated_at=now,
                     # System information (aligned with legacy host schema)

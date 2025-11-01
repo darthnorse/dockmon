@@ -169,6 +169,11 @@ async def lifespan(app: FastAPI):
     logger.info("Started DockMon update checker task")
 
     monitor.dockmon_update_task = asyncio.create_task(monitor.periodic_jobs.check_dockmon_updates_periodic())
+    logger.info("Started DockMon update periodic task")
+
+    # Start engine_id validation task (populates engine_id for existing hosts, detects VM clones)
+    monitor.engine_id_validation_task = asyncio.create_task(monitor.periodic_jobs.validate_engine_ids_periodic())
+    logger.info("Started engine_id validation periodic task")
 
     # Start blackout window monitoring with WebSocket support
     await monitor.notification_service.blackout_manager.start_monitoring(

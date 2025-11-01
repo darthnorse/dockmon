@@ -104,6 +104,7 @@ def _fetch_system_info_from_docker(client: DockerClient, host_name: str) -> dict
         kernel_version = system_info.get('KernelVersion', None)
         total_memory = system_info.get('MemTotal', None)
         num_cpus = system_info.get('NCPU', None)
+        engine_id = system_info.get('ID', None)  # Docker engine ID for migration detection
 
         docker_version = version_info.get('Version', None)
 
@@ -138,7 +139,8 @@ def _fetch_system_info_from_docker(client: DockerClient, host_name: str) -> dict
             'daemon_started_at': daemon_started_at,
             'total_memory': total_memory,
             'num_cpus': num_cpus,
-            'is_podman': is_podman
+            'is_podman': is_podman,
+            'engine_id': engine_id
         }
     except Exception as e:
         logger.warning(f"Failed to fetch system info for {host_name}: {e}")
@@ -150,7 +152,8 @@ def _fetch_system_info_from_docker(client: DockerClient, host_name: str) -> dict
             'daemon_started_at': None,
             'total_memory': None,
             'num_cpus': None,
-            'is_podman': False  # Default to Docker behavior on failure
+            'is_podman': False,  # Default to Docker behavior on failure
+            'engine_id': None
         }
 
 
@@ -426,6 +429,7 @@ class DockerMonitor:
             total_memory = sys_info['total_memory']
             num_cpus = sys_info['num_cpus']
             is_podman = sys_info.get('is_podman', False)
+            engine_id = sys_info['engine_id']
 
             # Validate TLS configuration for TCP connections
             security_status = self._validate_host_security(config)
@@ -454,7 +458,7 @@ class DockerMonitor:
             self.hosts[host.id] = host
 
             # Update OS info in database if reconnecting (when info wasn't saved before)
-            if skip_db_save and (os_type or os_version or kernel_version or docker_version or daemon_started_at or total_memory or num_cpus):
+            if skip_db_save and (os_type or os_version or kernel_version or docker_version or daemon_started_at or total_memory or num_cpus or engine_id):
                 # Update existing host with OS info
                 try:
                     with self.db.get_session() as session:
@@ -476,6 +480,8 @@ class DockerMonitor:
                                 db_host.num_cpus = num_cpus
                             # Always update is_podman (Issue #20)
                             db_host.is_podman = is_podman
+                            if engine_id:
+                                db_host.engine_id = engine_id
                             session.commit()
                 except Exception as e:
                     logger.warning(f"Failed to update OS info for {host.name}: {e}")
@@ -505,7 +511,8 @@ class DockerMonitor:
                     'daemon_started_at': host.daemon_started_at,
                     'total_memory': host.total_memory,
                     'num_cpus': host.num_cpus,
-                    'is_podman': host.is_podman
+                    'is_podman': host.is_podman,
+                    'engine_id': engine_id
                 })
 
             # Register host with stats and event services

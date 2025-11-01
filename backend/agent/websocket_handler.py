@@ -180,19 +180,63 @@ class AgentWebSocketHandler:
 
                     # Broadcast migration notification if this was a migration
                     if result.get("migration_detected") and self.monitor:
+                        old_host_id = result["migrated_from"]["host_id"]
+                        old_host_name = result["migrated_from"]["host_name"]
+                        new_host_name = validated_data.hostname
+
                         try:
                             await self.monitor.manager.broadcast({
                                 "type": "host_migrated",
                                 "data": {
-                                    "old_host_id": result["migrated_from"]["host_id"],
-                                    "old_host_name": result["migrated_from"]["host_name"],
+                                    "old_host_id": old_host_id,
+                                    "old_host_name": old_host_name,
                                     "new_host_id": result["host_id"],
-                                    "new_host_name": validated_data.hostname
+                                    "new_host_name": new_host_name
                                 }
                             })
-                            logger.info(f"Broadcast migration notification: {result['migrated_from']['host_name']} → {validated_data.hostname}")
+                            logger.info(f"Broadcast migration notification: {old_host_name} → {new_host_name}")
                         except Exception as e:
                             logger.error(f"Failed to broadcast migration notification: {e}")
+
+                        # Clean up old host from monitor's in-memory state and Go services
+                        # Database record is preserved (marked inactive) for audit trail
+                        try:
+                            # Remove from in-memory hosts dictionary
+                            if old_host_id in self.monitor.hosts:
+                                del self.monitor.hosts[old_host_id]
+                                logger.info(f"Removed old host {old_host_name} ({old_host_id[:8]}...) from monitor hosts")
+
+                            # Close and remove Docker client
+                            if old_host_id in self.monitor.clients:
+                                try:
+                                    self.monitor.clients[old_host_id].close()
+                                    logger.debug(f"Closed Docker client for old host {old_host_name}")
+                                except Exception as e:
+                                    logger.warning(f"Error closing Docker client for old host: {e}")
+                                del self.monitor.clients[old_host_id]
+
+                            # Unregister from Go stats and event services
+                            from stats_client import get_stats_client
+                            stats_client = get_stats_client()
+
+                            try:
+                                await stats_client.remove_docker_host(old_host_id)
+                                logger.info(f"Unregistered old host {old_host_name} from stats service")
+                            except asyncio.TimeoutError:
+                                logger.debug(f"Timeout unregistering {old_host_name} from stats service (expected during cleanup)")
+                            except Exception as e:
+                                logger.warning(f"Error unregistering from stats service: {e}")
+
+                            try:
+                                await stats_client.remove_event_host(old_host_id)
+                                logger.info(f"Unregistered old host {old_host_name} from event service")
+                            except Exception as e:
+                                logger.warning(f"Error unregistering from event service: {e}")
+
+                            logger.info(f"Migration cleanup complete: old host {old_host_name} removed from active monitoring")
+
+                        except Exception as e:
+                            logger.error(f"Error during migration cleanup: {e}", exc_info=True)
 
                 return result
 

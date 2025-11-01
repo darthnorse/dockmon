@@ -14,6 +14,10 @@ from fastapi import HTTPException
 from event_logger import EventLogger
 from models.docker_models import DockerHost
 from utils.keys import make_composite_key
+from agent.manager import AgentManager
+from agent.connection_manager import agent_connection_manager
+from agent.command_executor import AgentCommandExecutor
+from agent.container_operations import AgentContainerOperations
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +41,20 @@ class ContainerOperations:
         self.db = db
         self.monitor = monitor
 
+        # Initialize agent operations (v2.2.0)
+        self.agent_manager = AgentManager()
+        self.agent_command_executor = AgentCommandExecutor(agent_connection_manager)
+        self.agent_operations = AgentContainerOperations(
+            command_executor=self.agent_command_executor,
+            db=db,
+            agent_manager=self.agent_manager
+        )
+
     async def restart_container(self, host_id: str, container_id: str) -> bool:
         """
         Restart a specific container.
+
+        Routes through agent if available, otherwise uses direct Docker client.
 
         Args:
             host_id: Docker host ID
@@ -51,6 +66,13 @@ class ContainerOperations:
         Raises:
             HTTPException: If host not found or restart fails
         """
+        # Check if host has an agent - route through agent if available (v2.2.0)
+        agent_id = self.agent_manager.get_agent_for_host(host_id)
+        if agent_id:
+            logger.info(f"Routing restart_container for host {host_id} through agent {agent_id}")
+            return await self.agent_operations.restart_container(host_id, container_id)
+
+        # Legacy path: Direct Docker socket access
         from utils.async_docker import async_docker_call, async_container_restart
 
         if host_id not in self.clients:
@@ -118,6 +140,8 @@ class ContainerOperations:
         """
         Stop a specific container.
 
+        Routes through agent if available, otherwise uses direct Docker client.
+
         Args:
             host_id: Docker host ID
             container_id: Container ID
@@ -128,6 +152,13 @@ class ContainerOperations:
         Raises:
             HTTPException: If host not found or stop fails
         """
+        # Check if host has an agent - route through agent if available (v2.2.0)
+        agent_id = self.agent_manager.get_agent_for_host(host_id)
+        if agent_id:
+            logger.info(f"Routing stop_container for host {host_id} through agent {agent_id}")
+            return await self.agent_operations.stop_container(host_id, container_id)
+
+        # Legacy path: Direct Docker socket access
         from utils.async_docker import async_docker_call, async_container_stop
 
         if host_id not in self.clients:
@@ -200,6 +231,8 @@ class ContainerOperations:
         """
         Start a specific container.
 
+        Routes through agent if available, otherwise uses direct Docker client.
+
         Args:
             host_id: Docker host ID
             container_id: Container ID
@@ -210,6 +243,13 @@ class ContainerOperations:
         Raises:
             HTTPException: If host not found or start fails
         """
+        # Check if host has an agent - route through agent if available (v2.2.0)
+        agent_id = self.agent_manager.get_agent_for_host(host_id)
+        if agent_id:
+            logger.info(f"Routing start_container for host {host_id} through agent {agent_id}")
+            return await self.agent_operations.start_container(host_id, container_id)
+
+        # Legacy path: Direct Docker socket access
         from utils.async_docker import async_docker_call, async_container_start
 
         if host_id not in self.clients:

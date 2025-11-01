@@ -385,6 +385,12 @@ func (c *WebSocketClient) handleMessage(ctx context.Context, msg *types.Message)
 		"id":      msg.ID,
 	}).Debug("Received message")
 
+	// Handle new v2.2.0 container_operation messages
+	if msg.Type == "container_operation" {
+		c.handleContainerOperation(ctx, msg)
+		return
+	}
+
 	if msg.Type != "command" {
 		c.log.WithField("type", msg.Type).Warn("Unexpected message type")
 		return
@@ -494,6 +500,113 @@ func (c *WebSocketClient) handleMessage(ctx context.Context, msg *types.Message)
 	}
 }
 
+// handleContainerOperation handles container operation messages (v2.2.0)
+func (c *WebSocketClient) handleContainerOperation(ctx context.Context, msg *types.Message) {
+	// Parse payload to extract operation parameters
+	payload, ok := msg.Payload.(map[string]interface{})
+	if !ok {
+		c.log.Error("Invalid container_operation payload")
+		return
+	}
+
+	action, _ := payload["action"].(string)
+	containerID, _ := payload["container_id"].(string)
+	correlationID, _ := payload["correlation_id"].(string)
+
+	c.log.WithFields(logrus.Fields{
+		"action":         action,
+		"container_id":   containerID,
+		"correlation_id": correlationID,
+	}).Info("Handling container operation")
+
+	// Execute operation
+	var err error
+	response := map[string]interface{}{
+		"correlation_id": correlationID,
+	}
+
+	switch action {
+	case "start":
+		err = c.docker.StartContainer(ctx, containerID)
+		if err == nil {
+			response["success"] = true
+			response["container_id"] = containerID
+			response["status"] = "started"
+		}
+
+	case "stop":
+		timeout := 10 // default
+		if t, ok := payload["timeout"].(float64); ok {
+			timeout = int(t)
+		}
+		err = c.docker.StopContainer(ctx, containerID, timeout)
+		if err == nil {
+			response["success"] = true
+			response["container_id"] = containerID
+			response["status"] = "stopped"
+		}
+
+	case "restart":
+		timeout := 10 // default
+		if t, ok := payload["timeout"].(float64); ok {
+			timeout = int(t)
+		}
+		err = c.docker.RestartContainer(ctx, containerID, timeout)
+		if err == nil {
+			response["success"] = true
+			response["container_id"] = containerID
+			response["status"] = "restarted"
+		}
+
+	case "remove":
+		force := false
+		if f, ok := payload["force"].(bool); ok {
+			force = f
+		}
+		err = c.docker.RemoveContainer(ctx, containerID, force)
+		if err == nil {
+			response["success"] = true
+			response["container_id"] = containerID
+			response["removed"] = true
+		}
+
+	case "get_logs":
+		tail := "100" // default
+		if t, ok := payload["tail"].(float64); ok {
+			tail = fmt.Sprintf("%.0f", t)
+		}
+		var logs string
+		logs, err = c.docker.GetContainerLogs(ctx, containerID, tail)
+		if err == nil {
+			response["success"] = true
+			response["logs"] = logs
+		}
+
+	case "inspect":
+		var containerJSON interface{}
+		containerJSON, err = c.docker.InspectContainer(ctx, containerID)
+		if err == nil {
+			response["success"] = true
+			response["container"] = containerJSON
+		}
+
+	default:
+		err = fmt.Errorf("unknown action: %s", action)
+	}
+
+	// Add error to response if operation failed
+	if err != nil {
+		response["success"] = false
+		response["error"] = err.Error()
+		c.log.WithError(err).WithField("action", action).Error("Container operation failed")
+	}
+
+	// Send response with correlation_id
+	if sendErr := c.sendJSON(response); sendErr != nil {
+		c.log.WithError(sendErr).Error("Failed to send container operation response")
+	}
+}
+
 // streamEvents streams Docker events to DockMon
 func (c *WebSocketClient) streamEvents(ctx context.Context) {
 	c.log.Info("Starting event streaming")
@@ -572,6 +685,28 @@ func (c *WebSocketClient) sendMessage(msg *types.Message) error {
 func (c *WebSocketClient) sendEvent(eventType string, payload interface{}) error {
 	msg := protocol.NewEvent(eventType, payload)
 	return c.sendMessage(msg)
+}
+
+// sendJSON sends a raw JSON object directly (v2.2.0)
+// Used for container operation responses with correlation_id
+func (c *WebSocketClient) sendJSON(data interface{}) error {
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("failed to marshal JSON: %w", err)
+	}
+
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
+
+	if c.conn == nil {
+		return fmt.Errorf("connection not established")
+	}
+
+	if err := c.conn.WriteMessage(websocket.TextMessage, jsonData); err != nil {
+		return fmt.Errorf("failed to write JSON message: %w", err)
+	}
+
+	return nil
 }
 
 // CheckPendingUpdate checks for and applies pending self-update

@@ -17,6 +17,7 @@ Message Types:
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -24,8 +25,11 @@ from pydantic import ValidationError
 
 from agent.manager import AgentManager
 from agent.connection_manager import agent_connection_manager
+from agent.command_executor import get_agent_command_executor
 from agent.models import AgentRegistrationRequest
 from database import Agent, DatabaseManager
+from event_bus import Event, EventType, get_event_bus
+from event_logger import EventCategory, EventType as LogEventType, EventSeverity, EventContext
 
 logger = logging.getLogger(__name__)
 
@@ -33,17 +37,21 @@ logger = logging.getLogger(__name__)
 class AgentWebSocketHandler:
     """Handles WebSocket connections from agents"""
 
-    def __init__(self, websocket: WebSocket):
+    def __init__(self, websocket: WebSocket, monitor=None):
         """
         Initialize handler.
 
         Args:
             websocket: FastAPI WebSocket connection
+            monitor: DockerMonitor instance (for EventBus, WebSocket broadcast, stats)
         """
         self.websocket = websocket
+        self.monitor = monitor
         self.agent_manager = AgentManager()  # Creates short-lived sessions internally
         self.db_manager = DatabaseManager()  # For heartbeat updates
         self.agent_id: Optional[str] = None
+        self.agent_hostname: Optional[str] = None  # For event logging
+        self.host_id: Optional[str] = None  # For mapping agent to host
         self.authenticated = False
 
     async def handle_connection(self):
@@ -76,11 +84,15 @@ class AgentWebSocketHandler:
                 await self.websocket.close(code=1008, reason="Authentication failed")
                 return
 
+            # Store agent details for event logging
+            self.host_id = auth_result.get("host_id")
+            self.agent_hostname = auth_message.get("hostname") or self.agent_id
+
             # Send success response
             await self.websocket.send_json({
                 "type": "auth_success",
                 "agent_id": self.agent_id,
-                "host_id": auth_result.get("host_id"),
+                "host_id": self.host_id,
                 "permanent_token": auth_result.get("permanent_token")
             })
 
@@ -208,31 +220,38 @@ class AgentWebSocketHandler:
         - progress: Operation progress update
         - error: Operation error
         - heartbeat: Keep-alive ping
+        - response / messages with correlation_id: Command responses
 
         Args:
             message: Message dict from agent (must have 'type' field)
         """
+        # Check if this is a command response (has correlation_id)
+        # Command responses should be routed to AgentCommandExecutor
+        if "correlation_id" in message:
+            command_executor = get_agent_command_executor()
+            command_executor.handle_agent_response(message)
+            return
+
         msg_type = message.get("type")
 
         if msg_type == "stats":
-            # TODO: Forward stats to monitoring system
-            # For now, just log
-            logger.debug(f"Received stats from agent {self.agent_id}")
+            # Forward system stats to monitoring (in-memory buffer for sparklines)
+            await self._handle_system_stats(message)
 
         elif msg_type == "progress":
-            # TODO: Forward progress to UI via WebSocket broadcast
-            logger.info(f"Agent {self.agent_id} progress: {message.get('message')}")
+            # Forward progress to UI via WebSocket broadcast (for update progress bars)
+            await self._handle_progress(message)
 
         elif msg_type == "error":
-            # TODO: Log error and notify user
-            logger.error(f"Agent {self.agent_id} error: {message.get('error')}")
+            # Log error via EventBus (stores in database, triggers alerts, broadcasts to UI)
+            await self._handle_error(message)
 
         elif msg_type == "heartbeat":
             # Update last_seen_at (short-lived session)
             with self.db_manager.get_session() as session:
                 agent = session.query(Agent).filter_by(id=self.agent_id).first()
                 if agent:
-                    agent.last_seen_at = datetime.utcnow()
+                    agent.last_seen_at = datetime.now(timezone.utc)
                     session.commit()
 
         elif msg_type == "event":
@@ -242,13 +261,13 @@ class AgentWebSocketHandler:
 
             if event_type == "container_event":
                 # Container lifecycle event (start, stop, die, etc.)
-                logger.info(f"Agent {self.agent_id} container event: {payload.get('action')} for {payload.get('container_name')}")
-                # TODO: Store event in database, trigger alerts, broadcast to UI
+                # Emit via EventBus: stores in database, triggers alerts, broadcasts to UI
+                await self._handle_container_event(payload)
 
             elif event_type == "container_stats":
                 # Real-time container stats
-                logger.debug(f"Agent {self.agent_id} container stats for {payload.get('container_id')}")
-                # TODO: Store in container_stats_history, broadcast to UI
+                # Forward to stats system: in-memory buffer + WebSocket broadcast
+                await self._handle_container_stats(payload)
 
             else:
                 logger.warning(f"Unknown event type from agent {self.agent_id}: {event_type}")
@@ -256,18 +275,203 @@ class AgentWebSocketHandler:
         else:
             logger.warning(f"Unknown message type from agent {self.agent_id}: {msg_type}")
 
+    async def _handle_system_stats(self, message: dict):
+        """
+        Handle system stats from agent (TODO #1).
 
-async def handle_agent_websocket(websocket: WebSocket):
+        Stores stats in in-memory circular buffer for sparklines (no database).
+        """
+        try:
+            if not self.monitor or not hasattr(self.monitor, 'stats_history'):
+                logger.debug(f"Stats history not available for agent {self.agent_id}")
+                return
+
+            stats = message.get("stats", {})
+            cpu = stats.get("cpu_percent", 0.0)
+            mem = stats.get("mem_percent", 0.0)
+            net = stats.get("net_bytes_per_sec", 0.0)
+
+            # Store in circular buffer (50 points = ~90 seconds)
+            self.monitor.stats_history.add_stats(
+                host_id=self.host_id or self.agent_id,
+                cpu=cpu,
+                mem=mem,
+                net=net
+            )
+
+            logger.debug(f"Stored system stats for agent {self.agent_id}: CPU={cpu:.1f}%, MEM={mem:.1f}%, NET={net:.0f} B/s")
+
+        except Exception as e:
+            logger.error(f"Error handling system stats from agent {self.agent_id}: {e}", exc_info=True)
+
+    async def _handle_progress(self, message: dict):
+        """
+        Handle progress update from agent (TODO #2).
+
+        Broadcasts to UI for real-time progress bars (image pull, etc.).
+        """
+        try:
+            if not self.monitor or not hasattr(self.monitor, 'manager'):
+                logger.debug(f"WebSocket manager not available for agent {self.agent_id}")
+                return
+
+            # Forward progress to UI via WebSocket
+            await self.monitor.manager.broadcast({
+                "type": "agent_update_progress",
+                "data": {
+                    "agent_id": self.agent_id,
+                    "host_id": self.host_id or self.agent_id,
+                    "container_id": message.get("container_id"),
+                    "stage": message.get("stage"),
+                    "progress": message.get("percent"),
+                    "message": message.get("message"),
+                    "download_speed": message.get("download_speed"),
+                    "layer_info": message.get("layer_info")
+                }
+            })
+
+            logger.info(f"Agent {self.agent_id} progress: {message.get('message')}")
+
+        except Exception as e:
+            logger.error(f"Error broadcasting progress from agent {self.agent_id}: {e}", exc_info=True)
+
+    async def _handle_error(self, message: dict):
+        """
+        Handle error from agent (TODO #3).
+
+        Logs via EventLogger for database storage and UI notification.
+        """
+        try:
+            if not self.monitor or not hasattr(self.monitor, 'event_logger'):
+                logger.error(f"Agent {self.agent_id} error: {message.get('error')}")
+                return
+
+            error_msg = message.get("error", "Unknown error")
+            details = message.get("details")
+
+            # Log via EventLogger (stores in database + broadcasts to UI)
+            context = EventContext(
+                host_id=self.host_id or self.agent_id,
+                host_name=self.agent_hostname or self.agent_id,
+                container_id=message.get("container_id")
+            )
+
+            self.monitor.event_logger.log_event(
+                category=EventCategory.HOST,
+                event_type=LogEventType.ERROR,
+                severity=EventSeverity.ERROR,
+                title=f"Agent error: {error_msg}",
+                message=details,
+                context=context
+            )
+
+            logger.error(f"Agent {self.agent_id} error logged: {error_msg}")
+
+        except Exception as e:
+            logger.error(f"Error logging agent error from {self.agent_id}: {e}", exc_info=True)
+
+    async def _handle_container_event(self, payload: dict):
+        """
+        Handle container lifecycle event from agent (TODO #4).
+
+        Emits via EventBus: database logging, alert triggers, UI broadcast.
+        """
+        try:
+            if not self.monitor:
+                logger.warning(f"Monitor not available for container event from agent {self.agent_id}")
+                return
+
+            action = payload.get("action")  # 'start', 'stop', 'die', 'restart', 'destroy'
+            container_id = payload.get("container_id")
+            container_name = payload.get("container_name")
+
+            # Map Docker actions to EventBus event types
+            event_type_map = {
+                "start": EventType.CONTAINER_STARTED,
+                "stop": EventType.CONTAINER_STOPPED,
+                "restart": EventType.CONTAINER_RESTARTED,
+                "die": EventType.CONTAINER_DIED,
+                "destroy": EventType.CONTAINER_DELETED
+            }
+
+            event_type = event_type_map.get(action)
+            if not event_type:
+                logger.debug(f"No event mapping for action '{action}' from agent {self.agent_id}")
+                return
+
+            # Emit via EventBus (automatic: database, alerts, UI broadcast)
+            event = Event(
+                event_type=event_type,
+                scope_type='container',
+                scope_id=f"{self.host_id}:{container_id}",  # Composite key
+                scope_name=container_name,
+                host_id=self.host_id or self.agent_id,
+                host_name=self.agent_hostname or self.agent_id,
+                data=payload
+            )
+
+            event_bus = get_event_bus(self.monitor)
+            await event_bus.emit(event)
+
+            logger.info(f"Container event emitted: {action} for {container_name} (agent {self.agent_id})")
+
+        except Exception as e:
+            logger.error(f"Error handling container event from agent {self.agent_id}: {e}", exc_info=True)
+
+    async def _handle_container_stats(self, payload: dict):
+        """
+        Handle real-time container stats from agent (TODO #5).
+
+        Stores in in-memory buffer and broadcasts to UI for real-time graphs.
+        """
+        try:
+            if not self.monitor:
+                logger.debug(f"Monitor not available for container stats from agent {self.agent_id}")
+                return
+
+            container_id = payload.get("container_id")
+            stats = payload.get("stats", {})
+
+            # Store in circular buffer (no database)
+            if hasattr(self.monitor, 'container_stats_history'):
+                cpu = stats.get("cpu_percent", 0.0)
+                mem = stats.get("mem_percent", 0.0)
+                net = stats.get("net_bytes_per_sec", 0.0)
+
+                self.monitor.container_stats_history.add_stats(
+                    container_id=container_id,
+                    cpu=cpu,
+                    mem=mem,
+                    net=net
+                )
+
+            # Broadcast to UI clients subscribed to this container
+            if hasattr(self.monitor, 'manager'):
+                await self.monitor.manager.broadcast({
+                    "type": "container_stats",
+                    "container_id": container_id,
+                    "host_id": self.host_id or self.agent_id,
+                    "stats": stats
+                })
+
+            logger.debug(f"Container stats processed for {container_id} (agent {self.agent_id})")
+
+        except Exception as e:
+            logger.error(f"Error handling container stats from agent {self.agent_id}: {e}", exc_info=True)
+
+
+async def handle_agent_websocket(websocket: WebSocket, monitor=None):
     """
     FastAPI endpoint handler for agent WebSocket connections.
 
     Usage in main.py:
         @app.websocket("/api/agent/ws")
         async def agent_websocket_endpoint(websocket: WebSocket):
-            await handle_agent_websocket(websocket)
+            await handle_agent_websocket(websocket, monitor)
 
     Args:
         websocket: FastAPI WebSocket connection
+        monitor: DockerMonitor instance (for EventBus, WebSocket broadcast, stats)
     """
-    handler = AgentWebSocketHandler(websocket)
+    handler = AgentWebSocketHandler(websocket, monitor)
     await handler.handle_connection()

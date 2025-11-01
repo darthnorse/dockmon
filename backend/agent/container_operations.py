@@ -5,7 +5,7 @@ High-level container operations that route through agents instead of direct Dock
 This is a key component for remote Docker host management.
 
 Usage:
-    ops = AgentContainerOperations(command_executor, db, agent_manager)
+    ops = AgentContainerOperations(command_executor, db, agent_manager, event_logger)
     success = await ops.start_container("host-123", "container-abc")
 """
 
@@ -14,6 +14,7 @@ from typing import Optional
 from fastapi import HTTPException
 
 from agent.command_executor import AgentCommandExecutor, CommandStatus, CommandResult
+from event_logger import EventCategory, EventType, EventSeverity, EventContext
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,7 @@ class AgentContainerOperations:
     through agents via the AgentCommandExecutor.
     """
 
-    def __init__(self, command_executor: AgentCommandExecutor, db, agent_manager):
+    def __init__(self, command_executor: AgentCommandExecutor, db, agent_manager, event_logger=None):
         """
         Initialize agent container operations.
 
@@ -34,10 +35,12 @@ class AgentContainerOperations:
             command_executor: AgentCommandExecutor instance
             db: DatabaseManager instance
             agent_manager: AgentManager instance
+            event_logger: EventLogger instance (for logging user actions to database)
         """
         self.command_executor = command_executor
         self.db = db
         self.agent_manager = agent_manager
+        self.event_logger = event_logger
 
     def _handle_operation_result(
         self,
@@ -413,7 +416,9 @@ class AgentContainerOperations:
 
     def _log_event(self, action: str, host_id: str, container_id: str, success: bool, error: str = None):
         """
-        Log container operation event.
+        Log container operation event (TODO #6).
+
+        Logs to console AND database via EventLogger for audit trail + UI display.
 
         Args:
             action: Operation action (start, stop, restart, remove)
@@ -422,6 +427,7 @@ class AgentContainerOperations:
             success: Whether operation succeeded
             error: Error message if failed
         """
+        # Console logging (keep existing)
         if success:
             logger.info(
                 f"Container operation '{action}' successful: "
@@ -432,4 +438,28 @@ class AgentContainerOperations:
                 f"Container operation '{action}' failed: "
                 f"host={host_id}, container={container_id}, error={error}"
             )
-        # TODO: Store in event_logger for UI display
+
+        # Database logging + UI broadcast (via EventLogger)
+        if self.event_logger:
+            try:
+                context = EventContext(
+                    host_id=host_id,
+                    container_id=container_id
+                )
+
+                severity = EventSeverity.INFO if success else EventSeverity.ERROR
+                title = f"Container {action}: {'succeeded' if success else 'failed'}"
+                message = error if error else f"Container {container_id} {action} operation completed"
+
+                self.event_logger.log_container_action(
+                    action=action,
+                    host_id=host_id,
+                    container_id=container_id,
+                    success=success,
+                    error=error,
+                    context=context,
+                    triggered_by='user'  # User-initiated action via API
+                )
+
+            except Exception as e:
+                logger.error(f"Error logging container action to database: {e}", exc_info=True)

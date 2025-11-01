@@ -430,7 +430,7 @@ class AgentManager:
         Returns:
             Dict with success, agent_id, host_id, migration_detected, migrated_from
         """
-        from database import ContainerAutoRestart, ContainerTag, ContainerDesiredState
+        from database import AutoRestartConfig, ContainerTag, ContainerDesiredState
 
         old_host_id = existing_host.id
         old_host_name = existing_host.name
@@ -489,7 +489,7 @@ class AgentManager:
                 transferred_count = 0
 
                 # Transfer auto-restart configs
-                auto_restarts = session.query(ContainerAutoRestart).filter_by(host_id=old_host_id).all()
+                auto_restarts = session.query(AutoRestartConfig).filter_by(host_id=old_host_id).all()
                 for ar in auto_restarts:
                     # Extract short container ID from composite key
                     old_composite = ar.container_id
@@ -498,7 +498,7 @@ class AgentManager:
                         new_composite = f"{new_host_id}:{short_container_id}"
 
                         # Create new record with updated composite key
-                        new_ar = ContainerAutoRestart(
+                        new_ar = AutoRestartConfig(
                             container_id=new_composite,
                             host_id=new_host_id,
                             enabled=ar.enabled

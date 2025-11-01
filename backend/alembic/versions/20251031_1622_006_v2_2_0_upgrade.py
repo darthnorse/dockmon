@@ -135,6 +135,14 @@ def upgrade() -> None:
                 sa.Column('connection_type', sa.String(), server_default='local', nullable=False)
             )
 
+            # Update connection_type based on URL (unix:// = local, tcp://, http://, https:// = remote)
+            bind = op.get_bind()
+            bind.execute(sa.text("""
+                UPDATE docker_hosts
+                SET connection_type = 'remote'
+                WHERE url LIKE 'tcp://%' OR url LIKE 'http://%' OR url LIKE 'https://%'
+            """))
+
     # Change 4: Add engine_id column to docker_hosts (for migration detection)
     # Enables detection of duplicate registrations (same Docker engine, different connection method)
     if table_exists('docker_hosts'):

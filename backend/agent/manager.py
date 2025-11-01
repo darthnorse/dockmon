@@ -328,3 +328,17 @@ class AgentManager:
                 "success": True,
                 "agent_id": agent_id
             }
+
+    def get_agent_for_host(self, host_id: str) -> str:
+        """
+        Get the agent ID for a given host ID.
+
+        Args:
+            host_id: Docker host ID
+
+        Returns:
+            Agent ID (str) if agent exists for this host, None otherwise
+        """
+        with self.db_manager.get_session() as session:
+            agent = session.query(Agent).filter_by(host_id=host_id).first()
+            return agent.id if agent else None

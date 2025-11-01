@@ -444,6 +444,11 @@ class AgentManager:
         # Use dedicated session for migration (atomic transaction)
         with self.db_manager.get_session() as session:
             try:
+                # Re-query existing_host in THIS session to avoid detached object issues
+                existing_host = session.query(DockerHostDB).filter_by(id=existing_host.id).first()
+                if not existing_host:
+                    return {"success": False, "error": "Migration failed: existing host not found"}
+
                 # Step 1: Create new agent host
                 agent_name = hostname if hostname else f"Agent-{engine_id[:12]}"
                 new_host = DockerHostDB(

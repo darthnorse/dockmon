@@ -176,6 +176,9 @@ class ContainerDiscovery:
         """
         Attempt to reconnect to an offline host with exponential backoff.
 
+        For agent-based hosts, checks if agent is connected.
+        For legacy hosts (tcp/unix), creates new Docker client.
+
         Returns:
             True if reconnection successful, False otherwise
         """
@@ -183,6 +186,41 @@ class ContainerDiscovery:
         if not host:
             return False
 
+        # Agent-based hosts use WebSocket connection, not Docker client
+        if host.connection_type == "agent":
+            from agent.connection_manager import agent_connection_manager
+            from database import Agent
+
+            # Check if agent is connected
+            with self.db.get_session() as session:
+                agent = session.query(Agent).filter_by(host_id=host_id).first()
+                if not agent:
+                    logger.warning(f"Agent host {host.name} has no associated agent record")
+                    host.status = "offline"
+                    host.error = "No agent record found"
+                    return False
+
+                agent_id = agent.id
+
+            # Check if agent is connected via WebSocket
+            if agent_connection_manager.is_connected(agent_id):
+                # Agent is connected - mark host as online
+                host.status = "online"
+                host.error = None
+                logger.info(f"Agent host {host.name} is connected via agent {agent_id[:8]}...")
+
+                # Reset reconnection attempts
+                self.reconnect_attempts[host_id] = 0
+
+                return True
+            else:
+                # Agent is not connected - host is offline
+                logger.debug(f"Agent host {host.name} is offline - agent {agent_id[:8]}... not connected")
+                host.status = "offline"
+                host.error = "Agent not connected"
+                return False
+
+        # Legacy host (tcp/unix) - use Docker client reconnection
         # Exponential backoff: 5s, 10s, 20s, 40s, 80s, max 5 minutes
         # attempts represents number of failures so far
         # First retry (after 1 failure, attempts=1) should wait 5s
@@ -325,6 +363,9 @@ class ContainerDiscovery:
         """
         Discover all containers for a single host.
 
+        For agent-based hosts, requests container data via WebSocket.
+        For legacy hosts, queries Docker API directly.
+
         Args:
             host_id: The host ID to discover containers for
             get_auto_restart_status_fn: Function to get auto-restart status
@@ -339,6 +380,135 @@ class ContainerDiscovery:
         if not host:
             return containers
 
+        # Agent-based hosts - get container data from agent via WebSocket
+        if host.connection_type == "agent":
+            from agent.connection_manager import agent_connection_manager
+            from database import Agent
+
+            # Get agent ID
+            with self.db.get_session() as session:
+                agent = session.query(Agent).filter_by(host_id=host_id).first()
+                if not agent:
+                    logger.warning(f"No agent record for host {host.name}")
+                    return containers
+
+                agent_id = agent.id
+
+            # Check if agent is connected
+            if not agent_connection_manager.is_connected(agent_id):
+                logger.debug(f"Agent {agent_id[:8]}... not connected, cannot discover containers")
+                host.status = "offline"
+                host.error = "Agent not connected"
+                return containers
+
+            # Request container list from agent
+            try:
+                response = await agent_connection_manager.send_command(
+                    agent_id,
+                    "list_containers",
+                    {},
+                    timeout=10
+                )
+
+                if response.get("error"):
+                    logger.error(f"Agent returned error listing containers: {response['error']}")
+                    return containers
+
+                # Parse container data from agent response
+                agent_containers = response.get("result", {}).get("containers", [])
+                host.status = "online"
+                host.container_count = len(agent_containers)
+                host.error = None
+
+                # Convert agent container data to Container objects
+                # Agent returns container data in a format similar to Docker API
+                # See agent/command_executor.py for the exact format
+                for ac in agent_containers:
+                    try:
+                        container_id = ac.get("id", "")[:12]  # Use short ID (12 chars)
+                        container_name = ac.get("name", "").lstrip("/")  # Remove leading /
+                        container_image = ac.get("image", "unknown")
+                        container_status = ac.get("status", "unknown")
+
+                        # Map agent status to DockMon status
+                        if container_status in ["running", "paused", "restarting"]:
+                            status = container_status
+                        elif container_status in ["exited", "dead", "created"]:
+                            status = "exited"
+                        else:
+                            status = "unknown"
+
+                        # Extract labels and compose metadata
+                        labels = ac.get("labels", {}) or {}
+                        compose_project = labels.get("com.docker.compose.project")
+                        compose_service = labels.get("com.docker.compose.service")
+
+                        # Reattach tags (sticky tags feature)
+                        container_key = make_composite_key(host_id, container_id)
+                        existing_tags = self.db.get_tags_for_subject('container', container_key)
+                        if not existing_tags:
+                            try:
+                                reattached_tags = self.db.reattach_tags_for_container(
+                                    host_id=host_id,
+                                    container_id=container_id,
+                                    container_name=container_name,
+                                    compose_project=compose_project,
+                                    compose_service=compose_service
+                                )
+                                if reattached_tags:
+                                    logger.debug(f"Reattached {len(reattached_tags)} tags to container {container_name}")
+                            except Exception as e:
+                                logger.warning(f"Failed to reattach tags: {e}")
+
+                        # Load current tags from database
+                        tags = self.db.get_tags_for_subject('container', container_key)
+
+                        # Get auto-restart status
+                        auto_restart = get_auto_restart_status_fn(host_id, container_id)
+
+                        # Create Container object
+                        container = Container(
+                            id=ac.get("id", ""),  # Full 64-char ID
+                            short_id=container_id,  # Short 12-char ID
+                            name=container_name,
+                            image=container_image,
+                            status=status,
+                            state=status,
+                            created=ac.get("created", ""),
+                            host_id=host_id,
+                            host_name=host.name,
+                            ports=ac.get("ports", []),
+                            volumes=ac.get("volumes", []),
+                            restart_policy=ac.get("restart_policy", "no"),
+                            auto_restart=auto_restart,
+                            labels=labels,
+                            compose_project=compose_project,
+                            compose_service=compose_service,
+                            tags=tags,
+                            environment=ac.get("environment", {})
+                        )
+
+                        containers.append(container)
+
+                    except Exception as e:
+                        logger.error(f"Error parsing agent container data: {e}")
+                        continue
+
+                logger.debug(f"Discovered {len(containers)} containers from agent {agent_id[:8]}... for host {host.name}")
+                return containers
+
+            except asyncio.TimeoutError:
+                logger.error(f"Timeout requesting container list from agent {agent_id[:8]}...")
+                host.status = "offline"
+                host.error = "Agent command timeout"
+                return containers
+            except Exception as e:
+                logger.error(f"Error getting containers from agent {agent_id[:8]}...: {e}")
+                host.status = "offline"
+                host.error = f"Agent error: {str(e)}"
+                return containers
+
+        # Legacy host (tcp/unix) - use Docker client
         client = self.clients.get(host_id)
         if not client:
             return containers

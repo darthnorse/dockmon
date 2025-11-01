@@ -497,11 +497,16 @@ class AgentManager:
                         _, short_container_id = old_composite.split(':', 1)
                         new_composite = f"{new_host_id}:{short_container_id}"
 
-                        # Create new record with updated composite key
+                        # Create new record with updated composite key (copy ALL fields)
                         new_ar = AutoRestartConfig(
                             container_id=new_composite,
                             host_id=new_host_id,
-                            enabled=ar.enabled
+                            container_name=ar.container_name,
+                            enabled=ar.enabled,
+                            max_retries=ar.max_retries,
+                            retry_delay=ar.retry_delay,
+                            restart_count=ar.restart_count,
+                            last_restart=ar.last_restart
                         )
                         session.add(new_ar)
                         transferred_count += 1
@@ -521,7 +526,7 @@ class AgentManager:
                         _, short_container_id = old_composite.split(':', 1)
                         new_composite = f"{new_host_id}:{short_container_id}"
 
-                        # Create new assignment with updated composite key
+                        # Create new assignment with updated composite key (copy ALL fields)
                         new_assignment = TagAssignment(
                             tag_id=tag_assignment.tag_id,
                             subject_type='container',
@@ -529,7 +534,8 @@ class AgentManager:
                             compose_project=tag_assignment.compose_project,
                             compose_service=tag_assignment.compose_service,
                             host_id_at_attach=new_host_id,
-                            container_name_at_attach=tag_assignment.container_name_at_attach
+                            container_name_at_attach=tag_assignment.container_name_at_attach,
+                            last_seen_at=tag_assignment.last_seen_at
                         )
                         session.add(new_assignment)
                         transferred_count += 1
@@ -665,6 +671,32 @@ class AgentManager:
                         alert.scope_id = new_composite
                         alert.dedup_key = new_dedup_key
                         transferred_count += 1
+
+                # Transfer deployment metadata (tracks which containers were created by deployments)
+                from database import DeploymentMetadata
+                deployment_metadata = session.query(DeploymentMetadata).filter_by(host_id=old_host_id).all()
+                for dm in deployment_metadata:
+                    # Extract short container ID from composite key
+                    old_composite = dm.container_id
+                    if ':' in old_composite:
+                        _, short_container_id = old_composite.split(':', 1)
+                        new_composite = f"{new_host_id}:{short_container_id}"
+
+                        # Create new record with updated composite key
+                        # Note: deployment_id remains unchanged (points to old deployment for historical tracking)
+                        # If old deployment is deleted, FK constraint will SET NULL automatically
+                        new_dm = DeploymentMetadata(
+                            container_id=new_composite,
+                            host_id=new_host_id,
+                            deployment_id=dm.deployment_id,  # Keep link to original deployment
+                            is_managed=dm.is_managed,
+                            service_name=dm.service_name
+                        )
+                        session.add(new_dm)
+                        transferred_count += 1
+
+                        # Delete old record
+                        session.delete(dm)
 
                 logger.info(f"Transferred {transferred_count} container settings from {old_host_name} to {agent_name}")
 

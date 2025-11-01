@@ -298,6 +298,7 @@ class TestResponseHandling:
     @pytest.mark.asyncio
     async def test_cleanup_expired_pending_commands(self, executor):
         """Should clean up pending commands that have exceeded max timeout"""
+        from datetime import timezone
         # Create expired pending command (started 2 minutes ago)
         expired_correlation_id = "expired-123"
         expired_future = asyncio.Future()

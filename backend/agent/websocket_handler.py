@@ -178,6 +178,22 @@ class AgentWebSocketHandler:
                     self.agent_id = result["agent_id"]
                     self.authenticated = True
 
+                    # Broadcast migration notification if this was a migration
+                    if result.get("migration_detected") and self.monitor:
+                        try:
+                            await self.monitor.manager.broadcast({
+                                "type": "host_migrated",
+                                "data": {
+                                    "old_host_id": result["migrated_from"]["host_id"],
+                                    "old_host_name": result["migrated_from"]["host_name"],
+                                    "new_host_id": result["host_id"],
+                                    "new_host_name": validated_data.hostname
+                                }
+                            })
+                            logger.info(f"Broadcast migration notification: {result['migrated_from']['host_name']} → {validated_data.hostname}")
+                        except Exception as e:
+                            logger.error(f"Failed to broadcast migration notification: {e}")
+
                 return result
 
             except ValidationError as e:

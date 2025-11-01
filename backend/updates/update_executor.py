@@ -18,7 +18,7 @@ from typing import Dict, Optional, Any, Tuple
 import docker
 from sqlalchemy.exc import IntegrityError
 
-from database import DatabaseManager, ContainerUpdate, AutoRestartConfig, ContainerDesiredState, ContainerHttpHealthCheck, GlobalSettings, DeploymentMetadata, TagAssignment
+from database import DatabaseManager, ContainerUpdate, AutoRestartConfig, ContainerDesiredState, ContainerHttpHealthCheck, GlobalSettings, DeploymentMetadata, TagAssignment, Agent
 from event_bus import Event, EventType as BusEventType, get_event_bus
 from utils.async_docker import async_docker_call
 from utils.container_health import wait_for_container_health
@@ -27,6 +27,7 @@ from utils.keys import make_composite_key, parse_composite_key
 from utils.network_helpers import manually_connect_networks
 from utils.cache import CACHE_REGISTRY
 from updates.container_validator import ContainerValidator, ValidationResult
+from agent.command_executor import CommandStatus
 
 logger = logging.getLogger(__name__)
 
@@ -300,8 +301,9 @@ class UpdateExecutor:
 
             # Priority 0: Block DockMon self-update (ALWAYS, even with force=True)
             # Defense-in-depth: protect at executor layer in case API layer is bypassed
+            # NOTE: This only blocks the DockMon backend container itself, NOT agent containers
             container_name_lower = container_name.lower()
-            if container_name_lower == 'dockmon' or container_name_lower.startswith('dockmon-'):
+            if container_name_lower == 'dockmon' or (container_name_lower.startswith('dockmon-') and 'agent' not in container_name_lower):
                 error_message = "DockMon cannot update itself. Please update manually by pulling the new image and restarting the container."
                 logger.warning(f"Blocked self-update attempt for DockMon container '{container_name}' at executor layer")
 
@@ -314,6 +316,31 @@ class UpdateExecutor:
                 )
 
                 return False
+
+            # Priority 1: Detect agent self-update and route to special handler
+            # Agents update themselves in-place (binary swap), not container recreation
+            if 'dockmon-agent' in update_record.current_image.lower():
+                # Check if this host has an agent
+                if hasattr(self, 'agent_manager'):
+                    agent_id = self.agent_manager.get_agent_for_host(host_id)
+                    if agent_id:
+                        logger.info(
+                            f"Detected agent self-update for container '{container_name}' on host {host_id}, "
+                            f"routing to agent self-update mechanism"
+                        )
+                        return await self._execute_agent_self_update(
+                            agent_id,
+                            host_id,
+                            container_id,
+                            container_name,
+                            update_record
+                        )
+                    else:
+                        logger.warning(
+                            f"Container '{container_name}' has agent image but no agent registered for host {host_id}"
+                        )
+                # If no agent_manager or no agent for host, fall through to normal update
+                # (This shouldn't happen in normal operation, but provides fallback)
 
             # Validate update is allowed (unless force=True)
             if not force:
@@ -1506,6 +1533,232 @@ class UpdateExecutor:
             logger.error(f"Error removing backup container {backup_name}: {e}", exc_info=True)
             # Non-critical error - backup container left behind but update succeeded
 
+    async def _execute_agent_self_update(
+        self,
+        agent_id: str,
+        host_id: str,
+        container_id: str,
+        container_name: str,
+        update_record: ContainerUpdate
+    ) -> bool:
+        """
+        Execute agent self-update via self_update command.
+
+        Agents update themselves in-place by swapping the binary, not by recreating
+        the container. This ensures the agent container ID remains stable.
+
+        Flow:
+        1. Emit UPDATE_STARTED event
+        2. Send self_update command to agent with new image
+        3. Agent downloads new binary and prepares update
+        4. Agent exits and Docker restarts it automatically
+        5. On startup, agent detects update lock and swaps binaries
+        6. Wait for agent to reconnect with new version (timeout: 5 min)
+        7. Validate new version matches target
+        8. Update database, emit UPDATE_COMPLETED
+        9. Return True
+
+        On failure: Emit UPDATE_FAILED, return False
+
+        Args:
+            agent_id: Agent UUID
+            host_id: Host UUID
+            container_id: Container short ID (12 chars)
+            container_name: Container name (for logging)
+            update_record: ContainerUpdate database record
+
+        Returns:
+            True if update successful, False otherwise
+        """
+        logger.info(
+            f"Executing agent self-update for {container_name} (agent_id: {agent_id}): "
+            f"{update_record.current_image} → {update_record.latest_image}"
+        )
+
+        # Emit UPDATE_STARTED event
+        await self._emit_update_started_event(
+            host_id,
+            container_id,
+            container_name,
+            update_record.current_image,
+            update_record.latest_image
+        )
+
+        try:
+            # Send self_update command to agent
+            command = {
+                "type": "command",
+                "payload": {
+                    "action": "self_update",
+                    "params": {
+                        "image": update_record.latest_image,
+                        "version": self._extract_version_from_image(update_record.latest_image),
+                        "timeout_sec": 120
+                    }
+                }
+            }
+
+            logger.info(f"Sending self_update command to agent {agent_id}")
+
+            # Execute command with timeout
+            if not hasattr(self, 'agent_command_executor'):
+                logger.error("AgentCommandExecutor not available")
+                await self._emit_update_failed_event(
+                    host_id, container_id, container_name,
+                    "Agent command executor not initialized"
+                )
+                return False
+
+            result = await self.agent_command_executor.execute_command(
+                agent_id,
+                command,
+                timeout=150.0  # 2.5 minutes for download + prep
+            )
+
+            # Check if command was sent successfully
+            if result.status != CommandStatus.SUCCESS:
+                error_msg = f"Failed to send self-update command: {result.error}"
+                logger.error(error_msg)
+                await self._emit_update_failed_event(
+                    host_id, container_id, container_name, error_msg
+                )
+                return False
+
+            logger.info(f"Agent {agent_id} acknowledged self-update command, waiting for reconnection...")
+
+            # Wait for agent to reconnect with new version (agent exits and Docker restarts it)
+            # Timeout: 5 minutes (download, swap, restart)
+            reconnected = await self._wait_for_agent_reconnection(
+                agent_id,
+                timeout=300.0  # 5 minutes
+            )
+
+            if not reconnected:
+                error_msg = "Agent did not reconnect after self-update (timeout: 5 minutes)"
+                logger.error(error_msg)
+                await self._emit_update_failed_event(
+                    host_id, container_id, container_name, error_msg
+                )
+                return False
+
+            # Validate new version (optional - agent version should be updated on reconnection)
+            new_version = await self._get_agent_version(agent_id)
+            expected_version = self._extract_version_from_image(update_record.latest_image)
+
+            logger.info(
+                f"Agent reconnected with version: {new_version} "
+                f"(expected: {expected_version})"
+            )
+
+            # Update database
+            with self.db.get_session() as session:
+                # Update ContainerUpdate record
+                db_update = session.query(ContainerUpdate).filter_by(
+                    container_id=make_composite_key(host_id, container_id)
+                ).first()
+
+                if db_update:
+                    db_update.current_image = update_record.latest_image
+                    db_update.update_available = False
+                    db_update.last_updated_at = datetime.now(timezone.utc)
+                    session.commit()
+                    logger.debug(f"Updated database for {container_name}")
+
+            # Emit UPDATE_COMPLETED event
+            await self._emit_update_completed_event(
+                host_id,
+                container_id,
+                container_name,
+                update_record.latest_image
+            )
+
+            logger.info(f"Agent self-update completed successfully for {container_name}")
+            return True
+
+        except Exception as e:
+            error_msg = f"Agent self-update failed: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            await self._emit_update_failed_event(
+                host_id, container_id, container_name, error_msg
+            )
+            return False
+
+    async def _wait_for_agent_reconnection(
+        self,
+        agent_id: str,
+        timeout: float = 300.0
+    ) -> bool:
+        """
+        Wait for agent to reconnect after self-update.
+
+        Polls agent connection status until agent is online or timeout occurs.
+
+        Args:
+            agent_id: Agent UUID
+            timeout: Timeout in seconds (default: 5 minutes)
+
+        Returns:
+            True if agent reconnected, False if timeout
+        """
+        start_time = time.time()
+        poll_interval = 2.0  # Check every 2 seconds
+
+        logger.info(f"Waiting for agent {agent_id} to reconnect (timeout: {timeout}s)")
+
+        while (time.time() - start_time) < timeout:
+            # Check if agent is connected
+            if hasattr(self, 'agent_manager'):
+                # Get agent from database to check last_seen_at
+                with self.db.get_session() as session:
+                    agent = session.query(Agent).filter_by(id=agent_id).first()
+
+                    if agent and agent.status == "online":
+                        # Check if last_seen_at is recent (within last 10 seconds)
+                        if agent.last_seen_at:
+                            elapsed = (datetime.now(timezone.utc) - agent.last_seen_at).total_seconds()
+                            if elapsed < 10:
+                                logger.info(f"Agent {agent_id} reconnected successfully")
+                                return True
+
+            # Wait before next check
+            await asyncio.sleep(poll_interval)
+
+        logger.warning(f"Agent {agent_id} did not reconnect within {timeout} seconds")
+        return False
+
+    async def _get_agent_version(self, agent_id: str) -> str:
+        """
+        Get agent version from database.
+
+        Args:
+            agent_id: Agent UUID
+
+        Returns:
+            Agent version string or "unknown"
+        """
+        try:
+            with self.db.get_session() as session:
+                agent = session.query(Agent).filter_by(id=agent_id).first()
+                if agent:
+                    return agent.version or "unknown"
+        except Exception as e:
+            logger.warning(f"Could not get agent version: {e}")
+        return "unknown"
+
+    def _extract_version_from_image(self, image: str) -> str:
+        """
+        Extract version tag from Docker image string.
+
+        Args:
+            image: Docker image (e.g., "ghcr.io/darthnorse/dockmon-agent:2.2.1")
+
+        Returns:
+            Version tag (e.g., "2.2.1") or "latest"
+        """
+        if ':' in image:
+            return image.split(':')[-1]
+        return "latest"
+
     async def _re_evaluate_alerts_after_update(
         self,
         host_id: str,
@@ -2134,4 +2387,11 @@ def get_update_executor(db: DatabaseManager = None, monitor=None) -> UpdateExecu
             monitor.manager if hasattr(monitor, 'manager') else None,
             progress_callback=_update_executor._store_pull_progress
         )
+
+    # Inject agent_command_executor if not already set
+    if not hasattr(_update_executor, 'agent_command_executor'):
+        from agent.command_executor import get_agent_command_executor
+        _update_executor.agent_command_executor = get_agent_command_executor()
+        logger.debug("Injected agent_command_executor into UpdateExecutor")
+
     return _update_executor

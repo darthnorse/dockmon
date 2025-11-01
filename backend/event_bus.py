@@ -41,6 +41,7 @@ class EventType(str, Enum):
     # Host events
     HOST_CONNECTED = "host_connected"
     HOST_DISCONNECTED = "host_disconnected"
+    HOST_MIGRATED = "host_migrated"
 
     # System events
     SYSTEM_STARTUP = "system_startup"
@@ -200,6 +201,7 @@ class EventBus:
                 EventType.CONTAINER_HEALTH_CHANGED: (LogEventType.STATE_CHANGE, EventCategory.HEALTH_CHECK, EventSeverity.WARNING),
                 EventType.HOST_CONNECTED: (LogEventType.CONNECTION, EventCategory.HOST, EventSeverity.INFO),
                 EventType.HOST_DISCONNECTED: (LogEventType.DISCONNECTION, EventCategory.HOST, EventSeverity.ERROR),
+                EventType.HOST_MIGRATED: (LogEventType.ACTION_TAKEN, EventCategory.HOST, EventSeverity.INFO),
             }
 
             log_event_type, category, severity = event_type_map.get(
@@ -421,6 +423,12 @@ class EventBus:
             title = f"Host Connected: {event.host_name or event.scope_name}"
             url = event.data.get('url', 'unknown')
             message = f"Host {event.host_name or event.scope_name} reconnected ({url})"
+
+        elif event.event_type == EventType.HOST_MIGRATED:
+            old_host_name = event.data.get('old_host_name', 'unknown')
+            new_host_name = event.data.get('new_host_name', 'unknown')
+            title = f"Host Migrated: {old_host_name} → {new_host_name}"
+            message = f"Host '{old_host_name}' has been migrated to agent-based connection as '{new_host_name}'. Container settings preserved."
 
         else:
             title = f"{event.event_type.value}: {event.scope_name}"

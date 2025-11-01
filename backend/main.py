@@ -15,6 +15,7 @@ URL Pattern: /api/hosts/{host_id}/containers/{container_id}/...
 import asyncio
 import json
 import logging
+import os
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any
@@ -2287,6 +2288,7 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
         "alert_template_update": getattr(settings, 'alert_template_update', None),
         "blackout_windows": getattr(settings, 'blackout_windows', None),
         "timezone_offset": getattr(settings, 'timezone_offset', 0),
+        "timezone": os.environ.get('TZ', 'UTC'),  # TZ environment variable for agent deployment
         "show_host_stats": getattr(settings, 'show_host_stats', True),
         "show_container_stats": getattr(settings, 'show_container_stats', True),
         "show_container_alerts_on_hosts": getattr(settings, 'show_container_alerts_on_hosts', False),

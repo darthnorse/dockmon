@@ -183,7 +183,9 @@ class DockerHostDB(Base):
     # Podman compatibility (Issue #20)
     is_podman = Column(Boolean, default=False, nullable=False)  # True if host runs Podman instead of Docker
     # v2.2.0 - Agent support
-    connection_type = Column(String, nullable=False, server_default='local')  # 'local', 'mtls', 'agent'
+    connection_type = Column(String, nullable=False, server_default='local')  # 'local', 'remote', 'agent'
+    engine_id = Column(String, nullable=True, index=True)  # Docker engine ID for migration detection
+    replaced_by_host_id = Column(String, ForeignKey('docker_hosts.id', ondelete='SET NULL'), nullable=True)  # Migration tracking
 
     # Relationships
     auto_restart_configs = relationship("AutoRestartConfig", back_populates="host", cascade="all, delete-orphan")

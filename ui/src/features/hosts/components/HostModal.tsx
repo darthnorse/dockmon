@@ -42,6 +42,7 @@ import { apiClient } from '@/lib/api/client'
 import { debug } from '@/lib/debug'
 import { useAllContainers } from '@/lib/stats/StatsProvider'
 import { useQuery } from '@tanstack/react-query'
+import { useGlobalSettings } from '@/hooks/useSettings'
 
 // Zod schema for host form
 const hostSchema = z.object({
@@ -81,6 +82,9 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
   const addMutation = useAddHost()
   const updateMutation = useUpdateHost()
   const deleteMutation = useDeleteHost()
+
+  // Get settings for timezone
+  const { data: settings } = useGlobalSettings()
 
   // Get containers for this host (for delete confirmation)
   const containers = useAllContainers(host?.id || undefined)
@@ -176,13 +180,15 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
   const dockmonUrl = `${window.location.protocol}//${window.location.host}`
   const isHttps = window.location.protocol === 'https:'
 
+  const timezone = settings?.timezone || 'UTC'
   const installCommand = token
     ? `docker run -d \\
   --name dockmon-agent \\
   --restart unless-stopped \\
   -v /var/run/docker.sock:/var/run/docker.sock:ro \\
   -e DOCKMON_URL=${dockmonUrl} \\
-  -e REGISTRATION_TOKEN=${token} \\${isHttps ? '\n  -e INSECURE_SKIP_VERIFY=true \\' : ''}
+  -e REGISTRATION_TOKEN=${token} \\
+  -e TZ=${timezone} \\${isHttps ? '\n  -e INSECURE_SKIP_VERIFY=true \\' : ''}
   ghcr.io/darthnorse/dockmon-agent:latest`
     : ''
 

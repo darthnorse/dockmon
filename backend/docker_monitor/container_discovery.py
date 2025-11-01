@@ -403,8 +403,7 @@ class ContainerDiscovery:
                 response = await agent_connection_manager.send_command(
                     agent_id,
                     "list_containers",
-                    {},
-                    timeout=10
+                    {}
                 )
 
                 if response.get("error"):
@@ -494,11 +493,6 @@ class ContainerDiscovery:
                 logger.debug(f"Discovered {len(containers)} containers from agent {agent_id[:8]}... for host {host.name}")
                 return containers
 
-            except asyncio.TimeoutError:
-                logger.error(f"Timeout requesting container list from agent {agent_id[:8]}...")
-                host.status = "offline"
-                host.error = "Agent command timeout"
-                return containers
             except Exception as e:
                 logger.error(f"Error getting containers from agent {agent_id[:8]}...: {e}")
                 host.status = "offline"

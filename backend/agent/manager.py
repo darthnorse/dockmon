@@ -558,6 +558,112 @@ class AgentManager:
 
                         # Delete old record
                         session.delete(ds)
+                        transferred_count += 1
+
+                # Transfer container updates
+                from database import ContainerUpdate
+                container_updates = session.query(ContainerUpdate).filter_by(host_id=old_host_id).all()
+                for cu in container_updates:
+                    # Extract short container ID from composite key
+                    old_composite = cu.container_id
+                    if ':' in old_composite:
+                        _, short_container_id = old_composite.split(':', 1)
+                        new_composite = f"{new_host_id}:{short_container_id}"
+
+                        # Create new record with updated composite key
+                        new_cu = ContainerUpdate(
+                            container_id=new_composite,
+                            host_id=new_host_id,
+                            current_image=cu.current_image,
+                            current_digest=cu.current_digest,
+                            latest_image=cu.latest_image,
+                            latest_digest=cu.latest_digest,
+                            update_available=cu.update_available,
+                            floating_tag_mode=cu.floating_tag_mode,
+                            auto_update_enabled=cu.auto_update_enabled,
+                            update_policy=cu.update_policy,
+                            health_check_strategy=cu.health_check_strategy,
+                            health_check_url=cu.health_check_url,
+                            last_checked_at=cu.last_checked_at,
+                            last_updated_at=cu.last_updated_at,
+                            registry_url=cu.registry_url,
+                            platform=cu.platform,
+                            changelog_url=cu.changelog_url,
+                            changelog_source=cu.changelog_source,
+                            changelog_checked_at=cu.changelog_checked_at,
+                            registry_page_url=cu.registry_page_url,
+                            registry_page_source=cu.registry_page_source
+                        )
+                        session.add(new_cu)
+                        transferred_count += 1
+
+                        # Delete old record
+                        session.delete(cu)
+
+                # Transfer container HTTP health checks
+                from database import ContainerHttpHealthCheck
+                health_checks = session.query(ContainerHttpHealthCheck).filter_by(host_id=old_host_id).all()
+                for hc in health_checks:
+                    # Extract short container ID from composite key
+                    old_composite = hc.container_id
+                    if ':' in old_composite:
+                        _, short_container_id = old_composite.split(':', 1)
+                        new_composite = f"{new_host_id}:{short_container_id}"
+
+                        # Create new record with updated composite key (copy ALL fields)
+                        new_hc = ContainerHttpHealthCheck(
+                            container_id=new_composite,
+                            host_id=new_host_id,
+                            enabled=hc.enabled,
+                            url=hc.url,
+                            method=hc.method,
+                            expected_status_codes=hc.expected_status_codes,
+                            timeout_seconds=hc.timeout_seconds,
+                            check_interval_seconds=hc.check_interval_seconds,
+                            follow_redirects=hc.follow_redirects,
+                            verify_ssl=hc.verify_ssl,
+                            headers_json=hc.headers_json,
+                            auth_config_json=hc.auth_config_json,
+                            current_status=hc.current_status,
+                            last_checked_at=hc.last_checked_at,
+                            last_success_at=hc.last_success_at,
+                            last_failure_at=hc.last_failure_at,
+                            consecutive_successes=hc.consecutive_successes,
+                            consecutive_failures=hc.consecutive_failures,
+                            last_response_time_ms=hc.last_response_time_ms,
+                            last_error_message=hc.last_error_message,
+                            auto_restart_on_failure=hc.auto_restart_on_failure,
+                            failure_threshold=hc.failure_threshold,
+                            success_threshold=hc.success_threshold,
+                            max_restart_attempts=hc.max_restart_attempts,
+                            restart_retry_delay_seconds=hc.restart_retry_delay_seconds
+                        )
+                        session.add(new_hc)
+                        transferred_count += 1
+
+                        # Delete old record
+                        session.delete(hc)
+
+                # Transfer container alerts (scope_type='container')
+                from database import AlertV2
+                alerts = session.query(AlertV2).filter(
+                    AlertV2.scope_type == 'container',
+                    AlertV2.scope_id.like(f"{old_host_id}:%")
+                ).all()
+                for alert in alerts:
+                    # Extract short container ID from composite scope_id
+                    old_composite = alert.scope_id
+                    if ':' in old_composite:
+                        _, short_container_id = old_composite.split(':', 1)
+                        new_composite = f"{new_host_id}:{short_container_id}"
+
+                        # Update scope_id and dedup_key in place
+                        old_dedup_key = alert.dedup_key
+                        new_dedup_key = old_dedup_key.replace(old_composite, new_composite)
+
+                        alert.scope_id = new_composite
+                        alert.dedup_key = new_dedup_key
+                        transferred_count += 1
 
                 logger.info(f"Transferred {transferred_count} container settings from {old_host_name} to {agent_name}")
 

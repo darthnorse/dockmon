@@ -580,6 +580,18 @@ async def get_hosts(current_user: dict = Depends(get_current_user)):
                 is_connected = agent_connection_manager.is_connected(agent.id)
                 logger.info(f"Agent {agent.id[:8]}... - DB status: {agent.status}, connection_manager.is_connected: {is_connected}, total connections: {agent_connection_manager.get_connection_count()}")
 
+                # Get system info from database for this agent host
+                agent_host_db = db.query(DockerHostDB).filter_by(id=host_id).first()
+                if agent_host_db:
+                    # Override with database system info (agent-collected data)
+                    host_dict['os_type'] = agent_host_db.os_type
+                    host_dict['os_version'] = agent_host_db.os_version
+                    host_dict['kernel_version'] = agent_host_db.kernel_version
+                    host_dict['docker_version'] = agent_host_db.docker_version
+                    host_dict['daemon_started_at'] = agent_host_db.daemon_started_at
+                    host_dict['total_memory'] = agent_host_db.total_memory
+                    host_dict['num_cpus'] = agent_host_db.num_cpus
+
                 # Override status with real-time connection state
                 host_dict['status'] = 'online' if is_connected else 'offline'
                 host_dict['connection_type'] = 'agent'

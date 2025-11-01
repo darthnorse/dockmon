@@ -13,7 +13,7 @@ import logging
 from typing import Optional
 from fastapi import HTTPException
 
-from agent.command_executor import AgentCommandExecutor, CommandStatus
+from agent.command_executor import AgentCommandExecutor, CommandStatus, CommandResult
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,61 @@ class AgentContainerOperations:
         self.command_executor = command_executor
         self.db = db
         self.agent_manager = agent_manager
+
+    def _handle_operation_result(
+        self,
+        result: CommandResult,
+        action: str,
+        host_id: str,
+        container_id: str
+    ) -> bool:
+        """
+        Handle command execution result with consistent error handling.
+
+        Args:
+            result: CommandResult from command execution
+            action: Operation action (start, stop, restart, remove)
+            host_id: Docker host ID
+            container_id: Container ID
+
+        Returns:
+            True if operation succeeded
+
+        Raises:
+            HTTPException: 504 on timeout, 500 on other failures
+        """
+        if result.status == CommandStatus.SUCCESS:
+            self._log_event(
+                action=action,
+                host_id=host_id,
+                container_id=container_id,
+                success=True
+            )
+            return True
+        elif result.status == CommandStatus.TIMEOUT:
+            self._log_event(
+                action=action,
+                host_id=host_id,
+                container_id=container_id,
+                success=False,
+                error="timeout"
+            )
+            raise HTTPException(
+                status_code=504,
+                detail=f"Container {action} command timed out: {result.error}"
+            )
+        else:
+            self._log_event(
+                action=action,
+                host_id=host_id,
+                container_id=container_id,
+                success=False,
+                error=result.error
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to {action} container: {result.error}"
+            )
 
     async def start_container(self, host_id: str, container_id: str) -> bool:
         """
@@ -74,39 +129,7 @@ class AgentContainerOperations:
             timeout=30.0
         )
 
-        # Handle result
-        if result.status == CommandStatus.SUCCESS:
-            self._log_event(
-                action="start",
-                host_id=host_id,
-                container_id=container_id,
-                success=True
-            )
-            return True
-        elif result.status == CommandStatus.TIMEOUT:
-            self._log_event(
-                action="start",
-                host_id=host_id,
-                container_id=container_id,
-                success=False,
-                error="timeout"
-            )
-            raise HTTPException(
-                status_code=504,
-                detail=f"Container start command timed out: {result.error}"
-            )
-        else:
-            self._log_event(
-                action="start",
-                host_id=host_id,
-                container_id=container_id,
-                success=False,
-                error=result.error
-            )
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to start container: {result.error}"
-            )
+        return self._handle_operation_result(result, "start", host_id, container_id)
 
     async def stop_container(self, host_id: str, container_id: str, timeout: int = 10) -> bool:
         """
@@ -152,39 +175,7 @@ class AgentContainerOperations:
             timeout=float(timeout + 20)  # Command timeout > container timeout
         )
 
-        # Handle result
-        if result.status == CommandStatus.SUCCESS:
-            self._log_event(
-                action="stop",
-                host_id=host_id,
-                container_id=container_id,
-                success=True
-            )
-            return True
-        elif result.status == CommandStatus.TIMEOUT:
-            self._log_event(
-                action="stop",
-                host_id=host_id,
-                container_id=container_id,
-                success=False,
-                error="timeout"
-            )
-            raise HTTPException(
-                status_code=504,
-                detail=f"Container stop command timed out: {result.error}"
-            )
-        else:
-            self._log_event(
-                action="stop",
-                host_id=host_id,
-                container_id=container_id,
-                success=False,
-                error=result.error
-            )
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to stop container: {result.error}"
-            )
+        return self._handle_operation_result(result, "stop", host_id, container_id)
 
     async def restart_container(self, host_id: str, container_id: str) -> bool:
         """
@@ -228,39 +219,7 @@ class AgentContainerOperations:
             timeout=30.0
         )
 
-        # Handle result
-        if result.status == CommandStatus.SUCCESS:
-            self._log_event(
-                action="restart",
-                host_id=host_id,
-                container_id=container_id,
-                success=True
-            )
-            return True
-        elif result.status == CommandStatus.TIMEOUT:
-            self._log_event(
-                action="restart",
-                host_id=host_id,
-                container_id=container_id,
-                success=False,
-                error="timeout"
-            )
-            raise HTTPException(
-                status_code=504,
-                detail=f"Container restart command timed out: {result.error}"
-            )
-        else:
-            self._log_event(
-                action="restart",
-                host_id=host_id,
-                container_id=container_id,
-                success=False,
-                error=result.error
-            )
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to restart container: {result.error}"
-            )
+        return self._handle_operation_result(result, "restart", host_id, container_id)
 
     async def remove_container(self, host_id: str, container_id: str, force: bool = False) -> bool:
         """
@@ -306,39 +265,7 @@ class AgentContainerOperations:
             timeout=30.0
         )
 
-        # Handle result
-        if result.status == CommandStatus.SUCCESS:
-            self._log_event(
-                action="remove",
-                host_id=host_id,
-                container_id=container_id,
-                success=True
-            )
-            return True
-        elif result.status == CommandStatus.TIMEOUT:
-            self._log_event(
-                action="remove",
-                host_id=host_id,
-                container_id=container_id,
-                success=False,
-                error="timeout"
-            )
-            raise HTTPException(
-                status_code=504,
-                detail=f"Container remove command timed out: {result.error}"
-            )
-        else:
-            self._log_event(
-                action="remove",
-                host_id=host_id,
-                container_id=container_id,
-                success=False,
-                error=result.error
-            )
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to remove container: {result.error}"
-            )
+        return self._handle_operation_result(result, "remove", host_id, container_id)
 
     async def get_container_logs(self, host_id: str, container_id: str, tail: int = 100) -> str:
         """

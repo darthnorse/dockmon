@@ -14,7 +14,7 @@ import asyncio
 import json
 import logging
 from typing import Dict, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import WebSocket
 
@@ -31,7 +31,6 @@ class AgentConnectionManager:
     """
 
     _instance: Optional['AgentConnectionManager'] = None
-    _lock = asyncio.Lock()
 
     def __new__(cls):
         """Singleton pattern"""
@@ -76,7 +75,7 @@ class AgentConnectionManager:
             agent = session.query(Agent).filter_by(id=agent_id).first()
             if agent:
                 agent.status = "online"
-                agent.last_seen_at = datetime.utcnow()
+                agent.last_seen_at = datetime.now(timezone.utc)
                 session.commit()
 
         logger.info(f"Agent {agent_id} connected. Total agents: {len(self.connections)}")
@@ -97,7 +96,7 @@ class AgentConnectionManager:
             agent = session.query(Agent).filter_by(id=agent_id).first()
             if agent:
                 agent.status = "offline"
-                agent.last_seen_at = datetime.utcnow()
+                agent.last_seen_at = datetime.now(timezone.utc)
                 session.commit()
 
         logger.info(f"Agent {agent_id} disconnected. Total agents: {len(self.connections)}")

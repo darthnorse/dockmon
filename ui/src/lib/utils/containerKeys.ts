@@ -17,14 +17,16 @@ import type { Container } from '@/features/containers/types'
  * Create composite key from Container object
  *
  * @param container - Container-like object with host_id and id
- * @returns Composite key in format "{host_id}:{container_id}"
+ * @returns Composite key in format "{host_id}:{container_short_id}"
  *
  * @example
- * const container = { host_id: "host-123", id: "abc123", ... }
- * makeCompositeKey(container) // "host-123:abc123"
+ * const container = { host_id: "host-123", id: "abc123def456...", ... }
+ * makeCompositeKey(container) // "host-123:abc123def456"
  */
 export function makeCompositeKey(container: Pick<Container, 'host_id' | 'id'>): string {
-  return `${container.host_id}:${container.id}`
+  // Always use 12-char short ID for consistency (backend sparklines use 12-char IDs)
+  const shortId = container.id.slice(0, 12)
+  return `${container.host_id}:${shortId}`
 }
 
 /**

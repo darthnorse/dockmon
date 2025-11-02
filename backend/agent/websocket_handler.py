@@ -17,6 +17,7 @@ Message Types:
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -48,6 +49,8 @@ class AgentWebSocketHandler:
         """
         self.websocket = websocket
         self.monitor = monitor
+        # Track previous network readings for rate calculation (key: container_key, value: {rx, tx, timestamp})
+        self.prev_network_stats = {}
         self.agent_manager = AgentManager()  # Creates short-lived sessions internally
         self.db_manager = DatabaseManager()  # For heartbeat updates
         self.agent_id: Optional[str] = None
@@ -526,7 +529,8 @@ class AgentWebSocketHandler:
                 return
 
             container_id = self._truncate_container_id(payload.get("container_id"))
-            stats = payload.get("stats", {})
+            # Agent sends stats at top level, not nested under "stats" key
+            stats = payload
 
             # Validate required fields
             if not container_id:
@@ -536,18 +540,50 @@ class AgentWebSocketHandler:
             # Create composite key for stats storage (validates 12-char format)
             container_key = make_composite_key(self.host_id, container_id)
 
+            # Calculate network rate (bytes/sec) by comparing with previous reading
+            current_time = time.time()
+            net_rx = stats.get("network_rx", 0)
+            net_tx = stats.get("network_tx", 0)
+            net_total = net_rx + net_tx if isinstance(net_rx, (int, float)) and isinstance(net_tx, (int, float)) else 0
+
+            # Calculate rate if we have previous reading
+            net_bytes_per_sec = 0
+            if container_key in self.prev_network_stats:
+                prev = self.prev_network_stats[container_key]
+                time_delta = current_time - prev['timestamp']
+                if time_delta > 0:
+                    bytes_delta = net_total - prev['total']
+                    # Prevent negative values (can happen if container restarted)
+                    if bytes_delta > 0:
+                        net_bytes_per_sec = bytes_delta / time_delta
+
+            # Update previous reading for next calculation
+            self.prev_network_stats[container_key] = {
+                'total': net_total,
+                'timestamp': current_time
+            }
+
             # Store in circular buffer (no database)
             if hasattr(self.monitor, 'container_stats_history'):
                 cpu = stats.get("cpu_percent", 0.0)
-                mem = stats.get("mem_percent", 0.0)
-                net = stats.get("net_bytes_per_sec", 0.0)
+                mem = stats.get("memory_percent", 0.0)  # Agent sends "memory_percent" not "mem_percent"
 
                 self.monitor.container_stats_history.add_stats(
                     container_key=container_key,
                     cpu=cpu,
                     mem=mem,
-                    net=net
+                    net=net_bytes_per_sec  # Use calculated rate, not cumulative total
                 )
+
+            # Cache latest full stats for REST API endpoints (not just sparkline data)
+            # This allows populate_container_stats() to access memory_usage, memory_limit, etc.
+            # Add the calculated net_bytes_per_sec to the stats
+            stats_with_rate = {**stats, 'net_bytes_per_sec': net_bytes_per_sec}
+            if hasattr(self.monitor, 'agent_container_stats_cache'):
+                self.monitor.agent_container_stats_cache[container_key] = stats_with_rate
+            else:
+                # Initialize cache if it doesn't exist
+                self.monitor.agent_container_stats_cache = {container_key: stats_with_rate}
 
             # Broadcast to UI clients subscribed to this container
             if hasattr(self.monitor, 'manager'):

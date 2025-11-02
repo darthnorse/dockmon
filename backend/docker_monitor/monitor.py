@@ -503,11 +503,16 @@ class DockerMonitor:
 
                     async def register_host():
                         try:
-                            await stats_client.add_docker_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key)
-                            logger.info(f"Registered {host.name} ({host.id[:8]}) with stats service")
+                            # Skip agent hosts - they send stats via WebSocket, not Docker API
+                            # Agent hosts have url="agent://" which is not a valid Docker URL
+                            if host.connection_type != "agent":
+                                await stats_client.add_docker_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key)
+                                logger.info(f"Registered {host.name} ({host.id[:8]}) with stats service")
 
-                            await stats_client.add_event_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key)
-                            logger.info(f"Registered {host.name} ({host.id[:8]}) with event service")
+                                await stats_client.add_event_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key)
+                                logger.info(f"Registered {host.name} ({host.id[:8]}) with event service")
+                            else:
+                                logger.info(f"Skipped stats/event service registration for agent host {host.name} (uses WebSocket)")
                         except Exception as e:
                             logger.error(f"Failed to register {host.name} with Go services: {e}")
 
@@ -1016,14 +1021,19 @@ class DockerMonitor:
 
                 async def reregister_host():
                     try:
-                        # Re-register with stats service (automatically closes old client)
-                        await stats_client.add_docker_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key)
-                        logger.info(f"Re-registered {host.name} ({host.id[:8]}) with stats service")
+                        # Skip agent hosts - they use WebSocket for stats/events
+                        # Agent hosts have url="agent://" which is not a valid Docker URL
+                        if host.connection_type != "agent":
+                            # Re-register with stats service (automatically closes old client)
+                            await stats_client.add_docker_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key)
+                            logger.info(f"Re-registered {host.name} ({host.id[:8]}) with stats service")
 
-                        # Remove and re-add event monitoring
-                        await stats_client.remove_event_host(host.id)
-                        await stats_client.add_event_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key)
-                        logger.info(f"Re-registered {host.name} ({host.id[:8]}) with event service")
+                            # Remove and re-add event monitoring
+                            await stats_client.remove_event_host(host.id)
+                            await stats_client.add_event_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key)
+                            logger.info(f"Re-registered {host.name} ({host.id[:8]}) with event service")
+                        else:
+                            logger.info(f"Skipped stats/event service re-registration for agent host {host.name} (uses WebSocket)")
                     except Exception as e:
                         logger.error(f"Failed to re-register {host.name} with Go services: {e}")
 
@@ -1327,6 +1337,12 @@ class DockerMonitor:
 
         # Register all hosts with the stats and event services on startup
         for host_id, host in self.hosts.items():
+            # Skip agent hosts - they send stats via WebSocket, not Docker API
+            # Agent hosts have url="agent://" which is not a valid Docker URL
+            if host.connection_type == "agent":
+                logger.info(f"Skipped stats/event service registration for agent host {host.name} (uses WebSocket)")
+                continue
+
             try:
                 # Get TLS certificates from database
                 with self.db.get_session() as session:
@@ -1577,6 +1593,11 @@ class DockerMonitor:
                         container_sparklines[container_key] = sparklines
 
                     broadcast_data["container_sparklines"] = container_sparklines
+
+                    # Debug: Log sparkline data being sent
+                    logger.info(f"Broadcasting sparklines for {len(container_sparklines)} containers")
+                    for key, sparklines in list(container_sparklines.items())[:2]:  # Log first 2 containers
+                        logger.info(f"  {key}: cpu={len(sparklines['cpu'])}, mem={len(sparklines['mem'])}, net={len(sparklines['net'])}")
 
                     # Broadcast update to all connected clients
                     await self.manager.broadcast({

@@ -39,6 +39,9 @@ type WebSocketClient struct {
 
 	stopChan      chan struct{}
 	doneChan      chan struct{}
+
+	// WaitGroup to track background goroutines
+	backgroundWg  sync.WaitGroup
 }
 
 // NewWebSocketClient creates a new WebSocket client
@@ -325,8 +328,12 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 
 // handleConnection handles an active connection
 func (c *WebSocketClient) handleConnection(ctx context.Context) error {
-	// Start event streaming in background
-	go c.streamEvents(ctx)
+	// Start event streaming in background with WaitGroup tracking
+	c.backgroundWg.Add(1)
+	go func() {
+		defer c.backgroundWg.Done()
+		c.streamEvents(ctx)
+	}()
 
 	// Start stats collection
 	if err := c.statsHandler.StartStatsCollection(ctx); err != nil {
@@ -335,10 +342,14 @@ func (c *WebSocketClient) handleConnection(ctx context.Context) error {
 		c.log.Info("Stats collection started")
 	}
 
-	// Ensure stats collection stops when we exit
+	// Ensure cleanup when we exit
 	defer func() {
 		c.statsHandler.StopAll()
 		c.log.Info("Stats collection stopped")
+
+		// Wait for event streaming goroutine to finish
+		c.backgroundWg.Wait()
+		c.log.Info("Event streaming stopped")
 	}()
 
 	// Read messages in loop
@@ -463,8 +474,14 @@ func (c *WebSocketClient) handleMessage(ctx context.Context, msg *types.Message)
 		var updateReq handlers.UpdateRequest
 		if err = protocol.ParseCommand(msg, &updateReq); err == nil {
 			// Run update in background and respond immediately
+			// Use background context so update continues even if WebSocket disconnects
+			c.backgroundWg.Add(1)
 			go func() {
-				if updateErr := c.updateHandler.UpdateContainer(ctx, updateReq); updateErr != nil {
+				defer c.backgroundWg.Done()
+				// Use background context instead of connection context
+				// This allows updates to complete even if connection drops
+				updateCtx := context.Background()
+				if updateErr := c.updateHandler.UpdateContainer(updateCtx, updateReq); updateErr != nil {
 					c.log.WithError(updateErr).Error("Container update failed")
 				}
 			}()
@@ -475,8 +492,13 @@ func (c *WebSocketClient) handleMessage(ctx context.Context, msg *types.Message)
 		var updateReq handlers.SelfUpdateRequest
 		if err = protocol.ParseCommand(msg, &updateReq); err == nil {
 			// Run self-update in background and respond immediately
+			// Use background context so update continues even if WebSocket disconnects
+			c.backgroundWg.Add(1)
 			go func() {
-				if updateErr := c.selfUpdateHandler.PerformSelfUpdate(ctx, updateReq); updateErr != nil {
+				defer c.backgroundWg.Done()
+				// Use background context for self-update
+				updateCtx := context.Background()
+				if updateErr := c.selfUpdateHandler.PerformSelfUpdate(updateCtx, updateReq); updateErr != nil {
 					c.log.WithError(updateErr).Error("Self-update failed")
 				} else {
 					// Self-update prepared successfully, signal shutdown
@@ -722,6 +744,20 @@ func (c *WebSocketClient) closeConnection() {
 	if c.conn != nil {
 		c.conn.Close()
 		c.conn = nil
+	}
+
+	// Wait for background goroutines to complete (with timeout)
+	done := make(chan struct{})
+	go func() {
+		c.backgroundWg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		c.log.Info("All background operations completed")
+	case <-time.After(30 * time.Second):
+		c.log.Warn("Timed out waiting for background operations to complete")
 	}
 
 	c.registered = false

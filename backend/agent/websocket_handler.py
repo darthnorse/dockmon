@@ -359,7 +359,7 @@ class AgentWebSocketHandler:
 
     async def _handle_system_stats(self, message: dict):
         """
-        Handle system stats from agent (TODO #1).
+        Handle system stats from agent.
 
         Stores stats in in-memory circular buffer for sparklines (no database).
         """
@@ -388,7 +388,7 @@ class AgentWebSocketHandler:
 
     async def _handle_progress(self, message: dict):
         """
-        Handle progress update from agent (TODO #2).
+        Handle progress update from agent.
 
         Broadcasts to UI for real-time progress bars (image pull, etc.).
         """
@@ -422,7 +422,7 @@ class AgentWebSocketHandler:
 
     async def _handle_error(self, message: dict):
         """
-        Handle error from agent (TODO #3).
+        Handle error from agent.
 
         Logs via EventLogger for database storage and UI notification.
         """
@@ -460,7 +460,7 @@ class AgentWebSocketHandler:
 
     async def _handle_container_event(self, payload: dict):
         """
-        Handle container lifecycle event from agent (TODO #4).
+        Handle container lifecycle event from agent.
 
         Emits via EventBus: database logging, alert triggers, UI broadcast.
         """
@@ -516,7 +516,7 @@ class AgentWebSocketHandler:
 
     async def _handle_container_stats(self, payload: dict):
         """
-        Handle real-time container stats from agent (TODO #5).
+        Handle real-time container stats from agent.
 
         Stores in in-memory buffer and broadcasts to UI for real-time graphs.
         """

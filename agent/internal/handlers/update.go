@@ -208,6 +208,13 @@ func (h *UpdateHandler) waitForHealthy(ctx context.Context, containerID string, 
 	deadline := time.Now().Add(time.Duration(timeout) * time.Second)
 
 	for {
+		// Check context first
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
 		// Check deadline
 		if time.Now().After(deadline) {
 			return fmt.Errorf("health check timeout after %ds", timeout)
@@ -227,8 +234,13 @@ func (h *UpdateHandler) waitForHealthy(ctx context.Context, containerID string, 
 		// If no health check defined, wait a few seconds and assume healthy
 		if inspect.State.Health == nil {
 			h.log.Debug("No health check defined, waiting 5 seconds")
-			time.Sleep(5 * time.Second)
-			return nil
+			// Use context-aware sleep
+			select {
+			case <-time.After(5 * time.Second):
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		}
 
 		// Check health status
@@ -240,12 +252,22 @@ func (h *UpdateHandler) waitForHealthy(ctx context.Context, containerID string, 
 			return fmt.Errorf("container is unhealthy")
 		case "starting":
 			h.log.Debug("Container health is starting, waiting...")
-			time.Sleep(2 * time.Second)
-			continue
+			// Context-aware sleep
+			select {
+			case <-time.After(2 * time.Second):
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		default:
 			h.log.Debugf("Unknown health status: %s", inspect.State.Health.Status)
-			time.Sleep(2 * time.Second)
-			continue
+			// Context-aware sleep
+			select {
+			case <-time.After(2 * time.Second):
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		}
 	}
 }

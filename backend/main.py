@@ -1027,7 +1027,8 @@ async def delete_container(
     """
     # Get container name for logging (operations module will re-fetch it)
     containers = await monitor.get_containers()
-    container = next((c for c in containers if c.id == container_id and c.host_id == host_id), None)
+    # Match by short_id (12 chars) or full id (64 chars) - agent containers use both
+    container = next((c for c in containers if (c.short_id == container_id or c.id == container_id) and c.host_id == host_id), None)
     container_name = container.name if container else container_id
 
     # Delegate to monitor (which delegates to operations module)
@@ -1223,7 +1224,8 @@ async def update_container_tags(
     """
     # Get container name from monitor
     containers = await monitor.get_containers()
-    container = next((c for c in containers if c.id == container_id and c.host_id == host_id), None)
+    # Match by short_id (12 chars) or full id (64 chars) - agent containers use both
+    container = next((c for c in containers if (c.short_id == container_id or c.id == container_id) and c.host_id == host_id), None)
 
     if not container:
         raise HTTPException(status_code=404, detail="Container not found")
@@ -1280,7 +1282,8 @@ async def get_container_update_status(
         container = None
         try:
             containers = await monitor.get_containers(host_id=host_id)
-            container = next((c for c in containers if c.id == short_id), None)
+            # Match by short_id (12 chars) or full id (64 chars) - agent containers use both
+            container = next((c for c in containers if (c.short_id == short_id or c.id == short_id)), None)
         except Exception as e:
             logger.warning(f"Failed to get container {short_id} for validation: {e}")
 
@@ -1637,7 +1640,8 @@ async def update_auto_update_config(
             # Create new record - we need at least minimal info
             # Get container to populate image info
             containers = await monitor.get_containers()
-            container = next((c for c in containers if c.id == short_id and c.host_id == host_id), None)
+            # Match by short_id (12 chars) or full id (64 chars) - agent containers use both
+            container = next((c for c in containers if (c.short_id == short_id or c.id == short_id) and c.host_id == host_id), None)
 
             if not container:
                 raise HTTPException(status_code=404, detail="Container not found")
@@ -2444,7 +2448,8 @@ async def get_http_health_check(
     current_user: dict = Depends(get_current_user)
 ):
     """Get HTTP health check configuration for a container"""
-
+    # Truncate container_id to 12 chars (UI may send 64-char full ID)
+    container_id = container_id[:12]
     composite_key = make_composite_key(host_id, container_id)
 
     with monitor.db.get_session() as session:
@@ -2519,7 +2524,8 @@ async def update_http_health_check(
 ):
     """Update or create HTTP health check configuration"""
     from datetime import datetime, timezone
-
+    # Truncate container_id to 12 chars (UI may send 64-char full ID)
+    container_id = container_id[:12]
     composite_key = make_composite_key(host_id, container_id)
 
     with monitor.db.get_session() as session:
@@ -2576,7 +2582,8 @@ async def delete_http_health_check(
     current_user: dict = Depends(get_current_user)
 ):
     """Delete HTTP health check configuration"""
-
+    # Truncate container_id to 12 chars (UI may send 64-char full ID)
+    container_id = container_id[:12]
     composite_key = make_composite_key(host_id, container_id)
 
     with monitor.db.get_session() as session:
@@ -2677,6 +2684,8 @@ async def test_http_health_check(
                 error_message = f"Error: {str(e)[:100]}"
 
         # Update database with test result (if health check exists)
+        # Truncate container_id to 12 chars (UI may send 64-char full ID)
+        container_id = container_id[:12]
         composite_key = make_composite_key(host_id, container_id)
 
         with monitor.db.get_session() as session:
@@ -4580,8 +4589,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
                     # Verify container exists and user has access to it
                     try:
                         containers = await monitor.get_containers()  # Must await async function
+                        # Match by short_id (12 chars) or full id (64 chars) - agent containers use both
                         container_exists = any(
-                            c.id == container_id and c.host_id == host_id
+                            (c.short_id == container_id or c.id == container_id) and c.host_id == host_id
                             for c in containers
                         )
                         if container_exists:

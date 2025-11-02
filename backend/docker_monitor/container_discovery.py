@@ -329,17 +329,21 @@ class ContainerDiscovery:
                 })
 
             # Re-register with stats and events service
-            try:
-                stats_client = get_stats_client()
-                tls_ca = db_host.tls_ca if db_host else None
-                tls_cert = db_host.tls_cert if db_host else None
-                tls_key = db_host.tls_key if db_host else None
+            # Skip agent hosts - they use WebSocket for stats/events
+            if host.connection_type != "agent":
+                try:
+                    stats_client = get_stats_client()
+                    tls_ca = db_host.tls_ca if db_host else None
+                    tls_cert = db_host.tls_cert if db_host else None
+                    tls_key = db_host.tls_key if db_host else None
 
-                await stats_client.add_docker_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key)
-                await stats_client.add_event_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key)
-                logger.info(f"Re-registered {host.name} ({host_id[:8]}) with stats/events service after reconnection")
-            except Exception as e:
-                logger.warning(f"Failed to re-register {host.name} with Go services after reconnection: {e}")
+                    await stats_client.add_docker_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key)
+                    await stats_client.add_event_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key)
+                    logger.info(f"Re-registered {host.name} ({host_id[:8]}) with stats/events service after reconnection")
+                except Exception as e:
+                    logger.warning(f"Failed to re-register {host.name} with Go services after reconnection: {e}")
+            else:
+                logger.debug(f"Skipped stats/event service re-registration for agent host {host.name} (uses WebSocket)")
 
             return True
 
@@ -757,8 +761,8 @@ class ContainerDiscovery:
                     env = parse_container_env(env_list)
 
                     container = Container(
-                        id=dc.id[:12],  # Use SHORT ID consistently (12 chars)
-                        short_id=container_id,
+                        id=dc.id,  # Full 64-char ID
+                        short_id=container_id,  # Short 12-char ID
                         name=dc.name,
                         state=dc.status,
                         status=dc.attrs['State']['Status'],
@@ -873,6 +877,31 @@ class ContainerDiscovery:
             for container in containers:
                 # Use short_id for consistency with all other container operations
                 composite_key = make_composite_key(container.host_id, container.short_id)
+
+                # For agent hosts, get stats from WebSocket cache instead of stats service
+                # Agent containers send stats via WebSocket, not Docker API polling
+                if hasattr(self, 'monitor') and self.monitor:
+                    host = self.monitor.hosts.get(container.host_id)
+                    if host and host.connection_type == "agent":
+                        # Get latest full stats from agent cache (includes all fields: cpu, memory_usage, memory_limit, etc.)
+                        if hasattr(self.monitor, 'agent_container_stats_cache'):
+                            cached_stats = self.monitor.agent_container_stats_cache.get(composite_key, {})
+                            if cached_stats:
+                                # Populate all stats fields from agent cache
+                                container.cpu_percent = cached_stats.get('cpu_percent')
+                                container.memory_usage = cached_stats.get('memory_usage')
+                                container.memory_limit = cached_stats.get('memory_limit')
+                                container.memory_percent = cached_stats.get('memory_percent')
+                                container.network_rx = cached_stats.get('network_rx')
+                                container.network_tx = cached_stats.get('network_tx')
+                                # Use pre-calculated net_bytes_per_sec from WebSocket handler
+                                container.net_bytes_per_sec = cached_stats.get('net_bytes_per_sec', 0)
+                                container.disk_read = cached_stats.get('disk_read')
+                                container.disk_write = cached_stats.get('disk_write')
+                                logger.debug(f"Populated stats for agent container {container.name} from WebSocket cache: CPU {container.cpu_percent}%, RAM {container.memory_percent}%")
+                        continue  # Skip stats service lookup for agent containers
+
+                # For non-agent hosts, use stats service (existing logic)
                 stats = container_stats.get(composite_key, {})
                 if stats:
                     container.cpu_percent = stats.get('cpu_percent')

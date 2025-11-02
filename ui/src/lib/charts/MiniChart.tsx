@@ -162,9 +162,16 @@ export function MiniChart({
     padding: [4, 4, 4, 4],
   }), [width, height, color, label])
 
-  // Initialize chart
+  // Initialize chart (only when we have data)
   useEffect(() => {
     if (!chartRef.current) return
+    if (smoothedData.length === 0) return // Wait for data
+
+    // Destroy existing chart if any
+    if (plotRef.current) {
+      plotRef.current.destroy()
+      plotRef.current = null
+    }
 
     try {
       // Create uPlot instance
@@ -175,7 +182,6 @@ export function MiniChart({
       )
 
       plotRef.current = plot
-      debug.log('MiniChart', `Initialized ${color} chart with ${smoothedData.length} points`)
 
       // Cleanup on unmount
       return () => {
@@ -183,10 +189,10 @@ export function MiniChart({
         plotRef.current = null
       }
     } catch (error) {
-      debug.error('MiniChart', 'Failed to initialize chart:', error)
+      debug.error('MiniChart', `Failed to initialize ${color} chart:`, error)
       return undefined
     }
-  }, []) // Only run once on mount
+  }, [smoothedData.length, color, opts, xData]) // Re-initialize when data arrives
 
   // Update chart data when it changes
   useEffect(() => {

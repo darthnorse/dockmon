@@ -303,14 +303,18 @@ class AgentWebSocketHandler:
         Args:
             message: Message dict from agent (must have 'type' field)
         """
-        # Check if this is a command response (has correlation_id)
+        # Check if this is a command response (has correlation_id or id)
         # Command responses should be routed to AgentCommandExecutor
-        if "correlation_id" in message:
+        # Note: Legacy protocol uses "id", new protocol uses "correlation_id"
+        msg_type = message.get("type")
+
+        if "correlation_id" in message or ("id" in message and msg_type == "response"):
             command_executor = get_agent_command_executor()
+            # Normalize legacy "id" to "correlation_id" for command executor
+            if "id" in message and "correlation_id" not in message:
+                message["correlation_id"] = message["id"]
             command_executor.handle_agent_response(message)
             return
-
-        msg_type = message.get("type")
 
         if msg_type == "stats":
             # Forward system stats to monitoring (in-memory buffer for sparklines)

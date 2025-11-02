@@ -382,7 +382,7 @@ class ContainerDiscovery:
 
         # Agent-based hosts - get container data from agent via WebSocket
         if host.connection_type == "agent":
-            from agent.connection_manager import agent_connection_manager
+            from agent.command_executor import get_agent_command_executor
             from database import Agent
 
             # Get agent ID
@@ -394,51 +394,63 @@ class ContainerDiscovery:
 
                 agent_id = agent.id
 
-            # Check if agent is connected
-            if not agent_connection_manager.is_connected(agent_id):
-                logger.debug(f"Agent {agent_id[:8]}... not connected, cannot discover containers")
-                host.status = "offline"
-                host.error = "Agent not connected"
-                return containers
-
-            # Request container list from agent
+            # Request container list from agent using command executor
             try:
-                response = await agent_connection_manager.send_command(
+                executor = get_agent_command_executor()
+
+                # Use legacy command protocol (agent supports both legacy and new protocol)
+                command = {
+                    "type": "command",
+                    "command": "list_containers"
+                }
+
+                result = await executor.execute_command(
                     agent_id,
-                    "list_containers",
-                    {}
+                    command,
+                    timeout=30.0
                 )
 
-                if response.get("error"):
-                    logger.error(f"Agent returned error listing containers: {response['error']}")
+                if not result.success:
+                    logger.error(f"Failed to get containers from agent {agent_id[:8]}...: {result.error}")
+                    host.status = "offline"
+                    host.error = f"Agent error: {result.error}"
                     return containers
 
                 # Parse container data from agent response
-                agent_containers = response.get("result", {}).get("containers", [])
+                # Agent returns Docker API format: list of container objects
+                docker_containers = result.response if isinstance(result.response, list) else []
+
                 host.status = "online"
-                host.container_count = len(agent_containers)
+                host.container_count = len(docker_containers)
                 host.error = None
 
-                # Convert agent container data to Container objects
-                # Agent returns container data in a format similar to Docker API
-                # See agent/command_executor.py for the exact format
-                for ac in agent_containers:
+                # Convert Docker API container data to Container objects
+                # Agent returns same format as Docker Python SDK
+                for dc_data in docker_containers:
                     try:
-                        container_id = ac.get("id", "")[:12]  # Use short ID (12 chars)
-                        container_name = ac.get("name", "").lstrip("/")  # Remove leading /
-                        container_image = ac.get("image", "unknown")
-                        container_status = ac.get("status", "unknown")
+                        # Extract container info from Docker API response
+                        container_id = dc_data.get("Id", "")[:12]  # Use short ID (12 chars)
 
-                        # Map agent status to DockMon status
-                        if container_status in ["running", "paused", "restarting"]:
-                            status = container_status
-                        elif container_status in ["exited", "dead", "created"]:
+                        # Container name (remove leading slash)
+                        names = dc_data.get("Names", [])
+                        container_name = names[0].lstrip("/") if names else "unknown"
+
+                        # Image name
+                        container_image = dc_data.get("Image", "unknown")
+
+                        # Status and state
+                        container_state = dc_data.get("State", "unknown")
+
+                        # Map Docker state to DockMon status
+                        if container_state in ["running", "paused", "restarting"]:
+                            status = container_state
+                        elif container_state in ["exited", "dead", "created"]:
                             status = "exited"
                         else:
                             status = "unknown"
 
                         # Extract labels and compose metadata
-                        labels = ac.get("labels", {}) or {}
+                        labels = dc_data.get("Labels", {}) or {}
                         compose_project = labels.get("com.docker.compose.project")
                         compose_service = labels.get("com.docker.compose.service")
 
@@ -465,26 +477,60 @@ class ContainerDiscovery:
                         # Get auto-restart status
                         auto_restart = get_auto_restart_status_fn(host_id, container_id)
 
+                        # Extract ports - convert Docker API format to string list
+                        # Docker API returns: [{"PrivatePort": 80, "PublicPort": 8080, "Type": "tcp", "IP": "0.0.0.0"}]
+                        # We need: ["8080:80/tcp"]
+                        ports_data = dc_data.get("Ports", [])
+                        ports = []
+                        for port in ports_data:
+                            private_port = port.get("PrivatePort")
+                            public_port = port.get("PublicPort")
+                            port_type = port.get("Type", "tcp")
+
+                            if public_port:
+                                # Published port: "host:container/type"
+                                ports.append(f"{public_port}:{private_port}/{port_type}")
+                            elif private_port:
+                                # Exposed but not published: "container/type"
+                                ports.append(f"{private_port}/{port_type}")
+
+                        # Extract mounts/volumes - use existing helper function
+                        mounts = dc_data.get("Mounts", [])
+                        volumes = parse_container_volumes(mounts)
+
+                        # Restart policy (from HostConfig)
+                        host_config = dc_data.get("HostConfig", {})
+                        restart_policy_data = host_config.get("RestartPolicy", {})
+                        restart_policy = restart_policy_data.get("Name", "no")
+
+                        # Convert created timestamp if it's an int (Unix timestamp)
+                        created_value = dc_data.get("Created", "")
+                        if isinstance(created_value, int):
+                            # Convert Unix timestamp to ISO 8601 string
+                            created_str = datetime.fromtimestamp(created_value, tz=timezone.utc).isoformat()
+                        else:
+                            created_str = str(created_value) if created_value else ""
+
                         # Create Container object
                         container = Container(
-                            id=ac.get("id", ""),  # Full 64-char ID
+                            id=dc_data.get("Id", ""),  # Full 64-char ID
                             short_id=container_id,  # Short 12-char ID
                             name=container_name,
                             image=container_image,
                             status=status,
-                            state=status,
-                            created=ac.get("created", ""),
+                            state=container_state,
+                            created=created_str,
                             host_id=host_id,
                             host_name=host.name,
-                            ports=ac.get("ports", []),
-                            volumes=ac.get("volumes", []),
-                            restart_policy=ac.get("restart_policy", "no"),
+                            ports=ports,
+                            volumes=volumes,
+                            restart_policy=restart_policy,
                             auto_restart=auto_restart,
                             labels=labels,
                             compose_project=compose_project,
                             compose_service=compose_service,
                             tags=tags,
-                            environment=ac.get("environment", {})
+                            environment={}  # Not available in list response
                         )
 
                         containers.append(container)
@@ -497,7 +543,7 @@ class ContainerDiscovery:
                 return containers
 
             except Exception as e:
-                logger.error(f"Error getting containers from agent {agent_id[:8]}...: {e}")
+                logger.error(f"Error getting containers from agent {agent_id[:8]}...: {e}", exc_info=True)
                 host.status = "offline"
                 host.error = f"Agent error: {str(e)}"
                 return containers

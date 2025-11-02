@@ -215,6 +215,42 @@ class UpdateExecutor:
         new_container_id = None
         update_committed = False  # Track if database was successfully updated
 
+        # Check host connection type to route to appropriate update mechanism
+        from database import DockerHostDB
+        with self.db.get_session() as session:
+            host = session.query(DockerHostDB).filter_by(id=host_id).first()
+            if not host:
+                error_message = f"Host {host_id} not found in database"
+                logger.error(error_message)
+                await self._emit_update_failed_event(
+                    host_id, container_id, container_id, error_message
+                )
+                return False
+
+            connection_type = host.connection_type
+
+        # Validate connection type
+        if connection_type not in ('local', 'remote', 'agent'):
+            error_message = f"Unknown connection_type '{connection_type}' for host {host_id}. Expected: 'local', 'remote', or 'agent'"
+            logger.error(error_message)
+            await self._emit_update_failed_event(
+                host_id, container_id, container_id, error_message
+            )
+            return False
+
+        # Route to agent-based update for agent hosts
+        if connection_type == 'agent':
+            logger.info(f"Routing update for container {container_id} to agent-based update (host connection_type='agent')")
+            return await self._update_container_via_agent(
+                host_id,
+                container_id,
+                update_record,
+                force
+            )
+
+        # Continue with Docker SDK-based update for local/remote hosts
+        logger.debug(f"Using Docker SDK update for host {host_id} (connection_type='{connection_type}')")
+
         try:
             # Get Docker client for this host
             docker_client = await self._get_docker_client(host_id)
@@ -1314,6 +1350,324 @@ class UpdateExecutor:
         except Exception as e:
             logger.error(f"Error re-evaluating alerts after update: {e}", exc_info=True)
 
+    async def _update_container_via_agent(
+        self,
+        host_id: str,
+        container_id: str,
+        update_record: ContainerUpdate,
+        force: bool = False
+    ) -> bool:
+        """
+        Execute container update via agent for agent-based hosts.
+
+        Uses AgentContainerOperations to orchestrate the update:
+        1. Get container info and config
+        2. Pull new image
+        3. Stop old container
+        4. Create new container with new image
+        5. Start new container
+        6. Verify health
+        7. Update database
+        8. Remove old container
+
+        Args:
+            host_id: Host UUID
+            container_id: Container short ID (12 chars)
+            update_record: ContainerUpdate database record
+            force: If True, skip validation
+
+        Returns:
+            True if successful, False otherwise
+        """
+        logger.info(f"Executing agent-based update for container {container_id} on host {host_id}")
+
+        composite_key = make_composite_key(host_id, container_id)
+        old_container_id = container_id
+        new_container_id = None
+        update_committed = False
+
+        try:
+            # Get agent for this host
+            agent_id = self.agent_manager.get_agent_for_host(host_id)
+            if not agent_id:
+                error_message = "No agent registered for this host"
+                logger.error(f"No agent found for host {host_id}")
+                await self._emit_update_failed_event(
+                    host_id, container_id, container_id, error_message
+                )
+                return False
+
+            # Get container info from monitor
+            container_info = await self._get_container_info(host_id, container_id)
+            if not container_info:
+                error_message = "Container not found"
+                logger.error(f"Container {container_id} not found on host {host_id}")
+                await self._emit_update_failed_event(
+                    host_id, container_id, container_id, error_message
+                )
+                return False
+
+            container_name = container_info.get("name", container_id)
+            logger.info(f"Updating container '{container_name}' via agent")
+
+            # Block DockMon self-update
+            container_name_lower = container_name.lower()
+            if container_name_lower == 'dockmon' or (container_name_lower.startswith('dockmon-') and 'agent' not in container_name_lower):
+                error_message = "DockMon cannot update itself. Please update manually."
+                logger.warning(f"Blocked self-update attempt for DockMon container '{container_name}' via agent")
+                await self._emit_update_failed_event(
+                    host_id, container_id, container_name, error_message
+                )
+                return False
+
+            # Check for agent self-update (special handling)
+            if 'dockmon-agent' in update_record.current_image.lower():
+                logger.info(f"Routing to agent self-update for '{container_name}'")
+                return await self._execute_agent_self_update(
+                    agent_id, host_id, container_id, container_name, update_record
+                )
+
+            # Use AgentContainerOperations for the update
+            from agent.container_operations import AgentContainerOperations
+            agent_ops = AgentContainerOperations()
+
+            # Step 1: Get full container configuration via inspect
+            logger.info("Getting container configuration via agent")
+            await self._broadcast_progress(host_id, container_id, "configuring", 10, "Reading container configuration")
+
+            try:
+                config_result = await agent_ops.inspect_container(host_id, container_id)
+                container_attrs = config_result  # Full container inspection data
+            except Exception as e:
+                error_message = f"Failed to inspect container: {str(e)}"
+                logger.error(error_message)
+                await self._emit_update_failed_event(host_id, container_id, container_name, error_message)
+                return False
+
+            # Emit UPDATE_STARTED event
+            await self._emit_update_started_event(
+                host_id, container_id, container_name, update_record.latest_image
+            )
+
+            # Step 2: Pull new image
+            logger.info(f"Pulling new image via agent: {update_record.latest_image}")
+            await self._broadcast_progress(host_id, container_id, "pulling", 20, "Pulling new image")
+
+            try:
+                await agent_ops.pull_image(host_id, update_record.latest_image)
+            except Exception as e:
+                error_message = f"Failed to pull image: {str(e)}"
+                logger.error(error_message)
+                await self._emit_update_failed_event(host_id, container_id, container_name, error_message)
+                return False
+
+            await self._emit_update_pull_completed_event(
+                host_id, container_id, container_name, update_record.latest_image
+            )
+
+            # Step 3: Extract container config for recreation
+            logger.info("Extracting container configuration")
+            await self._broadcast_progress(host_id, container_id, "backup", 50, "Preparing container recreation")
+
+            # Build new container config from inspection data
+            try:
+                config = container_attrs.get("Config", {})
+                host_config = container_attrs.get("HostConfig", {})
+                networking = container_attrs.get("NetworkSettings", {})
+
+                # Build configuration for create_container
+                new_config = {
+                    "name": container_name,
+                    "image": update_record.latest_image,  # NEW IMAGE
+                    "hostname": config.get("Hostname"),
+                    "user": config.get("User"),
+                    "stdin_open": config.get("OpenStdin", False),
+                    "tty": config.get("Tty", False),
+                    "environment": config.get("Env", []),
+                    "command": config.get("Cmd"),
+                    "entrypoint": config.get("Entrypoint"),
+                    "working_dir": config.get("WorkingDir"),
+                    "labels": config.get("Labels", {}),
+                    "ports": host_config.get("PortBindings", {}),
+                    "volumes": host_config.get("Binds", []),
+                    "restart_policy": host_config.get("RestartPolicy", {}),
+                    "privileged": host_config.get("Privileged", False),
+                    "cap_add": host_config.get("CapAdd"),
+                    "cap_drop": host_config.get("CapDrop"),
+                    "devices": host_config.get("Devices"),
+                    "security_opt": host_config.get("SecurityOpt"),
+                }
+
+                # Extract network
+                networks = networking.get("Networks", {})
+                if networks:
+                    network_name = list(networks.keys())[0]
+                    new_config["network"] = network_name
+
+            except Exception as e:
+                error_message = f"Failed to extract container config: {str(e)}"
+                logger.error(error_message)
+                await self._emit_update_failed_event(host_id, container_id, container_name, error_message)
+                return False
+
+            # Step 4: Stop old container
+            logger.info(f"Stopping old container '{container_name}'")
+            await self._broadcast_progress(host_id, container_id, "stopping", 60, "Stopping old container")
+
+            try:
+                await agent_ops.stop_container(host_id, old_container_id, timeout=30)
+            except Exception as e:
+                error_message = f"Failed to stop old container: {str(e)}"
+                logger.error(error_message)
+                await self._emit_update_failed_event(host_id, container_id, container_name, error_message)
+                return False
+
+            # Step 5: Remove old container
+            logger.info(f"Removing old container '{container_name}'")
+            try:
+                await agent_ops.remove_container(host_id, old_container_id, force=False)
+            except Exception as e:
+                logger.warning(f"Failed to remove old container (non-fatal): {str(e)}")
+
+            # Step 6: Create new container
+            logger.info(f"Creating new container '{container_name}' with image {update_record.latest_image}")
+            await self._broadcast_progress(host_id, container_id, "creating", 70, "Creating new container")
+
+            try:
+                new_container_id = await agent_ops.create_container(host_id, new_config)
+                # Ensure SHORT ID
+                if len(new_container_id) > 12:
+                    new_container_id = new_container_id[:12]
+                logger.info(f"New container created with ID: {new_container_id}")
+            except Exception as e:
+                error_message = f"Failed to create new container: {str(e)}"
+                logger.error(error_message)
+                await self._emit_update_failed_event(host_id, container_id, container_name, error_message)
+                # TODO: Attempt to restart old container if possible
+                return False
+
+            # Step 7: Start new container
+            logger.info(f"Starting new container '{container_name}'")
+            await self._broadcast_progress(host_id, container_id, "starting", 80, "Starting new container")
+
+            try:
+                await agent_ops.start_container(host_id, new_container_id)
+            except Exception as e:
+                error_message = f"Failed to start new container: {str(e)}"
+                logger.error(error_message)
+                await self._emit_update_failed_event(host_id, container_id, container_name, error_message)
+                # New container exists but failed to start - manual intervention needed
+                return False
+
+            # Step 8: Verify health
+            logger.info(f"Verifying health of new container '{container_name}'")
+            await self._broadcast_progress(host_id, container_id, "health_check", 90, "Verifying container health")
+
+            try:
+                is_healthy = await agent_ops.verify_container_running(host_id, new_container_id, timeout=120)
+                if not is_healthy:
+                    error_message = "Health check failed: container not running or unhealthy"
+                    logger.error(error_message)
+                    await self._emit_update_failed_event(host_id, container_id, container_name, error_message)
+                    # TODO: Could attempt rollback here
+                    return False
+            except Exception as e:
+                error_message = f"Health check failed: {str(e)}"
+                logger.error(error_message)
+                await self._emit_update_failed_event(host_id, container_id, container_name, error_message)
+                return False
+
+            # Step 9: Update database
+            logger.info(f"Updating database records for '{container_name}'")
+            new_composite_key = make_composite_key(host_id, new_container_id)
+            old_composite_key = make_composite_key(host_id, old_container_id)
+
+            with self.db.get_session() as session:
+                record = session.query(ContainerUpdate).filter_by(
+                    container_id=old_composite_key
+                ).first()
+
+                if record:
+                    # Update all database tables (same as Docker SDK path)
+                    record.container_id = new_composite_key
+                    record.update_available = False
+                    record.current_image = update_record.latest_image
+                    record.current_digest = update_record.latest_digest
+                    record.last_updated_at = datetime.now(timezone.utc)
+                    record.updated_at = datetime.now(timezone.utc)
+
+                    # Update AutoRestartConfig
+                    session.query(AutoRestartConfig).filter_by(
+                        host_id=host_id, container_id=old_container_id
+                    ).update({
+                        "container_id": new_container_id,
+                        "updated_at": datetime.now(timezone.utc)
+                    })
+
+                    # Update ContainerDesiredState
+                    session.query(ContainerDesiredState).filter_by(
+                        host_id=host_id, container_id=old_container_id
+                    ).update({
+                        "container_id": new_container_id,
+                        "updated_at": datetime.now(timezone.utc)
+                    })
+
+                    # Update ContainerHttpHealthCheck
+                    session.query(ContainerHttpHealthCheck).filter_by(
+                        container_id=old_composite_key
+                    ).update({
+                        "container_id": new_composite_key
+                    })
+
+                    # Update DeploymentMetadata
+                    session.query(DeploymentMetadata).filter_by(
+                        container_id=old_composite_key
+                    ).update({
+                        "container_id": new_composite_key,
+                        "updated_at": datetime.now(timezone.utc)
+                    })
+
+                    # Update TagAssignment
+                    session.query(TagAssignment).filter(
+                        TagAssignment.subject_type == 'container',
+                        TagAssignment.subject_id == old_composite_key
+                    ).update({
+                        "subject_id": new_composite_key,
+                        "last_seen_at": datetime.now(timezone.utc)
+                    })
+
+                    update_committed = True
+                    session.commit()
+                    logger.info(f"Database updated: {old_composite_key} -> {new_composite_key}")
+
+            # Notify frontend of container ID change
+            await self._broadcast_container_recreated(
+                host_id, old_composite_key, new_composite_key, container_name
+            )
+
+            # Emit success event
+            await self._emit_update_completed_event(
+                host_id, new_container_id, container_name,
+                update_record.current_image, update_record.latest_image,
+                update_record.current_digest, update_record.latest_digest
+            )
+
+            logger.info(f"Successfully updated container '{container_name}' via agent")
+            await self._broadcast_progress(host_id, new_container_id, "completed", 100, "Update completed successfully")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error executing agent-based update for {container_name if 'container_name' in locals() else container_id}: {e}", exc_info=True)
+
+            if not update_committed:
+                error_message = f"Container update failed: {str(e)}"
+                if 'container_name' in locals():
+                    await self._emit_update_failed_event(
+                        host_id, container_id, container_name, error_message
+                    )
+
+            return False
+
     async def _broadcast_container_recreated(
         self,
         host_id: str,
@@ -1662,5 +2016,11 @@ def get_update_executor(db: DatabaseManager = None, monitor=None) -> UpdateExecu
         from agent.command_executor import get_agent_command_executor
         _update_executor.agent_command_executor = get_agent_command_executor()
         logger.debug("Injected agent_command_executor into UpdateExecutor")
+
+    # Inject agent_manager if not already set
+    if not hasattr(_update_executor, 'agent_manager'):
+        from agent.manager import AgentManager
+        _update_executor.agent_manager = AgentManager()
+        logger.debug("Injected agent_manager into UpdateExecutor")
 
     return _update_executor

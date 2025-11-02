@@ -295,12 +295,17 @@ class AgentCommandExecutor:
             )
 
         # Generate correlation ID for this command
+        # Use the SAME UUID for both 'id' and 'correlation_id' fields
+        # - 'id': Required by agent's legacy protocol (echoed back in response as 'id')
+        # - 'correlation_id': Used internally for request/response matching
+        # The agent echoes 'id' back in response, and websocket_handler normalizes it to 'correlation_id'
         correlation_id = str(uuid.uuid4())
 
-        # Add correlation_id to command
-        command_with_correlation = {
+        # Add both fields with same UUID value
+        command_with_ids = {
             **command,
-            "correlation_id": correlation_id
+            "id": correlation_id,           # Agent will echo this back as 'id'
+            "correlation_id": correlation_id # Used for internal tracking
         }
 
         # Create future for response
@@ -317,7 +322,7 @@ class AgentCommandExecutor:
         # Send command to agent
         send_success = await self.connection_manager.send_command(
             agent_id,
-            command_with_correlation
+            command_with_ids
         )
 
         if not send_success:
@@ -345,21 +350,10 @@ class AgentCommandExecutor:
             duration = time.time() - start_time
 
             # Parse response
-            if response.get("success"):
-                return CommandResult(
-                    status=CommandStatus.SUCCESS,
-                    success=True,
-                    response=response,
-                    error=None,
-                    error_code=None,  # No error on success
-                    duration_seconds=duration,
-                    attempt=attempt,
-                    total_attempts=total_attempts,
-                    retried=False
-                )
-            else:
-                # Agent returned error - classify error code from response
-                error_msg = response.get("error", "Unknown error")
+            # Check for error field first (both legacy and new protocol use this)
+            if "error" in response and response["error"]:
+                # Agent returned error
+                error_msg = response["error"]
                 error_code = self._classify_error_code(error_msg, response=response)
 
                 return CommandResult(
@@ -373,6 +367,32 @@ class AgentCommandExecutor:
                     total_attempts=total_attempts,
                     retried=False
                 )
+
+            # No error - command succeeded
+            # Legacy protocol returns {"type": "response", "id": "...", "payload": ...}
+            # New protocol returns {"success": true, "data": ...}
+            # Extract the actual response data from either format
+            if "payload" in response:
+                # Legacy protocol - payload contains the actual data
+                response_data = response["payload"]
+            elif "data" in response:
+                # New protocol - data contains the actual data
+                response_data = response["data"]
+            else:
+                # Fallback - return whole response
+                response_data = response
+
+            return CommandResult(
+                status=CommandStatus.SUCCESS,
+                success=True,
+                response=response_data,  # Return the actual data, not the wrapper
+                error=None,
+                error_code=None,  # No error on success
+                duration_seconds=duration,
+                attempt=attempt,
+                total_attempts=total_attempts,
+                retried=False
+            )
 
         except asyncio.TimeoutError as e:
             # Clean up pending command

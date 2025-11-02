@@ -10,7 +10,7 @@ Usage:
 """
 
 import logging
-from typing import Optional
+from typing import Optional, Dict, Any, List
 from fastapi import HTTPException
 
 from agent.command_executor import AgentCommandExecutor, CommandStatus, CommandResult
@@ -369,6 +369,365 @@ class AgentContainerOperations:
                 status_code=500,
                 detail=f"Failed to inspect container: {result.error}"
             )
+
+    async def pull_image(
+        self,
+        host_id: str,
+        image: str,
+        deployment_id: Optional[str] = None
+    ) -> bool:
+        """
+        Pull container image via agent.
+
+        Args:
+            host_id: Docker host ID
+            image: Image name (e.g., "nginx:latest")
+            deployment_id: Optional deployment ID for progress tracking
+
+        Returns:
+            True if pulled successfully
+
+        Raises:
+            HTTPException: If agent not found or command fails
+        """
+        agent_id = self._get_agent_for_host(host_id)
+        if not agent_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No agent registered for host {host_id}"
+            )
+
+        command = {
+            "type": "container_operation",
+            "action": "pull_image",
+            "image": image
+        }
+
+        if deployment_id:
+            command["deployment_id"] = deployment_id
+
+        # Image pulls can take 30+ minutes
+        result = await self.command_executor.execute_command(
+            agent_id,
+            command,
+            timeout=1800.0
+        )
+
+        return self._handle_operation_result(result, "pull_image", host_id, image)
+
+    async def create_container(
+        self,
+        host_id: str,
+        config: Dict[str, Any]
+    ) -> str:
+        """
+        Create container via agent.
+
+        Args:
+            host_id: Docker host ID
+            config: Container configuration dict (Docker SDK format)
+
+        Returns:
+            Container SHORT ID (12 chars)
+
+        Raises:
+            HTTPException: If agent not found or command fails
+        """
+        agent_id = self._get_agent_for_host(host_id)
+        if not agent_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No agent registered for host {host_id}"
+            )
+
+        command = {
+            "type": "container_operation",
+            "action": "create",
+            "config": config
+        }
+
+        result = await self.command_executor.execute_command(
+            agent_id,
+            command,
+            timeout=60.0
+        )
+
+        if result.status == CommandStatus.SUCCESS:
+            container_id = result.response.get("container_id")
+            if not container_id:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Agent did not return container_id"
+                )
+            # Ensure SHORT ID
+            return container_id[:12] if len(container_id) > 12 else container_id
+        elif result.status == CommandStatus.TIMEOUT:
+            raise HTTPException(
+                status_code=504,
+                detail=f"Create container command timed out: {result.error}"
+            )
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to create container: {result.error}"
+            )
+
+    async def list_networks(self, host_id: str) -> List[Dict[str, Any]]:
+        """
+        List Docker networks via agent.
+
+        Args:
+            host_id: Docker host ID
+
+        Returns:
+            List of network dicts
+
+        Raises:
+            HTTPException: If agent not found or command fails
+        """
+        agent_id = self._get_agent_for_host(host_id)
+        if not agent_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No agent registered for host {host_id}"
+            )
+
+        command = {
+            "type": "container_operation",
+            "action": "list_networks"
+        }
+
+        result = await self.command_executor.execute_command(
+            agent_id,
+            command,
+            timeout=15.0
+        )
+
+        if result.status == CommandStatus.SUCCESS:
+            return result.response.get("networks", [])
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to list networks: {result.error}"
+            )
+
+    async def create_network(
+        self,
+        host_id: str,
+        name: str,
+        driver: str = "bridge"
+    ) -> str:
+        """
+        Create Docker network via agent.
+
+        Args:
+            host_id: Docker host ID
+            name: Network name
+            driver: Network driver (default: bridge)
+
+        Returns:
+            Network ID
+
+        Raises:
+            HTTPException: If agent not found or command fails
+        """
+        agent_id = self._get_agent_for_host(host_id)
+        if not agent_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No agent registered for host {host_id}"
+            )
+
+        command = {
+            "type": "container_operation",
+            "action": "create_network",
+            "name": name,
+            "driver": driver
+        }
+
+        result = await self.command_executor.execute_command(
+            agent_id,
+            command,
+            timeout=30.0
+        )
+
+        if result.status == CommandStatus.SUCCESS:
+            return result.response.get("network_id", "")
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to create network: {result.error}"
+            )
+
+    async def list_volumes(self, host_id: str) -> List[Dict[str, Any]]:
+        """
+        List Docker volumes via agent.
+
+        Args:
+            host_id: Docker host ID
+
+        Returns:
+            List of volume dicts
+
+        Raises:
+            HTTPException: If agent not found or command fails
+        """
+        agent_id = self._get_agent_for_host(host_id)
+        if not agent_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No agent registered for host {host_id}"
+            )
+
+        command = {
+            "type": "container_operation",
+            "action": "list_volumes"
+        }
+
+        result = await self.command_executor.execute_command(
+            agent_id,
+            command,
+            timeout=15.0
+        )
+
+        if result.status == CommandStatus.SUCCESS:
+            return result.response.get("volumes", [])
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to list volumes: {result.error}"
+            )
+
+    async def create_volume(self, host_id: str, name: str) -> str:
+        """
+        Create Docker volume via agent.
+
+        Args:
+            host_id: Docker host ID
+            name: Volume name
+
+        Returns:
+            Volume name
+
+        Raises:
+            HTTPException: If agent not found or command fails
+        """
+        agent_id = self._get_agent_for_host(host_id)
+        if not agent_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No agent registered for host {host_id}"
+            )
+
+        command = {
+            "type": "container_operation",
+            "action": "create_volume",
+            "name": name
+        }
+
+        result = await self.command_executor.execute_command(
+            agent_id,
+            command,
+            timeout=30.0
+        )
+
+        if result.status == CommandStatus.SUCCESS:
+            return result.response.get("volume_name", name)
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to create volume: {result.error}"
+            )
+
+    async def get_container_status(self, host_id: str, container_id: str) -> str:
+        """
+        Get container status via agent.
+
+        Args:
+            host_id: Docker host ID
+            container_id: Container ID
+
+        Returns:
+            Status string ('running', 'exited', etc.)
+
+        Raises:
+            HTTPException: If agent not found or command fails
+        """
+        agent_id = self._get_agent_for_host(host_id)
+        if not agent_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No agent registered for host {host_id}"
+            )
+
+        command = {
+            "type": "container_operation",
+            "action": "get_status",
+            "container_id": container_id
+        }
+
+        result = await self.command_executor.execute_command(
+            agent_id,
+            command,
+            timeout=15.0
+        )
+
+        if result.status == CommandStatus.SUCCESS:
+            return result.response.get("status", "unknown")
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to get container status: {result.error}"
+            )
+
+    async def verify_container_running(
+        self,
+        host_id: str,
+        container_id: str,
+        max_wait_seconds: int = 60
+    ) -> bool:
+        """
+        Verify container is healthy and running via agent.
+
+        Args:
+            host_id: Docker host ID
+            container_id: Container ID
+            max_wait_seconds: Maximum wait time for health check
+
+        Returns:
+            True if healthy/running, False otherwise
+
+        Raises:
+            HTTPException: If agent not found or command fails
+        """
+        agent_id = self._get_agent_for_host(host_id)
+        if not agent_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No agent registered for host {host_id}"
+            )
+
+        command = {
+            "type": "container_operation",
+            "action": "verify_running",
+            "container_id": container_id,
+            "max_wait_seconds": max_wait_seconds
+        }
+
+        try:
+            result = await self.command_executor.execute_command(
+                agent_id,
+                command,
+                timeout=float(max_wait_seconds + 10)
+            )
+
+            if result.status == CommandStatus.SUCCESS:
+                return result.response.get("is_healthy", False)
+            else:
+                return False
+        except Exception as e:
+            logger.error(f"Error verifying container health: {e}")
+            return False
 
     def _get_agent_for_host(self, host_id: str) -> Optional[str]:
         """

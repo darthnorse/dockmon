@@ -212,7 +212,10 @@ class UpdateChecker:
             return None
 
         # Get or create container_update record to get tracking mode
-        composite_key = make_composite_key(container['host_id'], container['id'])
+        # DEFENSIVE: Normalize container ID (agents may send 64-char IDs)
+        from utils.container_id import normalize_container_id
+        container_id = normalize_container_id(container['id'])
+        composite_key = make_composite_key(container['host_id'], container_id)
         tracking_mode = self._get_tracking_mode(composite_key)
 
         # Compute floating tag based on tracking mode
@@ -289,12 +292,27 @@ class UpdateChecker:
             "changelog_checked_at": changelog_checked_at,
         }
 
+    def _extract_digest_from_repo_digests(self, repo_digests: List[str]) -> Optional[str]:
+        """Extract sha256 digest from RepoDigests list.
+
+        Args:
+            repo_digests: List like ["ghcr.io/org/app@sha256:abc123..."]
+
+        Returns:
+            Digest string like "sha256:abc123..." or None
+        """
+        for repo_digest in repo_digests:
+            if "@sha256:" in repo_digest:
+                return repo_digest.split("@", 1)[1]
+        return None
+
     async def _get_container_image_digest(self, container: Dict) -> Optional[str]:
         """
         Get the actual image digest that the container is running.
 
-        This queries the Docker API to get the RepoDigest of the image,
-        which is the sha256 digest the image was pulled with.
+        Priority order:
+        1. Use stored repo_digests from container discovery (agent hosts, v2.2.0+)
+        2. Query Docker API directly (legacy hosts with direct Docker access)
 
         Args:
             container: Container dict with host_id and id
@@ -302,38 +320,42 @@ class UpdateChecker:
         Returns:
             sha256 digest string or None if not available
         """
-        if not self.monitor:
-            return None
-
         try:
-            # Get Docker client for this host from the monitor's client pool
-            host_id = container.get("host_id")
-            if not host_id:
+            # PRIORITY 1: Check if we have repo_digests stored from agent discovery (v2.2.0+)
+            # This is the only way to get digest info from agent-monitored hosts
+            repo_digests = container.get("repo_digests")
+            if repo_digests and isinstance(repo_digests, list) and len(repo_digests) > 0:
+                digest = self._extract_digest_from_repo_digests(repo_digests)
+                if digest:
+                    logger.debug(f"Got container image digest from stored data: {digest[:16]}...")
+                    return digest
+
+            # PRIORITY 2: Fall back to Docker API query for legacy hosts
+            # (Agent hosts won't have Docker client, so this will fail gracefully)
+            if not self.monitor:
                 return None
 
-            if not self.monitor:
+            host_id = container.get("host_id")
+            if not host_id:
                 return None
 
             # Use the monitor's existing Docker client - it manages TLS certs properly
             client = self.monitor.clients.get(host_id)
             if not client:
-                logger.debug(f"No Docker client found for host {host_id}")
+                logger.debug(f"No Docker client found for host {host_id} (likely agent host)")
                 return None
 
             # Get container and extract digest (use async wrapper to prevent event loop blocking)
             from utils.async_docker import async_docker_call
             dc = await async_docker_call(client.containers.get, container["id"])
             image = dc.image
-            repo_digests = image.attrs.get("RepoDigests", [])
+            api_repo_digests = image.attrs.get("RepoDigests", [])
 
-            if repo_digests:
-                # RepoDigests is a list like ["ghcr.io/org/app@sha256:abc123..."]
-                # Extract the digest part
-                for repo_digest in repo_digests:
-                    if "@sha256:" in repo_digest:
-                        digest = repo_digest.split("@", 1)[1]
-                        logger.debug(f"Got container image digest from Docker API: {digest[:16]}...")
-                        return digest
+            if api_repo_digests:
+                digest = self._extract_digest_from_repo_digests(api_repo_digests)
+                if digest:
+                    logger.debug(f"Got container image digest from Docker API: {digest[:16]}...")
+                    return digest
 
             logger.debug(f"No RepoDigests found for container {container['name']}, image may have been built locally")
             return None
@@ -429,7 +451,9 @@ class UpdateChecker:
         Returns:
             Previous latest_digest from database, or None if no record exists (first check)
         """
-        composite_key = make_composite_key(container['host_id'], container['id'])
+        from utils.container_id import normalize_container_id
+        container_id = normalize_container_id(container['id'])
+        composite_key = make_composite_key(container['host_id'], container_id)
         with self.db.get_session() as session:
             record = session.query(ContainerUpdate).filter_by(
                 container_id=composite_key
@@ -444,7 +468,9 @@ class UpdateChecker:
             container: Container dict
             update_info: Update info dict from _check_container_update
         """
-        composite_key = make_composite_key(container['host_id'], container['id'])
+        from utils.container_id import normalize_container_id
+        container_id = normalize_container_id(container['id'])
+        composite_key = make_composite_key(container['host_id'], container_id)
 
         with self.db.get_session() as session:
             record = session.query(ContainerUpdate).filter_by(
@@ -525,10 +551,12 @@ class UpdateChecker:
 
                 # Emit event via EventBus - it handles database logging and alert triggering
                 event_bus = get_event_bus(self.monitor)
+                # DEFENSIVE: Normalize container ID (agents may send 64-char IDs)
+                container_id = normalize_container_id(container["id"])
                 await event_bus.emit(Event(
                     event_type=EventType.UPDATE_AVAILABLE,
                     scope_type='container',
-                    scope_id=make_composite_key(container["host_id"], container["id"]),
+                    scope_id=make_composite_key(container["host_id"], container_id),
                     scope_name=container["name"],
                     host_id=container["host_id"],
                     host_name=host_name,

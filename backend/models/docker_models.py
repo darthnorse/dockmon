@@ -256,3 +256,5 @@ class Container(BaseModel):
     labels: Optional[dict[str, str]] = None
     # Derived tags (Phase 3d - computed from labels)
     tags: Optional[list[str]] = None
+    # Image RepoDigests (v2.2.0+ - from agent for update checking)
+    repo_digests: Optional[list[str]] = None

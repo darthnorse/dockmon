@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/darthnorse/dockmon-agent/internal/config"
 	"github.com/sirupsen/logrus"
 )
@@ -230,13 +232,16 @@ func (c *Client) GetContainerLogs(ctx context.Context, containerID string, tail 
 	}
 	defer logs.Close()
 
-	// Read all logs
-	data, err := io.ReadAll(logs)
-	if err != nil {
-		return "", fmt.Errorf("failed to read logs: %w", err)
+	// Docker returns logs in a multiplexed stream format with 8-byte headers
+	// Use stdcopy to demultiplex stdout and stderr streams
+	var stdout, stderr bytes.Buffer
+	if _, err := stdcopy.StdCopy(&stdout, &stderr, logs); err != nil {
+		return "", fmt.Errorf("failed to demultiplex logs: %w", err)
 	}
 
-	return string(data), nil
+	// Combine stdout and stderr (interleaved, similar to Docker CLI)
+	result := stdout.String() + stderr.String()
+	return result, nil
 }
 
 // ContainerStats gets a stats stream for a container

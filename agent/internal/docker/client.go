@@ -283,12 +283,12 @@ func (c *Client) CreateContainer(ctx context.Context, config *container.Config, 
 
 // parseContainerIDFromCgroup extracts container ID from /proc/self/cgroup
 func parseContainerIDFromCgroup(data string) string {
-	// This is a simplified parser - production code should be more robust
-	// Look for lines containing /docker/ followed by container ID
-
+	// Handles multiple cgroup formats (v1 and v2)
 	// Example formats:
-	// 0::/docker/abc123...
-	// 12:cpu,cpuacct:/docker/abc123...
+	// cgroup v1: 12:cpu,cpuacct:/docker/abc123...
+	// cgroup v2: 0::/docker/abc123...
+	// systemd:   0::/system.slice/docker-abc123.scope
+	// podman:    0::/user.slice/user-1000.slice/user@1000.service/user.slice/libpod-abc123.scope
 
 	lines := splitLines(data)
 	for _, line := range lines {
@@ -296,26 +296,56 @@ func parseContainerIDFromCgroup(data string) string {
 			continue
 		}
 
-		// Find /docker/ prefix
+		// Method 1: Try /docker/ prefix (cgroup v1/v2)
 		dockerIdx := findString(line, "/docker/")
-		if dockerIdx == -1 {
-			continue
+		if dockerIdx != -1 {
+			idStart := dockerIdx + len("/docker/")
+			if idStart < len(line) {
+				// Extract container ID until next slash or end
+				idEnd := idStart
+				for idEnd < len(line) && line[idEnd] != '/' && line[idEnd] != '\n' {
+					idEnd++
+				}
+				if idEnd > idStart {
+					return line[idStart:idEnd]
+				}
+			}
 		}
 
-		// Extract ID after /docker/
-		idStart := dockerIdx + len("/docker/")
-		if idStart >= len(line) {
-			continue
+		// Method 2: Try docker-<id>.scope pattern (systemd cgroup v2)
+		scopeIdx := findString(line, "docker-")
+		if scopeIdx != -1 {
+			idStart := scopeIdx + len("docker-")
+			if idStart < len(line) {
+				// Extract container ID until .scope
+				idEnd := idStart
+				for idEnd < len(line) && line[idEnd] != '.' && line[idEnd] != '\n' {
+					idEnd++
+				}
+				// Verify it ends with .scope
+				if idEnd > idStart && idEnd+6 <= len(line) {
+					if line[idEnd:idEnd+6] == ".scope" {
+						return line[idStart:idEnd]
+					}
+				}
+			}
 		}
 
-		// Container ID is everything after /docker/ until end or slash
-		idEnd := idStart
-		for idEnd < len(line) && line[idEnd] != '/' && line[idEnd] != '\n' {
-			idEnd++
-		}
-
-		if idEnd > idStart {
-			return line[idStart:idEnd]
+		// Method 3: Try /libpod-<id>.scope pattern (Podman)
+		podmanIdx := findString(line, "/libpod-")
+		if podmanIdx != -1 {
+			idStart := podmanIdx + len("/libpod-")
+			if idStart < len(line) {
+				idEnd := idStart
+				for idEnd < len(line) && line[idEnd] != '.' && line[idEnd] != '\n' {
+					idEnd++
+				}
+				if idEnd > idStart && idEnd+6 <= len(line) {
+					if line[idEnd:idEnd+6] == ".scope" {
+						return line[idStart:idEnd]
+					}
+				}
+			}
 		}
 	}
 

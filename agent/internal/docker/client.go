@@ -136,13 +136,41 @@ func (c *Client) GetMyContainerID(ctx context.Context) (string, error) {
 	return containerID, nil
 }
 
-// ListContainers lists all containers
-func (c *Client) ListContainers(ctx context.Context) ([]types.Container, error) {
+// ContainerWithDigest extends types.Container with RepoDigests
+type ContainerWithDigest struct {
+	types.Container
+	RepoDigests []string `json:"RepoDigests"`
+}
+
+// ListContainers lists all containers with image digest information
+func (c *Client) ListContainers(ctx context.Context) ([]ContainerWithDigest, error) {
 	containers, err := c.cli.ContainerList(ctx, types.ContainerListOptions{All: true})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list containers: %w", err)
 	}
-	return containers, nil
+
+	// Enhance with RepoDigests from image inspection
+	result := make([]ContainerWithDigest, 0, len(containers))
+	for _, container := range containers {
+		enhanced := ContainerWithDigest{
+			Container:   container,
+			RepoDigests: []string{},
+		}
+
+		// Get image info to extract RepoDigests
+		// This is needed for update checking - backend can't query agent hosts directly
+		if container.ImageID != "" {
+			imageInfo, _, err := c.cli.ImageInspectWithRaw(ctx, container.ImageID)
+			if err == nil && imageInfo.RepoDigests != nil {
+				enhanced.RepoDigests = imageInfo.RepoDigests
+			}
+			// Silently ignore errors - RepoDigests are optional (e.g., locally built images)
+		}
+
+		result = append(result, enhanced)
+	}
+
+	return result, nil
 }
 
 // InspectContainer inspects a container

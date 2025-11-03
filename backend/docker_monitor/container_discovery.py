@@ -511,6 +511,9 @@ class ContainerDiscovery:
                         else:
                             created_str = str(created_value) if created_value else ""
 
+                        # Extract RepoDigests from agent response (v2.2.0+ agents)
+                        repo_digests = dc_data.get("RepoDigests", [])
+
                         # Create Container object
                         container = Container(
                             id=dc_data.get("Id", ""),  # Full 64-char ID
@@ -530,7 +533,8 @@ class ContainerDiscovery:
                             compose_project=compose_project,
                             compose_service=compose_service,
                             tags=tags,
-                            environment={}  # Not available in list response
+                            environment={},  # Not available in list response
+                            repo_digests=repo_digests  # Image digests for update checking
                         )
 
                         containers.append(container)

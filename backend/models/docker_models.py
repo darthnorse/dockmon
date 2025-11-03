@@ -261,3 +261,5 @@ class Container(BaseModel):
     # Docker network IP addresses (GitHub Issue #37)
     docker_ip: Optional[str] = None  # Primary Docker network IP
     docker_ips: Optional[dict[str, str]] = None  # All network IPs {network_name: ip}
+    # Image RepoDigests (v2.2.0+ - from agent for update checking)
+    repo_digests: Optional[list[str]] = None

@@ -25,9 +25,12 @@ export interface ContainerHealthCheckTabProps {
 }
 
 function ContainerHealthCheckTabInternal({ container }: ContainerHealthCheckTabProps) {
+  // CRITICAL: Always use 12-char short ID for API calls (backend expects short IDs)
+  const containerShortId = container.id.slice(0, 12)
+
   const { data: healthCheck, isLoading, error } = useContainerHealthCheck(
     container.host_id,
-    container.id
+    containerShortId
   )
   const updateHealthCheck = useUpdateHealthCheck()
   const testHealthCheck = useTestHealthCheck()
@@ -89,7 +92,7 @@ function ContainerHealthCheckTabInternal({ container }: ContainerHealthCheckTabP
     try {
       const result = await testHealthCheck.mutateAsync({
         hostId: container.host_id,
-        containerId: container.id,
+        containerId: containerShortId,
         config: {
           url,
           method,
@@ -134,7 +137,7 @@ function ContainerHealthCheckTabInternal({ container }: ContainerHealthCheckTabP
     try {
       await updateHealthCheck.mutateAsync({
         hostId: container.host_id,
-        containerId: container.id,
+        containerId: containerShortId,
         config: {
           // Only send configuration fields, not read-only state tracking fields
           enabled,

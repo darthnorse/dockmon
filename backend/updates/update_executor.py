@@ -764,7 +764,8 @@ class UpdateExecutor:
 
         try:
             containers = await self.monitor.get_containers()
-            container = next((c for c in containers if c.id == container_id and c.host_id == host_id), None)
+            # Match by short_id (12 chars) or full id (64 chars) - agent containers use both
+            container = next((c for c in containers if (c.short_id == container_id or c.id == container_id) and c.host_id == host_id), None)
             return container.dict() if container else None
         except Exception as e:
             logger.error(f"Error getting container info: {e}")

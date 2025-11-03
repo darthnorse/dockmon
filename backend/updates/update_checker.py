@@ -380,7 +380,19 @@ class UpdateChecker:
         try:
             # Get all containers and find the one we want
             containers = await self.monitor.get_containers()
-            container = next((c for c in containers if c.id == container_id and c.host_id == host_id), None)
+
+            # Match by short_id or full id - check with truncation for robustness
+            def matches(c):
+                if c.host_id != host_id:
+                    return False
+                # Truncate both IDs to 12 chars for comparison (handles both 12-char and 64-char IDs)
+                c_short = c.id[:12] if len(c.id) > 12 else c.id
+                c_short_from_field = c.short_id[:12] if len(c.short_id) > 12 else c.short_id
+                search_short = container_id[:12] if len(container_id) > 12 else container_id
+
+                return c_short == search_short or c_short_from_field == search_short or c.id == container_id
+
+            container = next((c for c in containers if matches(c)), None)
             return container.dict() if container else None
         except Exception as e:
             logger.error(f"Error fetching container: {e}")

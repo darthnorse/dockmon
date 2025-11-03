@@ -33,14 +33,17 @@ export function makeCompositeKey(container: Pick<Container, 'host_id' | 'id'>): 
  * Create composite key from separate host ID and container ID
  *
  * @param hostId - Host UUID
- * @param containerId - Container SHORT ID (12 chars)
- * @returns Composite key in format "{host_id}:{container_id}"
+ * @param containerId - Container ID (can be 12 or 64 chars, will be truncated to 12)
+ * @returns Composite key in format "{host_id}:{container_short_id}"
  *
  * @example
  * makeCompositeKeyFrom("host-123", "abc123") // "host-123:abc123"
+ * makeCompositeKeyFrom("host-123", "abc123def456...") // "host-123:abc123def456"
  */
 export function makeCompositeKeyFrom(hostId: string, containerId: string): string {
-  return `${hostId}:${containerId}`
+  // Always truncate to 12 chars for consistency with makeCompositeKey
+  const shortId = containerId.slice(0, 12)
+  return `${hostId}:${shortId}`
 }
 
 /**

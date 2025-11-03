@@ -990,6 +990,20 @@ class UpdateExecutor:
             logger.error(f"Error getting Docker client for host {host_id}: {e}")
             return None
 
+    async def _get_container_info(self, host_id: str, container_id: str) -> Optional[Dict]:
+        """Get container info from monitor"""
+        if not self.monitor:
+            return None
+
+        try:
+            containers = await self.monitor.get_containers()
+            # Match by short_id (12 chars) or full id (64 chars) - agent containers use both
+            container = next((c for c in containers if (c.short_id == container_id or c.id == container_id) and c.host_id == host_id), None)
+            return container.dict() if container else None
+        except Exception as e:
+            logger.error(f"Error getting container info: {e}")
+            return None
+
     async def _pull_image(self, client: docker.DockerClient, image: str, auth_config: dict = None, timeout: int = 1800):
         """
         Pull Docker image with timeout and optional authentication.

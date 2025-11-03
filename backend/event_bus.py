@@ -46,6 +46,7 @@ class EventType(str, Enum):
     # System events
     SYSTEM_STARTUP = "system_startup"
     SYSTEM_SHUTDOWN = "system_shutdown"
+    CONFIG_CHANGED = "config_changed"
 
     # Batch job events
     BATCH_JOB_STARTED = "batch_job_started"

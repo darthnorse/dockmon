@@ -297,6 +297,7 @@ subjectAltName = DNS:$HOST_NAME,DNS:localhost,IP:$HOST_IP,IP:127.0.0.1
 extendedKeyUsage = serverAuth
 keyUsage = critical, digitalSignature, keyEncipherment
 basicConstraints = CA:FALSE
+authorityKeyIdentifier = keyid,issuer
 EOF
 
 # Sign server certificate
@@ -316,6 +317,7 @@ cat > extfile-client.cnf <<EOF
 extendedKeyUsage = clientAuth
 keyUsage = critical, digitalSignature, keyEncipherment
 basicConstraints = CA:FALSE
+authorityKeyIdentifier = keyid,issuer
 EOF
 
 # Sign client certificate

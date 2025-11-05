@@ -534,6 +534,105 @@ class NotificationService:
             logger.error(f"Failed to send SMTP notification: {e}")
             return False
 
+    async def _send_webhook(self, config: Dict[str, Any], message: str, event=None, title: str = "DockMon Alert") -> bool:
+        """Send notification via webhook (HTTP POST/PUT)
+
+        Allows users to integrate DockMon alerts with any custom endpoint or service.
+        Supports JSON and form-encoded payloads, custom HTTP headers, and configurable methods.
+
+        Args:
+            config: Webhook configuration
+                - url (required): Webhook endpoint URL
+                - method (optional): HTTP method (POST/PUT, default: POST)
+                - headers (optional): Custom HTTP headers dict
+                - payload_format (optional): "json" or "form" (default: json)
+            message: Formatted alert message (supports markdown)
+            event: Optional event object (for additional context)
+            title: Alert title (default: "DockMon Alert")
+
+        Returns:
+            True if webhook delivered successfully (2xx response)
+            False if delivery failed (triggers retry queue)
+
+        Config Example:
+            {
+                "url": "https://my-service.com/alerts",
+                "method": "POST",
+                "headers": {
+                    "Authorization": "Bearer token",
+                    "X-Custom-Header": "value"
+                },
+                "payload_format": "json"
+            }
+        """
+        try:
+            # Validate required config
+            url = config.get('url', '').strip()
+            if not url:
+                logger.error("Webhook config missing url")
+                return False
+
+            # Validate URL format (basic check)
+            if not url.startswith(('http://', 'https://')):
+                logger.error(f"Webhook URL must start with http:// or https://: {url}")
+                return False
+
+            # Get optional config with defaults
+            method = config.get('method', 'POST').upper()
+            headers = config.get('headers', {})
+            payload_format = config.get('payload_format', 'json')
+
+            # Build payload
+            payload = {
+                'title': title,
+                'message': message,
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            }
+
+            # Add optional event context if available
+            if event and hasattr(event, 'container_name'):
+                payload['container'] = event.container_name
+            if event and hasattr(event, 'host_name'):
+                payload['host'] = event.host_name
+
+            # Send request based on payload format
+            if payload_format == 'json':
+                response = await self.http_client.request(
+                    method,
+                    url,
+                    json=payload,
+                    headers=headers
+                )
+            else:  # form-encoded
+                response = await self.http_client.request(
+                    method,
+                    url,
+                    data=payload,
+                    headers=headers
+                )
+
+            # Check for success (2xx status codes)
+            response.raise_for_status()
+
+            logger.info(f"Webhook notification sent successfully to {url}")
+            return True
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Webhook HTTP error {e.response.status_code}: {e}")
+            return False
+        except httpx.TimeoutException as e:
+            logger.error(f"Webhook timeout: {e}")
+            return False
+        except httpx.ConnectError as e:
+            logger.error(f"Webhook connection error: {e}")
+            return False
+        except httpx.RequestError as e:
+            logger.error(f"Webhook request error: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to send webhook notification: {e}")
+            return False
+
     # V1 methods test_channel() and process_suppressed_alerts() removed
     # Blackout window suppression now handled by AlertEngine in V2
 
@@ -589,6 +688,8 @@ class NotificationService:
                 success = await self._send_gotify(channel_config, test_message, test_event)
             elif channel_type == 'smtp':
                 success = await self._send_smtp(channel_config, test_message, test_event)
+            elif channel_type == 'webhook':
+                success = await self._send_webhook(channel_config, test_message, test_event)
             else:
                 return {"success": False, "error": f"Unsupported channel type: {channel_type}"}
 
@@ -717,6 +818,9 @@ class NotificationService:
                                 success_count += 1
                         elif channel.type == "smtp":
                             if await self._send_smtp(channel.config, message, title=alert.title):
+                                success_count += 1
+                        elif channel.type == "webhook":
+                            if await self._send_webhook(channel.config, message, title=alert.title):
                                 success_count += 1
                         else:
                             logger.warning(f"Unknown channel type '{channel.type}' for channel {channel.name}")

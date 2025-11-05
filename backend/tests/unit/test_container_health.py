@@ -61,22 +61,63 @@ class TestWaitForContainerHealthWithDockerHealthCheck:
         assert call_count >= 3  # Called at least 3 times before healthy
 
     @pytest.mark.asyncio
-    async def test_container_becomes_unhealthy(self):
+    async def test_container_becomes_unhealthy_after_grace_period(self):
         """
-        Container with Docker health check should return False when status becomes 'unhealthy'.
+        Container with Docker health check should return False when status is 'unhealthy' AFTER grace period.
 
         Scenario:
         - Container starts (running=True)
-        - Health status: "starting" → "unhealthy"
-        - Should return False immediately when unhealthy detected
+        - Health status: "starting" → "unhealthy" (stays unhealthy beyond grace period)
+        - Grace period: min(30s, timeout * 0.5) = min(30, 5) = 5 seconds
+        - Should return False after grace period expires
         """
         mock_client = Mock()
         mock_container = Mock()
 
-        # Simulate health check progression: starting → unhealthy
+        # Simulate health check progression: starting → unhealthy (persists)
         health_checks = [
             {"State": {"Running": True, "Health": {"Status": "starting"}}},
             {"State": {"Running": True, "Health": {"Status": "unhealthy"}}},
+        ]
+
+        mock_container.attrs = health_checks[0]
+        call_count = 0
+        start_time = time.time()
+
+        async def mock_async_docker_call(sync_fn, *args, **kwargs):
+            nonlocal call_count
+            # After first call, always return unhealthy
+            if call_count > 0:
+                mock_container.attrs = health_checks[1]
+            call_count += 1
+            return mock_container
+
+        with patch('utils.container_health.async_docker_call', side_effect=mock_async_docker_call):
+            with patch('utils.container_health.time.time', side_effect=lambda: start_time + (call_count * 3)):
+                # Mock time to advance 3 seconds per call, exceeding grace period
+                result = await wait_for_container_health(mock_client, "abc123def456", timeout=10)
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_container_unhealthy_within_grace_period_then_recovers(self):
+        """
+        Container that becomes unhealthy within grace period can still recover and succeed.
+
+        Scenario:
+        - Container starts (running=True)
+        - Health status: "starting" → "unhealthy" (early, within grace) → "healthy"
+        - Should continue waiting during grace period and return True when healthy
+        """
+        mock_client = Mock()
+        mock_container = Mock()
+
+        # Simulate health check progression: starting → unhealthy → healthy
+        health_checks = [
+            {"State": {"Running": True, "Health": {"Status": "starting"}}},
+            {"State": {"Running": True, "Health": {"Status": "unhealthy"}}},
+            {"State": {"Running": True, "Health": {"Status": "unhealthy"}}},
+            {"State": {"Running": True, "Health": {"Status": "healthy"}}},
         ]
 
         mock_container.attrs = health_checks[0]
@@ -89,9 +130,10 @@ class TestWaitForContainerHealthWithDockerHealthCheck:
             return mock_container
 
         with patch('utils.container_health.async_docker_call', side_effect=mock_async_docker_call):
-            result = await wait_for_container_health(mock_client, "abc123def456", timeout=10)
+            result = await wait_for_container_health(mock_client, "abc123def456", timeout=60)
 
-        assert result is False
+        assert result is True  # Should succeed after recovering
+        assert call_count >= 4  # Should have polled multiple times
 
     @pytest.mark.asyncio
     async def test_health_check_timeout(self):

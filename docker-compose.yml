@@ -48,7 +48,23 @@ services:
   # REVERSE PROXY EXAMPLE (Traefik, Caddy, nginx, etc.)
   # ==================================================================================
   # Uncomment and customize this section if deploying behind a reverse proxy.
-  # The reverse proxy handles TLS termination, and DockMon runs in HTTP mode.
+  #
+  # TWO CONFIGURATION OPTIONS:
+  #
+  # Option 1: HTTP Mode (REVERSE_PROXY_MODE=true)
+  #   - DockMon runs HTTP on port 80, reverse proxy handles HTTPS
+  #   - Simpler setup, no certificate trust issues
+  #   - Traffic unencrypted between proxy and DockMon (same network)
+  #   - Example shown below
+  #
+  # Option 2: HTTPS Passthrough (keep default HTTPS mode)
+  #   - DockMon keeps HTTPS on port 443, reverse proxy forwards to HTTPS
+  #   - End-to-end encryption (defense in depth)
+  #   - Requires reverse proxy to trust self-signed cert
+  #   - Add these Traefik labels:
+  #     - "traefik.http.services.dockmon.loadbalancer.server.port=443"
+  #     - "traefik.http.services.dockmon.loadbalancer.server.scheme=https"
+  #   - Remove REVERSE_PROXY_MODE and keep port 443 mapping
   #
   # dockmon:
   #   build:

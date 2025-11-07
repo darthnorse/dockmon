@@ -1898,6 +1898,7 @@ class DatabaseManager:
         """
         with self.get_session() as session:
             reattached_tags = []
+            processed_tag_ids = set()  # Track tags we've already reattached to avoid duplicates
 
             # Try to find previous assignments by compose identity
             if compose_project and compose_service:
@@ -1910,7 +1911,7 @@ class DatabaseManager:
 
                 for prev_assignment in prev_assignments:
                     tag = session.query(Tag).filter(Tag.id == prev_assignment.tag_id).first()
-                    if tag:
+                    if tag and tag.id not in processed_tag_ids:
                         # Create new assignment for the new container ID
                         container_key = make_composite_key(host_id, container_id)
 
@@ -1934,6 +1935,7 @@ class DatabaseManager:
                             )
                             session.add(new_assignment)
                             reattached_tags.append(tag.name)
+                            processed_tag_ids.add(tag.id)  # Mark as processed to prevent duplicates
                             logger.info(f"Reattached tag '{tag.name}' to container {container_name} via compose identity")
 
             # Fallback: try to match by container name + host
@@ -1946,7 +1948,7 @@ class DatabaseManager:
 
                 for prev_assignment in prev_assignments:
                     tag = session.query(Tag).filter(Tag.id == prev_assignment.tag_id).first()
-                    if tag:
+                    if tag and tag.id not in processed_tag_ids:
                         container_key = make_composite_key(host_id, container_id)
 
                         existing = session.query(TagAssignment).filter(
@@ -1966,6 +1968,7 @@ class DatabaseManager:
                             )
                             session.add(new_assignment)
                             reattached_tags.append(tag.name)
+                            processed_tag_ids.add(tag.id)  # Mark as processed to prevent duplicates
                             logger.info(f"Reattached tag '{tag.name}' to container {container_name} via name match")
 
             if reattached_tags:
@@ -2221,7 +2224,7 @@ class DatabaseManager:
                 follow_redirects=prev_health_check.follow_redirects,
                 verify_ssl=prev_health_check.verify_ssl,
                 headers_json=prev_health_check.headers_json,
-                body=prev_health_check.body
+                auth_config_json=prev_health_check.auth_config_json
             )
             session.add(new_health_check)
             session.commit()

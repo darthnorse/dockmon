@@ -4,9 +4,9 @@ CLAUDE.md
 CLAUDE_CONTEXT.md
 BASELINE_STATUS.md
 
-# Markdown files (except README.md)
+# Markdown files (except root README.md)
 *.md
-!README.md
+!/README.md
 claude.md
 
 # Wiki content (managed by separate script)

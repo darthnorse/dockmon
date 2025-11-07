@@ -44,6 +44,77 @@ services:
       - "com.dockmon.description=All-in-One Docker Container Monitor"
       - "com.dockmon.version=1.0"
 
+  # ==================================================================================
+  # REVERSE PROXY EXAMPLE (Traefik, Caddy, nginx, etc.)
+  # ==================================================================================
+  # Uncomment and customize this section if deploying behind a reverse proxy.
+  # The reverse proxy handles TLS termination, and DockMon runs in HTTP mode.
+  #
+  # dockmon:
+  #   build:
+  #     context: .
+  #     dockerfile: docker/Dockerfile
+  #     # Optional: Set BASE_PATH if deploying at a subpath (e.g., /dockmon/)
+  #     # args:
+  #     #   - BASE_PATH=/dockmon/
+  #   container_name: dockmon
+  #   restart: unless-stopped
+  #   security_opt:
+  #     - no-new-privileges:true
+  #   ports:
+  #     - "8080:80"  # HTTP mode - reverse proxy handles HTTPS
+  #   environment:
+  #     - TZ=America/New_York
+  #     - PYTHONPATH=/app/backend
+  #     - PYTHONUNBUFFERED=1
+  #
+  #     # REQUIRED: Enable reverse proxy mode (switches nginx to HTTP on port 80)
+  #     - REVERSE_PROXY_MODE=true
+  #
+  #     # Optional: Set BASE_PATH if deploying at subpath (must match build arg)
+  #     # - BASE_PATH=/dockmon/
+  #
+  #     # REQUIRED: Set CORS origins to match your reverse proxy domain
+  #     - DOCKMON_CORS_ORIGINS=https://dockmon.example.com
+  #   volumes:
+  #     - dockmon_data:/app/data
+  #     - /var/run/docker.sock:/var/run/docker.sock
+  #   networks:
+  #     - traefik  # Connect to Traefik network
+  #   logging:
+  #     driver: "json-file"
+  #     options:
+  #       max-size: "10m"
+  #       max-file: "3"
+  #       compress: "true"
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #     start_period: 30s
+  #   labels:
+  #     - "com.dockmon.description=All-in-One Docker Container Monitor"
+  #     - "com.dockmon.version=1.0"
+  #
+  #     # Traefik labels for routing and TLS
+  #     - "traefik.enable=true"
+  #     - "traefik.http.routers.dockmon.rule=Host(`dockmon.example.com`)"
+  #     - "traefik.http.routers.dockmon.entrypoints=websecure"
+  #     - "traefik.http.routers.dockmon.tls=true"
+  #     - "traefik.http.routers.dockmon.tls.certresolver=letsencrypt"
+  #     - "traefik.http.services.dockmon.loadbalancer.server.port=80"
+  #
+  #     # Optional: For subpath deployment (e.g., https://example.com/dockmon/)
+  #     # Uncomment and set BASE_PATH=/dockmon/ in environment and build args
+  #     # - "traefik.http.routers.dockmon.rule=Host(`example.com`) && PathPrefix(`/dockmon`)"
+  #     # - "traefik.http.middlewares.dockmon-strip.stripprefix.prefixes=/dockmon"
+  #     # - "traefik.http.routers.dockmon.middlewares=dockmon-strip"
+  #
+  # networks:
+  #   traefik:
+  #     external: true  # Assumes Traefik network already exists
+
 volumes:
   dockmon_data:
     driver: local

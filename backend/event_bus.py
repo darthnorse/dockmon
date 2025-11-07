@@ -377,9 +377,15 @@ class EventBus:
 
         elif event.event_type == EventType.CONTAINER_STOPPED:
             title = f"Container Stopped: {event.scope_name}"
-            old_state = event.data.get('old_state', 'unknown')
-            new_state = event.data.get('new_state', 'stopped')
-            message = f"Container {event.scope_name} changed state: {old_state} → {new_state}"
+            # Issue #23: Include exit code when present (from 'die' events)
+            exit_code = event.data.get('exit_code')
+            if exit_code is not None:
+                message = f"Container {event.scope_name} stopped with exit code {exit_code}"
+            else:
+                # Fallback to state change message (from 'stop' events)
+                old_state = event.data.get('old_state', 'unknown')
+                new_state = event.data.get('new_state', 'stopped')
+                message = f"Container {event.scope_name} changed state: {old_state} → {new_state}"
 
         elif event.event_type == EventType.CONTAINER_DIED:
             title = f"Container Died: {event.scope_name}"

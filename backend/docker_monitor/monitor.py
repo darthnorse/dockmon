@@ -1163,8 +1163,6 @@ class DockerMonitor:
                 exit_code = None
 
                 if action == 'die':
-                    bus_event_type = BusEventType.CONTAINER_DIED
-                    new_state = "exited"
                     # Docker sends exitCode in attributes
                     exit_code_str = attributes.get('exitCode')
                     if exit_code_str is not None:
@@ -1175,6 +1173,14 @@ class DockerMonitor:
                             exit_code = None
                     else:
                         exit_code = 0  # Default to 0 if not provided
+
+                    # Issue #23: Distinguish clean stops (exit 0) from crashes (exit != 0)
+                    if exit_code == 0:
+                        bus_event_type = BusEventType.CONTAINER_STOPPED
+                        new_state = "stopped"
+                    else:
+                        bus_event_type = BusEventType.CONTAINER_DIED
+                        new_state = "exited"
                 elif action == 'start':
                     bus_event_type = BusEventType.CONTAINER_STARTED
                     new_state = "running"

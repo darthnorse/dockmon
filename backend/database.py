@@ -226,7 +226,7 @@ class GlobalSettings(Base):
     alert_retention_days = Column(Integer, default=90)  # Keep resolved alerts for N days (0 = keep forever)
 
     # Version tracking and upgrade notifications
-    app_version = Column(String, default="2.0.0")  # Current application version
+    app_version = Column(String, default="2.1.1")  # Current application version
     upgrade_notice_dismissed = Column(Boolean, default=True)  # Whether user has seen v2 upgrade notice (False for v1→v2 upgrades set by migration)
     last_viewed_release_notes = Column(String, nullable=True)  # Last version of release notes user viewed
 

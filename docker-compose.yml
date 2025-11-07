@@ -3,6 +3,10 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
+      # Optional: Set BASE_PATH for reverse proxy subpath deployment (uncomment and edit if needed)
+      # Example: For accessing DockMon at https://domain.com/dockmon/
+      # args:
+      #   - BASE_PATH=/dockmon/
     container_name: dockmon
     restart: unless-stopped
     security_opt:
@@ -13,6 +17,9 @@ services:
       - TZ=America/New_York  # Change to your local timezone (e.g., Europe/London, Asia/Tokyo, etc.)
       - PYTHONPATH=/app/backend
       - PYTHONUNBUFFERED=1
+
+      # Optional: Set BASE_PATH for runtime (must match build arg above)
+      # - BASE_PATH=/dockmon/
 
       # Optional: Set CORS origins for production deployment (uncomment and edit if needed)
       # Leave empty/commented for development (auto-detects localhost)

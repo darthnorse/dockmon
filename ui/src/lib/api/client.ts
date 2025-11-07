@@ -30,7 +30,7 @@ interface RequestOptions extends RequestInit {
 class ApiClient {
   private baseURL: string
 
-  constructor(baseURL = '/api') {
+  constructor(baseURL = `${import.meta.env.BASE_URL}api`) {
     this.baseURL = baseURL
   }
 

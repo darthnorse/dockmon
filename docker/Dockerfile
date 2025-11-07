@@ -21,6 +21,9 @@ RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o stats-service .
 # Stage 2: Build React frontend
 FROM node:20-alpine AS frontend-builder
 
+# Accept BASE_PATH as build argument (defaults to root path)
+ARG BASE_PATH=/
+
 WORKDIR /build
 
 # Copy package files
@@ -32,7 +35,8 @@ RUN npm ci
 # Copy source files
 COPY ui/ ./
 
-# Build the React app
+# Build the React app with BASE_PATH
+ENV BASE_PATH=${BASE_PATH}
 RUN npm run build
 
 # Stage 3: Final image with Python + Go binary + built React app

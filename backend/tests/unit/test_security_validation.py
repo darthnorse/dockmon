@@ -151,6 +151,65 @@ class TestDangerousMounts:
         # Should detect all three dangerous mounts
         assert len(violations) == 3
 
+    def test_detect_docker_socket_mount_list_format(self, test_db):
+        """Should detect mounting of /var/run/docker.sock in list format."""
+        config = get_secure_base_config()
+        config["volumes"] = [
+            "/var/run/docker.sock:/var/run/docker.sock:rw"
+        ]
+
+        validator = SecurityValidator()
+        violations = validator.validate_container_config(config)
+
+        # Should have exactly one CRITICAL violation
+        assert len(violations) == 1
+        assert violations[0].level == SecurityLevel.CRITICAL
+        assert "docker.sock" in violations[0].message.lower()
+        assert violations[0].field == "volumes"
+
+    def test_detect_dangerous_mounts_list_format(self, test_db):
+        """Should detect multiple dangerous mounts in list format."""
+        config = get_secure_base_config()
+        config["volumes"] = [
+            "/var/run/docker.sock:/var/run/docker.sock:rw",
+            "/etc:/host-etc:ro",
+            "/proc:/host-proc:ro"
+        ]
+
+        validator = SecurityValidator()
+        violations = validator.validate_container_config(config)
+
+        # Should detect all three dangerous mounts
+        assert len(violations) == 3
+
+    def test_readonly_mount_reduces_severity_list_format(self, test_db):
+        """Read-only mounts in list format should be less severe."""
+        rw_config = get_secure_base_config()
+        rw_config["volumes"] = ["/etc:/host-etc:rw"]
+
+        ro_config = get_secure_base_config()
+        ro_config["volumes"] = ["/etc:/host-etc:ro"]
+
+        validator = SecurityValidator()
+        rw_violations = validator.validate_container_config(rw_config)
+        ro_violations = validator.validate_container_config(ro_config)
+
+        # Read-write should be more severe
+        assert rw_violations[0].level.value > ro_violations[0].level.value
+
+    def test_safe_volume_mounts_list_format_pass(self, test_db):
+        """Normal volume mounts in list format should not trigger violations."""
+        config = get_secure_base_config()
+        config["volumes"] = [
+            "/app/data:/data:rw",
+            "/var/log/nginx:/logs:rw"
+        ]
+
+        validator = SecurityValidator()
+        violations = validator.validate_container_config(config)
+
+        assert len(violations) == 0
+
 
 @pytest.mark.unit
 class TestPrivilegedContainers:

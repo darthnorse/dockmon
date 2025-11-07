@@ -195,32 +195,61 @@ class SecurityValidator:
         if not volumes:
             return violations
 
-        for host_path, bind_config in volumes.items():
-            # Check if this is a dangerous mount
-            for dangerous_path, danger_info in self.DANGEROUS_MOUNTS.items():
-                if host_path == dangerous_path or host_path.startswith(dangerous_path + '/'):
-                    level = danger_info['level']
-                    message = danger_info['message']
+        # Handle both list and dictionary formats
+        # List format: ["/host:/container:ro"]
+        # Dict format: {"/host": {"bind": "/container", "mode": "ro"}}
+        if isinstance(volumes, list):
+            # Parse list format volumes
+            for volume_spec in volumes:
+                if not isinstance(volume_spec, str):
+                    continue
 
-                    # Reduce severity if mount is read-only
-                    if isinstance(bind_config, dict):
-                        mode = bind_config.get('mode', 'rw')
-                        if mode == 'ro':
-                            # Downgrade by one level for read-only
-                            if level == SecurityLevel.CRITICAL:
-                                level = SecurityLevel.HIGH
-                            elif level == SecurityLevel.HIGH:
-                                level = SecurityLevel.MEDIUM
-                            message += ' (read-only reduces risk)'
+                # Parse volume string: host_path:container_path[:mode]
+                parts = volume_spec.split(':')
+                if len(parts) < 2:
+                    continue  # Invalid volume spec
 
-                    violations.append(SecurityViolation(
-                        level=level,
-                        field='volumes',
-                        message=f"Dangerous mount '{host_path}': {message}"
-                    ))
-                    break  # Only report once per mount
+                host_path = parts[0]
+                mode = parts[2] if len(parts) >= 3 else 'rw'
+
+                # Check if this is a dangerous mount
+                self._check_dangerous_mount(violations, host_path, mode)
+
+        elif isinstance(volumes, dict):
+            # Dictionary format
+            for host_path, bind_config in volumes.items():
+                # Extract mode from bind config
+                mode = 'rw'  # Default
+                if isinstance(bind_config, dict):
+                    mode = bind_config.get('mode', 'rw')
+
+                # Check if this is a dangerous mount
+                self._check_dangerous_mount(violations, host_path, mode)
 
         return violations
+
+    def _check_dangerous_mount(self, violations: List[SecurityViolation], host_path: str, mode: str) -> None:
+        """Check if a mount path is dangerous and add violation if so."""
+        for dangerous_path, danger_info in self.DANGEROUS_MOUNTS.items():
+            if host_path == dangerous_path or host_path.startswith(dangerous_path + '/'):
+                level = danger_info['level']
+                message = danger_info['message']
+
+                # Reduce severity if mount is read-only
+                if mode == 'ro':
+                    # Downgrade by one level for read-only
+                    if level == SecurityLevel.CRITICAL:
+                        level = SecurityLevel.HIGH
+                    elif level == SecurityLevel.HIGH:
+                        level = SecurityLevel.MEDIUM
+                    message += ' (read-only reduces risk)'
+
+                violations.append(SecurityViolation(
+                    level=level,
+                    field='volumes',
+                    message=f"Dangerous mount '{host_path}': {message}"
+                ))
+                break  # Only report once per mount
 
     def _check_privileged(self, config: Dict[str, Any]) -> List[SecurityViolation]:
         """Check for privileged container flag."""

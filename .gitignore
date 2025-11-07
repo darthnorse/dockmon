@@ -4,11 +4,13 @@ CLAUDE.md
 CLAUDE_CONTEXT.md
 BASELINE_STATUS.md
 
-# Markdown files (except README.md and wiki-content/)
+# Markdown files (except README.md)
 *.md
 !README.md
-!wiki-content/**/*.md
 claude.md
+
+# Wiki content (managed by separate script)
+wiki-content/
 
 # Wiki repo clone (if exists)
 wiki-repo/

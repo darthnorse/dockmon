@@ -4,8 +4,13 @@ CLAUDE.md
 CLAUDE_CONTEXT.md
 BASELINE_STATUS.md
 
-# Wiki Content (lives in wiki repo, not main repo)
-wiki-content/
+# Markdown files (except README.md and wiki-content/)
+*.md
+!README.md
+!wiki-content/**/*.md
+claude.md
+
+# Wiki repo clone (if exists)
 wiki-repo/
 
 # Documentation (internal development docs)

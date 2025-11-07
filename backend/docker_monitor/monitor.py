@@ -1045,8 +1045,9 @@ class DockerMonitor:
             if not host:
                 continue
 
-            # Try to reconnect if host exists but has no client (offline)
-            if hid not in self.clients:
+            # Try to reconnect if host is offline or has no client
+            # This ensures backoff logic is used for both cases
+            if hid not in self.clients or host.status == "offline":
                 reconnected = await self.discovery.attempt_reconnection(hid)
                 if not reconnected:
                     continue

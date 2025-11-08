@@ -6,7 +6,7 @@
 
 import { useState } from 'react'
 import { NotificationChannel, ChannelCreateRequest } from '../hooks/useNotificationChannels'
-import { Smartphone, Send, MessageSquare, Hash, Bell, Mail } from 'lucide-react'
+import { Smartphone, Send, MessageSquare, Hash, Bell, Mail, Webhook } from 'lucide-react'
 
 interface Props {
   channel?: NotificationChannel | null
@@ -24,6 +24,7 @@ const CHANNEL_TYPES = [
   { value: 'pushover', label: 'Pushover', icon: Smartphone },
   { value: 'gotify', label: 'Gotify', icon: Bell },
   { value: 'smtp', label: 'Email (SMTP)', icon: Mail },
+  { value: 'webhook', label: 'Webhook', icon: Webhook },
 ]
 
 export function ChannelForm({ channel, onSubmit, onCancel, onTest, isSubmitting, isTesting }: Props) {
@@ -119,6 +120,13 @@ export function ChannelForm({ channel, onSubmit, onCancel, onTest, isSubmitting,
         }
         if (!formData.config.to_email) {
           newErrors['config.to_email'] = 'To email is required'
+        }
+        break
+      case 'webhook':
+        if (!formData.config.url) {
+          newErrors['config.url'] = 'Webhook URL is required'
+        } else if (!formData.config.url.startsWith('http://') && !formData.config.url.startsWith('https://')) {
+          newErrors['config.url'] = 'URL must start with http:// or https://'
         }
         break
     }
@@ -384,6 +392,69 @@ export function ChannelForm({ channel, onSubmit, onCancel, onTest, isSubmitting,
                 />
                 Use TLS/SSL (recommended)
               </label>
+            </div>
+          </>
+        )}
+
+        {formData.type === 'webhook' && (
+          <>
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">Webhook URL *</label>
+              <input
+                type="url"
+                value={formData.config.url || ''}
+                onChange={(e) => handleConfigChange('url', e.target.value)}
+                placeholder="https://your-service.com/webhook"
+                className={`w-full rounded-md border ${errors['config.url'] ? 'border-red-500' : 'border-gray-700'} bg-gray-800 px-3 py-2 text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500`}
+              />
+              {errors['config.url'] && <p className="mt-1 text-xs text-red-400">{errors['config.url']}</p>}
+              <p className="mt-1 text-xs text-gray-400">HTTPS recommended for production</p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">HTTP Method</label>
+              <select
+                value={formData.config.method || 'POST'}
+                onChange={(e) => handleConfigChange('method', e.target.value)}
+                className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              >
+                <option value="POST">POST</option>
+                <option value="PUT">PUT</option>
+              </select>
+              <p className="mt-1 text-xs text-gray-400">HTTP method for webhook requests</p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">Payload Format</label>
+              <select
+                value={formData.config.payload_format || 'json'}
+                onChange={(e) => handleConfigChange('payload_format', e.target.value)}
+                className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              >
+                <option value="json">JSON</option>
+                <option value="form">Form-encoded</option>
+              </select>
+              <p className="mt-1 text-xs text-gray-400">Format of the webhook payload</p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">Custom Headers (JSON, optional)</label>
+              <textarea
+                value={typeof formData.config.headers === 'string' ? formData.config.headers : JSON.stringify(formData.config.headers || {}, null, 2)}
+                onChange={(e) => {
+                  try {
+                    const parsed = JSON.parse(e.target.value)
+                    handleConfigChange('headers', parsed)
+                  } catch {
+                    // Allow invalid JSON while typing
+                    handleConfigChange('headers', e.target.value)
+                  }
+                }}
+                placeholder={'{\n  "Authorization": "Bearer token",\n  "X-Custom-Header": "value"\n}'}
+                rows={4}
+                className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white placeholder-gray-500 font-mono text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+              <p className="mt-1 text-xs text-gray-400">Add custom HTTP headers (e.g., Authorization)</p>
             </div>
           </>
         )}

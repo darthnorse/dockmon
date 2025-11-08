@@ -227,6 +227,7 @@ class AppConfig:
 
     # Security settings
     CORS_ORIGINS = get_cors_origins()
+    REVERSE_PROXY_MODE = os.getenv('REVERSE_PROXY_MODE', 'false').lower() == 'true'
 
     # Import centralized paths
     from .paths import DATABASE_URL as DEFAULT_DATABASE_URL, CREDENTIALS_FILE as DEFAULT_CREDENTIALS_FILE

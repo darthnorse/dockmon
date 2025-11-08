@@ -178,7 +178,7 @@ export function ChannelForm({ channel, onSubmit, onCancel, onTest, isSubmitting,
             }}
             disabled={isEditing}
           >
-            <SelectTrigger>
+            <SelectTrigger className="bg-gray-800 border-gray-700">
               <SelectValue>
                 {CHANNEL_TYPES.find((t) => t.value === formData.type)?.label}
               </SelectValue>
@@ -430,7 +430,7 @@ export function ChannelForm({ channel, onSubmit, onCancel, onTest, isSubmitting,
                 value={formData.config.method || 'POST'}
                 onValueChange={(value) => handleConfigChange('method', value)}
               >
-                <SelectTrigger>
+                <SelectTrigger className="bg-gray-800 border-gray-700">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -447,7 +447,7 @@ export function ChannelForm({ channel, onSubmit, onCancel, onTest, isSubmitting,
                 value={formData.config.payload_format || 'json'}
                 onValueChange={(value) => handleConfigChange('payload_format', value)}
               >
-                <SelectTrigger>
+                <SelectTrigger className="bg-gray-800 border-gray-700">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>

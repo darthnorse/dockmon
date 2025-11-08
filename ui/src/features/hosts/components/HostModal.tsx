@@ -340,7 +340,7 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
             <Input
               id="url"
               {...register('url')}
-              placeholder="tcp://192.168.1.20:2376 or unix:///var/run/docker.sock"
+              placeholder="tcp://192.168.1.20:2376, unix:///var/run/docker.sock, or unix:///var/run/podman/podman.sock"
               className={errors.url ? 'border-destructive' : ''}
               data-testid="host-url-input"
             />

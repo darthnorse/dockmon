@@ -3,6 +3,10 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
+      # Optional: Set BASE_PATH for reverse proxy subpath deployment (uncomment and edit if needed)
+      # Example: For accessing DockMon at https://domain.com/dockmon/
+      # args:
+      #   - BASE_PATH=/dockmon/
     container_name: dockmon
     restart: unless-stopped
     security_opt:
@@ -13,6 +17,9 @@ services:
       - TZ=America/New_York  # Change to your local timezone (e.g., Europe/London, Asia/Tokyo, etc.)
       - PYTHONPATH=/app/backend
       - PYTHONUNBUFFERED=1
+
+      # Optional: Set BASE_PATH for runtime (must match build arg above)
+      # - BASE_PATH=/dockmon/
 
       # Optional: Set CORS origins for production deployment (uncomment and edit if needed)
       # Leave empty/commented for development (auto-detects localhost)
@@ -36,6 +43,45 @@ services:
     labels:
       - "com.dockmon.description=All-in-One Docker Container Monitor"
       - "com.dockmon.version=1.0"
+
+  # ==================================================================================
+  # REVERSE PROXY DEPLOYMENT (Traefik, Caddy, nginx Proxy Manager, etc.)
+  # ==================================================================================
+  # For comprehensive setup guides including Traefik, Caddy, nginx Proxy Manager,
+  # HTTPS passthrough, subpath deployment, and troubleshooting, see:
+  # https://github.com/darthnorse/dockmon/wiki/Reverse-Proxy-Deployment
+  #
+  # Quick example for HTTP mode (most common):
+  #
+  # dockmon:
+  #   build:
+  #     context: .
+  #     dockerfile: docker/Dockerfile
+  #   container_name: dockmon
+  #   restart: unless-stopped
+  #   ports:
+  #     - "8080:80"  # HTTP mode - reverse proxy handles HTTPS
+  #   environment:
+  #     - TZ=America/New_York
+  #     - PYTHONPATH=/app/backend
+  #     - PYTHONUNBUFFERED=1
+  #     - REVERSE_PROXY_MODE=true  # Enable HTTP mode
+  #     - DOCKMON_CORS_ORIGINS=https://dockmon.example.com
+  #   volumes:
+  #     - dockmon_data:/app/data
+  #     - /var/run/docker.sock:/var/run/docker.sock
+  #   networks:
+  #     - traefik
+  #   labels:
+  #     - "traefik.enable=true"
+  #     - "traefik.http.routers.dockmon.rule=Host(`dockmon.example.com`)"
+  #     - "traefik.http.routers.dockmon.entrypoints=websecure"
+  #     - "traefik.http.routers.dockmon.tls.certresolver=letsencrypt"
+  #     - "traefik.http.services.dockmon.loadbalancer.server.port=80"
+  #
+  # networks:
+  #   traefik:
+  #     external: true
 
 volumes:
   dockmon_data:

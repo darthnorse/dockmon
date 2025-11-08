@@ -31,7 +31,8 @@ async def wait_for_container_health(
     1. Wait for container to reach "running" state (up to timeout)
     2. If container has Docker HEALTHCHECK: Poll for "healthy" status (up to timeout)
        - Short-circuits immediately when "healthy" detected
-       - Returns False immediately if "unhealthy" detected
+       - Grace period (30s): Treat "unhealthy" like "starting" during initial startup
+       - After grace period: Returns False if "unhealthy" detected
     3. If no health check: Wait 3s for stability, verify still running
        - Short-circuits as soon as container is running + stable
 
@@ -54,6 +55,9 @@ async def wait_for_container_health(
         >>> # True if container running + stable for 3s, False if crashes or timeout
     """
     start_time = time.time()
+    # Grace period for containers with health checks: allow "unhealthy" status during startup
+    # Use min(30s, 50% of timeout) to handle both short and long timeouts gracefully
+    grace_period = min(30, timeout * 0.5)
 
     while time.time() - start_time < timeout:
         try:
@@ -73,12 +77,27 @@ async def wait_for_container_health(
             if health:
                 # Has Docker HEALTHCHECK configured - poll for healthy status
                 status = health.get("Status")
+                elapsed = time.time() - start_time
+
                 if status == "healthy":
                     logger.info(f"Container {container_id} is healthy")
                     return True
                 elif status == "unhealthy":
-                    logger.error(f"Container {container_id} is unhealthy")
-                    return False
+                    # Grace period: During initial startup, treat "unhealthy" like "starting"
+                    # This prevents false negatives for slow-starting containers (e.g., Immich)
+                    if elapsed < grace_period:
+                        logger.warning(
+                            f"Container {container_id} is unhealthy at {elapsed:.1f}s, "
+                            f"within {grace_period:.0f}s grace period - continuing to wait"
+                        )
+                        await asyncio.sleep(2)
+                        continue
+                    else:
+                        # Grace period expired - trust the unhealthy status
+                        logger.error(
+                            f"Container {container_id} is unhealthy after {grace_period:.0f}s grace period"
+                        )
+                        return False
                 # Status is "starting", continue waiting
                 logger.debug(f"Container {container_id} health status: {status}, waiting...")
                 await asyncio.sleep(2)

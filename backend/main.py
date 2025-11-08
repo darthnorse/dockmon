@@ -71,6 +71,7 @@ from batch_manager import BatchJobManager
 from utils.keys import make_composite_key
 from utils.encryption import encrypt_password, decrypt_password
 from utils.async_docker import async_docker_call
+from utils.base_path import get_base_path
 from updates.container_validator import ContainerValidator, ValidationResult
 from packaging.version import parse as parse_version, InvalidVersion
 from deployment import routes as deployment_routes, DeploymentExecutor, TemplateManager
@@ -336,7 +337,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="DockMon API",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
+    root_path=get_base_path().rstrip('/')  # Strip trailing slash for FastAPI root_path
 )
 
 # Configure CORS - Production ready with environment-based configuration

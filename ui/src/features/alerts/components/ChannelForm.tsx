@@ -6,7 +6,8 @@
 
 import { useState } from 'react'
 import { NotificationChannel, ChannelCreateRequest } from '../hooks/useNotificationChannels'
-import { Smartphone, Send, MessageSquare, Hash, Bell, Mail } from 'lucide-react'
+import { Smartphone, Send, MessageSquare, Hash, Bell, Mail, Webhook } from 'lucide-react'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
 interface Props {
   channel?: NotificationChannel | null
@@ -24,6 +25,7 @@ const CHANNEL_TYPES = [
   { value: 'pushover', label: 'Pushover', icon: Smartphone },
   { value: 'gotify', label: 'Gotify', icon: Bell },
   { value: 'smtp', label: 'Email (SMTP)', icon: Mail },
+  { value: 'webhook', label: 'Webhook', icon: Webhook },
 ]
 
 export function ChannelForm({ channel, onSubmit, onCancel, onTest, isSubmitting, isTesting }: Props) {
@@ -121,6 +123,24 @@ export function ChannelForm({ channel, onSubmit, onCancel, onTest, isSubmitting,
           newErrors['config.to_email'] = 'To email is required'
         }
         break
+      case 'webhook':
+        if (!formData.config.url) {
+          newErrors['config.url'] = 'Webhook URL is required'
+        } else if (!formData.config.url.startsWith('http://') && !formData.config.url.startsWith('https://')) {
+          newErrors['config.url'] = 'URL must start with http:// or https://'
+        }
+
+        // Validate headers is valid JSON if provided
+        if (formData.config.headers) {
+          if (typeof formData.config.headers === 'string') {
+            try {
+              JSON.parse(formData.config.headers)
+            } catch {
+              newErrors['config.headers'] = 'Headers must be valid JSON'
+            }
+          }
+        }
+        break
     }
 
     setErrors(newErrors)
@@ -161,21 +181,33 @@ export function ChannelForm({ channel, onSubmit, onCancel, onTest, isSubmitting,
 
         <div>
           <label className="block text-sm font-medium text-gray-300 mb-1">Channel Type *</label>
-          <select
+          <Select
             value={formData.type}
-            onChange={(e) => {
-              handleChange('type', e.target.value)
+            onValueChange={(value) => {
+              handleChange('type', value)
               handleChange('config', {}) // Reset config when type changes
             }}
             disabled={isEditing}
-            className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {CHANNEL_TYPES.map((type) => (
-              <option key={type.value} value={type.value}>
-                {type.label}
-              </option>
-            ))}
-          </select>
+            <SelectTrigger className="bg-gray-800 border-gray-700">
+              <SelectValue>
+                {CHANNEL_TYPES.find((t) => t.value === formData.type)?.label}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {CHANNEL_TYPES.map((type) => {
+                const IconComponent = type.icon
+                return (
+                  <SelectItem key={type.value} value={type.value}>
+                    <div className="flex items-center gap-2">
+                      <IconComponent className="h-4 w-4" />
+                      <span>{type.label}</span>
+                    </div>
+                  </SelectItem>
+                )
+              })}
+            </SelectContent>
+          </Select>
           {isEditing && (
             <p className="mt-1 text-xs text-gray-400">Channel type cannot be changed after creation</p>
           )}
@@ -384,6 +416,78 @@ export function ChannelForm({ channel, onSubmit, onCancel, onTest, isSubmitting,
                 />
                 Use TLS/SSL (recommended)
               </label>
+            </div>
+          </>
+        )}
+
+        {formData.type === 'webhook' && (
+          <>
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">Webhook URL *</label>
+              <input
+                type="url"
+                value={formData.config.url || ''}
+                onChange={(e) => handleConfigChange('url', e.target.value)}
+                placeholder="https://your-service.com/webhook"
+                className={`w-full rounded-md border ${errors['config.url'] ? 'border-red-500' : 'border-gray-700'} bg-gray-800 px-3 py-2 text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500`}
+              />
+              {errors['config.url'] && <p className="mt-1 text-xs text-red-400">{errors['config.url']}</p>}
+              <p className="mt-1 text-xs text-gray-400">HTTPS recommended for production</p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">HTTP Method</label>
+              <Select
+                value={formData.config.method || 'POST'}
+                onValueChange={(value) => handleConfigChange('method', value)}
+              >
+                <SelectTrigger className="bg-gray-800 border-gray-700">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="POST">POST</SelectItem>
+                  <SelectItem value="PUT">PUT</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="mt-1 text-xs text-gray-400">HTTP method for webhook requests</p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">Payload Format</label>
+              <Select
+                value={formData.config.payload_format || 'json'}
+                onValueChange={(value) => handleConfigChange('payload_format', value)}
+              >
+                <SelectTrigger className="bg-gray-800 border-gray-700">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="json">JSON</SelectItem>
+                  <SelectItem value="form">Form-encoded</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="mt-1 text-xs text-gray-400">Format of the webhook payload</p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">Custom Headers (JSON, optional)</label>
+              <textarea
+                value={typeof formData.config.headers === 'string' ? formData.config.headers : JSON.stringify(formData.config.headers || {}, null, 2)}
+                onChange={(e) => {
+                  try {
+                    const parsed = JSON.parse(e.target.value)
+                    handleConfigChange('headers', parsed)
+                  } catch {
+                    // Allow invalid JSON while typing
+                    handleConfigChange('headers', e.target.value)
+                  }
+                }}
+                placeholder={'{\n  "Authorization": "Bearer token",\n  "X-Custom-Header": "value"\n}'}
+                rows={4}
+                className={`w-full rounded-md border ${errors['config.headers'] ? 'border-red-500' : 'border-gray-700'} bg-gray-800 px-3 py-2 text-white placeholder-gray-500 font-mono text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500`}
+              />
+              {errors['config.headers'] && <p className="mt-1 text-xs text-red-400">{errors['config.headers']}</p>}
+              <p className="mt-1 text-xs text-gray-400">Add custom HTTP headers (e.g., Authorization)</p>
             </div>
           </>
         )}

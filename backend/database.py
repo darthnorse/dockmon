@@ -1898,6 +1898,7 @@ class DatabaseManager:
         """
         with self.get_session() as session:
             reattached_tags = []
+            processed_tag_ids = set()  # Track tags we've already reattached to avoid duplicates
 
             # Try to find previous assignments by compose identity
             if compose_project and compose_service:
@@ -1910,7 +1911,7 @@ class DatabaseManager:
 
                 for prev_assignment in prev_assignments:
                     tag = session.query(Tag).filter(Tag.id == prev_assignment.tag_id).first()
-                    if tag:
+                    if tag and tag.id not in processed_tag_ids:
                         # Create new assignment for the new container ID
                         container_key = make_composite_key(host_id, container_id)
 
@@ -1934,6 +1935,7 @@ class DatabaseManager:
                             )
                             session.add(new_assignment)
                             reattached_tags.append(tag.name)
+                            processed_tag_ids.add(tag.id)  # Mark as processed to prevent duplicates
                             logger.info(f"Reattached tag '{tag.name}' to container {container_name} via compose identity")
 
             # Fallback: try to match by container name + host
@@ -1946,7 +1948,7 @@ class DatabaseManager:
 
                 for prev_assignment in prev_assignments:
                     tag = session.query(Tag).filter(Tag.id == prev_assignment.tag_id).first()
-                    if tag:
+                    if tag and tag.id not in processed_tag_ids:
                         container_key = make_composite_key(host_id, container_id)
 
                         existing = session.query(TagAssignment).filter(
@@ -1966,6 +1968,7 @@ class DatabaseManager:
                             )
                             session.add(new_assignment)
                             reattached_tags.append(tag.name)
+                            processed_tag_ids.add(tag.id)  # Mark as processed to prevent duplicates
                             logger.info(f"Reattached tag '{tag.name}' to container {container_name} via name match")
 
             if reattached_tags:
@@ -1973,6 +1976,435 @@ class DatabaseManager:
                 logger.info(f"Reattached {len(reattached_tags)} tags to {container_name}")
 
             return reattached_tags
+
+    def reattach_auto_restart_for_container(
+        self,
+        host_id: str,
+        container_id: str,  # NEW container ID (12 chars)
+        container_name: str,
+        compose_project: str = None,
+        compose_service: str = None
+    ) -> Optional[dict]:
+        """
+        Reattach auto-restart configuration to a rebuilt container.
+
+        When containers are destroyed and recreated (e.g., TrueNAS stop/start),
+        this restores the auto-restart configuration based on logical identity.
+
+        Args:
+            host_id: Host UUID
+            container_id: NEW container ID (12 chars) to attach config to
+            container_name: Container name
+            compose_project: Compose project name (from labels)
+            compose_service: Compose service name (from labels)
+
+        Returns:
+            dict with preserved config if found, None otherwise
+        """
+        with self.get_session() as session:
+            prev_config = None
+
+            # Try to find previous config by compose identity
+            if compose_project and compose_service:
+                # For compose containers, match by project + service + host
+                # Don't filter by compose labels in TagAssignment table - use direct columns
+                prev_config = session.query(AutoRestartConfig).filter(
+                    AutoRestartConfig.host_id == host_id,
+                    AutoRestartConfig.container_name.like(f"{compose_project}_{compose_service}%")  # Match compose naming
+                ).order_by(AutoRestartConfig.updated_at.desc()).first()
+
+            # Fallback: try to match by container name + host
+            if not prev_config:
+                prev_config = session.query(AutoRestartConfig).filter(
+                    AutoRestartConfig.host_id == host_id,
+                    AutoRestartConfig.container_name == container_name
+                ).order_by(AutoRestartConfig.updated_at.desc()).first()
+
+            if not prev_config:
+                # No previous configuration found - not an error, just no reattachment
+                return None
+
+            # Check if config already exists for this container ID (idempotent)
+            existing_config = session.query(AutoRestartConfig).filter(
+                AutoRestartConfig.host_id == host_id,
+                AutoRestartConfig.container_id == container_id
+            ).first()
+
+            if existing_config:
+                # Already reattached, nothing to do
+                return None
+
+            # Create new config with preserved settings
+            new_config = AutoRestartConfig(
+                host_id=host_id,
+                container_id=container_id,  # NEW container ID
+                container_name=container_name,
+                enabled=prev_config.enabled,  # Preserve user setting
+                max_retries=prev_config.max_retries,  # Preserve user setting
+                retry_delay=prev_config.retry_delay,  # Preserve user setting
+                restart_count=0,  # Reset counter for new container
+                last_restart=None,  # No restarts yet
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc)
+            )
+            session.add(new_config)
+            session.commit()
+
+            logger.info(f"Reattached auto-restart config to container {container_name} (enabled={prev_config.enabled})")
+
+            return {
+                "enabled": prev_config.enabled,
+                "max_retries": prev_config.max_retries,
+                "retry_delay": prev_config.retry_delay
+            }
+
+    def reattach_desired_state_for_container(
+        self,
+        host_id: str,
+        container_id: str,  # NEW container ID (12 chars)
+        container_name: str,
+        compose_project: str = None,
+        compose_service: str = None
+    ) -> Optional[dict]:
+        """
+        Reattach desired state configuration to a rebuilt container.
+
+        When containers are destroyed and recreated (e.g., TrueNAS stop/start),
+        this restores the desired state and web UI URL.
+
+        Args:
+            host_id: Host UUID
+            container_id: NEW container ID (12 chars) to attach config to
+            container_name: Container name
+            compose_project: Compose project name (from labels)
+            compose_service: Compose service name (from labels)
+
+        Returns:
+            dict with preserved config if found, None otherwise
+        """
+        with self.get_session() as session:
+            prev_state = None
+
+            # Try to find previous state by compose identity
+            if compose_project and compose_service:
+                prev_state = session.query(ContainerDesiredState).filter(
+                    ContainerDesiredState.host_id == host_id,
+                    ContainerDesiredState.container_name.like(f"{compose_project}_{compose_service}%")
+                ).order_by(ContainerDesiredState.updated_at.desc()).first()
+
+            # Fallback: try to match by container name + host
+            if not prev_state:
+                prev_state = session.query(ContainerDesiredState).filter(
+                    ContainerDesiredState.host_id == host_id,
+                    ContainerDesiredState.container_name == container_name
+                ).order_by(ContainerDesiredState.updated_at.desc()).first()
+
+            if not prev_state:
+                # No previous configuration found
+                return None
+
+            # Check if state already exists for this container ID (idempotent)
+            existing_state = session.query(ContainerDesiredState).filter(
+                ContainerDesiredState.host_id == host_id,
+                ContainerDesiredState.container_id == container_id
+            ).first()
+
+            if existing_state:
+                # Already reattached, nothing to do
+                return None
+
+            # Create new state with preserved settings
+            new_state = ContainerDesiredState(
+                host_id=host_id,
+                container_id=container_id,  # NEW container ID
+                container_name=container_name,
+                desired_state=prev_state.desired_state,  # Preserve user setting
+                web_ui_url=prev_state.web_ui_url,  # Preserve web UI URL
+                custom_tags=None,  # Deprecated field - tags now in TagAssignment
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc)
+            )
+            session.add(new_state)
+            session.commit()
+
+            logger.info(f"Reattached desired state to container {container_name} (state={prev_state.desired_state})")
+
+            return {
+                "desired_state": prev_state.desired_state,
+                "web_ui_url": prev_state.web_ui_url
+            }
+
+    def reattach_http_health_check_for_container(
+        self,
+        host_id: str,
+        container_id: str,  # NEW container ID (12 chars)
+        container_name: str,
+        compose_project: str = None,
+        compose_service: str = None
+    ) -> Optional[dict]:
+        """
+        Reattach HTTP health check configuration to a rebuilt container.
+
+        When containers are destroyed and recreated (e.g., TrueNAS stop/start),
+        this restores the HTTP health check configuration.
+
+        Args:
+            host_id: Host UUID
+            container_id: NEW container ID (12 chars) to attach config to
+            container_name: Container name
+            compose_project: Compose project name (from labels)
+            compose_service: Compose service name (from labels)
+
+        Returns:
+            dict with preserved config if found, None otherwise
+        """
+        with self.get_session() as session:
+            # Find previous health check configs for this host
+            # Note: container_id is composite key, so we need to match by host_id pattern
+            prev_checks = session.query(ContainerHttpHealthCheck).filter(
+                ContainerHttpHealthCheck.host_id == host_id
+            ).all()
+
+            prev_health_check = None
+
+            # Try to find match by compose identity
+            if compose_project and compose_service and prev_checks:
+                for check in prev_checks:
+                    # Extract container name from composite key (format: host_id:container_id)
+                    old_container_id = check.container_id.split(':', 1)[1] if ':' in check.container_id else check.container_id
+                    # Get container name from AutoRestartConfig or ContainerDesiredState
+                    old_container = session.query(AutoRestartConfig).filter(
+                        AutoRestartConfig.host_id == host_id,
+                        AutoRestartConfig.container_id == old_container_id
+                    ).first()
+                    if old_container and old_container.container_name.startswith(f"{compose_project}_{compose_service}"):
+                        prev_health_check = check
+                        break
+
+            # Fallback: try to match by querying AutoRestartConfig to map container_id to container_name
+            if not prev_health_check and prev_checks:
+                # Get mapping of old container IDs to container names
+                old_containers = session.query(AutoRestartConfig).filter(
+                    AutoRestartConfig.host_id == host_id,
+                    AutoRestartConfig.container_name == container_name
+                ).all()
+
+                old_container_ids = {c.container_id for c in old_containers}
+
+                for check in prev_checks:
+                    old_container_id = check.container_id.split(':', 1)[1] if ':' in check.container_id else check.container_id
+                    if old_container_id in old_container_ids:
+                        prev_health_check = check
+                        break
+
+            if not prev_health_check:
+                # No previous health check found
+                return None
+
+            # Check if health check already exists for this container ID (idempotent)
+            new_composite_key = make_composite_key(host_id, container_id)
+            existing_check = session.query(ContainerHttpHealthCheck).filter(
+                ContainerHttpHealthCheck.container_id == new_composite_key
+            ).first()
+
+            if existing_check:
+                # Already reattached, nothing to do
+                return None
+
+            # Create new health check with preserved settings
+            new_health_check = ContainerHttpHealthCheck(
+                container_id=new_composite_key,  # NEW composite key
+                host_id=host_id,
+                enabled=prev_health_check.enabled,
+                url=prev_health_check.url,
+                method=prev_health_check.method,
+                expected_status_codes=prev_health_check.expected_status_codes,
+                timeout_seconds=prev_health_check.timeout_seconds,
+                check_interval_seconds=prev_health_check.check_interval_seconds,
+                follow_redirects=prev_health_check.follow_redirects,
+                verify_ssl=prev_health_check.verify_ssl,
+                headers_json=prev_health_check.headers_json,
+                auth_config_json=prev_health_check.auth_config_json
+            )
+            session.add(new_health_check)
+            session.commit()
+
+            logger.info(f"Reattached HTTP health check to container {container_name} (url={prev_health_check.url})")
+
+            return {
+                "enabled": prev_health_check.enabled,
+                "url": prev_health_check.url,
+                "method": prev_health_check.method
+            }
+
+    def reattach_update_settings_for_container(
+        self,
+        host_id: str,
+        container_id: str,
+        container_name: str,
+        current_image: str,
+        compose_project: str = None,
+        compose_service: str = None
+    ) -> Optional[dict]:
+        """Reattach update tracking settings to rebuilt container."""
+        with self.get_session() as session:
+            prev_update = None
+            
+            # Try compose match
+            if compose_project and compose_service:
+                # Query by host and image, then filter by name pattern
+                candidates = session.query(ContainerUpdate).filter(
+                    ContainerUpdate.host_id == host_id,
+                    ContainerUpdate.current_image == current_image
+                ).all()
+                for cand in candidates:
+                    old_id = cand.container_id.split(':', 1)[1] if ':' in cand.container_id else cand.container_id
+                    old_config = session.query(AutoRestartConfig).filter(
+                        AutoRestartConfig.host_id == host_id,
+                        AutoRestartConfig.container_id == old_id
+                    ).first()
+                    if old_config and old_config.container_name.startswith(f"{compose_project}_{compose_service}"):
+                        prev_update = cand
+                        break
+            
+            # Fallback: match by name + host + image
+            if not prev_update:
+                candidates = session.query(ContainerUpdate).filter(
+                    ContainerUpdate.host_id == host_id,
+                    ContainerUpdate.current_image == current_image
+                ).all()
+                old_ids = {c.container_id for c in session.query(AutoRestartConfig).filter(
+                    AutoRestartConfig.host_id == host_id,
+                    AutoRestartConfig.container_name == container_name
+                ).all()}
+                for cand in candidates:
+                    old_id = cand.container_id.split(':', 1)[1] if ':' in cand.container_id else cand.container_id
+                    if old_id in old_ids:
+                        prev_update = cand
+                        break
+            
+            if not prev_update:
+                return None
+            
+            new_composite_key = make_composite_key(host_id, container_id)
+            existing = session.query(ContainerUpdate).filter(
+                ContainerUpdate.container_id == new_composite_key
+            ).first()
+            
+            if existing:
+                return None
+            
+            # Create new record with preserved settings
+            new_update = ContainerUpdate(
+                container_id=new_composite_key,
+                host_id=host_id,
+                current_image=current_image,
+                current_digest=prev_update.current_digest,
+                floating_tag_mode=prev_update.floating_tag_mode,
+                auto_update_enabled=prev_update.auto_update_enabled,
+                update_policy=prev_update.update_policy,
+                health_check_strategy=prev_update.health_check_strategy,
+                health_check_url=prev_update.health_check_url,
+                changelog_url=prev_update.changelog_url,
+                changelog_source=prev_update.changelog_source,
+                changelog_checked_at=prev_update.changelog_checked_at,
+                registry_url=prev_update.registry_url,
+                registry_page_url=prev_update.registry_page_url,
+                registry_page_source=prev_update.registry_page_source,
+                platform=prev_update.platform,
+                latest_image=None,
+                latest_digest=None,
+                update_available=False,
+                last_checked_at=None,
+                last_updated_at=None,
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc)
+            )
+            session.add(new_update)
+            session.commit()
+            
+            logger.info(f"Reattached update settings to container {container_name} (auto_update={prev_update.auto_update_enabled})")
+            
+            return {"auto_update_enabled": prev_update.auto_update_enabled, "floating_tag_mode": prev_update.floating_tag_mode}
+
+    def reattach_deployment_metadata_for_container(
+        self,
+        host_id: str,
+        container_id: str,
+        container_name: str,
+        compose_project: str = None,
+        compose_service: str = None
+    ) -> Optional[dict]:
+        """Reattach deployment linkage to rebuilt container."""
+        with self.get_session() as session:
+            prev_meta = None
+            
+            # Try by compose (for stack deployments)
+            if compose_project and compose_service:
+                candidates = session.query(DeploymentMetadata).filter(
+                    DeploymentMetadata.host_id == host_id,
+                    DeploymentMetadata.service_name.isnot(None)
+                ).all()
+                for cand in candidates:
+                    old_id = cand.container_id.split(':', 1)[1] if ':' in cand.container_id else cand.container_id
+                    old_config = session.query(AutoRestartConfig).filter(
+                        AutoRestartConfig.host_id == host_id,
+                        AutoRestartConfig.container_id == old_id
+                    ).first()
+                    if old_config and old_config.container_name.startswith(f"{compose_project}_{compose_service}"):
+                        prev_meta = cand
+                        break
+            
+            # Fallback: by name
+            if not prev_meta:
+                candidates = session.query(DeploymentMetadata).filter(
+                    DeploymentMetadata.host_id == host_id
+                ).all()
+                old_ids = {c.container_id for c in session.query(AutoRestartConfig).filter(
+                    AutoRestartConfig.host_id == host_id,
+                    AutoRestartConfig.container_name == container_name
+                ).all()}
+                for cand in candidates:
+                    old_id = cand.container_id.split(':', 1)[1] if ':' in cand.container_id else cand.container_id
+                    if old_id in old_ids:
+                        prev_meta = cand
+                        break
+            
+            if not prev_meta:
+                return None
+            
+            # Verify deployment still exists
+            if prev_meta.deployment_id:
+                deployment = session.query(Deployment).filter(
+                    Deployment.id == prev_meta.deployment_id
+                ).first()
+                if not deployment:
+                    logger.warning(f"Skipping deployment metadata reattachment - deployment {prev_meta.deployment_id} no longer exists")
+                    return None
+            
+            new_composite_key = make_composite_key(host_id, container_id)
+            existing = session.query(DeploymentMetadata).filter(
+                DeploymentMetadata.container_id == new_composite_key
+            ).first()
+            
+            if existing:
+                return None
+            
+            new_meta = DeploymentMetadata(
+                container_id=new_composite_key,
+                host_id=host_id,
+                deployment_id=prev_meta.deployment_id,
+                is_managed=prev_meta.is_managed,
+                service_name=prev_meta.service_name,
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc)
+            )
+            session.add(new_meta)
+            session.commit()
+            
+            logger.info(f"Reattached deployment metadata to container {container_name} (deployment={prev_meta.deployment_id})")
+            
+            return {"deployment_id": prev_meta.deployment_id, "service_name": prev_meta.service_name}
 
     def cleanup_orphaned_tag_assignments(self, days_old: int = 30, batch_size: int = 1000) -> int:
         """

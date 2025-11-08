@@ -25,6 +25,7 @@ router = APIRouter(prefix="/api/v2/auth", tags=["auth-v2"])
 # Import shared database instance (single connection pool)
 from auth.shared import db
 from database import User
+from config.settings import AppConfig
 
 # Argon2 password hasher (more secure than bcrypt)
 # SECURITY: Argon2id is resistant to GPU attacks
@@ -147,7 +148,7 @@ async def login_v2(
             key="session_id",
             value=signed_token,
             httponly=True,          # Prevents XSS
-            secure=True,            # HTTPS only (disable for localhost dev)
+            secure=not AppConfig.REVERSE_PROXY_MODE,  # HTTPS mode unless reverse proxy
             samesite="lax",         # CSRF protection (allows same-origin GET requests)
             max_age=86400 * 7,      # 7 days
             path="/",               # Available to all routes

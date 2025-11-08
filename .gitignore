@@ -4,16 +4,23 @@ CLAUDE.md
 CLAUDE_CONTEXT.md
 BASELINE_STATUS.md
 
-# Wiki Content (lives in wiki repo, not main repo)
+# Markdown files (except root README.md)
+*.md
+!/README.md
+claude.md
+
+# Wiki content (managed by separate script)
 wiki-content/
+
+# Wiki repo clone (if exists)
 wiki-repo/
 
 # Documentation (internal development docs)
 docs/
 
 # Test Infrastructure (Development Only)
-# Note: Test source code (backend/tests/) IS committed for open source contributors
-# Only test artifacts/results are gitignored
+# Test source code is kept private for development
+backend/tests/
 test-results/
 test-results.json
 playwright-report/

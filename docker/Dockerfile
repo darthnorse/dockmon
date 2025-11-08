@@ -21,6 +21,9 @@ RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o stats-service .
 # Stage 2: Build React frontend
 FROM node:20-alpine AS frontend-builder
 
+# Accept BASE_PATH as build argument (defaults to root path)
+ARG BASE_PATH=/
+
 WORKDIR /build
 
 # Copy package files
@@ -32,7 +35,8 @@ RUN npm ci
 # Copy source files
 COPY ui/ ./
 
-# Build the React app
+# Build the React app with BASE_PATH
+ENV BASE_PATH=${BASE_PATH}
 RUN npm run build
 
 # Stage 3: Final image with Python + Go binary + built React app
@@ -93,10 +97,11 @@ RUN find /usr/share/nginx/html -type d -exec chmod 755 {} \;
 # Create certs directory (certificates will be generated at runtime if not present)
 RUN mkdir -p /etc/nginx/certs
 
-# Copy nginx configuration
+# Copy nginx configurations
 # Alpine nginx uses /etc/nginx/http.d/ instead of sites-enabled/sites-available
 RUN rm -f /etc/nginx/http.d/default.conf
 COPY docker/nginx.conf /etc/nginx/http.d/default.conf
+COPY docker/nginx-http.conf /docker/nginx-http.conf
 
 # Add WebSocket upgrade mapping to main nginx.conf (must be in http block)
 RUN sed -i '/^http {/a \    # WebSocket upgrade mapping\n    map $http_upgrade $connection_upgrade {\n        default upgrade;\n        '"''"' close;\n    }\n' /etc/nginx/nginx.conf
@@ -126,6 +131,14 @@ RUN echo '#!/bin/bash' > /startup.sh && \
     echo '  chmod 644 /etc/nginx/certs/dockmon.crt' >> /startup.sh && \
     echo 'fi' >> /startup.sh && \
     echo '' >> /startup.sh && \
+    echo '# Detect reverse proxy mode' >> /startup.sh && \
+    echo 'if [ "$REVERSE_PROXY_MODE" = "true" ]; then' >> /startup.sh && \
+    echo '  echo "Reverse proxy mode enabled - nginx will listen on HTTP port 80"' >> /startup.sh && \
+    echo '  cp /docker/nginx-http.conf /etc/nginx/http.d/default.conf' >> /startup.sh && \
+    echo 'else' >> /startup.sh && \
+    echo '  echo "Direct access mode (default) - nginx will listen on HTTPS port 443"' >> /startup.sh && \
+    echo 'fi' >> /startup.sh && \
+    echo '' >> /startup.sh && \
     echo '# Run database migrations' >> /startup.sh && \
     echo 'echo "Running database migrations..."' >> /startup.sh && \
     echo 'cd /app' >> /startup.sh && \
@@ -141,7 +154,8 @@ RUN echo '#!/bin/bash' > /startup.sh && \
     chmod +x /startup.sh
 
 # Expose ports (8081 is internal for stats service)
-EXPOSE 443 8080
+# Port 443: HTTPS mode (default), Port 80: HTTP mode (REVERSE_PROXY_MODE=true)
+EXPOSE 443 80 8080
 
 # Health check - checks both backend and stats service
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \

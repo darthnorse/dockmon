@@ -151,7 +151,7 @@ class NotificationChannelCreate(BaseModel):
         if not v or not v.strip():
             raise ValueError('Channel type cannot be empty')
 
-        valid_types = {'telegram', 'discord', 'pushover', 'slack', 'gotify', 'smtp'}
+        valid_types = {'telegram', 'discord', 'pushover', 'slack', 'gotify', 'smtp', 'webhook'}
         v = v.strip().lower()
 
         if v not in valid_types:
@@ -248,6 +248,21 @@ class NotificationChannelCreate(BaseModel):
                 v['smtp_port'] = port  # Ensure it's stored as int
             except (ValueError, TypeError):
                 raise ValueError('SMTP port must be a valid number')
+
+        elif channel_type == 'webhook':
+            required_keys = {'url'}
+            if not all(key in v for key in required_keys):
+                raise ValueError(f'Webhook config must contain: {required_keys}')
+
+            # Validate webhook URL
+            url = v.get('url', '')
+            if not (url.startswith('http://') or url.startswith('https://')):
+                raise ValueError('Webhook URL must start with http:// or https://')
+
+            # Validate headers is a dict if provided
+            if 'headers' in v and v['headers'] is not None:
+                if not isinstance(v['headers'], dict):
+                    raise ValueError('Headers must be a valid JSON object (dict)')
 
         # Validate all string values in config for security
         for key, value in v.items():

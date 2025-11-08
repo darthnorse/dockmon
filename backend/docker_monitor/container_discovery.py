@@ -422,6 +422,70 @@ class ContainerDiscovery:
                             # Don't fail container discovery if tag reattachment fails
                             logger.warning(f"Failed to reattach tags for container {dc.name}: {e}")
 
+                    # Reattach configuration from previous containers (TrueNAS container recreation support)
+                    # These methods are idempotent and safe to call on every discovery
+
+                    # Reattach auto-restart configuration
+                    try:
+                        self.db.reattach_auto_restart_for_container(
+                            host_id=host_id,
+                            container_id=dc.id[:12],
+                            container_name=dc.name,
+                            compose_project=compose_project,
+                            compose_service=compose_service
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to reattach auto-restart for {dc.name}: {e}")
+
+                    # Reattach desired state
+                    try:
+                        self.db.reattach_desired_state_for_container(
+                            host_id=host_id,
+                            container_id=dc.id[:12],
+                            container_name=dc.name,
+                            compose_project=compose_project,
+                            compose_service=compose_service
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to reattach desired state for {dc.name}: {e}")
+
+                    # Reattach HTTP health check
+                    try:
+                        self.db.reattach_http_health_check_for_container(
+                            host_id=host_id,
+                            container_id=dc.id[:12],
+                            container_name=dc.name,
+                            compose_project=compose_project,
+                            compose_service=compose_service
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to reattach HTTP health check for {dc.name}: {e}")
+
+                    # Reattach update settings
+                    try:
+                        self.db.reattach_update_settings_for_container(
+                            host_id=host_id,
+                            container_id=dc.id[:12],
+                            container_name=dc.name,
+                            current_image=image_name,
+                            compose_project=compose_project,
+                            compose_service=compose_service
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to reattach update settings for {dc.name}: {e}")
+
+                    # Reattach deployment metadata
+                    try:
+                        self.db.reattach_deployment_metadata_for_container(
+                            host_id=host_id,
+                            container_id=dc.id[:12],
+                            container_name=dc.name,
+                            compose_project=compose_project,
+                            compose_service=compose_service
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to reattach deployment metadata for {dc.name}: {e}")
+
                     # Derive tags from labels
                     derived_tags = derive_container_tags(labels)
 

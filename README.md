@@ -7,7 +7,7 @@ A comprehensive Docker container monitoring and management platform with real-ti
 ![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)
 ![React](https://img.shields.io/badge/React-18.3-61DAFB?logo=react&logoColor=white)
 ![Go](https://img.shields.io/badge/Go-1.23-00ADD8?logo=go&logoColor=white)
-![License](https://img.shields.io/badge/license-MIT-green.svg)
+![License](https://img.shields.io/badge/license-BSL%201.1-blue.svg)
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-Support-FFDD00?logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/darthnorse)
 
 <p align="center">
@@ -98,12 +98,14 @@ See the [Migration Guide](https://github.com/darthnorse/dockmon/wiki/Migration-G
 
 ## Contributing
 
-Contributions are welcome! Here's how you can help:
+Contributions are welcome! **No CLA required** - just submit a PR!
 
 - Report bugs via [GitHub Issues](https://github.com/darthnorse/dockmon/issues)
 - Suggest features in [Discussions](https://github.com/darthnorse/dockmon/discussions)
 - Improve documentation (edit the [Wiki](https://github.com/darthnorse/dockmon/wiki))
 - Submit pull requests (see [Contributing Guide](https://github.com/darthnorse/dockmon/wiki/Contributing))
+
+By contributing, you agree your contributions are licensed under the same BSL 1.1 terms as the project.
 
 ## Development
 
@@ -117,7 +119,37 @@ See [Development Setup](https://github.com/darthnorse/dockmon/wiki/Development-S
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) file for details.
+**Business Source License 1.1** - see [LICENSE](LICENSE) file for full details.
+
+### What this means:
+
+✅ **You can use DockMon:**
+- For internal use in your company (any size)
+- For personal projects
+- To monitor your clients' infrastructure as part of consulting/MSP services
+- Fork, modify, and customize for your own use
+- Contribute improvements back to the project
+
+❌ **You cannot:**
+- Offer DockMon as a SaaS product to third parties
+- Embed DockMon in a commercial monitoring platform sold to others
+- Provide DockMon hosting as a standalone commercial service
+
+### Future Open Source:
+After 2 years (Change Date: 2027-01-01), each version automatically converts to **Apache License 2.0**, becoming fully permissive open source with explicit patent grants.
+
+### Commercial Licensing:
+Need to use DockMon in a way not permitted by BSL? Contact us for commercial licensing:
+- [Open an Issue](https://github.com/darthnorse/dockmon/issues)
+- Describe your use case
+- We'll work with you on licensing terms
+
+### Why BSL?
+BSL protects the project from direct commercial competition while remaining contributor-friendly:
+- **No CLAs required** - standard GitHub workflow
+- **Eventually becomes open source** - builds community trust
+- **Allows all legitimate uses** - only blocks competitive SaaS offerings
+- Used successfully by Sentry, CockroachDB, MariaDB, and other major projects
 
 ## Author
 

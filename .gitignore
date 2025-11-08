@@ -19,8 +19,8 @@ wiki-repo/
 docs/
 
 # Test Infrastructure (Development Only)
-# Note: Test source code (backend/tests/) IS committed for open source contributors
-# Only test artifacts/results are gitignored
+# Test source code is kept private for development
+backend/tests/
 test-results/
 test-results.json
 playwright-report/

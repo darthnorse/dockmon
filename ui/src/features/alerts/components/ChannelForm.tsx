@@ -129,6 +129,17 @@ export function ChannelForm({ channel, onSubmit, onCancel, onTest, isSubmitting,
         } else if (!formData.config.url.startsWith('http://') && !formData.config.url.startsWith('https://')) {
           newErrors['config.url'] = 'URL must start with http:// or https://'
         }
+
+        // Validate headers is valid JSON if provided
+        if (formData.config.headers) {
+          if (typeof formData.config.headers === 'string') {
+            try {
+              JSON.parse(formData.config.headers)
+            } catch {
+              newErrors['config.headers'] = 'Headers must be valid JSON'
+            }
+          }
+        }
         break
     }
 
@@ -473,8 +484,9 @@ export function ChannelForm({ channel, onSubmit, onCancel, onTest, isSubmitting,
                 }}
                 placeholder={'{\n  "Authorization": "Bearer token",\n  "X-Custom-Header": "value"\n}'}
                 rows={4}
-                className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white placeholder-gray-500 font-mono text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className={`w-full rounded-md border ${errors['config.headers'] ? 'border-red-500' : 'border-gray-700'} bg-gray-800 px-3 py-2 text-white placeholder-gray-500 font-mono text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500`}
               />
+              {errors['config.headers'] && <p className="mt-1 text-xs text-red-400">{errors['config.headers']}</p>}
               <p className="mt-1 text-xs text-gray-400">Add custom HTTP headers (e.g., Authorization)</p>
             </div>
           </>

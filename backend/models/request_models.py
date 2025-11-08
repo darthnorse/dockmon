@@ -259,6 +259,11 @@ class NotificationChannelCreate(BaseModel):
             if not (url.startswith('http://') or url.startswith('https://')):
                 raise ValueError('Webhook URL must start with http:// or https://')
 
+            # Validate headers is a dict if provided
+            if 'headers' in v and v['headers'] is not None:
+                if not isinstance(v['headers'], dict):
+                    raise ValueError('Headers must be a valid JSON object (dict)')
+
         # Validate all string values in config for security
         for key, value in v.items():
             if isinstance(value, str):

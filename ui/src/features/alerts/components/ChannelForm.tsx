@@ -7,6 +7,7 @@
 import { useState } from 'react'
 import { NotificationChannel, ChannelCreateRequest } from '../hooks/useNotificationChannels'
 import { Smartphone, Send, MessageSquare, Hash, Bell, Mail, Webhook } from 'lucide-react'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
 interface Props {
   channel?: NotificationChannel | null
@@ -169,21 +170,33 @@ export function ChannelForm({ channel, onSubmit, onCancel, onTest, isSubmitting,
 
         <div>
           <label className="block text-sm font-medium text-gray-300 mb-1">Channel Type *</label>
-          <select
+          <Select
             value={formData.type}
-            onChange={(e) => {
-              handleChange('type', e.target.value)
+            onValueChange={(value) => {
+              handleChange('type', value)
               handleChange('config', {}) // Reset config when type changes
             }}
             disabled={isEditing}
-            className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {CHANNEL_TYPES.map((type) => (
-              <option key={type.value} value={type.value}>
-                {type.label}
-              </option>
-            ))}
-          </select>
+            <SelectTrigger>
+              <SelectValue>
+                {CHANNEL_TYPES.find((t) => t.value === formData.type)?.label}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {CHANNEL_TYPES.map((type) => {
+                const IconComponent = type.icon
+                return (
+                  <SelectItem key={type.value} value={type.value}>
+                    <div className="flex items-center gap-2">
+                      <IconComponent className="h-4 w-4" />
+                      <span>{type.label}</span>
+                    </div>
+                  </SelectItem>
+                )
+              })}
+            </SelectContent>
+          </Select>
           {isEditing && (
             <p className="mt-1 text-xs text-gray-400">Channel type cannot be changed after creation</p>
           )}
@@ -413,27 +426,35 @@ export function ChannelForm({ channel, onSubmit, onCancel, onTest, isSubmitting,
 
             <div>
               <label className="block text-sm font-medium text-gray-300 mb-1">HTTP Method</label>
-              <select
+              <Select
                 value={formData.config.method || 'POST'}
-                onChange={(e) => handleConfigChange('method', e.target.value)}
-                className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                onValueChange={(value) => handleConfigChange('method', value)}
               >
-                <option value="POST">POST</option>
-                <option value="PUT">PUT</option>
-              </select>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="POST">POST</SelectItem>
+                  <SelectItem value="PUT">PUT</SelectItem>
+                </SelectContent>
+              </Select>
               <p className="mt-1 text-xs text-gray-400">HTTP method for webhook requests</p>
             </div>
 
             <div>
               <label className="block text-sm font-medium text-gray-300 mb-1">Payload Format</label>
-              <select
+              <Select
                 value={formData.config.payload_format || 'json'}
-                onChange={(e) => handleConfigChange('payload_format', e.target.value)}
-                className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                onValueChange={(value) => handleConfigChange('payload_format', value)}
               >
-                <option value="json">JSON</option>
-                <option value="form">Form-encoded</option>
-              </select>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="json">JSON</SelectItem>
+                  <SelectItem value="form">Form-encoded</SelectItem>
+                </SelectContent>
+              </Select>
               <p className="mt-1 text-xs text-gray-400">Format of the webhook payload</p>
             </div>
 

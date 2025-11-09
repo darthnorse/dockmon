@@ -1715,8 +1715,8 @@ class DockerMonitor:
 
                             # Detect Podman from API response
                             if 'podman' in platform_name.lower():
-                                # Check if rootless
-                                if 'XDG_RUNTIME_DIR' in os.environ and os.environ['XDG_RUNTIME_DIR'] in socket_path:
+                                # Check if rootless (socket must be within XDG_RUNTIME_DIR)
+                                if 'XDG_RUNTIME_DIR' in os.environ and socket_path.startswith(os.environ['XDG_RUNTIME_DIR']):
                                     detected_name = "Local Podman (Rootless)"
                                 else:
                                     detected_name = "Local Podman"

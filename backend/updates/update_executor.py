@@ -1400,7 +1400,14 @@ def get_update_executor(db: DatabaseManager = None, monitor=None) -> UpdateExecu
         if db is None:
             db = DatabaseManager('/app/data/dockmon.db')
         _update_executor = UpdateExecutor(db, monitor)
-    # Update monitor if provided
+    # Update monitor if provided (and re-initialize image_pull_tracker with connection_manager)
     if monitor and _update_executor.monitor is None:
         _update_executor.monitor = monitor
+        # Re-initialize image pull tracker with connection manager for WebSocket broadcasts
+        # (fixes issue where tracker was initialized with connection_manager=None)
+        _update_executor.image_pull_tracker = ImagePullProgress(
+            _update_executor.loop,
+            monitor.manager if hasattr(monitor, 'manager') else None,
+            progress_callback=_update_executor._store_pull_progress
+        )
     return _update_executor

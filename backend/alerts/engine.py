@@ -350,8 +350,8 @@ class AlertEngine:
                     event_data.get("health_check_type") == "http")
 
         if rule.kind == "container_stopped":
-            # Container stopped/exited
-            return event_type == "state_change" and event_data and event_data.get("new_state") in ["exited", "dead"]
+            # Container stopped/exited (includes clean stops with exit 0 and crashes)
+            return event_type == "state_change" and event_data and event_data.get("new_state") in ["stopped", "exited", "dead"]
 
         if rule.kind in ["host_disconnected", "host_down"]:
             # Host disconnected/offline

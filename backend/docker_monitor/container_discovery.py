@@ -382,7 +382,14 @@ class ContainerDiscovery:
                     # Try to get image info, but handle missing images gracefully
                     try:
                         container_image = dc.image
-                        image_name = container_image.tags[0] if container_image.tags else container_image.short_id
+                        if container_image.tags:
+                            # Container has tags - use first tag (normal case)
+                            image_name = container_image.tags[0]
+                        else:
+                            # No tags (digest-based pull) - use the image reference from container config
+                            # This preserves the full repository name even for digest-based pulls
+                            # e.g., "portainer/portainer-ce@sha256:abc123" instead of just "sha256:abc123"
+                            image_name = dc.attrs.get('Config', {}).get('Image', container_image.short_id)
                     except Exception:
                         # Image may have been deleted - use image ID from container attrs
                         image_name = dc.attrs.get('Config', {}).get('Image', 'unknown')

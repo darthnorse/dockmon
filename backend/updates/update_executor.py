@@ -478,6 +478,20 @@ class UpdateExecutor:
                     # CRITICAL: Update container_id to new container's ID
                     # After update, the container has a new Docker ID
 
+                    # Race condition fix (Issue #30):
+                    # Delete any existing record with new container ID that may have been created
+                    # by the update checker while the update was in progress
+                    conflicting_record = session.query(ContainerUpdate).filter_by(
+                        container_id=new_composite_key
+                    ).first()
+                    if conflicting_record:
+                        logger.warning(
+                            f"Deleting conflicting ContainerUpdate record for {new_composite_key} "
+                            f"(likely created by update checker during update)"
+                        )
+                        session.delete(conflicting_record)
+                        session.flush()  # Ensure deletion is committed before update
+
                     # Update 1: ContainerUpdate table
                     record.container_id = new_composite_key
                     record.update_available = False

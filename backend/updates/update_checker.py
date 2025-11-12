@@ -477,9 +477,6 @@ class UpdateChecker:
         """
         Store or update container update info in database.
 
-        Handles race conditions where concurrent checks might try to insert
-        the same record simultaneously.
-
         Args:
             container: Container dict
             update_info: Update info dict from _check_container_update
@@ -493,7 +490,20 @@ class UpdateChecker:
 
             if record:
                 # Update existing record
-                self._update_record_fields(record, update_info)
+                record.current_image = update_info["current_image"]
+                record.current_digest = update_info["current_digest"]
+                record.latest_image = update_info["latest_image"]
+                record.latest_digest = update_info["latest_digest"]
+                record.update_available = update_info["update_available"]
+                record.registry_url = update_info["registry_url"]
+                record.platform = update_info["platform"]
+                record.last_checked_at = datetime.now(timezone.utc)
+                record.updated_at = datetime.now(timezone.utc)
+                record.current_version = update_info.get("current_version")
+                record.latest_version = update_info.get("latest_version")
+                record.changelog_url = update_info.get("changelog_url")
+                record.changelog_source = update_info.get("changelog_source")
+                record.changelog_checked_at = update_info.get("changelog_checked_at")
             else:
                 # Create new record
                 record = ContainerUpdate(
@@ -508,10 +518,8 @@ class UpdateChecker:
                     registry_url=update_info["registry_url"],
                     platform=update_info["platform"],
                     last_checked_at=datetime.now(timezone.utc),
-                    # Version fields
                     current_version=update_info.get("current_version"),
                     latest_version=update_info.get("latest_version"),
-                    # Changelog fields
                     changelog_url=update_info.get("changelog_url"),
                     changelog_source=update_info.get("changelog_source"),
                     changelog_checked_at=update_info.get("changelog_checked_at"),
@@ -521,51 +529,10 @@ class UpdateChecker:
             try:
                 session.commit()
             except IntegrityError:
-                # Race condition: Another process/thread created the record between
-                # our check and insert. Rollback and retry as update.
+                # Extremely rare: Concurrent insert on same container_id
+                # Just log and ignore - next check will update it
                 session.rollback()
-                logger.debug(f"Race condition detected for {composite_key}, retrying as update")
-
-                # Re-query for the record that was created concurrently
-                record = session.query(ContainerUpdate).filter_by(
-                    container_id=composite_key
-                ).first()
-
-                if record:
-                    # Update with our data
-                    self._update_record_fields(record, update_info)
-                    session.commit()
-                else:
-                    # Extremely unlikely: Record was deleted between operations
-                    logger.warning(f"Record vanished during race condition handling for {composite_key}")
-                    raise
-
-    def _update_record_fields(self, record: ContainerUpdate, update_info: Dict):
-        """
-        Update all fields of a ContainerUpdate record.
-
-        Extracted to separate method for reuse in race condition handling.
-
-        Args:
-            record: ContainerUpdate ORM object to update
-            update_info: Update info dict with new values
-        """
-        record.current_image = update_info["current_image"]
-        record.current_digest = update_info["current_digest"]
-        record.latest_image = update_info["latest_image"]
-        record.latest_digest = update_info["latest_digest"]
-        record.update_available = update_info["update_available"]
-        record.registry_url = update_info["registry_url"]
-        record.platform = update_info["platform"]
-        record.last_checked_at = datetime.now(timezone.utc)
-        record.updated_at = datetime.now(timezone.utc)
-        # Update version fields
-        record.current_version = update_info.get("current_version")
-        record.latest_version = update_info.get("latest_version")
-        # Update changelog fields
-        record.changelog_url = update_info.get("changelog_url")
-        record.changelog_source = update_info.get("changelog_source")
-        record.changelog_checked_at = update_info.get("changelog_checked_at")
+                logger.debug(f"Concurrent insert detected for {composite_key}, will update on next check")
 
     async def _create_update_event(
         self,

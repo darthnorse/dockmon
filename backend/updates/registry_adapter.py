@@ -747,7 +747,9 @@ class RegistryAdapter:
             async with aiohttp.ClientSession() as session:
                 async with session.get(blob_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
                     if response.status == 200:
-                        config = await response.json()
+                        # Config blobs are served as application/octet-stream, but contain JSON
+                        # Use content_type=None to bypass aiohttp's content-type validation
+                        config = await response.json(content_type=None)
                         logger.debug(f"Fetched config blob for {repository}")
                         return config
                     else:

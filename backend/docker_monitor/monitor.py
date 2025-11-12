@@ -1398,7 +1398,14 @@ class DockerMonitor:
                                 continue  # Skip this container's state update
 
                         # Detect state drift (state changed but we didn't get an event)
-                        if previous_state is not None and previous_state != current_state:
+                        # Normalize states for comparison: "stopped" and "exited" are equivalent
+                        def normalize_state(state):
+                            return "exited" if state in ["stopped", "exited"] else state
+
+                        normalized_previous = normalize_state(previous_state) if previous_state else None
+                        normalized_current = normalize_state(current_state)
+
+                        if normalized_previous is not None and normalized_previous != normalized_current:
                             # This should be rare - events should have caught this
                             logger.warning(
                                 f"State drift detected for {container.name}: {previous_state} → {current_state}. "

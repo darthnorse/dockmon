@@ -172,6 +172,7 @@ export function HostBulkActionBar({
               suggestions={tagSuggestions}
               placeholder={tagMode === 'add' ? 'Type tags (prod, dev, us-west-1...)' : 'Type tags to remove...'}
               maxTags={20}
+              mode={tagMode}
             />
             <div className="flex gap-2">
               <Button

@@ -1113,11 +1113,13 @@ class NotificationService:
                 variables['{TRIGGERED_BY}'] = event_context.get('triggered_by', 'system') or 'system'
 
                 # Container update variables
-                # For update_available: current_image, latest_image, latest_digest
+                # For update_available: current_image, latest_image, latest_digest, versions
                 variables['{CURRENT_IMAGE}'] = event_context.get('current_image', '') or ''
                 variables['{LATEST_IMAGE}'] = event_context.get('latest_image', '') or ''
                 variables['{CURRENT_DIGEST}'] = event_context.get('current_digest', '') or ''
                 variables['{LATEST_DIGEST}'] = event_context.get('latest_digest', '') or ''
+                variables['{CURRENT_VERSION}'] = event_context.get('current_version', '') or ''
+                variables['{LATEST_VERSION}'] = event_context.get('latest_version', '') or ''
 
                 # For update_completed: previous_image, new_image
                 # Map to CURRENT/LATEST for template consistency

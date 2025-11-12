@@ -10,6 +10,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
 
+from sqlalchemy.exc import IntegrityError
 from database import DatabaseManager, ContainerUpdate, GlobalSettings, RegistryCredential
 from updates.registry_adapter import get_registry_adapter
 from updates.changelog_resolver import resolve_changelog_url
@@ -228,13 +229,11 @@ class UpdateChecker:
         # Get current digest from Docker API (the actual digest the container is running)
         current_digest = await self._get_container_image_digest(container)
         if not current_digest:
-            logger.warning(f"Could not get current digest for {container['name']}, falling back to registry query")
-            # Fallback: query registry for current image tag (less accurate for :latest tags)
-            current_result = await self.registry.resolve_tag(image, auth=auth)
-            if not current_result:
-                logger.warning(f"Could not resolve current image: {image}")
-                return None
-            current_digest = current_result["digest"]
+            logger.warning(f"Could not get current digest for {container['name']}")
+            return None
+
+        # Get current version from local Docker image
+        current_version = await self._get_container_image_version(container)
 
         # Resolve floating tag to digest (what's available in registry)
         latest_result = await self.registry.resolve_tag(floating_tag, auth=auth)
@@ -256,6 +255,13 @@ class UpdateChecker:
                 container_id=composite_key
             ).first()
 
+        # Extract latest version information from OCI labels (from registry)
+        latest_manifest_labels = latest_result.get("manifest", {}).get("config", {}).get("config", {}).get("Labels", {}) or {}
+        latest_version = latest_manifest_labels.get("org.opencontainers.image.version")
+
+        if current_version or latest_version:
+            logger.debug(f"Version info: current={current_version}, latest={latest_version}")
+
         # Check if user has manually set a changelog URL (v2.0.2+)
         # If manual, skip auto-detection to preserve user's choice
         if existing_record and existing_record.changelog_source == 'manual':
@@ -263,13 +269,10 @@ class UpdateChecker:
             changelog_source = 'manual'
             changelog_checked_at = existing_record.changelog_checked_at
         else:
-            # Extract manifest labels for OCI label detection
-            manifest_labels = latest_result.get("manifest", {}).get("config", {}).get("Labels", {}) or {}
-
             # Resolve changelog URL with 3-tier strategy
             changelog_url, changelog_source, changelog_checked_at = await resolve_changelog_url(
                 image_name=floating_tag,
-                manifest_labels=manifest_labels,
+                manifest_labels=latest_manifest_labels,
                 current_url=existing_record.changelog_url if existing_record else None,
                 current_source=existing_record.changelog_source if existing_record else None,
                 last_checked=existing_record.changelog_checked_at if existing_record else None
@@ -284,6 +287,8 @@ class UpdateChecker:
             "registry_url": latest_result["registry"],
             "platform": container.get("platform", "linux/amd64"),
             "floating_tag_mode": tracking_mode,
+            "current_version": current_version,
+            "latest_version": latest_version,
             "changelog_url": changelog_url,
             "changelog_source": changelog_source,
             "changelog_checked_at": changelog_checked_at,
@@ -340,6 +345,50 @@ class UpdateChecker:
 
         except Exception as e:
             logger.warning(f"Error getting container image digest: {e}")
+            return None
+
+    async def _get_container_image_version(self, container: Dict) -> Optional[str]:
+        """
+        Get the OCI version label from the running container's local image.
+
+        This inspects the local Docker image (not the registry) to get the version
+        of the image that's actually running.
+
+        Args:
+            container: Container dict with host_id and id
+
+        Returns:
+            Version string from org.opencontainers.image.version label or None
+        """
+        if not self.monitor:
+            return None
+
+        try:
+            # Get Docker client for this host
+            host_id = container.get("host_id")
+            if not host_id:
+                return None
+
+            client = self.monitor.clients.get(host_id)
+            if not client:
+                return None
+
+            # Get container's image (use async wrapper)
+            from utils.async_docker import async_docker_call
+            dc = await async_docker_call(client.containers.get, container["id"])
+            image = dc.image
+
+            # Extract OCI version label from image config
+            labels = image.attrs.get("Config", {}).get("Labels", {}) or {}
+            version = labels.get("org.opencontainers.image.version")
+
+            if version:
+                logger.debug(f"Got version from local image: {version}")
+
+            return version
+
+        except Exception as e:
+            logger.warning(f"Error getting container image version: {e}")
             return None
 
     async def _get_all_containers(self) -> List[Dict]:
@@ -450,7 +499,8 @@ class UpdateChecker:
                 record.platform = update_info["platform"]
                 record.last_checked_at = datetime.now(timezone.utc)
                 record.updated_at = datetime.now(timezone.utc)
-                # Update changelog fields (v2.0.1+)
+                record.current_version = update_info.get("current_version")
+                record.latest_version = update_info.get("latest_version")
                 record.changelog_url = update_info.get("changelog_url")
                 record.changelog_source = update_info.get("changelog_source")
                 record.changelog_checked_at = update_info.get("changelog_checked_at")
@@ -468,14 +518,49 @@ class UpdateChecker:
                     registry_url=update_info["registry_url"],
                     platform=update_info["platform"],
                     last_checked_at=datetime.now(timezone.utc),
-                    # Changelog fields (v2.0.1+)
+                    current_version=update_info.get("current_version"),
+                    latest_version=update_info.get("latest_version"),
                     changelog_url=update_info.get("changelog_url"),
                     changelog_source=update_info.get("changelog_source"),
                     changelog_checked_at=update_info.get("changelog_checked_at"),
                 )
                 session.add(record)
 
-            session.commit()
+            try:
+                session.commit()
+            except IntegrityError:
+                # Race condition: Another check created the record between our query and insert
+                # This is extremely rare (single-process async + SQLite locking), but handle it properly
+                session.rollback()
+                logger.debug(f"Concurrent insert detected for {composite_key}, updating with our data")
+
+                # Re-query for the record that was created concurrently
+                record = session.query(ContainerUpdate).filter_by(
+                    container_id=composite_key
+                ).first()
+
+                if record:
+                    # NOTE: Inline duplication of update logic (exception to DRY principle)
+                    # Extracting to method adds unnecessary abstraction for extremely rare code path
+                    record.current_image = update_info["current_image"]
+                    record.current_digest = update_info["current_digest"]
+                    record.latest_image = update_info["latest_image"]
+                    record.latest_digest = update_info["latest_digest"]
+                    record.update_available = update_info["update_available"]
+                    record.registry_url = update_info["registry_url"]
+                    record.platform = update_info["platform"]
+                    record.last_checked_at = datetime.now(timezone.utc)
+                    record.updated_at = datetime.now(timezone.utc)
+                    record.current_version = update_info.get("current_version")
+                    record.latest_version = update_info.get("latest_version")
+                    record.changelog_url = update_info.get("changelog_url")
+                    record.changelog_source = update_info.get("changelog_source")
+                    record.changelog_checked_at = update_info.get("changelog_checked_at")
+                    session.commit()
+                else:
+                    # Record vanished between operations - extremely unlikely
+                    logger.warning(f"Record vanished during race condition handling for {composite_key}")
+                    raise
 
     async def _create_update_event(
         self,
@@ -525,7 +610,10 @@ class UpdateChecker:
                         'latest_image': update_info['latest_image'],
                         'current_digest': update_info['current_digest'],
                         'latest_digest': update_info['latest_digest'],
+                        'current_version': update_info.get('current_version'),
+                        'latest_version': update_info.get('latest_version'),
                         'changelog_url': update_info.get('changelog_url'),
+                        'update_detected': True,  # For alert engine
                     }
                 ))
 

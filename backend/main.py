@@ -1103,8 +1103,10 @@ async def get_container_update_status(
                 "update_available": False,
                 "current_image": None,
                 "current_digest": None,
+                "current_version": None,
                 "latest_image": None,
                 "latest_digest": None,
+                "latest_version": None,
                 "floating_tag_mode": "exact",
                 "last_checked_at": None,
                 "auto_update_enabled": False,
@@ -1122,8 +1124,10 @@ async def get_container_update_status(
             "update_available": record.update_available,
             "current_image": record.current_image,
             "current_digest": record.current_digest[:12] if record.current_digest else None,
+            "current_version": record.current_version,
             "latest_image": record.latest_image,
             "latest_digest": record.latest_digest[:12] if record.latest_digest else None,
+            "latest_version": record.latest_version,
             "floating_tag_mode": record.floating_tag_mode,
             "last_checked_at": record.last_checked_at.isoformat() + 'Z' if record.last_checked_at else None,
             "auto_update_enabled": record.auto_update_enabled,
@@ -1791,7 +1795,9 @@ async def suggest_tags(
     Used by the bulk tag management UI for containers.
     """
     tags = monitor.db.get_all_tags_v2(query=q, limit=limit, subject_type="container")
-    return {"tags": tags}
+    # Extract just the tag names for autocomplete
+    tag_names = [tag['name'] for tag in tags]
+    return {"tags": tag_names}
 
 @app.get("/api/hosts/tags/suggest")
 async def suggest_host_tags(
@@ -1805,7 +1811,9 @@ async def suggest_host_tags(
     Returns a list of existing host tags that match the query string.
     """
     tags = monitor.db.get_all_tags_v2(query=q, limit=limit, subject_type="host")
-    return {"tags": tags}
+    # Extract just the tag names for autocomplete
+    tag_names = [tag['name'] for tag in tags]
+    return {"tags": tag_names}
 
 
 # ==================== Batch Operations ====================
@@ -2621,6 +2629,8 @@ async def get_template_variables(current_user: dict = Depends(get_current_user))
             {"name": "{UPDATE_STATUS}", "description": "Update status (Available, Succeeded, Failed)"},
             {"name": "{CURRENT_IMAGE}", "description": "Current image tag"},
             {"name": "{LATEST_IMAGE}", "description": "Latest available image tag"},
+            {"name": "{CURRENT_VERSION}", "description": "Current version from OCI label (e.g., v1.0.2)"},
+            {"name": "{LATEST_VERSION}", "description": "Latest version from OCI label (e.g., v1.1.0)"},
             {"name": "{CURRENT_DIGEST}", "description": "Current image digest (SHA256)"},
             {"name": "{LATEST_DIGEST}", "description": "Latest image digest (SHA256)"},
             {"name": "{PREVIOUS_IMAGE}", "description": "Image before update (for completed updates)"},

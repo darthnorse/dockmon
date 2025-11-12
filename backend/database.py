@@ -253,6 +253,10 @@ class ContainerUpdate(Base):
     latest_digest = Column(Text, nullable=True)
     update_available = Column(Boolean, default=False, nullable=False)
 
+    # Version information (from OCI labels)
+    current_version = Column(Text, nullable=True)  # org.opencontainers.image.version from current image
+    latest_version = Column(Text, nullable=True)   # org.opencontainers.image.version from latest image
+
     # Tracking settings
     floating_tag_mode = Column(Text, default='exact', nullable=False)  # exact|patch|minor|latest
     auto_update_enabled = Column(Boolean, default=False, nullable=False)

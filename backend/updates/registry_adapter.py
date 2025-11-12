@@ -173,9 +173,17 @@ class RegistryAdapter:
             )
 
             if digest and manifest:
+                # Fetch config blob to get Labels (for OCI version extraction)
+                config_data = await self._fetch_config_blob(
+                    registry, repository, manifest, token, platform
+                )
+
                 result = {
                     "digest": digest,
-                    "manifest": manifest,
+                    "manifest": {
+                        **manifest,
+                        "config": config_data if config_data else manifest.get("config", {})
+                    },
                     "registry": registry,
                     "repository": repository,
                     "tag": tag,
@@ -188,6 +196,25 @@ class RegistryAdapter:
             logger.error(f"Failed to resolve {image_ref}: {e}")
 
         return None
+
+    def _normalize_registry_url(self, registry: str) -> str:
+        """
+        Normalize registry URL to full HTTPS URL.
+
+        Args:
+            registry: Registry name (e.g., "docker.io", "ghcr.io")
+
+        Returns:
+            Normalized HTTPS URL (e.g., "https://registry.hub.docker.com")
+        """
+        if not registry.startswith("http"):
+            registry = f"https://{registry}"
+
+        # Docker Hub uses special endpoint
+        if "docker.io" in registry:
+            registry = "https://registry.hub.docker.com"
+
+        return registry
 
     def _parse_image_ref(self, image_ref: str) -> Tuple[str, str, str]:
         """
@@ -233,15 +260,8 @@ class RegistryAdapter:
 
         Uses Registry v2 API format.
         """
-        # Ensure registry has protocol
-        if not registry.startswith("http"):
-            # Use HTTPS for all registries
-            registry = f"https://{registry}"
-
-        # Docker Hub uses different API endpoint
-        if "docker.io" in registry:
-            registry = "https://registry.hub.docker.com"
-
+        # Normalize registry URL
+        registry = self._normalize_registry_url(registry)
         return f"{registry}/v2/{repository}/manifests/{tag}"
 
     def _parse_www_authenticate(self, header: str) -> Optional[Dict[str, str]]:
@@ -700,6 +720,158 @@ class RegistryAdapter:
             logger.error(f"Error fetching manifest: {e}")
 
         return None, None
+
+    async def _fetch_config_blob(
+        self,
+        registry: str,
+        repository: str,
+        manifest: Dict,
+        token: Optional[str],
+        platform: str = "linux/amd64"
+    ) -> Optional[Dict]:
+        """
+        Fetch image config blob to extract Labels (for OCI version detection).
+
+        Returns the config dict with Labels, or None if fetch fails.
+        """
+        # Get config digest from manifest
+        config_descriptor = manifest.get("config", {})
+        config_digest = config_descriptor.get("digest")
+
+        if not config_digest:
+            # Check if this is a manifest list (multi-platform image)
+            manifest_type = manifest.get("mediaType", "unknown")
+            if manifest_type in ["application/vnd.docker.distribution.manifest.list.v2+json",
+                                  "application/vnd.oci.image.index.v1+json"]:
+                logger.info(f"Manifest list detected for {repository}, fetching platform-specific manifest for {platform}")
+                # Need to fetch platform-specific manifest
+                return await self._fetch_config_from_manifest_list(
+                    registry, repository, manifest, token, platform
+                )
+            else:
+                logger.info(f"No config digest in manifest for {repository} (type: {manifest_type})")
+            return None
+
+        # Normalize registry URL
+        normalized_registry = self._normalize_registry_url(registry)
+
+        # Build blob URL
+        blob_url = f"{normalized_registry}/v2/{repository}/blobs/{config_digest}"
+
+        headers = {}
+        if token:
+            headers["Authorization"] = token
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(blob_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                    if response.status == 200:
+                        # Config blobs are served as application/octet-stream, but contain JSON
+                        # Use content_type=None to bypass aiohttp's content-type validation
+                        config = await response.json(content_type=None)
+                        logger.info(f"Fetched config blob for {repository}")
+                        return config
+                    else:
+                        logger.warning(f"Failed to fetch config blob: {response.status}")
+                        return None
+
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout fetching config blob for {repository}")
+            return None
+        except Exception as e:
+            logger.warning(f"Error fetching config blob: {e}")
+            return None
+
+    async def _fetch_config_from_manifest_list(
+        self,
+        registry: str,
+        repository: str,
+        manifest_list: Dict,
+        token: Optional[str],
+        platform: str
+    ) -> Optional[Dict]:
+        """
+        Fetch config blob from a manifest list by first getting the platform-specific manifest.
+
+        Manifest lists (multi-platform images) don't have config descriptors at the top level.
+        We need to find the platform-specific manifest and fetch its config blob.
+        """
+        # Parse platform (e.g., "linux/amd64" → os=linux, arch=amd64)
+        os_name, arch = platform.split("/") if "/" in platform else ("linux", platform)
+
+        # Find matching platform manifest descriptor
+        platform_manifest_descriptor = None
+        for manifest_desc in manifest_list.get("manifests", []):
+            manifest_platform = manifest_desc.get("platform", {})
+            if (manifest_platform.get("os") == os_name and
+                manifest_platform.get("architecture") == arch):
+                platform_manifest_descriptor = manifest_desc
+                break
+
+        if not platform_manifest_descriptor:
+            logger.warning(f"No manifest found for platform {platform} in {repository}")
+            return None
+
+        platform_digest = platform_manifest_descriptor.get("digest")
+        if not platform_digest:
+            logger.warning(f"Platform manifest descriptor missing digest for {repository}")
+            return None
+
+        logger.info(f"Found platform-specific manifest for {repository}: {platform_digest[:16]}...")
+
+        # Normalize registry URL
+        normalized_registry = self._normalize_registry_url(registry)
+
+        # Fetch the platform-specific manifest
+        manifest_url = f"{normalized_registry}/v2/{repository}/manifests/{platform_digest}"
+        headers = {
+            "Accept": (
+                "application/vnd.docker.distribution.manifest.v2+json,"
+                "application/vnd.oci.image.manifest.v1+json"
+            )
+        }
+        if token:
+            headers["Authorization"] = token
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(manifest_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                    if response.status == 200:
+                        platform_manifest = await response.json()
+                        logger.info(f"Fetched platform-specific manifest for {repository}")
+
+                        # Now get the config blob from this manifest
+                        config_descriptor = platform_manifest.get("config", {})
+                        config_digest = config_descriptor.get("digest")
+
+                        if not config_digest:
+                            logger.warning(f"Platform-specific manifest has no config digest for {repository}")
+                            return None
+
+                        # Fetch the config blob
+                        blob_url = f"{normalized_registry}/v2/{repository}/blobs/{config_digest}"
+                        blob_headers = {}
+                        if token:
+                            blob_headers["Authorization"] = token
+
+                        async with session.get(blob_url, headers=blob_headers, timeout=aiohttp.ClientTimeout(total=10)) as blob_response:
+                            if blob_response.status == 200:
+                                config = await blob_response.json(content_type=None)
+                                logger.info(f"Fetched config blob from platform-specific manifest for {repository}")
+                                return config
+                            else:
+                                logger.warning(f"Failed to fetch config blob: {blob_response.status}")
+                                return None
+                    else:
+                        logger.warning(f"Failed to fetch platform-specific manifest: {response.status}")
+                        return None
+
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout fetching platform-specific config for {repository}")
+            return None
+        except Exception as e:
+            logger.warning(f"Error fetching platform-specific config: {e}")
+            return None
 
     async def _resolve_platform_manifest(
         self,

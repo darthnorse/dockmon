@@ -425,6 +425,7 @@ export function ExpandedHostCard({ host, cardRef, onHostClick, onViewDetails, on
                 gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
                 gap: '0.25rem',
                 gridAutoRows: 'min-content',
+                width: '100%',
               }}
             >
               {displayContainers.map((container) => (

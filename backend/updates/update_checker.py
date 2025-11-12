@@ -10,6 +10,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
 
+from sqlalchemy.exc import IntegrityError
 from database import DatabaseManager, ContainerUpdate, GlobalSettings, RegistryCredential
 from updates.registry_adapter import get_registry_adapter
 from updates.changelog_resolver import resolve_changelog_url
@@ -476,6 +477,9 @@ class UpdateChecker:
         """
         Store or update container update info in database.
 
+        Handles race conditions where concurrent checks might try to insert
+        the same record simultaneously.
+
         Args:
             container: Container dict
             update_info: Update info dict from _check_container_update
@@ -489,22 +493,7 @@ class UpdateChecker:
 
             if record:
                 # Update existing record
-                record.current_image = update_info["current_image"]
-                record.current_digest = update_info["current_digest"]
-                record.latest_image = update_info["latest_image"]
-                record.latest_digest = update_info["latest_digest"]
-                record.update_available = update_info["update_available"]
-                record.registry_url = update_info["registry_url"]
-                record.platform = update_info["platform"]
-                record.last_checked_at = datetime.now(timezone.utc)
-                record.updated_at = datetime.now(timezone.utc)
-                # Update version fields (v2.2.0+)
-                record.current_version = update_info.get("current_version")
-                record.latest_version = update_info.get("latest_version")
-                # Update changelog fields (v2.0.1+)
-                record.changelog_url = update_info.get("changelog_url")
-                record.changelog_source = update_info.get("changelog_source")
-                record.changelog_checked_at = update_info.get("changelog_checked_at")
+                self._update_record_fields(record, update_info)
             else:
                 # Create new record
                 record = ContainerUpdate(
@@ -519,17 +508,64 @@ class UpdateChecker:
                     registry_url=update_info["registry_url"],
                     platform=update_info["platform"],
                     last_checked_at=datetime.now(timezone.utc),
-                    # Version fields (v2.2.0+)
+                    # Version fields
                     current_version=update_info.get("current_version"),
                     latest_version=update_info.get("latest_version"),
-                    # Changelog fields (v2.0.1+)
+                    # Changelog fields
                     changelog_url=update_info.get("changelog_url"),
                     changelog_source=update_info.get("changelog_source"),
                     changelog_checked_at=update_info.get("changelog_checked_at"),
                 )
                 session.add(record)
 
-            session.commit()
+            try:
+                session.commit()
+            except IntegrityError:
+                # Race condition: Another process/thread created the record between
+                # our check and insert. Rollback and retry as update.
+                session.rollback()
+                logger.debug(f"Race condition detected for {composite_key}, retrying as update")
+
+                # Re-query for the record that was created concurrently
+                record = session.query(ContainerUpdate).filter_by(
+                    container_id=composite_key
+                ).first()
+
+                if record:
+                    # Update with our data
+                    self._update_record_fields(record, update_info)
+                    session.commit()
+                else:
+                    # Extremely unlikely: Record was deleted between operations
+                    logger.warning(f"Record vanished during race condition handling for {composite_key}")
+                    raise
+
+    def _update_record_fields(self, record: ContainerUpdate, update_info: Dict):
+        """
+        Update all fields of a ContainerUpdate record.
+
+        Extracted to separate method for reuse in race condition handling.
+
+        Args:
+            record: ContainerUpdate ORM object to update
+            update_info: Update info dict with new values
+        """
+        record.current_image = update_info["current_image"]
+        record.current_digest = update_info["current_digest"]
+        record.latest_image = update_info["latest_image"]
+        record.latest_digest = update_info["latest_digest"]
+        record.update_available = update_info["update_available"]
+        record.registry_url = update_info["registry_url"]
+        record.platform = update_info["platform"]
+        record.last_checked_at = datetime.now(timezone.utc)
+        record.updated_at = datetime.now(timezone.utc)
+        # Update version fields
+        record.current_version = update_info.get("current_version")
+        record.latest_version = update_info.get("latest_version")
+        # Update changelog fields
+        record.changelog_url = update_info.get("changelog_url")
+        record.changelog_source = update_info.get("changelog_source")
+        record.changelog_checked_at = update_info.get("changelog_checked_at")
 
     async def _create_update_event(
         self,

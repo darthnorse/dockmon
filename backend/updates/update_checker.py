@@ -227,21 +227,12 @@ class UpdateChecker:
 
         # Get current digest from Docker API (the actual digest the container is running)
         current_digest = await self._get_container_image_digest(container)
+        if not current_digest:
+            logger.warning(f"Could not get current digest for {container['name']}")
+            return None
 
-        # Also query registry for current image to get manifest/version info (v2.2.0+)
-        current_result = await self.registry.resolve_tag(image, auth=auth)
-        if not current_result:
-            # If registry query fails but we have Docker digest, continue without version info
-            if current_digest:
-                logger.warning(f"Could not query registry for current image {image}, continuing with Docker digest only")
-                current_result = {"manifest": {}}  # Empty manifest, no version
-            else:
-                logger.warning(f"Could not resolve current image: {image}")
-                return None
-        elif not current_digest:
-            # Use registry digest as fallback if Docker API didn't provide one
-            logger.warning(f"Could not get current digest for {container['name']}, using registry digest")
-            current_digest = current_result["digest"]
+        # Get current version from local Docker image
+        current_version = await self._get_container_image_version(container)
 
         # Resolve floating tag to digest (what's available in registry)
         latest_result = await self.registry.resolve_tag(floating_tag, auth=auth)
@@ -263,12 +254,8 @@ class UpdateChecker:
                 container_id=composite_key
             ).first()
 
-        # Extract version information from OCI labels
-        # Config blob structure: manifest.config.config.Labels
-        current_manifest_labels = current_result.get("manifest", {}).get("config", {}).get("config", {}).get("Labels", {}) or {}
+        # Extract latest version information from OCI labels (from registry)
         latest_manifest_labels = latest_result.get("manifest", {}).get("config", {}).get("config", {}).get("Labels", {}) or {}
-
-        current_version = current_manifest_labels.get("org.opencontainers.image.version")
         latest_version = latest_manifest_labels.get("org.opencontainers.image.version")
 
         if current_version or latest_version:
@@ -357,6 +344,50 @@ class UpdateChecker:
 
         except Exception as e:
             logger.warning(f"Error getting container image digest: {e}")
+            return None
+
+    async def _get_container_image_version(self, container: Dict) -> Optional[str]:
+        """
+        Get the OCI version label from the running container's local image.
+
+        This inspects the local Docker image (not the registry) to get the version
+        of the image that's actually running.
+
+        Args:
+            container: Container dict with host_id and id
+
+        Returns:
+            Version string from org.opencontainers.image.version label or None
+        """
+        if not self.monitor:
+            return None
+
+        try:
+            # Get Docker client for this host
+            host_id = container.get("host_id")
+            if not host_id:
+                return None
+
+            client = self.monitor.clients.get(host_id)
+            if not client:
+                return None
+
+            # Get container's image (use async wrapper)
+            from utils.async_docker import async_docker_call
+            dc = await async_docker_call(client.containers.get, container["id"])
+            image = dc.image
+
+            # Extract OCI version label from image config
+            labels = image.attrs.get("Config", {}).get("Labels", {}) or {}
+            version = labels.get("org.opencontainers.image.version")
+
+            if version:
+                logger.debug(f"Got version from local image: {version}")
+
+            return version
+
+        except Exception as e:
+            logger.warning(f"Error getting container image version: {e}")
             return None
 
     async def _get_all_containers(self) -> List[Dict]:

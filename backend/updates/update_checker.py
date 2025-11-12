@@ -529,10 +529,38 @@ class UpdateChecker:
             try:
                 session.commit()
             except IntegrityError:
-                # Extremely rare: Concurrent insert on same container_id
-                # Just log and ignore - next check will update it
+                # Race condition: Another check created the record between our query and insert
+                # This is extremely rare (single-process async + SQLite locking), but handle it properly
                 session.rollback()
-                logger.debug(f"Concurrent insert detected for {composite_key}, will update on next check")
+                logger.debug(f"Concurrent insert detected for {composite_key}, updating with our data")
+
+                # Re-query for the record that was created concurrently
+                record = session.query(ContainerUpdate).filter_by(
+                    container_id=composite_key
+                ).first()
+
+                if record:
+                    # NOTE: Inline duplication of update logic (exception to DRY principle)
+                    # Extracting to method adds unnecessary abstraction for extremely rare code path
+                    record.current_image = update_info["current_image"]
+                    record.current_digest = update_info["current_digest"]
+                    record.latest_image = update_info["latest_image"]
+                    record.latest_digest = update_info["latest_digest"]
+                    record.update_available = update_info["update_available"]
+                    record.registry_url = update_info["registry_url"]
+                    record.platform = update_info["platform"]
+                    record.last_checked_at = datetime.now(timezone.utc)
+                    record.updated_at = datetime.now(timezone.utc)
+                    record.current_version = update_info.get("current_version")
+                    record.latest_version = update_info.get("latest_version")
+                    record.changelog_url = update_info.get("changelog_url")
+                    record.changelog_source = update_info.get("changelog_source")
+                    record.changelog_checked_at = update_info.get("changelog_checked_at")
+                    session.commit()
+                else:
+                    # Record vanished between operations - extremely unlikely
+                    logger.warning(f"Record vanished during race condition handling for {composite_key}")
+                    raise
 
     async def _create_update_event(
         self,

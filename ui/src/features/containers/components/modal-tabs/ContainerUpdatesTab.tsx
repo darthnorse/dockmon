@@ -513,10 +513,16 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
                 {updateStatus?.current_image || container.image}
               </p>
             </div>
+            {updateStatus?.current_version && (
+              <div>
+                <p className="text-xs text-muted-foreground">Version</p>
+                <p className="text-sm font-semibold">{updateStatus.current_version}</p>
+              </div>
+            )}
             {updateStatus?.current_digest && (
               <div>
                 <p className="text-xs text-muted-foreground">Digest</p>
-                <p className="text-sm font-mono">{updateStatus.current_digest}</p>
+                <p className="text-sm font-mono text-xs">{updateStatus.current_digest}</p>
               </div>
             )}
           </div>
@@ -534,10 +540,16 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
                 <p className="text-xs text-muted-foreground">Image</p>
                 <p className="text-sm font-mono break-all">{updateStatus.latest_image}</p>
               </div>
+              {updateStatus.latest_version && (
+                <div>
+                  <p className="text-xs text-muted-foreground">Version</p>
+                  <p className="text-sm font-semibold text-amber-500">{updateStatus.latest_version}</p>
+                </div>
+              )}
               {updateStatus.latest_digest && (
                 <div>
                   <p className="text-xs text-muted-foreground">Digest</p>
-                  <p className="text-sm font-mono">{updateStatus.latest_digest}</p>
+                  <p className="text-sm font-mono text-xs">{updateStatus.latest_digest}</p>
                 </div>
               )}
             </div>

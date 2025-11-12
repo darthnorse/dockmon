@@ -227,13 +227,20 @@ class UpdateChecker:
 
         # Get current digest from Docker API (the actual digest the container is running)
         current_digest = await self._get_container_image_digest(container)
-        if not current_digest:
-            logger.warning(f"Could not get current digest for {container['name']}, falling back to registry query")
-            # Fallback: query registry for current image tag (less accurate for :latest tags)
-            current_result = await self.registry.resolve_tag(image, auth=auth)
-            if not current_result:
+
+        # Also query registry for current image to get manifest/version info (v2.2.0+)
+        current_result = await self.registry.resolve_tag(image, auth=auth)
+        if not current_result:
+            # If registry query fails but we have Docker digest, continue without version info
+            if current_digest:
+                logger.warning(f"Could not query registry for current image {image}, continuing with Docker digest only")
+                current_result = {"manifest": {}}  # Empty manifest, no version
+            else:
                 logger.warning(f"Could not resolve current image: {image}")
                 return None
+        elif not current_digest:
+            # Use registry digest as fallback if Docker API didn't provide one
+            logger.warning(f"Could not get current digest for {container['name']}, using registry digest")
             current_digest = current_result["digest"]
 
         # Resolve floating tag to digest (what's available in registry)
@@ -256,6 +263,16 @@ class UpdateChecker:
                 container_id=composite_key
             ).first()
 
+        # Extract version information from OCI labels (v2.2.0+)
+        current_manifest_labels = current_result.get("manifest", {}).get("config", {}).get("Labels", {}) or {}
+        latest_manifest_labels = latest_result.get("manifest", {}).get("config", {}).get("Labels", {}) or {}
+
+        current_version = current_manifest_labels.get("org.opencontainers.image.version")
+        latest_version = latest_manifest_labels.get("org.opencontainers.image.version")
+
+        if current_version or latest_version:
+            logger.debug(f"Version info: current={current_version}, latest={latest_version}")
+
         # Check if user has manually set a changelog URL (v2.0.2+)
         # If manual, skip auto-detection to preserve user's choice
         if existing_record and existing_record.changelog_source == 'manual':
@@ -263,13 +280,10 @@ class UpdateChecker:
             changelog_source = 'manual'
             changelog_checked_at = existing_record.changelog_checked_at
         else:
-            # Extract manifest labels for OCI label detection
-            manifest_labels = latest_result.get("manifest", {}).get("config", {}).get("Labels", {}) or {}
-
             # Resolve changelog URL with 3-tier strategy
             changelog_url, changelog_source, changelog_checked_at = await resolve_changelog_url(
                 image_name=floating_tag,
-                manifest_labels=manifest_labels,
+                manifest_labels=latest_manifest_labels,
                 current_url=existing_record.changelog_url if existing_record else None,
                 current_source=existing_record.changelog_source if existing_record else None,
                 last_checked=existing_record.changelog_checked_at if existing_record else None
@@ -284,6 +298,8 @@ class UpdateChecker:
             "registry_url": latest_result["registry"],
             "platform": container.get("platform", "linux/amd64"),
             "floating_tag_mode": tracking_mode,
+            "current_version": current_version,
+            "latest_version": latest_version,
             "changelog_url": changelog_url,
             "changelog_source": changelog_source,
             "changelog_checked_at": changelog_checked_at,
@@ -450,6 +466,9 @@ class UpdateChecker:
                 record.platform = update_info["platform"]
                 record.last_checked_at = datetime.now(timezone.utc)
                 record.updated_at = datetime.now(timezone.utc)
+                # Update version fields (v2.2.0+)
+                record.current_version = update_info.get("current_version")
+                record.latest_version = update_info.get("latest_version")
                 # Update changelog fields (v2.0.1+)
                 record.changelog_url = update_info.get("changelog_url")
                 record.changelog_source = update_info.get("changelog_source")
@@ -468,6 +487,9 @@ class UpdateChecker:
                     registry_url=update_info["registry_url"],
                     platform=update_info["platform"],
                     last_checked_at=datetime.now(timezone.utc),
+                    # Version fields (v2.2.0+)
+                    current_version=update_info.get("current_version"),
+                    latest_version=update_info.get("latest_version"),
                     # Changelog fields (v2.0.1+)
                     changelog_url=update_info.get("changelog_url"),
                     changelog_source=update_info.get("changelog_source"),
@@ -525,7 +547,10 @@ class UpdateChecker:
                         'latest_image': update_info['latest_image'],
                         'current_digest': update_info['current_digest'],
                         'latest_digest': update_info['latest_digest'],
+                        'current_version': update_info.get('current_version'),
+                        'latest_version': update_info.get('latest_version'),
                         'changelog_url': update_info.get('changelog_url'),
+                        'update_detected': True,  # For alert engine
                     }
                 ))
 

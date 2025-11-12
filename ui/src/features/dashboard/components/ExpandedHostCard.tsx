@@ -422,7 +422,7 @@ export function ExpandedHostCard({ host, cardRef, onHostClick, onViewDetails, on
             <div
               style={{
                 display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))',
+                gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
                 gap: '0.25rem',
                 gridAutoRows: 'min-content',
               }}

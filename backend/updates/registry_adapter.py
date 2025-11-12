@@ -727,8 +727,17 @@ class RegistryAdapter:
             logger.debug(f"No config digest in manifest for {repository}")
             return None
 
+        # Normalize registry URL (same logic as _get_manifest_url)
+        normalized_registry = registry
+        if not normalized_registry.startswith("http"):
+            normalized_registry = f"https://{normalized_registry}"
+
+        # Docker Hub uses different API endpoint
+        if "docker.io" in normalized_registry:
+            normalized_registry = "https://registry.hub.docker.com"
+
         # Build blob URL
-        blob_url = f"{registry}/v2/{repository}/blobs/{config_digest}"
+        blob_url = f"{normalized_registry}/v2/{repository}/blobs/{config_digest}"
 
         headers = {}
         if token:

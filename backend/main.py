@@ -2629,6 +2629,8 @@ async def get_template_variables(current_user: dict = Depends(get_current_user))
             {"name": "{UPDATE_STATUS}", "description": "Update status (Available, Succeeded, Failed)"},
             {"name": "{CURRENT_IMAGE}", "description": "Current image tag"},
             {"name": "{LATEST_IMAGE}", "description": "Latest available image tag"},
+            {"name": "{CURRENT_VERSION}", "description": "Current version from OCI label (e.g., v1.0.2)"},
+            {"name": "{LATEST_VERSION}", "description": "Latest version from OCI label (e.g., v1.1.0)"},
             {"name": "{CURRENT_DIGEST}", "description": "Current image digest (SHA256)"},
             {"name": "{LATEST_DIGEST}", "description": "Latest image digest (SHA256)"},
             {"name": "{PREVIOUS_IMAGE}", "description": "Image before update (for completed updates)"},

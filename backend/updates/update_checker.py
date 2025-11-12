@@ -263,9 +263,10 @@ class UpdateChecker:
                 container_id=composite_key
             ).first()
 
-        # Extract version information from OCI labels (v2.2.0+)
-        current_manifest_labels = current_result.get("manifest", {}).get("config", {}).get("Labels", {}) or {}
-        latest_manifest_labels = latest_result.get("manifest", {}).get("config", {}).get("Labels", {}) or {}
+        # Extract version information from OCI labels
+        # Config blob structure: manifest.config.config.Labels
+        current_manifest_labels = current_result.get("manifest", {}).get("config", {}).get("config", {}).get("Labels", {}) or {}
+        latest_manifest_labels = latest_result.get("manifest", {}).get("config", {}).get("config", {}).get("Labels", {}) or {}
 
         current_version = current_manifest_labels.get("org.opencontainers.image.version")
         latest_version = latest_manifest_labels.get("org.opencontainers.image.version")

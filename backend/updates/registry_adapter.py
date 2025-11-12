@@ -173,9 +173,15 @@ class RegistryAdapter:
             )
 
             if digest and manifest:
+                # Fetch config blob to get Labels (for OCI version extraction)
+                config_data = await self._fetch_config_blob(registry, repository, manifest, token)
+
                 result = {
                     "digest": digest,
-                    "manifest": manifest,
+                    "manifest": {
+                        **manifest,
+                        "config": config_data if config_data else manifest.get("config", {})
+                    },
                     "registry": registry,
                     "repository": repository,
                     "tag": tag,
@@ -700,6 +706,51 @@ class RegistryAdapter:
             logger.error(f"Error fetching manifest: {e}")
 
         return None, None
+
+    async def _fetch_config_blob(
+        self,
+        registry: str,
+        repository: str,
+        manifest: Dict,
+        token: Optional[str]
+    ) -> Optional[Dict]:
+        """
+        Fetch image config blob to extract Labels (for OCI version detection).
+
+        Returns the config dict with Labels, or None if fetch fails.
+        """
+        # Get config digest from manifest
+        config_descriptor = manifest.get("config", {})
+        config_digest = config_descriptor.get("digest")
+
+        if not config_digest:
+            logger.debug(f"No config digest in manifest for {repository}")
+            return None
+
+        # Build blob URL
+        blob_url = f"{registry}/v2/{repository}/blobs/{config_digest}"
+
+        headers = {}
+        if token:
+            headers["Authorization"] = token
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(blob_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                    if response.status == 200:
+                        config = await response.json()
+                        logger.debug(f"Fetched config blob for {repository}")
+                        return config
+                    else:
+                        logger.warning(f"Failed to fetch config blob: {response.status}")
+                        return None
+
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout fetching config blob for {repository}")
+            return None
+        except Exception as e:
+            logger.warning(f"Error fetching config blob: {e}")
+            return None
 
     async def _resolve_platform_manifest(
         self,

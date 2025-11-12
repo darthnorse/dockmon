@@ -197,6 +197,25 @@ class RegistryAdapter:
 
         return None
 
+    def _normalize_registry_url(self, registry: str) -> str:
+        """
+        Normalize registry URL to full HTTPS URL.
+
+        Args:
+            registry: Registry name (e.g., "docker.io", "ghcr.io")
+
+        Returns:
+            Normalized HTTPS URL (e.g., "https://registry.hub.docker.com")
+        """
+        if not registry.startswith("http"):
+            registry = f"https://{registry}"
+
+        # Docker Hub uses special endpoint
+        if "docker.io" in registry:
+            registry = "https://registry.hub.docker.com"
+
+        return registry
+
     def _parse_image_ref(self, image_ref: str) -> Tuple[str, str, str]:
         """
         Parse image reference into registry, repository, and tag.
@@ -241,15 +260,8 @@ class RegistryAdapter:
 
         Uses Registry v2 API format.
         """
-        # Ensure registry has protocol
-        if not registry.startswith("http"):
-            # Use HTTPS for all registries
-            registry = f"https://{registry}"
-
-        # Docker Hub uses different API endpoint
-        if "docker.io" in registry:
-            registry = "https://registry.hub.docker.com"
-
+        # Normalize registry URL
+        registry = self._normalize_registry_url(registry)
         return f"{registry}/v2/{repository}/manifests/{tag}"
 
     def _parse_www_authenticate(self, header: str) -> Optional[Dict[str, str]]:
@@ -740,14 +752,8 @@ class RegistryAdapter:
                 logger.info(f"No config digest in manifest for {repository} (type: {manifest_type})")
             return None
 
-        # Normalize registry URL (same logic as _get_manifest_url)
-        normalized_registry = registry
-        if not normalized_registry.startswith("http"):
-            normalized_registry = f"https://{normalized_registry}"
-
-        # Docker Hub uses different API endpoint
-        if "docker.io" in normalized_registry:
-            normalized_registry = "https://registry.hub.docker.com"
+        # Normalize registry URL
+        normalized_registry = self._normalize_registry_url(registry)
 
         # Build blob URL
         blob_url = f"{normalized_registry}/v2/{repository}/blobs/{config_digest}"
@@ -814,11 +820,7 @@ class RegistryAdapter:
         logger.info(f"Found platform-specific manifest for {repository}: {platform_digest[:16]}...")
 
         # Normalize registry URL
-        normalized_registry = registry
-        if not normalized_registry.startswith("http"):
-            normalized_registry = f"https://{normalized_registry}"
-        if "docker.io" in normalized_registry:
-            normalized_registry = "https://registry.hub.docker.com"
+        normalized_registry = self._normalize_registry_url(registry)
 
         # Fetch the platform-specific manifest
         manifest_url = f"{normalized_registry}/v2/{repository}/manifests/{platform_digest}"

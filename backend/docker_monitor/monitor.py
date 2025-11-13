@@ -891,7 +891,7 @@ class DockerMonitor:
                 existing_tags = self.db.get_tags_for_subject('host', host_id)
                 if existing_tags:
                     config.tags = existing_tags
-                    logger.info(f"Preserved {len(config.tags)} existing tags for host {config.name}")
+                    logger.debug(f"Preserved {len(config.tags)} existing tags for host {config.name}")
                 else:
                     logger.debug(f"No existing tags found for host {config.name}")
 

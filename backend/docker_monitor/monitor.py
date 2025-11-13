@@ -884,10 +884,15 @@ class DockerMonitor:
             if not config.tls_ca and existing_host.tls_ca:
                 config.tls_ca = existing_host.tls_ca
 
-            # If tags are not provided in the update, preserve existing ones
+            # If tags are not provided in the update (None or empty list), preserve existing ones
             # Tags are managed through a separate endpoint, so they shouldn't be cleared on update
-            if not config.tags and existing_host.tags:
-                config.tags = json.loads(existing_host.tags) if existing_host.tags else []
+            if (config.tags is None or len(config.tags) == 0) and existing_host.tags:
+                try:
+                    config.tags = json.loads(existing_host.tags) if existing_host.tags else []
+                    logger.debug(f"Preserved {len(config.tags)} existing tags for host {config.name}")
+                except (json.JSONDecodeError, TypeError):
+                    config.tags = []
+                    logger.warning(f"Failed to parse existing tags for host {config.name}")
 
             # Only validate certificates if NEW ones are provided (not using existing)
             # Check if any NEW certificate data was actually sent in the request

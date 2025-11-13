@@ -21,6 +21,10 @@ docs/
 # Test Infrastructure (Development Only)
 # Test source code is kept private for development
 backend/tests/
+ui/tests/
+ui/src/**/*.test.tsx
+ui/src/**/*.test.ts
+ui/src/**/__tests__/
 test-results/
 test-results.json
 playwright-report/
@@ -28,6 +32,13 @@ playwright-report/
 baseline*.log
 pre-refactor*.log
 post-refactor*.log
+.pytest_cache/
+pytest.ini
+requirements-test.txt
+vitest.config.ts
+coverage/
+.coverage
+htmlcov/
 
 # Node.js Dependencies (from test setup)
 #node_modules/

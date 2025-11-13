@@ -521,8 +521,10 @@ class AlertEvaluationService:
                     # Check if host is online in monitor
                     host = self.db.get_host(alert.scope_id)
                     if host and host.is_active:
-                        # Check if host is actually connected in monitor
-                        if alert.scope_id in self.monitor.clients:
+                        # Check if host is actually online (not just client exists)
+                        # Bug fix: client object persists even when host is offline
+                        monitor_host = self.monitor.hosts.get(alert.scope_id)
+                        if monitor_host and monitor_host.status == "online":
                             logger.info(f"Alert {alert.id}: Host {host.name} reconnected - condition cleared")
                             return False
 

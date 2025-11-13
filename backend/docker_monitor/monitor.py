@@ -440,7 +440,6 @@ class DockerMonitor:
                 # Update existing host with OS info
                 try:
                     with self.db.get_session() as session:
-                        from database import DockerHostDB
                         db_host = session.query(DockerHostDB).filter(DockerHostDB.id == host.id).first()
                         if db_host:
                             if os_type:
@@ -458,9 +457,10 @@ class DockerMonitor:
                             if num_cpus:
                                 db_host.num_cpus = num_cpus
                             session.commit()
-                            logger.info(f"Updated OS info for {host.name}: {os_version} / Docker {docker_version}")
                 except Exception as e:
                     logger.warning(f"Failed to update OS info for {host.name}: {e}")
+                else:
+                    logger.info(f"Updated OS info for {host.name}: {os_version} / Docker {docker_version}")
 
             # Save to database only if not reconnecting to an existing host
             if not skip_db_save:
@@ -724,7 +724,6 @@ class DockerMonitor:
 
             # Get all valid host IDs from database
             with self.db.get_session() as session:
-                from database import DockerHostDB
                 valid_host_ids = {host.id for host in session.query(DockerHostDB).all()}
 
             # List all cert directories
@@ -1017,7 +1016,6 @@ class DockerMonitor:
             # Update database with fresh system info
             try:
                 with self.db.get_session() as session:
-                    from database import DockerHostDB
                     db_host = session.query(DockerHostDB).filter(DockerHostDB.id == host_id).first()
                     if db_host:
                         db_host.os_type = os_type
@@ -1028,9 +1026,10 @@ class DockerMonitor:
                         db_host.total_memory = total_memory
                         db_host.num_cpus = num_cpus
                         session.commit()
-                        logger.info(f"Updated system info for {host.name}: {os_version} / Docker {docker_version}")
             except Exception as e:
                 logger.warning(f"Failed to update system info for {host.name}: {e}")
+            else:
+                logger.info(f"Updated system info for {host.name}: {os_version} / Docker {docker_version}")
 
             # Re-register host with stats and event services (in case URL changed)
             # Note: add_docker_host() automatically closes old client if it exists

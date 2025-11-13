@@ -440,7 +440,6 @@ class DockerMonitor:
                 # Update existing host with OS info
                 try:
                     with self.db.get_session() as session:
-                        from database import DockerHostDB
                         db_host = session.query(DockerHostDB).filter(DockerHostDB.id == host.id).first()
                         if db_host:
                             if os_type:
@@ -458,9 +457,10 @@ class DockerMonitor:
                             if num_cpus:
                                 db_host.num_cpus = num_cpus
                             session.commit()
-                            logger.info(f"Updated OS info for {host.name}: {os_version} / Docker {docker_version}")
                 except Exception as e:
                     logger.warning(f"Failed to update OS info for {host.name}: {e}")
+                else:
+                    logger.info(f"Updated OS info for {host.name}: {os_version} / Docker {docker_version}")
 
             # Save to database only if not reconnecting to an existing host
             if not skip_db_save:
@@ -724,7 +724,6 @@ class DockerMonitor:
 
             # Get all valid host IDs from database
             with self.db.get_session() as session:
-                from database import DockerHostDB
                 valid_host_ids = {host.id for host in session.query(DockerHostDB).all()}
 
             # List all cert directories
@@ -884,6 +883,17 @@ class DockerMonitor:
             if not config.tls_ca and existing_host.tls_ca:
                 config.tls_ca = existing_host.tls_ca
 
+            # If tags are not provided in the update (None or empty list), preserve existing ones
+            # Tags are managed through a separate endpoint, so they shouldn't be cleared on update
+            # Load from normalized tag_assignments table (tags column is legacy)
+            if config.tags is None or len(config.tags) == 0:
+                existing_tags = self.db.get_tags_for_subject('host', host_id)
+                if existing_tags:
+                    config.tags = existing_tags
+                    logger.debug(f"Preserved {len(config.tags)} existing tags for host {config.name}")
+                else:
+                    logger.debug(f"No existing tags found for host {config.name}")
+
             # Only validate certificates if NEW ones are provided (not using existing)
             # Check if any NEW certificate data was actually sent in the request
             if (config.tls_cert and config.tls_cert != existing_host.tls_cert) or \
@@ -971,7 +981,17 @@ class DockerMonitor:
             # Test connection
             client.ping()
 
-            # Create host object with existing ID
+            # Fetch fresh system information immediately after connecting
+            sys_info = _fetch_system_info_from_docker(client, config.name)
+            os_type = sys_info['os_type']
+            os_version = sys_info['os_version']
+            kernel_version = sys_info['kernel_version']
+            docker_version = sys_info['docker_version']
+            daemon_started_at = sys_info['daemon_started_at']
+            total_memory = sys_info['total_memory']
+            num_cpus = sys_info['num_cpus']
+
+            # Create host object with existing ID and fresh system info
             host = DockerHost(
                 id=host_id,
                 name=config.name,
@@ -979,12 +999,37 @@ class DockerMonitor:
                 status="online",
                 security_status=security_status,
                 tags=config.tags,
-                description=config.description
+                description=config.description,
+                os_type=os_type,
+                os_version=os_version,
+                kernel_version=kernel_version,
+                docker_version=docker_version,
+                daemon_started_at=daemon_started_at,
+                total_memory=total_memory,
+                num_cpus=num_cpus
             )
 
             # Store client and host
             self.clients[host.id] = client
             self.hosts[host.id] = host
+
+            # Update database with fresh system info
+            try:
+                with self.db.get_session() as session:
+                    db_host = session.query(DockerHostDB).filter(DockerHostDB.id == host_id).first()
+                    if db_host:
+                        db_host.os_type = os_type
+                        db_host.os_version = os_version
+                        db_host.kernel_version = kernel_version
+                        db_host.docker_version = docker_version
+                        db_host.daemon_started_at = daemon_started_at
+                        db_host.total_memory = total_memory
+                        db_host.num_cpus = num_cpus
+                        session.commit()
+            except Exception as e:
+                logger.warning(f"Failed to update system info for {host.name}: {e}")
+            else:
+                logger.info(f"Updated system info for {host.name}: {os_version} / Docker {docker_version}")
 
             # Re-register host with stats and event services (in case URL changed)
             # Note: add_docker_host() automatically closes old client if it exists

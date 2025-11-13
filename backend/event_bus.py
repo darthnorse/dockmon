@@ -300,6 +300,9 @@ class EventBus:
                 )
                 logger.debug(f"EventBus: Triggered container alert evaluation for {event.event_type}")
             elif event.scope_type == 'host':
+                # Include host_name in event_data for alert notification templates
+                event_data['host_name'] = event.host_name
+
                 await self.monitor.alert_evaluation_service.handle_host_event(
                     event_type=alert_event_type,
                     host_id=event.scope_id,

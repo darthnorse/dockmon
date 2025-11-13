@@ -2753,6 +2753,7 @@ class DatabaseManager:
         container_selector_json: Optional[str] = None,
         labels_json: Optional[str] = None,
         notify_channels_json: Optional[str] = None,
+        custom_template: Optional[str] = None,
         created_by: Optional[str] = None,
     ) -> AlertRuleV2:
         """Create a new alert rule v2"""
@@ -2781,6 +2782,7 @@ class DatabaseManager:
                 container_selector_json=container_selector_json,
                 labels_json=labels_json,
                 notify_channels_json=notify_channels_json,
+                custom_template=custom_template,
                 created_by=created_by,
             )
             session.add(rule)

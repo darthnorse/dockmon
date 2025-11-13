@@ -521,8 +521,10 @@ class AlertEvaluationService:
                     # Check if host is online in monitor
                     host = self.db.get_host(alert.scope_id)
                     if host and host.is_active:
-                        # Check if host is actually connected in monitor
-                        if alert.scope_id in self.monitor.clients:
+                        # Check if host is actually online (not just client exists)
+                        # Bug fix: client object persists even when host is offline
+                        monitor_host = self.monitor.hosts.get(alert.scope_id)
+                        if monitor_host and monitor_host.status == "online":
                             logger.info(f"Alert {alert.id}: Host {host.name} reconnected - condition cleared")
                             return False
 
@@ -716,6 +718,7 @@ class AlertEvaluationService:
             # Fetch container stats if we have stats client
             if self.stats_client:
                 await self._evaluate_container_metrics(rules_by_metric)
+                await self._evaluate_host_metrics(rules_by_metric)
 
         except Exception as e:
             logger.error(f"Error evaluating rules: {e}", exc_info=True)
@@ -829,6 +832,94 @@ class AlertEvaluationService:
             except Exception as e:
                 logger.error(
                     f"Error evaluating {metric_name} for {context.container_name}: {e}",
+                    exc_info=True
+                )
+
+    async def _evaluate_host_metrics(self, rules_by_metric: Dict[str, List[AlertRuleV2]]):
+        """Evaluate host metric rules"""
+        try:
+            # Get all host stats from stats service
+            stats = await self.stats_client.get_host_stats()
+
+            if not stats:
+                logger.debug("No host stats available")
+                return
+
+            # Get hosts from monitor
+            hosts = list(self.monitor.hosts.values())
+
+            if not hosts:
+                logger.debug("No hosts available")
+                return
+
+            # Evaluate each host's metrics
+            for host in hosts:
+                host_stats = stats.get(host.id)
+
+                if not host_stats:
+                    logger.debug(f"Host {host.name} stats not found")
+                    continue
+
+                # Fetch host tags for tag-based selector matching
+                host_tags = self.db.get_tags_for_subject('host', host.id)
+
+                # Create evaluation context
+                context = EvaluationContext(
+                    scope_type="host",
+                    scope_id=host.id,
+                    host_id=host.id,
+                    host_name=host.name,
+                    tags=host_tags
+                )
+
+                # Evaluate metrics
+                await self._evaluate_host_stats(host_stats, context, rules_by_metric)
+
+        except Exception as e:
+            logger.error(f"Error evaluating host metrics: {e}", exc_info=True)
+
+    async def _evaluate_host_stats(
+        self,
+        stats: Dict[str, Any],
+        context: EvaluationContext,
+        rules_by_metric: Dict[str, List[AlertRuleV2]]
+    ):
+        """Evaluate stats for a single host"""
+        # Map stats to metric names and evaluate
+        metric_mappings = {
+            "cpu_percent": stats.get("cpu_percent"),
+            "memory_percent": stats.get("memory_percent"),
+        }
+
+        for metric_name, metric_value in metric_mappings.items():
+            if metric_value is None:
+                continue
+
+            # Check if we have rules for this metric
+            if metric_name not in rules_by_metric:
+                continue
+
+            # Evaluate metric against all matching rules
+            try:
+                alerts = self.engine.evaluate_metric(
+                    metric_name,
+                    float(metric_value),
+                    context
+                )
+
+                if alerts:
+                    logger.info(
+                        f"Alert triggered for host {context.host_name}: "
+                        f"{metric_name}={metric_value}"
+                    )
+
+                    # Trigger notifications for all matched alerts
+                    for alert in alerts:
+                        await self._handle_alert_notification(alert)
+
+            except Exception as e:
+                logger.error(
+                    f"Error evaluating {metric_name} for host {context.host_name}: {e}",
                     exc_info=True
                 )
 

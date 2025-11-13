@@ -3673,7 +3673,7 @@ async def create_registry_credential(
                 "Registry Credential Created",
                 f"Added credentials for registry: {registry_url}",
                 EventSeverity.INFO,
-                EventType.CONFIG_CHANGED
+                LogEventType.CONFIG_CHANGED
             )
 
             # Return credential without password
@@ -3743,7 +3743,7 @@ async def update_registry_credential(
                 "Registry Credential Updated",
                 f"Updated credentials for registry: {credential.registry_url}",
                 EventSeverity.INFO,
-                EventType.CONFIG_CHANGED
+                LogEventType.CONFIG_CHANGED
             )
 
             # Return credential without password
@@ -3795,7 +3795,7 @@ async def delete_registry_credential(
                 "Registry Credential Deleted",
                 f"Deleted credentials for registry: {registry_url}",
                 EventSeverity.INFO,
-                EventType.CONFIG_CHANGED
+                LogEventType.CONFIG_CHANGED
             )
 
             return {

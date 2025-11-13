@@ -886,16 +886,14 @@ class DockerMonitor:
 
             # If tags are not provided in the update (None or empty list), preserve existing ones
             # Tags are managed through a separate endpoint, so they shouldn't be cleared on update
-            logger.info(f"Tag preservation check: config.tags={config.tags}, existing_host.tags={existing_host.tags}")
-            if (config.tags is None or len(config.tags) == 0) and existing_host.tags:
-                try:
-                    config.tags = json.loads(existing_host.tags) if existing_host.tags else []
+            # Load from normalized tag_assignments table (tags column is legacy)
+            if config.tags is None or len(config.tags) == 0:
+                existing_tags = self.db.get_tags_for_subject('host', host_id)
+                if existing_tags:
+                    config.tags = existing_tags
                     logger.info(f"Preserved {len(config.tags)} existing tags for host {config.name}")
-                except (json.JSONDecodeError, TypeError):
-                    config.tags = []
-                    logger.warning(f"Failed to parse existing tags for host {config.name}")
-            else:
-                logger.info(f"Tag preservation skipped: config.tags={config.tags}, existing_host.tags={existing_host.tags}")
+                else:
+                    logger.debug(f"No existing tags found for host {config.name}")
 
             # Only validate certificates if NEW ones are provided (not using existing)
             # Check if any NEW certificate data was actually sent in the request

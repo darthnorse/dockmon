@@ -982,7 +982,17 @@ class DockerMonitor:
             # Test connection
             client.ping()
 
-            # Create host object with existing ID
+            # Fetch fresh system information immediately after connecting
+            sys_info = _fetch_system_info_from_docker(client, config.name)
+            os_type = sys_info['os_type']
+            os_version = sys_info['os_version']
+            kernel_version = sys_info['kernel_version']
+            docker_version = sys_info['docker_version']
+            daemon_started_at = sys_info['daemon_started_at']
+            total_memory = sys_info['total_memory']
+            num_cpus = sys_info['num_cpus']
+
+            # Create host object with existing ID and fresh system info
             host = DockerHost(
                 id=host_id,
                 name=config.name,
@@ -990,12 +1000,37 @@ class DockerMonitor:
                 status="online",
                 security_status=security_status,
                 tags=config.tags,
-                description=config.description
+                description=config.description,
+                os_type=os_type,
+                os_version=os_version,
+                kernel_version=kernel_version,
+                docker_version=docker_version,
+                daemon_started_at=daemon_started_at,
+                total_memory=total_memory,
+                num_cpus=num_cpus
             )
 
             # Store client and host
             self.clients[host.id] = client
             self.hosts[host.id] = host
+
+            # Update database with fresh system info
+            try:
+                with self.db.get_session() as session:
+                    from database import DockerHostDB
+                    db_host = session.query(DockerHostDB).filter(DockerHostDB.id == host_id).first()
+                    if db_host:
+                        db_host.os_type = os_type
+                        db_host.os_version = os_version
+                        db_host.kernel_version = kernel_version
+                        db_host.docker_version = docker_version
+                        db_host.daemon_started_at = daemon_started_at
+                        db_host.total_memory = total_memory
+                        db_host.num_cpus = num_cpus
+                        session.commit()
+                        logger.info(f"Updated system info for {host.name}: {os_version} / Docker {docker_version}")
+            except Exception as e:
+                logger.warning(f"Failed to update system info for {host.name}: {e}")
 
             # Re-register host with stats and event services (in case URL changed)
             # Note: add_docker_host() automatically closes old client if it exists

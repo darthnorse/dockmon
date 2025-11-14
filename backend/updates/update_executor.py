@@ -16,6 +16,7 @@ import threading
 from datetime import datetime, timezone
 from typing import Dict, Optional, Any, Tuple
 import docker
+from sqlalchemy.exc import IntegrityError
 
 from database import DatabaseManager, ContainerUpdate, AutoRestartConfig, ContainerDesiredState, ContainerHttpHealthCheck, GlobalSettings, DeploymentMetadata, TagAssignment
 from event_bus import Event, EventType as BusEventType, get_event_bus
@@ -537,13 +538,31 @@ class UpdateExecutor:
 
                     # Update 6: TagAssignment table (uses subject_id as composite key for containers)
                     # When a container is recreated during update, preserve its tag assignments
-                    session.query(TagAssignment).filter(
+                    # DEFENSIVE: Check if reattachment already created assignments for new container (GitHub Issue #44)
+                    # Prevents race condition between container_discovery reattachment and update executor migration
+                    new_tag_count = session.query(TagAssignment).filter(
                         TagAssignment.subject_type == 'container',
-                        TagAssignment.subject_id == old_composite_key  # OLD composite key
-                    ).update({
-                        "subject_id": new_composite_key,  # NEW composite key
-                        "last_seen_at": datetime.now(timezone.utc)
-                    })
+                        TagAssignment.subject_id == new_composite_key
+                    ).count()
+
+                    if new_tag_count > 0:
+                        # Reattachment already created tag assignments for new container
+                        # Delete orphaned old assignments (cleanup)
+                        logger.debug(f"Reattachment already migrated {new_tag_count} tags, cleaning up old assignments")
+                        session.query(TagAssignment).filter(
+                            TagAssignment.subject_type == 'container',
+                            TagAssignment.subject_id == old_composite_key
+                        ).delete()
+                    else:
+                        # Reattachment didn't run yet (unlikely), migrate tags ourselves
+                        logger.debug("Migrating tag assignments from old to new container")
+                        session.query(TagAssignment).filter(
+                            TagAssignment.subject_type == 'container',
+                            TagAssignment.subject_id == old_composite_key
+                        ).update({
+                            "subject_id": new_composite_key,  # NEW composite key
+                            "last_seen_at": datetime.now(timezone.utc)
+                        })
 
                     # Set commit flag BEFORE commit to prevent race condition (Issue #6 fix)
                     # If exception occurs after commit but before flag setting, rollback would incorrectly execute
@@ -555,8 +574,26 @@ class UpdateExecutor:
                             f"Updated database records from {old_composite_key} to {new_composite_key}: "
                             f"ContainerUpdate, AutoRestartConfig, ContainerDesiredState, ContainerHttpHealthCheck, DeploymentMetadata, TagAssignment"
                         )
+                    except IntegrityError as integrity_error:
+                        # Handle tag reattachment race condition (GitHub Issue #44 edge case)
+                        # If reattachment commits tags in the millisecond window between our check and update,
+                        # the UPDATE will fail with IntegrityError. This is NOT a real failure.
+                        if "tag_assignments" in str(integrity_error).lower():
+                            # Tags were migrated by reattachment during the race window
+                            # Container update succeeded, tags exist (via reattachment) - continue as success
+                            session.rollback()
+                            logger.debug(
+                                f"Tag migration race detected for {container_name}: "
+                                f"reattachment already migrated tags during update. Continuing as success."
+                            )
+                            # Note: update_committed stays True - container was updated successfully
+                        else:
+                            # Different IntegrityError (unexpected) - treat as failure
+                            update_committed = False
+                            logger.error(f"Database integrity error for {container_name}: {integrity_error}", exc_info=True)
+                            raise  # Trigger rollback in outer exception handler
                     except Exception as commit_error:
-                        # Clear flag if commit failed - rollback should execute
+                        # Other database errors - treat as failure
                         update_committed = False
                         logger.error(f"Database commit failed for {container_name}: {commit_error}", exc_info=True)
                         raise  # Re-raise to trigger rollback in outer exception handler

@@ -4,15 +4,16 @@
  */
 
 import { useState } from 'react'
-import { LayoutDashboard, Bell, AlertTriangle, Settings, Package, LucideIcon } from 'lucide-react'
+import { LayoutDashboard, Bell, AlertTriangle, Settings, Package, Key, LucideIcon } from 'lucide-react'
 import { DashboardSettings } from './components/DashboardSettings'
 import { NotificationChannelsSection } from './components/NotificationChannelsSection'
 import { AlertTemplateSettings } from './components/AlertTemplateSettings'
 import { BlackoutWindowsSection } from './components/BlackoutWindowsSection'
 import { SystemSettings } from './components/SystemSettings'
 import { ContainerUpdatesSettings } from './components/ContainerUpdatesSettings'
+import { ApiKeysSettings } from './components/ApiKeysSettings'
 
-type TabId = 'dashboard' | 'alerts' | 'notifications' | 'updates' | 'system'
+type TabId = 'dashboard' | 'alerts' | 'notifications' | 'updates' | 'api-keys' | 'system'
 
 interface Tab {
   id: TabId
@@ -25,6 +26,7 @@ const TABS: Tab[] = [
   { id: 'alerts', label: 'Alerts', icon: AlertTriangle },
   { id: 'notifications', label: 'Notifications', icon: Bell },
   { id: 'updates', label: 'Container Updates', icon: Package },
+  { id: 'api-keys', label: 'API Keys', icon: Key },
   { id: 'system', label: 'System', icon: Settings },
 ]
 
@@ -81,6 +83,7 @@ export function SettingsPage() {
           )}
           {activeTab === 'notifications' && <NotificationChannelsSection />}
           {activeTab === 'updates' && <ContainerUpdatesSettings />}
+          {activeTab === 'api-keys' && <ApiKeysSettings />}
           {activeTab === 'system' && <SystemSettings />}
         </div>
       </div>

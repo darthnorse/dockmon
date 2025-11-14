@@ -22,7 +22,7 @@ from database import DatabaseManager, AlertV2, AlertRuleV2, AlertAnnotation
 from alerts.validator import AlertRuleValidator, AlertRuleValidationError
 from alerts.engine import AlertEngine
 from security.rate_limiting import get_rate_limit_dependency
-from auth.v2_routes import get_current_user  # v2 cookie-based auth
+from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_scope  # v2 hybrid auth (cookies + API keys)
 
 logger = logging.getLogger(__name__)
 
@@ -257,7 +257,7 @@ async def get_alert(
         )
 
 
-@router.post("/{alert_id}/resolve", response_model=AlertResponse, dependencies=[Depends(get_rate_limit_dependency("alerts_write"))])
+@router.post("/{alert_id}/resolve", response_model=AlertResponse, dependencies=[Depends(get_rate_limit_dependency("alerts_write")), Depends(require_scope("write"))])
 async def resolve_alert(
     alert_id: str,
     request: ResolveAlertRequest,
@@ -284,7 +284,7 @@ async def resolve_alert(
         )
 
 
-@router.post("/{alert_id}/snooze", response_model=AlertResponse, dependencies=[Depends(get_rate_limit_dependency("alerts_write"))])
+@router.post("/{alert_id}/snooze", response_model=AlertResponse, dependencies=[Depends(get_rate_limit_dependency("alerts_write")), Depends(require_scope("write"))])
 async def snooze_alert(
     alert_id: str,
     request: SnoozeAlertRequest,
@@ -312,7 +312,7 @@ async def snooze_alert(
         )
 
 
-@router.post("/{alert_id}/unsnooze", response_model=AlertResponse, dependencies=[Depends(get_rate_limit_dependency("alerts_write"))])
+@router.post("/{alert_id}/unsnooze", response_model=AlertResponse, dependencies=[Depends(get_rate_limit_dependency("alerts_write")), Depends(require_scope("write"))])
 async def unsnooze_alert(
     alert_id: str,
     db: DatabaseManager = Depends(get_db)
@@ -339,7 +339,7 @@ async def unsnooze_alert(
         )
 
 
-@router.post("/{alert_id}/annotations", dependencies=[Depends(get_rate_limit_dependency("alerts_write"))])
+@router.post("/{alert_id}/annotations", dependencies=[Depends(get_rate_limit_dependency("alerts_write")), Depends(require_scope("write"))])
 async def add_annotation(
     alert_id: str,
     request: AddAnnotationRequest,
@@ -422,7 +422,7 @@ async def list_rules(
         }
 
 
-@router.post("/rules/", response_model=AlertRuleResponse, dependencies=[Depends(get_rate_limit_dependency("rules_write"))])
+@router.post("/rules/", response_model=AlertRuleResponse, dependencies=[Depends(get_rate_limit_dependency("rules_write")), Depends(require_scope("admin"))])
 async def create_rule(
     request: AlertRuleRequest,
     db: DatabaseManager = Depends(get_db),
@@ -487,7 +487,7 @@ async def get_rule(
         return AlertRuleResponse(**{k: v for k, v in rule.__dict__.items() if not k.startswith('_')})
 
 
-@router.put("/rules/{rule_id}", response_model=AlertRuleResponse, dependencies=[Depends(get_rate_limit_dependency("rules_write"))])
+@router.put("/rules/{rule_id}", response_model=AlertRuleResponse, dependencies=[Depends(get_rate_limit_dependency("rules_write")), Depends(require_scope("admin"))])
 async def update_rule(
     rule_id: str,
     request: AlertRuleRequest,
@@ -538,7 +538,7 @@ async def update_rule(
         return AlertRuleResponse(**{k: v for k, v in rule.__dict__.items() if not k.startswith('_')})
 
 
-@router.delete("/rules/{rule_id}", dependencies=[Depends(get_rate_limit_dependency("rules_write"))])
+@router.delete("/rules/{rule_id}", dependencies=[Depends(get_rate_limit_dependency("rules_write")), Depends(require_scope("admin"))])
 async def delete_rule(
     rule_id: str,
     db: DatabaseManager = Depends(get_db)

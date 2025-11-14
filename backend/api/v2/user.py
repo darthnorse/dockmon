@@ -17,7 +17,7 @@ from collections import deque
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 
-from auth.v2_routes import get_current_user
+from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_scope
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v2/user", tags=["user-v2"])
@@ -241,7 +241,7 @@ async def get_user_preferences(
         )
 
 
-@router.patch("/preferences")
+@router.patch("/preferences", dependencies=[Depends(require_scope("write"))])
 async def update_user_preferences(
     updates: PreferencesUpdate,
     current_user: dict = Depends(get_current_user)
@@ -451,7 +451,7 @@ async def update_user_preferences(
     return {"status": "ok", "message": "Preferences updated successfully"}
 
 
-@router.delete("/preferences")
+@router.delete("/preferences", dependencies=[Depends(require_scope("write"))])
 async def reset_user_preferences(
     current_user: dict = Depends(get_current_user)
 ):

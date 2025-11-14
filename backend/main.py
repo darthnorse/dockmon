@@ -63,7 +63,7 @@ from models.request_models import (
 )
 from security.audit import security_audit
 from security.rate_limiting import rate_limiter, rate_limit_auth, rate_limit_hosts, rate_limit_containers, rate_limit_notifications, rate_limit_default
-from auth.v2_routes import get_current_user  # v2 cookie-based auth
+from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_scope  # v2 hybrid auth (cookies + API keys)
 from websocket.connection import ConnectionManager, DateTimeEncoder
 from websocket.rate_limiter import ws_rate_limiter
 from docker_monitor.monitor import DockerMonitor
@@ -336,7 +336,81 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="DockMon API",
-    version="1.0.0",
+    version="2.1.8",
+    redoc_url=None,  # Disable ReDoc (use Swagger UI only)
+    swagger_ui_parameters={
+        "defaultModelsExpandDepth": -1,  # Hide schemas section by default
+        "displayOperationId": False,
+        "filter": True,  # Enable search/filter box
+    },
+    description="""
+# DockMon API
+
+Monitor and manage Docker containers across multiple hosts with comprehensive automation features.
+
+## 🔐 Authentication
+
+DockMon supports two authentication methods:
+
+### 1. Session Cookies (Web UI)
+Automatically handled by your browser after logging in to the web interface.
+
+### 2. API Keys (Automation & Integration)
+For external tools, automation scripts, and integrations.
+
+**Quick Example:**
+```bash
+curl https://your-dockmon-url:8001/api/hosts \\
+  -H "Authorization: Bearer dockmon_your_key_here"
+```
+
+> **Note:** Port 8001 is the default DockMon port. If using a reverse proxy or custom configuration, adjust the port accordingly.
+
+**Python Example:**
+```python
+import requests
+
+headers = {"Authorization": "Bearer dockmon_your_key_here"}
+response = requests.get("https://your-dockmon-url:8001/api/hosts", headers=headers)
+print(response.json())
+```
+
+## 🚀 Getting Started with API Keys
+
+1. Log in to DockMon web interface
+2. Navigate to **Settings → API Keys**
+3. Click **Create API Key**
+4. Select permissions:
+   - `read` - View-only (dashboards, monitoring)
+   - `write` - Container operations (Ansible, automation)
+   - `admin` - Full access (system configuration)
+5. **Save the key immediately** - it's only shown once!
+
+## 📚 Additional Resources
+
+- **Wiki Guide**: [API Access Documentation](https://github.com/darthnorse/dockmon/wiki/API-Access) - User-friendly guide
+- **Security**: [Security Caveats](https://github.com/darthnorse/dockmon/blob/main/docs/API_KEY_SECURITY_CAVEATS.md) - Important warnings
+- **Testing**: [Testing Guide](https://github.com/darthnorse/dockmon/blob/main/docs/API_KEY_TESTING_GUIDE.md) - Validation examples
+
+## 🔒 Security Features
+
+- SHA256 key hashing (plaintext keys never stored)
+- Scope-based permissions (read/write/admin)
+- Optional IP allowlists
+- Optional expiration dates
+- Comprehensive audit logging
+
+## 💡 Common Use Cases
+
+- **Homepage Dashboard**: Read-only key for container status
+- **Ansible Automation**: Write key for deployments
+- **Monitoring Systems**: Read-only key for metrics
+- **CI/CD Pipelines**: Write key for container updates
+
+---
+
+**Try it out!** Use the "Authorize" button above to test endpoints with your API key.
+    """,
     lifespan=lifespan,
     root_path=get_base_path().rstrip('/')  # Strip trailing slash for FastAPI root_path
 )
@@ -405,6 +479,10 @@ app.include_router(deployment_routes.router)  # v2.1 deployment endpoints
 app.include_router(deployment_routes.template_router)  # v2.1 template endpoints
 # app.include_router(alerts_router)  # MOVED: Registered after v2 rules routes
 
+# API key routes (v2.1.8+)
+from auth import api_key_routes
+app.include_router(api_key_routes.router)  # API key management
+
 @app.get("/")
 async def root(current_user: dict = Depends(get_current_user)):
     """Backend API root - frontend is served separately"""
@@ -463,7 +541,7 @@ async def get_hosts(current_user: dict = Depends(get_current_user)):
     """Get all configured Docker hosts"""
     return list(monitor.hosts.values())
 
-@app.post("/api/hosts")
+@app.post("/api/hosts", dependencies=[Depends(require_scope("admin"))])
 async def add_host(config: DockerHostConfig, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_hosts, request: Request = None):
     """Add a new Docker host"""
     try:
@@ -498,7 +576,7 @@ async def add_host(config: DockerHostConfig, current_user: dict = Depends(get_cu
             )
         raise
 
-@app.post("/api/hosts/test-connection")
+@app.post("/api/hosts/test-connection", dependencies=[Depends(require_scope("admin"))])
 async def test_host_connection(config: DockerHostConfig, current_user: dict = Depends(get_current_user)):
     """Test connection to a Docker host without adding it
 
@@ -617,13 +695,13 @@ async def test_host_connection(config: DockerHostConfig, current_user: dict = De
         logger.error(f"Connection test failed for {config.url}: {str(e)}")
         raise HTTPException(status_code=400, detail=f"Connection failed: {str(e)}")
 
-@app.put("/api/hosts/{host_id}")
+@app.put("/api/hosts/{host_id}", dependencies=[Depends(require_scope("admin"))])
 async def update_host(host_id: str, config: DockerHostConfig, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_hosts):
     """Update an existing Docker host"""
     host = monitor.update_host(host_id, config)
     return host
 
-@app.delete("/api/hosts/{host_id}")
+@app.delete("/api/hosts/{host_id}", dependencies=[Depends(require_scope("admin"))])
 async def remove_host(host_id: str, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_hosts):
     """Remove a Docker host"""
     try:
@@ -645,7 +723,7 @@ async def remove_host(host_id: str, current_user: dict = Depends(get_current_use
         logger.error(f"Error removing host {host_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to remove host: {str(e)}")
 
-@app.patch("/api/hosts/{host_id}/tags")
+@app.patch("/api/hosts/{host_id}/tags", dependencies=[Depends(require_scope("admin"))])
 async def update_host_tags(
     host_id: str,
     request: HostTagUpdate,
@@ -769,25 +847,25 @@ async def get_containers(host_id: Optional[str] = None, current_user: dict = Dep
     """Get all containers"""
     return await monitor.get_containers(host_id)
 
-@app.post("/api/hosts/{host_id}/containers/{container_id}/restart")
+@app.post("/api/hosts/{host_id}/containers/{container_id}/restart", dependencies=[Depends(require_scope("write"))])
 async def restart_container(host_id: str, container_id: str, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
     """Restart a container"""
     success = await monitor.restart_container(host_id, container_id)
     return {"status": "success" if success else "failed"}
 
-@app.post("/api/hosts/{host_id}/containers/{container_id}/stop")
+@app.post("/api/hosts/{host_id}/containers/{container_id}/stop", dependencies=[Depends(require_scope("write"))])
 async def stop_container(host_id: str, container_id: str, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
     """Stop a container"""
     success = await monitor.stop_container(host_id, container_id)
     return {"status": "success" if success else "failed"}
 
-@app.post("/api/hosts/{host_id}/containers/{container_id}/start")
+@app.post("/api/hosts/{host_id}/containers/{container_id}/start", dependencies=[Depends(require_scope("write"))])
 async def start_container(host_id: str, container_id: str, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
     """Start a container"""
     success = await monitor.start_container(host_id, container_id)
     return {"status": "success" if success else "failed"}
 
-@app.delete("/api/hosts/{host_id}/containers/{container_id}")
+@app.delete("/api/hosts/{host_id}/containers/{container_id}", dependencies=[Depends(require_scope("write"))])
 async def delete_container(
     host_id: str,
     container_id: str,
@@ -976,7 +1054,7 @@ async def get_container_logs(
 # This is more reliable for remote Docker hosts
 
 
-@app.post("/api/hosts/{host_id}/containers/{container_id}/auto-restart")
+@app.post("/api/hosts/{host_id}/containers/{container_id}/auto-restart", dependencies=[Depends(require_scope("write"))])
 async def toggle_auto_restart(host_id: str, container_id: str, request: AutoRestartRequest, current_user: dict = Depends(get_current_user)):
     """Toggle auto-restart for a container"""
     # Normalize to short ID (12 chars) for consistency with monitor's internal tracking
@@ -984,7 +1062,7 @@ async def toggle_auto_restart(host_id: str, container_id: str, request: AutoRest
     monitor.toggle_auto_restart(host_id, short_id, request.container_name, request.enabled)
     return {"host_id": host_id, "container_id": container_id, "auto_restart": request.enabled}
 
-@app.post("/api/hosts/{host_id}/containers/{container_id}/desired-state")
+@app.post("/api/hosts/{host_id}/containers/{container_id}/desired-state", dependencies=[Depends(require_scope("write"))])
 async def set_desired_state(host_id: str, container_id: str, request: DesiredStateRequest, current_user: dict = Depends(get_current_user)):
     """Set desired state for a container"""
     # Normalize to short ID (12 chars) for consistency
@@ -992,7 +1070,7 @@ async def set_desired_state(host_id: str, container_id: str, request: DesiredSta
     monitor.set_container_desired_state(host_id, short_id, request.container_name, request.desired_state, request.web_ui_url)
     return {"host_id": host_id, "container_id": container_id, "desired_state": request.desired_state, "web_ui_url": request.web_ui_url}
 
-@app.patch("/api/hosts/{host_id}/containers/{container_id}/tags")
+@app.patch("/api/hosts/{host_id}/containers/{container_id}/tags", dependencies=[Depends(require_scope("write"))])
 async def update_container_tags(
     host_id: str,
     container_id: str,
@@ -1142,7 +1220,7 @@ async def get_container_update_status(
         }
 
 
-@app.post("/api/hosts/{host_id}/containers/{container_id}/check-update")
+@app.post("/api/hosts/{host_id}/containers/{container_id}/check-update", dependencies=[Depends(require_scope("write"))])
 async def check_container_update(
     host_id: str,
     container_id: str,
@@ -1181,7 +1259,7 @@ async def check_container_update(
     }
 
 
-@app.post("/api/hosts/{host_id}/containers/{container_id}/execute-update")
+@app.post("/api/hosts/{host_id}/containers/{container_id}/execute-update", dependencies=[Depends(require_scope("write"))])
 async def execute_container_update(
     host_id: str,
     container_id: str,
@@ -1301,7 +1379,7 @@ async def execute_container_update(
         }
 
 
-@app.put("/api/hosts/{host_id}/containers/{container_id}/auto-update-config")
+@app.put("/api/hosts/{host_id}/containers/{container_id}/auto-update-config", dependencies=[Depends(require_scope("write"))])
 async def update_auto_update_config(
     host_id: str,
     container_id: str,
@@ -1421,7 +1499,7 @@ async def update_auto_update_config(
         }
 
 
-@app.post("/api/updates/check-all")
+@app.post("/api/updates/check-all", dependencies=[Depends(require_scope("write"))])
 async def check_all_updates(current_user: dict = Depends(get_current_user)):
     """
     Manually trigger an update check for all containers.
@@ -1434,7 +1512,7 @@ async def check_all_updates(current_user: dict = Depends(get_current_user)):
     return stats
 
 
-@app.post("/api/images/prune")
+@app.post("/api/images/prune", dependencies=[Depends(require_scope("write"))])
 async def prune_images(current_user: dict = Depends(get_current_user)):
     """
     Manually trigger Docker image pruning.
@@ -1617,7 +1695,7 @@ async def get_update_policies(current_user: dict = Depends(get_current_user)):
         }
 
 
-@app.put("/api/update-policies/{category}/toggle")
+@app.put("/api/update-policies/{category}/toggle", dependencies=[Depends(require_scope("admin"))])
 async def toggle_update_policy_category(
     category: str,
     enabled: bool = Query(..., description="Enable or disable all patterns in category"),
@@ -1648,7 +1726,7 @@ async def toggle_update_policy_category(
         }
 
 
-@app.post("/api/update-policies/custom")
+@app.post("/api/update-policies/custom", dependencies=[Depends(require_scope("admin"))])
 async def create_custom_update_policy(
     pattern: str = Query(..., description="Pattern to match against image/container name"),
     current_user: dict = Depends(get_current_user)
@@ -1691,7 +1769,7 @@ async def create_custom_update_policy(
         }
 
 
-@app.delete("/api/update-policies/custom/{policy_id}")
+@app.delete("/api/update-policies/custom/{policy_id}", dependencies=[Depends(require_scope("admin"))])
 async def delete_custom_update_policy(
     policy_id: int,
     current_user: dict = Depends(get_current_user)

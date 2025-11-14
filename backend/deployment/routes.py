@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from database import Deployment, DeploymentTemplate, DatabaseManager, GlobalSettings, DeploymentMetadata
 from deployment import DeploymentExecutor, TemplateManager, SecurityException, SecurityValidator
-from auth.v2_routes import get_current_user
+from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_scope
 from utils.keys import parse_composite_key
 
 logger = logging.getLogger(__name__)
@@ -149,7 +149,7 @@ def get_database_manager() -> DatabaseManager:
 
 # ==================== Deployment Endpoints ====================
 
-@router.post("", response_model=DeploymentResponse, status_code=201)
+@router.post("", response_model=DeploymentResponse, status_code=201, dependencies=[Depends(require_scope("write"))])
 async def create_deployment(
     request: DeploymentCreate,
     background_tasks: BackgroundTasks,
@@ -189,7 +189,7 @@ async def create_deployment(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/{deployment_id}/execute", response_model=DeploymentResponse)
+@router.post("/{deployment_id}/execute", response_model=DeploymentResponse, dependencies=[Depends(require_scope("write"))])
 async def execute_deployment(
     deployment_id: str,
     background_tasks: BackgroundTasks,
@@ -327,7 +327,7 @@ async def get_deployment(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.put("/{deployment_id}", response_model=DeploymentResponse)
+@router.put("/{deployment_id}", response_model=DeploymentResponse, dependencies=[Depends(require_scope("write"))])
 async def update_deployment(
     deployment_id: str,
     request: DeploymentUpdate,
@@ -399,7 +399,7 @@ async def update_deployment(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/{deployment_id}")
+@router.delete("/{deployment_id}", dependencies=[Depends(require_scope("write"))])
 async def delete_deployment(
     deployment_id: str,
     current_user=Depends(get_current_user),
@@ -445,7 +445,7 @@ async def delete_deployment(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/{deployment_id}/save-as-template", status_code=200)
+@router.post("/{deployment_id}/save-as-template", status_code=200, dependencies=[Depends(require_scope("write"))])
 async def save_deployment_as_template(
     deployment_id: str,
     request: SaveAsTemplateRequest,

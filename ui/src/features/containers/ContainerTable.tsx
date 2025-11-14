@@ -82,6 +82,7 @@ import { DeleteConfirmModal } from './components/DeleteConfirmModal'
 import { UpdateConfirmModal } from './components/UpdateConfirmModal'
 import { BatchJobPanel } from './components/BatchJobPanel'
 import { ColumnCustomizationPanel } from './components/ColumnCustomizationPanel'
+import { IPAddressCell } from './components/IPAddressCell'
 import type { Container } from './types'
 import { useSimplifiedWorkflow, useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
 import { useContainerUpdateStatus, useUpdatesSummary, useAllAutoUpdateConfigs, useAllHealthCheckConfigs } from './hooks/useContainerUpdates'
@@ -1088,11 +1089,20 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
           // Filter by host_id when set from URL params
           return row.original.host_id === filterValue
         },
-        cell: ({ row }) => (
-          <div className="text-sm">{row.original.host_name || 'localhost'}</div>
-        ),
+        cell: ({ row }) => {
+          const { host_name } = row.original
+          return <div className="text-sm">{host_name || 'localhost'}</div>
+        },
       },
-      // 7. Ports
+      // 7. IP Address (Docker network IPs)
+      {
+        id: 'ip',
+        header: 'IP Address',
+        cell: ({ row }) => <IPAddressCell container={row.original} />,
+        size: 150,
+        enableSorting: false,
+      },
+      // 8. Ports
       {
         accessorKey: 'ports',
         id: 'ports',

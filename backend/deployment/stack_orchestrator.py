@@ -5,7 +5,7 @@ Orchestrates multi-service deployments from Docker Compose files.
 Handles dependency resolution, network/volume creation, and service lifecycle.
 """
 
-from deployment.compose_validator import ComposeValidator
+from .compose_validator import ComposeValidator
 
 
 class StackOrchestrationError(Exception):

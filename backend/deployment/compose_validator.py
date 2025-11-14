@@ -10,7 +10,7 @@ Validates compose files for:
 
 import re
 import yaml
-from deployment.compose_parser import ComposeParser, ComposeParseError
+from .compose_parser import ComposeParser, ComposeParseError
 
 
 class ComposeValidationError(Exception):

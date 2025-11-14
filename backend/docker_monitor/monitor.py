@@ -93,6 +93,7 @@ def _fetch_system_info_from_docker(client: DockerClient, host_name: str) -> dict
         Dict with system info keys (os_type, os_version, etc.)
         Returns dict with None values if fetch fails
     """
+
     try:
         # Fetch system information
         system_info = client.info()
@@ -1196,7 +1197,6 @@ class DockerMonitor:
                 logger.debug(f"V2: Processing {action} event for {container_name} ({container_id[:12]}) on {host_name} ({host_id[:8]})")
 
                 # Parse timestamp
-                from datetime import datetime, timezone
                 try:
                     timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
                 except (ValueError, AttributeError, TypeError) as e:

@@ -18,6 +18,7 @@ from models.docker_models import DockerHost, Container, derive_container_tags
 from event_bus import Event, EventType as BusEventType, get_event_bus
 from stats_client import get_stats_client
 from utils.keys import make_composite_key
+from utils.ip_extraction import extract_container_ips
 
 logger = logging.getLogger(__name__)
 
@@ -511,8 +512,12 @@ class ContainerDiscovery:
                     desired_state, web_ui_url = self.db.get_desired_state(host_id, container_id)
 
                     # Extract ports, restart policy, volumes, env
-                    port_bindings = dc.attrs.get('NetworkSettings', {}).get('Ports', {})
+                    network_settings = dc.attrs.get('NetworkSettings', {})
+                    port_bindings = network_settings.get('Ports', {})
                     ports = parse_container_ports(port_bindings)
+
+                    # Extract container Docker network IPs (GitHub Issue #37)
+                    docker_ip, docker_ips = extract_container_ips(network_settings)
 
                     host_config = dc.attrs.get('HostConfig', {})
                     restart_policy = parse_restart_policy(host_config)
@@ -542,7 +547,9 @@ class ContainerDiscovery:
                         volumes=volumes,
                         env=env,
                         labels=labels,
-                        tags=tags
+                        tags=tags,
+                        docker_ip=docker_ip,
+                        docker_ips=docker_ips
                     )
                     containers.append(container)
                 except Exception as container_error:

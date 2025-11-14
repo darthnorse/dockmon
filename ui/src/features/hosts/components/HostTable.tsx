@@ -490,7 +490,7 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
         cell: ({ row }) => <ContainerCount hostId={row.original.id} />,
       },
 
-      // 4. Alerts
+      // 5. Alerts
       {
         accessorKey: 'alerts',
         header: 'Alerts',
@@ -503,28 +503,28 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
         ),
       },
 
-      // 5. Uptime
+      // 6. Uptime
       {
         accessorKey: 'daemon_started_at',
         header: 'Uptime',
         cell: ({ row }) => <Uptime daemonStartedAt={row.original.daemon_started_at} />,
       },
 
-      // 6. CPU%
+      // 7. CPU%
       {
         accessorKey: 'cpu',
         header: 'CPU%',
         cell: ({ row }) => <HostMetricPercentage hostId={row.original.id} metric="cpu" />,
       },
 
-      // 7. RAM%
+      // 8. RAM%
       {
         accessorKey: 'memory',
         header: 'RAM%',
         cell: ({ row }) => <HostMetricPercentage hostId={row.original.id} metric="memory" />,
       },
 
-      // 8. OS/Version
+      // 9. OS/Version
       {
         accessorKey: 'os_version',
         header: 'OS / Version',

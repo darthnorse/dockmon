@@ -255,3 +255,6 @@ class Container(BaseModel):
     labels: Optional[dict[str, str]] = None
     # Derived tags (Phase 3d - computed from labels)
     tags: Optional[list[str]] = None
+    # Docker network IP addresses (GitHub Issue #37)
+    docker_ip: Optional[str] = None  # Primary Docker network IP
+    docker_ips: Optional[dict[str, str]] = None  # All network IPs {network_name: ip}

@@ -1760,6 +1760,7 @@ class DockerMonitor:
                     host_added = False
                     try:
                         # Detect platform (Docker vs Podman) via API
+                        temp_client = None
                         try:
                             temp_client = docker.DockerClient(base_url=f"unix://{socket_path}")
                             version_info = temp_client.version()
@@ -1774,12 +1775,17 @@ class DockerMonitor:
                                     detected_name = "Local Podman"
                             else:
                                 detected_name = "Local Docker"
-
-                            temp_client.close()
                         except Exception as detect_err:
                             # Fallback to socket-based detection
                             logger.debug(f"Could not detect platform via API: {detect_err}")
                             detected_name = f"Local {socket_name}"
+                        finally:
+                            # Always close client to prevent resource leak
+                            if temp_client:
+                                try:
+                                    temp_client.close()
+                                except Exception:
+                                    pass  # Ignore cleanup errors
 
                         config = DockerHostConfig(
                             name=detected_name,

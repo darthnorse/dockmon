@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -102,10 +103,20 @@ func (em *EventManager) AddHost(hostID, hostName, hostAddress, tlsCACert, tlsCer
 	var dockerClient *client.Client
 	var err error
 
-	if hostAddress == "" || hostAddress == "unix:///var/run/docker.sock" {
-		// Local Docker socket
+	// Check if this is a local socket (Docker or Podman)
+	isLocalSocket := hostAddress == "" ||
+		hostAddress == "unix:///var/run/docker.sock" ||
+		hostAddress == "unix:///var/run/podman/podman.sock" ||
+		strings.HasPrefix(hostAddress, "unix:///run/user/") && strings.HasSuffix(hostAddress, "/podman/podman.sock")
+
+	if isLocalSocket {
+		// Local Docker/Podman socket - use hostAddress or default to Docker socket
+		socketPath := hostAddress
+		if socketPath == "" {
+			socketPath = "unix:///var/run/docker.sock"
+		}
 		dockerClient, err = client.NewClientWithOpts(
-			client.FromEnv,
+			client.WithHost(socketPath),
 			client.WithAPIVersionNegotiation(),
 		)
 	} else {

@@ -78,6 +78,10 @@ class SecurityValidator:
             'level': SecurityLevel.CRITICAL,
             'message': 'Mounting docker.sock grants full Docker API access (container escape risk)'
         },
+        '/var/run/podman/podman.sock': {
+            'level': SecurityLevel.CRITICAL,
+            'message': 'Mounting podman.sock grants full Podman API access (container escape risk)'
+        },
         '/': {
             'level': SecurityLevel.CRITICAL,
             'message': 'Mounting root filesystem grants full host access'
@@ -230,6 +234,7 @@ class SecurityValidator:
 
     def _check_dangerous_mount(self, violations: List[SecurityViolation], host_path: str, mode: str) -> None:
         """Check if a mount path is dangerous and add violation if so."""
+        # Check against known dangerous paths
         for dangerous_path, danger_info in self.DANGEROUS_MOUNTS.items():
             if host_path == dangerous_path or host_path.startswith(dangerous_path + '/'):
                 level = danger_info['level']
@@ -249,7 +254,23 @@ class SecurityValidator:
                     field='volumes',
                     message=f"Dangerous mount '{host_path}': {message}"
                 ))
-                break  # Only report once per mount
+                return  # Only report once per mount
+
+        # Check for rootless Podman socket pattern: /run/user/*/podman/podman.sock
+        if re.match(r'^/run/user/\d+/podman/podman\.sock$', host_path):
+            level = SecurityLevel.CRITICAL
+            message = 'Mounting podman.sock grants full Podman API access (container escape risk)'
+
+            # Reduce severity if mount is read-only
+            if mode == 'ro':
+                level = SecurityLevel.HIGH
+                message += ' (read-only reduces risk)'
+
+            violations.append(SecurityViolation(
+                level=level,
+                field='volumes',
+                message=f"Dangerous mount '{host_path}': {message}"
+            ))
 
     def _check_privileged(self, config: Dict[str, Any]) -> List[SecurityViolation]:
         """Check for privileged container flag."""

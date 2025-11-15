@@ -1738,7 +1738,7 @@ class DockerMonitor:
             with self.db.get_session() as session:
                 settings = session.query(GlobalSettings).first()
 
-                # Detect socket path (Docker or Podman)
+                # Detect socket path (Docker, rootful Podman, or rootless Podman)
                 socket_path = None
                 socket_name = None
 
@@ -1748,6 +1748,12 @@ class DockerMonitor:
                 elif os.path.exists('/var/run/podman/podman.sock'):
                     socket_path = '/var/run/podman/podman.sock'
                     socket_name = 'Podman'
+                elif 'XDG_RUNTIME_DIR' in os.environ:
+                    runtime_dir = os.environ['XDG_RUNTIME_DIR']
+                    rootless_sock = f"{runtime_dir}/podman/podman.sock"
+                    if os.path.exists(rootless_sock):
+                        socket_path = rootless_sock
+                        socket_name = 'Podman (Rootless)'
 
                 if settings and not settings.first_run_complete and not db_hosts and socket_path:
                     logger.info(f"First run detected - adding local {socket_name} automatically")
@@ -1762,7 +1768,11 @@ class DockerMonitor:
 
                             # Detect Podman from API response
                             if 'podman' in platform_name.lower():
-                                detected_name = "Local Podman"
+                                # Check if rootless (socket must be within XDG_RUNTIME_DIR)
+                                if 'XDG_RUNTIME_DIR' in os.environ and socket_path.startswith(os.environ['XDG_RUNTIME_DIR']):
+                                    detected_name = "Local Podman (Rootless)"
+                                else:
+                                    detected_name = "Local Podman"
                             else:
                                 detected_name = "Local Docker"
                         except Exception as detect_err:

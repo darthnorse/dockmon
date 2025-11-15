@@ -256,6 +256,21 @@ class SecurityValidator:
                 ))
                 return  # Only report once per mount
 
+        # Check for rootless Podman socket (variable path: /run/user/{uid}/podman/podman.sock)
+        if 'podman.sock' in host_path and '/run/user/' in host_path:
+            level = SecurityLevel.CRITICAL
+            message = 'Mounting podman.sock grants full Podman API access (container escape risk)'
+
+            if mode == 'ro':
+                level = SecurityLevel.HIGH
+                message += ' (read-only reduces risk)'
+
+            violations.append(SecurityViolation(
+                level=level,
+                field='volumes',
+                message=f"Dangerous mount '{host_path}': {message}"
+            ))
+
     def _check_privileged(self, config: Dict[str, Any]) -> List[SecurityViolation]:
         """Check for privileged container flag."""
         violations = []

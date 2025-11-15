@@ -8,7 +8,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -106,8 +105,7 @@ func (em *EventManager) AddHost(hostID, hostName, hostAddress, tlsCACert, tlsCer
 	// Check if it's a local Unix socket (Docker or Podman)
 	isLocalSocket := hostAddress == "" ||
 		hostAddress == "unix:///var/run/docker.sock" ||
-		hostAddress == "unix:///var/run/podman/podman.sock" ||
-		strings.HasPrefix(hostAddress, "unix:///run/user/")
+		hostAddress == "unix:///var/run/podman/podman.sock"
 
 	if isLocalSocket {
 		// Local Docker/Podman socket - use FromEnv to auto-detect

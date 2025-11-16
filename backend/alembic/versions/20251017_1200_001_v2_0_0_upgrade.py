@@ -157,7 +157,7 @@ def upgrade() -> None:
     # Users Table: Add v2 columns
     if helper.table_exists('users'):
         users_columns = [
-            sa.Column('role', sa.String(), server_default='owner'),
+            sa.Column('role', sa.String(), server_default='admin'),  # Changed from 'owner' in v2.1.8
             sa.Column('display_name', sa.String(), nullable=True),
             sa.Column('prefs', sa.Text(), nullable=True),
             sa.Column('simplified_workflow', sa.Boolean(), server_default='1'),

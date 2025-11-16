@@ -9,6 +9,7 @@ CHANGES IN v2.1.8:
 - Add API key authentication system (Beta feature - GitHub Issue #35)
 - Add role column to users table (future-proofing for RBAC)
 - Add api_keys table for programmatic authentication
+- Migrate legacy 'owner' role to 'admin' for consistency
 - Update app_version to '2.1.8'
 
 BUG FIXES:
@@ -62,6 +63,13 @@ def upgrade() -> None:
     if not column_exists('users', 'role'):
         op.add_column('users',
             sa.Column('role', sa.Text(), nullable=False, server_default='admin'))
+
+    # 1b. Migrate legacy 'owner' role to 'admin' (v2.0.0 used 'owner' as default)
+    # This ensures consistency - 'admin' is the canonical admin role going forward
+    if table_exists('users'):
+        op.execute(
+            sa.text("UPDATE users SET role = 'admin' WHERE role = 'owner'")
+        )
 
     # 2. Create api_keys table
     if not table_exists('api_keys'):

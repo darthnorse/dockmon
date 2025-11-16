@@ -16,8 +16,14 @@ import logging
 from utils.async_docker import async_docker_call
 from utils.container_health import wait_for_container_health
 from utils.image_pull_progress import ImagePullProgress
+from utils.network_helpers import manually_connect_networks
 
 logger = logging.getLogger(__name__)
+
+# Import constants from stack_orchestrator (same keys used for network config)
+# Import moved here to avoid circular dependency
+_MANUAL_NETWORKS_KEY = '_dockmon_manual_networks'
+_MANUAL_NETWORKING_CONFIG_KEY = '_dockmon_manual_networking_config'
 
 
 class HostConnector(ABC):
@@ -316,9 +322,18 @@ class DirectDockerConnector(HostConnector):
         """
         Create container via Docker SDK.
 
+        Handles manual network connection for networks that require it:
+        - Multiple networks (can't use 'network' parameter for multiple)
+        - Static IPs / aliases (need network.connect() to set these)
+
         Returns SHORT ID (12 chars) - CRITICAL for DockMon standards.
         """
         client = self._get_client()
+
+        # Extract manual network connection instructions (if present)
+        # These are set by stack_orchestrator when networking_config doesn't work
+        manual_networks = config.pop(_MANUAL_NETWORKS_KEY, None)
+        manual_networking_config = config.pop(_MANUAL_NETWORKING_CONFIG_KEY, None)
 
         # Merge labels into config
         final_config = config.copy()
@@ -327,10 +342,27 @@ class DirectDockerConnector(HostConnector):
             **labels
         }
 
+        # Create container
         container = await async_docker_call(
             client.containers.create,
             **final_config
         )
+
+        # Manually connect to networks if needed (Bug fix: networking_config doesn't work)
+        # This must happen BEFORE starting the container
+        try:
+            await manually_connect_networks(
+                container=container,
+                manual_networks=manual_networks,
+                manual_networking_config=manual_networking_config,
+                client=client,
+                async_docker_call=async_docker_call,
+                container_id=container.short_id
+            )
+        except Exception:
+            # Clean up: remove container since we failed to configure it properly
+            await async_docker_call(container.remove, force=True)
+            raise
 
         # CRITICAL: Return SHORT ID (12 chars), NOT full 64-char ID
         return container.short_id

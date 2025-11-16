@@ -120,17 +120,18 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
     }
 
     try {
-      setAutoUpdateEnabled(enabled)
-      await updateAutoUpdateConfig.mutateAsync({
+      // Don't update local state optimistically - wait for server response
+      const result = await updateAutoUpdateConfig.mutateAsync({
         hostId: container.host_id,
         containerId: container.id,
         autoUpdateEnabled: enabled,
         floatingTagMode: trackingMode as 'exact' | 'patch' | 'minor' | 'latest',
       })
+      // Update local state only after successful server save
+      setAutoUpdateEnabled(result.auto_update_enabled ?? false)
       toast.success(enabled ? 'Auto-update enabled' : 'Auto-update disabled')
     } catch (error) {
-      // Revert on error
-      setAutoUpdateEnabled(!enabled)
+      // No need to revert - we never changed it optimistically
       toast.error('Failed to update configuration', {
         description: error instanceof Error ? error.message : 'Unknown error',
       })
@@ -145,20 +146,19 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
       return
     }
 
-    const previousMode = trackingMode
-
     try {
-      setTrackingMode(mode)
-      await updateAutoUpdateConfig.mutateAsync({
+      // Don't update local state optimistically - wait for server response
+      const result = await updateAutoUpdateConfig.mutateAsync({
         hostId: container.host_id,
         containerId: container.id,
         autoUpdateEnabled,
         floatingTagMode: mode as 'exact' | 'patch' | 'minor' | 'latest',
       })
+      // Update local state only after successful server save
+      setTrackingMode(result.floating_tag_mode || 'exact')
       toast.success('Tracking mode updated')
     } catch (error) {
-      // Revert on error
-      setTrackingMode(previousMode)
+      // No need to revert - we never changed it optimistically
       toast.error('Failed to update tracking mode', {
         description: error instanceof Error ? error.message : 'Unknown error',
       })
@@ -173,20 +173,19 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
       return
     }
 
-    const previousPolicy = updatePolicy
-
     try {
-      setUpdatePolicy(policy)
-      await setContainerPolicy.mutateAsync({
+      // Don't update local state optimistically - wait for server response
+      const result = await setContainerPolicy.mutateAsync({
         hostId: container.host_id,
         containerId: container.id,
         policy,
       })
+      // Update local state only after successful server save
+      setUpdatePolicy(result.update_policy ?? null)
       const policyLabel = POLICY_OPTIONS.find((opt) => opt.value === policy)?.label || 'Auto-detect'
       toast.success(`Update policy set to ${policyLabel}`)
     } catch (error) {
-      // Revert on error
-      setUpdatePolicy(previousPolicy)
+      // No need to revert - we never changed it optimistically
       toast.error('Failed to update policy', {
         description: error instanceof Error ? error.message : 'Unknown error',
       })
@@ -213,21 +212,21 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
       }
     }
 
-    const previousUrl = updateStatus?.changelog_url || ''
-
     try {
-      await updateAutoUpdateConfig.mutateAsync({
+      // Don't update local state optimistically - wait for server response
+      const result = await updateAutoUpdateConfig.mutateAsync({
         hostId: container.host_id,
         containerId: container.id,
         autoUpdateEnabled,
         floatingTagMode: trackingMode as 'exact' | 'patch' | 'minor' | 'latest',
         changelogUrl: changelogUrl.trim() || null,  // v2.0.2+
       })
+      // Update local state only after successful server save
+      setChangelogUrl(result.changelog_url || '')
       toast.success(changelogUrl.trim() ? 'Changelog URL saved' : 'Changelog URL cleared')
       setIsEditingChangelog(false)
     } catch (error) {
-      // Revert on error
-      setChangelogUrl(previousUrl)
+      // No need to revert - we never changed it optimistically
       toast.error('Failed to save changelog URL', {
         description: error instanceof Error ? error.message : 'Unknown error',
       })
@@ -254,21 +253,21 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
       }
     }
 
-    const previousUrl = updateStatus?.registry_page_url || ''
-
     try {
-      await updateAutoUpdateConfig.mutateAsync({
+      // Don't update local state optimistically - wait for server response
+      const result = await updateAutoUpdateConfig.mutateAsync({
         hostId: container.host_id,
         containerId: container.id,
         autoUpdateEnabled,
         floatingTagMode: trackingMode as 'exact' | 'patch' | 'minor' | 'latest',
         registryPageUrl: registryPageUrl.trim() || null,  // v2.0.2+
       })
+      // Update local state only after successful server save
+      setRegistryPageUrl(result.registry_page_url || '')
       toast.success(registryPageUrl.trim() ? 'Registry URL saved' : 'Registry URL cleared')
       setIsEditingRegistry(false)
     } catch (error) {
-      // Revert on error
-      setRegistryPageUrl(previousUrl)
+      // No need to revert - we never changed it optimistically
       toast.error('Failed to save registry URL', {
         description: error instanceof Error ? error.message : 'Unknown error',
       })

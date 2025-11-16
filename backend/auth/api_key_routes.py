@@ -295,6 +295,9 @@ async def update_api_key(
         if not api_key:
             raise HTTPException(status_code=404, detail="API key not found")
 
+        # Debug logging (use INFO to ensure it shows in logs)
+        logger.info(f"API Key update request - allowed_ips field: {repr(data.allowed_ips)}")
+
         # Collect changes for audit log
         changes = []
         if data.name is not None:
@@ -306,9 +309,15 @@ async def update_api_key(
         if data.scopes is not None:
             changes.append(f"scopes: {api_key.scopes} → {data.scopes}")
             api_key.scopes = data.scopes
-        if data.allowed_ips is not None:
-            changes.append(f"allowed_ips updated")
-            api_key.allowed_ips = data.allowed_ips
+        # Handle allowed_ips field - need to check if it's explicitly in the request
+        # Pydantic sets it to None when field is sent as null/empty
+        if hasattr(data, 'allowed_ips'):
+            if data.allowed_ips is None or (isinstance(data.allowed_ips, str) and data.allowed_ips.strip() == ""):
+                changes.append(f"allowed_ips cleared (no restrictions)")
+                api_key.allowed_ips = None
+            else:
+                changes.append(f"allowed_ips updated")
+                api_key.allowed_ips = data.allowed_ips
 
         api_key.updated_at = datetime.now(timezone.utc)
         session.commit()

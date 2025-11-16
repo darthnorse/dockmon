@@ -44,6 +44,7 @@ from database import (
     RegistryCredential,
     NotificationChannel,
     AlertRuleV2,
+    AlertV2,
     AutoRestartConfig,
     BatchJobItem,
     DeploymentContainer
@@ -1925,9 +1926,110 @@ async def create_batch_job(request: BatchJobCreate, current_user: dict = Depends
         logger.info(f"User {current_user.get('username')} created batch job {job_id}: {request.action} on {len(request.ids)} containers")
 
         return {"job_id": job_id}
+    except ValueError as e:
+        # Validation errors (e.g., dependency conflicts) return 400 Bad Request
+        logger.warning(f"Batch job validation failed: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Error creating batch job: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/batch/validate-update", tags=["batch-operations"])
+async def validate_batch_update(request: dict, current_user: dict = Depends(get_current_user)):
+    """
+    Pre-flight validation for bulk container updates.
+
+    Returns categorized list of containers: allowed, warned, blocked.
+    Frontend uses this to show confirmation dialog before proceeding.
+
+    Request body:
+        {"container_ids": ["host_id:container_id", ...]}
+
+    Response:
+        {
+            "allowed": [{container_id, container_name, reason}, ...],
+            "warned": [{container_id, container_name, reason, matched_pattern}, ...],
+            "blocked": [{container_id, container_name, reason}, ...],
+            "summary": {total, allowed, warned, blocked}
+        }
+    """
+    from updates.container_validator import ContainerValidator
+
+    container_ids = request.get("container_ids", [])
+    if not container_ids:
+        raise HTTPException(status_code=400, detail="No container IDs provided")
+
+    allowed = []
+    warned = []
+    blocked = []
+
+    # Get all containers for name lookup
+    all_containers = monitor.get_last_containers()
+    container_lookup = {f"{c.host_id}:{c.short_id}": c for c in all_containers}
+
+    for composite_id in container_ids:
+        try:
+            # Parse composite key
+            if ":" not in composite_id:
+                logger.warning(f"Invalid composite key format: {composite_id}")
+                continue
+
+            parts = composite_id.split(":", 1)
+            host_id = parts[0]
+            container_id = parts[1]
+
+            # Get container info
+            container = container_lookup.get(composite_id)
+            if not container:
+                logger.warning(f"Container not found: {composite_id}")
+                continue
+
+            container_name = container.name
+            image_name = container.image
+            labels = container.labels or {}
+
+            # Validate using ContainerValidator
+            with monitor.db.get_session() as session:
+                validator = ContainerValidator(session)
+                validation_result = validator.validate_update(
+                    host_id=host_id,
+                    container_id=container_id,
+                    container_name=container_name,
+                    image_name=image_name,
+                    labels=labels
+                )
+
+            # Categorize based on result
+            container_info = {
+                "container_id": composite_id,
+                "container_name": container_name,
+                "reason": validation_result.reason
+            }
+
+            if validation_result.result == ValidationResult.ALLOW:
+                allowed.append(container_info)
+            elif validation_result.result == ValidationResult.WARN:
+                container_info["matched_pattern"] = validation_result.matched_pattern
+                warned.append(container_info)
+            elif validation_result.result == ValidationResult.BLOCK:
+                blocked.append(container_info)
+
+        except Exception as e:
+            logger.error(f"Error validating container {composite_id}: {e}")
+            continue
+
+    return {
+        "allowed": allowed,
+        "warned": warned,
+        "blocked": blocked,
+        "summary": {
+            "total": len(allowed) + len(warned) + len(blocked),
+            "allowed": len(allowed),
+            "warned": len(warned),
+            "blocked": len(blocked)
+        }
+    }
 
 
 @app.get("/api/batch/{job_id}", tags=["batch-operations"])
@@ -3512,6 +3614,112 @@ async def get_dashboard_hosts(
 
     except Exception as e:
         logger.error(f"Failed to get dashboard hosts: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== Dashboard Summary (Homepage Integration) ====================
+
+# Simple in-memory cache for dashboard summary (30-second TTL)
+_dashboard_summary_cache = {
+    "data": None,
+    "timestamp": None
+}
+
+@app.get("/api/dashboard/summary", tags=["dashboard"])
+async def get_dashboard_summary(current_user: dict = Depends(get_current_user)):
+    """
+    Get aggregated dashboard summary for external integrations (Homepage, Grafana, etc.)
+
+    Returns high-level statistics about hosts, containers, and available updates.
+    Designed for read-only dashboard widgets and monitoring tools.
+
+    Response is cached for 30 seconds to reduce load from frequent polling.
+
+    Returns:
+        - hosts: online/offline/total counts
+        - containers: running/stopped/paused/total counts
+        - updates: available update count
+        - timestamp: ISO 8601 timestamp with 'Z' suffix (UTC)
+    """
+    try:
+        # Check cache (30-second TTL)
+        now = datetime.now(timezone.utc)
+        if _dashboard_summary_cache["data"] is not None and _dashboard_summary_cache["timestamp"] is not None:
+            cache_age = (now - _dashboard_summary_cache["timestamp"]).total_seconds()
+            if cache_age < 30:
+                # Return cached response
+                logger.debug(f"Returning cached dashboard summary (age: {cache_age:.1f}s)")
+                return _dashboard_summary_cache["data"]
+
+        # Cache miss or expired - gather fresh data
+        logger.debug("Cache miss - gathering fresh dashboard summary")
+
+        # Hosts summary
+        # NOTE: monitor.hosts is Dict[str, DockerHost] where DockerHost is a Pydantic model
+        total_hosts = len(monitor.hosts)
+        online_hosts = sum(1 for host in monitor.hosts.values() if host.status == 'online')
+        offline_hosts = total_hosts - online_hosts
+
+        # Containers summary
+        # NOTE: get_last_containers() returns cached list from last monitor cycle (max 2s old)
+        all_containers = monitor.get_last_containers()
+        state_counts = {}
+        for container in all_containers:
+            # Container is a Container model, not a dict
+            state = container.state if hasattr(container, 'state') else 'unknown'
+            state_counts[state] = state_counts.get(state, 0) + 1
+
+        # Updates and alerts summary
+        with monitor.db.get_session() as session:
+            updates_available = session.query(ContainerUpdate).filter(
+                ContainerUpdate.update_available == True
+            ).count()
+
+            # Count active alerts (state='open', not snoozed, not resolved)
+            active_alerts = session.query(AlertV2).filter(
+                AlertV2.state == 'open',
+                AlertV2.resolved_at == None
+            ).count()
+
+        # Build response (with both detailed and flattened formats for dashboard compatibility)
+        running_containers = state_counts.get('running', 0)
+        total_containers = len(all_containers)
+
+        response = {
+            # Detailed format (for custom dashboards)
+            "hosts": {
+                "online": online_hosts,
+                "total": total_hosts,
+                "offline": offline_hosts
+            },
+            "containers": {
+                "running": running_containers,
+                "stopped": state_counts.get('exited', 0),
+                "paused": state_counts.get('paused', 0),
+                "total": total_containers
+            },
+            "updates": {
+                "available": updates_available
+            },
+            "alerts": {
+                "active": active_alerts
+            },
+            # Flattened format (for Homepage and simple widgets)
+            "hosts_summary": f"{online_hosts}/{total_hosts}",
+            "containers_summary": f"{running_containers}/{total_containers}",
+            "updates_available": updates_available,
+            "alerts_active": active_alerts,
+            "timestamp": now.isoformat() + 'Z'
+        }
+
+        # Update cache
+        _dashboard_summary_cache["data"] = response
+        _dashboard_summary_cache["timestamp"] = now
+
+        return response
+
+    except Exception as e:
+        logger.error(f"Failed to get dashboard summary: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 # ==================== Event Log Routes ====================

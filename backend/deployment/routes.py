@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from database import Deployment, DeploymentTemplate, DatabaseManager, GlobalSettings, DeploymentMetadata
@@ -32,11 +32,30 @@ template_router = APIRouter(prefix="/api/templates", tags=["templates"])
 
 class DeploymentCreate(BaseModel):
     """Create deployment request."""
-    host_id: str
-    name: str
-    deployment_type: str  # 'container' or 'stack'
-    definition: Dict[str, Any]
-    rollback_on_failure: bool = True
+    host_id: str = Field(..., description="UUID of the Docker host to deploy to")
+    name: str = Field(..., description="Human-readable name for the deployment")
+    deployment_type: str = Field(..., description="Type of deployment: 'container' or 'stack'")
+    definition: Dict[str, Any] = Field(
+        ...,
+        description="Deployment configuration. For stacks: must include 'compose_yaml' field with Docker Compose YAML as string. For containers: include image, ports, volumes, etc."
+    )
+    rollback_on_failure: bool = Field(
+        True,
+        description="Automatically rollback if deployment fails (default: true)"
+    )
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "host_id": "86a10392-2289-409f-899d-5f5c799086da",
+                "name": "my-nginx-stack",
+                "deployment_type": "stack",
+                "definition": {
+                    "compose_yaml": "services:\n  web:\n    image: nginx:alpine\n    ports:\n      - 80:80"
+                },
+                "rollback_on_failure": True
+            }
+        }
 
 
 class DeploymentUpdate(BaseModel):
@@ -71,12 +90,18 @@ class DeploymentResponse(BaseModel):
 
 class TemplateCreate(BaseModel):
     """Create template request."""
-    name: str
-    deployment_type: str
-    template_definition: Dict[str, Any]
-    category: Optional[str] = None
-    description: Optional[str] = None
-    variables: Optional[Dict[str, Any]] = None
+    name: str = Field(..., description="Template name (must be unique)")
+    deployment_type: str = Field(..., description="Type: 'container' or 'stack'")
+    template_definition: Dict[str, Any] = Field(
+        ...,
+        description="Template definition with optional variables like ${VAR_NAME}"
+    )
+    category: Optional[str] = Field(None, description="Category for organization (e.g., 'media', 'networking')")
+    description: Optional[str] = Field(None, description="Human-readable description of what this template does")
+    variables: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Variable definitions with defaults. Example: {'APP_PORT': '8080', 'APP_IMAGE': 'nginx:alpine'}"
+    )
 
 
 class TemplateUpdate(BaseModel):
@@ -90,14 +115,17 @@ class TemplateUpdate(BaseModel):
 
 class TemplateRenderRequest(BaseModel):
     """Render template request."""
-    values: Dict[str, Any]
+    values: Dict[str, Any] = Field(
+        ...,
+        description="Variable values to substitute. Example: {'APP_PORT': '3000', 'APP_IMAGE': 'nginx:1.25'}"
+    )
 
 
 class SaveAsTemplateRequest(BaseModel):
     """Request to save deployment as reusable template."""
-    name: str
-    category: Optional[str] = None
-    description: Optional[str] = None
+    name: str = Field(..., description="Template name (must be unique)")
+    category: Optional[str] = Field(None, description="Category for organization")
+    description: Optional[str] = Field(None, description="Template description")
 
 
 # ==================== Dependency Injection ====================
@@ -159,9 +187,42 @@ async def create_deployment(
     """
     Create a new deployment.
 
+    Creates a deployment in 'planning' state. Call /deployments/{id}/execute to start it.
+
+    **For Stack Deployments (Docker Compose):**
+    - Set `deployment_type: "stack"`
+    - Include `compose_yaml` in definition with Docker Compose YAML as a string
+    - Use `\\n` for newlines in the YAML string
+
+    **Example - Simple Stack:**
+    ```json
+    {
+      "host_id": "your-host-id",
+      "name": "nginx-redis",
+      "deployment_type": "stack",
+      "definition": {
+        "compose_yaml": "services:\\n  web:\\n    image: nginx:alpine\\n  cache:\\n    image: redis:alpine"
+      }
+    }
+    ```
+
+    **Example - Stack with Variables:**
+    ```json
+    {
+      "definition": {
+        "compose_yaml": "services:\\n  app:\\n    image: ${APP_IMAGE}",
+        "variables": {
+          "APP_IMAGE": "nginx:1.25"
+        }
+      }
+    }
+    ```
+
+    **For Container Deployments:**
+    - Set `deployment_type: "container"`
+    - Include container config directly in definition (image, ports, volumes, etc.)
+
     Security validation is performed before creation.
-    Deployment will be in 'planning' state initially.
-    Use /deployments/{id}/execute to start deployment.
     """
     try:
         deployment_id = await executor.create_deployment(

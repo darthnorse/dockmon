@@ -42,60 +42,9 @@ class UpdateChecker:
         self.registry = get_registry_adapter()
 
     def _get_registry_credentials(self, image_name: str) -> Optional[Dict[str, str]]:
-        """
-        Get credentials for registry from image name.
-
-        Extracts registry URL from image and looks up stored credentials.
-
-        Args:
-            image_name: Full image reference (e.g., "nginx:1.25", "ghcr.io/user/app:latest")
-
-        Returns:
-            Dict with {username, password} if credentials found, None otherwise
-
-        Examples:
-            nginx:1.25 → docker.io → lookup credentials for "docker.io"
-            ghcr.io/user/app:latest → ghcr.io → lookup credentials for "ghcr.io"
-            registry.example.com:5000/app:v1 → registry.example.com:5000 → lookup
-        """
-        try:
-            # Extract registry URL using same logic as registry_adapter
-            registry_url = "docker.io"  # Default
-
-            # Check for explicit registry
-            if "/" in image_name:
-                parts = image_name.split("/", 1)
-                # If first part has dot or colon, it's likely a registry
-                if "." in parts[0] or ":" in parts[0]:
-                    registry_url = parts[0]
-
-            # Normalize (lowercase)
-            registry_url = registry_url.lower()
-
-            # Query database for credentials
-            with self.db.get_session() as session:
-                cred = session.query(RegistryCredential).filter_by(
-                    registry_url=registry_url
-                ).first()
-
-                if cred:
-                    try:
-                        plaintext = decrypt_password(cred.password_encrypted)
-                        logger.debug(f"Using credentials for registry '{registry_url}'")
-                        return {
-                            "username": cred.username,
-                            "password": plaintext
-                        }
-                    except Exception as e:
-                        logger.error(f"Failed to decrypt credentials for {registry_url}: {e}")
-                        return None
-
-                # No credentials found
-                return None
-
-        except Exception as e:
-            logger.error(f"Error looking up credentials for {image_name}: {e}")
-            return None
+        """Get credentials for registry from image name (delegates to shared utility)."""
+        from utils.registry_credentials import get_registry_credentials
+        return get_registry_credentials(self.db, image_name)
 
     async def check_all_containers(self) -> Dict[str, int]:
         """
@@ -219,7 +168,7 @@ class UpdateChecker:
         # Compute floating tag based on tracking mode
         floating_tag = self.registry.compute_floating_tag(image, tracking_mode)
 
-        logger.debug(f"Checking {image} with mode '{tracking_mode}' → tracking {floating_tag}")
+        logger.info(f"[{container['name']}] Checking {image} with mode '{tracking_mode}' → tracking {floating_tag}")
 
         # Look up registry credentials for this image
         auth = self._get_registry_credentials(image)
@@ -307,29 +256,34 @@ class UpdateChecker:
         Returns:
             sha256 digest string or None if not available
         """
+        container_name = container.get("name", "unknown")
+
         if not self.monitor:
+            logger.warning(f"[{container_name}] No monitor object available")
             return None
 
         try:
             # Get Docker client for this host from the monitor's client pool
             host_id = container.get("host_id")
             if not host_id:
-                return None
-
-            if not self.monitor:
+                logger.warning(f"[{container_name}] No host_id in container dict")
                 return None
 
             # Use the monitor's existing Docker client - it manages TLS certs properly
             client = self.monitor.clients.get(host_id)
             if not client:
-                logger.debug(f"No Docker client found for host {host_id}")
+                logger.warning(f"[{container_name}] No Docker client found for host {host_id}")
+                logger.warning(f"[{container_name}] Available clients: {list(self.monitor.clients.keys())}")
                 return None
 
             # Get container and extract digest (use async wrapper to prevent event loop blocking)
             from utils.async_docker import async_docker_call
+            logger.debug(f"[{container_name}] Fetching container with ID: {container['id']}")
             dc = await async_docker_call(client.containers.get, container["id"])
+            logger.debug(f"[{container_name}] Got container object, fetching image...")
             image = dc.image
             repo_digests = image.attrs.get("RepoDigests", [])
+            logger.debug(f"[{container_name}] RepoDigests: {repo_digests}")
 
             if repo_digests:
                 # RepoDigests is a list like ["ghcr.io/org/app@sha256:abc123..."]
@@ -337,14 +291,14 @@ class UpdateChecker:
                 for repo_digest in repo_digests:
                     if "@sha256:" in repo_digest:
                         digest = repo_digest.split("@", 1)[1]
-                        logger.debug(f"Got container image digest from Docker API: {digest[:16]}...")
+                        logger.debug(f"[{container_name}] Got container image digest from Docker API: {digest[:16]}...")
                         return digest
 
-            logger.debug(f"No RepoDigests found for container {container['name']}, image may have been built locally")
+            logger.warning(f"[{container_name}] No RepoDigests found (image may be built locally)")
             return None
 
         except Exception as e:
-            logger.warning(f"Error getting container image digest: {e}")
+            logger.warning(f"[{container_name}] Error getting container image digest: {e}", exc_info=True)
             return None
 
     async def _get_container_image_version(self, container: Dict) -> Optional[str]:

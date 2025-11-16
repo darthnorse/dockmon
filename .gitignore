@@ -109,3 +109,7 @@ htmlcov/
 
 # V1 Frontend (removed - use ui/ React app instead)
 /src/
+
+# Compiled Go binaries (built during Docker build)
+stats-service/stats-service
+agent/dockmon-agent-logs-fix

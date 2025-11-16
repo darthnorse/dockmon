@@ -26,17 +26,20 @@ export function IPAddressCell({ container }: IPAddressCellProps) {
     return <span className="text-sm text-muted-foreground">{docker_ip}</span>
   }
 
-  // Multiple networks - show primary + count with tooltip
-  const tooltipText = Object.entries(docker_ips || {})
-    .map(([network, ip]) => `${network}: ${ip}`)
-    .join('\n')
+  // Multiple networks - show each IP on a separate line
+  // Show primary IP first, then the rest
+  const allIps = Object.entries(docker_ips || {})
+  const primaryEntry = allIps.find(([, ip]) => ip === docker_ip)
+  const otherEntries = allIps.filter(([, ip]) => ip !== docker_ip)
+  const sortedEntries = primaryEntry ? [primaryEntry, ...otherEntries] : allIps
 
   return (
-    <div className="flex items-center gap-1.5 cursor-help" title={tooltipText}>
-      <span className="text-sm text-muted-foreground">{docker_ip}</span>
-      <span className="text-xs text-muted-foreground bg-muted px-1.5 py-0.5 rounded-md">
-        +{networkCount - 1}
-      </span>
+    <div className="flex flex-col gap-0.5">
+      {sortedEntries.map(([network, ip]) => (
+        <span key={network} className="text-sm text-muted-foreground">
+          {ip}
+        </span>
+      ))}
     </div>
   )
 }

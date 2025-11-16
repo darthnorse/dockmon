@@ -99,6 +99,128 @@ class ComposeValidator:
                             f"Invalid port mapping in service '{service_name}': {port}"
                         )
 
+            # Validate network_mode if present (v2.1.8 - Quick Wins)
+            if 'network_mode' in service_config:
+                network_mode = service_config['network_mode']
+
+                # Must be a string
+                if not isinstance(network_mode, str):
+                    raise ComposeValidationError(
+                        f"Service '{service_name}': network_mode must be a string, "
+                        f"got {type(network_mode).__name__}"
+                    )
+
+                # Explicit check for empty string with clear message
+                if not network_mode or network_mode.strip() == "":
+                    raise ComposeValidationError(
+                        f"Service '{service_name}': network_mode cannot be empty. "
+                        f"Valid values: 'bridge', 'host', 'none', or 'container:<name>'"
+                    )
+
+                # Must be valid mode or container:<name>
+                valid_modes = ['bridge', 'host', 'none']
+                # Docker Compose accepts both 'container:name' and 'service:name' (service is alias for container in compose)
+                if network_mode not in valid_modes and not network_mode.startswith('container:') and not network_mode.startswith('service:'):
+                    raise ComposeValidationError(
+                        f"Service '{service_name}': Invalid network_mode '{network_mode}'. "
+                        f"Must be one of {valid_modes}, 'container:<name>', or 'service:<name>'"
+                    )
+
+                # Cannot use both network_mode and networks
+                if 'networks' in service_config:
+                    raise ComposeValidationError(
+                        f"Service '{service_name}': Cannot use both 'network_mode' and 'networks'. "
+                        f"These options are mutually exclusive. "
+                        f"Remove one to fix this error."
+                    )
+
+            # Validate extra_hosts if present (v2.1.8 - Quick Wins)
+            if 'extra_hosts' in service_config:
+                extra_hosts = service_config['extra_hosts']
+
+                if isinstance(extra_hosts, list):
+                    # List format: validate 'hostname:ip' format
+                    for entry in extra_hosts:
+                        if not isinstance(entry, str):
+                            raise ComposeValidationError(
+                                f"Service '{service_name}': extra_hosts entries must be strings, "
+                                f"got {type(entry).__name__}"
+                            )
+                        if ':' not in entry:
+                            raise ComposeValidationError(
+                                f"Service '{service_name}': Invalid extra_hosts format '{entry}'. "
+                                f"Expected format: 'hostname:ip' (e.g., 'db:192.168.1.100')"
+                            )
+                elif isinstance(extra_hosts, dict):
+                    # Dict format: validate keys and values are strings
+                    for hostname, ip in extra_hosts.items():
+                        if not isinstance(hostname, str):
+                            raise ComposeValidationError(
+                                f"Service '{service_name}': extra_hosts hostname must be string, "
+                                f"got {type(hostname).__name__}"
+                            )
+                        if not isinstance(ip, str):
+                            raise ComposeValidationError(
+                                f"Service '{service_name}': extra_hosts IP must be string, "
+                                f"got {type(ip).__name__}"
+                            )
+                else:
+                    raise ComposeValidationError(
+                        f"Service '{service_name}': extra_hosts must be a list or dict, "
+                        f"got {type(extra_hosts).__name__}"
+                    )
+
+            # Validate devices if present (v2.1.8 - Quick Wins)
+            if 'devices' in service_config:
+                devices = service_config['devices']
+
+                if not isinstance(devices, list):
+                    raise ComposeValidationError(
+                        f"Service '{service_name}': devices must be a list, "
+                        f"got {type(devices).__name__}"
+                    )
+
+                for device in devices:
+                    if not isinstance(device, str):
+                        raise ComposeValidationError(
+                            f"Service '{service_name}': device entries must be strings, "
+                            f"got {type(device).__name__}"
+                        )
+
+            # Validate cap_add if present (v2.1.8 - Quick Wins)
+            if 'cap_add' in service_config:
+                cap_add = service_config['cap_add']
+
+                if not isinstance(cap_add, list):
+                    raise ComposeValidationError(
+                        f"Service '{service_name}': cap_add must be a list, "
+                        f"got {type(cap_add).__name__}"
+                    )
+
+                for cap in cap_add:
+                    if not isinstance(cap, str):
+                        raise ComposeValidationError(
+                            f"Service '{service_name}': cap_add entries must be strings, "
+                            f"got {type(cap).__name__}"
+                        )
+
+            # Validate cap_drop if present (v2.1.8 - Quick Wins)
+            if 'cap_drop' in service_config:
+                cap_drop = service_config['cap_drop']
+
+                if not isinstance(cap_drop, list):
+                    raise ComposeValidationError(
+                        f"Service '{service_name}': cap_drop must be a list, "
+                        f"got {type(cap_drop).__name__}"
+                    )
+
+                for cap in cap_drop:
+                    if not isinstance(cap, str):
+                        raise ComposeValidationError(
+                            f"Service '{service_name}': cap_drop entries must be strings, "
+                            f"got {type(cap).__name__}"
+                        )
+
     def _is_valid_port_mapping(self, port_spec) -> bool:
         """
         Check if port mapping is valid.

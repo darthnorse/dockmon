@@ -86,8 +86,8 @@ class RateLimiter:
                 _get_int_env('DOCKMON_RATE_VIOLATIONS_ALERTS', 8)
             ),
             "alerts_write": (
-                _get_int_env('DOCKMON_RATE_LIMIT_ALERTS_WRITE', 30),  # Write operations (resolve/snooze)
-                _get_int_env('DOCKMON_RATE_BURST_ALERTS_WRITE', 10),
+                _get_int_env('DOCKMON_RATE_LIMIT_ALERTS_WRITE', 200),  # Write operations (resolve/snooze) - increased for bulk operations
+                _get_int_env('DOCKMON_RATE_BURST_ALERTS_WRITE', 100),
                 _get_int_env('DOCKMON_RATE_VIOLATIONS_ALERTS_WRITE', 5)
             ),
             "rules": (

@@ -13,12 +13,12 @@ import uuid
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from database import Deployment, DeploymentTemplate, DatabaseManager, GlobalSettings, DeploymentMetadata
 from deployment import DeploymentExecutor, TemplateManager, SecurityException, SecurityValidator
-from auth.v2_routes import get_current_user
+from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_scope
 from utils.keys import parse_composite_key
 
 logger = logging.getLogger(__name__)
@@ -32,11 +32,30 @@ template_router = APIRouter(prefix="/api/templates", tags=["templates"])
 
 class DeploymentCreate(BaseModel):
     """Create deployment request."""
-    host_id: str
-    name: str
-    deployment_type: str  # 'container' or 'stack'
-    definition: Dict[str, Any]
-    rollback_on_failure: bool = True
+    host_id: str = Field(..., description="UUID of the Docker host to deploy to")
+    name: str = Field(..., description="Human-readable name for the deployment")
+    deployment_type: str = Field(..., description="Type of deployment: 'container' or 'stack'")
+    definition: Dict[str, Any] = Field(
+        ...,
+        description="Deployment configuration. For stacks: must include 'compose_yaml' field with Docker Compose YAML as string. For containers: include image, ports, volumes, etc."
+    )
+    rollback_on_failure: bool = Field(
+        True,
+        description="Automatically rollback if deployment fails (default: true)"
+    )
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "host_id": "86a10392-2289-409f-899d-5f5c799086da",
+                "name": "my-nginx-stack",
+                "deployment_type": "stack",
+                "definition": {
+                    "compose_yaml": "services:\n  web:\n    image: nginx:alpine\n    ports:\n      - 80:80"
+                },
+                "rollback_on_failure": True
+            }
+        }
 
 
 class DeploymentUpdate(BaseModel):
@@ -71,12 +90,18 @@ class DeploymentResponse(BaseModel):
 
 class TemplateCreate(BaseModel):
     """Create template request."""
-    name: str
-    deployment_type: str
-    template_definition: Dict[str, Any]
-    category: Optional[str] = None
-    description: Optional[str] = None
-    variables: Optional[Dict[str, Any]] = None
+    name: str = Field(..., description="Template name (must be unique)")
+    deployment_type: str = Field(..., description="Type: 'container' or 'stack'")
+    template_definition: Dict[str, Any] = Field(
+        ...,
+        description="Template definition with optional variables like ${VAR_NAME}"
+    )
+    category: Optional[str] = Field(None, description="Category for organization (e.g., 'media', 'networking')")
+    description: Optional[str] = Field(None, description="Human-readable description of what this template does")
+    variables: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Variable definitions with defaults. Example: {'APP_PORT': '8080', 'APP_IMAGE': 'nginx:alpine'}"
+    )
 
 
 class TemplateUpdate(BaseModel):
@@ -90,14 +115,17 @@ class TemplateUpdate(BaseModel):
 
 class TemplateRenderRequest(BaseModel):
     """Render template request."""
-    values: Dict[str, Any]
+    values: Dict[str, Any] = Field(
+        ...,
+        description="Variable values to substitute. Example: {'APP_PORT': '3000', 'APP_IMAGE': 'nginx:1.25'}"
+    )
 
 
 class SaveAsTemplateRequest(BaseModel):
     """Request to save deployment as reusable template."""
-    name: str
-    category: Optional[str] = None
-    description: Optional[str] = None
+    name: str = Field(..., description="Template name (must be unique)")
+    category: Optional[str] = Field(None, description="Category for organization")
+    description: Optional[str] = Field(None, description="Template description")
 
 
 # ==================== Dependency Injection ====================
@@ -149,7 +177,7 @@ def get_database_manager() -> DatabaseManager:
 
 # ==================== Deployment Endpoints ====================
 
-@router.post("", response_model=DeploymentResponse, status_code=201)
+@router.post("", response_model=DeploymentResponse, status_code=201, dependencies=[Depends(require_scope("write"))])
 async def create_deployment(
     request: DeploymentCreate,
     background_tasks: BackgroundTasks,
@@ -159,9 +187,42 @@ async def create_deployment(
     """
     Create a new deployment.
 
+    Creates a deployment in 'planning' state. Call /deployments/{id}/execute to start it.
+
+    **For Stack Deployments (Docker Compose):**
+    - Set `deployment_type: "stack"`
+    - Include `compose_yaml` in definition with Docker Compose YAML as a string
+    - Use `\\n` for newlines in the YAML string
+
+    **Example - Simple Stack:**
+    ```json
+    {
+      "host_id": "your-host-id",
+      "name": "nginx-redis",
+      "deployment_type": "stack",
+      "definition": {
+        "compose_yaml": "services:\\n  web:\\n    image: nginx:alpine\\n  cache:\\n    image: redis:alpine"
+      }
+    }
+    ```
+
+    **Example - Stack with Variables:**
+    ```json
+    {
+      "definition": {
+        "compose_yaml": "services:\\n  app:\\n    image: ${APP_IMAGE}",
+        "variables": {
+          "APP_IMAGE": "nginx:1.25"
+        }
+      }
+    }
+    ```
+
+    **For Container Deployments:**
+    - Set `deployment_type: "container"`
+    - Include container config directly in definition (image, ports, volumes, etc.)
+
     Security validation is performed before creation.
-    Deployment will be in 'planning' state initially.
-    Use /deployments/{id}/execute to start deployment.
     """
     try:
         deployment_id = await executor.create_deployment(
@@ -189,7 +250,7 @@ async def create_deployment(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/{deployment_id}/execute", response_model=DeploymentResponse)
+@router.post("/{deployment_id}/execute", response_model=DeploymentResponse, dependencies=[Depends(require_scope("write"))])
 async def execute_deployment(
     deployment_id: str,
     background_tasks: BackgroundTasks,
@@ -327,7 +388,7 @@ async def get_deployment(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.put("/{deployment_id}", response_model=DeploymentResponse)
+@router.put("/{deployment_id}", response_model=DeploymentResponse, dependencies=[Depends(require_scope("write"))])
 async def update_deployment(
     deployment_id: str,
     request: DeploymentUpdate,
@@ -399,7 +460,7 @@ async def update_deployment(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/{deployment_id}")
+@router.delete("/{deployment_id}", dependencies=[Depends(require_scope("write"))])
 async def delete_deployment(
     deployment_id: str,
     current_user=Depends(get_current_user),
@@ -445,7 +506,7 @@ async def delete_deployment(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/{deployment_id}/save-as-template", status_code=200)
+@router.post("/{deployment_id}/save-as-template", status_code=200, dependencies=[Depends(require_scope("write"))])
 async def save_deployment_as_template(
     deployment_id: str,
     request: SaveAsTemplateRequest,

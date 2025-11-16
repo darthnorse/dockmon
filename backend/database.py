@@ -45,6 +45,7 @@ class User(Base):
     username = Column(String, nullable=False, unique=True)
     password_hash = Column(String, nullable=False)
     display_name = Column(String, nullable=True)  # Optional friendly display name
+    role = Column(Text, nullable=False, default="admin")  # "admin", "user", "readonly" - for future RBAC
     is_first_login = Column(Boolean, default=True)
     must_change_password = Column(Boolean, default=False)
     dashboard_layout_v2 = Column(Text, nullable=True)  # JSON string of react-grid-layout (v2)
@@ -68,6 +69,60 @@ class UserPrefs(Base):
     dismissed_dockmon_update_version = Column(Text, nullable=True)  # Version user dismissed (v2.0.1+)
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class ApiKey(Base):
+    """
+    API keys for programmatic access (Ansible, Homepage, monitoring tools).
+
+    SECURITY:
+    - Keys are hashed (SHA256) before storage - NEVER store plaintext
+    - key_prefix allows user identification without exposing full key
+    - Optional IP restrictions for additional security
+    - Scoped permissions (read/write/admin)
+
+    CONSISTENCY:
+    - All datetime fields use timezone.utc for consistency
+    - Usage tracking (last_used_at, usage_count) updated on each request
+    """
+    __tablename__ = "api_keys"
+
+    # Primary key
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # Owner
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+
+    # Key identification (user-friendly)
+    name = Column(Text, nullable=False)  # "Homepage Dashboard", "Ansible Automation"
+    description = Column(Text, nullable=True)  # Optional detailed description
+
+    # Key storage (SECURITY CRITICAL)
+    key_hash = Column(Text, nullable=False, unique=True)  # SHA256 hash of full key
+    key_prefix = Column(Text, nullable=False)  # First 12 chars for UI display
+
+    # Permissions (mandatory enforcement)
+    scopes = Column(Text, nullable=False, default="read")  # Comma-separated: "read", "read,write", "admin"
+
+    # IP restrictions (optional security layer)
+    # WARNING: Only works correctly with REVERSE_PROXY_MODE=true
+    allowed_ips = Column(Text, nullable=True)  # Comma-separated: "192.168.1.0/24,10.0.0.1"
+
+    # Usage tracking
+    last_used_at = Column(DateTime, nullable=True)
+    usage_count = Column(Integer, default=0, nullable=False)
+
+    # Lifecycle management
+    expires_at = Column(DateTime, nullable=True)  # Optional expiration (null = no expiration)
+    revoked_at = Column(DateTime, nullable=True)  # Revocation timestamp (null = active)
+
+    # Timestamps (always timezone-aware)
+    created_at = Column(DateTime, nullable=False)
+    updated_at = Column(DateTime, nullable=False)
+
+    def __repr__(self):
+        return f"<ApiKey(id={self.id}, name='{self.name}', prefix='{self.key_prefix}', scopes='{self.scopes}')>"
+
 
 class DockerHostDB(Base):
     """Docker host configuration"""
@@ -2753,6 +2808,7 @@ class DatabaseManager:
         container_selector_json: Optional[str] = None,
         labels_json: Optional[str] = None,
         notify_channels_json: Optional[str] = None,
+        custom_template: Optional[str] = None,
         created_by: Optional[str] = None,
     ) -> AlertRuleV2:
         """Create a new alert rule v2"""
@@ -2781,6 +2837,7 @@ class DatabaseManager:
                 container_selector_json=container_selector_json,
                 labels_json=labels_json,
                 notify_channels_json=notify_channels_json,
+                custom_template=custom_template,
                 created_by=created_by,
             )
             session.add(rule)

@@ -111,6 +111,9 @@ export interface Container {
   disk_io_per_sec?: number | null
   // Tags
   tags?: string[] | null
+  // Docker network IP addresses (GitHub Issue #37)
+  docker_ip?: string | null  // Primary Docker network IP
+  docker_ips?: Record<string, string> | null  // All network IPs {network_name: ip}
 }
 
 // ==================== Registry Credentials ====================

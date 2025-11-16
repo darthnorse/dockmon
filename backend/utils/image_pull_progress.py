@@ -70,6 +70,7 @@ class ImagePullProgress:
         image: str,
         host_id: str,
         entity_id: str,
+        auth_config: dict = None,
         event_type: str = "image_pull_layer_progress",
         timeout: int = 1800
     ):
@@ -87,6 +88,7 @@ class ImagePullProgress:
             image: Image name with tag (e.g., "nginx:latest")
             host_id: Full UUID of the Docker host
             entity_id: Container ID (12 chars) or Deployment ID (composite key)
+            auth_config: Optional Docker registry auth config dict with 'username' and 'password'
             event_type: WebSocket event type (e.g., "container_update_layer_progress")
             timeout: Maximum seconds for the entire pull operation
 
@@ -103,6 +105,7 @@ class ImagePullProgress:
             image,
             host_id,
             entity_id,
+            auth_config,
             event_type,
             timeout
         )
@@ -113,6 +116,7 @@ class ImagePullProgress:
         image: str,
         host_id: str,
         entity_id: str,
+        auth_config: dict,
         event_type: str,
         timeout: int
     ):
@@ -142,7 +146,12 @@ class ImagePullProgress:
 
         try:
             # Stream pull with decode (returns generator of dicts)
-            stream = api_client.pull(image, stream=True, decode=True)
+            # Pass auth_config if provided
+            pull_kwargs = {'stream': True, 'decode': True}
+            if auth_config:
+                pull_kwargs['auth_config'] = auth_config
+
+            stream = api_client.pull(image, **pull_kwargs)
 
             for line in stream:
                 # Check timeout

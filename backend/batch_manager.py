@@ -59,6 +59,22 @@ class BatchJobManager:
         # Use composite keys {host_id}:{container_id} for multi-host support (cloned VMs)
         container_map = {f"{c.host_id}:{c.short_id}": c for c in all_containers}
 
+        # Check for dependency conflicts if this is an update action
+        if action == 'update-containers':
+            logger.info(f"Checking for dependency conflicts in batch update with {len(container_ids)} containers")
+            from updates.dependency_analyzer import DependencyConflictDetector
+            detector = DependencyConflictDetector(self.monitor)
+            logger.info(f"Created DependencyConflictDetector, calling check_batch with container_ids={container_ids}")
+            conflict_error = detector.check_batch(container_ids, container_map)
+            logger.info(f"Dependency check result: {conflict_error}")
+            if conflict_error:
+                # Dependency conflict detected - fail the entire batch
+                # Don't create individual items, just fail the job with the error message
+                logger.error(f"Batch job {job_id} blocked due to dependency conflict: {conflict_error}")
+
+                # Raise an exception that will be caught by the API endpoint
+                raise ValueError(conflict_error)
+
         # Create job record
         with self.db.get_session() as session:
             job = BatchJob(
@@ -291,7 +307,7 @@ class BatchJobManager:
             if action not in ['delete-containers']:
                 # Get current container state for non-delete operations
                 containers = await self.monitor.get_containers(host_id)
-                container = next((c for c in containers if c.short_id == container_id), None)
+                container = next((c for c in containers if c.short_id == short_id), None)
 
                 if not container:
                     return {
@@ -440,8 +456,11 @@ class BatchJobManager:
                         }
 
                 # Use update executor to handle the layered progress
+                # Get force_warn parameter from params (default: False for safety)
+                force_warn = params.get('force_warn', False) if params else False
+
                 executor = get_update_executor(self.db, self.monitor)
-                success = await executor.update_container(host_id, short_id, update_record, force=False)
+                success = await executor.update_container(host_id, short_id, update_record, force=False, force_warn=force_warn)
 
                 if success:
                     message = 'Update completed successfully'

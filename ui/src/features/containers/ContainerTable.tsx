@@ -80,8 +80,10 @@ import { BulkActionBar } from './components/BulkActionBar'
 import { BulkActionConfirmModal } from './components/BulkActionConfirmModal'
 import { DeleteConfirmModal } from './components/DeleteConfirmModal'
 import { UpdateConfirmModal } from './components/UpdateConfirmModal'
+import { BatchUpdateValidationConfirmModal } from './components/BatchUpdateValidationConfirmModal'
 import { BatchJobPanel } from './components/BatchJobPanel'
 import { ColumnCustomizationPanel } from './components/ColumnCustomizationPanel'
+import { IPAddressCell } from './components/IPAddressCell'
 import type { Container } from './types'
 import { useSimplifiedWorkflow, useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
 import { useContainerUpdateStatus, useUpdatesSummary, useAllAutoUpdateConfigs, useAllHealthCheckConfigs } from './hooks/useContainerUpdates'
@@ -392,6 +394,12 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   const [pendingAction, setPendingAction] = useState<'start' | 'stop' | 'restart' | null>(null)
   const [deleteConfirmModalOpen, setDeleteConfirmModalOpen] = useState(false)
   const [updateConfirmModalOpen, setUpdateConfirmModalOpen] = useState(false)
+  const [validationModalOpen, setValidationModalOpen] = useState(false)
+  const [validationData, setValidationData] = useState<{
+    allowed: Array<{ container_id: string; container_name: string; reason: string }>
+    warned: Array<{ container_id: string; container_name: string; reason: string; matched_pattern?: string }>
+    blocked: Array<{ container_id: string; container_name: string; reason: string }>
+  } | null>(null)
   const { enabled: simplifiedWorkflow } = useSimplifiedWorkflow()
   const { openModal } = useContainerModal()
 
@@ -700,8 +708,32 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
     }
   }
 
-  const handleUpdateContainers = () => {
-    setUpdateConfirmModalOpen(true)
+  const handleUpdateContainers = async () => {
+    if (!data || selectedContainerIds.size === 0) return
+
+    try {
+      // Call pre-flight validation endpoint
+      const validation = await apiClient.post<{
+        allowed: Array<{ container_id: string; container_name: string; reason: string }>
+        warned: Array<{ container_id: string; container_name: string; reason: string; matched_pattern?: string }>
+        blocked: Array<{ container_id: string; container_name: string; reason: string }>
+        summary: { total: number; allowed: number; warned: number; blocked: number }
+      }>('/batch/validate-update', {
+        container_ids: Array.from(selectedContainerIds),
+      })
+
+      // If there are warned or blocked containers, show validation modal
+      if (validation.warned.length > 0 || validation.blocked.length > 0) {
+        setValidationData(validation)
+        setValidationModalOpen(true)
+      } else {
+        // All containers allowed - show simple confirmation
+        setUpdateConfirmModalOpen(true)
+      }
+    } catch (error) {
+      debug.error('ContainerTable', 'Failed to validate batch update:', error)
+      toast.error(`Failed to validate update: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    }
   }
 
   const handleConfirmUpdateContainers = async () => {
@@ -721,6 +753,36 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
       setUpdateConfirmModalOpen(false)
 
       toast.success(`Updating ${count} container${count !== 1 ? 's' : ''}...`)
+      clearSelection()
+    } catch (error) {
+      toast.error(`Failed to update containers: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    }
+  }
+
+  const handleConfirmValidatedUpdate = async () => {
+    if (!data || !validationData) return
+
+    // Extract non-blocked container IDs (allowed + warned)
+    const allowedIds = new Set(validationData.allowed.map(c => c.container_id))
+    const warnedIds = new Set(validationData.warned.map(c => c.container_id))
+    const updateIds = [...allowedIds, ...warnedIds]
+
+    try {
+      // Create batch job with force_warn parameter
+      const result = await apiClient.post<{ job_id: string }>('/batch', {
+        scope: 'container',
+        action: 'update-containers',
+        ids: updateIds,
+        params: {
+          force_warn: true, // Allow warned containers to update
+        },
+      })
+      setBatchJobId(result.job_id)
+      setShowJobPanel(true)
+      setValidationModalOpen(false)
+      setValidationData(null)
+
+      toast.success(`Updating ${updateIds.length} container${updateIds.length !== 1 ? 's' : ''}...`)
       clearSelection()
     } catch (error) {
       toast.error(`Failed to update containers: ${error instanceof Error ? error.message : 'Unknown error'}`)
@@ -1088,11 +1150,20 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
           // Filter by host_id when set from URL params
           return row.original.host_id === filterValue
         },
-        cell: ({ row }) => (
-          <div className="text-sm">{row.original.host_name || 'localhost'}</div>
-        ),
+        cell: ({ row }) => {
+          const { host_name } = row.original
+          return <div className="text-sm">{host_name || 'localhost'}</div>
+        },
       },
-      // 7. Ports
+      // 7. IP Address (Docker network IPs)
+      {
+        id: 'ip',
+        header: 'IP Address',
+        cell: ({ row }) => <IPAddressCell container={row.original} />,
+        size: 150,
+        enableSorting: false,
+      },
+      // 8. Ports
       {
         accessorKey: 'ports',
         id: 'ports',
@@ -1422,6 +1493,21 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
       // Search in ports array (e.g., ["8080:80/tcp", "443:443/tcp"])
       if (container.ports?.some(port => port.toLowerCase().includes(searchValue))) {
         return true
+      }
+
+      // Search in primary IP address
+      if (container.docker_ip?.toLowerCase().includes(searchValue)) {
+        return true
+      }
+
+      // Search in all IP addresses (for multi-network containers)
+      if (container.docker_ips) {
+        const ipMatches = Object.values(container.docker_ips).some(ip =>
+          ip.toLowerCase().includes(searchValue)
+        )
+        if (ipMatches) {
+          return true
+        }
       }
 
       return false
@@ -1920,6 +2006,21 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
           data?.filter((c) => selectedContainerIds.has(makeCompositeKey(c))) || []
         }
       />
+
+      {/* Batch Update Validation Confirmation Modal */}
+      {validationData && (
+        <BatchUpdateValidationConfirmModal
+          isOpen={validationModalOpen}
+          onClose={() => {
+            setValidationModalOpen(false)
+            setValidationData(null)
+          }}
+          onConfirm={handleConfirmValidatedUpdate}
+          allowed={validationData.allowed}
+          warned={validationData.warned}
+          blocked={validationData.blocked}
+        />
+      )}
 
       {/* Batch Job Progress Panel */}
       <BatchJobPanel

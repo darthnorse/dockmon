@@ -191,13 +191,38 @@ async def logout_v2(
     return {"message": "Logout successful"}
 
 
+# Helper function to map user role to scopes
+def _get_user_scopes(user_role: str) -> list[str]:
+    """
+    Map user role to scopes.
+
+    Args:
+        user_role: User role from User.role column
+
+    Returns:
+        List of scopes for this role
+
+    Scope mapping:
+        admin → ["admin"] (full access)
+        user → ["read", "write"] (can manage containers)
+        readonly → ["read"] (view-only)
+        default → ["read"] (safe fallback)
+    """
+    role_map = {
+        "admin": ["admin"],
+        "user": ["read", "write"],
+        "readonly": ["read"]
+    }
+    return role_map.get(user_role, ["read"])  # Safe default
+
+
 # Dependency for protected routes
 async def get_current_user_dependency(
     request: Request,
     session_id: str = Cookie(None),
 ) -> dict:
     """
-    Validate session and return user data.
+    Validate session and return user data with scopes.
 
     SECURITY CHECKS:
     1. Cookie exists
@@ -210,7 +235,7 @@ async def get_current_user_dependency(
         HTTPException: 401 if authentication fails
 
     Returns:
-        Dict with user_id, username, session_id
+        Dict with user_id, username, session_id, scopes (derived from role)
     """
     if not session_id:
         logger.warning("No session cookie provided")
@@ -229,7 +254,24 @@ async def get_current_user_dependency(
             detail="Invalid or expired session"
         )
 
-    return session_data
+    # Derive scopes from User.role (not hardcoded)
+    with db.get_session() as session:
+        user = session.query(User).filter(User.id == session_data["user_id"]).first()
+        if user:
+            user_scopes = _get_user_scopes(user.role)
+            return {
+                **session_data,
+                "auth_type": "session",
+                "scopes": user_scopes
+            }
+
+    # Fallback if user not found (shouldn't happen)
+    logger.warning(f"User {session_data['user_id']} not found in database")
+    return {
+        **session_data,
+        "auth_type": "session",
+        "scopes": ["read"]  # Safe default
+    }
 
 
 # Export dependency for use in other routes

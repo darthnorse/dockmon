@@ -29,7 +29,7 @@ from .security_validator import SecurityValidator, SecurityLevel
 from .host_connector import get_host_connector
 from .compose_parser import ComposeParser, ComposeParseError
 from .container_validator import ContainerValidator, ContainerValidationError
-from .compose_validator import ComposeValidator
+from .compose_validator import ComposeValidator, ComposeValidationError
 from .stack_orchestrator import StackOrchestrator, StackOrchestrationError
 from utils.async_docker import async_docker_call
 from utils.container_health import wait_for_container_health
@@ -294,7 +294,18 @@ class DeploymentExecutor:
                 return False
 
             except Exception as e:
-                logger.error(f"Deployment {deployment_id} failed: {e}", exc_info=True)
+                # Check if this is a user validation error (log without traceback)
+                # vs a system error (log with traceback for debugging)
+                is_validation_error = (
+                    isinstance(e, RuntimeError) and "validation failed" in str(e).lower()
+                )
+
+                if is_validation_error:
+                    # User error - log at WARNING without traceback (already logged above)
+                    logger.warning(f"Deployment {deployment_id} failed validation")
+                else:
+                    # System error - log with traceback for debugging
+                    logger.error(f"Deployment {deployment_id} failed: {e}", exc_info=True)
 
                 # Mark as failed (refresh deployment state first)
                 deployment = session.query(Deployment).filter_by(id=deployment_id).first()
@@ -581,7 +592,9 @@ class DeploymentExecutor:
             validator.validate_service_configuration(compose_data)
             validator.validate_dependencies(compose_data)
 
-        except (ComposeParseError, StackOrchestrationError) as e:
+        except (ComposeParseError, ComposeValidationError, StackOrchestrationError) as e:
+            # User validation error - log at WARNING level without traceback
+            logger.warning(f"Compose validation failed for deployment {deployment.id}: {e}")
             raise RuntimeError(f"Compose validation failed: {e}")
 
         # Get host connector
@@ -604,10 +617,22 @@ class DeploymentExecutor:
                         logger.info(f"Skipping external network: {network_name}")
                         continue
 
-                    logger.info(f"Creating network: {network_name}")
-                    # Note: Network creation implementation depends on connector
-                    # For now, we'll let Docker handle networks via service creation
-                    created_networks.append(network_name)
+                    # Get network driver (default to bridge)
+                    driver = 'bridge'
+                    if network_config and isinstance(network_config, dict):
+                        driver = network_config.get('driver', 'bridge')
+
+                    logger.info(f"Creating network: {network_name} (driver: {driver})")
+                    try:
+                        await connector.create_network(network_name, driver=driver)
+                        created_networks.append(network_name)
+                    except Exception as e:
+                        # Check if network already exists (idempotent)
+                        if '409' in str(e) or 'already exists' in str(e).lower():
+                            logger.info(f"Network {network_name} already exists, continuing")
+                            created_networks.append(network_name)
+                        else:
+                            raise RuntimeError(f"Failed to create network {network_name}: {e}")
 
             # Step 5: Create volumes
             if 'volumes' in compose_data:
@@ -637,7 +662,8 @@ class DeploymentExecutor:
                     try:
                         container_config = orchestrator.map_service_to_container_config(
                             service_name,
-                            service_config
+                            service_config,
+                            compose_data  # Pass full compose data for service name resolution
                         )
                     except StackOrchestrationError as e:
                         raise RuntimeError(f"Service '{service_name}' configuration error: {e}")
@@ -665,23 +691,32 @@ class DeploymentExecutor:
                         f'Creating {service_name}'
                     )
 
+                    # Determine project name for labels (use compose name if present, else deployment name)
+                    project_name = compose_data.get('name', deployment.name)
+
                     # Add stack labels
                     labels = container_config.get('labels', {})
                     labels.update({
-                        'com.docker.compose.project': deployment.name,
+                        'com.docker.compose.project': project_name,
                         'com.docker.compose.service': service_name,
                         'dockmon.deployment_id': deployment.id,
                         'dockmon.managed': 'true'
                     })
                     container_config['labels'] = labels
 
-                    # Set container name
-                    # For single-service stacks, use just the service name to avoid duplication (e.g., "radarr" instead of "Radarr_radarr")
-                    # For multi-service stacks, use Docker Compose format: {project}_{service}
-                    if total_services == 1:
-                        container_config['name'] = service_name
+                    # Set container name (priority order):
+                    # 1. Use explicit container_name from service config if present
+                    # 2. Use {compose_name}_{service} if compose has top-level name field
+                    # 3. Use just {service} as default
+                    if 'container_name' in service_config:
+                        container_config['name'] = service_config['container_name']
+                        logger.debug(f"Using explicit container_name: {service_config['container_name']}")
+                    elif 'name' in compose_data:
+                        container_config['name'] = f"{compose_data['name']}_{service_name}"
+                        logger.debug(f"Using compose name prefix: {compose_data['name']}_{service_name}")
                     else:
-                        container_config['name'] = f"{deployment.name}_{service_name}"
+                        container_config['name'] = service_name
+                        logger.debug(f"Using service name as container name: {service_name}")
 
                     try:
                         # Create container using connector

@@ -33,6 +33,9 @@ export interface Container {
   network_rx?: number
   network_tx?: number
   net_bytes_per_sec?: number // Calculated network rate (bytes/sec)
+  // IP addresses (GitHub Issue #37)
+  docker_ip?: string | null  // Primary Docker network IP
+  docker_ips?: Record<string, string> | null  // All network IPs {network_name: ip}
 }
 
 export interface ContainerAction {

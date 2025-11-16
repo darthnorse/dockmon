@@ -16,6 +16,7 @@ import threading
 from datetime import datetime, timezone
 from typing import Dict, Optional, Any, Tuple
 import docker
+from sqlalchemy.exc import IntegrityError
 
 from database import DatabaseManager, ContainerUpdate, AutoRestartConfig, ContainerDesiredState, ContainerHttpHealthCheck, GlobalSettings, DeploymentMetadata, TagAssignment
 from event_bus import Event, EventType as BusEventType, get_event_bus
@@ -23,9 +24,17 @@ from utils.async_docker import async_docker_call
 from utils.container_health import wait_for_container_health
 from utils.image_pull_progress import ImagePullProgress
 from utils.keys import make_composite_key, parse_composite_key
+from utils.network_helpers import manually_connect_networks
 from updates.container_validator import ContainerValidator, ValidationResult
 
 logger = logging.getLogger(__name__)
+
+# Constants for internal DockMon metadata keys (same as stack_orchestrator)
+_MANUAL_NETWORKS_KEY = '_dockmon_manual_networks'
+_MANUAL_NETWORKING_CONFIG_KEY = '_dockmon_manual_networking_config'
+
+# Docker container ID length (short format)
+CONTAINER_ID_SHORT_LENGTH = 12
 
 
 class UpdateExecutor:
@@ -88,6 +97,11 @@ class UpdateExecutor:
                 **progress_data
             }
 
+    def _get_registry_credentials(self, image_name: str) -> Optional[Dict[str, str]]:
+        """Get credentials for registry from image name (delegates to shared utility)."""
+        from utils.registry_credentials import get_registry_credentials
+        return get_registry_credentials(self.db, image_name)
+
     async def execute_auto_updates(self) -> Dict[str, int]:
         """
         Execute auto-updates for all containers that:
@@ -123,6 +137,20 @@ class UpdateExecutor:
                 updates_data.append(update_record)
 
         # Session is now closed - safe for async operations
+
+        # Detect dependency conflicts BEFORE starting updates
+        # Fail fast if batch contains both a provider and its dependent
+        from updates.dependency_analyzer import DependencyConflictDetector
+
+        # Extract container IDs for conflict detection
+        container_ids = [record.container_id for record in updates_data]
+        detector = DependencyConflictDetector(self.monitor)
+        dependency_conflict = detector.check_batch(container_ids)
+
+        if dependency_conflict:
+            logger.error(f"Dependency conflict detected: {dependency_conflict}")
+            stats["failed"] = len(updates_data)
+            return stats
 
         # Implement bounded concurrency to update multiple containers in parallel
         # but avoid overwhelming the system
@@ -182,7 +210,8 @@ class UpdateExecutor:
         host_id: str,
         container_id: str,
         update_record: ContainerUpdate,
-        force: bool = False
+        force: bool = False,
+        force_warn: bool = False
     ) -> bool:
         """
         Execute update for a single container.
@@ -191,12 +220,13 @@ class UpdateExecutor:
             host_id: Host UUID
             container_id: Container short ID (12 chars)
             update_record: ContainerUpdate database record
-            force: If True, skip validation (API layer already validated)
+            force: If True, skip ALL validation (admin override)
+            force_warn: If True, allow WARN containers but still block BLOCK containers (user confirmation)
 
         Returns:
             True if successful, False otherwise
         """
-        logger.info(f"Executing update for container {container_id} on host {host_id} (force={force})")
+        logger.info(f"Executing update for container {container_id} on host {host_id} (force={force}, force_warn={force_warn})")
 
         composite_key = make_composite_key(host_id, container_id)
 
@@ -234,9 +264,12 @@ class UpdateExecutor:
 
                 return False
 
-            # Get container info
-            container_info = await self._get_container_info(host_id, container_id)
-            if not container_info:
+            # Get container object directly from Docker (avoids expensive monitor.get_containers() call)
+            # This prevents race conditions during batch updates where containers are being recreated
+            try:
+                old_container = await async_docker_call(docker_client.containers.get, container_id)
+                container_name = old_container.name
+            except docker.errors.NotFound:
                 error_message = "Container update failed: Container not found"
                 logger.error(f"Container not found: {container_id} on host {host_id}")
 
@@ -249,11 +282,19 @@ class UpdateExecutor:
                 )
 
                 return False
+            except Exception as e:
+                error_message = f"Container update failed: Error getting container: {e}"
+                logger.error(f"Error getting container {container_id} on host {host_id}: {e}")
 
-            container_name = container_info.get("name", container_id)
+                # Emit UPDATE_FAILED event
+                await self._emit_update_failed_event(
+                    host_id,
+                    container_id,
+                    container_id,  # Use ID as name fallback
+                    error_message
+                )
 
-            # Get container object for configuration extraction
-            old_container = await async_docker_call(docker_client.containers.get, container_id)
+                return False
 
             # Priority 0: Block DockMon self-update (ALWAYS, even with force=True)
             # Defense-in-depth: protect at executor layer in case API layer is bypassed
@@ -303,22 +344,30 @@ class UpdateExecutor:
                     return False
 
                 elif validation_result.result == ValidationResult.WARN:
-                    # For auto-updates, skip containers that require warnings
-                    # (user confirmation required - not safe for auto-update)
-                    logger.info(
-                        f"Skipping auto-update for {container_name}: {validation_result.reason} "
-                        f"(requires user confirmation)"
-                    )
+                    # WARN requires user confirmation
+                    # If force_warn=True, user has confirmed - allow update
+                    # If force_warn=False, skip update (safety for auto-updates)
+                    if not force_warn:
+                        logger.info(
+                            f"Skipping update for {container_name}: {validation_result.reason} "
+                            f"(requires user confirmation - set force_warn=True to proceed)"
+                        )
 
-                    # Emit warning event (non-critical)
-                    await self._emit_update_warning_event(
-                        host_id,
-                        container_id,
-                        container_name,
-                        validation_result.reason
-                    )
+                        # Emit warning event (non-critical)
+                        await self._emit_update_warning_event(
+                            host_id,
+                            container_id,
+                            container_name,
+                            validation_result.reason
+                        )
 
-                    return False
+                        return False
+                    else:
+                        # force_warn=True - user has confirmed, proceed with update
+                        logger.info(
+                            f"Proceeding with update for {container_name} despite warning: {validation_result.reason} "
+                            f"(force_warn=True - user confirmed)"
+                        )
 
                 # ValidationResult.ALLOW - proceed with update
                 logger.debug(f"Update allowed for {container_name}: {validation_result.reason}")
@@ -337,6 +386,13 @@ class UpdateExecutor:
             logger.info(f"Pulling new image: {update_record.latest_image}")
             await self._broadcast_progress(host_id, container_id, "pulling", 20, "Starting image pull")
 
+            # Look up registry credentials for authenticated pulls
+            auth_config = self._get_registry_credentials(update_record.latest_image)
+            if auth_config:
+                logger.info(f"Using registry credentials for image pull: {update_record.latest_image}")
+            else:
+                logger.warning(f"No registry credentials found for image: {update_record.latest_image}")
+
             try:
                 # Use shared ImagePullProgress for detailed layer tracking (same as deployment system)
                 await self.image_pull_tracker.pull_with_progress(
@@ -344,12 +400,13 @@ class UpdateExecutor:
                     update_record.latest_image,
                     host_id,
                     container_id,
+                    auth_config=auth_config,
                     event_type="container_update_layer_progress"
                 )
             except Exception as streaming_error:
                 logger.warning(f"Streaming pull failed, falling back to simple pull: {streaming_error}")
                 # Fallback to old method (still works, just no detailed progress)
-                await self._pull_image(docker_client, update_record.latest_image)
+                await self._pull_image(docker_client, update_record.latest_image, auth_config=auth_config)
 
             # Emit UPDATE_PULL_COMPLETED event (audit trail)
             await self._emit_update_pull_completed_event(
@@ -359,7 +416,22 @@ class UpdateExecutor:
                 update_record.latest_image
             )
 
-            # Step 2: Get full container configuration
+            # Step 2a: Find dependent containers (network_mode: container:this_container)
+            # These must be recreated after update to point to new container ID
+            logger.info(f"Checking for dependent containers")
+            dependent_containers = await self._get_dependent_containers(
+                docker_client,
+                old_container,
+                container_name,
+                container_id
+            )
+            if dependent_containers:
+                logger.info(
+                    f"Found {len(dependent_containers)} dependent container(s): "
+                    f"{[dep['name'] for dep in dependent_containers]}"
+                )
+
+            # Step 2b: Get full container configuration
             # (reuse old_container fetched during validation to avoid duplicate API call)
             logger.info("Getting container configuration")
             await self._broadcast_progress(host_id, container_id, "configuring", 35, "Reading container configuration")
@@ -537,13 +609,31 @@ class UpdateExecutor:
 
                     # Update 6: TagAssignment table (uses subject_id as composite key for containers)
                     # When a container is recreated during update, preserve its tag assignments
-                    session.query(TagAssignment).filter(
+                    # DEFENSIVE: Check if reattachment already created assignments for new container (GitHub Issue #44)
+                    # Prevents race condition between container_discovery reattachment and update executor migration
+                    new_tag_count = session.query(TagAssignment).filter(
                         TagAssignment.subject_type == 'container',
-                        TagAssignment.subject_id == old_composite_key  # OLD composite key
-                    ).update({
-                        "subject_id": new_composite_key,  # NEW composite key
-                        "last_seen_at": datetime.now(timezone.utc)
-                    })
+                        TagAssignment.subject_id == new_composite_key
+                    ).count()
+
+                    if new_tag_count > 0:
+                        # Reattachment already created tag assignments for new container
+                        # Delete orphaned old assignments (cleanup)
+                        logger.debug(f"Reattachment already migrated {new_tag_count} tags, cleaning up old assignments")
+                        session.query(TagAssignment).filter(
+                            TagAssignment.subject_type == 'container',
+                            TagAssignment.subject_id == old_composite_key
+                        ).delete()
+                    else:
+                        # Reattachment didn't run yet (unlikely), migrate tags ourselves
+                        logger.debug("Migrating tag assignments from old to new container")
+                        session.query(TagAssignment).filter(
+                            TagAssignment.subject_type == 'container',
+                            TagAssignment.subject_id == old_composite_key
+                        ).update({
+                            "subject_id": new_composite_key,  # NEW composite key
+                            "last_seen_at": datetime.now(timezone.utc)
+                        })
 
                     # Set commit flag BEFORE commit to prevent race condition (Issue #6 fix)
                     # If exception occurs after commit but before flag setting, rollback would incorrectly execute
@@ -555,8 +645,26 @@ class UpdateExecutor:
                             f"Updated database records from {old_composite_key} to {new_composite_key}: "
                             f"ContainerUpdate, AutoRestartConfig, ContainerDesiredState, ContainerHttpHealthCheck, DeploymentMetadata, TagAssignment"
                         )
+                    except IntegrityError as integrity_error:
+                        # Handle tag reattachment race condition (GitHub Issue #44 edge case)
+                        # If reattachment commits tags in the millisecond window between our check and update,
+                        # the UPDATE will fail with IntegrityError. This is NOT a real failure.
+                        if "tag_assignments" in str(integrity_error).lower():
+                            # Tags were migrated by reattachment during the race window
+                            # Container update succeeded, tags exist (via reattachment) - continue as success
+                            session.rollback()
+                            logger.debug(
+                                f"Tag migration race detected for {container_name}: "
+                                f"reattachment already migrated tags during update. Continuing as success."
+                            )
+                            # Note: update_committed stays True - container was updated successfully
+                        else:
+                            # Different IntegrityError (unexpected) - treat as failure
+                            update_committed = False
+                            logger.error(f"Database integrity error for {container_name}: {integrity_error}", exc_info=True)
+                            raise  # Trigger rollback in outer exception handler
                     except Exception as commit_error:
-                        # Clear flag if commit failed - rollback should execute
+                        # Other database errors - treat as failure
                         update_committed = False
                         logger.error(f"Database commit failed for {container_name}: {commit_error}", exc_info=True)
                         raise  # Re-raise to trigger rollback in outer exception handler
@@ -580,7 +688,38 @@ class UpdateExecutor:
                 update_record.latest_digest
             )
 
-            # Step 9: Cleanup backup container on success
+            # Step 9: Recreate dependent containers (if any)
+            # These are containers using network_mode: container:this_container
+            # They must be recreated to point to the new container ID
+            if dependent_containers:
+                logger.info(f"Recreating {len(dependent_containers)} dependent container(s)")
+                failed_dependents = []
+
+                for dep in dependent_containers:
+                    try:
+                        logger.info(f"Recreating dependent container: {dep['name']}")
+                        success = await self._recreate_dependent_container(
+                            docker_client,
+                            dep,
+                            new_container.id  # Full container ID for network_mode
+                        )
+                        if not success:
+                            failed_dependents.append(dep['name'])
+                    except Exception as dep_error:
+                        logger.error(f"Failed to recreate dependent {dep['name']}: {dep_error}", exc_info=True)
+                        failed_dependents.append(dep['name'])
+
+                if failed_dependents:
+                    logger.warning(
+                        f"Update succeeded but failed to recreate dependent containers: {', '.join(failed_dependents)}. "
+                        f"Manual recreation may be required."
+                    )
+                    # Don't fail the update - main container updated successfully
+                    # User can manually recreate dependents if needed
+                else:
+                    logger.info(f"Successfully recreated all {len(dependent_containers)} dependent container(s)")
+
+            # Step 10: Cleanup backup container on success
             logger.info(f"Update successful, cleaning up backup container {backup_name}")
             await self._cleanup_backup_container(docker_client, backup_container, backup_name)
 
@@ -708,26 +847,14 @@ class UpdateExecutor:
             logger.error(f"Error getting Docker client for host {host_id}: {e}")
             return None
 
-    async def _get_container_info(self, host_id: str, container_id: str) -> Optional[Dict]:
-        """Get container info from monitor"""
-        if not self.monitor:
-            return None
-
-        try:
-            containers = await self.monitor.get_containers()
-            container = next((c for c in containers if c.id == container_id and c.host_id == host_id), None)
-            return container.dict() if container else None
-        except Exception as e:
-            logger.error(f"Error getting container info: {e}")
-            return None
-
-    async def _pull_image(self, client: docker.DockerClient, image: str, timeout: int = 1800):
+    async def _pull_image(self, client: docker.DockerClient, image: str, auth_config: dict = None, timeout: int = 1800):
         """
-        Pull Docker image with timeout.
+        Pull Docker image with timeout and optional authentication.
 
         Args:
             client: Docker client instance
             image: Image name to pull
+            auth_config: Optional Docker registry auth config dict with 'username' and 'password'
             timeout: Timeout in seconds (default: 1800 = 30 minutes)
 
         Raises:
@@ -736,8 +863,13 @@ class UpdateExecutor:
         """
         try:
             # Use async wrapper with timeout to prevent event loop blocking and handle large images
+            pull_kwargs = {}
+            if auth_config:
+                pull_kwargs['auth_config'] = auth_config
+                logger.debug(f"Pulling {image} with authentication")
+
             await asyncio.wait_for(
-                async_docker_call(client.images.pull, image),
+                async_docker_call(client.images.pull, image, **pull_kwargs),
                 timeout=timeout
             )
             logger.debug(f"Successfully pulled image {image}")
@@ -760,10 +892,47 @@ class UpdateExecutor:
         host_config = attrs["HostConfig"]
         networking = attrs["NetworkSettings"]
 
-        # Build configuration dict
+        def _extract_ipam_config(network_data):
+            """
+            Extract IPAM configuration only if user-configured (not auto-assigned).
+
+            Returns IPAMConfig dict if IPs were user-configured, None otherwise.
+            """
+            # Only preserve IPs if IPAMConfig exists in original config
+            # If IPAMConfig is null, IPs are auto-assigned by Docker
+            if not network_data.get("IPAMConfig"):
+                return None
+
+            ipam_config = {}
+            if network_data.get("IPAddress"):
+                ipam_config["IPv4Address"] = network_data["IPAddress"]
+            if network_data.get("GlobalIPv6Address"):
+                ipam_config["IPv6Address"] = network_data["GlobalIPv6Address"]
+
+            return ipam_config if ipam_config else None
+
+        # Extract network_mode early to check for conflicts
+        network_mode = host_config.get("NetworkMode")
+
+        # Docker field conflicts - these combinations are rejected by Docker API
+        # Handle during extraction to avoid runtime errors during container creation
+
+        # hostname conflicts with network_mode: container:X
+        # When using shared network mode, hostname comes from the network provider
+        hostname = None
+        if not (network_mode and network_mode.startswith("container:")):
+            hostname = config.get("Hostname")
+
+        # mac_address conflicts with network_mode: container:X
+        # MAC address comes from the network provider in shared mode
+        mac_address = None
+        if not (network_mode and network_mode.startswith("container:")):
+            mac_address = config.get("MacAddress")
+
         container_config = {
             "name": attrs["Name"].lstrip("/"),
-            "hostname": config.get("Hostname"),
+            "hostname": hostname,
+            "mac_address": mac_address,
             "user": config.get("User"),
             "detach": True,
             "stdin_open": config.get("OpenStdin", False),
@@ -791,8 +960,8 @@ class UpdateExecutor:
             "shm_size": host_config.get("ShmSize"),
         }
 
-        # Extract port bindings
-        if host_config.get("PortBindings"):
+        # Extract port bindings (skip if using host networking - ports are ignored anyway)
+        if host_config.get("PortBindings") and network_mode != "host":
             container_config["ports"] = host_config["PortBindings"]
 
         # Extract volume bindings
@@ -810,12 +979,106 @@ class UpdateExecutor:
                         "mode": mode
                     }
 
-        # Extract network
+        # Extract network configuration
+        # CRITICAL: Preserve full endpoint configuration including static IPs
+        # HYBRID APPROACH: Use same logic as stack_orchestrator for consistency
         networks = networking.get("Networks", {})
         if networks:
-            # Get first network (containers can be in multiple networks)
-            network_name = list(networks.keys())[0]
-            container_config["network"] = network_name
+            # Filter out network_mode pseudo-networks (bridge, host, none)
+            # These are represented as network_mode, not actual custom networks
+            # Only preserve real custom networks created by users
+            custom_networks = {k: v for k, v in networks.items() if k not in ['bridge', 'host', 'none']}
+
+            if not custom_networks:
+                # Only on default bridge network - don't preserve
+                pass
+            elif len(custom_networks) == 1:
+                # Single custom network - check if it has advanced config
+                network_name, network_data = list(custom_networks.items())[0]
+                has_static_ip = bool(network_data.get("IPAddress") or network_data.get("GlobalIPv6Address"))
+                # Filter out container ID from aliases (Docker auto-adds 12-char container ID)
+                has_aliases = bool(network_data.get("Aliases") and [a for a in network_data["Aliases"] if len(a) != CONTAINER_ID_SHORT_LENGTH])
+
+                if has_static_ip or has_aliases:
+                    # Has advanced config - use manual connection format
+                    endpoint_config = {}
+
+                    # Extract user-configured static IPs (not auto-assigned)
+                    ipam_config = _extract_ipam_config(network_data)
+                    if ipam_config:
+                        endpoint_config["IPAMConfig"] = ipam_config
+                        logger.debug(f"Preserving user-configured IP for {network_name}")
+
+                    if has_aliases:
+                        # Filter out container ID from aliases
+                        aliases = [a for a in network_data["Aliases"] if len(a) != CONTAINER_ID_SHORT_LENGTH]
+                        endpoint_config["Aliases"] = aliases
+
+                    if network_data.get("Links"):
+                        endpoint_config["Links"] = network_data["Links"]
+
+                    container_config[_MANUAL_NETWORKING_CONFIG_KEY] = {
+                        "EndpointsConfig": {network_name: endpoint_config}
+                    }
+                    logger.debug(f"Extracted advanced network config for {network_name}")
+                else:
+                    # Simple single network - use 'network' parameter
+                    container_config["network"] = network_name
+                    logger.debug(f"Extracted simple network: {network_name}")
+
+            else:
+                # Multiple custom networks - use manual connection format
+                endpoints_config = {}
+
+                for network_name, network_data in custom_networks.items():
+                    endpoint_config = {}
+
+                    # Extract user-configured static IPs (not auto-assigned)
+                    ipam_config = _extract_ipam_config(network_data)
+                    if ipam_config:
+                        endpoint_config["IPAMConfig"] = ipam_config
+                        logger.debug(f"Preserving user-configured IP for {network_name}")
+
+                    # Extract network aliases (filter out container ID)
+                    if network_data.get("Aliases"):
+                        aliases = [a for a in network_data["Aliases"] if len(a) != CONTAINER_ID_SHORT_LENGTH]
+                        if aliases:
+                            endpoint_config["Aliases"] = aliases
+
+                    # Extract links (legacy)
+                    if network_data.get("Links"):
+                        endpoint_config["Links"] = network_data["Links"]
+
+                    endpoints_config[network_name] = endpoint_config
+
+                container_config[_MANUAL_NETWORKING_CONFIG_KEY] = {
+                    "EndpointsConfig": endpoints_config
+                }
+                logger.debug(f"Extracted multiple network config: {list(custom_networks.keys())}")
+
+        # Extract network_mode (v2.1.8 - Quick Wins)
+        # NOTE: devices, extra_hosts, cap_add, cap_drop already extracted above (lines 818-820, 825)
+        if "NetworkMode" in host_config:
+            network_mode = host_config["NetworkMode"]
+
+            # Filter Docker auto-defaults
+            # "default" = Docker's automatic setting (don't preserve)
+            # Everything else = potentially user-set (preserve)
+            if network_mode and network_mode not in ["default"]:
+                # CRITICAL: Check for conflict with custom networks
+                # Cannot have both network_mode and networking_config (static IPs, etc.)
+                # Defense-in-depth: Check both manual networking AND simple network parameter
+                # Note: container_config["network"] is set to None by default (line 816),
+                # so we check for truthiness, not just existence
+                if (_MANUAL_NETWORKING_CONFIG_KEY not in container_config and
+                    not container_config.get("network")):
+                    container_config["network_mode"] = network_mode
+                    logger.debug(f"Extracted network_mode: {network_mode}")
+                else:
+                    logger.debug(
+                        f"Container has custom network config, "
+                        f"skipping network_mode extraction (mutually exclusive)"
+                    )
 
         return container_config
 
@@ -825,40 +1088,75 @@ class UpdateExecutor:
         image: str,
         config: Dict[str, Any]
     ) -> Any:
-        """Create new container with given config"""
+        """
+        Create new container with given config.
+
+        Preserves all network configuration including static IPs, aliases, and links.
+        Bug Fix: Manually connects networks since Docker SDK networking_config doesn't work.
+        """
         try:
-            # Use async wrapper to prevent event loop blocking
+            # Extract manual network connection instructions (if present)
+            manual_networks = config.pop(_MANUAL_NETWORKS_KEY, None)
+            manual_networking_config = config.pop(_MANUAL_NETWORKING_CONFIG_KEY, None)
+
+            # Build create parameters
+            create_params = {
+                "image": image,
+                "name": config["name"],
+                "hostname": config.get("hostname"),
+                "user": config.get("user"),
+                "detach": config.get("detach", True),
+                "stdin_open": config.get("stdin_open", False),
+                "tty": config.get("tty", False),
+                "environment": config.get("environment"),
+                "command": config.get("command"),
+                "entrypoint": config.get("entrypoint"),
+                "working_dir": config.get("working_dir"),
+                "labels": config.get("labels"),
+                "ports": config.get("ports"),
+                "volumes": config.get("volumes"),
+                "restart_policy": config.get("restart_policy"),
+                "privileged": config.get("privileged", False),
+                "cap_add": config.get("cap_add"),
+                "cap_drop": config.get("cap_drop"),
+                "devices": config.get("devices"),
+                "security_opt": config.get("security_opt"),
+                "tmpfs": config.get("tmpfs"),
+                "ulimits": config.get("ulimits"),
+                "dns": config.get("dns"),
+                "extra_hosts": config.get("extra_hosts"),
+                "ipc_mode": config.get("ipc_mode"),
+                "pid_mode": config.get("pid_mode"),
+                "shm_size": config.get("shm_size"),
+                "network_mode": config.get("network_mode"),  # v2.1.8 - Quick Wins
+            }
+
+            # CRITICAL: Network configuration (Bug Fix: Use hybrid approach)
+            # Simple single network can use 'network' parameter
+            if config.get("network"):
+                create_params["network"] = config["network"]
+
+            # Create container
             container = await async_docker_call(
                 client.containers.create,
-                image,
-                name=config["name"],
-                hostname=config.get("hostname"),
-                user=config.get("user"),
-                detach=config.get("detach", True),
-                stdin_open=config.get("stdin_open", False),
-                tty=config.get("tty", False),
-                environment=config.get("environment"),
-                command=config.get("command"),
-                entrypoint=config.get("entrypoint"),
-                working_dir=config.get("working_dir"),
-                labels=config.get("labels"),
-                ports=config.get("ports"),
-                volumes=config.get("volumes"),
-                network=config.get("network"),
-                restart_policy=config.get("restart_policy"),
-                privileged=config.get("privileged", False),
-                cap_add=config.get("cap_add"),
-                cap_drop=config.get("cap_drop"),
-                devices=config.get("devices"),
-                security_opt=config.get("security_opt"),
-                tmpfs=config.get("tmpfs"),
-                ulimits=config.get("ulimits"),
-                dns=config.get("dns"),
-                extra_hosts=config.get("extra_hosts"),
-                ipc_mode=config.get("ipc_mode"),
-                pid_mode=config.get("pid_mode"),
-                shm_size=config.get("shm_size"),
+                **create_params
             )
+
+            # Manually connect to networks if needed (Bug fix: networking_config doesn't work)
+            # This must happen BEFORE starting the container
+            try:
+                await manually_connect_networks(
+                    container=container,
+                    manual_networks=manual_networks,
+                    manual_networking_config=manual_networking_config,
+                    client=client,
+                    async_docker_call=async_docker_call
+                )
+            except Exception:
+                # Clean up: remove container since we failed to configure it properly
+                await async_docker_call(container.remove, force=True)
+                raise
+
             return container
         except Exception as e:
             logger.error(f"Error creating container: {e}")
@@ -1042,10 +1340,20 @@ class UpdateExecutor:
 
             logger.info(f"Re-evaluating alerts for {container_name} after update")
 
-            # Get current container state
-            container_info = await self._get_container_info(host_id, container_id)
-            if not container_info:
-                logger.warning(f"Could not get container info for post-update alert evaluation: {container_id}")
+            # Get current container state directly from Docker (avoids expensive monitor.get_containers() call)
+            try:
+                docker_client = await self._get_docker_client(host_id)
+                if not docker_client:
+                    logger.warning(f"Could not get Docker client for post-update alert evaluation: {container_id}")
+                    return
+
+                container_obj = await async_docker_call(docker_client.containers.get, container_id)
+                container_state = container_obj.status.lower()  # 'running', 'exited', etc.
+            except docker.errors.NotFound:
+                logger.warning(f"Container not found for post-update alert evaluation: {container_id}")
+                return
+            except Exception as e:
+                logger.warning(f"Could not get container info for post-update alert evaluation: {e}")
                 return
 
             # Get host name
@@ -1055,7 +1363,7 @@ class UpdateExecutor:
             event_data = {
                 'timestamp': datetime.now(timezone.utc).isoformat() + 'Z',
                 'event_type': 'state_change',
-                'new_state': container_info.get('state', 'unknown'),
+                'new_state': container_state,
                 'old_state': 'updating',
                 'triggered_by': 'post_update_check',
             }
@@ -1377,6 +1685,215 @@ class UpdateExecutor:
 
         except Exception as e:
             logger.error(f"Error emitting rollback completed event: {e}", exc_info=True)
+
+    async def _get_dependent_containers(
+        self,
+        client: docker.DockerClient,
+        container,
+        container_name: str,
+        container_id: str
+    ) -> list:
+        """
+        Find containers that depend on this container via network_mode.
+
+        When a container uses network_mode: container:other_container, it shares
+        the network namespace of that container. If the target container is
+        recreated with a new ID, dependent containers must also be recreated
+        to point to the new ID.
+
+        Common use cases:
+        - VPN sidecars (Gluetun + qBittorrent, ProtonVPN + Transmission)
+        - Log forwarders (Fluentd attached to app container)
+        - Network proxies (nginx sharing network with backend)
+
+        Args:
+            client: Docker SDK client instance
+            container: Container object being updated
+            container_name: Container name (for logging)
+            container_id: Container short ID (for logging)
+
+        Returns:
+            List of dicts with dependent container info:
+            [
+                {
+                    'container': Docker container object,
+                    'name': str,
+                    'id': str (short),
+                    'image': str,
+                    'old_network_mode': str (original network_mode value)
+                },
+                ...
+            ]
+        """
+        dependents = []
+
+        try:
+            # Get all containers (including stopped ones - they may be auto-restart)
+            all_containers = await async_docker_call(client.containers.list, all=True)
+
+            for other in all_containers:
+                # Skip self
+                if other.id == container.id:
+                    continue
+
+                # Check if this container uses network_mode pointing to our container
+                network_mode = other.attrs.get('HostConfig', {}).get('NetworkMode', '')
+
+                # network_mode can reference by name or ID
+                # Examples: "container:gluetun", "container:abc123def456"
+                if network_mode in [f'container:{container_name}', f'container:{container.id}']:
+                    logger.info(
+                        f"Found dependent container: {other.name} "
+                        f"(network_mode: {network_mode})"
+                    )
+
+                    # Get image name (prefer tag, fallback to Config.Image)
+                    try:
+                        image_name = other.image.tags[0] if other.image.tags else other.attrs.get('Config', {}).get('Image', '')
+                    except Exception:
+                        image_name = other.attrs.get('Config', {}).get('Image', '')
+
+                    dependents.append({
+                        'container': other,
+                        'name': other.name,
+                        'id': other.short_id,
+                        'image': image_name,
+                        'old_network_mode': network_mode
+                    })
+
+        except Exception as e:
+            logger.warning(f"Could not check for dependent containers: {e}")
+            # Non-fatal - return empty list
+            return []
+
+        return dependents
+
+    async def _recreate_dependent_container(
+        self,
+        client: docker.DockerClient,
+        dep_info: dict,
+        new_parent_container_id: str
+    ) -> bool:
+        """
+        Recreate a dependent container with updated network_mode.
+
+        This handles containers that use network_mode: container:other_container.
+        When the parent container is updated, dependents must be recreated to
+        point to the new parent container ID.
+
+        Strategy:
+        1. Extract current configuration
+        2. Stop container
+        3. Rename to temporary name (preserves for rollback)
+        4. Create new container with updated network_mode
+        5. Start new container
+        6. Verify running for 3 seconds (stability check)
+        7. Remove temp container
+        8. On failure: Restore original container
+
+        Args:
+            client: Docker SDK client instance
+            dep_info: Dict with dependent container info (from _get_dependent_containers)
+            new_parent_container_id: Full container ID of new parent (for network_mode)
+
+        Returns:
+            True if recreation succeeded, False otherwise
+        """
+        dep_container = dep_info['container']
+        dep_name = dep_info['name']
+
+        try:
+            logger.info(f"Recreating dependent container: {dep_name}")
+
+            # Step 1: Extract current configuration
+            config = await self._extract_container_config(dep_container)
+
+            # Step 2: Update network_mode to point to new parent container
+            # Use full container ID (not short ID) for network_mode
+            old_network_mode = config.get('network_mode', '')
+            config['network_mode'] = f'container:{new_parent_container_id}'
+            logger.info(
+                f"Updated network_mode: {old_network_mode} → {config['network_mode']}"
+            )
+
+            # Step 3: Extract networks (for restoration after network_mode removed)
+            # Note: Containers using network_mode: container:X cannot have custom networks
+            # But we preserve this info in case user manually fixes later
+            networks = dep_container.attrs.get('NetworkSettings', {}).get('Networks', {})
+
+            # Step 4: Stop container
+            logger.info(f"Stopping dependent container: {dep_name}")
+            try:
+                await async_docker_call(dep_container.stop, timeout=10)
+            except Exception as stop_error:
+                logger.warning(f"Graceful stop failed, attempting kill: {stop_error}")
+                await async_docker_call(dep_container.kill)
+
+            # Step 5: Rename to temporary name (enables rollback)
+            temp_name = f"{dep_name}-temp-{int(time.time())}"
+            logger.info(f"Renaming to temporary: {temp_name}")
+            await async_docker_call(dep_container.rename, temp_name)
+
+            # Step 6: Create new container with updated config
+            logger.info(f"Creating new dependent container: {dep_name}")
+            new_dep_container = await self._create_container(
+                client,
+                dep_info['image'],
+                config
+            )
+
+            # Step 7: Start new container
+            logger.info(f"Starting new dependent container: {dep_name}")
+            await async_docker_call(new_dep_container.start)
+
+            # Step 8: Verify running (simple stability check - 3 seconds)
+            logger.info(f"Verifying dependent container started: {dep_name}")
+            await asyncio.sleep(3)
+
+            # Reload and check status
+            await async_docker_call(new_dep_container.reload)
+            if new_dep_container.status != 'running':
+                raise Exception(
+                    f"Container failed to start properly (status: {new_dep_container.status})"
+                )
+
+            # Step 9: Success - remove temporary container
+            logger.info(f"Removing temporary container: {temp_name}")
+            temp_container = await async_docker_call(client.containers.get, temp_name)
+            await async_docker_call(temp_container.remove, force=True)
+
+            logger.info(f"Successfully recreated dependent container: {dep_name}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to recreate dependent {dep_name}: {e}", exc_info=True)
+
+            # Attempt rollback: restore original container
+            try:
+                logger.info(f"Rolling back dependent container: {dep_name}")
+
+                # Remove failed new container
+                try:
+                    await async_docker_call(new_dep_container.remove, force=True)
+                except Exception:
+                    pass  # May not exist
+
+                # Restore temp container to original name
+                temp_container = await async_docker_call(client.containers.get, temp_name)
+                await async_docker_call(temp_container.rename, dep_name)
+
+                # Restart original container
+                await async_docker_call(temp_container.start)
+
+                logger.info(f"Rollback successful for dependent: {dep_name}")
+
+            except Exception as rollback_error:
+                logger.error(
+                    f"Rollback failed for dependent {dep_name}: {rollback_error}. "
+                    f"Manual intervention may be required for container: {temp_name}"
+                )
+
+            return False
 
     async def cleanup_stale_pull_progress(self):
         """

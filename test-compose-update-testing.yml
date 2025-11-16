@@ -1,0 +1,91 @@
+name: update-test
+
+services:
+  # Test 1: Baseline - simple container with no special config
+  nginx-baseline:
+    image: nginx:1.23.0-alpine
+    container_name: nginx-baseline
+    restart: unless-stopped
+
+  # Test 2: Host networking
+  nginx-host:
+    image: nginx:1.23.0-alpine
+    container_name: nginx-host
+    network_mode: host
+    restart: unless-stopped
+
+  # Test 3: Device mapping (hardware access)
+  nginx-devices:
+    image: nginx:1.23.0-alpine
+    container_name: nginx-devices
+    devices:
+      - /dev/null:/dev/null
+      - /dev/zero:/dev/zero
+    restart: unless-stopped
+
+  # Test 4: Capabilities (cap_add and cap_drop)
+  nginx-caps:
+    image: nginx:1.23.0-alpine
+    container_name: nginx-caps
+    cap_add:
+      - NET_ADMIN
+      - SYS_TIME
+    cap_drop:
+      - NET_RAW
+      - SYS_PTRACE
+    restart: unless-stopped
+
+  # Test 5: Extra hosts (/etc/hosts entries)
+  nginx-hosts:
+    image: nginx:1.23.0-alpine
+    container_name: nginx-hosts
+    extra_hosts:
+      - "test.local:192.168.1.100"
+      - "api.test.local:192.168.1.101"
+    restart: unless-stopped
+
+  # Test 6: Container network sharing (like gluetun/qbittorrent)
+  nginx-network-provider:
+    image: nginx:1.23.0-alpine
+    container_name: nginx-network-provider
+    ports:
+      - "8081:80"
+    restart: unless-stopped
+
+  nginx-network-consumer:
+    image: alpine:3.17.0
+    container_name: nginx-network-consumer
+    command: sleep infinity
+    network_mode: service:nginx-network-provider
+    depends_on:
+      - nginx-network-provider
+    restart: unless-stopped
+
+  # Test 7: Multiple networks
+  nginx-multi-net:
+    image: nginx:1.23.0-alpine
+    container_name: nginx-multi-net
+    networks:
+      - frontend
+      - backend
+    restart: unless-stopped
+
+  # Test 8: Complex combo - devices + caps + extra_hosts
+  nginx-complex:
+    image: nginx:1.23.0-alpine
+    container_name: nginx-complex
+    devices:
+      - /dev/null:/dev/null
+    cap_add:
+      - NET_ADMIN
+    cap_drop:
+      - NET_RAW
+    extra_hosts:
+      - "complex.local:10.0.0.1"
+    restart: unless-stopped
+
+networks:
+  frontend:
+    driver: bridge
+  backend:
+    driver: bridge

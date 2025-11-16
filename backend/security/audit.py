@@ -307,6 +307,45 @@ class SecurityAuditLogger:
                 details={"old_username": old_username, "new_username": new_username, "client_ip": client_ip, "user_agent": user_agent}
             )
 
+    def log_event(self, event_type: str, severity: str = "info", user_id: int = None,
+                  client_ip: str = "unknown", endpoint: str = None, user_agent: str = None,
+                  details: dict = None):
+        """
+        General-purpose security event logging method for API key authentication.
+
+        Args:
+            event_type: Type of security event (e.g., "api_key_invalid_format", "scope_violation")
+            severity: Event severity ("info", "warning", "error")
+            user_id: User ID if applicable
+            client_ip: Client IP address
+            endpoint: API endpoint if applicable
+            user_agent: User agent string if applicable
+            details: Additional event details as dict
+        """
+        # Map severity to risk level
+        risk_level_map = {
+            "info": "LOW",
+            "warning": "MEDIUM",
+            "error": "HIGH"
+        }
+        risk_level = risk_level_map.get(severity.lower(), "MEDIUM")
+
+        # Add user_id to details if provided
+        event_details = details or {}
+        if user_id:
+            event_details["user_id"] = user_id
+
+        # Log the event
+        self._log_security_event(
+            level=severity,
+            event_type=event_type,
+            client_ip=client_ip,
+            endpoint=endpoint,
+            user_agent=user_agent,
+            details=event_details,
+            risk_level=risk_level
+        )
+
 
 # Global security audit logger instance
 security_audit = SecurityAuditLogger()

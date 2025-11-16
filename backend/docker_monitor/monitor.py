@@ -93,6 +93,7 @@ def _fetch_system_info_from_docker(client: DockerClient, host_name: str) -> dict
         Dict with system info keys (os_type, os_version, etc.)
         Returns dict with None values if fetch fails
     """
+
     try:
         # Fetch system information
         system_info = client.info()
@@ -1196,7 +1197,6 @@ class DockerMonitor:
                 logger.debug(f"V2: Processing {action} event for {container_name} ({container_id[:12]}) on {host_name} ({host_id[:8]})")
 
                 # Parse timestamp
-                from datetime import datetime, timezone
                 try:
                     timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
                 except (ValueError, AttributeError, TypeError) as e:
@@ -1734,23 +1734,69 @@ class DockerMonitor:
                     session.add(settings)
                     session.commit()
 
-            # Auto-add local Docker only on first run (outside session context)
+            # Auto-add local Docker/Podman only on first run (outside session context)
             with self.db.get_session() as session:
                 settings = session.query(GlobalSettings).first()
-                if settings and not settings.first_run_complete and not db_hosts and os.path.exists('/var/run/docker.sock'):
-                    logger.info("First run detected - adding local Docker automatically")
+
+                # Detect socket path (Docker, rootful Podman, or rootless Podman)
+                socket_path = None
+                socket_name = None
+
+                if os.path.exists('/var/run/docker.sock'):
+                    socket_path = '/var/run/docker.sock'
+                    socket_name = 'Docker'
+                elif os.path.exists('/var/run/podman/podman.sock'):
+                    socket_path = '/var/run/podman/podman.sock'
+                    socket_name = 'Podman'
+                elif 'XDG_RUNTIME_DIR' in os.environ:
+                    runtime_dir = os.environ['XDG_RUNTIME_DIR']
+                    rootless_sock = f"{runtime_dir}/podman/podman.sock"
+                    if os.path.exists(rootless_sock):
+                        socket_path = rootless_sock
+                        socket_name = 'Podman (Rootless)'
+
+                if settings and not settings.first_run_complete and not db_hosts and socket_path:
+                    logger.info(f"First run detected - adding local {socket_name} automatically")
                     host_added = False
                     try:
+                        # Detect platform (Docker vs Podman) via API
+                        temp_client = None
+                        try:
+                            temp_client = docker.DockerClient(base_url=f"unix://{socket_path}")
+                            version_info = temp_client.version()
+                            platform_name = version_info.get('Platform', {}).get('Name', '')
+
+                            # Detect Podman from API response
+                            if 'podman' in platform_name.lower():
+                                # Check if rootless (socket must be within XDG_RUNTIME_DIR)
+                                if 'XDG_RUNTIME_DIR' in os.environ and socket_path.startswith(os.environ['XDG_RUNTIME_DIR']):
+                                    detected_name = "Local Podman (Rootless)"
+                                else:
+                                    detected_name = "Local Podman"
+                            else:
+                                detected_name = "Local Docker"
+                        except Exception as detect_err:
+                            # Fallback to socket-based detection
+                            logger.debug(f"Could not detect platform via API: {detect_err}")
+                            detected_name = f"Local {socket_name}"
+                        finally:
+                            # Always close client to prevent resource leak
+                            if temp_client:
+                                try:
+                                    temp_client.close()
+                                except Exception:
+                                    pass  # Ignore cleanup errors
+
                         config = DockerHostConfig(
-                            name="Local Docker",
-                            url="unix:///var/run/docker.sock",
+                            name=detected_name,
+                            url=f"unix://{socket_path}",
                             tls_cert=None,
                             tls_key=None,
                             tls_ca=None
                         )
                         self.add_host(config, suppress_event_loop_errors=True)
                         host_added = True
-                        logger.info("Successfully added local Docker host")
+                        logger.info(f"Successfully added {detected_name} host")
                     except Exception as e:
                         # Check if this is the benign "no running event loop" error during startup
                         # The host is actually added successfully despite this error

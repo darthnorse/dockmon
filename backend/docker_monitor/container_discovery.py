@@ -385,6 +385,7 @@ class ContainerDiscovery:
                         container_image = dc.image
                         config_image_name = dc.attrs.get('Config', {}).get('Image', container_image.short_id)
                         if ":" not in config_image_name:
+                            # Add implicit :latest if tag is missing
                             config_image_name = f"{config_image_name}:latest"
 
                         if container_image.tags:

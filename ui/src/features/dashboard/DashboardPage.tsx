@@ -140,13 +140,7 @@ export function DashboardPage() {
         groupBy === 'tags' ? (
           <GroupedHostsView
             key="standard-grouped"
-            hosts={hosts.map(h => ({
-              id: h.id,
-              name: h.name,
-              url: h.url,
-              status: h.status as 'online' | 'offline' | 'error',
-              ...(h.tags && { tags: h.tags }),
-            }))}
+            hosts={hosts}
             onHostClick={handleHostClick}
             onViewDetails={handleViewDetails}
             onEditHost={handleEditHost}
@@ -155,13 +149,7 @@ export function DashboardPage() {
         ) : (
           <HostCardsGrid
             key="standard"
-            hosts={hosts.map(h => ({
-              id: h.id,
-              name: h.name,
-              url: h.url,
-              status: h.status as 'online' | 'offline' | 'error',
-              ...(h.tags && { tags: h.tags }),
-            }))}
+            hosts={hosts}
             onHostClick={handleHostClick}
             onViewDetails={handleViewDetails}
             onEditHost={handleEditHost}
@@ -174,13 +162,7 @@ export function DashboardPage() {
         groupBy === 'tags' ? (
           <GroupedHostsView
             key="expanded-grouped"
-            hosts={hosts.map(h => ({
-              id: h.id,
-              name: h.name,
-              url: h.url,
-              status: h.status as 'online' | 'offline' | 'error',
-              ...(h.tags && { tags: h.tags }),
-            }))}
+            hosts={hosts}
             onHostClick={handleHostClick}
             onViewDetails={handleViewDetails}
             onEditHost={handleEditHost}
@@ -189,13 +171,7 @@ export function DashboardPage() {
         ) : (
           <HostCardsGrid
             key="expanded"
-            hosts={hosts.map(h => ({
-              id: h.id,
-              name: h.name,
-              url: h.url,
-              status: h.status as 'online' | 'offline' | 'error',
-              ...(h.tags && { tags: h.tags }),
-            }))}
+            hosts={hosts}
             onHostClick={handleHostClick}
             onViewDetails={handleViewDetails}
             onEditHost={handleEditHost}

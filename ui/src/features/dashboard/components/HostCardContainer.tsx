@@ -13,14 +13,7 @@
 
 import { useHostMetrics, useHostSparklines, useAllContainers, useContainerCounts } from '@/lib/stats/StatsProvider'
 import { HostCard, type HostCardData } from './HostCard'
-
-interface Host {
-  id: string
-  name: string
-  url: string
-  status: 'online' | 'offline' | 'error'
-  tags?: string[]
-}
+import type { Host } from '@/types/api'
 
 interface HostCardContainerProps {
   host: Host
@@ -41,7 +34,7 @@ export function HostCardContainer({ host, onHostClick, onViewDetails, onEditHost
     id: host.id,
     name: host.name,
     url: host.url,
-    status: host.status,
+    status: (host.status === 'degraded' ? 'error' : host.status) as 'online' | 'offline' | 'error',
     ...(host.tags && { tags: host.tags }),
 
     // Current stats from WebSocket
@@ -50,7 +43,7 @@ export function HostCardContainer({ host, onHostClick, onViewDetails, onEditHost
         cpu_percent: metrics.cpu_percent,
         mem_percent: metrics.mem_percent,
         mem_used_gb: metrics.mem_bytes / (1024 * 1024 * 1024), // Convert bytes to GB
-        mem_total_gb: 16, // TODO: Get from host info
+        mem_total_gb: host.total_memory ? host.total_memory / (1024 * 1024 * 1024) : 0,
         net_bytes_per_sec: metrics.net_bytes_per_sec,
       },
     }),

@@ -14,17 +14,10 @@ import GridLayout, { WidthProvider, type Layout } from 'react-grid-layout'
 import { ExpandedHostCardContainer } from './components/ExpandedHostCardContainer'
 import { HostCardContainer } from './components/HostCardContainer'
 import { useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
+import type { Host } from '@/types/api'
 import 'react-grid-layout/css/styles.css'
 
 const ResponsiveGridLayout = WidthProvider(GridLayout)
-
-interface Host {
-  id: string
-  name: string
-  url: string
-  status: 'online' | 'offline' | 'error'
-  tags?: string[]
-}
 
 interface HostCardsGridProps {
   hosts: Host[]
@@ -160,26 +153,14 @@ export function HostCardsGrid({ hosts, onHostClick, onViewDetails, onEditHost, m
             <div className="h-full overflow-hidden">
               {mode === 'standard' ? (
                 <HostCardContainer
-                  host={{
-                    id: host.id,
-                    name: host.name,
-                    url: host.url,
-                    status: host.status,
-                    ...(host.tags && { tags: host.tags }),
-                  }}
+                  host={host}
                   {...(onHostClick && { onHostClick })}
                   {...(onViewDetails && { onViewDetails })}
                   {...(onEditHost && { onEditHost })}
                 />
               ) : (
                 <ExpandedHostCardContainer
-                  host={{
-                    id: host.id,
-                    name: host.name,
-                    url: host.url,
-                    status: host.status,
-                    ...(host.tags && { tags: host.tags }),
-                  }}
+                  host={host}
                   {...(onHostClick && { onHostClick })}
                   {...(onViewDetails && { onViewDetails })}
                   {...(onEditHost && { onEditHost })}

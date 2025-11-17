@@ -146,9 +146,9 @@ export function HostCard({ host, onHostClick, onViewDetails, onEditHost }: HostC
   const hasStats = host.stats && host.sparklines
 
   // Fix #7: Check if sparklines have valid data (not just priming zeros)
-  // Network sparklines start at 0 during priming - wait for at least 2 valid readings
+  // Wait for at least 2 data points (4 seconds), then always show even if zero
   const hasValidNetworkData = host.sparklines
-    ? host.sparklines.net.filter(v => v > 0).length >= 2
+    ? host.sparklines.net.length >= 2
     : false
 
   const hasContainers = host.containers && host.containers.total > 0

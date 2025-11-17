@@ -33,17 +33,10 @@ import { CSS } from '@dnd-kit/utilities'
 import { ExpandedHostCardContainer } from './components/ExpandedHostCardContainer'
 import { HostCardContainer } from './components/HostCardContainer'
 import { useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
+import type { Host } from '@/types/api'
 import 'react-grid-layout/css/styles.css'
 
 const ResponsiveGridLayout = WidthProvider(GridLayout)
-
-interface Host {
-  id: string
-  name: string
-  url: string
-  status: 'online' | 'offline' | 'error'
-  tags?: string[]
-}
 
 interface GroupedHostsViewProps {
   hosts: Host[]
@@ -343,7 +336,10 @@ function GroupSection({
   const statusCounts = useMemo(() => {
     const counts = { online: 0, offline: 0, error: 0 }
     group.hosts.forEach((host) => {
-      counts[host.status]++
+      const status = host.status === 'degraded' ? 'error' : host.status
+      if (status === 'online' || status === 'offline' || status === 'error') {
+        counts[status]++
+      }
     })
     return counts
   }, [group.hosts])
@@ -431,26 +427,14 @@ function GroupSection({
                 <div className="h-full overflow-hidden">
                   {mode === 'standard' ? (
                     <HostCardContainer
-                      host={{
-                        id: host.id,
-                        name: host.name,
-                        url: host.url,
-                        status: host.status,
-                        ...(host.tags && { tags: host.tags }),
-                      }}
+                      host={host}
                       {...(onHostClick && { onHostClick })}
                       {...(onViewDetails && { onViewDetails })}
                       {...(onEditHost && { onEditHost })}
                     />
                   ) : (
                     <ExpandedHostCardContainer
-                      host={{
-                        id: host.id,
-                        name: host.name,
-                        url: host.url,
-                        status: host.status,
-                        ...(host.tags && { tags: host.tags }),
-                      }}
+                      host={host}
                       {...(onHostClick && { onHostClick })}
                       {...(onViewDetails && { onViewDetails })}
                       {...(onEditHost && { onEditHost })}

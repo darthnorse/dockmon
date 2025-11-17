@@ -383,14 +383,26 @@ class ContainerDiscovery:
                     # Try to get image info, but handle missing images gracefully
                     try:
                         container_image = dc.image
+                        config_image_name = dc.attrs.get('Config', {}).get('Image', container_image.short_id)
+                        if ":" not in config_image_name:
+                            # Add implicit :latest if tag is missing
+                            config_image_name = f"{config_image_name}:latest"
+
                         if container_image.tags:
-                            # Container has tags - use first tag (normal case)
-                            image_name = container_image.tags[0]
+                            if config_image_name in container_image.tags:
+                                # Container has tags and one of the tags matches the config
+                                image_name = config_image_name
+                                logger.debug(f"Container has tags and one of the tags matches the config {image_name}")
+                            else:
+                                # Container has tags but no config matches - use first tag
+                                image_name = container_image.tags[0]
+                                logger.debug(f"Container has tags {container_image.tags} but none of the tags matches the config {config_image_name} using {image_name}")
                         else:
                             # No tags (digest-based pull) - use the image reference from container config
                             # This preserves the full repository name even for digest-based pulls
                             # e.g., "portainer/portainer-ce@sha256:abc123" instead of just "sha256:abc123"
-                            image_name = dc.attrs.get('Config', {}).get('Image', container_image.short_id)
+                            image_name = config_image_name
+                            logger.debug(f"Container has no tags, using the config {config_image_name}")
                     except Exception:
                         # Image may have been deleted - use image ID from container attrs
                         image_name = dc.attrs.get('Config', {}).get('Image', 'unknown')

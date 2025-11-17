@@ -143,11 +143,26 @@ class NotificationService:
                     parts[i] = f'<code>{parts[i]}</code>'
             html_message = ''.join(parts)
 
-            payload = {
-                'chat_id': chat_id,
-                'text': html_message,
-                'parse_mode': 'HTML'
-            }
+        # Parse chat_id to check if it contains topic ID
+        # Format: -100<channel_id>/<topic_id>
+        payload = {
+            'text': html_message,
+            'parse_mode': 'HTML'
+        }
+
+        if '/' in str(chat_id):
+            # Split chat_id into channel_id and message_thread_id
+            channel_id_str, topic_id_str = str(chat_id).split('/', 1)
+            try:
+                payload['chat_id'] = int(channel_id_str)
+                payload['message_thread_id'] = int(topic_id_str)
+            except ValueError:
+                logger.error(f"Invalid Telegram chat_id format: {chat_id}. Expected format: -100<channel_id>/<topic_id>")
+                return False
+        else:
+            # Regular chat_id without topic
+            payload['chat_id'] = chat_id
+
 
             response = await self.http_client.post(url, json=payload)
             response.raise_for_status()

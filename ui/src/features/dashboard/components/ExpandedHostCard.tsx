@@ -74,6 +74,7 @@ export interface ExpandedHostData {
       status: string
       cpu_percent: number | null
       memory_percent: number | null
+      memory_usage: number | null
       network_rx: number | null
       network_tx: number | null
       web_ui_url?: string | null | undefined
@@ -104,6 +105,16 @@ function formatNetworkSpeed(bytesPerSec: number): string {
   if (bytesPerSec < 1024 * 1024) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`
   if (bytesPerSec < 1024 * 1024 * 1024) return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`
   return `${(bytesPerSec / (1024 * 1024 * 1024)).toFixed(2)} GB/s`
+}
+
+/**
+ * Format memory bytes to human-readable format
+ */
+function formatMemory(bytes: number): string {
+  const mb = bytes / (1024 * 1024)
+  if (mb < 1024) return `${mb.toFixed(0)}MB`
+  const gb = mb / 1024
+  return `${gb.toFixed(2)}GB`
 }
 
 /**
@@ -463,7 +474,7 @@ export function ExpandedHostCard({ host, cardRef, onHostClick, onViewDetails, on
                       <span className="text-xs font-mono text-muted-foreground flex-shrink-0 whitespace-nowrap">
                         {container.cpu_percent !== null ? `${container.cpu_percent.toFixed(1)}%` : '—'}
                         {' / '}
-                        {container.memory_percent !== null ? `${container.memory_percent.toFixed(0)}MB` : '—'}
+                        {container.memory_usage !== null ? formatMemory(container.memory_usage) : '—'}
                       </span>
                     )}
 

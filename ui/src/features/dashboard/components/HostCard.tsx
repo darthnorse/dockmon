@@ -57,6 +57,7 @@ export interface HostCardData {
       state: string
       cpu_percent: number
       memory_percent?: number
+      memory_usage?: number | null
     }>
   }
 
@@ -82,6 +83,16 @@ function formatNetworkSpeed(bytesPerSec: number): string {
   if (bytesPerSec < 1024) return `${bytesPerSec.toFixed(0)} B/s`
   if (bytesPerSec < 1024 * 1024) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`
   return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`
+}
+
+/**
+ * Format memory bytes to human-readable format
+ */
+function formatMemory(bytes: number): string {
+  const mb = bytes / (1024 * 1024)
+  if (mb < 1024) return `${mb.toFixed(0)}MB`
+  const gb = mb / 1024
+  return `${gb.toFixed(2)}GB`
 }
 
 /**
@@ -383,7 +394,7 @@ export function HostCard({ host, onHostClick, onViewDetails, onEditHost }: HostC
                     <span>{container.cpu_percent.toFixed(1)}%</span>
                     <span>/</span>
                     <span>
-                      {container.memory_percent !== undefined ? `${container.memory_percent.toFixed(0)}MB` : '—'}
+                      {container.memory_usage !== undefined && container.memory_usage !== null ? formatMemory(container.memory_usage) : '—'}
                     </span>
                   </div>
                 )}

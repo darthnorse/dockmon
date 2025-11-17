@@ -53,6 +53,7 @@ export function ExpandedHostCardContainer({ host, onHostClick, onViewDetails, on
       status: string
       cpu_percent: number | null
       memory_percent: number | null
+      memory_usage: number | null
       network_rx: number | null
       network_tx: number | null
       web_ui_url?: string | null | undefined
@@ -68,6 +69,7 @@ export function ExpandedHostCardContainer({ host, onHostClick, onViewDetails, on
           status: container.status,
           cpu_percent: container.cpu_percent,
           memory_percent: container.memory_percent,
+          memory_usage: container.memory_usage,
           network_rx: container.network_rx,
           network_tx: container.network_tx,
           web_ui_url: container.web_ui_url,

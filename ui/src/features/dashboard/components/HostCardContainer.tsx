@@ -69,6 +69,7 @@ export function HostCardContainer({ host, onHostClick, onViewDetails, onEditHost
           state: c.state,
           cpu_percent: c.cpu_percent || 0,
           memory_percent: c.memory_percent || 0,
+          memory_usage: c.memory_usage,
         })),
       },
     }),

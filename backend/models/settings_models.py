@@ -206,7 +206,7 @@ class GlobalSettingsUpdate(BaseModel):
 
     # Image pruning settings (v2.1+)
     prune_images_enabled: Optional[bool] = Field(None, description="Enable automatic image pruning")
-    image_retention_count: Optional[int] = Field(None, ge=1, le=10, description="Keep last N versions per image (1-10)")
+    image_retention_count: Optional[int] = Field(None, ge=0, le=10, description="Keep last N versions per image (0=only in-use images, 1-10=keep N versions)")
     image_prune_grace_hours: Optional[int] = Field(None, ge=1, le=168, description="Don't remove images newer than N hours (1-168)")
 
     class Config:

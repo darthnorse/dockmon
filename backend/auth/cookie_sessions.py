@@ -366,4 +366,5 @@ class CookieSessionManager:
 
 
 # Global instance
-cookie_session_manager = CookieSessionManager(session_timeout_hours=24)
+from config.settings import AppConfig
+cookie_session_manager = CookieSessionManager(session_timeout_hours=AppConfig.SESSION_TIMEOUT_HOURS)

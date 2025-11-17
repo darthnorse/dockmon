@@ -1159,9 +1159,28 @@ class DockerMonitor:
         """Alias for set_container_desired_state - used by batch operations"""
         return self.set_container_desired_state(host_id, container_id, container_name, desired_state, web_ui_url)
 
-    async def update_container_tags(self, host_id: str, container_id: str, container_name: str, tags_to_add: list[str], tags_to_remove: list[str]) -> dict:
-        """Update container custom tags in database"""
-        return await self.state_manager.update_container_tags(host_id, container_id, container_name, tags_to_add, tags_to_remove)
+    async def update_container_tags(
+        self,
+        host_id: str,
+        container_id: str,
+        container_name: str,
+        tags_to_add: list[str] = None,
+        tags_to_remove: list[str] = None,
+        ordered_tags: list[str] = None
+    ) -> dict:
+        """
+        Update container custom tags in database
+
+        Supports two modes:
+        1. Delta mode: tags_to_add/tags_to_remove (backwards compatible)
+        2. Ordered mode: ordered_tags (for reordering, v2.1.8-hotfix.1+)
+        """
+        return await self.state_manager.update_container_tags(
+            host_id, container_id, container_name,
+            tags_to_add=tags_to_add,
+            tags_to_remove=tags_to_remove,
+            ordered_tags=ordered_tags
+        )
 
 
     async def _handle_docker_event(self, event: dict):

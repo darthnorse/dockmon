@@ -739,7 +739,10 @@ async def update_host_tags(
     """
     Update tags for a host
 
-    Add or remove custom tags for organizing hosts (e.g., 'prod', 'dev', 'us-west-1').
+    Supports two modes:
+    1. Delta mode: Add/remove tags (tags_to_add, tags_to_remove) - backwards compatible
+    2. Ordered mode: Set complete ordered list (ordered_tags) - for reordering (v2.1.8-hotfix.1+)
+
     Host tags are separate from container tags and used for filtering/grouping hosts.
     """
     # Get host from monitor
@@ -747,12 +750,13 @@ async def update_host_tags(
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
 
-    # Update tags using normalized schema
+    # Update tags using normalized schema (supports both modes)
     updated_tags = monitor.db.update_subject_tags(
         'host',
         host_id,
-        request.tags_to_add,
-        request.tags_to_remove,
+        tags_to_add=request.tags_to_add,
+        tags_to_remove=request.tags_to_remove,
+        ordered_tags=request.ordered_tags,
         host_id_at_attach=host_id,
         container_name_at_attach=host.name  # Use host name for logging
     )
@@ -1087,8 +1091,12 @@ async def update_container_tags(
     """
     Update tags for a container
 
-    Add or remove custom tags. Tags are stored in DockMon's database and merged with
-    tags derived from Docker labels (compose:project, swarm:service).
+    Supports two modes:
+    1. Delta mode: Add/remove tags (tags_to_add, tags_to_remove) - backwards compatible
+    2. Ordered mode: Set complete ordered list (ordered_tags) - for reordering (v2.1.8-hotfix.1+)
+
+    Tags are stored in DockMon's database and merged with tags derived from Docker labels
+    (compose:project, swarm:service).
     """
     # Get container name from monitor
     containers = await monitor.get_containers()
@@ -1101,8 +1109,9 @@ async def update_container_tags(
         host_id,
         container_id,
         container.name,
-        request.tags_to_add,
-        request.tags_to_remove
+        tags_to_add=request.tags_to_add,
+        tags_to_remove=request.tags_to_remove,
+        ordered_tags=request.ordered_tags
     )
 
     logger.info(f"User {current_user.get('username')} updated tags for container {container.name}")

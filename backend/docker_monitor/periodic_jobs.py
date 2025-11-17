@@ -357,8 +357,31 @@ class PeriodicJobsManager:
                 # Check if we should run update checker (based on configured time)
                 await self._check_and_run_updates()
 
-                # Sleep for 24 hours before next cleanup
-                await asyncio.sleep(24 * 60 * 60)  # 24 hours
+                # Calculate sleep duration until next scheduled check (Issue #49 fix)
+                # This ensures checks run at configured time, not 24h after container restart
+                try:
+                    settings = self.db.get_settings()
+                    check_time_str = settings.update_check_time if hasattr(settings, 'update_check_time') and settings.update_check_time else "02:00"
+
+                    # Parse configured time
+                    hour, minute = map(int, check_time_str.split(":"))
+                    target_time = dt_time(hour, minute)
+
+                    # Calculate dynamic sleep duration
+                    sleep_seconds = self._calculate_sleep_until_next_check(target_time)
+                    next_check_time = datetime.now(timezone.utc) + timedelta(seconds=sleep_seconds)
+
+                    logger.info(
+                        f"Next update check scheduled for {next_check_time.strftime('%Y-%m-%d %H:%M:%S UTC')} "
+                        f"(sleeping {sleep_seconds/3600:.1f} hours)"
+                    )
+
+                    await asyncio.sleep(sleep_seconds)
+
+                except Exception as e:
+                    # Fallback to 24-hour sleep on error
+                    logger.error(f"Failed to calculate sleep duration, falling back to 24h: {e}")
+                    await asyncio.sleep(24 * 60 * 60)
 
             except Exception as e:
                 logger.error(f"Error in cleanup task: {e}")
@@ -431,6 +454,41 @@ class PeriodicJobsManager:
 
         except Exception as e:
             logger.error(f"Error in update checker: {e}", exc_info=True)
+
+    def _calculate_sleep_until_next_check(self, target_time: dt_time) -> float:
+        """
+        Calculate seconds to sleep until next occurrence of target time.
+
+        This ensures update checks run at the user-configured time, not 24 hours
+        after container restart.
+
+        Args:
+            target_time: Target time of day (e.g., time(14, 0) for 2:00 PM UTC)
+
+        Returns:
+            Seconds to sleep (always >= 60 to prevent tight loops)
+
+        Example:
+            Current: 1:00 PM, Target: 2:00 PM → sleep ~1 hour
+            Current: 3:00 PM, Target: 2:00 PM → sleep ~23 hours (until tomorrow)
+        """
+        now = datetime.now(timezone.utc)
+
+        # Create datetime for target time today
+        target_today = datetime.combine(now.date(), target_time, tzinfo=timezone.utc)
+
+        if now.time() < target_time:
+            # Haven't reached target time today yet
+            next_check = target_today
+        else:
+            # Already past target time, schedule for tomorrow
+            next_check = target_today + timedelta(days=1)
+
+        # Calculate seconds until next check
+        sleep_seconds = (next_check - now).total_seconds()
+
+        # Ensure we always sleep at least 60 seconds (prevent tight loop if time calculation is off)
+        return max(60, sleep_seconds)
 
     async def check_updates_now(self):
         """

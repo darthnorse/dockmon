@@ -220,6 +220,9 @@ def _validate_schema(engine, version: str):
             'users_columns': ['role'],
             'tables': ['api_keys'],
         },
+        '014_v2_1_8_hotfix_1': {
+            'tag_assignments_columns': ['order_index'],
+        },
         # Add validations for future versions here:
     }
 

@@ -338,13 +338,20 @@ class BatchJobCreate(BaseModel):
 
 class TagUpdateBase(BaseModel):
     """
-    Base model for adding/removing tags from containers or hosts.
-    Provides common validation logic for all tag operations.
-    """
-    tags_to_add: List[str] = Field(default_factory=list, max_items=20)
-    tags_to_remove: List[str] = Field(default_factory=list, max_items=20)
+    Base model for updating tags (v2.1.8-hotfix.1+)
 
-    @validator('tags_to_add', 'tags_to_remove', each_item=True)
+    Supports two modes:
+    1. Delta mode: tags_to_add/tags_to_remove (backwards compatible)
+    2. Ordered mode: ordered_tags (new - for reordering)
+    """
+    # Mode 1: Delta operations (backwards compatible)
+    tags_to_add: Optional[List[str]] = Field(default=None, max_items=50)
+    tags_to_remove: Optional[List[str]] = Field(default=None, max_items=50)
+
+    # Mode 2: Ordered list (new - for reordering)
+    ordered_tags: Optional[List[str]] = Field(default=None, max_items=50)
+
+    @validator('tags_to_add', 'tags_to_remove', 'ordered_tags', each_item=True)
     def validate_tag(cls, v):
         """Validate individual tag format"""
         if not v or not v.strip():
@@ -358,17 +365,39 @@ class TagUpdateBase(BaseModel):
 
     @root_validator(skip_on_failure=True)
     def validate_tags(cls, values):
-        """Ensure at least one operation is specified and no conflicts"""
+        """Ensure only one mode is used and at least one operation specified"""
+        tags_to_add = values.get('tags_to_add')
+        tags_to_remove = values.get('tags_to_remove')
+        ordered_tags = values.get('ordered_tags')
+
+        # Check mutual exclusivity
+        if ordered_tags is not None and (tags_to_add or tags_to_remove):
+            raise ValueError('Cannot use ordered_tags with tags_to_add/tags_to_remove')
+
+        # Ensure at least one operation
+        if ordered_tags is None and not tags_to_add and not tags_to_remove:
+            raise ValueError('Must provide either ordered_tags or tags_to_add/tags_to_remove')
+
+        # Convert empty lists to None for cleaner handling
+        if tags_to_add is not None and len(tags_to_add) == 0:
+            values['tags_to_add'] = []
+        if tags_to_remove is not None and len(tags_to_remove) == 0:
+            values['tags_to_remove'] = []
+
+        # Check for conflicts in delta mode only
+        ordered_tags = values.get('ordered_tags')
         tags_to_add = values.get('tags_to_add', [])
         tags_to_remove = values.get('tags_to_remove', [])
 
-        if not tags_to_add and not tags_to_remove:
-            raise ValueError('At least one tag operation (add or remove) is required')
+        # Only validate delta operations if not using ordered mode
+        if ordered_tags is None:
+            if not tags_to_add and not tags_to_remove:
+                raise ValueError('At least one tag operation (add or remove) is required')
 
-        # Check for conflicts (adding and removing the same tag)
-        conflicts = set(tags_to_add) & set(tags_to_remove)
-        if conflicts:
-            raise ValueError(f'Cannot add and remove the same tag(s): {", ".join(conflicts)}')
+            # Check for conflicts (adding and removing the same tag)
+            conflicts = set(tags_to_add) & set(tags_to_remove)
+            if conflicts:
+                raise ValueError(f'Cannot add and remove the same tag(s): {", ".join(conflicts)}')
 
         return values
 

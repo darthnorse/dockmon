@@ -88,20 +88,37 @@ export function useContainerTagEditor({
     setIsLoading(true)
 
     try {
-      // Calculate tags to add and remove
-      const tagsToAdd = editedTags.filter(tag => !currentTags.includes(tag))
-      const tagsToRemove = currentTags.filter(tag => !editedTags.includes(tag))
+      // Check if tags changed at all
+      const tagsChanged = JSON.stringify(editedTags) !== JSON.stringify(currentTags)
 
-      if (tagsToAdd.length === 0 && tagsToRemove.length === 0) {
+      if (!tagsChanged) {
         toast.info('No changes to save')
         setIsEditing(false)
         return
       }
 
-      await apiClient.patch(`/hosts/${hostId}/containers/${containerId}/tags`, {
-        tags_to_add: tagsToAdd,
-        tags_to_remove: tagsToRemove
-      })
+      // Check if order changed (tags are same but in different order)
+      const sameTagsDifferentOrder =
+        editedTags.length === currentTags.length &&
+        editedTags.every(tag => currentTags.includes(tag)) &&
+        JSON.stringify(editedTags) !== JSON.stringify(currentTags)
+
+      // Use ordered mode if reordering, delta mode if adding/removing
+      if (sameTagsDifferentOrder) {
+        // Reorder mode: send complete ordered list (v2.1.8-hotfix.1+)
+        await apiClient.patch(`/hosts/${hostId}/containers/${containerId}/tags`, {
+          ordered_tags: editedTags
+        })
+      } else {
+        // Delta mode: calculate add/remove (backwards compatible)
+        const tagsToAdd = editedTags.filter(tag => !currentTags.includes(tag))
+        const tagsToRemove = currentTags.filter(tag => !editedTags.includes(tag))
+
+        await apiClient.patch(`/hosts/${hostId}/containers/${containerId}/tags`, {
+          tags_to_add: tagsToAdd,
+          tags_to_remove: tagsToRemove
+        })
+      }
 
       toast.success('Container tags updated successfully')
       setIsEditing(false)

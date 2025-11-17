@@ -105,16 +105,29 @@ class StateManager:
         self.db.set_desired_state(host_id, container_id, container_name, desired_state, web_ui_url)
         logger.info(f"Desired state set to '{desired_state}' for container '{container_name}' on host '{host_name}'")
 
-    async def update_container_tags(self, host_id: str, container_id: str, container_name: str, tags_to_add: list[str], tags_to_remove: list[str]) -> dict:
+    async def update_container_tags(
+        self,
+        host_id: str,
+        container_id: str,
+        container_name: str,
+        tags_to_add: list[str] = None,
+        tags_to_remove: list[str] = None,
+        ordered_tags: list[str] = None
+    ) -> dict:
         """
         Update container custom tags in database.
+
+        Supports two modes:
+        1. Delta mode: tags_to_add/tags_to_remove (backwards compatible)
+        2. Ordered mode: ordered_tags (for reordering, v2.1.8-hotfix.1+)
 
         Args:
             host_id: Docker host ID
             container_id: Container ID
             container_name: Container name
-            tags_to_add: List of tags to add
-            tags_to_remove: List of tags to remove
+            tags_to_add: List of tags to add (delta mode)
+            tags_to_remove: List of tags to remove (delta mode)
+            ordered_tags: Complete ordered list of tags (ordered mode)
 
         Returns:
             dict with success status and updated tags list
@@ -130,13 +143,14 @@ class StateManager:
             # Get labels to derive compose/swarm tags
             labels = container.labels if container.labels else {}
 
-            # Update custom tags in database
+            # Update custom tags in database (supports both modes)
             container_key = make_composite_key(host_id, container_id)
             custom_tags = self.db.update_subject_tags(
                 'container',
                 container_key,
-                tags_to_add,
-                tags_to_remove,
+                tags_to_add=tags_to_add,
+                tags_to_remove=tags_to_remove,
+                ordered_tags=ordered_tags,
                 host_id_at_attach=host_id,
                 container_name_at_attach=container_name
             )
@@ -148,7 +162,11 @@ class StateManager:
             all_tags_set = set(derived_tags + custom_tags)
             all_tags = sorted(list(all_tags_set))
 
-            logger.info(f"Updated tags for container {container_name} on host {host_id}: +{tags_to_add}, -{tags_to_remove}")
+            # Log operation
+            if ordered_tags is not None:
+                logger.info(f"Updated tags for container {container_name} on host {host_id}: ordered={ordered_tags}")
+            else:
+                logger.info(f"Updated tags for container {container_name} on host {host_id}: +{tags_to_add}, -{tags_to_remove}")
 
             return {
                 "success": True,

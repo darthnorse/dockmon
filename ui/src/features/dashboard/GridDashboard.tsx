@@ -160,8 +160,8 @@ export function GridDashboard() {
   )
 
   return (
-    <div className="p-6 min-w-[900px] overflow-x-auto">
-      {/* Grid Layout - Responsive width with 900px minimum */}
+    <div className="w-full">
+      {/* Grid Layout - Responsive width */}
       <ResponsiveGridLayout
         className="layout"
         layout={layout}
@@ -171,6 +171,7 @@ export function GridDashboard() {
         draggableHandle=".widget-drag-handle"
         compactType="vertical"
         preventCollision={false}
+        style={{ width: '100%' }}
       >
         {widgets.map((widget) => {
           const WidgetComponent = widgetComponents[widget.type]

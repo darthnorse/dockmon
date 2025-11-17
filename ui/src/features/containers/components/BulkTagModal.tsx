@@ -122,6 +122,8 @@ export function BulkTagModal({ isOpen, onClose, mode, selectedContainers, onConf
         }
         return acc.filter(tag => container.tags?.includes(tag))
       }, [] as string[])
+        // Filter out tags already added to the removal list
+        .filter(tag => !tags.includes(tag))
     : []
 
   return (

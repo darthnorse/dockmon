@@ -276,14 +276,16 @@ export function TagEditor({ tags, containerId, hostId }: TagEditorProps) {
               />
 
               {/* Suggestions dropdown */}
-              {showSuggestions && suggestions.length > 0 && (
+              {showSuggestions && suggestions.filter(s => !selectedTags.includes(s)).length > 0 && (
                 <div
                   ref={suggestionsRef}
                   id="tag-suggestions"
                   role="listbox"
                   className="absolute top-full left-0 mt-1 w-full bg-popover border border-border rounded-md shadow-md max-h-60 overflow-y-auto z-50 p-1"
                 >
-                  {suggestions.map((suggestion) => (
+                  {suggestions
+                    .filter(s => !selectedTags.includes(s))
+                    .map((suggestion) => (
                     <button
                       key={suggestion}
                       onClick={() => addTag(suggestion)}

@@ -667,6 +667,9 @@ class TagAssignment(Base):
     host_id_at_attach = Column(String, nullable=True)
     container_name_at_attach = Column(String, nullable=True)
 
+    # Tag ordering (v2.1.8-hotfix.1+)
+    order_index = Column(Integer, nullable=False, default=0)  # Order within subject's tag list (0 = primary tag)
+
     # Timestamps
     created_at = Column(DateTime, default=utcnow, nullable=False)
     last_seen_at = Column(DateTime, nullable=True)
@@ -1826,20 +1829,26 @@ class DatabaseManager:
             return False
 
     def get_tags_for_subject(self, subject_type: str, subject_id: str) -> list[str]:
-        """Get all tag names for a subject (optimized with JOIN to avoid N+1)"""
+        """
+        Get all tag names for a subject in user-defined order (v2.1.8-hotfix.1+)
+
+        Tags are returned in order_index order (NOT alphabetically).
+        First tag (order_index=0) is the "primary tag" for the subject.
+        """
         subject_type = self._validate_subject_type(subject_type)
 
         with self.get_session() as session:
             # Use JOIN to fetch tags in a single query (avoids N+1)
+            # Order by order_index (user-defined order) instead of alphabetically
             tag_names = session.query(Tag.name).join(
                 TagAssignment,
                 TagAssignment.tag_id == Tag.id
             ).filter(
                 TagAssignment.subject_type == subject_type,
                 TagAssignment.subject_id == subject_id
-            ).all()
+            ).order_by(TagAssignment.order_index).all()
 
-            return sorted([name[0] for name in tag_names])
+            return [name[0] for name in tag_names]
 
     def get_subjects_with_tag(self, tag_name: str, subject_type: str = None) -> list[dict]:
         """Get all subjects that have a specific tag"""
@@ -1871,12 +1880,39 @@ class DatabaseManager:
         self,
         subject_type: str,
         subject_id: str,
-        tags_to_add: list[str],
-        tags_to_remove: list[str],
+        tags_to_add: list[str] = None,
+        tags_to_remove: list[str] = None,
+        ordered_tags: list[str] = None,
         **identity_fields
     ) -> list[str]:
-        """Update tags for a subject (add and/or remove)"""
+        """
+        Update tags for a subject using one of two modes (v2.1.8-hotfix.1+)
+
+        MODE 1 - Delta Operations (safe for concurrent use):
+            tags_to_add: Tags to add to current set
+            tags_to_remove: Tags to remove from current set
+            Use for: Bulk operations, programmatic tagging, concurrent updates
+            Tags added via this mode are appended to end (max order_index + 1)
+
+        MODE 2 - Set Operation (full state replacement with ordering):
+            ordered_tags: Complete ordered list (replaces all existing tags)
+            Use for: User-driven reordering, setting exact tag order
+            First tag becomes "primary tag" for the subject
+
+        Modes are mutually exclusive - use one or the other, not both.
+        """
         subject_type = self._validate_subject_type(subject_type)
+
+        # Validate mode usage
+        if ordered_tags is not None and (tags_to_add or tags_to_remove):
+            raise ValueError("Cannot use both ordered_tags and tags_to_add/tags_to_remove")
+
+        if ordered_tags is None and tags_to_add is None and tags_to_remove is None:
+            raise ValueError("Must provide either ordered_tags or tags_to_add/tags_to_remove")
+
+        # Set defaults for None values
+        tags_to_add = tags_to_add or []
+        tags_to_remove = tags_to_remove or []
 
         # Limit number of tags per operation to prevent abuse
         MAX_TAGS_PER_OPERATION = 50
@@ -1884,31 +1920,105 @@ class DatabaseManager:
             raise ValueError(f"Cannot add more than {MAX_TAGS_PER_OPERATION} tags at once")
         if len(tags_to_remove) > MAX_TAGS_PER_OPERATION:
             raise ValueError(f"Cannot remove more than {MAX_TAGS_PER_OPERATION} tags at once")
+        if ordered_tags is not None and len(ordered_tags) > MAX_TAGS_PER_OPERATION:
+            raise ValueError(f"Cannot set more than {MAX_TAGS_PER_OPERATION} tags at once")
 
         with self.get_session() as session:
             try:
-                # Remove tags
-                for tag_name in tags_to_remove:
-                    self.remove_tag_from_subject(tag_name, subject_type, subject_id)
+                # MODE 2: Ordered list - replace all tags with ordered set
+                if ordered_tags is not None:
+                    # Delete all existing assignments for this subject
+                    session.query(TagAssignment).filter(
+                        TagAssignment.subject_type == subject_type,
+                        TagAssignment.subject_id == subject_id
+                    ).delete()
+                    session.flush()
 
-                # Add tags
-                for tag_name in tags_to_add:
-                    self.assign_tag_to_subject(
-                        tag_name,
-                        subject_type,
-                        subject_id,
-                        **identity_fields
-                    )
+                    # Create new assignments with sequential order_index
+                    for idx, tag_name in enumerate(ordered_tags):
+                        # Get or create tag
+                        tag = session.query(Tag).filter(Tag.name == tag_name).first()
+                        if not tag:
+                            tag_id = str(uuid.uuid4())
+                            tag = Tag(
+                                id=tag_id,
+                                name=tag_name,
+                                kind=subject_type,
+                                color=None,  # Color is optional, will be NULL in database
+                                last_used_at=datetime.now(timezone.utc)
+                            )
+                            session.add(tag)
+                            session.flush()
 
-                # Return current tags
-                current_tags = self.get_tags_for_subject(subject_type, subject_id)
+                        # Update last_used_at for existing tags
+                        tag.last_used_at = datetime.now(timezone.utc)
 
-                # Enforce maximum total tags per subject
-                MAX_TAGS_PER_SUBJECT = 100
-                if len(current_tags) > MAX_TAGS_PER_SUBJECT:
-                    logger.warning(f"Subject {subject_type}:{subject_id} has {len(current_tags)} tags (max {MAX_TAGS_PER_SUBJECT})")
+                        # Create assignment with order_index
+                        assignment = TagAssignment(
+                            tag_id=tag.id,
+                            subject_type=subject_type,
+                            subject_id=subject_id,
+                            order_index=idx,
+                            created_at=datetime.now(timezone.utc),
+                            **identity_fields
+                        )
+                        session.add(assignment)
 
-                return current_tags
+                    session.commit()
+                    return ordered_tags
+
+                # MODE 1: Add/remove - backwards compatible delta operations
+                else:
+                    # Get current max order_index for appending new tags
+                    max_order = session.query(func.max(TagAssignment.order_index)).filter(
+                        TagAssignment.subject_type == subject_type,
+                        TagAssignment.subject_id == subject_id
+                    ).scalar() or -1
+
+                    # Remove tags
+                    for tag_name in tags_to_remove:
+                        self.remove_tag_from_subject(tag_name, subject_type, subject_id)
+
+                    # Add tags (append to end with max order_index + 1)
+                    for tag_name in tags_to_add:
+                        max_order += 1
+                        # Need to set order_index when assigning
+                        tag = session.query(Tag).filter(Tag.name == tag_name).first()
+                        if not tag:
+                            tag_id = str(uuid.uuid4())
+                            tag = Tag(
+                                id=tag_id,
+                                name=tag_name,
+                                kind=subject_type,
+                                color=None,  # Color is optional, will be NULL in database
+                                last_used_at=datetime.now(timezone.utc)
+                            )
+                            session.add(tag)
+                            session.flush()
+
+                        tag.last_used_at = datetime.now(timezone.utc)
+
+                        # Create assignment with order_index = max + 1
+                        assignment = TagAssignment(
+                            tag_id=tag.id,
+                            subject_type=subject_type,
+                            subject_id=subject_id,
+                            order_index=max_order,
+                            created_at=datetime.now(timezone.utc),
+                            **identity_fields
+                        )
+                        session.add(assignment)
+
+                    # Return current tags (in order)
+                    session.commit()
+                    current_tags = self.get_tags_for_subject(subject_type, subject_id)
+
+                    # Enforce maximum total tags per subject
+                    MAX_TAGS_PER_SUBJECT = 100
+                    if len(current_tags) > MAX_TAGS_PER_SUBJECT:
+                        logger.warning(f"Subject {subject_type}:{subject_id} has {len(current_tags)} tags (max {MAX_TAGS_PER_SUBJECT})")
+
+                    return current_tags
 
             except Exception as e:
                 logger.error(f"Failed to update tags for {subject_type}:{subject_id}: {e}")

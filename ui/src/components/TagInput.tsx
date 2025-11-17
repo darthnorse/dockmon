@@ -34,7 +34,6 @@ export interface TagInputProps {
   disabled?: boolean
   error?: string
   showPrimaryIndicator?: boolean  // Show visual indicator for primary (first) tag
-  mode?: 'add' | 'remove'  // Add or remove mode - affects suggestion filtering
 }
 
 export function TagInput({
@@ -46,7 +45,6 @@ export function TagInput({
   disabled = false,
   error,
   showPrimaryIndicator = false,
-  mode = 'add',
 }: TagInputProps) {
   const [inputValue, setInputValue] = useState('')
   const [showSuggestions, setShowSuggestions] = useState(false)
@@ -57,10 +55,9 @@ export function TagInput({
   const containerRef = useRef<HTMLDivElement>(null)
 
   // Filter suggestions based on input
-  // In 'add' mode: exclude already selected tags
-  // In 'remove' mode: show all tags (user wants to see existing tags to remove them)
+  // In both 'add' and 'remove' modes: exclude already selected tags
   const filteredSuggestions = suggestions
-    .filter((tag) => mode === 'add' ? !value.includes(tag) : true)
+    .filter((tag) => !value.includes(tag))
     .filter((tag) => tag.toLowerCase().includes(inputValue.toLowerCase()))
     .slice(0, 10) // Max 10 suggestions
 

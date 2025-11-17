@@ -391,8 +391,8 @@ class ContainerDiscovery:
                         if container_image.tags:
                             if config_image_name in container_image.tags:
                                 # Container has tags and one of the tags matches the config
-                                logger.debug(f"Container has tags and one of the tags matches the config {image_name}")
                                 image_name = config_image_name
+                                logger.debug(f"Container has tags and one of the tags matches the config {image_name}")
                             else:
                                 # Container has tags but no config matches - use first tag
                                 image_name = container_image.tags[0]

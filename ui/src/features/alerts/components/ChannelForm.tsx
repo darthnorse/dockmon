@@ -245,7 +245,7 @@ export function ChannelForm({ channel, onSubmit, onCancel, onTest, isSubmitting,
                 className={`w-full rounded-md border ${errors['config.chat_id'] ? 'border-red-500' : 'border-gray-700'} bg-gray-800 px-3 py-2 text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500`}
               />
               {errors['config.chat_id'] && <p className="mt-1 text-xs text-red-400">{errors['config.chat_id']}</p>}
-              <p className="mt-1 text-xs text-gray-400">Use @userinfobot to get your chat ID</p>
+              <p className="mt-1 text-xs text-gray-400">Use @userinfobot to get your chat ID. For topics: -1001234567890/topicID</p>
             </div>
           </>
         )}

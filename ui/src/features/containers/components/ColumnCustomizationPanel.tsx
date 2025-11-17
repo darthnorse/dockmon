@@ -161,10 +161,13 @@ export function ColumnCustomizationPanel<TData>({ table }: ColumnCustomizationPa
     const { active, over } = event
 
     if (over && active.id !== over.id) {
-      const oldIndex = currentOrder.indexOf(active.id as string)
-      const newIndex = currentOrder.indexOf(over.id as string)
+      // Use orderedColumns (what user sees) instead of currentOrder (saved state)
+      // This allows dragging of newly added columns that aren't in saved preferences yet
+      const orderedColumnIds = orderedColumns.map(c => c.id)
+      const oldIndex = orderedColumnIds.indexOf(active.id as string)
+      const newIndex = orderedColumnIds.indexOf(over.id as string)
 
-      const newOrder = arrayMove(currentOrder, oldIndex, newIndex)
+      const newOrder = arrayMove(orderedColumnIds, oldIndex, newIndex)
       // Always prepend 'select' so it stays on the left
       table.setColumnOrder(['select', ...newOrder])
     }

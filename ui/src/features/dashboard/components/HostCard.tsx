@@ -22,6 +22,7 @@ import { DropdownMenu, DropdownMenuItem } from '@/components/ui/dropdown-menu'
 import { useUserPreferences, useUpdatePreferences, useSimplifiedWorkflow } from '@/lib/hooks/useUserPreferences'
 import { useContainerModal } from '@/providers'
 import { makeCompositeKeyFrom } from '@/lib/utils/containerKeys'
+import { formatBytes } from '@/lib/utils/formatting'
 
 export interface HostCardData {
   id: string
@@ -83,16 +84,6 @@ function formatNetworkSpeed(bytesPerSec: number): string {
   if (bytesPerSec < 1024) return `${bytesPerSec.toFixed(0)} B/s`
   if (bytesPerSec < 1024 * 1024) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`
   return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`
-}
-
-/**
- * Format memory bytes to human-readable format
- */
-function formatMemory(bytes: number): string {
-  const mb = bytes / (1024 * 1024)
-  if (mb < 1024) return `${mb.toFixed(0)}MB`
-  const gb = mb / 1024
-  return `${gb.toFixed(2)}GB`
 }
 
 /**
@@ -394,7 +385,7 @@ export function HostCard({ host, onHostClick, onViewDetails, onEditHost }: HostC
                     <span>{container.cpu_percent.toFixed(1)}%</span>
                     <span>/</span>
                     <span>
-                      {container.memory_usage !== undefined && container.memory_usage !== null ? formatMemory(container.memory_usage) : '—'}
+                      {formatBytes(container.memory_usage)}
                     </span>
                   </div>
                 )}

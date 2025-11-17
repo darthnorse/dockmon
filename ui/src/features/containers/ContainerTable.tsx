@@ -90,6 +90,7 @@ import { useContainerUpdateStatus, useUpdatesSummary, useAllAutoUpdateConfigs, u
 import { useContainerActions } from './hooks/useContainerActions'
 import { useContainerHealthCheck } from './hooks/useContainerHealthCheck'
 import { makeCompositeKey } from '@/lib/utils/containerKeys'
+import { formatBytes } from '@/lib/utils/formatting'
 import { useContainerModal } from '@/providers'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
 
@@ -1292,17 +1293,8 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
             return <span className="text-xs text-muted-foreground">-</span>
           }
 
-          const formatMemory = (bytes: number) => {
-            const mb = bytes / (1024 * 1024)
-            if (mb < 1024) {
-              return `${mb.toFixed(0)} MB`
-            }
-            const gb = mb / 1024
-            return `${gb.toFixed(1)} GB`
-          }
-
-          const usage = formatMemory(container.memory_usage)
-          const limit = container.memory_limit ? formatMemory(container.memory_limit) : '—'
+          const usage = formatBytes(container.memory_usage)
+          const limit = container.memory_limit ? formatBytes(container.memory_limit) : 'No limit'
 
           return (
             <span className="text-xs text-muted-foreground" title={`Limit: ${limit}`}>

@@ -37,6 +37,7 @@ import { useContainerActions } from '@/features/containers/hooks/useContainerAct
 import { useContainerModal } from '@/providers'
 import { makeCompositeKeyFrom } from '@/lib/utils/containerKeys'
 import { debug } from '@/lib/debug'
+import { formatBytes } from '@/lib/utils/formatting'
 
 export interface ExpandedHostData {
   id: string
@@ -105,16 +106,6 @@ function formatNetworkSpeed(bytesPerSec: number): string {
   if (bytesPerSec < 1024 * 1024) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`
   if (bytesPerSec < 1024 * 1024 * 1024) return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`
   return `${(bytesPerSec / (1024 * 1024 * 1024)).toFixed(2)} GB/s`
-}
-
-/**
- * Format memory bytes to human-readable format
- */
-function formatMemory(bytes: number): string {
-  const mb = bytes / (1024 * 1024)
-  if (mb < 1024) return `${mb.toFixed(0)}MB`
-  const gb = mb / 1024
-  return `${gb.toFixed(2)}GB`
 }
 
 /**
@@ -474,7 +465,7 @@ export function ExpandedHostCard({ host, cardRef, onHostClick, onViewDetails, on
                       <span className="text-xs font-mono text-muted-foreground flex-shrink-0 whitespace-nowrap">
                         {container.cpu_percent !== null ? `${container.cpu_percent.toFixed(1)}%` : '—'}
                         {' / '}
-                        {container.memory_usage !== null ? formatMemory(container.memory_usage) : '—'}
+                        {formatBytes(container.memory_usage)}
                       </span>
                     )}
 

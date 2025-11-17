@@ -17,6 +17,7 @@ import { TagEditor } from './TagEditor'
 import { toast } from 'sonner'
 import { apiClient } from '@/lib/api/client'
 import { debug } from '@/lib/debug'
+import { formatBytes } from '@/lib/utils/formatting'
 
 interface ContainerOverviewTabProps {
   containerId: string
@@ -140,14 +141,6 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
       // Revert on error
       setDesiredState(previousState)
     }
-  }
-
-  const formatBytes = (bytes: number | null | undefined) => {
-    if (!bytes) return '0 B'
-    const k = 1024
-    const sizes = ['B', 'KB', 'MB', 'GB']
-    const i = Math.floor(Math.log(bytes) / Math.log(k))
-    return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`
   }
 
   const formatNetworkRate = (bytesPerSec: number) => {

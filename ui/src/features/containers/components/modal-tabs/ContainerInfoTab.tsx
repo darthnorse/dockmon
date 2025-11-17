@@ -29,6 +29,7 @@ import { TagChip } from '@/components/TagChip'
 import { Button } from '@/components/ui/button'
 import { useContainerTagEditor } from '@/hooks/useContainerTagEditor'
 import { makeCompositeKey } from '@/lib/utils/containerKeys'
+import { formatBytes } from '@/lib/utils/formatting'
 
 interface ContainerInfoTabProps {
   container: Container
@@ -119,14 +120,6 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
     } catch (error) {
       toast.error(`Failed to save WebUI URL: ${error instanceof Error ? error.message : 'Unknown error'}`)
     }
-  }
-
-  const formatBytes = (bytes: number | null | undefined): string => {
-    if (!bytes) return '0 B'
-    const k = 1024
-    const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
-    const i = Math.floor(Math.log(bytes) / Math.log(k))
-    return `${(bytes / Math.pow(k, i)).toFixed(2)} ${sizes[i]}`
   }
 
   const formatNetworkRate = (bytesPerSec: number | null | undefined): string => {

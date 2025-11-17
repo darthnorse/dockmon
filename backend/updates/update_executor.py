@@ -416,6 +416,24 @@ class UpdateExecutor:
                 update_record.latest_image
             )
 
+            # Step 1b: Inspect new image to get labels for intelligent merge
+            logger.info(f"Inspecting new image labels: {update_record.latest_image}")
+            try:
+                new_image = await async_docker_call(
+                    docker_client.images.get,
+                    update_record.latest_image
+                )
+                new_image_labels = new_image.attrs.get("Config", {}).get("Labels", {}) or {}
+                logger.debug(f"New image has {len(new_image_labels)} labels")
+            except Exception as e:
+                # If image inspection fails (network issue, image deleted, etc.),
+                # proceed with old labels rather than crashing the update
+                logger.warning(
+                    f"Failed to inspect new image labels: {e}. "
+                    f"Proceeding with old container labels only."
+                )
+                new_image_labels = {}  # Fallback: no merge, preserve old labels
+
             # Step 2a: Find dependent containers (network_mode: container:this_container)
             # These must be recreated after update to point to new container ID
             logger.info(f"Checking for dependent containers")
@@ -435,7 +453,7 @@ class UpdateExecutor:
             # (reuse old_container fetched during validation to avoid duplicate API call)
             logger.info("Getting container configuration")
             await self._broadcast_progress(host_id, container_id, "configuring", 35, "Reading container configuration")
-            container_config = await self._extract_container_config(old_container)
+            container_config = await self._extract_container_config(old_container, new_image_labels=new_image_labels)
 
             # Step 3: Create backup of old container (stop + rename for rollback)
             logger.info(f"Creating backup of {container_name}")
@@ -881,9 +899,64 @@ class UpdateExecutor:
             logger.error(f"Error pulling image {image}: {e}")
             raise
 
-    async def _extract_container_config(self, container) -> Dict[str, Any]:
+    def _merge_labels(
+        self,
+        old_labels: Dict[str, str],
+        new_image_labels: Dict[str, str] = None
+    ) -> Dict[str, str]:
+        """
+        Merge container labels for update operation.
+
+        Strategy: Preserve all old labels, but override with fresh image labels.
+        This ensures:
+        - Image metadata labels (version, created, etc.) are updated
+        - Compose labels (com.docker.compose.*) are preserved
+        - DockMon tracking labels (dockmon.*) are preserved
+        - User custom labels are preserved
+
+        Note on label removal: Labels present in old container but not in new image
+        are PRESERVED. We cannot distinguish between "user added" vs "old image had it",
+        so preservation is safer (don't delete user data). Stale image labels are
+        unlikely since images typically add labels, not remove them.
+
+        Args:
+            old_labels: Labels from old container
+            new_image_labels: Labels from new image (optional)
+
+        Returns:
+            Merged labels dict
+        """
+        # Defensive: Handle None inputs (Docker returns None for no labels)
+        if old_labels is None:
+            old_labels = {}
+        if new_image_labels is None:
+            new_image_labels = {}
+
+        if not new_image_labels:
+            # No new image labels provided - return old labels
+            return old_labels.copy() if old_labels else {}
+
+        # Merge: old labels first, then override with new image labels
+        # When same key exists in both, new_image_labels wins (image is source of truth)
+        merged = {
+            **old_labels,        # Preserve compose, dockmon, custom labels
+            **new_image_labels   # Update image metadata labels
+        }
+
+        logger.debug(
+            f"Label merge: {len(old_labels)} old + {len(new_image_labels)} image = "
+            f"{len(merged)} merged"
+        )
+
+        return merged
+
+    async def _extract_container_config(self, container, new_image_labels: Dict[str, str] = None) -> Dict[str, Any]:
         """
         Extract container configuration for recreation.
+
+        Args:
+            container: Container object to extract config from
+            new_image_labels: Optional dict of labels from new image (for merging during updates)
 
         Returns a dict with all necessary config to recreate the container.
         """
@@ -941,7 +1014,10 @@ class UpdateExecutor:
             "command": config.get("Cmd"),
             "entrypoint": config.get("Entrypoint"),
             "working_dir": config.get("WorkingDir"),
-            "labels": config.get("Labels", {}),
+            "labels": self._merge_labels(
+                old_labels=config.get("Labels", {}),
+                new_image_labels=new_image_labels
+            ),
             "ports": {},
             "volumes": {},
             "network": None,

@@ -16,7 +16,6 @@ from typing import Dict, List, Optional
 import docker
 from docker import DockerClient
 from fastapi import HTTPException
-from functools import wraps
 
 from config.paths import DATABASE_PATH, CERTS_DIR
 from database import DatabaseManager, AutoRestartConfig, GlobalSettings, DockerHostDB

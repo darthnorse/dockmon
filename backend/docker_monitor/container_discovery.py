@@ -320,7 +320,7 @@ class ContainerDiscovery:
             logger.debug(f"Host {host.name} still offline (attempt {attempts + 1}). Next retry in {next_attempt_in}s")
             return False
 
-    @async_ttl_cache(ttl_seconds=10)
+    @async_ttl_cache(ttl_seconds=5)
     async def discover_containers_for_host(self, host_id: str, get_auto_restart_status_fn) -> List[Container]:
         """
         Discover all containers for a single host.

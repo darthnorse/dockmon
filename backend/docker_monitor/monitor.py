@@ -1082,7 +1082,7 @@ class DockerMonitor:
             error_msg = self._get_user_friendly_error(str(e))
             raise HTTPException(status_code=400, detail=error_msg)
 
-    @async_ttl_cache(ttl_seconds=10)
+    @async_ttl_cache(ttl_seconds=5)
     async def get_containers(self, host_id: Optional[str] = None) -> List[Container]:
         """Get containers from one or all hosts"""
         containers = []

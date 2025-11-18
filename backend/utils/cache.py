@@ -9,6 +9,8 @@ from collections import defaultdict
 from functools import wraps
 from typing import Any, Dict, Tuple, Callable
 
+CACHE_REGISTRY = {}
+
 def async_ttl_cache(ttl_seconds: float = 60.0):
     """
     Cache results of an async function for ttl_seconds.

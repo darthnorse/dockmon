@@ -25,6 +25,7 @@ from utils.container_health import wait_for_container_health
 from utils.image_pull_progress import ImagePullProgress
 from utils.keys import make_composite_key, parse_composite_key
 from utils.network_helpers import manually_connect_networks
+from utils.cache import CACHE_REGISTRY
 from updates.container_validator import ContainerValidator, ValidationResult
 
 logger = logging.getLogger(__name__)
@@ -740,6 +741,10 @@ class UpdateExecutor:
             # Step 10: Cleanup backup container on success
             logger.info(f"Update successful, cleaning up backup container {backup_name}")
             await self._cleanup_backup_container(docker_client, backup_container, backup_name)
+
+            # Step 11: Invalidate cache
+            for name, fn in CACHE_REGISTRY.items():
+                fn.invalidate()
 
             logger.info(f"Successfully updated container {container_name}")
             await self._broadcast_progress(host_id, new_container_id, "completed", 100, "Update completed successfully")

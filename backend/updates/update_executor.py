@@ -1040,7 +1040,7 @@ class UpdateExecutor:
         if host_config.get("PortBindings") and network_mode != "host":
             container_config["ports"] = host_config["PortBindings"]
 
-        # Extract volume bindings from legacy Binds format
+        # Extract volume bindings
         if host_config.get("Binds"):
             for bind in host_config["Binds"]:
                 parts = bind.split(":")
@@ -1052,40 +1052,6 @@ class UpdateExecutor:
                     # and container_path as bind value (where it mounts in container)
                     container_config["volumes"][host_path] = {
                         "bind": container_path,
-                        "mode": mode
-                    }
-
-        # Extract mounts from modern Docker API (Mounts array)
-        # This handles bind mounts, named volumes, and anonymous volumes
-        # that may not be present in the legacy Binds format
-        mounts = attrs.get('Mounts', [])
-        if mounts:
-            for mount in mounts:
-                mount_type = mount.get('Type', '')
-                source = mount.get('Source', '')
-                destination = mount.get('Destination', '')
-                mode = mount.get('Mode', 'rw')
-
-                # Skip if already extracted from Binds
-                if source in container_config["volumes"]:
-                    continue
-
-                if mount_type == 'bind' and source and destination:
-                    # Bind mount: host path -> container path
-                    container_config["volumes"][source] = {
-                        "bind": destination,
-                        "mode": mode
-                    }
-                elif mount_type == 'volume' and source and destination:
-                    # Named volume: volume name -> container path
-                    container_config["volumes"][source] = {
-                        "bind": destination,
-                        "mode": mode
-                    }
-                elif destination and not source:
-                    # Anonymous volume: just destination path
-                    container_config["volumes"][destination] = {
-                        "bind": destination,
                         "mode": mode
                     }
 

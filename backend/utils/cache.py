@@ -1,7 +1,7 @@
--"""
--Simple cache wrapper that works with async functions
--
--"""
+"""
+Simple cache wrapper that works with async functions
+
+"""
 
 import asyncio
 import time

@@ -35,6 +35,7 @@ from docker_monitor.state_manager import StateManager
 from docker_monitor.operations import ContainerOperations
 from docker_monitor.periodic_jobs import PeriodicJobsManager
 from auth.session_manager import session_manager
+from utils.cache import async_ttl_cache
 from utils.keys import make_composite_key
 
 
@@ -43,47 +44,6 @@ logger = logging.getLogger(__name__)
 # State update race condition prevention (Issue #3 fix)
 # Reject polling updates within this window if recent event exists
 STATE_UPDATE_STALE_THRESHOLD = 2.0  # seconds
-
-
-def async_ttl_cache(ttl_seconds: float = 60.0):
-    """
-    Cache results of an async function for ttl_seconds.
-    Adds:
-      - func.invalidate()         -> clear all cache
-      - func.invalidate_key(...)  -> clear specific key
-    """
-    def decorator(func):
-        cache = {}  # key -> (result, timestamp)
-
-        @wraps(func)
-        async def wrapper(*args, **kwargs):
-            key = (args, tuple(sorted(kwargs.items())))
-            now = time.time()
-
-            if key in cache:
-                result, ts = cache[key]
-                if now - ts < ttl_seconds:
-                    return result  # still fresh
-
-            # compute and cache
-            result = await func(*args, **kwargs)
-            cache[key] = (result, now)
-            return result
-
-        def invalidate():
-            """Clear entire cache."""
-            cache.clear()
-
-        def invalidate_key(*args, **kwargs):
-            """Clear cache for one specific key."""
-            key = (args, tuple(sorted(kwargs.items())))
-            cache.pop(key, None)
-
-        wrapper.invalidate = invalidate
-        wrapper.invalidate_key = invalidate_key
-        return wrapper
-
-    return decorator
 
 
 def parse_container_ports(port_bindings: dict) -> list[str]:

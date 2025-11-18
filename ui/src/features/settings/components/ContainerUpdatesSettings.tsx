@@ -123,8 +123,8 @@ export function ContainerUpdatesSettings() {
 
   const handleImageRetentionCountBlur = async () => {
     if (imageRetentionCount !== settings?.image_retention_count) {
-      if (imageRetentionCount < 1 || imageRetentionCount > 10) {
-        toast.error('Retention count must be between 1 and 10')
+      if (imageRetentionCount < 0 || imageRetentionCount > 10) {
+        toast.error('Retention count must be between 0 and 10')
         setImageRetentionCount(settings?.image_retention_count ?? 2)
         return
       }

@@ -45,7 +45,7 @@ class DeploymentCreate(BaseModel):
     )
 
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "host_id": "86a10392-2289-409f-899d-5f5c799086da",
                 "name": "my-nginx-stack",

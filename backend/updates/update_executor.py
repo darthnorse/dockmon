@@ -1084,6 +1084,9 @@ class UpdateExecutor:
             container_config["ports"] = host_config["PortBindings"]
 
         # Extract volume bindings from legacy Binds format
+        # Issue #68: Track used destinations to prevent duplicate mount points
+        used_destinations = set()
+
         if host_config.get("Binds"):
             for bind in host_config["Binds"]:
                 parts = bind.split(":")
@@ -1097,6 +1100,8 @@ class UpdateExecutor:
                         "bind": container_path,
                         "mode": mode
                     }
+                    # Track this destination as used
+                    used_destinations.add(container_path)
 
         # Extract mounts from modern Docker API (Mounts array)
         # This handles bind mounts and named volumes that may not be
@@ -1120,7 +1125,11 @@ class UpdateExecutor:
 
             if mount_type == 'bind' and source and destination:
                 # Bind mount: use host path as key
-                # Skip if already extracted from Binds
+                # Issue #68: Skip if destination already used (prevents "Duplicate mount point" error)
+                if destination in used_destinations:
+                    logger.debug(f"Skipping duplicate destination bind mount: {source} -> {destination}")
+                    continue
+                # Skip if source already extracted from Binds
                 if source in container_config["volumes"]:
                     logger.debug(f"Skipping duplicate bind mount: {source}")
                     continue
@@ -1128,6 +1137,7 @@ class UpdateExecutor:
                     "bind": destination,
                     "mode": mode
                 }
+                used_destinations.add(destination)
                 logger.debug(f"Extracted bind mount: {source} -> {destination} ({mode})")
             elif mount_type == 'volume' and destination:
                 # Named volume: use volume name (not source path)
@@ -1135,6 +1145,10 @@ class UpdateExecutor:
                 volume_name = mount.get('Name', '')
                 if not volume_name:
                     logger.debug(f"Skipping volume mount without name: {mount}")
+                    continue
+                # Issue #68: Skip if destination already used (prevents "Duplicate mount point" error)
+                if destination in used_destinations:
+                    logger.debug(f"Skipping duplicate destination volume: {volume_name} -> {destination}")
                     continue
                 # Skip if already extracted from Binds
                 if volume_name in container_config["volumes"]:
@@ -1144,6 +1158,7 @@ class UpdateExecutor:
                     "bind": destination,
                     "mode": mode
                 }
+                used_destinations.add(destination)
                 logger.debug(f"Extracted named volume: {volume_name} -> {destination} ({mode})")
             elif mount_type == 'bind':
                 # Log skipped mounts for debugging

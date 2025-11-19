@@ -150,6 +150,8 @@ class DockerHostDB(Base):
     # System resources
     total_memory = Column(BigInteger, nullable=True)  # Total memory in bytes
     num_cpus = Column(Integer, nullable=True)  # Number of CPUs
+    # Podman compatibility (Issue #20)
+    is_podman = Column(Boolean, default=False, nullable=False)  # True if host runs Podman instead of Docker
 
     # Relationships
     auto_restart_configs = relationship("AutoRestartConfig", back_populates="host", cascade="all, delete-orphan")

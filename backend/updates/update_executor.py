@@ -38,6 +38,57 @@ _MANUAL_NETWORKING_CONFIG_KEY = '_dockmon_manual_networking_config'
 CONTAINER_ID_SHORT_LENGTH = 12
 
 
+def filter_podman_incompatible_params(config: Dict[str, Any], is_podman: bool) -> Dict[str, Any]:
+    """
+    Filter out container parameters that are incompatible with Podman.
+
+    Podman doesn't support certain Docker parameters:
+    - NanoCPUs: Convert to cpu_period/cpu_quota instead
+    - MemorySwappiness: Strip completely (not supported)
+
+    Args:
+        config: Container configuration dictionary
+        is_podman: True if the target host runs Podman
+
+    Returns:
+        Filtered configuration (new dict, original not modified)
+
+    Issue #20: Container updates fail on Podman hosts
+    """
+    if config is None:
+        return {}
+
+    # Always create a copy to avoid modifying the original
+    # (even for Docker, since _create_container uses pop() which modifies the dict)
+    filtered = config.copy()
+
+    if not is_podman:
+        return filtered
+
+    # Filter NanoCPUs - convert to cpu_period/cpu_quota
+    nano_cpus = filtered.get('nano_cpus')
+    if nano_cpus:
+        # Only convert if cpu_period/cpu_quota are not already set by user
+        if not filtered.get('cpu_period') and not filtered.get('cpu_quota'):
+            # Standard cpu_period is 100000 microseconds (100ms)
+            # cpu_quota = nano_cpus / 1e9 * cpu_period
+            # e.g., 2 CPUs = 2000000000 nano_cpus = 200000 quota
+            cpu_period = 100000
+            cpu_quota = int(nano_cpus / 1e9 * cpu_period)
+            filtered['cpu_period'] = cpu_period
+            filtered['cpu_quota'] = cpu_quota
+            logger.debug(f"Converted nano_cpus ({nano_cpus}) to cpu_quota ({cpu_quota}) for Podman compatibility")
+        filtered['nano_cpus'] = None
+
+    # Filter MemorySwappiness - not supported by Podman
+    if 'memory_swappiness' in filtered:
+        if filtered['memory_swappiness'] is not None:
+            logger.debug(f"Stripped memory_swappiness ({filtered['memory_swappiness']}) for Podman compatibility")
+        filtered['memory_swappiness'] = None
+
+    return filtered
+
+
 class UpdateExecutor:
     """
     Service that executes container updates with automatic rollback.
@@ -491,10 +542,17 @@ class UpdateExecutor:
             # Step 4: Create new container with updated image
             logger.info(f"Creating new container with image {update_record.latest_image}")
             await self._broadcast_progress(host_id, container_id, "creating", 65, "Creating new container")
+
+            # Get is_podman flag from host info (Issue #20)
+            is_podman = False
+            if self.monitor and hasattr(self.monitor, 'hosts') and host_id in self.monitor.hosts:
+                is_podman = getattr(self.monitor.hosts[host_id], 'is_podman', False)
+
             new_container = await self._create_container(
                 docker_client,
                 update_record.latest_image,
-                container_config
+                container_config,
+                is_podman=is_podman
             )
             # Capture SHORT ID (12 chars) for event emission
             new_container_id = new_container.short_id
@@ -733,7 +791,8 @@ class UpdateExecutor:
                         success = await self._recreate_dependent_container(
                             docker_client,
                             dep,
-                            new_container.id  # Full container ID for network_mode
+                            new_container.id,  # Full container ID for network_mode
+                            is_podman=is_podman  # Pass Podman flag (Issue #20)
                         )
                         if not success:
                             failed_dependents.append(dep['name'])
@@ -1126,13 +1185,22 @@ class UpdateExecutor:
             if mount_type == 'bind' and source and destination:
                 # Bind mount: use host path as key
                 # Issue #68: Skip if destination already used (prevents "Duplicate mount point" error)
+                # Docker can represent the same mount with different source paths (trailing slash,
+                # symlink resolution, etc.) but same destination
                 if destination in used_destinations:
                     logger.debug(f"Skipping duplicate destination bind mount: {source} -> {destination}")
                     continue
-                # Skip if source already extracted from Binds
+
+                # Also check source with path normalization (strip trailing slashes)
+                # This catches cases like /path vs /path/
+                normalized_source = source.rstrip('/')
+                if normalized_source in container_config["volumes"]:
+                    logger.debug(f"Skipping duplicate bind mount (normalized source): {source}")
+                    continue
                 if source in container_config["volumes"]:
                     logger.debug(f"Skipping duplicate bind mount: {source}")
                     continue
+
                 container_config["volumes"][source] = {
                     "bind": destination,
                     "mode": mode
@@ -1146,14 +1214,17 @@ class UpdateExecutor:
                 if not volume_name:
                     logger.debug(f"Skipping volume mount without name: {mount}")
                     continue
+
                 # Issue #68: Skip if destination already used (prevents "Duplicate mount point" error)
                 if destination in used_destinations:
                     logger.debug(f"Skipping duplicate destination volume: {volume_name} -> {destination}")
                     continue
+
                 # Skip if already extracted from Binds
                 if volume_name in container_config["volumes"]:
                     logger.debug(f"Skipping duplicate volume: {volume_name}")
                     continue
+
                 container_config["volumes"][volume_name] = {
                     "bind": destination,
                     "mode": mode
@@ -1288,15 +1359,25 @@ class UpdateExecutor:
         self,
         client: docker.DockerClient,
         image: str,
-        config: Dict[str, Any]
+        config: Dict[str, Any],
+        is_podman: bool = False
     ) -> Any:
         """
         Create new container with given config.
 
         Preserves all network configuration including static IPs, aliases, and links.
         Bug Fix: Manually connects networks since Docker SDK networking_config doesn't work.
+
+        Args:
+            client: Docker client
+            image: Image to use for the new container
+            config: Container configuration dictionary
+            is_podman: True if target host runs Podman (for compatibility filtering)
         """
         try:
+            # Filter Podman-incompatible parameters (Issue #20)
+            config = filter_podman_incompatible_params(config, is_podman)
+
             # Extract manual network connection instructions (if present)
             manual_networks = config.pop(_MANUAL_NETWORKS_KEY, None)
             manual_networking_config = config.pop(_MANUAL_NETWORKING_CONFIG_KEY, None)
@@ -2000,7 +2081,8 @@ class UpdateExecutor:
         self,
         client: docker.DockerClient,
         dep_info: dict,
-        new_parent_container_id: str
+        new_parent_container_id: str,
+        is_podman: bool = False
     ) -> bool:
         """
         Recreate a dependent container with updated network_mode.
@@ -2023,6 +2105,7 @@ class UpdateExecutor:
             client: Docker SDK client instance
             dep_info: Dict with dependent container info (from _get_dependent_containers)
             new_parent_container_id: Full container ID of new parent (for network_mode)
+            is_podman: True if target host runs Podman (for compatibility filtering)
 
         Returns:
             True if recreation succeeded, False otherwise
@@ -2067,7 +2150,8 @@ class UpdateExecutor:
             new_dep_container = await self._create_container(
                 client,
                 dep_info['image'],
-                config
+                config,
+                is_podman=is_podman
             )
 
             # Step 7: Start new container

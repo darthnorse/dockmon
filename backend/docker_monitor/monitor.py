@@ -107,6 +107,10 @@ def _fetch_system_info_from_docker(client: DockerClient, host_name: str) -> dict
 
         docker_version = version_info.get('Version', None)
 
+        # Detect Podman vs Docker (Issue #20)
+        platform_name = version_info.get('Platform', {}).get('Name', '')
+        is_podman = 'podman' in platform_name.lower()
+
         # Get Docker daemon start time from bridge network creation
         daemon_started_at = None
         try:
@@ -124,7 +128,8 @@ def _fetch_system_info_from_docker(client: DockerClient, host_name: str) -> dict
             'docker_version': docker_version,
             'daemon_started_at': daemon_started_at,
             'total_memory': total_memory,
-            'num_cpus': num_cpus
+            'num_cpus': num_cpus,
+            'is_podman': is_podman
         }
     except Exception as e:
         logger.warning(f"Failed to fetch system info for {host_name}: {e}")
@@ -135,7 +140,8 @@ def _fetch_system_info_from_docker(client: DockerClient, host_name: str) -> dict
             'docker_version': None,
             'daemon_started_at': None,
             'total_memory': None,
-            'num_cpus': None
+            'num_cpus': None,
+            'is_podman': False  # Default to Docker behavior on failure
         }
 
 
@@ -410,6 +416,7 @@ class DockerMonitor:
             daemon_started_at = sys_info['daemon_started_at']
             total_memory = sys_info['total_memory']
             num_cpus = sys_info['num_cpus']
+            is_podman = sys_info.get('is_podman', False)
 
             # Validate TLS configuration for TCP connections
             security_status = self._validate_host_security(config)
@@ -429,7 +436,8 @@ class DockerMonitor:
                 docker_version=docker_version,
                 daemon_started_at=daemon_started_at,
                 total_memory=total_memory,
-                num_cpus=num_cpus
+                num_cpus=num_cpus,
+                is_podman=is_podman
             )
 
             # Store client and host
@@ -991,6 +999,7 @@ class DockerMonitor:
             daemon_started_at = sys_info['daemon_started_at']
             total_memory = sys_info['total_memory']
             num_cpus = sys_info['num_cpus']
+            is_podman = sys_info.get('is_podman', False)
 
             # Create host object with existing ID and fresh system info
             host = DockerHost(
@@ -1007,7 +1016,8 @@ class DockerMonitor:
                 docker_version=docker_version,
                 daemon_started_at=daemon_started_at,
                 total_memory=total_memory,
-                num_cpus=num_cpus
+                num_cpus=num_cpus,
+                is_podman=is_podman
             )
 
             # Store client and host
@@ -1026,11 +1036,13 @@ class DockerMonitor:
                         db_host.daemon_started_at = daemon_started_at
                         db_host.total_memory = total_memory
                         db_host.num_cpus = num_cpus
+                        db_host.is_podman = is_podman
                         session.commit()
             except Exception as e:
                 logger.warning(f"Failed to update system info for {host.name}: {e}")
             else:
-                logger.info(f"Updated system info for {host.name}: {os_version} / Docker {docker_version}")
+                platform_type = "Podman" if is_podman else "Docker"
+                logger.info(f"Updated system info for {host.name}: {os_version} / {platform_type} {docker_version}")
 
             # Re-register host with stats and event services (in case URL changed)
             # Note: add_docker_host() automatically closes old client if it exists
@@ -1988,7 +2000,8 @@ class DockerMonitor:
                     sys_info['docker_version'] != host.docker_version or
                     sys_info['daemon_started_at'] != host.daemon_started_at or
                     sys_info['total_memory'] != host.total_memory or
-                    sys_info['num_cpus'] != host.num_cpus
+                    sys_info['num_cpus'] != host.num_cpus or
+                    sys_info.get('is_podman', False) != host.is_podman
                 )
 
                 if not changed:
@@ -2003,6 +2016,7 @@ class DockerMonitor:
                 host.daemon_started_at = sys_info['daemon_started_at']
                 host.total_memory = sys_info['total_memory']
                 host.num_cpus = sys_info['num_cpus']
+                host.is_podman = sys_info.get('is_podman', False)
 
                 # Update database (in separate session to avoid blocking)
                 with self.db.get_session() as session:
@@ -2015,9 +2029,11 @@ class DockerMonitor:
                         db_host.daemon_started_at = sys_info['daemon_started_at']
                         db_host.total_memory = sys_info['total_memory']
                         db_host.num_cpus = sys_info['num_cpus']
+                        db_host.is_podman = sys_info.get('is_podman', False)
                         session.commit()
 
-                        logger.info(f"Refreshed system info for {host.name} ({host_id[:8]}): {sys_info['os_version']} / Docker {sys_info['docker_version']}")
+                        platform_type = "Podman" if sys_info.get('is_podman', False) else "Docker"
+                        logger.info(f"Refreshed system info for {host.name} ({host_id[:8]}): {sys_info['os_version']} / {platform_type} {sys_info['docker_version']}")
                         updated_count += 1
                     else:
                         logger.warning(f"Host {host.name} ({host_id[:8]}) not found in database")

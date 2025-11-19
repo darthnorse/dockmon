@@ -219,6 +219,8 @@ class DockerHost(BaseModel):
     # System resources
     total_memory: Optional[int] = None  # Total memory in bytes
     num_cpus: Optional[int] = None  # Number of CPUs
+    # Podman compatibility (Issue #20)
+    is_podman: bool = False  # True if host runs Podman instead of Docker
 
 
 class Container(BaseModel):

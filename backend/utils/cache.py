@@ -63,6 +63,8 @@ def async_ttl_cache(ttl_seconds: float = 60.0):
 
         wrapper.invalidate = invalidate
         wrapper.invalidate_key = invalidate_key
+
+        CACHE_REGISTRY[func.__name__] = wrapper
         return wrapper
 
     return decorator

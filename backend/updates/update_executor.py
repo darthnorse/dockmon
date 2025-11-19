@@ -755,9 +755,10 @@ class UpdateExecutor:
             logger.info(f"Update successful, cleaning up backup container {backup_name}")
             await self._cleanup_backup_container(docker_client, backup_container, backup_name)
 
-            # Step 11: Invalidate cache
+            # Step 11: Invalidate cache to ensure fresh container discovery
             for name, fn in CACHE_REGISTRY.items():
                 fn.invalidate()
+                logger.debug(f"Invalidated cache: {name}")
 
             logger.info(f"Successfully updated container {container_name}")
             await self._broadcast_progress(host_id, new_container_id, "completed", 100, "Update completed successfully")

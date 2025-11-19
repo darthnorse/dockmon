@@ -687,6 +687,19 @@ class UpdateExecutor:
                         logger.error(f"Database commit failed for {container_name}: {commit_error}", exc_info=True)
                         raise  # Re-raise to trigger rollback in outer exception handler
 
+            # Invalidate image digest cache for the old image (Issue #62)
+            # This ensures the next update check will fetch fresh data from registry
+            try:
+                old_image = update_record.current_image
+                if old_image:
+                    # Invalidate all cache entries for this image (any platform)
+                    invalidated = self.db.invalidate_image_cache(old_image)
+                    if invalidated:
+                        logger.debug(f"Invalidated {invalidated} cache entries for {old_image}")
+            except Exception as cache_error:
+                # Non-critical - just log and continue
+                logger.warning(f"Failed to invalidate image cache: {cache_error}")
+
             # Notify frontend that container ID changed (keeps modal open during updates)
             await self._broadcast_container_recreated(
                 host_id,

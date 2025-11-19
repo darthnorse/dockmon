@@ -1236,6 +1236,54 @@ async def get_container_update_status(
         }
 
 
+@app.get("/api/updates/image-cache", tags=["container-updates"], dependencies=[Depends(require_scope("read"))])
+async def get_image_digest_cache(current_user: dict = Depends(get_current_user)):
+    """
+    Get the current state of the image digest cache.
+
+    Returns all cached registry lookups with their TTL and expiry status.
+    Useful for debugging and monitoring registry API usage.
+
+    Issue #62: Registry rate limit handling
+    """
+    from datetime import datetime, timedelta, timezone
+    from database import ImageDigestCache
+
+    with monitor.db.get_session() as session:
+        entries = session.query(ImageDigestCache).order_by(
+            ImageDigestCache.checked_at.desc()
+        ).all()
+
+        now = datetime.now(timezone.utc)
+        result = []
+
+        for entry in entries:
+            # Handle naive datetimes from SQLite
+            checked_at = entry.checked_at
+            if checked_at.tzinfo is None:
+                checked_at = checked_at.replace(tzinfo=timezone.utc)
+
+            expires_at = checked_at + timedelta(seconds=entry.ttl_seconds)
+            remaining_seconds = (expires_at - now).total_seconds()
+            is_expired = remaining_seconds <= 0
+
+            result.append({
+                "cache_key": entry.cache_key,
+                "digest": entry.latest_digest[:16] + "..." if entry.latest_digest else None,
+                "registry_url": entry.registry_url,
+                "ttl_seconds": entry.ttl_seconds,
+                "checked_at": checked_at.isoformat() + "Z",
+                "expires_at": expires_at.isoformat() + "Z",
+                "remaining_seconds": max(0, int(remaining_seconds)),
+                "is_expired": is_expired,
+            })
+
+        return {
+            "total_entries": len(result),
+            "entries": result,
+        }
+
+
 @app.post("/api/hosts/{host_id}/containers/{container_id}/check-update", tags=["container-updates"], dependencies=[Depends(require_scope("write"))])
 async def check_container_update(
     host_id: str,

@@ -346,6 +346,11 @@ class PeriodicJobsManager:
                         EventType.STARTUP
                     )
 
+                # Clean up expired image digest cache entries (Issue #62)
+                cache_cleaned = await self.cleanup_expired_image_cache()
+                if cache_cleaned > 0:
+                    logger.debug(f"Cleaned up {cache_cleaned} expired image cache entries")
+
                 # Check SSL certificate expiry and regenerate if needed
                 cert_regenerated = await self.check_certificate_expiry()
                 if cert_regenerated:
@@ -962,3 +967,23 @@ class PeriodicJobsManager:
                 logger.error(f"Error in DockMon update checker: {e}", exc_info=True)
                 # Wait 1 hour before retrying on error
                 await asyncio.sleep(60 * 60)
+
+    async def cleanup_expired_image_cache(self) -> int:
+        """
+        Clean up expired image digest cache entries.
+
+        Issue #62: Rate limit mitigation via caching.
+        Expired entries are no longer useful and should be removed to prevent
+        database bloat.
+
+        Returns:
+            Number of cache entries removed
+        """
+        try:
+            removed_count = self.db.cleanup_expired_image_cache()
+            if removed_count > 0:
+                logger.info(f"Cleaned up {removed_count} expired image cache entries")
+            return removed_count
+        except Exception as e:
+            logger.error(f"Error cleaning expired image cache: {e}", exc_info=True)
+            return 0

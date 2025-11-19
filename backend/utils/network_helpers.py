@@ -89,6 +89,15 @@ async def manually_connect_networks(
                 if 'Links' in endpoint_config:
                     connect_kwargs['links'] = endpoint_config['Links']
 
+                # If container is already on this network (from create), disconnect first
+                # This allows us to reconnect with proper aliases/IPs
+                try:
+                    await async_docker_call(network.disconnect, container)
+                    logger.debug(f"Disconnected from network {network_name} to reconnect with config")
+                except Exception:
+                    # Not connected yet, that's fine
+                    pass
+
                 # Connect to network with all parameters
                 await async_docker_call(network.connect, container, **connect_kwargs)
                 logger.debug(f"Connected to network: {network_name}")

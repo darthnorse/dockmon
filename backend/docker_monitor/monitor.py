@@ -34,7 +34,6 @@ from docker_monitor.state_manager import StateManager
 from docker_monitor.operations import ContainerOperations
 from docker_monitor.periodic_jobs import PeriodicJobsManager
 from auth.session_manager import session_manager
-from utils.cache import async_ttl_cache
 from utils.keys import make_composite_key
 
 
@@ -1082,7 +1081,6 @@ class DockerMonitor:
             error_msg = self._get_user_friendly_error(str(e))
             raise HTTPException(status_code=400, detail=error_msg)
 
-    @async_ttl_cache(ttl_seconds=5)
     async def get_containers(self, host_id: Optional[str] = None) -> List[Container]:
         """Get containers from one or all hosts"""
         containers = []

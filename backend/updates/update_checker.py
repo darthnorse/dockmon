@@ -6,12 +6,22 @@ Runs daily by default, configurable via global settings.
 """
 
 import asyncio
+import json
 import logging
+import os
+import re
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
 
 from sqlalchemy.exc import IntegrityError
 from database import DatabaseManager, ContainerUpdate, GlobalSettings, RegistryCredential
+
+# Image cache TTL configuration (in seconds)
+# Can be overridden via environment variables
+CACHE_TTL_LATEST = int(os.getenv('DOCKMON_CACHE_TTL_LATEST', 30 * 60))  # 30 minutes
+CACHE_TTL_PINNED = int(os.getenv('DOCKMON_CACHE_TTL_PINNED', 24 * 3600))  # 24 hours
+CACHE_TTL_FLOATING = int(os.getenv('DOCKMON_CACHE_TTL_FLOATING', 6 * 3600))  # 6 hours
+CACHE_TTL_DEFAULT = int(os.getenv('DOCKMON_CACHE_TTL_DEFAULT', 6 * 3600))  # 6 hours
 from updates.registry_adapter import get_registry_adapter
 from updates.changelog_resolver import resolve_changelog_url
 from event_bus import Event, EventType, get_event_bus
@@ -45,6 +55,42 @@ class UpdateChecker:
         """Get credentials for registry from image name (delegates to shared utility)."""
         from utils.registry_credentials import get_registry_credentials
         return get_registry_credentials(self.db, image_name)
+
+    def _compute_cache_ttl_seconds(self, image_tag: str) -> int:
+        """
+        Compute cache TTL in seconds based on tag pattern.
+
+        Issue #62: Different TTLs to balance freshness vs rate limits.
+
+        TTLs can be configured via environment variables:
+        - DOCKMON_CACHE_TTL_LATEST: For :latest tags (default: 1800s / 30min)
+        - DOCKMON_CACHE_TTL_PINNED: For pinned versions like 1.25.3 (default: 86400s / 24h)
+        - DOCKMON_CACHE_TTL_FLOATING: For floating tags like 1.25 (default: 21600s / 6h)
+        - DOCKMON_CACHE_TTL_DEFAULT: For other tags (default: 21600s / 6h)
+
+        Args:
+            image_tag: Full image reference (e.g., "nginx:1.25.3", "ghcr.io/org/app:latest")
+
+        Returns:
+            TTL in seconds
+        """
+        # Check for :latest tag
+        if ':latest' in image_tag:
+            return CACHE_TTL_LATEST
+
+        # Extract just the tag portion
+        tag = image_tag.split(':')[-1] if ':' in image_tag else 'latest'
+
+        # Pinned version (1.25.3, v2.0.1, 1.2.3.4)
+        if re.match(r'^v?\d+\.\d+\.\d+', tag):
+            return CACHE_TTL_PINNED
+
+        # Floating minor/major (1.25, 1, v2)
+        if re.match(r'^v?\d+(\.\d+)?$', tag):
+            return CACHE_TTL_FLOATING
+
+        # Default (alpine, stable, bullseye, etc.)
+        return CACHE_TTL_DEFAULT
 
     async def check_all_containers(self) -> Dict[str, int]:
         """
@@ -184,14 +230,60 @@ class UpdateChecker:
         # Get current version from local Docker image
         current_version = await self._get_container_image_version(container)
 
-        # Resolve floating tag to digest (what's available in registry)
-        latest_result = await self.registry.resolve_tag(floating_tag, auth=auth)
-        if not latest_result:
-            logger.warning(f"Could not resolve floating tag: {floating_tag}")
-            return None
+        # Build cache key for this image:tag:platform combination
+        platform = container.get("platform", "linux/amd64")
+        cache_key = f"{floating_tag}:{platform}"
+
+        # Check database cache first (Issue #62: rate limit mitigation)
+        cached_result = None
+        try:
+            cached_result = self.db.get_cached_image_digest(cache_key)
+        except Exception as e:
+            logger.warning(f"Failed to check image cache: {e}")
+
+        if cached_result:
+            # Cache hit - use cached data
+            logger.info(f"[{container['name']}] Cache hit for {floating_tag}")
+            latest_digest = cached_result["digest"]
+            registry_url = cached_result["registry_url"]
+
+            # Parse cached manifest for labels
+            latest_manifest_labels = {}
+            if cached_result.get("manifest_json"):
+                try:
+                    manifest_data = json.loads(cached_result["manifest_json"])
+                    latest_manifest_labels = manifest_data.get("config", {}).get("config", {}).get("Labels", {}) or {}
+                except json.JSONDecodeError:
+                    pass
+        else:
+            # Cache miss - call registry
+            latest_result = await self.registry.resolve_tag(floating_tag, auth=auth)
+            if not latest_result:
+                logger.warning(f"Could not resolve floating tag: {floating_tag}")
+                return None
+
+            latest_digest = latest_result["digest"]
+            registry_url = latest_result["registry"]
+
+            # Extract manifest labels
+            latest_manifest_labels = latest_result.get("manifest", {}).get("config", {}).get("config", {}).get("Labels", {}) or {}
+
+            # Store in cache for future lookups
+            try:
+                ttl_seconds = self._compute_cache_ttl_seconds(floating_tag)
+                manifest_json = json.dumps(latest_result.get("manifest", {}))
+                self.db.cache_image_digest(
+                    cache_key=cache_key,
+                    digest=latest_digest,
+                    manifest_json=manifest_json,
+                    registry_url=registry_url,
+                    ttl_seconds=ttl_seconds
+                )
+                logger.debug(f"Cached {floating_tag} with TTL {ttl_seconds}s")
+            except Exception as e:
+                logger.warning(f"Failed to cache image digest: {e}")
 
         # Compare digests
-        latest_digest = latest_result["digest"]
         update_available = current_digest != latest_digest
 
         logger.debug(f"Digest comparison: current={current_digest[:16]}... latest={latest_digest[:16]}... update={update_available}")
@@ -204,8 +296,7 @@ class UpdateChecker:
                 container_id=composite_key
             ).first()
 
-        # Extract latest version information from OCI labels (from registry)
-        latest_manifest_labels = latest_result.get("manifest", {}).get("config", {}).get("config", {}).get("Labels", {}) or {}
+        # Extract latest version from OCI labels
         latest_version = latest_manifest_labels.get("org.opencontainers.image.version")
 
         if current_version or latest_version:
@@ -233,8 +324,8 @@ class UpdateChecker:
             "latest_image": floating_tag,
             "latest_digest": latest_digest,
             "update_available": update_available,
-            "registry_url": latest_result["registry"],
-            "platform": container.get("platform", "linux/amd64"),
+            "registry_url": registry_url,
+            "platform": platform,
             "floating_tag_mode": tracking_mode,
             "current_version": current_version,
             "latest_version": latest_version,

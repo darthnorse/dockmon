@@ -346,6 +346,11 @@ class PeriodicJobsManager:
                         EventType.STARTUP
                     )
 
+                # Clean up expired image digest cache entries (Issue #62)
+                cache_cleaned = await self.cleanup_expired_image_cache()
+                if cache_cleaned > 0:
+                    logger.debug(f"Cleaned up {cache_cleaned} expired image cache entries")
+
                 # Check SSL certificate expiry and regenerate if needed
                 cert_regenerated = await self.check_certificate_expiry()
                 if cert_regenerated:
@@ -363,9 +368,25 @@ class PeriodicJobsManager:
                     settings = self.db.get_settings()
                     check_time_str = settings.update_check_time if hasattr(settings, 'update_check_time') and settings.update_check_time else "02:00"
 
-                    # Parse configured time
+                    # Parse configured time (user's local time based on TZ env var)
                     hour, minute = map(int, check_time_str.split(":"))
-                    target_time = dt_time(hour, minute)
+
+                    # Get system timezone offset from TZ environment variable
+                    # This respects the TZ setting in docker-compose.yml
+                    local_now = datetime.now().astimezone()
+                    tz_offset_seconds = local_now.utcoffset().total_seconds()
+                    timezone_offset = int(tz_offset_seconds / 60)  # Convert to minutes
+
+                    # Convert local time to UTC for scheduling
+                    # timezone_offset is minutes from UTC (e.g., -300 for ET, +60 for CET)
+                    # User enters local time, we need UTC: UTC = local - offset
+                    total_minutes_local = hour * 60 + minute
+                    total_minutes_utc = total_minutes_local - timezone_offset
+
+                    # Handle day wraparound (e.g., 1 AM ET = 6 AM UTC, or 11 PM ET = 4 AM UTC next day)
+                    target_hour_utc = (total_minutes_utc // 60) % 24
+                    target_minute_utc = total_minutes_utc % 60
+                    target_time = dt_time(target_hour_utc, target_minute_utc)
 
                     # Calculate dynamic sleep duration
                     sleep_seconds = self._calculate_sleep_until_next_check(target_time)
@@ -401,9 +422,26 @@ class PeriodicJobsManager:
             settings = self.db.get_settings()
             check_time_str = settings.update_check_time if hasattr(settings, 'update_check_time') and settings.update_check_time else "02:00"
 
-            # Parse configured time
+            # Parse configured time (user's local time based on TZ env var)
             hour, minute = map(int, check_time_str.split(":"))
-            target_time = dt_time(hour, minute)
+
+            # Get system timezone offset from TZ environment variable
+            # This respects the TZ setting in docker-compose.yml
+            local_now = datetime.now().astimezone()
+            tz_offset_seconds = local_now.utcoffset().total_seconds()
+            timezone_offset = int(tz_offset_seconds / 60)  # Convert to minutes
+
+            # Convert local time to UTC for comparison
+            # timezone_offset is minutes from UTC (e.g., -300 for ET, +60 for CET)
+            # User enters local time, we need UTC: UTC = local - offset
+            total_minutes_local = hour * 60 + minute
+            total_minutes_utc = total_minutes_local - timezone_offset
+
+            # Handle day wraparound
+            target_hour_utc = (total_minutes_utc // 60) % 24
+            target_minute_utc = total_minutes_utc % 60
+            target_time = dt_time(target_hour_utc, target_minute_utc)
+
             now = datetime.now(timezone.utc)
             current_time = now.time()
 
@@ -416,7 +454,7 @@ class PeriodicJobsManager:
             elif self._last_update_check.date() < now.date() and current_time >= target_time:
                 # Haven't run today and we're past the target time
                 should_run = True
-                logger.info(f"Running scheduled update check (target time: {check_time_str})")
+                logger.info(f"Running scheduled update check (target time: {check_time_str}, UTC: {target_hour_utc:02d}:{target_minute_utc:02d})")
 
             if should_run:
                 # Step 1: Check for updates
@@ -929,3 +967,23 @@ class PeriodicJobsManager:
                 logger.error(f"Error in DockMon update checker: {e}", exc_info=True)
                 # Wait 1 hour before retrying on error
                 await asyncio.sleep(60 * 60)
+
+    async def cleanup_expired_image_cache(self) -> int:
+        """
+        Clean up expired image digest cache entries.
+
+        Issue #62: Rate limit mitigation via caching.
+        Expired entries are no longer useful and should be removed to prevent
+        database bloat.
+
+        Returns:
+            Number of cache entries removed
+        """
+        try:
+            removed_count = self.db.cleanup_expired_image_cache()
+            if removed_count > 0:
+                logger.info(f"Cleaned up {removed_count} expired image cache entries")
+            return removed_count
+        except Exception as e:
+            logger.error(f"Error cleaning expired image cache: {e}", exc_info=True)
+            return 0

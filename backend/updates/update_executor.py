@@ -687,6 +687,19 @@ class UpdateExecutor:
                         logger.error(f"Database commit failed for {container_name}: {commit_error}", exc_info=True)
                         raise  # Re-raise to trigger rollback in outer exception handler
 
+            # Invalidate image digest cache for the old image (Issue #62)
+            # This ensures the next update check will fetch fresh data from registry
+            try:
+                old_image = update_record.current_image
+                if old_image:
+                    # Invalidate all cache entries for this image (any platform)
+                    invalidated = self.db.invalidate_image_cache(old_image)
+                    if invalidated:
+                        logger.debug(f"Invalidated {invalidated} cache entries for {old_image}")
+            except Exception as cache_error:
+                # Non-critical - just log and continue
+                logger.warning(f"Failed to invalidate image cache: {cache_error}")
+
             # Notify frontend that container ID changed (keeps modal open during updates)
             await self._broadcast_container_recreated(
                 host_id,
@@ -1034,13 +1047,37 @@ class UpdateExecutor:
             "ipc_mode": host_config.get("IpcMode"),
             "pid_mode": host_config.get("PidMode"),
             "shm_size": host_config.get("ShmSize"),
+            # Phase 2: Critical config preservation (Issue #64)
+            "healthcheck": config.get("Healthcheck"),
+            "runtime": host_config.get("Runtime"),
+            "cpu_period": host_config.get("CpuPeriod"),
+            "cpu_quota": host_config.get("CpuQuota"),
+            "cpu_shares": host_config.get("CpuShares"),
+            "cpuset_cpus": host_config.get("CpusetCpus"),
+            "cpuset_mems": host_config.get("CpusetMems"),
+            "mem_limit": host_config.get("Memory"),
+            "mem_reservation": host_config.get("MemoryReservation"),
+            "memswap_limit": host_config.get("MemorySwap"),
+            "nano_cpus": host_config.get("NanoCpus"),
+            "oom_kill_disable": host_config.get("OomKillDisable"),
+            "pids_limit": host_config.get("PidsLimit"),
+            # Phase 3: High priority config (Issue #64)
+            "stop_timeout": host_config.get("StopTimeout"),
+            "read_only": host_config.get("ReadonlyRootfs"),
+            "sysctls": host_config.get("Sysctls"),
+            "group_add": host_config.get("GroupAdd"),
+            "log_config": host_config.get("LogConfig"),
+            "userns_mode": host_config.get("UsernsMode"),
+            "init": host_config.get("Init"),
+            "domainname": config.get("Domainname"),
+            "storage_opt": host_config.get("StorageOpt"),
         }
 
         # Extract port bindings (skip if using host networking - ports are ignored anyway)
         if host_config.get("PortBindings") and network_mode != "host":
             container_config["ports"] = host_config["PortBindings"]
 
-        # Extract volume bindings
+        # Extract volume bindings from legacy Binds format
         if host_config.get("Binds"):
             for bind in host_config["Binds"]:
                 parts = bind.split(":")
@@ -1054,6 +1091,60 @@ class UpdateExecutor:
                         "bind": container_path,
                         "mode": mode
                     }
+
+        # Extract mounts from modern Docker API (Mounts array)
+        # This handles bind mounts and named volumes that may not be
+        # present in the legacy Binds format
+        mounts = attrs.get('Mounts', [])
+        for mount in mounts:
+            mount_type = mount.get('Type', '')
+            source = mount.get('Source', '')
+            # Handle both field names - Docker API returns 'Destination' for most mounts
+            # but Docker Compose secrets use 'Target'
+            destination = mount.get('Destination') or mount.get('Target', '')
+
+            # Handle both Mode string and ReadOnly boolean
+            # Docker secrets use ReadOnly: true, regular mounts use Mode: 'ro'
+            if mount.get('ReadOnly'):
+                mode = 'ro'
+            elif mount.get('RW') is False:
+                mode = 'ro'
+            else:
+                mode = mount.get('Mode') or 'rw'
+
+            if mount_type == 'bind' and source and destination:
+                # Bind mount: use host path as key
+                # Skip if already extracted from Binds
+                if source in container_config["volumes"]:
+                    logger.debug(f"Skipping duplicate bind mount: {source}")
+                    continue
+                container_config["volumes"][source] = {
+                    "bind": destination,
+                    "mode": mode
+                }
+                logger.debug(f"Extracted bind mount: {source} -> {destination} ({mode})")
+            elif mount_type == 'volume' and destination:
+                # Named volume: use volume name (not source path)
+                # Source is /var/lib/docker/volumes/name/_data but we need just the name
+                volume_name = mount.get('Name', '')
+                if not volume_name:
+                    logger.debug(f"Skipping volume mount without name: {mount}")
+                    continue
+                # Skip if already extracted from Binds
+                if volume_name in container_config["volumes"]:
+                    logger.debug(f"Skipping duplicate volume: {volume_name}")
+                    continue
+                container_config["volumes"][volume_name] = {
+                    "bind": destination,
+                    "mode": mode
+                }
+                logger.debug(f"Extracted named volume: {volume_name} -> {destination} ({mode})")
+            elif mount_type == 'bind':
+                # Log skipped mounts for debugging
+                logger.warning(
+                    f"Skipping bind mount with missing source or destination: "
+                    f"source={source}, destination={destination}, mount={mount}"
+                )
 
         # Extract network configuration
         # CRITICAL: Preserve full endpoint configuration including static IPs
@@ -1071,12 +1162,20 @@ class UpdateExecutor:
             elif len(custom_networks) == 1:
                 # Single custom network - check if it has advanced config
                 network_name, network_data = list(custom_networks.items())[0]
-                has_static_ip = bool(network_data.get("IPAddress") or network_data.get("GlobalIPv6Address"))
-                # Filter out container ID from aliases (Docker auto-adds 12-char container ID)
-                has_aliases = bool(network_data.get("Aliases") and [a for a in network_data["Aliases"] if len(a) != CONTAINER_ID_SHORT_LENGTH])
+                # Check for user-configured static IP (IPAMConfig), not auto-assigned IP (IPAddress)
+                # Every container on a network has IPAddress, but only user-configured ones have IPAMConfig
+                has_static_ip = bool(network_data.get("IPAMConfig"))
 
-                if has_static_ip or has_aliases:
-                    # Has advanced config - use manual connection format
+                # Preserve all aliases except container ID (12 chars - Docker auto-adds this)
+                # We keep container name and service name aliases for Docker Compose service discovery
+                all_aliases = network_data.get("Aliases", []) or []
+                preserved_aliases = [a for a in all_aliases if len(a) != CONTAINER_ID_SHORT_LENGTH]
+
+                if has_static_ip or preserved_aliases:
+                    # Has config to preserve - use manual connection format
+                    # BUT also set network to avoid creating on bridge
+                    container_config["network"] = network_name
+
                     endpoint_config = {}
 
                     # Extract user-configured static IPs (not auto-assigned)
@@ -1085,10 +1184,9 @@ class UpdateExecutor:
                         endpoint_config["IPAMConfig"] = ipam_config
                         logger.debug(f"Preserving user-configured IP for {network_name}")
 
-                    if has_aliases:
-                        # Filter out container ID from aliases
-                        aliases = [a for a in network_data["Aliases"] if len(a) != CONTAINER_ID_SHORT_LENGTH]
-                        endpoint_config["Aliases"] = aliases
+                    if preserved_aliases:
+                        endpoint_config["Aliases"] = preserved_aliases
+                        logger.debug(f"Preserving aliases for {network_name}: {preserved_aliases}")
 
                     if network_data.get("Links"):
                         endpoint_config["Links"] = network_data["Links"]
@@ -1106,6 +1204,10 @@ class UpdateExecutor:
                 # Multiple custom networks - use manual connection format
                 endpoints_config = {}
 
+                # Set first network as primary to avoid creating on bridge
+                primary_network = list(custom_networks.keys())[0]
+                container_config["network"] = primary_network
+
                 for network_name, network_data in custom_networks.items():
                     endpoint_config = {}
 
@@ -1115,11 +1217,14 @@ class UpdateExecutor:
                         endpoint_config["IPAMConfig"] = ipam_config
                         logger.debug(f"Preserving user-configured IP for {network_name}")
 
-                    # Extract network aliases (filter out container ID)
+                    # Extract ALL network aliases (filter out just container ID)
                     if network_data.get("Aliases"):
-                        aliases = [a for a in network_data["Aliases"] if len(a) != CONTAINER_ID_SHORT_LENGTH]
-                        if aliases:
-                            endpoint_config["Aliases"] = aliases
+                        preserved_aliases = [
+                            a for a in network_data["Aliases"]
+                            if len(a) != CONTAINER_ID_SHORT_LENGTH
+                        ]
+                        if preserved_aliases:
+                            endpoint_config["Aliases"] = preserved_aliases
 
                     # Extract links (legacy)
                     if network_data.get("Links"):
@@ -1205,6 +1310,32 @@ class UpdateExecutor:
                 "pid_mode": config.get("pid_mode"),
                 "shm_size": config.get("shm_size"),
                 "network_mode": config.get("network_mode"),  # v2.1.8 - Quick Wins
+                "mac_address": config.get("mac_address"),  # Issue #64 - Was extracted but not passed
+                # Phase 2: Critical config preservation (Issue #64)
+                "healthcheck": config.get("healthcheck"),
+                "runtime": config.get("runtime"),
+                "cpu_period": config.get("cpu_period"),
+                "cpu_quota": config.get("cpu_quota"),
+                "cpu_shares": config.get("cpu_shares"),
+                "cpuset_cpus": config.get("cpuset_cpus"),
+                "cpuset_mems": config.get("cpuset_mems"),
+                "mem_limit": config.get("mem_limit"),
+                "mem_reservation": config.get("mem_reservation"),
+                "memswap_limit": config.get("memswap_limit"),
+                "nano_cpus": config.get("nano_cpus"),
+                "oom_kill_disable": config.get("oom_kill_disable"),
+                "pids_limit": config.get("pids_limit"),
+                # Phase 3: High priority config (Issue #64)
+                # Note: stop_timeout is not supported by Docker SDK containers.create()
+                # It can only be set when calling container.stop(timeout=N)
+                "read_only": config.get("read_only"),
+                "sysctls": config.get("sysctls"),
+                "group_add": config.get("group_add"),
+                "log_config": config.get("log_config"),
+                "userns_mode": config.get("userns_mode"),
+                "init": config.get("init"),
+                "domainname": config.get("domainname"),
+                "storage_opt": config.get("storage_opt"),
             }
 
             # CRITICAL: Network configuration (Bug Fix: Use hybrid approach)

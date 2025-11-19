@@ -6,12 +6,35 @@
 import { useState, useEffect } from 'react'
 import { useGlobalSettings, useUpdateGlobalSettings } from '@/hooks/useSettings'
 import { toast } from 'sonner'
-import { RefreshCw } from 'lucide-react'
+import { RefreshCw, Database, Clock, CheckCircle, XCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { apiClient } from '@/lib/api/client'
 import { ToggleSwitch } from './ToggleSwitch'
 import { UpdatePoliciesSettings } from './UpdatePoliciesSettings'
 import { RegistryCredentialsSettings } from './RegistryCredentialsSettings'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+
+interface ImageCacheEntry {
+  cache_key: string
+  digest: string
+  registry_url: string
+  ttl_seconds: number
+  checked_at: string
+  expires_at: string
+  remaining_seconds: number
+  is_expired: boolean
+}
+
+interface ImageCacheResponse {
+  total_entries: number
+  entries: ImageCacheEntry[]
+}
 
 export function ContainerUpdatesSettings() {
   const { data: settings } = useGlobalSettings()
@@ -27,6 +50,11 @@ export function ContainerUpdatesSettings() {
   const [imageRetentionCount, setImageRetentionCount] = useState(settings?.image_retention_count ?? 2)
   const [imagePruneGraceHours, setImagePruneGraceHours] = useState(settings?.image_prune_grace_hours ?? 48)
   const [isPruningImages, setIsPruningImages] = useState(false)
+
+  // Image cache modal
+  const [isCacheModalOpen, setIsCacheModalOpen] = useState(false)
+  const [cacheData, setCacheData] = useState<ImageCacheResponse | null>(null)
+  const [isLoadingCache, setIsLoadingCache] = useState(false)
 
   // Sync state when settings load from API
   useEffect(() => {
@@ -123,8 +151,8 @@ export function ContainerUpdatesSettings() {
 
   const handleImageRetentionCountBlur = async () => {
     if (imageRetentionCount !== settings?.image_retention_count) {
-      if (imageRetentionCount < 1 || imageRetentionCount > 10) {
-        toast.error('Retention count must be between 1 and 10')
+      if (imageRetentionCount < 0 || imageRetentionCount > 10) {
+        toast.error('Retention count must be between 0 and 10')
         setImageRetentionCount(settings?.image_retention_count ?? 2)
         return
       }
@@ -178,6 +206,31 @@ export function ContainerUpdatesSettings() {
     }
   }
 
+  const handleViewCache = async () => {
+    setIsCacheModalOpen(true)
+    setIsLoadingCache(true)
+    try {
+      const data = await apiClient.get<ImageCacheResponse>('/updates/image-cache')
+      setCacheData(data)
+    } catch (error) {
+      toast.error(`Failed to load cache: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    } finally {
+      setIsLoadingCache(false)
+    }
+  }
+
+  const formatTimeRemaining = (seconds: number): string => {
+    if (seconds <= 0) return 'Expired'
+    if (seconds < 60) return `${seconds}s`
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m`
+    return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`
+  }
+
+  const formatTTL = (seconds: number): string => {
+    if (seconds < 3600) return `${seconds / 60}m`
+    return `${seconds / 3600}h`
+  }
+
   return (
     <div className="space-y-6">
       {/* Update Check Schedule */}
@@ -212,6 +265,20 @@ export function ContainerUpdatesSettings() {
             </div>
             <p className="mt-1 text-xs text-gray-400">
               Time of day to check for container updates (24-hour format). The system will check for updates once per day at this time.
+            </p>
+          </div>
+
+          <div>
+            <Button
+              onClick={handleViewCache}
+              variant="outline"
+              className="w-full"
+            >
+              <Database className="h-4 w-4 mr-2" />
+              View Registry Cache
+            </Button>
+            <p className="mt-1 text-xs text-gray-400">
+              View cached registry lookups. Caching reduces API calls to avoid rate limits.
             </p>
           </div>
         </div>
@@ -340,6 +407,84 @@ export function ContainerUpdatesSettings() {
       <div>
         <RegistryCredentialsSettings />
       </div>
+
+      {/* Image Cache Modal */}
+      <Dialog open={isCacheModalOpen} onOpenChange={setIsCacheModalOpen}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Registry Cache</DialogTitle>
+            <DialogDescription>
+              Cached registry lookups to reduce API calls and avoid rate limits
+            </DialogDescription>
+          </DialogHeader>
+
+          {isLoadingCache ? (
+            <div className="flex items-center justify-center py-8">
+              <RefreshCw className="h-6 w-6 animate-spin text-gray-400" />
+            </div>
+          ) : cacheData ? (
+            <div className="space-y-4">
+              <div className="text-sm text-gray-400">
+                {cacheData.total_entries} cached {cacheData.total_entries === 1 ? 'entry' : 'entries'}
+              </div>
+
+              {cacheData.entries.length === 0 ? (
+                <div className="text-center py-8 text-gray-400">
+                  No cached entries. Run an update check to populate the cache.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {cacheData.entries.map((entry) => (
+                    <div
+                      key={entry.cache_key}
+                      className="p-3 bg-gray-800 rounded-lg border border-gray-700"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex-1 min-w-0">
+                          <div className="font-mono text-sm text-white truncate" title={entry.cache_key}>
+                            {entry.cache_key}
+                          </div>
+                          <div className="text-xs text-gray-400 mt-1">
+                            Digest: {entry.digest}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          {entry.is_expired ? (
+                            <XCircle className="h-4 w-4 text-red-400" />
+                          ) : (
+                            <CheckCircle className="h-4 w-4 text-green-400" />
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-4 mt-2 text-xs text-gray-400">
+                        <div className="flex items-center gap-1">
+                          <Clock className="h-3 w-3" />
+                          TTL: {formatTTL(entry.ttl_seconds)}
+                        </div>
+                        <div>
+                          {entry.is_expired ? (
+                            <span className="text-red-400">Expired</span>
+                          ) : (
+                            <span className="text-green-400">
+                              Expires in {formatTimeRemaining(entry.remaining_seconds)}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="pt-4 border-t border-gray-700">
+                <p className="text-xs text-gray-400">
+                  <strong>TTL by tag type:</strong> :latest = 30min, floating (1.25) = 6h, pinned (1.25.3) = 24h
+                </p>
+              </div>
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

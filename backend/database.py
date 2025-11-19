@@ -338,6 +338,27 @@ class ContainerUpdate(Base):
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
 
+class ImageDigestCache(Base):
+    """Cache for registry digest lookups to reduce API calls.
+
+    Caches registry responses by image:tag:platform to prevent hitting
+    rate limits (e.g., Docker Hub's 100 requests/6 hours for unauthenticated users).
+
+    Issue #62: Registry rate limit handling
+    """
+    __tablename__ = "image_digest_cache"
+
+    cache_key = Column(Text, primary_key=True)  # "{image}:{tag}:{platform}"
+    latest_digest = Column(Text, nullable=False)
+    registry_url = Column(Text, nullable=True)
+    manifest_json = Column(Text, nullable=True)  # JSON blob for labels/version extraction
+    ttl_seconds = Column(Integer, nullable=False, default=21600)  # 6 hours default
+
+    checked_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+
 class ContainerHttpHealthCheck(Base):
     """HTTP/HTTPS health check configuration for containers"""
     __tablename__ = "container_http_health_checks"
@@ -3497,3 +3518,154 @@ class DatabaseManager:
                 session.commit()
                 return True
             return False
+
+    # ===== Image Digest Cache Methods (Issue #62) =====
+
+    def get_cached_image_digest(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        """
+        Get cached digest if not expired.
+
+        Args:
+            cache_key: Cache key in format "{image}:{tag}:{platform}"
+
+        Returns:
+            Dict with keys: digest, manifest_json, registry_url
+            Or None if not found or expired
+        """
+        with self.get_session() as session:
+            entry = session.query(ImageDigestCache).filter_by(
+                cache_key=cache_key
+            ).first()
+
+            if not entry:
+                return None
+
+            # Check if expired
+            # Handle both naive and aware datetimes from SQLite
+            now = datetime.now(timezone.utc)
+            checked_at = entry.checked_at
+            if checked_at.tzinfo is None:
+                checked_at = checked_at.replace(tzinfo=timezone.utc)
+            expires_at = checked_at + timedelta(seconds=entry.ttl_seconds)
+
+            if now > expires_at:
+                logger.debug(f"Cache expired for {cache_key}")
+                return None
+
+            logger.debug(f"Cache hit for {cache_key}")
+            return {
+                "digest": entry.latest_digest,
+                "manifest_json": entry.manifest_json,
+                "registry_url": entry.registry_url,
+            }
+
+    def cache_image_digest(
+        self,
+        cache_key: str,
+        digest: str,
+        manifest_json: str,
+        registry_url: str,
+        ttl_seconds: int
+    ) -> None:
+        """
+        Store or update cached digest (upsert pattern).
+
+        Args:
+            cache_key: Cache key in format "{image}:{tag}:{platform}"
+            digest: The sha256 digest from registry
+            manifest_json: JSON string of manifest for label extraction
+            registry_url: Registry URL
+            ttl_seconds: Time-to-live in seconds
+        """
+        with self.get_session() as session:
+            entry = session.query(ImageDigestCache).filter_by(
+                cache_key=cache_key
+            ).first()
+
+            now = datetime.now(timezone.utc)
+
+            if entry:
+                # Update existing
+                entry.latest_digest = digest
+                entry.manifest_json = manifest_json
+                entry.registry_url = registry_url
+                entry.ttl_seconds = ttl_seconds
+                entry.checked_at = now
+                entry.updated_at = now
+            else:
+                # Create new
+                entry = ImageDigestCache(
+                    cache_key=cache_key,
+                    latest_digest=digest,
+                    manifest_json=manifest_json,
+                    registry_url=registry_url,
+                    ttl_seconds=ttl_seconds,
+                    checked_at=now,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(entry)
+
+            session.commit()
+            logger.debug(f"Cached {cache_key} with TTL {ttl_seconds}s")
+
+    def invalidate_image_cache(self, image_pattern: str) -> int:
+        """
+        Invalidate cache entries matching pattern.
+
+        Args:
+            image_pattern: Image pattern to match (e.g., "nginx:1.25")
+
+        Returns:
+            Number of entries deleted
+        """
+        with self.get_session() as session:
+            # Find entries where cache_key starts with the pattern
+            entries = session.query(ImageDigestCache).filter(
+                ImageDigestCache.cache_key.like(f"{image_pattern}%")
+            ).all()
+
+            count = len(entries)
+            for entry in entries:
+                session.delete(entry)
+
+            session.commit()
+
+            if count > 0:
+                logger.info(f"Invalidated {count} cache entries matching {image_pattern}")
+
+            return count
+
+    def cleanup_expired_image_cache(self) -> int:
+        """
+        Remove all expired cache entries.
+
+        Returns:
+            Number of entries deleted
+        """
+        with self.get_session() as session:
+            now = datetime.now(timezone.utc)
+
+            # Find all expired entries
+            # SQLite doesn't have great datetime arithmetic, so we fetch all and filter in Python
+            all_entries = session.query(ImageDigestCache).all()
+            expired = []
+
+            for entry in all_entries:
+                # Handle both naive and aware datetimes from SQLite
+                checked_at = entry.checked_at
+                if checked_at.tzinfo is None:
+                    checked_at = checked_at.replace(tzinfo=timezone.utc)
+                expires_at = checked_at + timedelta(seconds=entry.ttl_seconds)
+                if now > expires_at:
+                    expired.append(entry)
+
+            for entry in expired:
+                session.delete(entry)
+
+            session.commit()
+
+            if expired:
+                logger.info(f"Cleaned up {len(expired)} expired image cache entries")
+
+            return len(expired)

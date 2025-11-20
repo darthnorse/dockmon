@@ -505,9 +505,21 @@ class UpdateExecutor:
 
             # Step 2b: Get full container configuration
             # (reuse old_container fetched during validation to avoid duplicate API call)
+            # v2.2.0: Use passthrough approach for config extraction
             logger.info("Getting container configuration")
             await self._broadcast_progress(host_id, container_id, "configuring", 35, "Reading container configuration")
-            container_config = await self._extract_container_config(old_container, new_image_labels=new_image_labels)
+
+            # Get is_podman flag for extraction (needed for Podman compatibility filtering)
+            is_podman = False
+            if self.monitor and hasattr(self.monitor, 'hosts') and host_id in self.monitor.hosts:
+                is_podman = getattr(self.monitor.hosts[host_id], 'is_podman', False)
+
+            container_config = await self._extract_container_config_v2(
+                old_container,
+                docker_client,  # v2 requires client for NetworkMode resolution
+                new_image_labels=new_image_labels,
+                is_podman=is_podman
+            )
 
             # Step 3: Create backup of old container (stop + rename for rollback)
             logger.info(f"Creating backup of {container_name}")
@@ -542,15 +554,12 @@ class UpdateExecutor:
             )
 
             # Step 4: Create new container with updated image
+            # v2.2.0: Use passthrough approach for container creation
             logger.info(f"Creating new container with image {update_record.latest_image}")
             await self._broadcast_progress(host_id, container_id, "creating", 65, "Creating new container")
 
-            # Get is_podman flag from host info (Issue #20)
-            is_podman = False
-            if self.monitor and hasattr(self.monitor, 'hosts') and host_id in self.monitor.hosts:
-                is_podman = getattr(self.monitor.hosts[host_id], 'is_podman', False)
-
-            new_container = await self._create_container(
+            # is_podman was already retrieved earlier for extraction (line 513)
+            new_container = await self._create_container_v2(
                 docker_client,
                 update_record.latest_image,
                 container_config,
@@ -1029,6 +1038,274 @@ class UpdateExecutor:
         )
 
         return merged
+
+    def _extract_network_config(self, attrs: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Extract network configuration from container attributes.
+
+        Returns network configuration dict with 'network', 'network_mode',
+        and optionally '_dockmon_manual_networking_config' for complex setups.
+
+        This is extracted as a helper to support both v1 (field-by-field) and
+        v2 (passthrough) extraction approaches.
+        """
+        networking = attrs.get("NetworkSettings", {})
+        host_config = attrs.get("HostConfig", {})
+        network_mode = host_config.get("NetworkMode")
+
+        result = {
+            "network": None,
+            "network_mode": None,
+        }
+
+        def _extract_ipam_config(network_data):
+            """Extract IPAM configuration only if user-configured (not auto-assigned)."""
+            if not network_data.get("IPAMConfig"):
+                return None
+
+            ipam_config = {}
+            if network_data.get("IPAddress"):
+                ipam_config["IPv4Address"] = network_data["IPAddress"]
+            if network_data.get("GlobalIPv6Address"):
+                ipam_config["IPv6Address"] = network_data["GlobalIPv6Address"]
+
+            return ipam_config if ipam_config else None
+
+        # Extract network configuration
+        networks = networking.get("Networks", {})
+        if networks:
+            # Filter out network_mode pseudo-networks (bridge, host, none)
+            custom_networks = {k: v for k, v in networks.items() if k not in ['bridge', 'host', 'none']}
+
+            if not custom_networks:
+                # Only on default bridge network - don't preserve
+                pass
+            elif len(custom_networks) == 1:
+                # Single custom network
+                network_name, network_data = list(custom_networks.items())[0]
+                has_static_ip = bool(network_data.get("IPAMConfig"))
+
+                # Preserve aliases except container ID (12 chars)
+                all_aliases = network_data.get("Aliases", []) or []
+                preserved_aliases = [a for a in all_aliases if len(a) != CONTAINER_ID_SHORT_LENGTH]
+
+                if has_static_ip or preserved_aliases:
+                    # Has config to preserve - use manual connection format
+                    result["network"] = network_name
+
+                    endpoint_config = {}
+                    ipam_config = _extract_ipam_config(network_data)
+                    if ipam_config:
+                        endpoint_config["IPAMConfig"] = ipam_config
+
+                    if preserved_aliases:
+                        endpoint_config["Aliases"] = preserved_aliases
+
+                    if network_data.get("Links"):
+                        endpoint_config["Links"] = network_data["Links"]
+
+                    result[_MANUAL_NETWORKING_CONFIG_KEY] = {
+                        "EndpointsConfig": {network_name: endpoint_config}
+                    }
+                else:
+                    # Simple single network
+                    result["network"] = network_name
+
+            else:
+                # Multiple custom networks
+                endpoints_config = {}
+                primary_network = list(custom_networks.keys())[0]
+                result["network"] = primary_network
+
+                for network_name, network_data in custom_networks.items():
+                    endpoint_config = {}
+
+                    ipam_config = _extract_ipam_config(network_data)
+                    if ipam_config:
+                        endpoint_config["IPAMConfig"] = ipam_config
+
+                    if network_data.get("Aliases"):
+                        preserved_aliases = [
+                            a for a in network_data["Aliases"]
+                            if len(a) != CONTAINER_ID_SHORT_LENGTH
+                        ]
+                        if preserved_aliases:
+                            endpoint_config["Aliases"] = preserved_aliases
+
+                    if network_data.get("Links"):
+                        endpoint_config["Links"] = network_data["Links"]
+
+                    endpoints_config[network_name] = endpoint_config
+
+                result[_MANUAL_NETWORKING_CONFIG_KEY] = {
+                    "EndpointsConfig": endpoints_config
+                }
+
+        # Extract network_mode
+        if network_mode and network_mode not in ["default"]:
+            # Check for conflict with custom networks
+            if (_MANUAL_NETWORKING_CONFIG_KEY not in result and not result.get("network")):
+                result["network_mode"] = network_mode
+
+        return result
+
+    async def _extract_container_config_v2(
+        self,
+        container,
+        client: docker.DockerClient,
+        new_image_labels: Dict[str, str] = None,
+        is_podman: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Extract container configuration using passthrough approach (v2.2.0).
+
+        This method uses a passthrough approach similar to Watchtower, eliminating
+        complex field-by-field extraction and transformation. The HostConfig is
+        passed directly to the low-level API, preserving ALL Docker fields including
+        GPU support (DeviceRequests), missing in v1.
+
+        Key differences from v1 (_extract_container_config):
+        - HostConfig passed through directly (all 35+ fields preserved automatically)
+        - Volume transformation eliminated (no duplicate mount bugs)
+        - GPU support fixed (DeviceRequests preserved)
+        - Future-proof (new Docker features work automatically)
+
+        Args:
+            container: Docker container object
+            client: Docker client (needed for NetworkMode resolution)
+            new_image_labels: Labels from new image for merging
+            is_podman: True if target host runs Podman (for compatibility filtering)
+
+        Returns:
+            Dict with config, host_config, labels, network_config
+        """
+        attrs = container.attrs
+        config = attrs['Config']
+        host_config = attrs['HostConfig'].copy()  # Copy to avoid mutation
+
+        # === ONLY modify what MUST be modified ===
+
+        # 1. Handle Podman compatibility (IMPORTANT: Use PascalCase for raw HostConfig!)
+        if is_podman:
+            # Remove unsupported fields
+            nano_cpus = host_config.pop('NanoCpus', None)
+            host_config.pop('MemorySwappiness', None)
+
+            # Convert NanoCpus to CpuPeriod/CpuQuota if it was set
+            if nano_cpus and not host_config.get('CpuPeriod'):
+                cpu_period = 100000
+                cpu_quota = int(nano_cpus / 1e9 * cpu_period)
+                host_config['CpuPeriod'] = cpu_period  # PascalCase
+                host_config['CpuQuota'] = cpu_quota    # PascalCase
+
+        # 2. Resolve container:ID to container:name in NetworkMode
+        if host_config.get('NetworkMode', '').startswith('container:'):
+            ref_id = host_config['NetworkMode'].split(':')[1]
+            try:
+                ref_container = await async_docker_call(client.containers.get, ref_id)
+                host_config['NetworkMode'] = f"container:{ref_container.name}"
+            except Exception:
+                pass  # Keep original if can't resolve
+
+        # 3. Handle label merging (merge old + new image labels)
+        labels = self._merge_labels(config.get('Labels', {}), new_image_labels)
+
+        # 4. Extract network configuration (reuse existing logic)
+        network_config = self._extract_network_config(attrs)
+
+        return {
+            'config': config,
+            'host_config': host_config,  # DIRECT PASSTHROUGH!
+            'labels': labels,
+            'network': network_config.get('network'),
+            'network_mode_override': network_config.get('network_mode'),
+            _MANUAL_NETWORKING_CONFIG_KEY: network_config.get(_MANUAL_NETWORKING_CONFIG_KEY),
+        }
+
+    async def _create_container_v2(
+        self,
+        client: docker.DockerClient,
+        image: str,
+        extracted_config: Dict[str, Any],
+        is_podman: bool = False  # Not used here but kept for API consistency
+    ) -> Any:
+        """
+        Create container using low-level API with passthrough (v2.2.0).
+
+        This method uses the low-level API (client.api.create_container) instead of
+        the high-level API (client.containers.create), allowing direct passthrough
+        of HostConfig without field-by-field mapping.
+
+        Key differences from v1 (_create_container):
+        - Uses low-level API for raw dict passthrough
+        - HostConfig passed directly (no transformation)
+        - Volumes in Binds format preserved (no duplicate mount errors)
+        - GPU DeviceRequests preserved automatically
+
+        Args:
+            client: Docker client instance
+            image: Image name for the new container
+            extracted_config: Config dict from _extract_container_config_v2()
+            is_podman: Unused (filtering done in extraction phase)
+
+        Returns:
+            Docker container object
+        """
+        try:
+            config = extracted_config['config']
+            host_config = extracted_config['host_config']
+            network_mode = host_config.get('NetworkMode', '')
+
+            # Override network_mode if explicitly set in network config
+            if extracted_config.get('network_mode_override'):
+                host_config['NetworkMode'] = extracted_config['network_mode_override']
+                network_mode = extracted_config['network_mode_override']
+
+            # Use low-level API for direct passthrough
+            response = await async_docker_call(
+                client.api.create_container,
+                image=image,
+                name=config.get('Name', '').lstrip('/'),
+                hostname=config.get('Hostname') if not network_mode.startswith('container:') else None,
+                user=config.get('User'),
+                environment=config.get('Env'),
+                command=config.get('Cmd'),
+                entrypoint=config.get('Entrypoint'),
+                working_dir=config.get('WorkingDir'),
+                labels=extracted_config['labels'],
+                host_config=host_config,  # DIRECT PASSTHROUGH! (All HostConfig fields preserved)
+                networking_config=None,   # Unused - manual connection below
+                healthcheck=config.get('Healthcheck'),
+                stop_signal=config.get('StopSignal'),  # FIX: Added this field
+                domainname=config.get('Domainname'),
+                mac_address=config.get('MacAddress') if not network_mode.startswith('container:') else None,
+                tty=config.get('Tty', False),
+                stdin_open=config.get('OpenStdin', False),
+            )
+
+            container_id = response['Id']
+
+            # Connect additional networks if needed (manual connection required - SDK bug)
+            try:
+                await manually_connect_networks(
+                    container=client.containers.get(container_id),
+                    manual_networks=None,  # Not used in v2 (was for stack orchestrator)
+                    manual_networking_config=extracted_config.get(_MANUAL_NETWORKING_CONFIG_KEY),
+                    client=client,
+                    async_docker_call=async_docker_call
+                )
+            except Exception:
+                # Clean up: remove container since we failed to configure networks
+                try:
+                    await async_docker_call(client.containers.get(container_id).remove, force=True)
+                except Exception:
+                    pass
+                raise
+
+            return client.containers.get(container_id)
+        except Exception as e:
+            logger.error(f"Error creating container (v2 passthrough): {e}")
+            raise
 
     async def _extract_container_config(self, container, new_image_labels: Dict[str, str] = None) -> Dict[str, Any]:
         """
@@ -2118,15 +2395,21 @@ class UpdateExecutor:
         try:
             logger.info(f"Recreating dependent container: {dep_name}")
 
-            # Step 1: Extract current configuration
-            config = await self._extract_container_config(dep_container)
+            # Step 1: Extract current configuration (v2.2.0: Use passthrough approach)
+            config = await self._extract_container_config_v2(
+                dep_container,
+                client,  # v2 requires client for NetworkMode resolution
+                new_image_labels=None,  # No image update for dependent containers
+                is_podman=is_podman
+            )
 
             # Step 2: Update network_mode to point to new parent container
+            # v2.2.0: Modify HostConfig directly (passthrough approach)
             # Use full container ID (not short ID) for network_mode
-            old_network_mode = config.get('network_mode', '')
-            config['network_mode'] = f'container:{new_parent_container_id}'
+            old_network_mode = config['host_config'].get('NetworkMode', '')
+            config['host_config']['NetworkMode'] = f'container:{new_parent_container_id}'
             logger.info(
-                f"Updated network_mode: {old_network_mode} → {config['network_mode']}"
+                f"Updated network_mode: {old_network_mode} → {config['host_config']['NetworkMode']}"
             )
 
             # Step 3: Extract networks (for restoration after network_mode removed)
@@ -2147,9 +2430,9 @@ class UpdateExecutor:
             logger.info(f"Renaming to temporary: {temp_name}")
             await async_docker_call(dep_container.rename, temp_name)
 
-            # Step 6: Create new container with updated config
+            # Step 6: Create new container with updated config (v2.2.0: Use passthrough approach)
             logger.info(f"Creating new dependent container: {dep_name}")
-            new_dep_container = await self._create_container(
+            new_dep_container = await self._create_container_v2(
                 client,
                 dep_info['image'],
                 config,

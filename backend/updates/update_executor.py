@@ -1008,14 +1008,18 @@ class UpdateExecutor:
 
         def _extract_ipam_config(network_data):
             """Extract IPAM configuration only if user-configured (not auto-assigned)."""
-            if not network_data.get("IPAMConfig"):
+            # IPAMConfig exists when user explicitly set static IP
+            ipam_config_raw = network_data.get("IPAMConfig")
+            if not ipam_config_raw:
                 return None
 
+            # IPAMConfig dict contains the user's configuration
+            # Extract IPv4 and IPv6 addresses if present
             ipam_config = {}
-            if network_data.get("IPAddress"):
-                ipam_config["IPv4Address"] = network_data["IPAddress"]
-            if network_data.get("GlobalIPv6Address"):
-                ipam_config["IPv6Address"] = network_data["GlobalIPv6Address"]
+            if ipam_config_raw.get("IPv4Address"):
+                ipam_config["IPv4Address"] = ipam_config_raw["IPv4Address"]
+            if ipam_config_raw.get("IPv6Address"):
+                ipam_config["IPv6Address"] = ipam_config_raw["IPv6Address"]
 
             return ipam_config if ipam_config else None
 

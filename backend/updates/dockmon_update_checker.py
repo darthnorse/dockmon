@@ -18,6 +18,20 @@ from database import DatabaseManager, GlobalSettings
 logger = logging.getLogger(__name__)
 
 
+def normalize_version(version: str) -> str:
+    """Normalize version string for PEP 440 compatibility.
+
+    Converts formats like '2.1.8-hotfix.3' to '2.1.8.post3' which is valid PEP 440.
+    """
+    import re
+    # Convert hotfix.N to post release format (PEP 440 compliant)
+    # 2.1.8-hotfix.3 -> 2.1.8.post3
+    normalized = re.sub(r'-hotfix\.(\d+)', r'.post\1', version)
+    # Also handle hotfixN format (no dot)
+    normalized = re.sub(r'-hotfix(\d+)', r'.post\1', normalized)
+    return normalized
+
+
 class DockMonUpdateChecker:
     """Check GitHub for DockMon application updates"""
 
@@ -82,7 +96,10 @@ class DockMonUpdateChecker:
 
             # Compare versions using semver
             try:
-                update_available = parse_version(latest_version) > parse_version(current_version)
+                # Normalize versions for PEP 440 compatibility (e.g., hotfix.3 -> post3)
+                normalized_current = normalize_version(current_version)
+                normalized_latest = normalize_version(latest_version)
+                update_available = parse_version(normalized_latest) > parse_version(normalized_current)
             except InvalidVersion as e:
                 logger.error(f"Invalid version format: current={current_version}, latest={latest_version}: {e}")
                 return {

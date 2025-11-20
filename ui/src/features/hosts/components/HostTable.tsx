@@ -118,14 +118,17 @@ function SecurityIndicator({ url, securityStatus }: { url: string; securityStatu
 }
 
 // OS/Version component
-function OSVersion({ osVersion, dockerVersion }: { osVersion?: string | null | undefined; dockerVersion?: string | null | undefined }) {
+function OSVersion({ osVersion, dockerVersion, isPodman }: { osVersion?: string | null | undefined; dockerVersion?: string | null | undefined; isPodman?: boolean | undefined }) {
   if (!osVersion && !dockerVersion) {
     return <span className="text-sm text-muted-foreground">-</span>
   }
 
   const parts = []
   if (osVersion) parts.push(osVersion)
-  if (dockerVersion) parts.push(`Docker ${dockerVersion}`)
+  if (dockerVersion) {
+    const platform = isPodman ? 'Podman' : 'Docker'
+    parts.push(`${platform} ${dockerVersion}`)
+  }
 
   return <span className="text-sm text-muted-foreground">{parts.join(' • ')}</span>
 }
@@ -528,7 +531,7 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
       {
         accessorKey: 'os_version',
         header: 'OS / Version',
-        cell: ({ row }) => <OSVersion osVersion={row.original.os_version} dockerVersion={row.original.docker_version} />,
+        cell: ({ row }) => <OSVersion osVersion={row.original.os_version} dockerVersion={row.original.docker_version} isPodman={row.original.is_podman} />,
       },
 
       // 9. Actions

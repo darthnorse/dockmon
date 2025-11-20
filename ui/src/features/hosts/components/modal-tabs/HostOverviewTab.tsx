@@ -82,7 +82,7 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
                   <span>{host.os_version || 'Unknown'}</span>
                 </div>
                 <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">Docker Version</span>
+                  <span className="text-muted-foreground">{host.is_podman ? 'Podman' : 'Docker'} Version</span>
                   <span>{host.docker_version || '—'}</span>
                 </div>
                 <div className="flex justify-between text-sm">

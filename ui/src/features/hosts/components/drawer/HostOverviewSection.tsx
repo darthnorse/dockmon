@@ -17,6 +17,7 @@ interface Host {
   daemon_started_at?: string | null
   os_version?: string | null
   docker_version?: string | null
+  is_podman?: boolean
 }
 
 interface HostOverviewSectionProps {
@@ -104,7 +105,7 @@ export function HostOverviewSection({ host }: HostOverviewSectionProps) {
             )}
             {host.docker_version && (
               <div>
-                <label className="text-xs font-medium text-muted-foreground">Docker</label>
+                <label className="text-xs font-medium text-muted-foreground">{host.is_podman ? 'Podman' : 'Docker'}</label>
                 <p className="text-sm mt-1">{host.docker_version}</p>
               </div>
             )}

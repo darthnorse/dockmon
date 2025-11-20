@@ -108,8 +108,17 @@ def _fetch_system_info_from_docker(client: DockerClient, host_name: str) -> dict
         docker_version = version_info.get('Version', None)
 
         # Detect Podman vs Docker (Issue #20)
+        # Check Platform.Name first (some Podman versions)
         platform_name = version_info.get('Platform', {}).get('Name', '')
         is_podman = 'podman' in platform_name.lower()
+
+        # Also check Components array (Podman 5.x puts "Podman Engine" there)
+        if not is_podman:
+            components = version_info.get('Components', [])
+            for component in components:
+                if 'podman' in component.get('Name', '').lower():
+                    is_podman = True
+                    break
 
         # Get Docker daemon start time from bridge network creation
         daemon_started_at = None
@@ -465,11 +474,14 @@ class DockerMonitor:
                                 db_host.total_memory = total_memory
                             if num_cpus:
                                 db_host.num_cpus = num_cpus
+                            # Always update is_podman (Issue #20)
+                            db_host.is_podman = is_podman
                             session.commit()
                 except Exception as e:
                     logger.warning(f"Failed to update OS info for {host.name}: {e}")
                 else:
-                    logger.info(f"Updated OS info for {host.name}: {os_version} / Docker {docker_version}")
+                    platform_type = "Podman" if is_podman else "Docker"
+                    logger.info(f"Updated OS info for {host.name}: {os_version} / {platform_type} {docker_version}")
 
             # Save to database only if not reconnecting to an existing host
             if not skip_db_save:
@@ -492,7 +504,8 @@ class DockerMonitor:
                     'docker_version': host.docker_version,
                     'daemon_started_at': host.daemon_started_at,
                     'total_memory': host.total_memory,
-                    'num_cpus': host.num_cpus
+                    'num_cpus': host.num_cpus,
+                    'is_podman': host.is_podman
                 })
 
             # Register host with stats and event services

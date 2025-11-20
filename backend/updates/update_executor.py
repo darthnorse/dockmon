@@ -1194,6 +1194,11 @@ class UpdateExecutor:
         - Volumes in Binds format preserved (no duplicate mount errors)
         - GPU DeviceRequests preserved automatically
 
+        API Version-Aware Networking (v2.2.0):
+        - Docker API >= 1.44: Uses networking_config at creation (efficient)
+        - Docker API < 1.44: Falls back to manual network connection post-creation
+        See: https://docs.docker.com/engine/api/version-history/#v144-api-changes
+
         Args:
             client: Docker client instance
             image: Image name for the new container
@@ -1213,6 +1218,27 @@ class UpdateExecutor:
                 host_config['NetworkMode'] = extracted_config['network_mode_override']
                 network_mode = extracted_config['network_mode_override']
 
+            # Get manual networking config for version-aware handling
+            manual_networking_config = extracted_config.get(_MANUAL_NETWORKING_CONFIG_KEY)
+
+            # Detect Docker API version for network handling strategy
+            # API >= 1.44 supports multiple networks at creation time
+            # API < 1.44 requires manual connection post-creation
+            from packaging import version
+            api_version = version.parse(client.api.api_version)
+            use_networking_config = api_version >= version.parse("1.44")
+
+            # Determine networking_config parameter based on API version
+            networking_config = None
+            if use_networking_config and manual_networking_config:
+                # Modern API - pass full network config at creation (efficient!)
+                networking_config = manual_networking_config
+                logger.debug(f"Using networking_config at creation (API {client.api.api_version} >= 1.44)")
+            else:
+                # Legacy API or no manual config - will connect networks manually after creation
+                if manual_networking_config:
+                    logger.debug(f"Will manually connect networks post-creation (API {client.api.api_version} < 1.44)")
+
             # Use low-level API for direct passthrough
             response = await async_docker_call(
                 client.api.create_container,
@@ -1226,9 +1252,9 @@ class UpdateExecutor:
                 working_dir=config.get('WorkingDir'),
                 labels=extracted_config['labels'],
                 host_config=host_config,  # DIRECT PASSTHROUGH! (All HostConfig fields preserved)
-                networking_config=None,   # Unused - manual connection below
+                networking_config=networking_config,  # API version-aware: Used for API >= 1.44
                 healthcheck=config.get('Healthcheck'),
-                stop_signal=config.get('StopSignal'),  # FIX: Added this field
+                stop_signal=config.get('StopSignal'),
                 domainname=config.get('Domainname'),
                 mac_address=config.get('MacAddress') if not network_mode.startswith('container:') else None,
                 tty=config.get('Tty', False),
@@ -1237,22 +1263,23 @@ class UpdateExecutor:
 
             container_id = response['Id']
 
-            # Connect additional networks if needed (manual connection required - SDK bug)
-            try:
-                await manually_connect_networks(
-                    container=client.containers.get(container_id),
-                    manual_networks=None,  # Not used in v2 (was for stack orchestrator)
-                    manual_networking_config=extracted_config.get(_MANUAL_NETWORKING_CONFIG_KEY),
-                    client=client,
-                    async_docker_call=async_docker_call
-                )
-            except Exception:
-                # Clean up: remove container since we failed to configure networks
+            # Manual network connection for legacy API or when networking_config wasn't used
+            if not use_networking_config and manual_networking_config:
                 try:
-                    await async_docker_call(client.containers.get(container_id).remove, force=True)
+                    await manually_connect_networks(
+                        container=client.containers.get(container_id),
+                        manual_networks=None,  # Not used in v2 (was for stack orchestrator)
+                        manual_networking_config=manual_networking_config,
+                        client=client,
+                        async_docker_call=async_docker_call
+                    )
                 except Exception:
-                    pass
-                raise
+                    # Clean up: remove container since we failed to configure networks
+                    try:
+                        await async_docker_call(client.containers.get(container_id).remove, force=True)
+                    except Exception:
+                        pass
+                    raise
 
             return client.containers.get(container_id)
         except Exception as e:

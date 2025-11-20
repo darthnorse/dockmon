@@ -78,13 +78,15 @@ def filter_podman_incompatible_params(config: Dict[str, Any], is_podman: bool) -
             filtered['cpu_period'] = cpu_period
             filtered['cpu_quota'] = cpu_quota
             logger.debug(f"Converted nano_cpus ({nano_cpus}) to cpu_quota ({cpu_quota}) for Podman compatibility")
-        filtered['nano_cpus'] = None
+        else:
+            logger.debug(f"Removing nano_cpus ({nano_cpus}) - cpu_period/cpu_quota already set")
+        # Must delete the key, not set to None - Podman rejects NanoCpus entirely
+        del filtered['nano_cpus']
 
     # Filter MemorySwappiness - not supported by Podman
-    if 'memory_swappiness' in filtered:
-        if filtered['memory_swappiness'] is not None:
-            logger.debug(f"Stripped memory_swappiness ({filtered['memory_swappiness']}) for Podman compatibility")
-        filtered['memory_swappiness'] = None
+    if 'memory_swappiness' in filtered and filtered['memory_swappiness'] is not None:
+        logger.debug(f"Stripped memory_swappiness ({filtered['memory_swappiness']}) for Podman compatibility")
+        del filtered['memory_swappiness']
 
     return filtered
 

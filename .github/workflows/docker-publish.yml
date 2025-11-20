@@ -35,6 +35,17 @@ jobs:
         id: lowercase
         run: echo "owner=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
+      - name: Check if prerelease
+        id: prerelease
+        run: |
+          TAG="${{ github.ref_name }}"
+          # Check if tag contains alpha, beta, rc, or dev (case insensitive)
+          if [[ "$TAG" =~ (alpha|beta|rc|dev) ]]; then
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Extract metadata (tags, labels)
         id: meta
         uses: docker/metadata-action@v5
@@ -43,10 +54,8 @@ jobs:
             ${{ secrets.DOCKERHUB_USERNAME }}/dockmon
             ghcr.io/${{ secrets.GHCR_USERNAME }}/dockmon
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=tag
+            type=raw,value=latest,enable=${{ steps.prerelease.outputs.is_prerelease == 'false' }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5

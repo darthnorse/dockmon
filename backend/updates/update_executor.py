@@ -418,8 +418,26 @@ class UpdateExecutor:
                 update_record.latest_image
             )
 
-            # Step 1b: Inspect new image to get labels for intelligent merge
+            # Step 1b: Inspect OLD image to get its labels (for subtraction)
+            logger.info(f"Inspecting old image labels: {old_container.image}")
+            old_image_labels = {}
+            try:
+                old_image = await async_docker_call(
+                    docker_client.images.get,
+                    old_container.image.id
+                )
+                old_image_labels = old_image.attrs.get("Config", {}).get("Labels", {}) or {}
+                logger.debug(f"Old image has {len(old_image_labels)} labels")
+            except Exception as e:
+                logger.warning(
+                    f"Failed to inspect old image labels: {e}. "
+                    f"Will preserve all container labels (safer fallback)."
+                )
+                # Fallback: empty dict means all container labels are treated as user-added
+
+            # Step 1c: Inspect NEW image to get its labels (for Docker auto-merge)
             logger.info(f"Inspecting new image labels: {update_record.latest_image}")
+            new_image_labels = {}
             try:
                 new_image = await async_docker_call(
                     docker_client.images.get,
@@ -428,13 +446,11 @@ class UpdateExecutor:
                 new_image_labels = new_image.attrs.get("Config", {}).get("Labels", {}) or {}
                 logger.debug(f"New image has {len(new_image_labels)} labels")
             except Exception as e:
-                # If image inspection fails (network issue, image deleted, etc.),
-                # proceed with old labels rather than crashing the update
                 logger.warning(
                     f"Failed to inspect new image labels: {e}. "
-                    f"Proceeding with old container labels only."
+                    f"Container will use old image labels."
                 )
-                new_image_labels = {}  # Fallback: no merge, preserve old labels
+                # Fallback: Docker will use whatever labels it has for the image
 
             # Step 2a: Find dependent containers (network_mode: container:this_container)
             # These must be recreated after update to point to new container ID
@@ -465,6 +481,7 @@ class UpdateExecutor:
             container_config = await self._extract_container_config_v2(
                 old_container,
                 docker_client,  # v2 requires client for NetworkMode resolution
+                old_image_labels=old_image_labels,
                 new_image_labels=new_image_labels,
                 is_podman=is_podman
             )
@@ -936,56 +953,69 @@ class UpdateExecutor:
             logger.error(f"Error pulling image {image}: {e}")
             raise
 
-    def _merge_labels(
+    def _extract_user_labels(
         self,
-        old_labels: Dict[str, str],
-        new_image_labels: Dict[str, str] = None
+        old_container_labels: Dict[str, str],
+        old_image_labels: Dict[str, str]
     ) -> Dict[str, str]:
         """
-        Merge container labels for update operation.
+        Extract user-added labels by filtering out old image defaults.
 
-        Strategy: Preserve all old labels, but override with fresh image labels.
-        This ensures:
-        - Image metadata labels (version, created, etc.) are updated
-        - Compose labels (com.docker.compose.*) are preserved
-        - DockMon tracking labels (dockmon.*) are preserved
-        - User custom labels are preserved
+        This preserves user customizations while allowing new image labels to take effect.
+        Approach inspired by industry standard practices (Watchtower, Diun).
 
-        Note on label removal: Labels present in old container but not in new image
-        are PRESERVED. We cannot distinguish between "user added" vs "old image had it",
-        so preservation is safer (don't delete user data). Stale image labels are
-        unlikely since images typically add labels, not remove them.
+        Strategy:
+        1. Start with all container labels (includes image + user labels)
+        2. Remove labels that match old image defaults
+        3. Return only user-added/customized labels
+        4. Docker will automatically merge these with new image labels during creation
+
+        This fixes issues where stale image labels (removed from new image) would
+        persist and cause application failures (e.g., Immich Issue #69).
 
         Args:
-            old_labels: Labels from old container
-            new_image_labels: Labels from new image (optional)
+            old_container_labels: All labels from old container
+            old_image_labels: Labels from old image (for identifying defaults)
 
         Returns:
-            Merged labels dict
+            Dict with only user-added labels (compose, custom, infrastructure)
+
+        Example:
+            Old container: {"version": "1.0", "env": "prod", "author": "custom"}
+            Old image: {"version": "1.0", "author": "me"}
+            Result: {"env": "prod", "author": "custom"}
+            (version removed - matched image, env kept - user added, author kept - customized)
+
+            Then Docker creates container with new image:
+            New image: {"version": "2.0", "author": "newauthor"}
+            Final container: {"version": "2.0", "author": "custom", "env": "prod"}
+            (Docker merges new image labels + our extracted user labels)
         """
         # Defensive: Handle None inputs (Docker returns None for no labels)
-        if old_labels is None:
-            old_labels = {}
-        if new_image_labels is None:
-            new_image_labels = {}
+        if old_container_labels is None:
+            old_container_labels = {}
+        if old_image_labels is None:
+            old_image_labels = {}
 
-        if not new_image_labels:
-            # No new image labels provided - return old labels
-            return old_labels.copy() if old_labels else {}
+        # Start with all container labels
+        user_labels = old_container_labels.copy()
 
-        # Merge: old labels first, then override with new image labels
-        # When same key exists in both, new_image_labels wins (image is source of truth)
-        merged = {
-            **old_labels,        # Preserve compose, dockmon, custom labels
-            **new_image_labels   # Update image metadata labels
-        }
+        # Remove labels that match old image defaults
+        # (these will come from new image automatically)
+        for key, image_value in old_image_labels.items():
+            container_value = user_labels.get(key)
+            if container_value == image_value:
+                # Label matches old image default - remove it
+                # New image will provide updated value automatically
+                user_labels.pop(key, None)
 
-        logger.debug(
-            f"Label merge: {len(old_labels)} old + {len(new_image_labels)} image = "
-            f"{len(merged)} merged"
+        logger.info(
+            f"Label extraction: {len(old_container_labels)} container - "
+            f"{len(old_image_labels)} image defaults = "
+            f"{len(user_labels)} user labels to preserve"
         )
 
-        return merged
+        return user_labels
 
     def _extract_network_config(self, attrs: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
@@ -1105,6 +1135,7 @@ class UpdateExecutor:
         self,
         container,
         client: docker.DockerClient,
+        old_image_labels: Dict[str, str] = None,
         new_image_labels: Dict[str, str] = None,
         is_podman: bool = False
     ) -> Dict[str, Any]:
@@ -1120,12 +1151,14 @@ class UpdateExecutor:
         - HostConfig passed through directly (all 35+ fields preserved automatically)
         - Volume transformation eliminated (no duplicate mount bugs)
         - GPU support fixed (DeviceRequests preserved)
+        - Label handling fixed (extracts user labels, prevents stale image labels)
         - Future-proof (new Docker features work automatically)
 
         Args:
             container: Docker container object
             client: Docker client (needed for NetworkMode resolution)
-            new_image_labels: Labels from new image for merging
+            old_image_labels: Labels from old image (for identifying user-added labels)
+            new_image_labels: Labels from new image (informational only, for logging)
             is_podman: True if target host runs Podman (for compatibility filtering)
 
         Returns:
@@ -1159,8 +1192,14 @@ class UpdateExecutor:
             except Exception:
                 pass  # Keep original if can't resolve
 
-        # 3. Handle label merging (merge old + new image labels)
-        labels = self._merge_labels(config.get('Labels', {}), new_image_labels)
+        # 3. Extract user-added labels (subtract old image defaults from container labels)
+        # Docker will automatically merge these with new image labels during container creation
+        if old_image_labels is None:
+            old_image_labels = {}
+        labels = self._extract_user_labels(
+            old_container_labels=config.get('Labels', {}),
+            old_image_labels=old_image_labels
+        )
 
         # 4. Extract network configuration (reuse existing logic)
         network_config = self._extract_network_config(attrs)

@@ -533,6 +533,14 @@ class UpdateExecutor:
             # Capture SHORT ID (12 chars) for event emission
             new_container_id = new_container.short_id
 
+            # Add new container to updating set to prevent auto-restart interference during rollback
+            # This prevents race condition where auto-restart tries to restart the new container
+            # while rollback is trying to remove it (Issue #69)
+            new_composite_key = make_composite_key(host_id, new_container_id)
+            with self._update_lock:
+                self.updating_containers.add(new_composite_key)
+            logger.debug(f"Added new container {new_composite_key} to updating set (prevents auto-restart during rollback)")
+
             # Step 5: Start new container (IMMEDIATELY to prevent backup from auto-restarting and stealing ports)
             logger.info(f"Starting new container {container_name}")
             await async_docker_call(new_container.start)
@@ -855,9 +863,16 @@ class UpdateExecutor:
 
         finally:
             # Always remove from updating set when done (whether success or failure)
+            # Remove both old and new container IDs to prevent auto-restart interference (Issue #69)
             with self._update_lock:
-                self.updating_containers.discard(composite_key)
-            logger.debug(f"Removed {composite_key} from updating containers set")
+                self.updating_containers.discard(composite_key)  # Remove OLD container ID
+                # Remove NEW container ID if it was created (defensive check for early failures)
+                if 'new_container_id' in locals() and new_container_id:
+                    new_composite_key = make_composite_key(host_id, new_container_id)
+                    self.updating_containers.discard(new_composite_key)  # Remove NEW container ID
+                    logger.debug(f"Removed both old ({composite_key}) and new ({new_composite_key}) containers from updating set")
+                else:
+                    logger.debug(f"Removed {composite_key} from updating containers set (new container was not created)")
 
             # Re-evaluate alerts that may have been suppressed during the update
             # Use new container ID if available, otherwise fall back to old ID

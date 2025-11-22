@@ -357,23 +357,6 @@ function ContainerAlertSeverityCounts({
   )
 }
 
-/**
- * Updates badge for containers
- */
-function ContainerUpdatesBadge({ hasUpdates }: { hasUpdates: boolean }) {
-  if (!hasUpdates) {
-    return <span className="text-xs text-muted-foreground">-</span>
-  }
-
-  return (
-    <div className="flex items-center gap-1">
-      <div className="h-2 w-2 rounded-full bg-info animate-pulse" />
-      <span className="text-xs text-info">Available</span>
-    </div>
-  )
-}
-
-
 interface ContainerTableProps {
   hostId?: string // Optional: filter by specific host
 }
@@ -1124,13 +1107,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         ),
         enableSorting: true,
       },
-      // 5. Updates
-      {
-        id: 'updates',
-        header: 'Updates',
-        cell: () => <ContainerUpdatesBadge hasUpdates={false} />, // TODO: Check for container updates
-      },
-      // 6. Host
+      // 5. Host
       {
         accessorKey: 'host_name',
         id: 'host_id',

@@ -115,7 +115,6 @@ const COLUMN_LABELS: Record<string, string> = {
   name: 'Name',
   policy: 'Policy',
   alerts: 'Alerts',
-  updates: 'Updates',
   host_id: 'Host',
   ports: 'Ports',
   created: 'Uptime',

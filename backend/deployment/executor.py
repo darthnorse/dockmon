@@ -619,12 +619,16 @@ class DeploymentExecutor:
 
                     # Get network driver (default to bridge)
                     driver = 'bridge'
+                    ipam_config = None
                     if network_config and isinstance(network_config, dict):
                         driver = network_config.get('driver', 'bridge')
+                        # Parse IPAM configuration if present
+                        if 'ipam' in network_config:
+                            ipam_config = self._parse_ipam_config(network_config['ipam'])
 
                     logger.info(f"Creating network: {network_name} (driver: {driver})")
                     try:
-                        await connector.create_network(network_name, driver=driver)
+                        await connector.create_network(network_name, driver=driver, ipam=ipam_config)
                         created_networks.append(network_name)
                     except Exception as e:
                         # Check if network already exists (idempotent)
@@ -1203,6 +1207,61 @@ class DeploymentExecutor:
             True if named volume, False if bind mount
         """
         return not (path.startswith('/') or path.startswith('.'))
+
+    def _parse_ipam_config(self, ipam_dict: Dict[str, Any]):
+        """
+        Convert Docker Compose IPAM config to Docker SDK IPAMConfig.
+
+        Supports all IPAM fields from compose spec:
+        - driver: IPAM driver (default: 'default')
+        - config: List of subnet configurations
+          - subnet: Network subnet (e.g., '172.20.0.0/16')
+          - gateway: Gateway IP (optional)
+          - ip_range: Range for dynamic IPs (optional)
+          - aux_addresses: Reserved IPs (optional dict)
+        - options: Driver-specific options (optional dict)
+
+        Args:
+            ipam_dict: IPAM configuration from compose file
+
+        Returns:
+            docker.types.IPAMConfig object or None if no config
+
+        Example compose IPAM:
+            ipam:
+              driver: default
+              config:
+                - subnet: 172.20.0.0/16
+                  gateway: 172.20.0.1
+                  ip_range: 172.20.240.0/20
+                  aux_addresses:
+                    host1: 172.20.0.5
+              options:
+                foo: bar
+        """
+        from docker.types import IPAMConfig, IPAMPool
+
+        if not ipam_dict:
+            return None
+
+        pool_configs = []
+        if 'config' in ipam_dict and ipam_dict['config']:
+            for pool in ipam_dict['config']:
+                if not isinstance(pool, dict):
+                    continue
+
+                pool_configs.append(IPAMPool(
+                    subnet=pool.get('subnet'),
+                    gateway=pool.get('gateway'),
+                    iprange=pool.get('ip_range'),
+                    aux_addresses=pool.get('aux_addresses')
+                ))
+
+        return IPAMConfig(
+            driver=ipam_dict.get('driver'),
+            pool_configs=pool_configs if pool_configs else None,
+            options=ipam_dict.get('options')
+        )
 
     # Network and volume helper methods removed - volumes are now created directly via connector.create_volume()
     # Networks fallback to 'bridge' network if requested network doesn't exist (per spec Section 9.5)

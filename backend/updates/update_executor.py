@@ -1226,6 +1226,7 @@ class UpdateExecutor:
             'network': network_config.get('network'),
             'network_mode_override': network_config.get('network_mode'),
             _MANUAL_NETWORKING_CONFIG_KEY: network_config.get(_MANUAL_NETWORKING_CONFIG_KEY),
+            'container_name': attrs.get('Name', '').lstrip('/'),  # Extract container name
         }
 
     async def _create_container_v2(
@@ -1294,10 +1295,12 @@ class UpdateExecutor:
                     logger.debug(f"Will manually connect networks post-creation (API {client.api.api_version} < 1.44)")
 
             # Use low-level API for direct passthrough
+            # Container name is extracted during config extraction
+            container_name = extracted_config.get('container_name', '')
             response = await async_docker_call(
                 client.api.create_container,
                 image=image,
-                name=config.get('Name', '').lstrip('/'),
+                name=container_name,
                 hostname=config.get('Hostname') if not network_mode.startswith('container:') else None,
                 user=config.get('User'),
                 environment=config.get('Env'),

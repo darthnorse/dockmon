@@ -1851,7 +1851,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
       </div>
 
       {/* Table */}
-      <div className="overflow-hidden rounded-lg border border-border">
+      <div className="overflow-x-auto rounded-lg border border-border">
         <table className="w-full" data-testid="containers-table">
           <thead className="border-b border-border bg-muted/50 sticky top-0 z-10">
             {table.getHeaderGroups().map((headerGroup) => (

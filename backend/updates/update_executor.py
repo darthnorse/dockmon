@@ -1204,7 +1204,9 @@ class UpdateExecutor:
             try:
                 ref_container = await async_docker_call(client.containers.get, ref_id)
                 host_config['NetworkMode'] = f"container:{ref_container.name}"
-            except Exception:
+                logger.debug(f"Resolved NetworkMode: container:{ref_id[:12]}... → container:{ref_container.name}")
+            except Exception as e:
+                logger.warning(f"Failed to resolve NetworkMode container:{ref_id[:12]}...: {e}")
                 pass  # Keep original if can't resolve
 
         # 3. Extract user-added labels (subtract old image defaults from container labels)

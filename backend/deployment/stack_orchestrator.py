@@ -414,12 +414,72 @@ class StackOrchestrator:
             if restart in ['always', 'unless-stopped', 'on-failure']:
                 config['restart_policy'] = {'Name': restart}
 
-        # Resource limits
+        # Resource limits (Compose v2 syntax - backward compatibility)
         if 'mem_limit' in service_config:
             config['mem_limit'] = service_config['mem_limit']
 
         if 'cpus' in service_config:
             config['nano_cpus'] = int(float(service_config['cpus']) * 1e9)
+
+        # Resource limits (Compose v3 syntax - deploy.resources)
+        # v3 takes precedence over v2 if both are specified
+        if 'deploy' in service_config:
+            deploy = service_config['deploy']
+            if 'resources' in deploy:
+                resources = deploy['resources']
+
+                # Resource limits (hard limits)
+                if 'limits' in resources:
+                    limits = resources['limits']
+                    if 'memory' in limits:
+                        config['mem_limit'] = limits['memory']
+                    if 'cpus' in limits:
+                        config['nano_cpus'] = int(float(limits['cpus']) * 1e9)
+
+                # Resource reservations (soft limits / guaranteed resources)
+                if 'reservations' in resources:
+                    reservations = resources['reservations']
+                    if 'memory' in reservations:
+                        config['mem_reservation'] = reservations['memory']
+                    # Note: CPU reservations not supported in standalone Docker
+                    # (Swarm-only feature, silently ignored like Docker Compose does)
+
+        # Healthcheck (Docker Compose healthcheck directive)
+        if 'healthcheck' in service_config:
+            from utils.duration_parser import parse_docker_duration
+
+            hc_source = service_config['healthcheck']
+
+            # Handle disable: true (removes healthcheck)
+            if hc_source and hc_source.get('disable'):
+                config['healthcheck'] = None
+            elif hc_source:
+                healthcheck = {}
+
+                # Test command (required field)
+                if 'test' in hc_source:
+                    test = hc_source['test']
+                    if isinstance(test, str):
+                        # String format - pass through, Docker wraps in CMD-SHELL
+                        healthcheck['test'] = test
+                    elif isinstance(test, list):
+                        # Array format - pass through as-is
+                        healthcheck['test'] = test
+
+                # Timing parameters (convert compose time strings to nanoseconds)
+                if 'interval' in hc_source:
+                    healthcheck['interval'] = parse_docker_duration(hc_source['interval'])
+
+                if 'timeout' in hc_source:
+                    healthcheck['timeout'] = parse_docker_duration(hc_source['timeout'])
+
+                if 'retries' in hc_source:
+                    healthcheck['retries'] = hc_source['retries']
+
+                if 'start_period' in hc_source:
+                    healthcheck['start_period'] = parse_docker_duration(hc_source['start_period'])
+
+                config['healthcheck'] = healthcheck
 
         # Privileged
         if 'privileged' in service_config:

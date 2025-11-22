@@ -288,11 +288,13 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
   if (!isOpen) return null
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" data-testid="host-modal">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" data-testid="host-modal">
       <div
-        className="relative w-full max-w-lg rounded-2xl border border-border bg-background p-6 shadow-lg"
+        className="relative w-full max-w-lg max-h-[90vh] flex flex-col rounded-2xl border border-border bg-background shadow-lg"
         onClick={(e) => e.stopPropagation()}
       >
+        {/* Scrollable content wrapper */}
+        <div className="overflow-y-auto px-6 py-6">
         {/* Header */}
         <div className="flex items-center justify-between mb-4">
           <div>
@@ -632,6 +634,8 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
           </div>
         </div>
       )}
+      </div>
+      {/* End scrollable content wrapper */}
     </div>
   )
 }

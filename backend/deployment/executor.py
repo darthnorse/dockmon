@@ -709,8 +709,20 @@ class DeploymentExecutor:
                     # Determine project name for labels (use compose name if present, else deployment name)
                     project_name = compose_data.get('name', deployment.name)
 
-                    # Add stack labels
-                    labels = container_config.get('labels', {})
+                    # Add stack labels (handle both list and dict formats)
+                    existing_labels = container_config.get('labels', {})
+
+                    # Convert list format to dict if needed
+                    if isinstance(existing_labels, list):
+                        labels_dict = {}
+                        for label in existing_labels:
+                            if '=' in label:
+                                key, value = label.split('=', 1)
+                                labels_dict[key] = value
+                        existing_labels = labels_dict
+
+                    # Merge with stack labels
+                    labels = existing_labels.copy() if isinstance(existing_labels, dict) else {}
                     labels.update({
                         'com.docker.compose.project': project_name,
                         'com.docker.compose.service': service_name,

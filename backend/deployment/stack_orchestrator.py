@@ -577,6 +577,24 @@ class StackOrchestrator:
                     f"Service '{service_name}': extra_hosts must be a list or dict"
                 )
 
+        # PID mode (share host or container PID namespace)
+        if 'pid' in service_config:
+            pid = service_config['pid']
+            if pid == 'host':
+                config['pid_mode'] = 'host'
+            elif isinstance(pid, str) and pid.startswith('container:'):
+                config['pid_mode'] = pid
+            elif isinstance(pid, str) and pid.startswith('service:'):
+                # service:name format - will be resolved during deployment
+                service_ref = pid.split(':', 1)[1]
+                config['pid_mode'] = f'service:{service_ref}'
+
+        # Security options (AppArmor, SELinux, seccomp profiles)
+        if 'security_opt' in service_config:
+            security_opt = service_config['security_opt']
+            if security_opt and isinstance(security_opt, list):
+                config['security_opt'] = security_opt
+
         # Linux capabilities - add capabilities (v2.1.8 - Quick Wins)
         if 'cap_add' in service_config:
             cap_add = service_config['cap_add']

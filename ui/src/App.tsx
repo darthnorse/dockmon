@@ -29,6 +29,7 @@ import { SettingsPage } from '@/features/settings/SettingsPage'
 import { ChangePasswordModal } from '@/features/auth/ChangePasswordModal'
 import { DeploymentsPage } from '@/features/deployments/DeploymentsPage'
 import { TemplatesPage } from '@/features/deployments/TemplatesPage'
+import { AgentsPage } from '@/features/agents/AgentsPage'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { LoadingSkeleton } from '@/components/layout/LoadingSkeleton'
 import { useState, useEffect } from 'react'
@@ -107,6 +108,7 @@ function AppRoutes() {
         <Route path="/deployments" element={<DeploymentsPage />} />
         <Route path="/templates" element={<TemplatesPage />} />
         <Route path="/hosts" element={<HostsPage />} />
+        <Route path="/agents" element={<AgentsPage />} />
         <Route path="/logs" element={<ContainerLogsPage />} />
         <Route path="/events" element={<EventsPage />} />
         <Route path="/alerts" element={<AlertsPage />} />

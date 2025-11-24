@@ -1,9 +1,10 @@
 package main
 
-// truncateID truncates an ID string to specified length
+import (
+	dockerpkg "github.com/darthnorse/dockmon-shared/docker"
+)
+
+// truncateID is now a wrapper for the shared package implementation
 func truncateID(id string, length int) string {
-	if len(id) <= length {
-		return id
-	}
-	return id[:length]
+	return dockerpkg.TruncateID(id, length)
 }

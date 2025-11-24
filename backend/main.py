@@ -4161,6 +4161,143 @@ async def delete_registry_credential(
         raise HTTPException(status_code=500, detail=f"Failed to delete credential: {str(e)}")
 
 
+# ==================== Agent Management Routes (v2.2.0) ====================
+
+@app.post("/api/agent/generate-token")
+async def generate_agent_registration_token(
+    request: Request,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Generate a single-use registration token for agent registration.
+
+    Token expires after 15 minutes and can only be used once.
+    """
+    try:
+        from agent.manager import AgentManager
+
+        with get_db_context() as db:
+            agent_manager = AgentManager(db)
+            token_record = agent_manager.generate_registration_token(
+                user_id=current_user["id"]
+            )
+
+            return {
+                "success": True,
+                "token": token_record.token,
+                "expires_at": token_record.expires_at.isoformat() + 'Z'
+            }
+
+    except Exception as e:
+        logger.error(f"Failed to generate agent registration token: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to generate token: {str(e)}")
+
+
+@app.get("/api/agent/list")
+async def list_agents(
+    request: Request,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    List all registered agents with their status and metadata.
+    """
+    try:
+        from database import Agent, DockerHostDB
+        from agent.connection_manager import agent_connection_manager
+
+        with get_db_context() as db:
+            agents = db.query(Agent).join(DockerHostDB).all()
+
+            agents_data = []
+            for agent in agents:
+                agents_data.append({
+                    "agent_id": agent.id,
+                    "host_id": agent.host_id,
+                    "host_name": agent.host.name if agent.host else None,
+                    "engine_id": agent.engine_id,
+                    "version": agent.version,
+                    "proto_version": agent.proto_version,
+                    "capabilities": json.loads(agent.capabilities) if agent.capabilities else {},
+                    "status": agent.status,
+                    "connected": agent_connection_manager.is_connected(agent.id),
+                    "last_seen_at": agent.last_seen_at.isoformat() + 'Z' if agent.last_seen_at else None,
+                    "registered_at": agent.registered_at.isoformat() + 'Z' if agent.registered_at else None
+                })
+
+            return {
+                "success": True,
+                "agents": agents_data,
+                "total": len(agents_data),
+                "connected_count": agent_connection_manager.get_connection_count()
+            }
+
+    except Exception as e:
+        logger.error(f"Failed to list agents: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to list agents: {str(e)}")
+
+
+@app.get("/api/agent/{agent_id}/status")
+async def get_agent_status(
+    agent_id: str,
+    request: Request,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get detailed status of a specific agent.
+    """
+    try:
+        from database import Agent, DockerHostDB
+        from agent.connection_manager import agent_connection_manager
+
+        with get_db_context() as db:
+            agent = db.query(Agent).filter_by(id=agent_id).first()
+
+            if not agent:
+                raise HTTPException(status_code=404, detail="Agent not found")
+
+            return {
+                "success": True,
+                "agent": {
+                    "agent_id": agent.id,
+                    "host_id": agent.host_id,
+                    "host_name": agent.host.name if agent.host else None,
+                    "engine_id": agent.engine_id,
+                    "version": agent.version,
+                    "proto_version": agent.proto_version,
+                    "capabilities": json.loads(agent.capabilities) if agent.capabilities else {},
+                    "status": agent.status,
+                    "connected": agent_connection_manager.is_connected(agent.id),
+                    "last_seen_at": agent.last_seen_at.isoformat() + 'Z' if agent.last_seen_at else None,
+                    "registered_at": agent.registered_at.isoformat() + 'Z' if agent.registered_at else None
+                }
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get agent status: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get agent status: {str(e)}")
+
+
+@app.websocket("/api/agent/ws")
+async def agent_websocket_endpoint(websocket: WebSocket):
+    """
+    WebSocket endpoint for DockMon agent connections.
+
+    Protocol:
+    1. Agent connects
+    2. Agent sends authentication message (register or reconnect)
+    3. Backend validates and responds
+    4. Bidirectional message exchange
+    5. Agent disconnects
+    """
+    from agent.websocket_handler import handle_agent_websocket
+
+    # Use dependency injection context for database session
+    with get_db_context() as db:
+        await handle_agent_websocket(websocket, db)
+
+
 @app.websocket("/ws")
 @app.websocket("/ws/")
 async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = Cookie(None)):

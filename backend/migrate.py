@@ -223,6 +223,10 @@ def _validate_schema(engine, version: str):
         '014_v2_1_8_hotfix_1': {
             'tag_assignments_columns': ['order_index'],
         },
+        '015_v2_2_0': {
+            'tables': ['registration_tokens', 'agents'],
+            'docker_hosts_columns': ['connection_type'],
+        },
         # Add validations for future versions here:
     }
 

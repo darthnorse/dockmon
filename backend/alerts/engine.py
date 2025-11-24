@@ -671,13 +671,31 @@ class AlertEngine:
                         clear_breached = self._check_breach(metric_value, rule.clear_threshold, rule.operator)
 
                         if not clear_breached:
-                            # Track clear start
-                            if state["clear_started_at"] is None:
-                                state["clear_started_at"] = now.isoformat()
+                            # Determine clear duration (use explicit value, fallback to duration_seconds, then 60s default)
+                            clear_duration = rule.clear_duration_seconds if rule.clear_duration_seconds is not None else (rule.duration_seconds if rule.duration_seconds else 60)
 
-                            # Check if we've been below clear threshold long enough
-                            clear_duration = rule.clear_duration_seconds or rule.duration_seconds or 0
-                            if clear_duration > 0:
+                            # Handle immediate clearing (clear_duration_seconds = 0)
+                            if clear_duration == 0:
+                                # Clear immediately without waiting
+                                dedup_key = self._make_dedup_key(rule.id, rule.kind, context.scope_type, context.scope_id)
+                                existing = session.query(AlertV2).filter(
+                                    AlertV2.dedup_key == dedup_key,
+                                    AlertV2.state == "open"
+                                ).first()
+
+                                if existing:
+                                    self._resolve_alert(existing, "Clear condition met (immediate)")
+                                    alerts_changed.append(existing)
+
+                                # Reset state
+                                state["breach_started_at"] = None
+                                state["clear_started_at"] = None
+                            else:
+                                # Track clear start for sustained clearing
+                                if state["clear_started_at"] is None:
+                                    state["clear_started_at"] = now.isoformat()
+
+                                # Check if we've been below clear threshold long enough
                                 clear_start = datetime.fromisoformat(state["clear_started_at"])
                                 time_clearing = (now - clear_start).total_seconds()
 

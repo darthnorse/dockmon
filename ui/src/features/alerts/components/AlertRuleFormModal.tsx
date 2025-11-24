@@ -257,11 +257,11 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       threshold: rule?.threshold || 90,
       operator: rule?.operator || '>=',
       // Event-driven rules: fire immediately (0s, 1 occurrence), auto-resolve after 30s, cooldown 15s
-      // Metric-driven rules: require sustained breach (300s, 3 occurrences), cooldown 5 min
+      // Metric-driven rules: require sustained breach (300s, 3 occurrences), auto-resolve after 60s, cooldown 5 min
       duration_seconds: rule?.duration_seconds ?? (isMetricDriven ? 300 : 0),
       occurrences: rule?.occurrences ?? (isMetricDriven ? 3 : 1),
       clear_threshold: rule?.clear_threshold,
-      clear_duration_seconds: rule?.clear_duration_seconds ?? (isMetricDriven ? undefined : 30),
+      clear_duration_seconds: rule?.clear_duration_seconds ?? (isMetricDriven ? 60 : 30),
       cooldown_seconds: rule?.cooldown_seconds ?? (isMetricDriven ? 300 : 15),
       // Selectors
       host_selector_all: parseSelector(rule?.host_selector_json).all,
@@ -929,7 +929,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                     className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                     placeholder="Optional"
                   />
-                  <p className="mt-1 text-xs text-gray-500">Value to auto-resolve alert</p>
+                  <p className="mt-1 text-xs text-gray-400">Metric value that triggers auto-resolve (e.g., CPU drops below 80%)</p>
                 </div>
 
                 <div>
@@ -943,8 +943,8 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                     placeholder="Optional"
                   />
                   <p className="mt-1 text-xs text-gray-400">
-                    Time window for transient issues. If the condition clears within this period, the alert will auto-resolve
-                    without sending notifications. Useful for brief threshold spikes.
+                    How long the metric must stay below the clear threshold before auto-resolving the alert.
+                    Set to 0 for immediate clearing. Defaults to 60s if not specified.
                   </p>
                 </div>
               </div>

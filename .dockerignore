@@ -8,10 +8,13 @@ README.md
 *.md
 wiki-content
 
-# Tests
+# Tests (never include in Docker image)
+**/tests
 tests
 test-results
 playwright-report
+backend/tests
+ui/tests
 
 # Node modules and build artifacts (exclude from all directories)
 **/node_modules

@@ -276,42 +276,6 @@ class UpdateExecutor:
         new_container_id = None
         update_committed = False  # Track if database was successfully updated
 
-        # Check host connection type to route to appropriate update mechanism
-        from database import DockerHostDB
-        with self.db.get_session() as session:
-            host = session.query(DockerHostDB).filter_by(id=host_id).first()
-            if not host:
-                error_message = f"Host {host_id} not found in database"
-                logger.error(error_message)
-                await self._emit_update_failed_event(
-                    host_id, container_id, container_id, error_message
-                )
-                return False
-
-            connection_type = host.connection_type
-
-        # Validate connection type
-        if connection_type not in ('local', 'remote', 'agent'):
-            error_message = f"Unknown connection_type '{connection_type}' for host {host_id}. Expected: 'local', 'remote', or 'agent'"
-            logger.error(error_message)
-            await self._emit_update_failed_event(
-                host_id, container_id, container_id, error_message
-            )
-            return False
-
-        # Route to agent-based update for agent hosts
-        if connection_type == 'agent':
-            logger.info(f"Routing update for container {container_id} to agent-based update (host connection_type='agent')")
-            return await self._update_container_via_agent(
-                host_id,
-                container_id,
-                update_record,
-                force
-            )
-
-        # Continue with Docker SDK-based update for local/remote hosts
-        logger.debug(f"Using Docker SDK update for host {host_id} (connection_type='{connection_type}')")
-
         try:
             # Get Docker client for this host
             docker_client = await self._get_docker_client(host_id)

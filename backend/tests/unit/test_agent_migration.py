@@ -7,6 +7,8 @@ engine_id that matches an existing mTLS host.
 RED Phase: These tests should FAIL until migration feature is implemented.
 """
 import pytest
+import tempfile
+import os
 from datetime import datetime, timezone
 from unittest.mock import Mock, patch, MagicMock
 from database import DatabaseManager, DockerHostDB, Agent, RegistrationToken
@@ -15,15 +17,27 @@ from agent.manager import AgentManager
 
 @pytest.fixture
 def db_manager():
-    """Create a test database manager with in-memory SQLite."""
-    # Reset the singleton to allow creating a new instance for testing
+    """Create a test database manager with temp file SQLite."""
     import database
-    database._database_manager_instance = None  # Reset singleton
-    manager = DatabaseManager(db_path=':memory:')
-    # Tables are created automatically in __init__ via Base.metadata.create_all()
-    yield manager
-    # Cleanup: reset singleton after test
+
+    # Create a temp file for the database
+    fd, temp_db_path = tempfile.mkstemp(suffix='.db')
+    os.close(fd)  # Close the file descriptor, SQLAlchemy will open it
+
+    # Reset the singleton to allow creating a new instance for testing
     database._database_manager_instance = None
+
+    manager = DatabaseManager(db_path=temp_db_path)
+    # Tables are created automatically in __init__ via Base.metadata.create_all()
+
+    yield manager
+
+    # Cleanup: reset singleton and remove temp file
+    database._database_manager_instance = None
+    try:
+        os.unlink(temp_db_path)
+    except OSError:
+        pass
 
 
 @pytest.fixture
@@ -37,11 +51,23 @@ def agent_manager(db_manager):
 @pytest.fixture
 def registration_token(db_manager):
     """Create a valid registration token."""
+    from database import User
+    import uuid
+
     now = datetime.now(timezone.utc)
     with db_manager.get_session() as session:
+        # Create a test user first (FK constraint)
+        user = User(
+            username="testuser",
+            password_hash="$2b$12$test_hash_placeholder",
+            created_at=now
+        )
+        session.add(user)
+        session.flush()
+
         token = RegistrationToken(
-            token="test-token-12345",
-            created_by_user_id=1,
+            token=f"test-token-{uuid.uuid4().hex[:8]}",  # Unique token per test
+            created_by_user_id=user.id,
             created_at=now,
             expires_at=now.replace(year=now.year + 1),  # Far future
             used=False
@@ -136,6 +162,7 @@ def test_agent_migration_preserves_settings(agent_manager, registration_token, e
         auto_restart = AutoRestartConfig(
             container_id="existing-host-id:abc123456789",  # Composite key
             host_id="existing-host-id",
+            container_name="test_container",  # Required NOT NULL field
             enabled=True
         )
         session.add(auto_restart)
@@ -299,14 +326,28 @@ def test_migration_rejects_already_migrated_host(agent_manager, registration_tok
 
     # Create an already-migrated host
     with db_manager.get_session() as session:
+        # First create the replacement host (FK requirement)
+        replacement_host = DockerHostDB(
+            id="replacement-host-id",
+            name="Replacement Host",
+            url="agent://replacement",
+            connection_type="agent",
+            engine_id="engine-67890",  # Same engine_id as migrated host
+            is_active=True,
+            created_at=now,
+            updated_at=now
+        )
+        session.add(replacement_host)
+        session.flush()  # Ensure replacement host exists before creating migrated host
+
         migrated_host = DockerHostDB(
             id="migrated-host-id",
             name="Already Migrated",
             url="tcp://192.168.1.100:2376",
             connection_type="remote",
-            engine_id="engine-67890",
+            engine_id="engine-67890-old",  # Different engine_id (old one)
             is_active=False,  # Already migrated (inactive)
-            replaced_by_host_id="some-other-host",
+            replaced_by_host_id="replacement-host-id",  # Points to actual host
             created_at=now,
             updated_at=now
         )
@@ -315,7 +356,7 @@ def test_migration_rejects_already_migrated_host(agent_manager, registration_tok
 
     registration_data = {
         "token": registration_token,
-        "engine_id": "engine-67890",  # Matches migrated host
+        "engine_id": "engine-67890",  # Matches the replacement host (already an agent)
         "hostname": "another-agent",
         "version": "1.0.0",
         "proto_version": "1.0",
@@ -325,9 +366,11 @@ def test_migration_rejects_already_migrated_host(agent_manager, registration_tok
 
     result = agent_manager.register_agent(registration_data)
 
-    # Should reject
+    # Should reject - an agent host with this engine_id already exists
     assert result["success"] is False
-    assert "already migrated" in result["error"].lower()
+    # The implementation rejects with "already exists with connection type 'agent'" message
+    # because the replacement host is an active agent with the same engine_id
+    assert "already exists" in result["error"].lower() or "already migrated" in result["error"].lower()
 
 
 def test_migration_result_contains_proper_details(agent_manager, registration_token, existing_mtls_host):

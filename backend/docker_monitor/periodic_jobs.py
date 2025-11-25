@@ -563,7 +563,7 @@ class PeriodicJobsManager:
         """
         Remove backup containers older than 24 hours.
 
-        Backup containers are created during updates with pattern: {name}-backup-{timestamp}
+        Backup containers are created during updates with pattern: {name}-dockmon-backup-{timestamp}
         If update succeeds, cleanup removes them. If cleanup fails, they accumulate.
         This job removes old backups to prevent disk bloat.
 
@@ -585,8 +585,8 @@ class PeriodicJobsManager:
                     containers = await async_docker_call(client.containers.list, all=True)
 
                     for container in containers:
-                        # Check if this is a backup container (pattern: {name}-backup-{timestamp})
-                        if '-backup-' not in container.name:
+                        # Check if this is a backup container (pattern: {name}-dockmon-backup-{timestamp})
+                        if '-dockmon-backup-' not in container.name:
                             continue
 
                         # Parse created timestamp

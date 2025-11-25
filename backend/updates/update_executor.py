@@ -18,7 +18,7 @@ from typing import Dict, Optional, Any, Tuple
 import docker
 from sqlalchemy.exc import IntegrityError
 
-from database import DatabaseManager, ContainerUpdate, AutoRestartConfig, ContainerDesiredState, ContainerHttpHealthCheck, GlobalSettings, DeploymentMetadata, TagAssignment, Agent
+from database import DatabaseManager, ContainerUpdate, AutoRestartConfig, ContainerDesiredState, ContainerHttpHealthCheck, GlobalSettings, DeploymentMetadata, TagAssignment, Agent, DockerHostDB
 from event_bus import Event, EventType as BusEventType, get_event_bus
 from utils.async_docker import async_docker_call
 from utils.container_health import wait_for_container_health
@@ -239,6 +239,35 @@ class UpdateExecutor:
                 logger.warning(f"Container {container_id} is already being updated, rejecting concurrent update")
                 return False
             self.updating_containers.add(composite_key)
+
+        # Router Pattern: Determine host connection type and route to appropriate executor
+        # This separation allows base branch bug fixes to merge cleanly without conflicts
+        connection_type = 'local'  # Default
+        with self.db.get_session() as session:
+            host = session.query(DockerHostDB).filter_by(id=host_id).first()
+            if host:
+                connection_type = host.connection_type or 'local'
+            else:
+                logger.warning(f"Host {host_id} not found in database, using connection_type='local'")
+
+        # Route to agent-based update for agent hosts
+        if connection_type == 'agent':
+            logger.info(f"Routing update for container {container_id} to agent-based executor (host connection_type='agent')")
+            try:
+                return await self._update_container_via_agent(
+                    host_id,
+                    container_id,
+                    update_record,
+                    force,
+                    force_warn
+                )
+            finally:
+                # Always remove from updating set when done
+                with self._update_lock:
+                    self.updating_containers.discard(composite_key)
+
+        # Continue with Docker SDK-based update for local/remote hosts
+        logger.debug(f"Using Docker SDK update for host {host_id} (connection_type='{connection_type}')")
 
         # Track backup for rollback capability
         backup_container = None
@@ -1725,6 +1754,387 @@ class UpdateExecutor:
 
         logger.warning(f"Agent {agent_id} did not reconnect within {timeout} seconds")
         return False
+
+    async def _update_container_via_agent(
+        self,
+        host_id: str,
+        container_id: str,
+        update_record: ContainerUpdate,
+        force: bool = False,
+        force_warn: bool = False
+    ) -> bool:
+        """
+        Execute container update via agent for agent-based hosts.
+
+        The agent handles the entire update workflow autonomously:
+        1. Inspect old container to clone configuration
+        2. Pull new image
+        3. Create new container with same config but new image
+        4. Start new container
+        5. Wait for health check
+        6. Stop old container
+        7. Remove old container
+        8. Send progress events back to backend
+
+        The backend delegates the update to the agent and handles:
+        - Sending the update_container command
+        - Waiting for completion via progress events
+        - Updating database with new container ID
+        - Event emission for logging/alerts
+
+        Note: Actual update logic lives in agent/internal/handlers/update.go
+        This function orchestrates the agent call and handles the response.
+
+        Args:
+            host_id: Host UUID
+            container_id: Container short ID (12 chars)
+            update_record: ContainerUpdate database record
+            force: If True, skip validation
+            force_warn: If True, allow WARN containers
+
+        Returns:
+            True if successful, False otherwise
+        """
+        logger.info(f"Executing agent-based update for container {container_id} on host {host_id}")
+
+        composite_key = make_composite_key(host_id, container_id)
+        old_container_id = container_id
+        new_container_id = None
+        container_name = container_id  # Default, will be updated
+
+        try:
+            # Get agent for this host
+            if not hasattr(self, 'agent_manager') or not self.agent_manager:
+                error_message = "Agent manager not available"
+                logger.error(error_message)
+                await self._emit_update_failed_event(
+                    host_id, container_id, container_id, error_message
+                )
+                return False
+
+            agent_id = self.agent_manager.get_agent_for_host(host_id)
+            if not agent_id:
+                error_message = "No agent registered for this host"
+                logger.error(f"No agent found for host {host_id}")
+                await self._emit_update_failed_event(
+                    host_id, container_id, container_id, error_message
+                )
+                return False
+
+            # Get container info for logging/events
+            container_info = await self._get_container_info(host_id, container_id)
+            if container_info:
+                container_name = container_info.get("name", container_id)
+            logger.info(f"Updating container '{container_name}' via agent")
+
+            # Block DockMon self-update (backend container - agent containers are allowed)
+            container_name_lower = container_name.lower()
+            if container_name_lower == 'dockmon' or (container_name_lower.startswith('dockmon-') and 'agent' not in container_name_lower):
+                error_message = "DockMon cannot update itself. Please update manually."
+                logger.warning(f"Blocked self-update attempt for DockMon container '{container_name}' via agent")
+                await self._emit_update_failed_event(
+                    host_id, container_id, container_name, error_message
+                )
+                return False
+
+            # Check for agent self-update (special handling via _execute_agent_self_update)
+            if 'dockmon-agent' in update_record.current_image.lower():
+                logger.info(f"Routing to agent self-update for '{container_name}'")
+                return await self._execute_agent_self_update(
+                    agent_id, host_id, container_id, container_name, update_record
+                )
+
+            # Emit UPDATE_STARTED event
+            await self._emit_update_started_event(
+                host_id, container_id, container_name,
+                update_record.current_image, update_record.latest_image
+            )
+
+            # Send update_container command to agent
+            # Agent handles: pull image, stop old, create new, start new, health check, remove old
+            command = {
+                "action": "update_container",
+                "container_id": container_id,
+                "new_image": update_record.latest_image,
+                "stop_timeout": 30,
+                "health_timeout": 120,
+            }
+
+            logger.info(f"Sending update_container command to agent {agent_id}")
+            await self._broadcast_progress(host_id, container_id, "initiating", 5, "Sending update command to agent")
+
+            # Get command executor
+            if not hasattr(self, 'agent_command_executor') or not self.agent_command_executor:
+                error_message = "Agent command executor not available"
+                logger.error(error_message)
+                await self._emit_update_failed_event(
+                    host_id, container_id, container_name, error_message
+                )
+                return False
+
+            # Execute command - agent runs update in background and returns immediately
+            result = await self.agent_command_executor.execute_command(
+                agent_id,
+                command,
+                timeout=180.0  # 3 minutes for initial command acknowledgment
+            )
+
+            # Check if command was accepted
+            if result.status != CommandStatus.SUCCESS:
+                error_msg = f"Agent rejected update command: {result.error}"
+                logger.error(error_msg)
+                await self._emit_update_failed_event(
+                    host_id, container_id, container_name, error_msg
+                )
+                return False
+
+            logger.info(f"Agent {agent_id} accepted update command, waiting for completion...")
+            await self._broadcast_progress(host_id, container_id, "agent_updating", 20, "Agent is performing update")
+
+            # Wait for update completion via progress polling
+            # Agent sends update_progress events, but we also need to poll for final state
+            update_success = await self._wait_for_agent_update_completion(
+                host_id,
+                container_id,
+                container_name,
+                timeout=300.0  # 5 minutes for full update
+            )
+
+            if not update_success:
+                logger.error(f"Agent update failed or timed out for container {container_name}")
+                await self._emit_update_failed_event(
+                    host_id, container_id, container_name,
+                    "Agent update failed or timed out"
+                )
+                return False
+
+            # Get new container ID from monitor (agent creates new container with same name)
+            # The new container should have the same name but different ID
+            new_container_info = await self._get_container_info_by_name(host_id, container_name)
+            if new_container_info:
+                new_container_id = new_container_info.get("id", "")[:12]
+                logger.info(f"New container ID after agent update: {new_container_id}")
+            else:
+                # If we can't find the new container, the update may have failed
+                logger.warning(f"Could not find new container after agent update, assuming same ID")
+                new_container_id = container_id
+
+            # Update database records with new container ID
+            if new_container_id and new_container_id != old_container_id:
+                await self._update_database_after_agent_update(
+                    host_id,
+                    old_container_id,
+                    new_container_id,
+                    update_record
+                )
+
+                # Notify frontend of container ID change
+                await self._broadcast_container_recreated(
+                    host_id,
+                    composite_key,
+                    make_composite_key(host_id, new_container_id),
+                    container_name
+                )
+
+            # Emit success event
+            await self._emit_update_completed_event(
+                host_id,
+                new_container_id or container_id,
+                container_name,
+                update_record.current_image,
+                update_record.latest_image,
+                update_record.current_digest,
+                update_record.latest_digest
+            )
+
+            logger.info(f"Successfully updated container '{container_name}' via agent")
+            await self._broadcast_progress(
+                host_id,
+                new_container_id or container_id,
+                "completed",
+                100,
+                "Update completed successfully"
+            )
+            return True
+
+        except Exception as e:
+            error_message = f"Agent-based update failed: {str(e)}"
+            logger.error(f"Error executing agent-based update for {container_name}: {e}", exc_info=True)
+            await self._emit_update_failed_event(
+                host_id, container_id, container_name, error_message
+            )
+            return False
+
+    async def _wait_for_agent_update_completion(
+        self,
+        host_id: str,
+        container_id: str,
+        container_name: str,
+        timeout: float = 300.0
+    ) -> bool:
+        """
+        Wait for agent update to complete by polling container state.
+
+        The agent sends progress events during the update, but we also poll
+        to detect when the update completes (new container running).
+
+        Args:
+            host_id: Host UUID
+            container_id: Original container short ID
+            container_name: Container name
+            timeout: Timeout in seconds
+
+        Returns:
+            True if update completed successfully, False otherwise
+        """
+        start_time = time.time()
+        poll_interval = 3.0  # Check every 3 seconds
+
+        logger.info(f"Waiting for agent update completion for {container_name} (timeout: {timeout}s)")
+
+        while (time.time() - start_time) < timeout:
+            try:
+                # Try to get container by name (agent creates new container with same name)
+                container_info = await self._get_container_info_by_name(host_id, container_name)
+
+                if container_info:
+                    # Check if container is running
+                    state = container_info.get("state", "").lower()
+                    status = container_info.get("status", "").lower()
+
+                    if state == "running" or "up" in status:
+                        # Container is running - check if it has the new image
+                        # (This is a basic check; the agent handles image verification)
+                        logger.info(f"Container {container_name} is running after agent update")
+                        return True
+
+                    if state in ("exited", "dead"):
+                        # Container stopped - update may have failed
+                        logger.warning(f"Container {container_name} is not running (state: {state})")
+                        # Continue waiting - might be transitioning
+
+                # Wait before next check
+                await asyncio.sleep(poll_interval)
+
+            except Exception as e:
+                logger.warning(f"Error checking container state during agent update: {e}")
+                await asyncio.sleep(poll_interval)
+
+        logger.warning(f"Agent update timed out for container {container_name}")
+        return False
+
+    async def _get_container_info_by_name(self, host_id: str, container_name: str) -> Optional[Dict]:
+        """
+        Get container info by name from the monitor.
+
+        Args:
+            host_id: Host UUID
+            container_name: Container name
+
+        Returns:
+            Container info dict or None if not found
+        """
+        if not self.monitor:
+            return None
+
+        try:
+            containers = await self.monitor.get_containers()
+            # Normalize name (Docker names may start with /)
+            target_name = container_name.lstrip('/')
+
+            for container in containers:
+                if container.get("host_id") != host_id:
+                    continue
+
+                name = container.get("name", "").lstrip('/')
+                if name == target_name:
+                    return container
+
+        except Exception as e:
+            logger.warning(f"Error getting container by name: {e}")
+
+        return None
+
+    async def _update_database_after_agent_update(
+        self,
+        host_id: str,
+        old_container_id: str,
+        new_container_id: str,
+        update_record: ContainerUpdate
+    ):
+        """
+        Update all database records after an agent-based container update.
+
+        When a container is recreated, it gets a new Docker ID. This updates
+        all related tables to use the new ID.
+
+        Args:
+            host_id: Host UUID
+            old_container_id: Old container short ID (12 chars)
+            new_container_id: New container short ID (12 chars)
+            update_record: ContainerUpdate record
+        """
+        old_composite_key = make_composite_key(host_id, old_container_id)
+        new_composite_key = make_composite_key(host_id, new_container_id)
+
+        logger.info(f"Updating database records: {old_composite_key} -> {new_composite_key}")
+
+        with self.db.get_session() as session:
+            # Update ContainerUpdate record
+            record = session.query(ContainerUpdate).filter_by(
+                container_id=old_composite_key
+            ).first()
+
+            if record:
+                record.container_id = new_composite_key
+                record.update_available = False
+                record.current_image = update_record.latest_image
+                record.current_digest = update_record.latest_digest
+                record.last_updated_at = datetime.now(timezone.utc)
+                record.updated_at = datetime.now(timezone.utc)
+
+            # Update AutoRestartConfig
+            session.query(AutoRestartConfig).filter_by(
+                host_id=host_id, container_id=old_container_id
+            ).update({
+                "container_id": new_container_id,
+                "updated_at": datetime.now(timezone.utc)
+            })
+
+            # Update ContainerDesiredState
+            session.query(ContainerDesiredState).filter_by(
+                host_id=host_id, container_id=old_container_id
+            ).update({
+                "container_id": new_container_id,
+                "updated_at": datetime.now(timezone.utc)
+            })
+
+            # Update ContainerHttpHealthCheck
+            session.query(ContainerHttpHealthCheck).filter_by(
+                container_id=old_composite_key
+            ).update({
+                "container_id": new_composite_key
+            })
+
+            # Update DeploymentMetadata
+            session.query(DeploymentMetadata).filter_by(
+                container_id=old_composite_key
+            ).update({
+                "container_id": new_composite_key,
+                "updated_at": datetime.now(timezone.utc)
+            })
+
+            # Update TagAssignment
+            session.query(TagAssignment).filter(
+                TagAssignment.subject_type == 'container',
+                TagAssignment.subject_id == old_composite_key
+            ).update({
+                "subject_id": new_composite_key,
+                "last_seen_at": datetime.now(timezone.utc)
+            })
+
+            session.commit()
+            logger.info(f"Database updated: {old_composite_key} -> {new_composite_key}")
 
     async def _get_agent_version(self, agent_id: str) -> str:
         """

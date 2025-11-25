@@ -39,9 +39,12 @@ type WebSocketClient struct {
 
 	stopChan      chan struct{}
 	doneChan      chan struct{}
+	stopOnce      sync.Once  // Prevents double-close panic on stopChan
 
-	// WaitGroup to track background goroutines
+	// WaitGroup to track background goroutines (ping, event streaming)
 	backgroundWg  sync.WaitGroup
+	// WaitGroup to track message handler goroutines (must complete before backgroundWg.Wait)
+	messageWg     sync.WaitGroup
 }
 
 // NewWebSocketClient creates a new WebSocket client
@@ -92,6 +95,7 @@ func (c *WebSocketClient) Run(ctx context.Context) error {
 	defer close(c.doneChan)
 
 	backoff := c.cfg.ReconnectInitial
+	isReconnect := false
 
 	for {
 		select {
@@ -102,6 +106,11 @@ func (c *WebSocketClient) Run(ctx context.Context) error {
 			c.log.Info("Stop signal received")
 			return nil
 		default:
+		}
+
+		// Log reconnection attempts clearly
+		if isReconnect {
+			c.log.WithField("backoff", backoff).Info("Attempting to reconnect to DockMon...")
 		}
 
 		// Attempt connection
@@ -121,26 +130,36 @@ func (c *WebSocketClient) Run(ctx context.Context) error {
 			case <-c.stopChan:
 				return nil
 			}
+			isReconnect = true
 			continue
 		}
 
 		// Connection successful, reset backoff
 		backoff = c.cfg.ReconnectInitial
+		isReconnect = false
 
 		// Handle connection (blocks until disconnect)
 		if err := c.handleConnection(ctx); err != nil {
-			c.log.WithError(err).Warn("Connection handling error")
+			c.log.WithError(err).Warn("Connection lost, will attempt to reconnect")
 		}
 
-		// Close connection
+		// Close connection and prepare for reconnect
 		c.closeConnection()
+		isReconnect = true
 	}
 }
 
 // Stop stops the WebSocket client
 func (c *WebSocketClient) Stop() {
-	close(c.stopChan)
+	c.signalStop()
 	<-c.doneChan
+}
+
+// signalStop safely closes stopChan exactly once (prevents panic on double-close)
+func (c *WebSocketClient) signalStop() {
+	c.stopOnce.Do(func() {
+		close(c.stopChan)
+	})
 }
 
 // connect establishes WebSocket connection and registers agent
@@ -229,7 +248,11 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 		hostname, err = os.Hostname()
 		if err != nil {
 			c.log.WithError(err).Warn("Failed to get hostname, using engine ID")
-			hostname = c.engineID[:12]
+			// Safe slice: use full ID if shorter than 12 chars
+			hostname = c.engineID
+			if len(hostname) > 12 {
+				hostname = hostname[:12]
+			}
 		}
 	}
 
@@ -272,7 +295,12 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 
 	c.log.WithField("message", string(data)).Info("Sending registration message to backend")
 
-	if err := c.conn.WriteMessage(websocket.TextMessage, data); err != nil {
+	// Set write deadline for registration message
+	c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	err = c.conn.WriteMessage(websocket.TextMessage, data)
+	c.conn.SetWriteDeadline(time.Time{})  // Clear deadline
+
+	if err != nil {
 		return fmt.Errorf("failed to send registration: %w", err)
 	}
 
@@ -331,7 +359,86 @@ func (c *WebSocketClient) handleConnection(ctx context.Context) error {
 	// Create connection-scoped context that we cancel when disconnecting
 	// This ensures background goroutines (event streaming) stop when connection drops
 	connCtx, connCancel := context.WithCancel(ctx)
-	defer connCancel() // Cancel when handleConnection returns (disconnect)
+
+	// Configure ping/pong for connection health monitoring
+	// This detects stale connections (NAT timeout, firewall changes, network partitions)
+	const (
+		pingInterval = 30 * time.Second  // Send ping every 30s
+		pongTimeout  = 10 * time.Second  // Expect pong within 10s
+	)
+
+	c.connMu.RLock()
+	conn := c.conn
+	c.connMu.RUnlock()
+
+	if conn == nil {
+		return fmt.Errorf("connection not established")
+	}
+
+	// Set up pong handler - resets read deadline when pong received
+	conn.SetPongHandler(func(appData string) error {
+		c.log.Debug("Received pong from server")
+		// Extend read deadline on pong
+		return conn.SetReadDeadline(time.Now().Add(pingInterval + pongTimeout))
+	})
+
+	// Set initial read deadline
+	conn.SetReadDeadline(time.Now().Add(pingInterval + pongTimeout))
+
+	// Start shutdown watcher goroutine - closes connection when stop is signaled
+	// This makes shutdown responsive instead of waiting for read deadline (up to 40s)
+	c.backgroundWg.Add(1)
+	go func() {
+		defer c.backgroundWg.Done()
+		select {
+		case <-connCtx.Done():
+			return
+		case <-c.stopChan:
+			c.log.Debug("Stop signal received, closing connection to interrupt read")
+			c.connMu.Lock()
+			if c.conn != nil {
+				c.conn.Close()
+				c.conn = nil  // Set to nil so other goroutines detect closure
+			}
+			c.connMu.Unlock()
+		}
+	}()
+
+	// Start ping goroutine to keep connection alive and detect stale connections
+	c.backgroundWg.Add(1)
+	go func() {
+		defer c.backgroundWg.Done()
+		ticker := time.NewTicker(pingInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-connCtx.Done():
+				return
+			case <-c.stopChan:
+				return
+			case <-ticker.C:
+				// Must hold WRITE lock for WebSocket writes (gorilla allows only 1 concurrent writer)
+				c.connMu.Lock()
+				if c.conn == nil {
+					c.connMu.Unlock()
+					return
+				}
+
+				// Send ping with write deadline
+				c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+				err := c.conn.WriteMessage(websocket.PingMessage, nil)
+				c.conn.SetWriteDeadline(time.Time{})  // Clear write deadline
+				c.connMu.Unlock()
+
+				if err != nil {
+					c.log.WithError(err).Warn("Failed to send ping")
+					return
+				}
+				c.log.Debug("Sent ping to server")
+			}
+		}
+	}()
 
 	// Start event streaming in background with WaitGroup tracking
 	c.backgroundWg.Add(1)
@@ -348,11 +455,23 @@ func (c *WebSocketClient) handleConnection(ctx context.Context) error {
 	}
 
 	// Ensure cleanup when we exit
+	// IMPORTANT: Order matters here to prevent deadlocks and races:
+	// 1. Cancel context to signal goroutines to stop
+	// 2. Wait for message handlers (which may call backgroundWg.Add)
+	// 3. Wait for background goroutines (ping, events, updates)
 	defer func() {
+		// Cancel context first to signal event streaming and ping goroutines to stop
+		connCancel()
+
 		c.statsHandler.StopAll()
 		c.log.Info("Stats collection stopped")
 
-		// Wait for event streaming goroutine to finish
+		// Wait for message handlers first - they may call backgroundWg.Add()
+		// This prevents the race: backgroundWg.Add() called after Wait() returns
+		c.messageWg.Wait()
+		c.log.Debug("Message handlers completed")
+
+		// Now safe to wait for background goroutines (all Add() calls have completed)
 		c.backgroundWg.Wait()
 		c.log.Info("Event streaming stopped")
 	}()
@@ -367,7 +486,7 @@ func (c *WebSocketClient) handleConnection(ctx context.Context) error {
 		default:
 		}
 
-		// Read message
+		// Read message (will timeout based on read deadline set by pong handler)
 		c.connMu.RLock()
 		conn := c.conn
 		c.connMu.RUnlock()
@@ -381,6 +500,9 @@ func (c *WebSocketClient) handleConnection(ctx context.Context) error {
 			return fmt.Errorf("read error: %w", err)
 		}
 
+		// Reset read deadline after successful read
+		conn.SetReadDeadline(time.Now().Add(pingInterval + pongTimeout))
+
 		// Decode message
 		msg, err := protocol.DecodeMessage(data)
 		if err != nil {
@@ -388,8 +510,13 @@ func (c *WebSocketClient) handleConnection(ctx context.Context) error {
 			continue
 		}
 
-		// Handle message
-		go c.handleMessage(ctx, msg)
+		// Handle message in goroutine, tracked by messageWg
+		// This ensures all Add() calls to backgroundWg happen before backgroundWg.Wait()
+		c.messageWg.Add(1)
+		go func(m *types.Message) {
+			defer c.messageWg.Done()
+			c.handleMessage(ctx, m)
+		}(msg)
 	}
 }
 
@@ -417,63 +544,8 @@ func (c *WebSocketClient) handleMessage(ctx context.Context, msg *types.Message)
 	var err error
 
 	switch msg.Command {
-	case "ping":
-		result = map[string]string{"status": "pong"}
-
-	case "get_system_info":
-		// Return fresh system information (for periodic refresh)
-		var sysInfo *docker.SystemInfo
-		sysInfo, err = c.docker.GetSystemInfo(ctx)
-		if err == nil {
-			result = map[string]interface{}{
-				"os_type":           sysInfo.OSType,
-				"os_version":        sysInfo.OSVersion,
-				"kernel_version":    sysInfo.KernelVersion,
-				"docker_version":    sysInfo.DockerVersion,
-				"daemon_started_at": sysInfo.DaemonStartedAt,
-				"total_memory":      sysInfo.TotalMemory,
-				"num_cpus":          sysInfo.NumCPUs,
-			}
-		}
-
 	case "list_containers":
 		result, err = c.docker.ListContainers(ctx)
-
-	case "start_container":
-		var op types.ContainerOperation
-		if err = protocol.ParseCommand(msg, &op); err == nil {
-			err = c.docker.StartContainer(ctx, op.ContainerID)
-			result = map[string]string{"status": "started"}
-		}
-
-	case "stop_container":
-		var op types.ContainerOperation
-		if err = protocol.ParseCommand(msg, &op); err == nil {
-			err = c.docker.StopContainer(ctx, op.ContainerID, 10)
-			result = map[string]string{"status": "stopped"}
-		}
-
-	case "restart_container":
-		var op types.ContainerOperation
-		if err = protocol.ParseCommand(msg, &op); err == nil {
-			err = c.docker.RestartContainer(ctx, op.ContainerID, 10)
-			result = map[string]string{"status": "restarted"}
-		}
-
-	case "delete_container":
-		var op types.ContainerOperation
-		if err = protocol.ParseCommand(msg, &op); err == nil {
-			err = c.docker.RemoveContainer(ctx, op.ContainerID, true)
-			result = map[string]string{"status": "deleted"}
-		}
-
-	case "container_logs":
-		var op types.ContainerOperation
-		if err = protocol.ParseCommand(msg, &op); err == nil {
-			var logs string
-			logs, err = c.docker.GetContainerLogs(ctx, op.ContainerID, "100")
-			result = map[string]string{"logs": logs}
-		}
 
 	case "update_container":
 		var updateReq handlers.UpdateRequest
@@ -510,7 +582,7 @@ func (c *WebSocketClient) handleMessage(ctx context.Context, msg *types.Message)
 					c.log.Info("Self-update prepared, shutting down for restart")
 					// Give a moment for logs to flush
 					time.Sleep(1 * time.Second)
-					close(c.stopChan)
+					c.signalStop()  // Use safe stop to prevent double-close panic
 				}
 			}()
 			result = map[string]string{"status": "self_update_started"}
@@ -671,7 +743,12 @@ func (c *WebSocketClient) streamEvents(ctx context.Context) {
 			case "start":
 				// Start stats collection for newly started container
 				if err := c.statsHandler.StartContainerStats(ctx, event.Actor.ID, event.Actor.Attributes["name"]); err != nil {
-					c.log.WithError(err).Warnf("Failed to start stats for container %s", event.Actor.ID[:12])
+					// Safe slice: use full ID if shorter than 12 chars
+					shortID := event.Actor.ID
+					if len(shortID) > 12 {
+						shortID = shortID[:12]
+					}
+					c.log.WithError(err).Warnf("Failed to start stats for container %s", shortID)
 				}
 			case "die", "stop", "kill":
 				// Stop stats collection for stopped container
@@ -701,7 +778,12 @@ func (c *WebSocketClient) sendMessage(msg *types.Message) error {
 		return fmt.Errorf("connection not established")
 	}
 
-	if err := c.conn.WriteMessage(websocket.TextMessage, data); err != nil {
+	// Set write deadline to prevent blocking indefinitely on slow/congested networks
+	c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	err = c.conn.WriteMessage(websocket.TextMessage, data)
+	c.conn.SetWriteDeadline(time.Time{})  // Clear deadline
+
+	if err != nil {
 		return fmt.Errorf("failed to write message: %w", err)
 	}
 
@@ -730,7 +812,12 @@ func (c *WebSocketClient) sendJSON(data interface{}) error {
 		return fmt.Errorf("connection not established")
 	}
 
-	if err := c.conn.WriteMessage(websocket.TextMessage, jsonData); err != nil {
+	// Set write deadline to prevent blocking indefinitely on slow/congested networks
+	c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	err = c.conn.WriteMessage(websocket.TextMessage, jsonData)
+	c.conn.SetWriteDeadline(time.Time{})  // Clear deadline
+
+	if err != nil {
 		return fmt.Errorf("failed to write JSON message: %w", err)
 	}
 
@@ -744,15 +831,16 @@ func (c *WebSocketClient) CheckPendingUpdate() error {
 
 // closeConnection closes the WebSocket connection
 func (c *WebSocketClient) closeConnection() {
+	// Close connection under lock (quick operation)
 	c.connMu.Lock()
-	defer c.connMu.Unlock()
-
 	if c.conn != nil {
 		c.conn.Close()
 		c.conn = nil
 	}
+	c.connMu.Unlock()  // Release lock BEFORE waiting
 
 	// Wait for background goroutines to complete (with timeout)
+	// This is done WITHOUT holding the lock to prevent blocking other goroutines
 	done := make(chan struct{})
 	go func() {
 		c.backgroundWg.Wait()

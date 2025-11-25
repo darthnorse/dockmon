@@ -156,12 +156,12 @@ def upgrade() -> None:
 
     # Change 5: Add replaced_by_host_id column to docker_hosts (migration tracking)
     # Tracks which host replaced this one during mTLS->agent migration
+    # Note: No FK constraint because SQLite doesn't support adding FK via ALTER
+    # App logic handles the relationship
     if table_exists('docker_hosts'):
         if not column_exists('docker_hosts', 'replaced_by_host_id'):
             op.add_column('docker_hosts',
-                sa.Column('replaced_by_host_id', sa.String(),
-                          sa.ForeignKey('docker_hosts.id', ondelete='SET NULL'),
-                          nullable=True)
+                sa.Column('replaced_by_host_id', sa.String(), nullable=True)
             )
 
     # Change 6: Update app_version

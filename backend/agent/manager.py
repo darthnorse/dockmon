@@ -370,6 +370,7 @@ class AgentManager:
             Dict with:
                 - success: bool
                 - agent_id: str (on success)
+                - host_id: str (on success)
                 - error: str (on failure)
         """
         agent_id = reconnect_data.get("agent_id")
@@ -386,14 +387,27 @@ class AgentManager:
             if agent.engine_id != engine_id:
                 return {"success": False, "error": "Engine_id mismatch: agent verification failed"}
 
+            # Get host info for monitor notification
+            host_id = agent.host_id
+            host = session.query(DockerHostDB).filter_by(id=host_id).first()
+            host_name = host.name if host else f"Agent-{engine_id[:12]}"
+
             # Update last_seen_at
             agent.last_seen_at = datetime.now(timezone.utc)  # Naive UTC datetime
             agent.status = "online"
             session.commit()
 
+            # Notify monitor to mark host online and broadcast status change
+            if self.monitor:
+                self.monitor.add_agent_host(
+                    host_id=host_id,
+                    name=host_name
+                )
+
             return {
                 "success": True,
-                "agent_id": agent_id
+                "agent_id": agent_id,
+                "host_id": host_id
             }
 
     def get_agent_for_host(self, host_id: str) -> str:

@@ -1152,7 +1152,10 @@ class DockerMonitor:
             security_status: Security status (default: "unknown")
         """
         if host_id in self.hosts:
-            logger.debug(f"Agent host {name} ({host_id[:8]}...) already in monitor")
+            # Host already exists - mark it online (reconnection case)
+            self.hosts[host_id].status = "online"
+            logger.debug(f"Agent host {name} ({host_id[:8]}...) already in monitor, marked online")
+            self._schedule_host_status_broadcast(host_id, "online")
             return
 
         # Load tags for this host
@@ -1172,6 +1175,41 @@ class DockerMonitor:
         host.security_status = security_status
         self.hosts[host_id] = host
         logger.info(f"Added agent host {name} ({host_id[:8]}...) to monitor")
+
+        # Broadcast status change for real-time UI update
+        self._schedule_host_status_broadcast(host_id, "online")
+
+    def _schedule_host_status_broadcast(self, host_id: str, status: str):
+        """
+        Schedule a host status broadcast to WebSocket clients.
+
+        Uses asyncio to schedule the broadcast since this may be called from sync context.
+        """
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.create_task(self._broadcast_host_status(host_id, status))
+            else:
+                loop.run_until_complete(self._broadcast_host_status(host_id, status))
+        except RuntimeError:
+            # No event loop - skip broadcast
+            logger.debug(f"No event loop for host status broadcast: {host_id} -> {status}")
+
+    async def _broadcast_host_status(self, host_id: str, status: str):
+        """Broadcast host status change to WebSocket clients."""
+        if self.manager:
+            try:
+                await self.manager.broadcast({
+                    "type": "host_status_changed",
+                    "data": {
+                        "host_id": host_id,
+                        "status": status
+                    }
+                })
+                logger.debug(f"Broadcast host status: {host_id[:8]}... -> {status}")
+            except Exception as e:
+                logger.error(f"Failed to broadcast host status: {e}")
 
     async def get_containers(self, host_id: Optional[str] = None) -> List[Container]:
         """Get containers from one or all hosts"""

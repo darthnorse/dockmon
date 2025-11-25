@@ -9,7 +9,7 @@ These models provide:
 """
 import re
 from typing import Optional, Dict
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 
 class AgentRegistrationRequest(BaseModel):
@@ -103,8 +103,7 @@ class AgentRegistrationRequest(BaseModel):
             raise ValueError("ID must contain only alphanumeric characters, hyphens, and underscores")
         return v
 
-    class Config:
-        # Don't allow extra fields not defined in the model
-        extra = 'forbid'
-        # Validate on assignment (not just initialization)
-        validate_assignment = True
+    model_config = ConfigDict(
+        extra='forbid',           # Don't allow extra fields not defined in the model
+        validate_assignment=True  # Validate on assignment (not just initialization)
+    )

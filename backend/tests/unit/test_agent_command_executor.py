@@ -257,7 +257,7 @@ class TestResponseHandling:
         executor._pending_commands[correlation_id] = {
             "future": future,
             "agent_id": agent_id,
-            "started_at": datetime.utcnow()
+            "started_at": datetime.now(timezone.utc)
         }
 
         # Simulate agent response
@@ -473,12 +473,12 @@ class TestCommandMetrics:
         executor._pending_commands["cmd-1"] = {
             "future": asyncio.Future(),
             "agent_id": "agent-1",
-            "started_at": datetime.utcnow()
+            "started_at": datetime.now(timezone.utc)
         }
         executor._pending_commands["cmd-2"] = {
             "future": asyncio.Future(),
             "agent_id": "agent-2",
-            "started_at": datetime.utcnow()
+            "started_at": datetime.now(timezone.utc)
         }
 
         assert executor.get_pending_command_count() == 2

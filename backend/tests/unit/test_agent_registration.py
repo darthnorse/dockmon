@@ -60,7 +60,8 @@ class TestRegistrationTokenGeneration:
             assert len(token_record.token) == 36  # UUID format
             assert token_record.created_by_user_id == user_id
             assert token_record.used is False
-            assert token_record.expires_at > datetime.utcnow()
+            # DB returns naive datetime, so compare as naive (both are UTC)
+            assert token_record.expires_at > datetime.now(timezone.utc).replace(tzinfo=None)
 
     def test_token_expires_after_15_minutes(self, db_session, mock_db_manager):
         """Token should expire after 15 minutes"""
@@ -116,8 +117,8 @@ class TestTokenValidation:
         expired_token = RegistrationToken(
             token="expired-token-uuid",
             created_by_user_id=1,
-            created_at=datetime.utcnow() - timedelta(minutes=20),
-            expires_at=datetime.utcnow() - timedelta(minutes=1),
+            created_at=datetime.now(timezone.utc) - timedelta(minutes=20),
+            expires_at=datetime.now(timezone.utc) - timedelta(minutes=1),
             used=False
         )
         db_session.add(expired_token)
@@ -138,10 +139,10 @@ class TestTokenValidation:
         used_token = RegistrationToken(
             token="used-token-uuid",
             created_by_user_id=1,
-            created_at=datetime.utcnow(),
-            expires_at=datetime.utcnow() + timedelta(minutes=15),
+            created_at=datetime.now(timezone.utc),
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
             used=True,
-            used_at=datetime.utcnow()
+            used_at=datetime.now(timezone.utc)
         )
         db_session.add(used_token)
         db_session.commit()
@@ -220,8 +221,8 @@ class TestAgentRegistration:
         expired_token = RegistrationToken(
             token="expired-token",
             created_by_user_id=1,
-            created_at=datetime.utcnow() - timedelta(minutes=20),
-            expires_at=datetime.utcnow() - timedelta(minutes=1),
+            created_at=datetime.now(timezone.utc) - timedelta(minutes=20),
+            expires_at=datetime.now(timezone.utc) - timedelta(minutes=1),
             used=False
         )
         db_session.add(expired_token)

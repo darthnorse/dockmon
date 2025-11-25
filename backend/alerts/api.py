@@ -16,7 +16,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any
 from fastapi import APIRouter, HTTPException, Depends, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 from database import DatabaseManager, AlertV2, AlertRuleV2, AlertAnnotation
 from alerts.validator import AlertRuleValidator, AlertRuleValidationError
@@ -63,11 +63,7 @@ class AlertResponse(BaseModel):
     host_id: Optional[str] = None
     container_name: Optional[str] = None
 
-    class Config:
-        from_attributes = True
-        json_encoders = {
-            datetime: lambda v: v.isoformat() + 'Z' if v else None
-        }
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AlertListResponse(BaseModel):
@@ -150,8 +146,7 @@ class AlertRuleResponse(BaseModel):
     updated_at: datetime
     version: int
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ==================== Dependencies ====================

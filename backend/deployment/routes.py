@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy.orm import Session
 
 from database import Deployment, DeploymentTemplate, DatabaseManager, GlobalSettings, DeploymentMetadata
@@ -44,8 +44,8 @@ class DeploymentCreate(BaseModel):
         description="Automatically rollback if deployment fails (default: true)"
     )
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "host_id": "86a10392-2289-409f-899d-5f5c799086da",
                 "name": "my-nginx-stack",
@@ -56,6 +56,7 @@ class DeploymentCreate(BaseModel):
                 "rollback_on_failure": True
             }
         }
+    )
 
 
 class DeploymentUpdate(BaseModel):

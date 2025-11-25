@@ -32,6 +32,9 @@ def mock_monitor():
     """Mock DockerMonitor"""
     monitor = MagicMock()
     monitor.manager = None
+    # Mock alert_evaluation_service with async methods
+    monitor.alert_evaluation_service = MagicMock()
+    monitor.alert_evaluation_service.handle_container_event = AsyncMock()
     return monitor
 
 
@@ -84,17 +87,21 @@ class TestAgentSelfUpdateDetection:
         # Mock _execute_agent_self_update to verify it's called
         executor._execute_agent_self_update = AsyncMock(return_value=True)
 
-        # Mock _get_docker_client and _get_container_info to prevent normal flow
-        executor._get_docker_client = AsyncMock(return_value=MagicMock())
-        executor._get_container_info = AsyncMock(return_value={
-            "name": "dockmon-agent",
-            "id": container_id
-        })
+        # Create a mock container with proper name attribute
+        mock_container = MagicMock()
+        mock_container.name = "dockmon-agent"
+        mock_container.labels = {}
 
-        # Execute
-        result = await executor.update_container(
-            host_id, container_id, agent_update_record, force=False
-        )
+        # Mock _get_docker_client to return a mock client
+        mock_client = MagicMock()
+        executor._get_docker_client = AsyncMock(return_value=mock_client)
+
+        # Mock async_docker_call to return the mock container
+        with patch('updates.update_executor.async_docker_call', AsyncMock(return_value=mock_container)):
+            # Execute
+            result = await executor.update_container(
+                host_id, container_id, agent_update_record, force=False
+            )
 
         # Verify: Should route to agent self-update
         executor._execute_agent_self_update.assert_called_once()
@@ -112,16 +119,22 @@ class TestAgentSelfUpdateDetection:
         )
         executor.agent_manager.get_agent_for_host.return_value = "agent-456"
         executor._execute_agent_self_update = AsyncMock(return_value=True)
-        executor._get_docker_client = AsyncMock(return_value=MagicMock())
-        executor._get_container_info = AsyncMock(return_value={
-            "name": "custom-agent",
-            "id": "abc123def456"
-        })
 
-        # Execute
-        result = await executor.update_container(
-            "host-123", "abc123def456", custom_agent_record, force=False
-        )
+        # Create a mock container with proper name attribute
+        mock_container = MagicMock()
+        mock_container.name = "custom-agent"
+        mock_container.labels = {}
+
+        # Mock _get_docker_client to return a mock client
+        mock_client = MagicMock()
+        executor._get_docker_client = AsyncMock(return_value=mock_client)
+
+        # Mock async_docker_call to return the mock container
+        with patch('updates.update_executor.async_docker_call', AsyncMock(return_value=mock_container)):
+            # Execute
+            result = await executor.update_container(
+                "host-123", "abc123def456", custom_agent_record, force=False
+            )
 
         # Verify
         executor._execute_agent_self_update.assert_called_once()

@@ -368,6 +368,23 @@ class AgentCommandExecutor:
                     retried=False
                 )
 
+            # Validate response has required 'success' field (for non-legacy responses)
+            # Legacy responses have 'payload' field, new protocol has 'success' field
+            # If neither 'success' nor 'payload' is present, it's an invalid response
+            if "success" not in response and "payload" not in response:
+                error_msg = "Invalid response: missing 'success' or 'payload' field"
+                return CommandResult(
+                    status=CommandStatus.ERROR,
+                    success=False,
+                    response=response,
+                    error=error_msg,
+                    error_code=CommandErrorCode.INVALID_RESPONSE,
+                    duration_seconds=duration,
+                    attempt=attempt,
+                    total_attempts=total_attempts,
+                    retried=False
+                )
+
             # No error - command succeeded
             # Legacy protocol returns {"type": "response", "id": "...", "payload": ...}
             # New protocol returns {"success": true, "data": ...}

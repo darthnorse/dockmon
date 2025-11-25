@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from typing import Optional, List
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, validator, ConfigDict
 
 
 from typing import Optional, List
@@ -209,8 +209,7 @@ class GlobalSettingsUpdate(BaseModel):
     image_retention_count: Optional[int] = Field(None, ge=0, le=10, description="Keep last N versions per image (0=only in-use images, 1-10=keep N versions)")
     image_prune_grace_hours: Optional[int] = Field(None, ge=1, le=168, description="Don't remove images newer than N hours (1-168)")
 
-    class Config:
-        extra = "forbid"  # Reject unknown keys (typos, attacks)
+    model_config = ConfigDict(extra="forbid")  # Reject unknown keys (typos, attacks)
 
     @validator('blackout_windows')
     def validate_blackout_windows(cls, v):

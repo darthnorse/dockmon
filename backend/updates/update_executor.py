@@ -1497,7 +1497,7 @@ class UpdateExecutor:
         try:
             # Generate backup name with timestamp
             timestamp = int(time.time())
-            backup_name = f"{original_name}-backup-{timestamp}"
+            backup_name = f"{original_name}-dockmon-backup-{timestamp}"
 
             logger.info(f"Creating backup: stopping and renaming {original_name} to {backup_name}")
 

@@ -328,15 +328,20 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 
 // handleConnection handles an active connection
 func (c *WebSocketClient) handleConnection(ctx context.Context) error {
+	// Create connection-scoped context that we cancel when disconnecting
+	// This ensures background goroutines (event streaming) stop when connection drops
+	connCtx, connCancel := context.WithCancel(ctx)
+	defer connCancel() // Cancel when handleConnection returns (disconnect)
+
 	// Start event streaming in background with WaitGroup tracking
 	c.backgroundWg.Add(1)
 	go func() {
 		defer c.backgroundWg.Done()
-		c.streamEvents(ctx)
+		c.streamEvents(connCtx)
 	}()
 
 	// Start stats collection
-	if err := c.statsHandler.StartStatsCollection(ctx); err != nil {
+	if err := c.statsHandler.StartStatsCollection(connCtx); err != nil {
 		c.log.WithError(err).Warn("Failed to start stats collection")
 	} else {
 		c.log.Info("Stats collection started")

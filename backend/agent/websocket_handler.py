@@ -255,19 +255,6 @@ class AgentWebSocketHandler:
                     "error": f"Invalid registration data: {error_details['msg']} (field: {error_details['loc'][0]})"
                 }
 
-        elif msg_type == "reconnect":
-            # Existing agent reconnection
-            result = self.agent_manager.reconnect_agent({
-                "agent_id": message.get("agent_id"),
-                "engine_id": message.get("engine_id")
-            })
-
-            if result["success"]:
-                self.agent_id = result["agent_id"]
-                self.authenticated = True
-
-            return result
-
         else:
             return {"success": False, "error": f"Invalid authentication type: {msg_type}"}
 

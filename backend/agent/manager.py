@@ -204,13 +204,25 @@ class AgentManager:
                         if registration_data.get("num_cpus"):
                             host.num_cpus = registration_data.get("num_cpus")
 
+                    # Capture IDs before commit (for monitor notification)
+                    agent_id = existing_agent.id
+                    host_id = existing_agent.host_id
+                    host_name = host.name if host else hostname
+
                     session.commit()
+
+                    # Notify monitor to mark host online and broadcast status change
+                    if self.monitor:
+                        self.monitor.add_agent_host(
+                            host_id=host_id,
+                            name=host_name
+                        )
 
                     return {
                         "success": True,
-                        "agent_id": existing_agent.id,
-                        "host_id": existing_agent.host_id,
-                        "permanent_token": existing_agent.id
+                        "agent_id": agent_id,
+                        "host_id": host_id,
+                        "permanent_token": agent_id
                     }
                 else:
                     return {"success": False, "error": "Permanent token does not match engine_id"}

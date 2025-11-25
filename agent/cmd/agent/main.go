@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
@@ -114,9 +116,9 @@ func setupLogging(cfg *config.Config) *logrus.Logger {
 	}
 	log.SetLevel(level)
 
-	// Set format
+	// Set format - always use timestamp-first format for readability
 	if cfg.LogJSON {
-		log.SetFormatter(&logrus.JSONFormatter{
+		log.SetFormatter(&TimestampFirstJSONFormatter{
 			TimestampFormat: "2006-01-02T15:04:05.000Z07:00",
 		})
 	} else {
@@ -127,4 +129,44 @@ func setupLogging(cfg *config.Config) *logrus.Logger {
 	}
 
 	return log
+}
+
+// TimestampFirstJSONFormatter outputs JSON with timestamp as the first field
+type TimestampFirstJSONFormatter struct {
+	TimestampFormat string
+}
+
+// Format renders a log entry as JSON with timestamp first
+func (f *TimestampFirstJSONFormatter) Format(entry *logrus.Entry) ([]byte, error) {
+	// Build ordered output: time, level, msg, then other fields alphabetically
+	var b bytes.Buffer
+	b.WriteString(`{"time":"`)
+
+	timestampFormat := f.TimestampFormat
+	if timestampFormat == "" {
+		timestampFormat = "2006-01-02T15:04:05.000Z07:00"
+	}
+	b.WriteString(entry.Time.Format(timestampFormat))
+	b.WriteString(`","level":"`)
+	b.WriteString(entry.Level.String())
+	b.WriteString(`","msg":`)
+
+	// JSON encode the message to handle special characters
+	msgBytes, _ := json.Marshal(entry.Message)
+	b.Write(msgBytes)
+
+	// Add any additional fields
+	for key, value := range entry.Data {
+		b.WriteString(`,"`)
+		b.WriteString(key)
+		b.WriteString(`":`)
+		valueBytes, err := json.Marshal(value)
+		if err != nil {
+			valueBytes = []byte(`"` + fmt.Sprintf("%v", value) + `"`)
+		}
+		b.Write(valueBytes)
+	}
+
+	b.WriteString("}\n")
+	return b.Bytes(), nil
 }

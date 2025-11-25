@@ -48,6 +48,8 @@ venv
 env
 .pytest_cache
 .mypy_cache
+pytest.ini
+backend/pytest.ini
 
 # Backend data (dev database)
 backend/data

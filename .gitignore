@@ -33,7 +33,6 @@ baseline*.log
 pre-refactor*.log
 post-refactor*.log
 .pytest_cache/
-pytest.ini
 requirements-test.txt
 vitest.config.ts
 coverage/

@@ -29,7 +29,8 @@ class TestDeploymentCreation:
     def test_create_container_deployment(
         self,
         db_session,
-        test_host
+        test_host,
+        test_user
     ):
         """Test creating a single container deployment"""
         # Arrange
@@ -69,7 +70,8 @@ class TestDeploymentCreation:
     def test_create_stack_deployment(
         self,
         db_session,
-        test_host
+        test_host,
+        test_user
     ):
         """Test creating a stack deployment"""
         # Arrange
@@ -105,7 +107,8 @@ class TestDeploymentCreation:
     def test_deployment_unique_name_per_host(
         self,
         db_session,
-        test_host
+        test_host,
+        test_user
     ):
         """Test that deployment names must be unique per host"""
         # Arrange: Create first deployment
@@ -153,7 +156,8 @@ class TestDeploymentStateTransitions:
     def test_deployment_state_progression(
         self,
         db_session,
-        test_host
+        test_host,
+        test_user
     ):
         """Test complete deployment state progression persists"""
         # Arrange: Create deployment
@@ -200,7 +204,8 @@ class TestDeploymentStateTransitions:
     def test_deployment_failure_state_persists(
         self,
         db_session,
-        test_host
+        test_host,
+        test_user
     ):
         """Test deployment failure state and error message persist"""
         # Arrange
@@ -243,7 +248,8 @@ class TestDeploymentContainerRelationship:
     def test_single_container_deployment_link(
         self,
         db_session,
-        test_host
+        test_host,
+        test_user
     ):
         """Test linking single container to deployment"""
         # Arrange: Create deployment
@@ -286,7 +292,8 @@ class TestDeploymentContainerRelationship:
     def test_stack_deployment_multiple_containers(
         self,
         db_session,
-        test_host
+        test_host,
+        test_user
     ):
         """Test linking multiple containers to stack deployment"""
         # Arrange: Create stack deployment
@@ -336,7 +343,8 @@ class TestDeploymentContainerRelationship:
     def test_deployment_deletion_cascades_to_containers(
         self,
         db_session,
-        test_host
+        test_host,
+        test_user
     ):
         """Test that deleting deployment cascades to DeploymentContainer links"""
         # Arrange: Create deployment with container link
@@ -503,19 +511,19 @@ class TestDeploymentMetadata:
     def test_create_deployment_metadata(
         self,
         db_session,
-        test_host
+        test_host,
+        test_deployment
     ):
         """Test creating deployment metadata for container"""
         # Arrange
-        container_id = "abc123def456"
+        container_id = "meta12345678"
         composite_key = create_composite_key(test_host.id, container_id)
-        deployment_id = "deploy-123"
 
-        # Act: Create metadata
+        # Act: Create metadata linked to the test deployment
         metadata = DeploymentMetadata(
             container_id=composite_key,
             host_id=test_host.id,
-            deployment_id=deployment_id,
+            deployment_id=test_deployment.id,
             is_managed=True,
             service_name="web",
             created_at=datetime.now(timezone.utc),
@@ -530,7 +538,7 @@ class TestDeploymentMetadata:
         ).first()
 
         assert retrieved is not None
-        assert retrieved.deployment_id == deployment_id
+        assert retrieved.deployment_id == test_deployment.id
         assert retrieved.is_managed is True
         assert retrieved.service_name == "web"
 
@@ -538,18 +546,19 @@ class TestDeploymentMetadata:
     def test_deployment_metadata_identifies_managed_containers(
         self,
         db_session,
-        test_host
+        test_host,
+        test_deployment
     ):
         """Test metadata distinguishes managed vs unmanaged containers"""
         # Arrange: Create two containers
-        managed_container = create_composite_key(test_host.id, "managed123")
+        managed_container = create_composite_key(test_host.id, "managed12345")
         unmanaged_container = create_composite_key(test_host.id, "unmanaged456")
 
-        # Mark first as managed
+        # Mark first as managed (linked to deployment)
         managed_meta = DeploymentMetadata(
             container_id=managed_container,
             host_id=test_host.id,
-            deployment_id="deploy-1",
+            deployment_id=test_deployment.id,
             is_managed=True,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc)
@@ -578,7 +587,8 @@ class TestDeploymentCommitmentPoint:
     def test_committed_flag_persists(
         self,
         db_session,
-        test_host
+        test_host,
+        test_user
     ):
         """Test that committed flag persists in database"""
         # Arrange: Create deployment
@@ -610,7 +620,8 @@ class TestDeploymentCommitmentPoint:
     def test_rollback_on_failure_flag_persists(
         self,
         db_session,
-        test_host
+        test_host,
+        test_user
     ):
         """Test that rollback_on_failure setting persists"""
         # Arrange: Create deployment with rollback disabled

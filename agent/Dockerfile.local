@@ -50,8 +50,8 @@ COPY --from=builder /build/dockmon-agent /app/dockmon-agent
 # Switch to non-root user
 USER agent
 
-# Set up volume for persistent data
-VOLUME ["/data"]
+# Data directory at /data - mount a named volume to persist agent identity:
+#   -v agent-data:/data
 
 # Expose no ports (agent connects outbound only)
 

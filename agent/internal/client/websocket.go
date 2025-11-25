@@ -389,7 +389,10 @@ func (c *WebSocketClient) handleConnection(ctx context.Context) error {
 	// This makes shutdown responsive instead of waiting for read deadline (up to 40s)
 	c.backgroundWg.Add(1)
 	go func() {
-		defer c.backgroundWg.Done()
+		defer func() {
+			c.log.Info("Goroutine exit: shutdown watcher")
+			c.backgroundWg.Done()
+		}()
 		select {
 		case <-connCtx.Done():
 			return
@@ -407,7 +410,10 @@ func (c *WebSocketClient) handleConnection(ctx context.Context) error {
 	// Start ping goroutine to keep connection alive and detect stale connections
 	c.backgroundWg.Add(1)
 	go func() {
-		defer c.backgroundWg.Done()
+		defer func() {
+			c.log.Info("Goroutine exit: ping")
+			c.backgroundWg.Done()
+		}()
 		ticker := time.NewTicker(pingInterval)
 		defer ticker.Stop()
 
@@ -443,7 +449,10 @@ func (c *WebSocketClient) handleConnection(ctx context.Context) error {
 	// Start event streaming in background with WaitGroup tracking
 	c.backgroundWg.Add(1)
 	go func() {
-		defer c.backgroundWg.Done()
+		defer func() {
+			c.log.Info("Goroutine exit: event streaming")
+			c.backgroundWg.Done()
+		}()
 		c.streamEvents(connCtx)
 	}()
 
@@ -461,19 +470,22 @@ func (c *WebSocketClient) handleConnection(ctx context.Context) error {
 	// 3. Wait for background goroutines (ping, events, updates)
 	defer func() {
 		// Cancel context first to signal event streaming and ping goroutines to stop
+		c.log.Info("Connection cleanup: cancelling context")
 		connCancel()
 
 		c.statsHandler.StopAll()
-		c.log.Info("Stats collection stopped")
+		c.log.Info("Connection cleanup: stats stopped")
 
 		// Wait for message handlers first - they may call backgroundWg.Add()
 		// This prevents the race: backgroundWg.Add() called after Wait() returns
+		c.log.Info("Connection cleanup: waiting for message handlers")
 		c.messageWg.Wait()
-		c.log.Debug("Message handlers completed")
+		c.log.Info("Connection cleanup: message handlers done")
 
 		// Now safe to wait for background goroutines (all Add() calls have completed)
+		c.log.Info("Connection cleanup: waiting for background goroutines")
 		c.backgroundWg.Wait()
-		c.log.Info("Event streaming stopped")
+		c.log.Info("Connection cleanup: all goroutines stopped")
 	}()
 
 	// Read messages in loop
@@ -715,8 +727,10 @@ func (c *WebSocketClient) streamEvents(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			c.log.Info("Event streaming: context cancelled")
 			return
 		case <-c.stopChan:
+			c.log.Info("Event streaming: stop signal received")
 			return
 		case err := <-errChan:
 			c.log.WithError(err).Error("Event stream error")

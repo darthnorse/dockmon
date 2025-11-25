@@ -79,6 +79,7 @@ from utils.base_path import get_base_path
 from updates.container_validator import ContainerValidator, ValidationResult
 from agent.manager import AgentManager
 from agent import handle_agent_websocket
+from agent.connection_manager import agent_connection_manager
 from packaging.version import parse as parse_version, InvalidVersion
 from deployment import routes as deployment_routes, DeploymentExecutor, TemplateManager
 

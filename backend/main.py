@@ -48,7 +48,8 @@ from database import (
     AlertV2,
     AutoRestartConfig,
     BatchJobItem,
-    DeploymentContainer
+    DeploymentContainer,
+    Agent,
 )
 from realtime import RealtimeMonitor
 from notifications import NotificationService
@@ -76,6 +77,7 @@ from utils.encryption import encrypt_password, decrypt_password
 from utils.async_docker import async_docker_call
 from utils.base_path import get_base_path
 from updates.container_validator import ContainerValidator, ValidationResult
+from agent.manager import AgentManager
 from packaging.version import parse as parse_version, InvalidVersion
 from deployment import routes as deployment_routes, DeploymentExecutor, TemplateManager
 
@@ -560,7 +562,7 @@ async def get_hosts(current_user: dict = Depends(get_current_user)):
     hosts = list(monitor.hosts.values())
 
     # Enrich hosts with agent information
-    with get_db_context() as db:
+    with monitor.db.get_session() as db:
         # Get all agents with their host associations
         agents = db.query(Agent).all()
         agent_by_host = {agent.host_id: agent for agent in agents}
@@ -4332,10 +4334,9 @@ async def list_agents(
     List all registered agents with their status and metadata.
     """
     try:
-        from database import Agent, DockerHostDB
         from agent.connection_manager import agent_connection_manager
 
-        with get_db_context() as db:
+        with monitor.db.get_session() as db:
             agents = db.query(Agent).join(DockerHostDB).all()
 
             agents_data = []
@@ -4376,10 +4377,9 @@ async def get_agent_status(
     Get detailed status of a specific agent.
     """
     try:
-        from database import Agent, DockerHostDB
         from agent.connection_manager import agent_connection_manager
 
-        with get_db_context() as db:
+        with monitor.db.get_session() as db:
             agent = db.query(Agent).filter_by(id=agent_id).first()
 
             if not agent:

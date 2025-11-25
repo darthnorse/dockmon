@@ -209,7 +209,7 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
     const date = new Date(isoString)
     const now = new Date()
     const diff = date.getTime() - now.getTime()
-    const minutes = Math.floor(diff / 60000)
+    const minutes = Math.ceil(diff / 60000)  // Round up so "14:59" shows as "15 minutes"
     return `${minutes} minute${minutes !== 1 ? 's' : ''}`
   }
 
@@ -703,12 +703,12 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
             tabs={[
               {
                 id: 'agent',
-                label: 'Agent',
+                label: 'Agent (recommended)',
                 content: agentTabContent,
               },
               {
                 id: 'remote',
-                label: 'Remote Docker Connection',
+                label: 'Legacy',
                 content: remoteTabContent,
               },
             ]}

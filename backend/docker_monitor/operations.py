@@ -349,6 +349,13 @@ class ContainerOperations:
             BatchJobItem, DeploymentContainer
         )
 
+        # Check if host has an agent - route through agent if available (v2.2.0)
+        agent_id = self.agent_manager.get_agent_for_host(host_id)
+        if agent_id:
+            logger.info(f"Routing delete_container for host {host_id} through agent {agent_id}")
+            return await self._delete_container_via_agent(host_id, container_id, container_name, remove_volumes)
+
+        # Legacy path: Direct Docker socket access
         if host_id not in self.clients:
             raise HTTPException(status_code=404, detail="Host not found")
 
@@ -476,3 +483,109 @@ class ContainerOperations:
                 duration_ms=duration_ms
             )
             raise HTTPException(status_code=500, detail=f"Failed to delete container: {str(e)}")
+
+    async def _delete_container_via_agent(self, host_id: str, container_id: str, container_name: str, remove_volumes: bool = False) -> dict:
+        """
+        Delete a container via agent for agent-based hosts.
+
+        Args:
+            host_id: Docker host ID
+            container_id: Container SHORT ID (12 chars)
+            container_name: Container name (for logging)
+            remove_volumes: If True, also remove anonymous volumes
+
+        Returns:
+            {"success": True, "message": "Container deleted successfully"}
+
+        Raises:
+            HTTPException: If agent not found, command fails, or timeout
+        """
+        from event_bus import Event, EventType, get_event_bus
+        from database import (
+            ContainerUpdate, ContainerDesiredState, ContainerHttpHealthCheck,
+            DeploymentMetadata, TagAssignment, AutoRestartConfig, DeploymentContainer
+        )
+
+        host = self.hosts.get(host_id)
+        host_name = host.name if host else 'Unknown Host'
+        start_time = time.time()
+
+        try:
+            # Use agent operations to remove the container
+            # Note: AgentContainerOperations.remove_container already handles DockMon safety check
+            await self.agent_operations.remove_container(host_id, container_id, force=True)
+
+            # Clean up all related database records (same as direct Docker path)
+            with self.db.get_session() as session:
+                composite_key = make_composite_key(host_id, container_id)
+
+                deleted_updates = session.query(ContainerUpdate).filter_by(container_id=composite_key).delete()
+                deleted_states = session.query(ContainerDesiredState).filter_by(container_id=composite_key).delete()
+                deleted_restart = session.query(AutoRestartConfig).filter(
+                    AutoRestartConfig.host_id == host_id,
+                    AutoRestartConfig.container_id == container_id
+                ).delete()
+                deleted_health = session.query(ContainerHttpHealthCheck).filter_by(container_id=composite_key).delete()
+                deleted_tags = session.query(TagAssignment).filter(
+                    TagAssignment.subject_type == 'container',
+                    TagAssignment.subject_id == composite_key
+                ).delete()
+                deleted_metadata = session.query(DeploymentMetadata).filter_by(container_id=composite_key).delete()
+                deleted_deploy_containers = session.query(DeploymentContainer).filter_by(container_id=container_id).delete()
+
+                session.commit()
+
+                logger.info(
+                    f"Cleaned up database records for container {container_name} ({composite_key}): "
+                    f"updates={deleted_updates}, states={deleted_states}, restart={deleted_restart}, "
+                    f"health={deleted_health}, tags={deleted_tags}, metadata={deleted_metadata}, "
+                    f"deployment_containers={deleted_deploy_containers}"
+                )
+
+            # Emit CONTAINER_DELETED event
+            composite_key = make_composite_key(host_id, container_id)
+            event = Event(
+                event_type=EventType.CONTAINER_DELETED,
+                scope_type='container',
+                scope_id=composite_key,
+                scope_name=container_name,
+                host_id=host_id,
+                host_name=host_name,
+                data={'removed_volumes': remove_volumes}
+            )
+            await get_event_bus(self.monitor).emit(event)
+
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            self.event_logger.log_container_action(
+                action="delete",
+                container_name=container_name,
+                container_id=container_id,
+                host_name=host_name,
+                host_id=host_id,
+                success=True,
+                triggered_by="user",
+                duration_ms=duration_ms
+            )
+
+            logger.info(f"Successfully deleted container {container_name} ({container_id}) via agent on host {host_name}")
+            return {"success": True, "message": f"Container {container_name} deleted successfully"}
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            duration_ms = int((time.time() - start_time) * 1000)
+            logger.error(f"Failed to delete container {container_name} via agent on host {host_name}: {e}")
+
+            self.event_logger.log_container_action(
+                action="delete",
+                container_name=container_name,
+                container_id=container_id,
+                host_name=host_name,
+                host_id=host_id,
+                success=False,
+                triggered_by="user",
+                error_message=str(e),
+                duration_ms=duration_ms
+            )
+            raise HTTPException(status_code=500, detail=f"Failed to delete container via agent: {str(e)}")

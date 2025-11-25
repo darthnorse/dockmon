@@ -10,7 +10,7 @@ All tests should FAIL initially since AgentCommandExecutor doesn't exist yet.
 
 import pytest
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, AsyncMock, patch
 
 from agent.command_executor import AgentCommandExecutor, CommandResult, CommandStatus
@@ -304,7 +304,7 @@ class TestResponseHandling:
         executor._pending_commands[expired_correlation_id] = {
             "future": expired_future,
             "agent_id": "agent-123",
-            "started_at": datetime.utcnow() - timedelta(minutes=2)
+            "started_at": datetime.now(timezone.utc) - timedelta(minutes=2)
         }
 
         # Create recent pending command (started 5 seconds ago)
@@ -313,11 +313,11 @@ class TestResponseHandling:
         executor._pending_commands[recent_correlation_id] = {
             "future": recent_future,
             "agent_id": "agent-456",
-            "started_at": datetime.utcnow() - timedelta(seconds=5)
+            "started_at": datetime.now(timezone.utc) - timedelta(seconds=5)
         }
 
         # Cleanup with max_age of 60 seconds
-        executor.cleanup_expired_pending_commands(max_age_seconds=60)
+        await executor.cleanup_expired_pending_commands(max_age_seconds=60)
 
         # Expired command should be removed
         assert expired_correlation_id not in executor._pending_commands

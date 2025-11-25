@@ -77,6 +77,19 @@ export interface Host {
   num_cpus?: number | null  // Number of CPUs
   // Podman compatibility (Issue #20)
   is_podman?: boolean  // True if host runs Podman instead of Docker
+  // Connection type (v2.2.0)
+  connection_type?: 'agent' | 'remote'
+  agent?: {
+    agent_id: string
+    engine_id: string
+    version: string
+    proto_version: number
+    capabilities: Record<string, unknown>
+    status: string
+    connected: boolean
+    last_seen_at: string | null  // ISO timestamp
+    registered_at: string | null  // ISO timestamp
+  } | null
 }
 
 // ==================== Containers ====================

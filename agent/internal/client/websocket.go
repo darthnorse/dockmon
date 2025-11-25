@@ -651,17 +651,18 @@ func (c *WebSocketClient) streamEvents(ctx context.Context) {
 			}
 
 			// Convert to our event type
+			action := string(event.Action) // Convert typed Action to string
 			containerEvent := types.ContainerEvent{
 				ContainerID:   event.Actor.ID,
 				ContainerName: event.Actor.Attributes["name"],
 				Image:         event.Actor.Attributes["image"],
-				Action:        event.Action,
+				Action:        action,
 				Timestamp:     time.Unix(event.Time, 0),
 				Attributes:    event.Actor.Attributes,
 			}
 
 			// Handle stats collection lifecycle based on container events
-			switch event.Action {
+			switch action {
 			case "start":
 				// Start stats collection for newly started container
 				if err := c.statsHandler.StartContainerStats(ctx, event.Actor.ID, event.Actor.Attributes["name"]); err != nil {

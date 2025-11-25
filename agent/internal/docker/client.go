@@ -11,6 +11,8 @@ import (
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/events"
+	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/darthnorse/dockmon-agent/internal/config"
@@ -104,7 +106,7 @@ func (c *Client) GetSystemInfo(ctx context.Context) (*SystemInfo, error) {
 
 	// Get daemon start time from bridge network creation time
 	// This matches the approach in monitor.py
-	networks, err := c.cli.NetworkList(ctx, types.NetworkListOptions{})
+	networks, err := c.cli.NetworkList(ctx, network.ListOptions{})
 	if err == nil {
 		for _, network := range networks {
 			if network.Name == "bridge" {
@@ -146,7 +148,7 @@ type ContainerWithDigest struct {
 
 // ListContainers lists all containers with image digest information
 func (c *Client) ListContainers(ctx context.Context) ([]ContainerWithDigest, error) {
-	containers, err := c.cli.ContainerList(ctx, types.ContainerListOptions{All: true})
+	containers, err := c.cli.ContainerList(ctx, container.ListOptions{All: true})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list containers: %w", err)
 	}
@@ -186,7 +188,7 @@ func (c *Client) InspectContainer(ctx context.Context, containerID string) (type
 
 // StartContainer starts a container
 func (c *Client) StartContainer(ctx context.Context, containerID string) error {
-	if err := c.cli.ContainerStart(ctx, containerID, types.ContainerStartOptions{}); err != nil {
+	if err := c.cli.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
 		return fmt.Errorf("failed to start container: %w", err)
 	}
 	return nil
@@ -212,7 +214,7 @@ func (c *Client) RestartContainer(ctx context.Context, containerID string, timeo
 
 // RemoveContainer removes a container
 func (c *Client) RemoveContainer(ctx context.Context, containerID string, force bool) error {
-	if err := c.cli.ContainerRemove(ctx, containerID, types.ContainerRemoveOptions{Force: force}); err != nil {
+	if err := c.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: force}); err != nil {
 		return fmt.Errorf("failed to remove container: %w", err)
 	}
 	return nil
@@ -220,7 +222,7 @@ func (c *Client) RemoveContainer(ctx context.Context, containerID string, force 
 
 // GetContainerLogs retrieves container logs
 func (c *Client) GetContainerLogs(ctx context.Context, containerID string, tail string) (string, error) {
-	options := types.ContainerLogsOptions{
+	options := container.LogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
 		Tail:       tail,
@@ -245,19 +247,19 @@ func (c *Client) GetContainerLogs(ctx context.Context, containerID string, tail 
 }
 
 // ContainerStats gets a stats stream for a container
-func (c *Client) ContainerStats(ctx context.Context, containerID string, stream bool) (types.ContainerStats, error) {
+func (c *Client) ContainerStats(ctx context.Context, containerID string, stream bool) (container.StatsResponseReader, error) {
 	return c.cli.ContainerStats(ctx, containerID, stream)
 }
 
 // WatchEvents watches Docker events
 func (c *Client) WatchEvents(ctx context.Context) (<-chan events.Message, <-chan error) {
-	eventChan, errChan := c.cli.Events(ctx, types.EventsOptions{})
+	eventChan, errChan := c.cli.Events(ctx, events.ListOptions{})
 	return eventChan, errChan
 }
 
 // PullImage pulls a Docker image
-func (c *Client) PullImage(ctx context.Context, image string) error {
-	reader, err := c.cli.ImagePull(ctx, image, types.ImagePullOptions{})
+func (c *Client) PullImage(ctx context.Context, imageName string) error {
+	reader, err := c.cli.ImagePull(ctx, imageName, image.PullOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to pull image: %w", err)
 	}

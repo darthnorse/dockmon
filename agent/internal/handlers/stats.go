@@ -9,7 +9,7 @@ import (
 
 	sharedDocker "github.com/darthnorse/dockmon-shared/docker"
 	"github.com/darthnorse/dockmon-agent/internal/docker"
-	dockerTypes "github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
 	"github.com/sirupsen/logrus"
 )
 
@@ -130,7 +130,7 @@ func (h *StatsHandler) collectStats(ctx context.Context, containerID, containerN
 			h.log.Debugf("Stats collection cancelled for %s", containerID[:12])
 			return
 		default:
-			var stats dockerTypes.StatsJSON
+			var stats container.StatsResponse
 			if err := decoder.Decode(&stats); err != nil {
 				h.log.Errorf("Failed to decode stats for %s: %v", containerID[:12], err)
 				return
@@ -143,7 +143,7 @@ func (h *StatsHandler) collectStats(ctx context.Context, containerID, containerN
 }
 
 // processStats processes raw Docker stats and sends to backend
-func (h *StatsHandler) processStats(stat *dockerTypes.StatsJSON, containerID, containerName string) {
+func (h *StatsHandler) processStats(stat *container.StatsResponse, containerID, containerName string) {
 	// Use shared package to calculate stats (same logic as stats-service!)
 	result := sharedDocker.CalculateStats(stat)
 

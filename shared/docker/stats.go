@@ -1,7 +1,7 @@
 package docker
 
 import (
-	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
 )
 
 // StatsResult contains calculated container statistics
@@ -18,7 +18,7 @@ type StatsResult struct {
 
 // CalculateStats processes raw Docker stats and returns calculated metrics
 // This is the proven, battle-tested logic from stats-service
-func CalculateStats(stat *types.StatsJSON) *StatsResult {
+func CalculateStats(stat *container.StatsResponse) *StatsResult {
 	result := &StatsResult{}
 
 	// Calculate CPU percentage
@@ -53,7 +53,7 @@ func CalculateStats(stat *types.StatsJSON) *StatsResult {
 
 // calculateCPUPercent calculates CPU percentage from Docker stats
 // Algorithm matches `docker stats` command
-func calculateCPUPercent(stat *types.StatsJSON) float64 {
+func calculateCPUPercent(stat *container.StatsResponse) float64 {
 	cpuDelta := float64(stat.CPUStats.CPUUsage.TotalUsage) - float64(stat.PreCPUStats.CPUUsage.TotalUsage)
 	systemDelta := float64(stat.CPUStats.SystemUsage) - float64(stat.PreCPUStats.SystemUsage)
 
@@ -79,7 +79,7 @@ func calculateCPUPercent(stat *types.StatsJSON) float64 {
 // - Kubernetes (kubelet memory.working_set)
 // - cAdvisor (working_set metric)
 // - Proxmox (used memory)
-func calculateWorkingSetMemory(stat *types.StatsJSON) uint64 {
+func calculateWorkingSetMemory(stat *container.StatsResponse) uint64 {
 	memUsage := stat.MemoryStats.Usage
 	workingSet := memUsage
 

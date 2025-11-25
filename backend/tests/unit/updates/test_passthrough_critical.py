@@ -129,9 +129,9 @@ class TestCritical1LowLevelAPI:
             'network_mode_override': None,
         }
 
-        # Mock manually_connect_networks and async_docker_call
-        with patch('updates.update_executor.manually_connect_networks', new_callable=AsyncMock):
-            with patch('updates.update_executor.async_docker_call', side_effect=mock_async_call):
+        # Mock manually_connect_networks and async_docker_call (in docker_executor after refactor)
+        with patch('updates.docker_executor.manually_connect_networks', new_callable=AsyncMock):
+            with patch('updates.docker_executor.async_docker_call', side_effect=mock_async_call):
                 # Call _create_container_v2 with passthrough config
                 new_container = await executor._create_container_v2(
                     mock_client,
@@ -364,9 +364,9 @@ class TestCritical3VolumePassthrough:
             'network_mode_override': None,
         }
 
-        # Mock manually_connect_networks and async_docker_call
-        with patch('updates.update_executor.manually_connect_networks', new_callable=AsyncMock):
-            with patch('updates.update_executor.async_docker_call', side_effect=mock_async_call):
+        # Mock manually_connect_networks and async_docker_call (in docker_executor after refactor)
+        with patch('updates.docker_executor.manually_connect_networks', new_callable=AsyncMock):
+            with patch('updates.docker_executor.async_docker_call', side_effect=mock_async_call):
                 # Create container with v2 method
                 await executor._create_container_v2(
                     mock_client,
@@ -537,9 +537,9 @@ class TestCritical4PodmanCompatibility:
             is_podman=True
         )
 
-        # Mock manually_connect_networks and async_docker_call
-        with patch('updates.update_executor.manually_connect_networks', new_callable=AsyncMock):
-            with patch('updates.update_executor.async_docker_call', side_effect=mock_async_call):
+        # Mock manually_connect_networks and async_docker_call (in docker_executor after refactor)
+        with patch('updates.docker_executor.manually_connect_networks', new_callable=AsyncMock):
+            with patch('updates.docker_executor.async_docker_call', side_effect=mock_async_call):
                 # Create container with v2 method
                 await executor._create_container_v2(
                     mock_client,

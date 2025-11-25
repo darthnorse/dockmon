@@ -122,8 +122,10 @@ class AgentContainerOperations:
         # Send start command
         command = {
             "type": "container_operation",
-            "action": "start",
-            "container_id": container_id
+            "payload": {
+                "action": "start",
+                "container_id": container_id
+            }
         }
 
         result = await self.command_executor.execute_command(
@@ -167,9 +169,11 @@ class AgentContainerOperations:
         # Send stop command
         command = {
             "type": "container_operation",
-            "action": "stop",
-            "container_id": container_id,
-            "timeout": timeout
+            "payload": {
+                "action": "stop",
+                "container_id": container_id,
+                "timeout": timeout
+            }
         }
 
         result = await self.command_executor.execute_command(
@@ -212,8 +216,10 @@ class AgentContainerOperations:
         # Send restart command
         command = {
             "type": "container_operation",
-            "action": "restart",
-            "container_id": container_id
+            "payload": {
+                "action": "restart",
+                "container_id": container_id
+            }
         }
 
         result = await self.command_executor.execute_command(
@@ -257,9 +263,11 @@ class AgentContainerOperations:
         # Send remove command
         command = {
             "type": "container_operation",
-            "action": "remove",
-            "container_id": container_id,
-            "force": force
+            "payload": {
+                "action": "remove",
+                "container_id": container_id,
+                "force": force
+            }
         }
 
         result = await self.command_executor.execute_command(
@@ -296,9 +304,11 @@ class AgentContainerOperations:
         # Send get_logs command
         command = {
             "type": "container_operation",
-            "action": "get_logs",
-            "container_id": container_id,
-            "tail": tail
+            "payload": {
+                "action": "get_logs",
+                "container_id": container_id,
+                "tail": tail
+            }
         }
 
         result = await self.command_executor.execute_command(
@@ -346,8 +356,10 @@ class AgentContainerOperations:
         # Send inspect command
         command = {
             "type": "container_operation",
-            "action": "inspect",
-            "container_id": container_id
+            "payload": {
+                "action": "inspect",
+                "container_id": container_id
+            }
         }
 
         result = await self.command_executor.execute_command(
@@ -397,14 +409,17 @@ class AgentContainerOperations:
                 detail=f"No agent registered for host {host_id}"
             )
 
-        command = {
-            "type": "container_operation",
+        payload = {
             "action": "pull_image",
             "image": image
         }
-
         if deployment_id:
-            command["deployment_id"] = deployment_id
+            payload["deployment_id"] = deployment_id
+
+        command = {
+            "type": "container_operation",
+            "payload": payload
+        }
 
         # Image pulls can take 30+ minutes
         result = await self.command_executor.execute_command(
@@ -442,8 +457,10 @@ class AgentContainerOperations:
 
         command = {
             "type": "container_operation",
-            "action": "create",
-            "config": config
+            "payload": {
+                "action": "create",
+                "config": config
+            }
         }
 
         result = await self.command_executor.execute_command(
@@ -494,7 +511,9 @@ class AgentContainerOperations:
 
         command = {
             "type": "container_operation",
-            "action": "list_networks"
+            "payload": {
+                "action": "list_networks"
+            }
         }
 
         result = await self.command_executor.execute_command(
@@ -540,9 +559,11 @@ class AgentContainerOperations:
 
         command = {
             "type": "container_operation",
-            "action": "create_network",
-            "name": name,
-            "driver": driver
+            "payload": {
+                "action": "create_network",
+                "name": name,
+                "driver": driver
+            }
         }
 
         result = await self.command_executor.execute_command(
@@ -581,7 +602,9 @@ class AgentContainerOperations:
 
         command = {
             "type": "container_operation",
-            "action": "list_volumes"
+            "payload": {
+                "action": "list_volumes"
+            }
         }
 
         result = await self.command_executor.execute_command(
@@ -621,8 +644,10 @@ class AgentContainerOperations:
 
         command = {
             "type": "container_operation",
-            "action": "create_volume",
-            "name": name
+            "payload": {
+                "action": "create_volume",
+                "name": name
+            }
         }
 
         result = await self.command_executor.execute_command(
@@ -662,8 +687,10 @@ class AgentContainerOperations:
 
         command = {
             "type": "container_operation",
-            "action": "get_status",
-            "container_id": container_id
+            "payload": {
+                "action": "get_status",
+                "container_id": container_id
+            }
         }
 
         result = await self.command_executor.execute_command(
@@ -709,9 +736,11 @@ class AgentContainerOperations:
 
         command = {
             "type": "container_operation",
-            "action": "verify_running",
-            "container_id": container_id,
-            "max_wait_seconds": max_wait_seconds
+            "payload": {
+                "action": "verify_running",
+                "container_id": container_id,
+                "max_wait_seconds": max_wait_seconds
+            }
         }
 
         try:

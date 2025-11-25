@@ -672,8 +672,10 @@ class AgentConnector(HostConnector):
 
         command = {
             "type": "container_operation",
-            "action": "create",
-            "config": final_config
+            "payload": {
+                "action": "create",
+                "config": final_config
+            }
         }
 
         response = await self._execute_command(command, timeout=60.0)
@@ -689,8 +691,10 @@ class AgentConnector(HostConnector):
         """Start container by SHORT ID"""
         command = {
             "type": "container_operation",
-            "action": "start",
-            "container_id": container_id
+            "payload": {
+                "action": "start",
+                "container_id": container_id
+            }
         }
 
         await self._execute_command(command, timeout=30.0)
@@ -699,9 +703,11 @@ class AgentConnector(HostConnector):
         """Stop container by SHORT ID"""
         command = {
             "type": "container_operation",
-            "action": "stop",
-            "container_id": container_id,
-            "timeout": timeout
+            "payload": {
+                "action": "stop",
+                "container_id": container_id,
+                "timeout": timeout
+            }
         }
 
         await self._execute_command(command, timeout=float(timeout + 20))
@@ -710,9 +716,11 @@ class AgentConnector(HostConnector):
         """Remove container by SHORT ID"""
         command = {
             "type": "container_operation",
-            "action": "remove",
-            "container_id": container_id,
-            "force": force
+            "payload": {
+                "action": "remove",
+                "container_id": container_id,
+                "force": force
+            }
         }
 
         await self._execute_command(command, timeout=30.0)
@@ -725,8 +733,10 @@ class AgentConnector(HostConnector):
         """
         command = {
             "type": "container_operation",
-            "action": "get_status",
-            "container_id": container_id
+            "payload": {
+                "action": "get_status",
+                "container_id": container_id
+            }
         }
 
         response = await self._execute_command(command, timeout=15.0)
@@ -739,15 +749,18 @@ class AgentConnector(HostConnector):
         since: Optional[str] = None
     ) -> str:
         """Get container logs"""
-        command = {
-            "type": "container_operation",
+        payload = {
             "action": "get_logs",
             "container_id": container_id,
             "tail": tail
         }
-
         if since:
-            command["since"] = since
+            payload["since"] = since
+
+        command = {
+            "type": "container_operation",
+            "payload": payload
+        }
 
         response = await self._execute_command(command, timeout=30.0)
         return response.get("logs", "")
@@ -764,14 +777,17 @@ class AgentConnector(HostConnector):
         Note: Agent handles progress tracking internally and broadcasts
         via WebSocket. The deployment_id is passed for correlation.
         """
-        command = {
-            "type": "container_operation",
+        payload = {
             "action": "pull_image",
             "image": image
         }
-
         if deployment_id:
-            command["deployment_id"] = deployment_id
+            payload["deployment_id"] = deployment_id
+
+        command = {
+            "type": "container_operation",
+            "payload": payload
+        }
 
         # Image pulls can take a long time (30 minutes timeout)
         await self._execute_command(command, timeout=1800.0)
@@ -780,7 +796,9 @@ class AgentConnector(HostConnector):
         """List Docker networks on host"""
         command = {
             "type": "container_operation",
-            "action": "list_networks"
+            "payload": {
+                "action": "list_networks"
+            }
         }
 
         response = await self._execute_command(command, timeout=15.0)
@@ -790,9 +808,11 @@ class AgentConnector(HostConnector):
         """Create Docker network"""
         command = {
             "type": "container_operation",
-            "action": "create_network",
-            "name": name,
-            "driver": driver
+            "payload": {
+                "action": "create_network",
+                "name": name,
+                "driver": driver
+            }
         }
 
         response = await self._execute_command(command, timeout=30.0)
@@ -802,7 +822,9 @@ class AgentConnector(HostConnector):
         """List Docker volumes on host"""
         command = {
             "type": "container_operation",
-            "action": "list_volumes"
+            "payload": {
+                "action": "list_volumes"
+            }
         }
 
         response = await self._execute_command(command, timeout=15.0)
@@ -812,8 +834,10 @@ class AgentConnector(HostConnector):
         """Create Docker volume"""
         command = {
             "type": "container_operation",
-            "action": "create_volume",
-            "name": name
+            "payload": {
+                "action": "create_volume",
+                "name": name
+            }
         }
 
         response = await self._execute_command(command, timeout=30.0)
@@ -827,8 +851,10 @@ class AgentConnector(HostConnector):
         """
         command = {
             "type": "container_operation",
-            "action": "validate_ports",
-            "ports": ports
+            "payload": {
+                "action": "validate_ports",
+                "ports": ports
+            }
         }
 
         # This will raise RuntimeError if validation fails
@@ -842,9 +868,11 @@ class AgentConnector(HostConnector):
         """
         command = {
             "type": "container_operation",
-            "action": "verify_running",
-            "container_id": container_id,
-            "max_wait_seconds": max_wait_seconds
+            "payload": {
+                "action": "verify_running",
+                "container_id": container_id,
+                "max_wait_seconds": max_wait_seconds
+            }
         }
 
         try:

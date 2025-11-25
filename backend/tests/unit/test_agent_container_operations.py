@@ -72,14 +72,15 @@ class TestStartContainer:
 
         assert result is True
 
-        # Verify correct command sent
+        # Verify correct command sent with payload wrapper
         mock_command_executor.execute_command.assert_called_once()
         call_args = mock_command_executor.execute_command.call_args
         assert call_args[0][0] == "agent-123"  # agent_id
         command = call_args[0][1]
         assert command["type"] == "container_operation"
-        assert command["action"] == "start"
-        assert command["container_id"] == container_id
+        # Parameters are inside payload (v2.2.0 agent protocol)
+        assert command["payload"]["action"] == "start"
+        assert command["payload"]["container_id"] == container_id
 
     @pytest.mark.asyncio
     async def test_start_container_agent_error(self, container_ops, mock_command_executor):
@@ -157,10 +158,10 @@ class TestStopContainer:
 
         assert result is True
 
-        # Verify command includes timeout
+        # Verify command includes timeout (inside payload)
         command = mock_command_executor.execute_command.call_args[0][1]
-        assert command["action"] == "stop"
-        assert "timeout" in command
+        assert command["payload"]["action"] == "stop"
+        assert "timeout" in command["payload"]
 
     @pytest.mark.asyncio
     async def test_stop_container_custom_timeout(self, container_ops, mock_command_executor):
@@ -177,9 +178,9 @@ class TestStopContainer:
 
         await container_ops.stop_container(host_id, container_id, timeout=30)
 
-        # Verify custom timeout in command
+        # Verify custom timeout in command (inside payload)
         command = mock_command_executor.execute_command.call_args[0][1]
-        assert command["timeout"] == 30
+        assert command["payload"]["timeout"] == 30
 
     @pytest.mark.asyncio
     async def test_stop_container_safety_check_dockmon(self, container_ops, mock_command_executor):
@@ -219,7 +220,7 @@ class TestRestartContainer:
         assert result is True
 
         command = mock_command_executor.execute_command.call_args[0][1]
-        assert command["action"] == "restart"
+        assert command["payload"]["action"] == "restart"
 
     @pytest.mark.asyncio
     async def test_restart_container_safety_check_dockmon(self, container_ops):
@@ -255,8 +256,8 @@ class TestRemoveContainer:
         assert result is True
 
         command = mock_command_executor.execute_command.call_args[0][1]
-        assert command["action"] == "remove"
-        assert command["force"] is False
+        assert command["payload"]["action"] == "remove"
+        assert command["payload"]["force"] is False
 
     @pytest.mark.asyncio
     async def test_remove_container_with_force(self, container_ops, mock_command_executor):
@@ -274,7 +275,7 @@ class TestRemoveContainer:
         await container_ops.remove_container(host_id, container_id, force=True)
 
         command = mock_command_executor.execute_command.call_args[0][1]
-        assert command["force"] is True
+        assert command["payload"]["force"] is True
 
     @pytest.mark.asyncio
     async def test_remove_container_safety_check_dockmon(self, container_ops):
@@ -310,8 +311,8 @@ class TestGetContainerLogs:
         assert logs == expected_logs
 
         command = mock_command_executor.execute_command.call_args[0][1]
-        assert command["action"] == "get_logs"
-        assert command["tail"] == 100
+        assert command["payload"]["action"] == "get_logs"
+        assert command["payload"]["tail"] == 100
 
     @pytest.mark.asyncio
     async def test_get_logs_custom_tail(self, container_ops, mock_command_executor):
@@ -329,7 +330,7 @@ class TestGetContainerLogs:
         await container_ops.get_container_logs(host_id, container_id, tail=500)
 
         command = mock_command_executor.execute_command.call_args[0][1]
-        assert command["tail"] == 500
+        assert command["payload"]["tail"] == 500
 
 
 class TestInspectContainer:
@@ -359,7 +360,7 @@ class TestInspectContainer:
         assert details == expected_details
 
         command = mock_command_executor.execute_command.call_args[0][1]
-        assert command["action"] == "inspect"
+        assert command["payload"]["action"] == "inspect"
 
 
 class TestHostToAgentMapping:
@@ -525,6 +526,6 @@ class TestTimeoutConfiguration:
 
         await container_ops.stop_container("host-123", "abc123", timeout=60)
 
-        # Timeout should be passed through
+        # Timeout should be passed through (inside payload)
         command = mock_command_executor.execute_command.call_args[0][1]
-        assert command["timeout"] == 60
+        assert command["payload"]["timeout"] == 60

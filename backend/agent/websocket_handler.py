@@ -51,7 +51,7 @@ class AgentWebSocketHandler:
         self.monitor = monitor
         # Track previous network readings for rate calculation (key: container_key, value: {rx, tx, timestamp})
         self.prev_network_stats = {}
-        self.agent_manager = AgentManager()  # Creates short-lived sessions internally
+        self.agent_manager = AgentManager(monitor=monitor)  # Pass monitor for host registration
         self.db_manager = DatabaseManager()  # For heartbeat updates
         self.agent_id: Optional[str] = None
         self.agent_hostname: Optional[str] = None  # For event logging

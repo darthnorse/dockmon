@@ -1138,48 +1138,43 @@ class DockerMonitor:
             error_msg = self._get_user_friendly_error(str(e))
             raise HTTPException(status_code=400, detail=error_msg)
 
-    async def _sync_agent_hosts(self):
+    def add_agent_host(self, host_id: str, name: str, description: str = None, security_status: str = "unknown"):
         """
-        Sync agent hosts from database to in-memory hosts dictionary.
+        Add an agent-based host to the in-memory hosts dictionary.
 
-        When agents register while the monitor is running, the host is created
-        in the database but not added to self.hosts. This method adds any
-        missing agent hosts so container discovery can find them.
+        Called by AgentManager when an agent successfully registers. This enables
+        immediate container discovery without waiting for periodic refresh.
+
+        Args:
+            host_id: The host's UUID
+            name: Display name for the host
+            description: Optional description
+            security_status: Security status (default: "unknown")
         """
-        try:
-            with self.db.get_session() as session:
-                # Find all agent-based hosts in database
-                agent_hosts = session.query(DockerHostDB).filter(
-                    DockerHostDB.connection_type == "agent"
-                ).all()
+        if host_id in self.hosts:
+            logger.debug(f"Agent host {name} ({host_id[:8]}...) already in monitor")
+            return
 
-                for db_host in agent_hosts:
-                    if db_host.id not in self.hosts:
-                        # Load tags for this host
-                        tags = self.db.get_tags_for_subject('host', db_host.id)
+        # Load tags for this host
+        tags = self.db.get_tags_for_subject('host', host_id)
 
-                        # Create Host object for the agent
-                        host = Host(
-                            id=db_host.id,
-                            name=db_host.name,
-                            url=db_host.url or "agent://",
-                            connection_type="agent",
-                            status="online",  # Agent hosts are online if they registered
-                            client=None,  # Agent hosts don't use Docker client directly
-                            tags=tags,
-                            description=db_host.description
-                        )
-                        host.security_status = db_host.security_status or "unknown"
-                        self.hosts[db_host.id] = host
-                        logger.info(f"Added agent host {db_host.name} ({db_host.id[:8]}...) to monitor")
-        except Exception as e:
-            logger.error(f"Failed to sync agent hosts: {e}")
+        # Create Host object for the agent
+        host = Host(
+            id=host_id,
+            name=name,
+            url="agent://",
+            connection_type="agent",
+            status="online",  # Agent hosts are online when they register
+            client=None,  # Agent hosts don't use Docker client directly
+            tags=tags,
+            description=description
+        )
+        host.security_status = security_status
+        self.hosts[host_id] = host
+        logger.info(f"Added agent host {name} ({host_id[:8]}...) to monitor")
 
     async def get_containers(self, host_id: Optional[str] = None) -> List[Container]:
         """Get containers from one or all hosts"""
-        # Sync any new agent hosts from database that aren't in self.hosts
-        await self._sync_agent_hosts()
-
         containers = []
         hosts_to_check = [host_id] if host_id else list(self.hosts.keys())
 

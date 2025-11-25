@@ -42,7 +42,7 @@ class ContainerOperations:
         self.monitor = monitor
 
         # Initialize agent operations (v2.2.0)
-        self.agent_manager = AgentManager()
+        self.agent_manager = AgentManager(monitor=monitor)
         self.agent_command_executor = AgentCommandExecutor(agent_connection_manager)
         self.agent_operations = AgentContainerOperations(
             command_executor=self.agent_command_executor,

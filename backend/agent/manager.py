@@ -24,14 +24,18 @@ logger = logging.getLogger(__name__)
 class AgentManager:
     """Manages agent registration and lifecycle"""
 
-    def __init__(self):
+    def __init__(self, monitor=None):
         """
         Initialize AgentManager.
 
         Creates short-lived database sessions for each operation instead of
         using a persistent session (following the pattern used throughout DockMon).
+
+        Args:
+            monitor: Optional DockerMonitor instance for notifying when hosts are created
         """
         self.db_manager = DatabaseManager()  # Creates sessions as needed
+        self.monitor = monitor  # For adding hosts to monitor on registration
 
     def generate_registration_token(self, user_id: int) -> RegistrationToken:
         """
@@ -326,6 +330,16 @@ class AgentManager:
                 # Commit in the dedicated session (context manager will close it)
                 reg_session.commit()
                 logger.info(f"Successfully registered agent {agent_id[:8]}... (host: {agent_name}, host_id: {host_id[:8]}...)")
+
+                # Notify monitor to add host to in-memory hosts dict
+                # This enables immediate container discovery without waiting for refresh
+                if self.monitor:
+                    self.monitor.add_agent_host(
+                        host_id=host_id,
+                        name=agent_name,
+                        description=None,
+                        security_status="unknown"
+                    )
 
                 return {
                     "success": True,

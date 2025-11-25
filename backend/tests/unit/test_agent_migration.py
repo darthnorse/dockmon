@@ -16,9 +16,14 @@ from agent.manager import AgentManager
 @pytest.fixture
 def db_manager():
     """Create a test database manager with in-memory SQLite."""
+    # Reset the singleton to allow creating a new instance for testing
+    import database
+    database._database_manager_instance = None  # Reset singleton
     manager = DatabaseManager(db_path=':memory:')
-    manager.init_db()
-    return manager
+    # Tables are created automatically in __init__ via Base.metadata.create_all()
+    yield manager
+    # Cleanup: reset singleton after test
+    database._database_manager_instance = None
 
 
 @pytest.fixture

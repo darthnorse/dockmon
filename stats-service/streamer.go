@@ -11,7 +11,7 @@ import (
 	"time"
 
 	dockerpkg "github.com/darthnorse/dockmon-shared/docker"
-	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 )
 
@@ -281,7 +281,7 @@ func (sm *StreamManager) streamStats(ctx context.Context, containerID, container
 			default:
 			}
 
-			var stat types.StatsJSON
+			var stat container.StatsResponse
 			if err := decoder.Decode(&stat); err != nil {
 				stats.Body.Close()
 				if err == io.EOF || err == context.Canceled {
@@ -303,7 +303,7 @@ func (sm *StreamManager) streamStats(ctx context.Context, containerID, container
 
 // processStats calculates metrics from raw Docker stats
 // Now uses shared package for consistent calculation across all hosts
-func (sm *StreamManager) processStats(stat *types.StatsJSON, containerID, containerName, hostID string) {
+func (sm *StreamManager) processStats(stat *container.StatsResponse, containerID, containerName, hostID string) {
 	// Use shared package for all stats calculations
 	result := dockerpkg.CalculateStats(stat)
 

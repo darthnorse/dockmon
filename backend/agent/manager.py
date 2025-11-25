@@ -212,11 +212,13 @@ class AgentManager:
                     session.commit()
 
                     # Notify monitor to mark host online and broadcast status change
+                    logger.info(f"Permanent token reconnection: notifying monitor (monitor={self.monitor is not None})")
                     if self.monitor:
                         self.monitor.add_agent_host(
                             host_id=host_id,
                             name=host_name
                         )
+                        logger.info(f"Called add_agent_host for {host_name} ({host_id[:8]}...)")
 
                     return {
                         "success": True,

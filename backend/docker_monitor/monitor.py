@@ -1154,7 +1154,7 @@ class DockerMonitor:
         if host_id in self.hosts:
             # Host already exists - mark it online (reconnection case)
             self.hosts[host_id].status = "online"
-            logger.debug(f"Agent host {name} ({host_id[:8]}...) already in monitor, marked online")
+            logger.info(f"Agent host {name} ({host_id[:8]}...) reconnected, marked online")
             self._schedule_host_status_broadcast(host_id, "online")
             return
 
@@ -1207,9 +1207,11 @@ class DockerMonitor:
                         "status": status
                     }
                 })
-                logger.debug(f"Broadcast host status: {host_id[:8]}... -> {status}")
+                logger.info(f"Broadcast host status: {host_id[:8]}... -> {status}")
             except Exception as e:
                 logger.error(f"Failed to broadcast host status: {e}")
+        else:
+            logger.warning(f"Cannot broadcast host status: no manager (host_id={host_id[:8]}..., status={status})")
 
     async def get_containers(self, host_id: Optional[str] = None) -> List[Container]:
         """Get containers from one or all hosts"""

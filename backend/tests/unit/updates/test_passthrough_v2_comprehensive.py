@@ -301,6 +301,7 @@ class TestExtractContainerConfigV2:
         }
         return container
 
+    @pytest.mark.asyncio
     async def test_passthrough_preserves_hostconfig_exactly(self, update_executor, mock_container):
         """HostConfig should be passed through without modification (Docker host)"""
         mock_client = Mock()
@@ -321,6 +322,7 @@ class TestExtractContainerConfigV2:
         assert config['host_config']['Memory'] == 536870912
         assert config['host_config']['CpuQuota'] == 50000
 
+    @pytest.mark.asyncio
     async def test_podman_filtering_removes_incompatible_fields(self, update_executor, mock_container):
         """Podman host should filter NanoCpus and MemorySwappiness"""
         mock_client = Mock()
@@ -347,6 +349,7 @@ class TestExtractContainerConfigV2:
         # MemorySwappiness should be removed
         assert 'MemorySwappiness' not in config['host_config']
 
+    @pytest.mark.asyncio
     async def test_network_mode_container_id_resolved_to_name(self, update_executor, mock_container):
         """NetworkMode with container:ID should be resolved to container:name"""
         mock_client = Mock()
@@ -361,7 +364,7 @@ class TestExtractContainerConfigV2:
                 return mock_ref_container
             return func(*args, **kwargs)
 
-        with patch('updates.update_executor.async_docker_call', side_effect=mock_async_call):
+        with patch('updates.docker_executor.async_docker_call', side_effect=mock_async_call):
             config = await update_executor._extract_container_config_v2(
                 mock_container,
                 mock_client,
@@ -372,6 +375,7 @@ class TestExtractContainerConfigV2:
         # Should be resolved to container:name
         assert config['host_config']['NetworkMode'] == 'container:gluetun'
 
+    @pytest.mark.asyncio
     async def test_network_mode_container_id_resolution_failure_preserves_id(self, update_executor, mock_container):
         """If container:ID resolution fails, preserve the ID"""
         mock_client = Mock()
@@ -384,7 +388,7 @@ class TestExtractContainerConfigV2:
                 raise Exception("Container not found")
             return func(*args, **kwargs)
 
-        with patch('updates.update_executor.async_docker_call', side_effect=mock_async_call):
+        with patch('updates.docker_executor.async_docker_call', side_effect=mock_async_call):
             config = await update_executor._extract_container_config_v2(
                 mock_container,
                 mock_client,
@@ -395,6 +399,7 @@ class TestExtractContainerConfigV2:
         # Should preserve original ID
         assert config['host_config']['NetworkMode'] == 'container:abc123def456'
 
+    @pytest.mark.asyncio
     async def test_label_merging_preserves_old_labels(self, update_executor, mock_container):
         """User labels should be preserved, image labels subtracted"""
         mock_client = Mock()
@@ -425,6 +430,7 @@ class TestExtractContainerConfigV2:
         assert 'org.opencontainers.image.version' not in config['labels']
         assert 'org.opencontainers.image.created' not in config['labels']
 
+    @pytest.mark.asyncio
     async def test_network_config_extraction_single_network(self, update_executor, mock_container):
         """Single custom network should be extracted"""
         mock_client = Mock()
@@ -448,6 +454,7 @@ class TestExtractContainerConfigV2:
         assert config['network'] == 'frontend-net'
         assert config['network_mode_override'] is None
 
+    @pytest.mark.asyncio
     async def test_network_config_extraction_multiple_networks(self, update_executor, mock_container):
         """Multiple networks should trigger manual connection"""
         mock_client = Mock()
@@ -526,6 +533,7 @@ class TestCreateContainerV2:
             'container_name': 'nginx-test'  # Extracted from config['Name']
         }
 
+    @pytest.mark.asyncio
     async def test_low_level_api_called_with_correct_params(self, update_executor, minimal_config):
         """Low-level API should be called with all required parameters"""
         mock_client = Mock()
@@ -537,7 +545,7 @@ class TestCreateContainerV2:
             mock_client, mock_new_container, track_calls=True
         )
 
-        with patch('updates.update_executor.async_docker_call', side_effect=mock_async_docker_call):
+        with patch('updates.docker_executor.async_docker_call', side_effect=mock_async_docker_call):
             result = await update_executor._create_container_v2(
                 mock_client,
                 'nginx:1.21',
@@ -560,6 +568,7 @@ class TestCreateContainerV2:
         # HostConfig passed directly
         assert api_call['host_config'] == minimal_config['host_config']
 
+    @pytest.mark.asyncio
     async def test_container_network_mode_excludes_hostname_and_mac(self, update_executor, minimal_config):
         """Container network mode should exclude hostname and mac_address"""
         mock_client = Mock()
@@ -573,7 +582,7 @@ class TestCreateContainerV2:
             mock_client, mock_new_container, track_calls=True
         )
 
-        with patch('updates.update_executor.async_docker_call', side_effect=mock_async_docker_call):
+        with patch('updates.docker_executor.async_docker_call', side_effect=mock_async_docker_call):
             result = await update_executor._create_container_v2(
                 mock_client,
                 'nginx:1.21',
@@ -587,6 +596,7 @@ class TestCreateContainerV2:
         assert api_call['hostname'] is None
         assert api_call['mac_address'] is None
 
+    @pytest.mark.asyncio
     async def test_network_mode_override_applied(self, update_executor, minimal_config):
         """network_mode_override should replace HostConfig NetworkMode"""
         mock_client = Mock()
@@ -600,7 +610,7 @@ class TestCreateContainerV2:
             mock_client, mock_new_container, track_calls=True
         )
 
-        with patch('updates.update_executor.async_docker_call', side_effect=mock_async_docker_call):
+        with patch('updates.docker_executor.async_docker_call', side_effect=mock_async_docker_call):
             result = await update_executor._create_container_v2(
                 mock_client,
                 'nginx:1.21',
@@ -613,6 +623,7 @@ class TestCreateContainerV2:
         # NetworkMode should be overridden
         assert api_call['host_config']['NetworkMode'] == 'default'
 
+    @pytest.mark.asyncio
     async def test_creation_failure_no_cleanup_attempt(self, update_executor, minimal_config):
         """If creation fails, no cleanup attempt should be made"""
         mock_client = Mock()
@@ -624,7 +635,7 @@ class TestCreateContainerV2:
                 raise Exception("Image not found")
             return func(*args, **kwargs)
 
-        with patch('updates.update_executor.async_docker_call', side_effect=mock_async_call):
+        with patch('updates.docker_executor.async_docker_call', side_effect=mock_async_call):
             with pytest.raises(Exception, match="Image not found"):
                 await update_executor._create_container_v2(
                     mock_client,
@@ -633,6 +644,7 @@ class TestCreateContainerV2:
                     is_podman=False
                 )
 
+    @pytest.mark.asyncio
     async def test_manual_network_connection_failure_cleans_up_container(self, update_executor, minimal_config):
         """If manual network connection fails, container should be removed"""
         mock_client = Mock()
@@ -655,8 +667,8 @@ class TestCreateContainerV2:
                 return mock_new_container
             return func(*args, **kwargs)
 
-        with patch('updates.update_executor.async_docker_call', side_effect=mock_async_call):
-            with patch('updates.update_executor.manually_connect_networks', side_effect=Exception("Network connection failed")):
+        with patch('updates.docker_executor.async_docker_call', side_effect=mock_async_call):
+            with patch('updates.docker_executor.manually_connect_networks', side_effect=Exception("Network connection failed")):
                 with pytest.raises(Exception, match="Network connection failed"):
                     await update_executor._create_container_v2(
                         mock_client,
@@ -665,6 +677,7 @@ class TestCreateContainerV2:
                         is_podman=False
                     )
 
+    @pytest.mark.asyncio
     async def test_returns_created_container_object(self, update_executor, minimal_config):
         """Should return the created container object"""
         mock_client = Mock()
@@ -680,7 +693,7 @@ class TestCreateContainerV2:
             mock_client, mock_new_container
         )
 
-        with patch('updates.update_executor.async_docker_call', side_effect=mock_async_docker_call):
+        with patch('updates.docker_executor.async_docker_call', side_effect=mock_async_docker_call):
             result = await update_executor._create_container_v2(
                 mock_client,
                 'nginx:1.21',

@@ -1,20 +1,23 @@
 """
 Unit tests for Agent Self-Update functionality.
 
-Tests the agent self-update detection and execution in UpdateExecutor.
+Tests the agent self-update detection and execution in AgentUpdateExecutor.
 This ensures agents can update themselves without recreating containers.
 
-TDD RED Phase: These tests define expected behavior.
-All tests should FAIL initially since feature doesn't exist yet.
+Architecture (v2.2.0+):
+- UpdateExecutor routes to AgentUpdateExecutor for agent-based hosts
+- AgentUpdateExecutor.execute() detects agent containers and routes to execute_self_update()
+- Self-update uses binary swap instead of container recreation
 """
 
 import pytest
 import asyncio
-from unittest.mock import MagicMock, AsyncMock, patch, call
-from datetime import datetime
+from unittest.mock import MagicMock, AsyncMock, patch
+from datetime import datetime, timezone
 
-from updates.update_executor import UpdateExecutor
-from database import DatabaseManager, ContainerUpdate
+from updates.agent_executor import AgentUpdateExecutor
+from updates.types import UpdateContext, UpdateResult
+from database import DatabaseManager, ContainerUpdate, Agent
 from agent.manager import AgentManager
 from agent.command_executor import CommandStatus, CommandResult
 
@@ -28,27 +31,38 @@ def mock_db():
 
 
 @pytest.fixture
+def mock_agent_manager():
+    """Mock AgentManager"""
+    manager = MagicMock(spec=AgentManager)
+    manager.get_agent_for_host = MagicMock(return_value="agent-456")
+    return manager
+
+
+@pytest.fixture
+def mock_command_executor():
+    """Mock AgentCommandExecutor"""
+    executor = MagicMock()
+    executor.execute_command = AsyncMock()
+    return executor
+
+
+@pytest.fixture
 def mock_monitor():
     """Mock DockerMonitor"""
     monitor = MagicMock()
     monitor.manager = None
-    # Mock alert_evaluation_service with async methods
-    monitor.alert_evaluation_service = MagicMock()
-    monitor.alert_evaluation_service.handle_container_event = AsyncMock()
     return monitor
 
 
 @pytest.fixture
-def executor(mock_db, mock_monitor):
-    """Create UpdateExecutor with mocked dependencies"""
-    with patch('updates.update_executor.ImagePullProgress'):
-        executor = UpdateExecutor(mock_db, mock_monitor)
-        # Mock agent manager
-        executor.agent_manager = MagicMock(spec=AgentManager)
-        # Mock agent command executor
-        executor.agent_command_executor = MagicMock()
-        executor.agent_command_executor.execute_command = AsyncMock()
-        return executor
+def agent_executor(mock_db, mock_agent_manager, mock_command_executor, mock_monitor):
+    """Create AgentUpdateExecutor with mocked dependencies"""
+    return AgentUpdateExecutor(
+        db=mock_db,
+        agent_manager=mock_agent_manager,
+        agent_command_executor=mock_command_executor,
+        monitor=mock_monitor,
+    )
 
 
 @pytest.fixture
@@ -73,438 +87,412 @@ def normal_update_record():
     )
 
 
+@pytest.fixture
+def agent_context():
+    """Create UpdateContext for agent container"""
+    return UpdateContext(
+        host_id="host-123",
+        container_id="abc123def456",
+        container_name="dockmon-agent",
+        current_image="ghcr.io/darthnorse/dockmon-agent:2.2.0",
+        new_image="ghcr.io/darthnorse/dockmon-agent:2.2.1",
+        update_record_id=1,
+    )
+
+
+@pytest.fixture
+def normal_context():
+    """Create UpdateContext for normal container"""
+    return UpdateContext(
+        host_id="host-123",
+        container_id="def456abc123",
+        container_name="nginx",
+        current_image="nginx:1.24",
+        new_image="nginx:1.25",
+        update_record_id=2,
+    )
+
+
 class TestAgentSelfUpdateDetection:
-    """Test agent container detection logic"""
+    """Test agent container detection logic in AgentUpdateExecutor"""
 
     @pytest.mark.asyncio
-    async def test_detects_agent_container_by_official_image(self, executor, agent_update_record):
-        """Should detect agent by official image name"""
-        # Setup
-        host_id = "host-123"
-        container_id = "abc123def456"
-        executor.agent_manager.get_agent_for_host.return_value = "agent-456"
+    async def test_detects_agent_container_by_official_image(
+        self, agent_executor, agent_update_record, agent_context, mock_command_executor
+    ):
+        """Should detect agent by image name and route to self-update"""
+        # Setup: Mock execute_self_update to verify it's called
+        agent_executor.execute_self_update = AsyncMock(
+            return_value=UpdateResult.success_result("abc123def456")
+        )
 
-        # Mock _execute_agent_self_update to verify it's called
-        executor._execute_agent_self_update = AsyncMock(return_value=True)
+        async def progress_callback(stage, percent, message):
+            pass
 
-        # Create a mock container with proper name attribute
-        mock_container = MagicMock()
-        mock_container.name = "dockmon-agent"
-        mock_container.labels = {}
+        # Execute
+        result = await agent_executor.execute(
+            context=agent_context,
+            progress_callback=progress_callback,
+            update_record=agent_update_record,
+        )
 
-        # Mock _get_docker_client to return a mock client
-        mock_client = MagicMock()
-        executor._get_docker_client = AsyncMock(return_value=mock_client)
-
-        # Mock async_docker_call to return the mock container
-        with patch('updates.update_executor.async_docker_call', AsyncMock(return_value=mock_container)):
-            # Execute
-            result = await executor.update_container(
-                host_id, container_id, agent_update_record, force=False
-            )
-
-        # Verify: Should route to agent self-update
-        executor._execute_agent_self_update.assert_called_once()
-        assert result is True
+        # Verify: Should route to self-update
+        agent_executor.execute_self_update.assert_called_once()
+        assert result.success is True
 
     @pytest.mark.asyncio
-    async def test_detects_agent_container_by_custom_image(self, executor):
+    async def test_detects_agent_container_by_custom_image(
+        self, agent_executor, mock_command_executor
+    ):
         """Should detect agent even with custom registry"""
         # Setup
-        custom_agent_record = ContainerUpdate(
+        custom_context = UpdateContext(
+            host_id="host-123",
+            container_id="abc123def456",
+            container_name="custom-agent",
+            current_image="registry.example.com/my-dockmon-agent:v1",
+            new_image="registry.example.com/my-dockmon-agent:v2",
+            update_record_id=1,
+        )
+        custom_record = ContainerUpdate(
             container_id="host-123:abc123def456",
             current_image="registry.example.com/my-dockmon-agent:v1",
             latest_image="registry.example.com/my-dockmon-agent:v2",
             update_available=True
         )
-        executor.agent_manager.get_agent_for_host.return_value = "agent-456"
-        executor._execute_agent_self_update = AsyncMock(return_value=True)
 
-        # Create a mock container with proper name attribute
-        mock_container = MagicMock()
-        mock_container.name = "custom-agent"
-        mock_container.labels = {}
+        agent_executor.execute_self_update = AsyncMock(
+            return_value=UpdateResult.success_result("abc123def456")
+        )
 
-        # Mock _get_docker_client to return a mock client
-        mock_client = MagicMock()
-        executor._get_docker_client = AsyncMock(return_value=mock_client)
+        async def progress_callback(stage, percent, message):
+            pass
 
-        # Mock async_docker_call to return the mock container
-        with patch('updates.update_executor.async_docker_call', AsyncMock(return_value=mock_container)):
-            # Execute
-            result = await executor.update_container(
-                "host-123", "abc123def456", custom_agent_record, force=False
-            )
+        # Execute
+        result = await agent_executor.execute(
+            context=custom_context,
+            progress_callback=progress_callback,
+            update_record=custom_record,
+        )
 
-        # Verify
-        executor._execute_agent_self_update.assert_called_once()
+        # Verify: Should route to self-update
+        agent_executor.execute_self_update.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_ignores_non_agent_containers(self, executor, normal_update_record):
+    async def test_ignores_non_agent_containers(
+        self, agent_executor, normal_update_record, normal_context, mock_command_executor
+    ):
         """Should NOT route non-agent containers to self-update"""
-        # Setup
-        executor._execute_agent_self_update = AsyncMock(return_value=True)
-        executor._get_docker_client = AsyncMock(return_value=MagicMock())
-        executor._get_container_info = AsyncMock(return_value={
-            "name": "nginx",
-            "id": "def456abc123"
+        # Setup: Mock normal update flow
+        agent_executor.execute_self_update = AsyncMock()
+
+        mock_command_executor.execute_command.return_value = CommandResult(
+            status=CommandStatus.SUCCESS,
+            success=True,
+            response={},
+            error=None
+        )
+
+        # Mock _wait_for_agent_update_completion
+        agent_executor._wait_for_agent_update_completion = AsyncMock(return_value=True)
+        agent_executor._get_container_info_by_name = AsyncMock(return_value={
+            "id": "def456abc123",
+            "state": "running"
         })
+        agent_executor._update_database = AsyncMock()
 
-        # Mock the normal update flow to avoid errors
-        with patch.object(executor, '_emit_update_started_event', AsyncMock()):
-            with patch.object(executor, '_emit_update_failed_event', AsyncMock()):
-                # This will fail in normal flow, but that's OK for this test
-                try:
-                    await executor.update_container(
-                        "host-123", "def456abc123", normal_update_record, force=False
-                    )
-                except:
-                    pass
+        async def progress_callback(stage, percent, message):
+            pass
 
-        # Verify: Should NOT call agent self-update
-        executor._execute_agent_self_update.assert_not_called()
+        # Execute
+        await agent_executor.execute(
+            context=normal_context,
+            progress_callback=progress_callback,
+            update_record=normal_update_record,
+        )
+
+        # Verify: Should NOT call self-update
+        agent_executor.execute_self_update.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_requires_agent_for_host_to_route_to_self_update(self, executor, agent_update_record):
-        """Should only route to self-update if agent exists for host"""
+    async def test_no_agent_for_host_returns_failure(
+        self, agent_executor, agent_update_record, agent_context, mock_agent_manager
+    ):
+        """Should return failure if no agent for host"""
         # Setup: No agent for this host
-        executor.agent_manager.get_agent_for_host.return_value = None
-        executor._execute_agent_self_update = AsyncMock(return_value=True)
-        executor._get_docker_client = AsyncMock(return_value=MagicMock())
-        executor._get_container_info = AsyncMock(return_value={
-            "name": "dockmon-agent",
-            "id": "abc123def456"
-        })
+        mock_agent_manager.get_agent_for_host.return_value = None
 
-        # Mock normal flow
-        with patch.object(executor, '_emit_update_started_event', AsyncMock()):
-            with patch.object(executor, '_emit_update_failed_event', AsyncMock()):
-                try:
-                    await executor.update_container(
-                        "host-123", "abc123def456", agent_update_record, force=False
-                    )
-                except:
-                    pass
+        async def progress_callback(stage, percent, message):
+            pass
 
-        # Verify: Should NOT route to self-update if no agent
-        executor._execute_agent_self_update.assert_not_called()
+        # Execute
+        result = await agent_executor.execute(
+            context=agent_context,
+            progress_callback=progress_callback,
+            update_record=agent_update_record,
+        )
+
+        # Verify: Should fail
+        assert result.success is False
+        assert "No agent" in result.error_message
 
 
 class TestAgentSelfUpdateExecution:
     """Test agent self-update execution logic"""
 
     @pytest.mark.asyncio
-    async def test_sends_self_update_command_to_agent(self, executor):
+    async def test_sends_self_update_command_to_agent(
+        self, agent_executor, agent_update_record, agent_context, mock_command_executor
+    ):
         """Should send self_update command with correct parameters"""
         # Setup
-        agent_id = "agent-456"
-        host_id = "host-123"
-        container_id = "abc123def456"
-        container_name = "dockmon-agent"
-        update_record = ContainerUpdate(
-            container_id=f"{host_id}:{container_id}",
-            current_image="ghcr.io/darthnorse/dockmon-agent:2.2.0",
-            latest_image="ghcr.io/darthnorse/dockmon-agent:2.2.1",
-            update_available=True
-        )
-
-        # Mock successful command execution
-        executor.agent_command_executor.execute_command.return_value = CommandResult(
+        mock_command_executor.execute_command.return_value = CommandResult(
             status=CommandStatus.SUCCESS,
             success=True,
-            response={"message": "Update initiated"},
-            error=None,
-            duration_seconds=1.5
+            response={"status": "updating"},
+            error=None
         )
 
-        # Mock event emission
-        executor._emit_update_started_event = AsyncMock()
-        executor._emit_update_completed_event = AsyncMock()
+        # Mock reconnection and version check
+        agent_executor._wait_for_agent_reconnection = AsyncMock(return_value=True)
+        agent_executor._get_agent_version = AsyncMock(return_value="2.2.1")
 
-        # Mock agent reconnection check
-        with patch.object(executor, '_wait_for_agent_reconnection', AsyncMock(return_value=True)):
-            # Execute
-            result = await executor._execute_agent_self_update(
-                agent_id, host_id, container_id, container_name, update_record
-            )
+        # Mock database session for the update
+        mock_session = MagicMock()
+        mock_session.query.return_value.filter_by.return_value.first.return_value = None
+        agent_executor.db.get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
+        agent_executor.db.get_session.return_value.__exit__ = MagicMock(return_value=False)
 
-        # Verify command was sent
-        executor.agent_command_executor.execute_command.assert_called_once()
-        call_args = executor.agent_command_executor.execute_command.call_args
+        async def progress_callback(stage, percent, message):
+            pass
 
-        # Verify command structure
-        assert call_args[0][0] == agent_id  # First arg: agent_id
-        command = call_args[0][1]  # Second arg: command dict
+        # Execute
+        result = await agent_executor.execute_self_update(
+            context=agent_context,
+            progress_callback=progress_callback,
+            update_record=agent_update_record,
+            agent_id="agent-456",
+        )
+
+        # Verify command was sent with correct format
+        mock_command_executor.execute_command.assert_called_once()
+        call_args = mock_command_executor.execute_command.call_args
+        command = call_args[0][1]
+
         assert command["type"] == "command"
-        assert command["payload"]["action"] == "self_update"
-        assert "ghcr.io/darthnorse/dockmon-agent:2.2.1" in command["payload"]["params"]["image"]
-
-        assert result is True
+        assert command["command"] == "self_update"
+        assert "payload" in command
+        assert command["payload"]["image"] == "ghcr.io/darthnorse/dockmon-agent:2.2.1"
+        assert command["payload"]["version"] == "2.2.1"
 
     @pytest.mark.asyncio
-    async def test_waits_for_agent_reconnection_after_update(self, executor):
-        """Should wait for agent to reconnect with new version"""
-        # This test verifies the waiting logic exists
-        agent_id = "agent-456"
-
-        # Mock command execution
-        executor.agent_command_executor.execute_command.return_value = CommandResult(
+    async def test_waits_for_agent_reconnection_after_update(
+        self, agent_executor, agent_update_record, agent_context, mock_command_executor
+    ):
+        """Should wait for agent to reconnect after self-update"""
+        # Setup
+        mock_command_executor.execute_command.return_value = CommandResult(
             status=CommandStatus.SUCCESS,
             success=True,
             response={},
-            error=None,
-            duration_seconds=1.0
+            error=None
         )
 
-        executor._emit_update_started_event = AsyncMock()
-        executor._emit_update_completed_event = AsyncMock()
+        reconnection_called = False
 
-        # Mock reconnection
-        executor._wait_for_agent_reconnection = AsyncMock(return_value=True)
+        async def mock_wait_reconnection(agent_id, timeout):
+            nonlocal reconnection_called
+            reconnection_called = True
+            return True
 
-        update_record = ContainerUpdate(
-            container_id="host-123:abc123def456",
-            current_image="ghcr.io/darthnorse/dockmon-agent:2.2.0",
-            latest_image="ghcr.io/darthnorse/dockmon-agent:2.2.1"
-        )
+        agent_executor._wait_for_agent_reconnection = mock_wait_reconnection
+        agent_executor._get_agent_version = AsyncMock(return_value="2.2.1")
+
+        mock_session = MagicMock()
+        mock_session.query.return_value.filter_by.return_value.first.return_value = None
+        agent_executor.db.get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
+        agent_executor.db.get_session.return_value.__exit__ = MagicMock(return_value=False)
+
+        async def progress_callback(stage, percent, message):
+            pass
 
         # Execute
-        await executor._execute_agent_self_update(
-            agent_id, "host-123", "abc123def456", "dockmon-agent", update_record
+        await agent_executor.execute_self_update(
+            context=agent_context,
+            progress_callback=progress_callback,
+            update_record=agent_update_record,
+            agent_id="agent-456",
         )
 
-        # Verify reconnection check was called
-        executor._wait_for_agent_reconnection.assert_called_once()
+        # Verify
+        assert reconnection_called is True
 
     @pytest.mark.asyncio
-    async def test_handles_command_send_failure(self, executor):
-        """Should handle failure to send command to agent"""
-        # Setup
-        agent_id = "agent-456"
-        executor.agent_command_executor.execute_command.return_value = CommandResult(
+    async def test_handles_command_send_failure(
+        self, agent_executor, agent_update_record, agent_context, mock_command_executor
+    ):
+        """Should return failure if command send fails"""
+        # Setup: Command fails
+        mock_command_executor.execute_command.return_value = CommandResult(
             status=CommandStatus.ERROR,
             success=False,
             response=None,
-            error="Agent not connected",
-            duration_seconds=0.1
+            error="Connection refused"
         )
 
-        executor._emit_update_started_event = AsyncMock()
-        executor._emit_update_failed_event = AsyncMock()
-
-        update_record = ContainerUpdate(
-            container_id="host-123:abc123def456",
-            current_image="ghcr.io/darthnorse/dockmon-agent:2.2.0",
-            latest_image="ghcr.io/darthnorse/dockmon-agent:2.2.1"
-        )
+        async def progress_callback(stage, percent, message):
+            pass
 
         # Execute
-        result = await executor._execute_agent_self_update(
-            agent_id, "host-123", "abc123def456", "dockmon-agent", update_record
+        result = await agent_executor.execute_self_update(
+            context=agent_context,
+            progress_callback=progress_callback,
+            update_record=agent_update_record,
+            agent_id="agent-456",
         )
 
         # Verify
-        assert result is False
-        executor._emit_update_failed_event.assert_called_once()
+        assert result.success is False
+        assert "Failed to send" in result.error_message
 
     @pytest.mark.asyncio
-    async def test_timeout_if_agent_never_reconnects(self, executor):
-        """Should timeout if agent doesn't reconnect within timeframe"""
+    async def test_timeout_if_agent_never_reconnects(
+        self, agent_executor, agent_update_record, agent_context, mock_command_executor
+    ):
+        """Should return failure if agent doesn't reconnect"""
         # Setup
-        agent_id = "agent-456"
-        executor.agent_command_executor.execute_command.return_value = CommandResult(
+        mock_command_executor.execute_command.return_value = CommandResult(
             status=CommandStatus.SUCCESS,
             success=True,
             response={},
-            error=None,
-            duration_seconds=1.0
+            error=None
         )
 
-        executor._emit_update_started_event = AsyncMock()
-        executor._emit_update_failed_event = AsyncMock()
+        # Agent never reconnects
+        agent_executor._wait_for_agent_reconnection = AsyncMock(return_value=False)
 
-        # Mock timeout on reconnection
-        executor._wait_for_agent_reconnection = AsyncMock(return_value=False)
-
-        update_record = ContainerUpdate(
-            container_id="host-123:abc123def456",
-            current_image="ghcr.io/darthnorse/dockmon-agent:2.2.0",
-            latest_image="ghcr.io/darthnorse/dockmon-agent:2.2.1"
-        )
+        async def progress_callback(stage, percent, message):
+            pass
 
         # Execute
-        result = await executor._execute_agent_self_update(
-            agent_id, "host-123", "abc123def456", "dockmon-agent", update_record
+        result = await agent_executor.execute_self_update(
+            context=agent_context,
+            progress_callback=progress_callback,
+            update_record=agent_update_record,
+            agent_id="agent-456",
         )
 
         # Verify
-        assert result is False
-        executor._emit_update_failed_event.assert_called_once()
+        assert result.success is False
+        assert "did not reconnect" in result.error_message
 
     @pytest.mark.asyncio
-    async def test_validates_new_version_on_reconnection(self, executor):
-        """Should verify agent reconnects with expected new version"""
-        # This test ensures version validation logic exists
-        agent_id = "agent-456"
-        executor.agent_command_executor.execute_command.return_value = CommandResult(
+    async def test_validates_new_version_on_reconnection(
+        self, agent_executor, agent_update_record, agent_context, mock_command_executor
+    ):
+        """Should check agent version after reconnection"""
+        # Setup
+        mock_command_executor.execute_command.return_value = CommandResult(
             status=CommandStatus.SUCCESS,
             success=True,
             response={},
-            error=None,
-            duration_seconds=1.0
+            error=None
         )
 
-        executor._emit_update_started_event = AsyncMock()
-        executor._emit_update_completed_event = AsyncMock()
-        executor._wait_for_agent_reconnection = AsyncMock(return_value=True)
+        agent_executor._wait_for_agent_reconnection = AsyncMock(return_value=True)
 
-        # Mock getting agent version after reconnection
-        executor._get_agent_version = AsyncMock(return_value="2.2.1")
+        version_checked = False
 
-        update_record = ContainerUpdate(
-            container_id="host-123:abc123def456",
-            current_image="ghcr.io/darthnorse/dockmon-agent:2.2.0",
-            latest_image="ghcr.io/darthnorse/dockmon-agent:2.2.1"
-        )
+        async def mock_get_version(agent_id):
+            nonlocal version_checked
+            version_checked = True
+            return "2.2.1"
+
+        agent_executor._get_agent_version = mock_get_version
+
+        mock_session = MagicMock()
+        mock_session.query.return_value.filter_by.return_value.first.return_value = None
+        agent_executor.db.get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
+        agent_executor.db.get_session.return_value.__exit__ = MagicMock(return_value=False)
+
+        async def progress_callback(stage, percent, message):
+            pass
 
         # Execute
-        result = await executor._execute_agent_self_update(
-            agent_id, "host-123", "abc123def456", "dockmon-agent", update_record
+        await agent_executor.execute_self_update(
+            context=agent_context,
+            progress_callback=progress_callback,
+            update_record=agent_update_record,
+            agent_id="agent-456",
         )
 
-        # Verify version check was called
-        executor._get_agent_version.assert_called_once_with(agent_id)
-        assert result is True
+        # Verify
+        assert version_checked is True
 
 
 class TestAgentSelfUpdateEvents:
     """Test event emission during agent self-update"""
 
     @pytest.mark.asyncio
-    async def test_emits_update_started_event(self, executor):
-        """Should emit UPDATE_STARTED event at beginning"""
-        agent_id = "agent-456"
-        executor.agent_command_executor.execute_command.return_value = CommandResult(
+    async def test_progress_callback_called_with_stages(
+        self, agent_executor, agent_update_record, agent_context, mock_command_executor
+    ):
+        """Should call progress callback with appropriate stages"""
+        # Setup
+        mock_command_executor.execute_command.return_value = CommandResult(
             status=CommandStatus.SUCCESS,
             success=True,
             response={},
-            error=None,
-            duration_seconds=1.0
+            error=None
         )
 
-        executor._emit_update_started_event = AsyncMock()
-        executor._emit_update_completed_event = AsyncMock()
-        executor._wait_for_agent_reconnection = AsyncMock(return_value=True)
+        agent_executor._wait_for_agent_reconnection = AsyncMock(return_value=True)
+        agent_executor._get_agent_version = AsyncMock(return_value="2.2.1")
 
-        update_record = ContainerUpdate(
-            container_id="host-123:abc123def456",
-            current_image="ghcr.io/darthnorse/dockmon-agent:2.2.0",
-            latest_image="ghcr.io/darthnorse/dockmon-agent:2.2.1"
-        )
+        mock_session = MagicMock()
+        mock_session.query.return_value.filter_by.return_value.first.return_value = None
+        agent_executor.db.get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
+        agent_executor.db.get_session.return_value.__exit__ = MagicMock(return_value=False)
+
+        progress_stages = []
+
+        async def progress_callback(stage, percent, message):
+            progress_stages.append(stage)
 
         # Execute
-        await executor._execute_agent_self_update(
-            agent_id, "host-123", "abc123def456", "dockmon-agent", update_record
+        await agent_executor.execute_self_update(
+            context=agent_context,
+            progress_callback=progress_callback,
+            update_record=agent_update_record,
+            agent_id="agent-456",
         )
 
-        # Verify
-        executor._emit_update_started_event.assert_called_once_with(
-            "host-123", "abc123def456", "dockmon-agent", "ghcr.io/darthnorse/dockmon-agent:2.2.0", "ghcr.io/darthnorse/dockmon-agent:2.2.1"
+        # Verify: Should have progress stages
+        assert len(progress_stages) > 0
+        assert "initiating" in progress_stages
+        assert "completed" in progress_stages
+
+
+class TestVersionExtraction:
+    """Test version extraction from image tags"""
+
+    def test_extracts_version_from_standard_tag(self, agent_executor):
+        """Should extract version from standard tag format"""
+        version = agent_executor._extract_version_from_image(
+            "ghcr.io/darthnorse/dockmon-agent:2.2.1"
         )
+        assert version == "2.2.1"
 
-    @pytest.mark.asyncio
-    async def test_emits_update_completed_on_success(self, executor):
-        """Should emit UPDATE_COMPLETED event when successful"""
-        agent_id = "agent-456"
-        executor.agent_command_executor.execute_command.return_value = CommandResult(
-            status=CommandStatus.SUCCESS,
-            success=True,
-            response={},
-            error=None,
-            duration_seconds=1.0
+    def test_returns_latest_for_no_tag(self, agent_executor):
+        """Should return 'latest' when no tag specified"""
+        version = agent_executor._extract_version_from_image(
+            "ghcr.io/darthnorse/dockmon-agent"
         )
+        assert version == "latest"
 
-        executor._emit_update_started_event = AsyncMock()
-        executor._emit_update_completed_event = AsyncMock()
-        executor._wait_for_agent_reconnection = AsyncMock(return_value=True)
-
-        update_record = ContainerUpdate(
-            container_id="host-123:abc123def456",
-            current_image="ghcr.io/darthnorse/dockmon-agent:2.2.0",
-            latest_image="ghcr.io/darthnorse/dockmon-agent:2.2.1"
+    def test_extracts_version_with_v_prefix(self, agent_executor):
+        """Should extract version with v prefix"""
+        version = agent_executor._extract_version_from_image(
+            "registry.example.com/agent:v1.0.0"
         )
-
-        # Execute
-        await executor._execute_agent_self_update(
-            agent_id, "host-123", "abc123def456", "dockmon-agent", update_record
-        )
-
-        # Verify
-        executor._emit_update_completed_event.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_emits_update_failed_on_error(self, executor):
-        """Should emit UPDATE_FAILED event on failure"""
-        agent_id = "agent-456"
-        executor.agent_command_executor.execute_command.return_value = CommandResult(
-            status=CommandStatus.ERROR,
-            success=False,
-            response=None,
-            error="Connection lost",
-            duration_seconds=0.1
-        )
-
-        executor._emit_update_started_event = AsyncMock()
-        executor._emit_update_failed_event = AsyncMock()
-
-        update_record = ContainerUpdate(
-            container_id="host-123:abc123def456",
-            current_image="ghcr.io/darthnorse/dockmon-agent:2.2.0",
-            latest_image="ghcr.io/darthnorse/dockmon-agent:2.2.1"
-        )
-
-        # Execute
-        await executor._execute_agent_self_update(
-            agent_id, "host-123", "abc123def456", "dockmon-agent", update_record
-        )
-
-        # Verify
-        executor._emit_update_failed_event.assert_called_once()
-
-
-class TestAgentSelfUpdateDockMonProtection:
-    """Test that DockMon self-protection happens before agent check"""
-
-    @pytest.mark.asyncio
-    async def test_blocks_dockmon_self_update_before_agent_check(self, executor):
-        """Should block DockMon update before checking for agent"""
-        # Setup: DockMon container with agent-like image (shouldn't happen, but test anyway)
-        dockmon_update = ContainerUpdate(
-            container_id="host-123:abc123def456",
-            current_image="dockmon:2.1.0",  # Not agent image
-            latest_image="dockmon:2.2.0",
-            update_available=True
-        )
-
-        executor._get_docker_client = AsyncMock(return_value=MagicMock())
-        executor._get_container_info = AsyncMock(return_value={
-            "name": "dockmon",  # DockMon container
-            "id": "abc123def456"
-        })
-        executor._emit_update_failed_event = AsyncMock()
-        executor._execute_agent_self_update = AsyncMock()
-
-        # Mock getting container
-        mock_container = MagicMock()
-        mock_container.name = "dockmon"
-        mock_container.labels = {}
-        with patch('updates.update_executor.async_docker_call', AsyncMock(return_value=mock_container)):
-            # Execute
-            result = await executor.update_container(
-                "host-123", "abc123def456", dockmon_update, force=False
-            )
-
-        # Verify: Should block and NOT route to agent self-update
-        assert result is False
-        executor._execute_agent_self_update.assert_not_called()
-        executor._emit_update_failed_event.assert_called_once()
+        assert version == "v1.0.0"

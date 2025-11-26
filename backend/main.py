@@ -56,6 +56,7 @@ from notifications import NotificationService
 from event_logger import EventLogger, EventContext, EventCategory, EventSeverity, PerformanceTimer
 from event_logger import EventType as LogEventType
 from event_bus import Event, EventType, get_event_bus
+from utils.container_id import normalize_container_id
 
 # Import extracted modules
 from config.settings import AppConfig, get_cors_origins, setup_logging, HealthCheckFilter

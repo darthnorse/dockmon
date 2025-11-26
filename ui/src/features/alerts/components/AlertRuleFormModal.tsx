@@ -929,7 +929,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                     className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                     placeholder="Optional"
                   />
-                  <p className="mt-1 text-xs text-gray-400">Metric value that triggers auto-resolve (e.g., CPU drops below 80%)</p>
+                  <p className="mt-1 text-xs text-gray-400">Metric value that triggers auto-resolve (e.g., CPU drops below 80%). Defaults to alert threshold if not specified.</p>
                 </div>
 
                 <div>

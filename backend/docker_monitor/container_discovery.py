@@ -518,6 +518,10 @@ class ContainerDiscovery:
                         # Extract RepoDigests from agent response (v2.2.0+ agents)
                         repo_digests = dc_data.get("RepoDigests", [])
 
+                        # Extract Docker network IPs (GitHub Issue #37)
+                        network_settings = dc_data.get("NetworkSettings", {})
+                        docker_ip, docker_ips = extract_container_ips(network_settings)
+
                         # Create Container object
                         container = Container(
                             id=container_id,  # Short 12-char ID (per CLAUDE.md spec)
@@ -538,7 +542,9 @@ class ContainerDiscovery:
                             compose_service=compose_service,
                             tags=tags,
                             environment={},  # Not available in list response
-                            repo_digests=repo_digests  # Image digests for update checking
+                            repo_digests=repo_digests,  # Image digests for update checking
+                            docker_ip=docker_ip,
+                            docker_ips=docker_ips
                         )
 
                         containers.append(container)

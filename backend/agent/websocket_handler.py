@@ -125,6 +125,23 @@ class AgentWebSocketHandler:
 
             logger.info(f"Agent {self.agent_id} authenticated successfully")
 
+            # Emit HOST_CONNECTED event via EventBus
+            if self.monitor and self.host_id:
+                try:
+                    event = Event(
+                        event_type=EventType.HOST_CONNECTED,
+                        scope_type='host',
+                        scope_id=self.host_id,
+                        scope_name=self.agent_hostname or self.agent_id,
+                        host_id=self.host_id,
+                        host_name=self.agent_hostname or self.agent_id,
+                        data={"url": "agent://", "agent_id": self.agent_id}
+                    )
+                    await get_event_bus(self.monitor).emit(event)
+                    logger.debug(f"Emitted HOST_CONNECTED event for agent {self.agent_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to emit HOST_CONNECTED event: {e}")
+
             # Message processing loop
             await self.message_loop()
 
@@ -150,6 +167,23 @@ class AgentWebSocketHandler:
                 pass
 
         finally:
+            # Emit HOST_DISCONNECTED event via EventBus (before cleanup)
+            if self.monitor and self.host_id and self.authenticated:
+                try:
+                    event = Event(
+                        event_type=EventType.HOST_DISCONNECTED,
+                        scope_type='host',
+                        scope_id=self.host_id,
+                        scope_name=self.agent_hostname or self.agent_id,
+                        host_id=self.host_id,
+                        host_name=self.agent_hostname or self.agent_id,
+                        data={"error": "Agent disconnected", "agent_id": self.agent_id}
+                    )
+                    await get_event_bus(self.monitor).emit(event)
+                    logger.debug(f"Emitted HOST_DISCONNECTED event for agent {self.agent_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to emit HOST_DISCONNECTED event: {e}")
+
             # Clean up connection
             if self.agent_id:
                 await agent_connection_manager.unregister_connection(

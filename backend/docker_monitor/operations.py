@@ -589,3 +589,200 @@ class ContainerOperations:
                 duration_ms=duration_ms
             )
             raise HTTPException(status_code=500, detail=f"Failed to delete container via agent: {str(e)}")
+
+    async def get_container_logs(self, host_id: str, container_id: str, tail: int = 100, since: str = None) -> dict:
+        """
+        Get container logs.
+
+        Routes through agent if available, otherwise uses direct Docker client.
+
+        Args:
+            host_id: Docker host ID
+            container_id: Container ID
+            tail: Number of lines to retrieve (default: 100)
+            since: ISO timestamp for getting logs since a specific time
+
+        Returns:
+            Dict with container_id, logs (list of {timestamp, log}), and last_timestamp
+
+        Raises:
+            HTTPException: If host not found or operation fails
+        """
+        from utils.async_docker import async_docker_call
+        from datetime import datetime, timezone, timedelta
+
+        # Security constants (match main.py)
+        MAX_LOG_TAIL = 10000
+        MAX_LOG_AGE_DAYS = 7
+
+        # Clamp tail to prevent DoS
+        tail = max(1, min(tail, MAX_LOG_TAIL))
+
+        # Check if host has an agent - route through agent if available (v2.2.0)
+        agent_id = self.agent_manager.get_agent_for_host(host_id)
+        if agent_id:
+            logger.info(f"Routing get_container_logs for host {host_id} through agent {agent_id}")
+            # Agent returns raw logs string, we need to parse it
+            raw_logs = await self.agent_operations.get_container_logs(host_id, container_id, tail)
+            return self._parse_logs_response(container_id, raw_logs)
+
+        # Legacy path: Direct Docker socket access
+        if host_id not in self.clients:
+            raise HTTPException(status_code=404, detail="Host not found")
+
+        try:
+            client = self.clients[host_id]
+            loop = asyncio.get_event_loop()
+
+            # Get container with timeout
+            try:
+                container = await asyncio.wait_for(
+                    loop.run_in_executor(None, client.containers.get, container_id),
+                    timeout=5.0
+                )
+            except asyncio.TimeoutError:
+                raise HTTPException(status_code=504, detail="Timeout getting container")
+
+            # Prepare log options
+            log_kwargs = {
+                'timestamps': True,
+                'tail': tail
+            }
+
+            # Add since parameter if provided
+            if since:
+                try:
+                    import dateutil.parser
+                    dt = dateutil.parser.parse(since)
+
+                    # Security: Reject timestamps older than MAX_LOG_AGE_DAYS
+                    max_age = datetime.now(timezone.utc) - timedelta(days=MAX_LOG_AGE_DAYS)
+                    if dt.replace(tzinfo=None) < max_age.replace(tzinfo=None):
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"'since' parameter cannot be older than {MAX_LOG_AGE_DAYS} days"
+                        )
+
+                    unix_ts = dt.timestamp()
+                    log_kwargs['since'] = unix_ts
+                except ValueError as e:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Invalid 'since' timestamp format: {e}"
+                    )
+
+            # Fetch logs with timeout
+            try:
+                logs = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None,
+                        lambda: container.logs(**log_kwargs).decode('utf-8', errors='ignore')
+                    ),
+                    timeout=5.0
+                )
+            except asyncio.TimeoutError:
+                raise HTTPException(status_code=504, detail="Timeout fetching logs")
+
+            return self._parse_logs_response(container_id, logs)
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to get logs for {container_id}: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    def _parse_logs_response(self, container_id: str, raw_logs: str) -> dict:
+        """
+        Parse raw Docker logs into structured response.
+
+        Args:
+            container_id: Container ID
+            raw_logs: Raw logs string from Docker
+
+        Returns:
+            Dict with container_id, logs list, and last_timestamp
+        """
+        from datetime import datetime, timezone
+
+        parsed_logs = []
+        for line in raw_logs.split('\n'):
+            if not line.strip():
+                continue
+
+            try:
+                space_idx = line.find(' ')
+                if space_idx > 0:
+                    timestamp_str = line[:space_idx]
+                    log_text = line[space_idx + 1:]
+
+                    # Parse timestamp (Docker format: ISO8601 with nanoseconds)
+                    if 'T' in timestamp_str and timestamp_str.endswith('Z'):
+                        # Truncate to microseconds if nanoseconds present
+                        parts = timestamp_str[:-1].split('.')
+                        if len(parts) == 2 and len(parts[1]) > 6:
+                            timestamp_str = f"{parts[0]}.{parts[1][:6]}Z"
+
+                        parsed_logs.append({
+                            "timestamp": timestamp_str,
+                            "log": log_text
+                        })
+                    else:
+                        parsed_logs.append({
+                            "timestamp": datetime.now(timezone.utc).isoformat() + 'Z',
+                            "log": line
+                        })
+                else:
+                    parsed_logs.append({
+                        "timestamp": datetime.now(timezone.utc).isoformat() + 'Z',
+                        "log": line
+                    })
+            except (ValueError, IndexError, AttributeError):
+                parsed_logs.append({
+                    "timestamp": datetime.now(timezone.utc).isoformat() + 'Z',
+                    "log": line
+                })
+
+        return {
+            "container_id": container_id,
+            "logs": parsed_logs,
+            "last_timestamp": datetime.now(timezone.utc).isoformat() + 'Z'
+        }
+
+    async def inspect_container(self, host_id: str, container_id: str) -> dict:
+        """
+        Get detailed container information (Docker inspect).
+
+        Routes through agent if available, otherwise uses direct Docker client.
+
+        Args:
+            host_id: Docker host ID
+            container_id: Container ID
+
+        Returns:
+            Container details dict (Docker inspect output)
+
+        Raises:
+            HTTPException: If host not found or operation fails
+        """
+        from utils.async_docker import async_docker_call
+
+        # Check if host has an agent - route through agent if available (v2.2.0)
+        agent_id = self.agent_manager.get_agent_for_host(host_id)
+        if agent_id:
+            logger.info(f"Routing inspect_container for host {host_id} through agent {agent_id}")
+            return await self.agent_operations.inspect_container(host_id, container_id)
+
+        # Legacy path: Direct Docker socket access
+        if host_id not in self.clients:
+            raise HTTPException(status_code=404, detail="Host not found")
+
+        try:
+            client = self.clients[host_id]
+            container = await async_docker_call(client.containers.get, container_id)
+            return container.attrs
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to inspect container {container_id}: {e}")
+            raise HTTPException(status_code=500, detail=str(e))

@@ -1049,141 +1049,40 @@ async def get_container_logs(
 ):
     """Get container logs - Portainer-style polling approach
 
+    Routes through agent for agent-based hosts, direct Docker for others.
+
     Security:
     - tail parameter is clamped to MAX_LOG_TAIL to prevent DoS attacks
     - since parameter validated to prevent fetching excessive historical logs
     """
-    if host_id not in monitor.clients:
-        raise HTTPException(status_code=404, detail="Host not found")
+    # Normalize container ID (defense-in-depth)
+    container_id = normalize_container_id(container_id)
 
-    try:
-        client = monitor.clients[host_id]
+    # Delegate to operations (handles agent routing)
+    return await monitor.operations.get_container_logs(host_id, container_id, tail, since)
 
-        # SECURITY: Clamp tail to prevent DoS attacks
-        # Even if client requests 1,000,000 lines, limit to MAX_LOG_TAIL
-        tail = max(1, min(tail, MAX_LOG_TAIL))
+@app.get("/api/hosts/{host_id}/containers/{container_id}/inspect", tags=["containers"])
+async def inspect_container(
+    host_id: str,
+    container_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get detailed container information (Docker inspect)
 
-        # Run blocking Docker calls in executor with timeout
-        loop = asyncio.get_event_loop()
+    Routes through agent for agent-based hosts, direct Docker for others.
 
-        # Get container with timeout
-        try:
-            container = await asyncio.wait_for(
-                loop.run_in_executor(None, client.containers.get, container_id),
-                timeout=5.0
-            )
-        except asyncio.TimeoutError:
-            raise HTTPException(status_code=504, detail="Timeout getting container")
+    Returns full container configuration including:
+    - Config: image, command, env vars, labels, ports
+    - State: running status, exit code, timestamps
+    - NetworkSettings: IP addresses, ports, DNS
+    - Mounts: volumes, bind mounts
+    - HostConfig: resource limits, restart policy
+    """
+    # Normalize container ID (defense-in-depth)
+    container_id = normalize_container_id(container_id)
 
-        # Prepare log options
-        log_kwargs = {
-            'timestamps': True,
-            'tail': tail  # Use clamped value
-        }
-
-        # Add since parameter if provided (for getting only new logs)
-        if since:
-            try:
-                # Parse ISO timestamp and convert to Unix timestamp for Docker
-                import dateutil.parser
-                dt = dateutil.parser.parse(since)
-
-                # SECURITY: Reject timestamps older than MAX_LOG_AGE_DAYS to prevent memory exhaustion
-                # This prevents attacks like since="1970-01-01" that would fetch entire container history
-                max_age = datetime.now(timezone.utc) - timedelta(days=MAX_LOG_AGE_DAYS)
-                if dt.replace(tzinfo=None) < max_age.replace(tzinfo=None):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"'since' parameter cannot be older than {MAX_LOG_AGE_DAYS} days"
-                    )
-
-                # BUG FIX: Use dt.timestamp() instead of time.mktime()
-                # mktime() incorrectly interprets timezone-aware datetime as local time
-                # timestamp() correctly handles timezone offsets
-                unix_ts = dt.timestamp()
-                log_kwargs['since'] = unix_ts
-
-                # SECURITY: Even with 'since', respect tail limit
-                # Never use tail='all' to prevent unbounded memory usage
-                log_kwargs['tail'] = tail  # Use clamped value, not 'all'
-
-            except ValueError as e:
-                # Provide clear error message for invalid timestamps
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Invalid 'since' timestamp format: {e}"
-                )
-
-        # Fetch logs with timeout
-        try:
-            logs = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None,
-                    lambda: container.logs(**log_kwargs).decode('utf-8', errors='ignore')
-                ),
-                timeout=5.0
-            )
-        except asyncio.TimeoutError:
-            raise HTTPException(status_code=504, detail="Timeout fetching logs")
-
-        # Parse logs and extract timestamps
-        # Docker log format with timestamps: "2025-09-30T19:30:45.123456789Z actual log message"
-        parsed_logs = []
-        for line in logs.split('\n'):
-            if not line.strip():
-                continue
-
-            # Try to extract timestamp (Docker format: ISO8601 with nanoseconds)
-            try:
-                # Find the space after timestamp
-                space_idx = line.find(' ')
-                if space_idx > 0:
-                    timestamp_str = line[:space_idx]
-                    log_text = line[space_idx + 1:]
-
-                    # Parse timestamp (remove nanoseconds for Python datetime)
-                    # Format: 2025-09-30T19:30:45.123456789Z -> 2025-09-30T19:30:45.123456Z
-                    if 'T' in timestamp_str and timestamp_str.endswith('Z'):
-                        # Truncate to microseconds (6 digits) if nanoseconds present
-                        parts = timestamp_str[:-1].split('.')
-                        if len(parts) == 2 and len(parts[1]) > 6:
-                            timestamp_str = f"{parts[0]}.{parts[1][:6]}Z"
-
-                        parsed_logs.append({
-                            "timestamp": timestamp_str,
-                            "log": log_text
-                        })
-                    else:
-                        # No valid timestamp, use current time
-                        parsed_logs.append({
-                            "timestamp": datetime.now(timezone.utc).isoformat() + 'Z',
-                            "log": line
-                        })
-                else:
-                    # No space found, treat whole line as log
-                    parsed_logs.append({
-                        "timestamp": datetime.now(timezone.utc).isoformat() + 'Z',
-                        "log": line
-                    })
-            except (ValueError, IndexError, AttributeError) as e:
-                # If timestamp parsing fails, use current time
-                logger.debug(f"Failed to parse log timestamp: {e}")
-                parsed_logs.append({
-                    "timestamp": datetime.now(timezone.utc).isoformat() + 'Z',
-                    "log": line
-                })
-
-        return {
-            "container_id": container_id,
-            "logs": parsed_logs,
-            "last_timestamp": datetime.now(timezone.utc).isoformat() + 'Z'  # For next 'since' parameter
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get logs for {container_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    # Delegate to operations (handles agent routing)
+    return await monitor.operations.inspect_container(host_id, container_id)
 
 # Container exec endpoint removed for security reasons
 # Users should use direct SSH, Docker CLI, or other appropriate tools for container access

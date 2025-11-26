@@ -29,8 +29,8 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
 # Runtime stage
 FROM alpine:3.19
 
-# Install runtime dependencies
-RUN apk add --no-cache ca-certificates tzdata
+# Install runtime dependencies (su-exec for dropping privileges)
+RUN apk add --no-cache ca-certificates tzdata su-exec
 
 # Create non-root user
 RUN addgroup -g 1000 agent && \
@@ -44,12 +44,23 @@ WORKDIR /app
 # Copy binary from builder
 COPY --from=builder /build/dockmon-agent /app/dockmon-agent
 
-# Switch to non-root user
-USER agent
+# Create entrypoint script that fixes permissions then drops to agent user
+RUN echo '#!/bin/sh' > /entrypoint.sh && \
+    echo 'set -e' >> /entrypoint.sh && \
+    echo '' >> /entrypoint.sh && \
+    echo '# Fix /data permissions if mounted volume has wrong ownership' >> /entrypoint.sh && \
+    echo 'if [ -d /data ] && [ "$(stat -c %u /data)" != "1000" ]; then' >> /entrypoint.sh && \
+    echo '    echo "Fixing /data permissions (was owned by $(stat -c %U /data))"' >> /entrypoint.sh && \
+    echo '    chown -R agent:agent /data' >> /entrypoint.sh && \
+    echo 'fi' >> /entrypoint.sh && \
+    echo '' >> /entrypoint.sh && \
+    echo '# Drop privileges and run agent' >> /entrypoint.sh && \
+    echo 'exec su-exec agent /app/dockmon-agent "$@"' >> /entrypoint.sh && \
+    chmod +x /entrypoint.sh
 
 # Data directory at /data - mount a named volume to persist agent identity:
-#   -v agent-data:/data
+#   -v dockmon-agent-data:/data
 
 # Expose no ports (agent connects outbound only)
 
-ENTRYPOINT ["/app/dockmon-agent"]
+ENTRYPOINT ["/entrypoint.sh"]

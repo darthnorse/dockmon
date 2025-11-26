@@ -814,10 +814,9 @@ class DockerMonitor:
                     agent = session.query(Agent).filter_by(host_id=host_id).first()
                     if agent:
                         agent_id = agent.id
-
-                # Close the agent's WebSocket connection (creates its own session)
-                await agent_connection_manager.unregister_connection(agent_id)
-                logger.info(f"Disconnected agent {agent_id[:8]}... for host {host_name}")
+                        # Close the agent's WebSocket connection (creates its own session)
+                        await agent_connection_manager.unregister_connection(agent_id)
+                        logger.info(f"Disconnected agent {agent_id[:8]}... for host {host_name}")
 
             del self.hosts[host_id]
             if host_id in self.clients:
@@ -906,6 +905,35 @@ class DockerMonitor:
             )
 
             logger.info(f"Removed host {host_name} ({host_id[:8]})")
+        else:
+            # Host not in memory - check database (agent hosts may only exist in DB after restart)
+            db_host = self.db.get_host(host_id)
+            if db_host:
+                host_name = db_host.name
+
+                # Disconnect agent if this is an agent-based host
+                if db_host.connection_type == "agent":
+                    from agent.connection_manager import agent_connection_manager
+                    from database import Agent
+
+                    with self.db.get_session() as session:
+                        agent = session.query(Agent).filter_by(host_id=host_id).first()
+                        if agent:
+                            await agent_connection_manager.unregister_connection(agent.id)
+                            logger.info(f"Disconnected agent {agent.id[:8]}... for host {host_name}")
+
+                # Delete from database
+                self.db.delete_host(host_id)
+
+                self.event_logger.log_host_removed(
+                    host_name=host_name,
+                    host_id=host_id,
+                    triggered_by="user"
+                )
+
+                logger.info(f"Removed host {host_name} ({host_id[:8]}) from database")
+            else:
+                raise ValueError(f"Host {host_id} not found")
 
     def update_host(self, host_id: str, config: DockerHostConfig):
         """Update an existing Docker host"""
@@ -1161,8 +1189,8 @@ class DockerMonitor:
         # Load tags for this host
         tags = self.db.get_tags_for_subject('host', host_id)
 
-        # Create Host object for the agent
-        host = Host(
+        # Create DockerHost object for the agent
+        host = DockerHost(
             id=host_id,
             name=name,
             url="agent://",

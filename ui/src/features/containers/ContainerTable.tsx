@@ -791,9 +791,8 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   })
 
   // Container action hook (reusable across components)
-  const { executeAction, isPending: isActionPending } = useContainerActions({
-    invalidateQueries: ['containers'],
-  })
+  // Uses per-container pending tracking + optimistic updates
+  const { executeAction, isContainerPending } = useContainerActions()
 
   // Batch action mutation
   const batchMutation = useMutation({
@@ -1313,7 +1312,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
                     host_id: container.host_id,
                   })
                 }}
-                disabled={!canStart || isActionPending}
+                disabled={!canStart || isContainerPending(container.host_id || '', container.id)}
                 title="Start container"
               >
                 <PlayCircle className={`h-4 w-4 ${canStart ? 'text-success' : 'text-muted-foreground'}`} />
@@ -1337,7 +1336,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
                     host_id: container.host_id,
                   })
                 }}
-                disabled={!canStop || isActionPending}
+                disabled={!canStop || isContainerPending(container.host_id || '', container.id)}
                 title="Stop container"
               >
                 <Square className={`h-4 w-4 ${canStop ? 'text-danger' : 'text-muted-foreground'}`} />
@@ -1361,7 +1360,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
                     host_id: container.host_id,
                   })
                 }}
-                disabled={!canRestart || isActionPending}
+                disabled={!canRestart || isContainerPending(container.host_id || '', container.id)}
                 title="Restart container"
               >
                 <RotateCw className={`h-4 w-4 ${canRestart ? 'text-info' : 'text-muted-foreground'}`} />
@@ -1421,7 +1420,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         },
       },
     ],
-    [executeAction, isActionPending, selectedContainerIds, data, toggleContainerSelection, toggleSelectAll, alertCounts, allAutoUpdateConfigs, allHealthCheckConfigs]
+    [executeAction, isContainerPending, selectedContainerIds, data, toggleContainerSelection, toggleSelectAll, alertCounts, allAutoUpdateConfigs, allHealthCheckConfigs]
   )
 
   const table = useReactTable({

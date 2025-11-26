@@ -15,8 +15,7 @@ from event_logger import EventLogger
 from models.docker_models import DockerHost
 from utils.keys import make_composite_key
 from agent.manager import AgentManager
-from agent.connection_manager import agent_connection_manager
-from agent.command_executor import AgentCommandExecutor
+from agent.command_executor import get_agent_command_executor
 from agent.container_operations import AgentContainerOperations
 
 logger = logging.getLogger(__name__)
@@ -42,8 +41,9 @@ class ContainerOperations:
         self.monitor = monitor
 
         # Initialize agent operations (v2.2.0)
+        # IMPORTANT: Use the singleton to ensure commands and responses use same instance
         self.agent_manager = AgentManager(monitor=monitor)
-        self.agent_command_executor = AgentCommandExecutor(agent_connection_manager)
+        self.agent_command_executor = get_agent_command_executor()
         self.agent_operations = AgentContainerOperations(
             command_executor=self.agent_command_executor,
             db=db,

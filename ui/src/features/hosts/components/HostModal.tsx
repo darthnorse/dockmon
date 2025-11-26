@@ -199,6 +199,7 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
   --name dockmon-agent \\
   --restart unless-stopped \\
   -v /var/run/docker.sock:/var/run/docker.sock:ro \\
+  -v dockmon-agent-data:/data \\
   -e DOCKMON_URL=${dockmonUrl} \\
   -e REGISTRATION_TOKEN=${token} \\
   -e TZ=${timezone} \\${isHttps ? '\n  -e INSECURE_SKIP_VERIFY=true \\' : ''}

@@ -520,7 +520,7 @@ class ContainerDiscovery:
 
                         # Create Container object
                         container = Container(
-                            id=dc_data.get("Id", ""),  # Full 64-char ID
+                            id=container_id,  # Short 12-char ID (per CLAUDE.md spec)
                             short_id=container_id,  # Short 12-char ID
                             name=container_name,
                             image=container_image,
@@ -761,7 +761,7 @@ class ContainerDiscovery:
                     env = parse_container_env(env_list)
 
                     container = Container(
-                        id=dc.id,  # Full 64-char ID
+                        id=container_id,  # Short 12-char ID (per CLAUDE.md spec)
                         short_id=container_id,  # Short 12-char ID
                         name=dc.name,
                         state=dc.status,

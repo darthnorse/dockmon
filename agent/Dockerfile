@@ -1,19 +1,22 @@
 # Build stage
-FROM golang:1.21-alpine AS builder
+FROM golang:1.24-alpine AS builder
 
 # Install build dependencies
 RUN apk add --no-cache git ca-certificates
 
 WORKDIR /build
 
+# Copy shared module first (required by go.mod replace directive)
+COPY shared/ /shared/
+
 # Copy go mod files
-COPY go.mod go.sum ./
+COPY agent/go.mod agent/go.sum ./
 
 # Download dependencies
 RUN go mod download
 
 # Copy source code
-COPY . .
+COPY agent/ .
 
 # Build binary
 ARG VERSION=dev

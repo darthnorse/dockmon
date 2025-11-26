@@ -622,7 +622,8 @@ func (c *WebSocketClient) handleContainerOperation(ctx context.Context, msg *typ
 
 	action, _ := payload["action"].(string)
 	containerID, _ := payload["container_id"].(string)
-	correlationID, _ := payload["correlation_id"].(string)
+	// Correlation ID is in msg.ID (Message struct), not in payload
+	correlationID := msg.ID
 
 	c.log.WithFields(logrus.Fields{
 		"action":         action,

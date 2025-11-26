@@ -225,6 +225,7 @@ func (c *Client) GetContainerLogs(ctx context.Context, containerID string, tail 
 	options := container.LogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
+		Timestamps: true,
 		Tail:       tail,
 	}
 

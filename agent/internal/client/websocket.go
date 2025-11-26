@@ -115,7 +115,7 @@ func (c *WebSocketClient) Run(ctx context.Context) error {
 
 		// Attempt connection
 		if err := c.connect(ctx); err != nil {
-			c.log.WithError(err).Errorf("Connection failed, retrying in %v", backoff)
+			c.log.WithField("error", err.Error()).Errorf("Connection failed, retrying in %v", backoff)
 
 			// Wait before retry with exponential backoff
 			select {

@@ -160,12 +160,15 @@ class AgentManager:
             with self.db_manager.get_session() as session:
                 token_record = session.query(RegistrationToken).filter_by(token=token).first()
                 if token_record:
+                    # Check if already used first
+                    if token_record.used:
+                        return {"success": False, "error": "Registration token has already been used"}
                     # SQLite stores datetimes as naive, make it timezone-aware for comparison
                     expires_at = token_record.expires_at.replace(tzinfo=timezone.utc) if token_record.expires_at.tzinfo is None else token_record.expires_at
                     if expires_at <= datetime.now(timezone.utc):
                         return {"success": False, "error": "Registration token has expired"}
-                elif token_record and token_record.used:
-                    return {"success": False, "error": "Registration token has already been used"}
+                    # Token exists but validation failed for unknown reason
+                    return {"success": False, "error": "Invalid registration token"}
                 else:
                     return {"success": False, "error": "Invalid registration token"}
 

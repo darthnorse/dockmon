@@ -42,6 +42,21 @@ def mock_db_manager(db_session):
     return mock_manager
 
 
+def create_mock_init(mock_db_manager):
+    """Create a mock __init__ that sets both db_manager and monitor.
+
+    AgentManager.__init__ sets:
+    - self.db_manager = DatabaseManager()
+    - self.monitor = monitor
+
+    Tests that call register_agent need monitor set to avoid AttributeError.
+    """
+    def mock_init(self):
+        self.db_manager = mock_db_manager
+        self.monitor = None
+    return mock_init
+
+
 class TestRegistrationTokenGeneration:
     """Test registration token generation"""
 
@@ -173,7 +188,7 @@ class TestAgentRegistration:
         """Should register agent with valid token and create host"""
         from agent.manager import AgentManager
 
-        with patch.object(AgentManager, '__init__', lambda self: setattr(self, 'db_manager', mock_db_manager)):
+        with patch.object(AgentManager, '__init__', create_mock_init(mock_db_manager)):
             manager = AgentManager()
             token_record = manager.generate_registration_token(user_id=1)
 
@@ -228,7 +243,7 @@ class TestAgentRegistration:
         db_session.add(expired_token)
         db_session.commit()
 
-        with patch.object(AgentManager, '__init__', lambda self: setattr(self, 'db_manager', mock_db_manager)):
+        with patch.object(AgentManager, '__init__', create_mock_init(mock_db_manager)):
             manager = AgentManager()
 
             registration_data = {
@@ -249,7 +264,7 @@ class TestAgentRegistration:
         """Should reject registration if engine_id already registered"""
         from agent.manager import AgentManager
 
-        with patch.object(AgentManager, '__init__', lambda self: setattr(self, 'db_manager', mock_db_manager)):
+        with patch.object(AgentManager, '__init__', create_mock_init(mock_db_manager)):
             manager = AgentManager()
 
             # Register first agent

@@ -496,3 +496,304 @@ class TestVersionExtraction:
             "registry.example.com/agent:v1.0.0"
         )
         assert version == "v1.0.0"
+
+
+class TestAgentPlatformDetection:
+    """Test agent platform detection for binary URL construction"""
+
+    @pytest.mark.asyncio
+    async def test_uses_agent_platform_for_binary_url(
+        self, agent_executor, agent_update_record, agent_context, mock_command_executor, mock_db
+    ):
+        """Should construct binary URL using agent's os/arch from database"""
+        # Setup: Mock agent record with platform info
+        mock_agent = MagicMock()
+        mock_agent.agent_os = "linux"
+        mock_agent.agent_arch = "arm64"
+
+        mock_session = MagicMock()
+        mock_session.query.return_value.filter_by.return_value.first.return_value = mock_agent
+        mock_db.get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
+        mock_db.get_session.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_command_executor.execute_command.return_value = CommandResult(
+            status=CommandStatus.SUCCESS,
+            success=True,
+            response={},
+            error=None
+        )
+
+        agent_executor._wait_for_agent_reconnection = AsyncMock(return_value=True)
+        agent_executor._get_agent_version = AsyncMock(return_value="2.2.1")
+
+        async def progress_callback(stage, percent, message):
+            pass
+
+        # Execute
+        await agent_executor.execute_self_update(
+            context=agent_context,
+            progress_callback=progress_callback,
+            update_record=agent_update_record,
+            agent_id="agent-456",
+        )
+
+        # Verify binary URL contains correct platform
+        call_args = mock_command_executor.execute_command.call_args
+        command = call_args[0][1]
+        binary_url = command["payload"]["binary_url"]
+
+        assert "linux-arm64" in binary_url
+        assert "dockmon-agent-linux-arm64" in binary_url
+
+    @pytest.mark.asyncio
+    async def test_uses_default_platform_when_not_set(
+        self, agent_executor, agent_update_record, agent_context, mock_command_executor, mock_db
+    ):
+        """Should default to linux-amd64 when agent platform not set"""
+        # Setup: Mock agent record without platform info
+        mock_agent = MagicMock()
+        mock_agent.agent_os = None
+        mock_agent.agent_arch = None
+
+        mock_session = MagicMock()
+        mock_session.query.return_value.filter_by.return_value.first.return_value = mock_agent
+        mock_db.get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
+        mock_db.get_session.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_command_executor.execute_command.return_value = CommandResult(
+            status=CommandStatus.SUCCESS,
+            success=True,
+            response={},
+            error=None
+        )
+
+        agent_executor._wait_for_agent_reconnection = AsyncMock(return_value=True)
+        agent_executor._get_agent_version = AsyncMock(return_value="2.2.1")
+
+        async def progress_callback(stage, percent, message):
+            pass
+
+        # Execute
+        await agent_executor.execute_self_update(
+            context=agent_context,
+            progress_callback=progress_callback,
+            update_record=agent_update_record,
+            agent_id="agent-456",
+        )
+
+        # Verify default platform used
+        call_args = mock_command_executor.execute_command.call_args
+        command = call_args[0][1]
+        binary_url = command["payload"]["binary_url"]
+
+        assert "linux-amd64" in binary_url
+
+    @pytest.mark.asyncio
+    async def test_handles_darwin_arm64_platform(
+        self, agent_executor, agent_update_record, agent_context, mock_command_executor, mock_db
+    ):
+        """Should handle macOS Apple Silicon (darwin-arm64)"""
+        mock_agent = MagicMock()
+        mock_agent.agent_os = "darwin"
+        mock_agent.agent_arch = "arm64"
+
+        mock_session = MagicMock()
+        mock_session.query.return_value.filter_by.return_value.first.return_value = mock_agent
+        mock_db.get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
+        mock_db.get_session.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_command_executor.execute_command.return_value = CommandResult(
+            status=CommandStatus.SUCCESS,
+            success=True,
+            response={},
+            error=None
+        )
+
+        agent_executor._wait_for_agent_reconnection = AsyncMock(return_value=True)
+        agent_executor._get_agent_version = AsyncMock(return_value="2.2.1")
+
+        async def progress_callback(stage, percent, message):
+            pass
+
+        await agent_executor.execute_self_update(
+            context=agent_context,
+            progress_callback=progress_callback,
+            update_record=agent_update_record,
+            agent_id="agent-456",
+        )
+
+        call_args = mock_command_executor.execute_command.call_args
+        command = call_args[0][1]
+        binary_url = command["payload"]["binary_url"]
+
+        assert "darwin-arm64" in binary_url
+
+    @pytest.mark.asyncio
+    async def test_handles_linux_arm_platform(
+        self, agent_executor, agent_update_record, agent_context, mock_command_executor, mock_db
+    ):
+        """Should handle Raspberry Pi 3 (linux-arm)"""
+        mock_agent = MagicMock()
+        mock_agent.agent_os = "linux"
+        mock_agent.agent_arch = "arm"
+
+        mock_session = MagicMock()
+        mock_session.query.return_value.filter_by.return_value.first.return_value = mock_agent
+        mock_db.get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
+        mock_db.get_session.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_command_executor.execute_command.return_value = CommandResult(
+            status=CommandStatus.SUCCESS,
+            success=True,
+            response={},
+            error=None
+        )
+
+        agent_executor._wait_for_agent_reconnection = AsyncMock(return_value=True)
+        agent_executor._get_agent_version = AsyncMock(return_value="2.2.1")
+
+        async def progress_callback(stage, percent, message):
+            pass
+
+        await agent_executor.execute_self_update(
+            context=agent_context,
+            progress_callback=progress_callback,
+            update_record=agent_update_record,
+            agent_id="agent-456",
+        )
+
+        call_args = mock_command_executor.execute_command.call_args
+        command = call_args[0][1]
+        binary_url = command["payload"]["binary_url"]
+
+        assert "linux-arm" in binary_url
+        assert "dockmon-agent-linux-arm" in binary_url
+
+    @pytest.mark.asyncio
+    async def test_defaults_when_agent_not_found(
+        self, agent_executor, agent_update_record, agent_context, mock_command_executor, mock_db
+    ):
+        """Should use defaults when agent record not found"""
+        mock_session = MagicMock()
+        mock_session.query.return_value.filter_by.return_value.first.return_value = None
+        mock_db.get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
+        mock_db.get_session.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_command_executor.execute_command.return_value = CommandResult(
+            status=CommandStatus.SUCCESS,
+            success=True,
+            response={},
+            error=None
+        )
+
+        agent_executor._wait_for_agent_reconnection = AsyncMock(return_value=True)
+        agent_executor._get_agent_version = AsyncMock(return_value="2.2.1")
+
+        async def progress_callback(stage, percent, message):
+            pass
+
+        await agent_executor.execute_self_update(
+            context=agent_context,
+            progress_callback=progress_callback,
+            update_record=agent_update_record,
+            agent_id="agent-456",
+        )
+
+        call_args = mock_command_executor.execute_command.call_args
+        command = call_args[0][1]
+        binary_url = command["payload"]["binary_url"]
+
+        # Should default to linux-amd64
+        assert "linux-amd64" in binary_url
+
+    @pytest.mark.asyncio
+    async def test_binary_url_includes_version(
+        self, agent_executor, agent_update_record, agent_context, mock_command_executor, mock_db
+    ):
+        """Should include version in binary URL"""
+        mock_agent = MagicMock()
+        mock_agent.agent_os = "linux"
+        mock_agent.agent_arch = "amd64"
+
+        mock_session = MagicMock()
+        mock_session.query.return_value.filter_by.return_value.first.return_value = mock_agent
+        mock_db.get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
+        mock_db.get_session.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_command_executor.execute_command.return_value = CommandResult(
+            status=CommandStatus.SUCCESS,
+            success=True,
+            response={},
+            error=None
+        )
+
+        agent_executor._wait_for_agent_reconnection = AsyncMock(return_value=True)
+        agent_executor._get_agent_version = AsyncMock(return_value="2.2.1")
+
+        async def progress_callback(stage, percent, message):
+            pass
+
+        await agent_executor.execute_self_update(
+            context=agent_context,
+            progress_callback=progress_callback,
+            update_record=agent_update_record,
+            agent_id="agent-456",
+        )
+
+        call_args = mock_command_executor.execute_command.call_args
+        command = call_args[0][1]
+        binary_url = command["payload"]["binary_url"]
+
+        # Version from image tag: ghcr.io/darthnorse/dockmon-agent:2.2.1
+        assert "v2.2.1" in binary_url or "2.2.1" in binary_url
+
+
+class TestAgentSelfUpdatePayload:
+    """Test self-update command payload structure"""
+
+    @pytest.mark.asyncio
+    async def test_payload_contains_both_image_and_binary_url(
+        self, agent_executor, agent_update_record, agent_context, mock_command_executor, mock_db
+    ):
+        """Should send both image (container mode) and binary_url (native mode)"""
+        mock_agent = MagicMock()
+        mock_agent.agent_os = "linux"
+        mock_agent.agent_arch = "amd64"
+
+        mock_session = MagicMock()
+        mock_session.query.return_value.filter_by.return_value.first.return_value = mock_agent
+        mock_db.get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
+        mock_db.get_session.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_command_executor.execute_command.return_value = CommandResult(
+            status=CommandStatus.SUCCESS,
+            success=True,
+            response={},
+            error=None
+        )
+
+        agent_executor._wait_for_agent_reconnection = AsyncMock(return_value=True)
+        agent_executor._get_agent_version = AsyncMock(return_value="2.2.1")
+
+        async def progress_callback(stage, percent, message):
+            pass
+
+        await agent_executor.execute_self_update(
+            context=agent_context,
+            progress_callback=progress_callback,
+            update_record=agent_update_record,
+            agent_id="agent-456",
+        )
+
+        call_args = mock_command_executor.execute_command.call_args
+        command = call_args[0][1]
+        payload = command["payload"]
+
+        # Should have both for dual-mode support
+        assert "image" in payload
+        assert "binary_url" in payload
+        assert "version" in payload
+
+        assert payload["image"] == "ghcr.io/darthnorse/dockmon-agent:2.2.1"
+        assert "github.com" in payload["binary_url"]  # Default binary source
+        assert payload["version"] == "2.2.1"

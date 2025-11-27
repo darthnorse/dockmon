@@ -28,7 +28,7 @@ from agent.manager import AgentManager
 from agent.connection_manager import agent_connection_manager
 from agent.command_executor import get_agent_command_executor
 from agent.models import AgentRegistrationRequest
-from database import Agent, DatabaseManager
+from database import Agent, ContainerHttpHealthCheck, DatabaseManager
 from event_bus import Event, EventType, get_event_bus
 from event_logger import EventCategory, EventType as LogEventType, EventSeverity, EventContext
 from utils.keys import make_composite_key
@@ -124,6 +124,9 @@ class AgentWebSocketHandler:
             )
 
             logger.info(f"Agent {self.agent_id} authenticated successfully")
+
+            # Sync health check configs to agent
+            await self._sync_health_check_configs()
 
             # Emit HOST_CONNECTED event via EventBus
             if self.monitor and self.host_id:
@@ -375,6 +378,11 @@ class AgentWebSocketHandler:
                 # Forward to stats system: in-memory buffer + WebSocket broadcast
                 await self._handle_container_stats(payload)
 
+            elif event_type == "health_check_result":
+                # Health check result from agent
+                # Updates database and triggers auto-restart if needed
+                await self._handle_health_check_result(payload)
+
             else:
                 logger.warning(f"Unknown event type from agent {self.agent_id}: {event_type}")
 
@@ -619,6 +627,173 @@ class AgentWebSocketHandler:
 
         except Exception as e:
             logger.error(f"Error handling container stats from agent {self.agent_id}: {e}", exc_info=True)
+
+    async def _sync_health_check_configs(self):
+        """
+        Send all health check configs for this host to the agent.
+
+        Called after agent authentication to sync agent-based health checks.
+        Only sends configs where check_from='agent'.
+        """
+        try:
+            if not self.host_id:
+                logger.warning("Cannot sync health check configs: host_id not set")
+                return
+
+            # Build config list inside session, send outside session
+            config_list = []
+
+            with self.db_manager.get_session() as session:
+                # Get all agent-based health checks for this host
+                configs = session.query(ContainerHttpHealthCheck).filter(
+                    ContainerHttpHealthCheck.host_id == self.host_id,
+                    ContainerHttpHealthCheck.check_from == 'agent'
+                ).all()
+
+                if not configs:
+                    logger.debug(f"No agent-based health checks for host {self.host_id}")
+                    return
+
+                # Convert to agent protocol format
+                for config in configs:
+                    # Extract container_id from composite key (host_id:container_id)
+                    container_id = config.container_id.split(':')[-1] if ':' in config.container_id else config.container_id
+
+                    config_list.append({
+                        "container_id": container_id,
+                        "host_id": config.host_id,
+                        "enabled": config.enabled,
+                        "url": config.url,
+                        "method": config.method,
+                        "expected_status_codes": config.expected_status_codes,
+                        "timeout_seconds": config.timeout_seconds,
+                        "check_interval_seconds": config.check_interval_seconds,
+                        "follow_redirects": config.follow_redirects,
+                        "verify_ssl": config.verify_ssl,
+                        "headers_json": config.headers_json,
+                        "auth_config_json": config.auth_config_json,
+                    })
+
+            # Send sync message to agent (outside session)
+            if config_list:
+                await self.websocket.send_json({
+                    "type": "health_check_configs_sync",
+                    "payload": {
+                        "configs": config_list
+                    }
+                })
+                logger.info(f"Synced {len(config_list)} health check configs to agent {self.agent_id}")
+
+        except Exception as e:
+            logger.error(f"Error syncing health check configs to agent {self.agent_id}: {e}", exc_info=True)
+
+    async def _handle_health_check_result(self, payload: dict):
+        """
+        Handle health check result from agent.
+
+        Updates database with check result and triggers auto-restart if configured.
+        """
+        try:
+            container_id = self._truncate_container_id(payload.get("container_id"))
+            if not container_id:
+                logger.warning(f"Health check result missing container_id from agent {self.agent_id}")
+                return
+
+            healthy = payload.get("healthy", False)
+            status_code = payload.get("status_code", 0)
+            response_time_ms = payload.get("response_time_ms", 0)
+            error_message = payload.get("error_message")
+            timestamp_str = payload.get("timestamp")
+
+            # Parse timestamp
+            try:
+                check_time = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00')) if timestamp_str else datetime.now(timezone.utc)
+            except (ValueError, AttributeError):
+                check_time = datetime.now(timezone.utc)
+
+            # Create composite key
+            composite_key = make_composite_key(self.host_id, container_id)
+
+            # Track if we need to trigger auto-restart (do it outside session)
+            should_restart = False
+
+            with self.db_manager.get_session() as session:
+                health_check = session.query(ContainerHttpHealthCheck).filter(
+                    ContainerHttpHealthCheck.container_id == composite_key
+                ).first()
+
+                if not health_check:
+                    logger.warning(f"No health check config found for {composite_key}")
+                    return
+
+                # Update state
+                health_check.last_checked_at = check_time
+                health_check.last_response_time_ms = response_time_ms
+
+                if healthy:
+                    health_check.last_success_at = check_time
+                    health_check.consecutive_successes += 1
+                    health_check.consecutive_failures = 0
+                    health_check.last_error_message = None
+
+                    # Check if recovered (consecutive_successes >= success_threshold)
+                    if health_check.consecutive_successes >= health_check.success_threshold:
+                        if health_check.current_status != 'healthy':
+                            health_check.current_status = 'healthy'
+                            logger.info(f"Container {container_id} health check recovered (agent)")
+                else:
+                    health_check.last_failure_at = check_time
+                    health_check.consecutive_failures += 1
+                    health_check.consecutive_successes = 0
+                    health_check.last_error_message = error_message
+
+                    # Check if failed (consecutive_failures >= failure_threshold)
+                    if health_check.consecutive_failures >= health_check.failure_threshold:
+                        if health_check.current_status != 'unhealthy':
+                            health_check.current_status = 'unhealthy'
+                            logger.warning(f"Container {container_id} health check failed (agent): {error_message}")
+
+                            # Mark for auto-restart (triggered outside session)
+                            if health_check.auto_restart_on_failure:
+                                should_restart = True
+
+                session.commit()
+
+            # Trigger auto-restart outside session to avoid holding DB connection during slow operation
+            if should_restart:
+                await self._trigger_auto_restart(container_id, error_message)
+
+            logger.debug(f"Health check result processed for {container_id}: healthy={healthy}")
+
+        except Exception as e:
+            logger.error(f"Error handling health check result from agent {self.agent_id}: {e}", exc_info=True)
+
+    async def _trigger_auto_restart(self, container_id: str, error_message: str):
+        """
+        Trigger auto-restart for a container via the agent.
+
+        Args:
+            container_id: Short container ID
+            error_message: Reason for restart
+        """
+        try:
+            if not self.monitor:
+                logger.warning("Cannot trigger auto-restart: monitor not available")
+                return
+
+            # Import here to avoid circular dependency
+            from docker_monitor.operations import DockerOperations
+
+            ops = DockerOperations(self.monitor)
+            success = await ops.restart_container(self.host_id, container_id)
+
+            if success:
+                logger.info(f"Auto-restart triggered for {container_id} due to health check failure")
+            else:
+                logger.error(f"Failed to auto-restart {container_id}")
+
+        except Exception as e:
+            logger.error(f"Error triggering auto-restart for {container_id}: {e}", exc_info=True)
 
 
 async def handle_agent_websocket(websocket: WebSocket, monitor=None):

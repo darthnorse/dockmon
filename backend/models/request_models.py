@@ -422,6 +422,7 @@ class HttpHealthCheckConfig(BaseModel):
     check_interval_seconds: int = Field(default=60, ge=10, le=3600)
     follow_redirects: bool = Field(default=True)
     verify_ssl: bool = Field(default=True)
+    check_from: str = Field(default='backend', pattern='^(backend|agent)$')  # v2.2.0+
     auto_restart_on_failure: bool = Field(default=False)
     failure_threshold: int = Field(default=3, ge=1, le=10)
     success_threshold: int = Field(default=1, ge=1, le=10)

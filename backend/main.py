@@ -2371,6 +2371,7 @@ async def get_http_health_check(
                 "check_interval_seconds": 60,
                 "follow_redirects": True,
                 "verify_ssl": True,
+                "check_from": "backend",  # v2.2.0+
                 "auto_restart_on_failure": False,
                 "failure_threshold": 3,
                 "success_threshold": 1,
@@ -2403,6 +2404,7 @@ async def get_http_health_check(
             "check_interval_seconds": check.check_interval_seconds,
             "follow_redirects": check.follow_redirects,
             "verify_ssl": check.verify_ssl,
+            "check_from": getattr(check, 'check_from', 'backend'),  # v2.2.0+ (default for backwards compatibility)
             "auto_restart_on_failure": check.auto_restart_on_failure,
             "failure_threshold": check.failure_threshold,
             "success_threshold": getattr(check, 'success_threshold', 1),  # Default to 1 for backwards compatibility
@@ -2428,6 +2430,8 @@ async def update_http_health_check(
 ):
     """Update or create HTTP health check configuration"""
     from datetime import datetime, timezone
+    from agent.health_check_sync import push_health_check_config_to_agent, remove_health_check_config_from_agent
+
     # Truncate container_id to 12 chars (UI may send 64-char full ID)
     container_id = container_id[:12]
     composite_key = make_composite_key(host_id, container_id)
@@ -2436,6 +2440,9 @@ async def update_http_health_check(
         check = session.query(ContainerHttpHealthCheck).filter_by(
             container_id=composite_key
         ).first()
+
+        # Track if check_from changed (for removing from agent if switched to backend)
+        old_check_from = check.check_from if check else None
 
         if check:
             # Update existing
@@ -2447,6 +2454,7 @@ async def update_http_health_check(
             check.check_interval_seconds = config.check_interval_seconds
             check.follow_redirects = config.follow_redirects
             check.verify_ssl = config.verify_ssl
+            check.check_from = config.check_from  # v2.2.0+
             check.auto_restart_on_failure = config.auto_restart_on_failure
             check.failure_threshold = config.failure_threshold
             check.success_threshold = config.success_threshold
@@ -2466,6 +2474,7 @@ async def update_http_health_check(
                 check_interval_seconds=config.check_interval_seconds,
                 follow_redirects=config.follow_redirects,
                 verify_ssl=config.verify_ssl,
+                check_from=config.check_from,  # v2.2.0+
                 auto_restart_on_failure=config.auto_restart_on_failure,
                 failure_threshold=config.failure_threshold,
                 success_threshold=config.success_threshold,
@@ -2476,7 +2485,15 @@ async def update_http_health_check(
 
         session.commit()
 
-        return {"success": True}
+    # Push config to agent if needed (after commit, outside session)
+    if config.check_from == 'agent':
+        # Push updated config to agent
+        await push_health_check_config_to_agent(host_id, container_id, db_manager=monitor.db)
+    elif old_check_from == 'agent' and config.check_from == 'backend':
+        # Switched from agent to backend - remove from agent
+        await remove_health_check_config_from_agent(host_id, container_id)
+
+    return {"success": True}
 
 
 @app.delete("/api/containers/{host_id}/{container_id}/http-health-check", tags=["container-health"])
@@ -2486,20 +2503,28 @@ async def delete_http_health_check(
     current_user: dict = Depends(get_current_user)
 ):
     """Delete HTTP health check configuration"""
+    from agent.health_check_sync import remove_health_check_config_from_agent
+
     # Truncate container_id to 12 chars (UI may send 64-char full ID)
     container_id = container_id[:12]
     composite_key = make_composite_key(host_id, container_id)
 
+    was_agent_based = False
     with monitor.db.get_session() as session:
         check = session.query(ContainerHttpHealthCheck).filter_by(
             container_id=composite_key
         ).first()
 
         if check:
+            was_agent_based = check.check_from == 'agent'
             session.delete(check)
             session.commit()
 
-        return {"success": True}
+    # Remove from agent if it was agent-based
+    if was_agent_based:
+        await remove_health_check_config_from_agent(host_id, container_id)
+
+    return {"success": True}
 
 
 @app.post("/api/containers/{host_id}/{container_id}/http-health-check/test", tags=["container-health"])

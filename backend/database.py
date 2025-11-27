@@ -412,6 +412,9 @@ class ContainerHttpHealthCheck(Base):
     follow_redirects = Column(Boolean, default=True, nullable=False)
     verify_ssl = Column(Boolean, default=True, nullable=False)
 
+    # Check location: "backend" (default) or "agent" (for remote hosts)
+    check_from = Column(Text, default='backend', nullable=False)
+
     # Advanced config (JSON)
     headers_json = Column(Text, nullable=True)
     auth_config_json = Column(Text, nullable=True)

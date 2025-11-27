@@ -1,10 +1,10 @@
-"""v2.2.0 upgrade - Agent infrastructure for remote Docker host monitoring
+"""v2.2.0-beta1 upgrade - Agent infrastructure for remote Docker host monitoring
 
 Revision ID: 018_v2_2_0
 Revises: 017_v2_1_9_beta1
 Create Date: 2025-11-24
 
-CHANGES IN v2.2.0:
+CHANGES IN v2.2.0-beta1:
 - Create registration_tokens table (agent registration system)
   - Single-use tokens with 15-minute expiry
   - Tracks which user created token and when used
@@ -25,8 +25,11 @@ CHANGES IN v2.2.0:
   - Foreign key to docker_hosts.id
   - Tracks which host replaced this one during migration
   - Enables audit trail of host migrations
+- Add check_from column to container_http_health_checks
+  - Values: 'backend' (default) or 'agent'
+  - Enables health checks to be performed by remote agent
 - Add indexes for performance (engine_id, host_id, status)
-- Update app_version to '2.2.0'
+- Update app_version to '2.2.0-beta1'
 
 NEW FEATURES:
 - Agent registration via time-limited tokens
@@ -75,7 +78,7 @@ def index_exists(table_name: str, index_name: str) -> bool:
 
 
 def upgrade() -> None:
-    """Add v2.2.0 agent infrastructure"""
+    """Add v2.2.0-beta1 agent infrastructure"""
 
     # Change 1: Create registration_tokens table
     # Tracks single-use tokens for agent registration with 15-minute expiry
@@ -164,16 +167,25 @@ def upgrade() -> None:
                 sa.Column('replaced_by_host_id', sa.String(), nullable=True)
             )
 
-    # Change 6: Update app_version
+    # Change 6: Add check_from column to container_http_health_checks
+    # Allows health checks to be performed by agent instead of backend
+    # Values: 'backend' (default), 'agent'
+    if table_exists('container_http_health_checks'):
+        if not column_exists('container_http_health_checks', 'check_from'):
+            op.add_column('container_http_health_checks',
+                sa.Column('check_from', sa.Text(), server_default='backend', nullable=False)
+            )
+
+    # Change 7: Update app_version
     if table_exists('global_settings'):
         op.execute(
             sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-            .bindparams(version='2.2.0', id=1)
+            .bindparams(version='2.2.0-beta1', id=1)
         )
 
 
 def downgrade() -> None:
-    """Remove v2.2.0 agent infrastructure"""
+    """Remove v2.2.0-beta1 agent infrastructure"""
 
     # Reverse order of upgrade
     if table_exists('global_settings'):
@@ -181,6 +193,11 @@ def downgrade() -> None:
             sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
             .bindparams(version='2.1.9-beta1', id=1)
         )
+
+    # Remove check_from column from container_http_health_checks
+    if table_exists('container_http_health_checks'):
+        if column_exists('container_http_health_checks', 'check_from'):
+            op.drop_column('container_http_health_checks', 'check_from')
 
     # Remove replaced_by_host_id column from docker_hosts
     if table_exists('docker_hosts'):

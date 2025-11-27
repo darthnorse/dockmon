@@ -33,9 +33,10 @@ type WebSocketClient struct {
 	agentID       string
 	hostID        string
 
-	statsHandler      *handlers.StatsHandler
-	updateHandler     *handlers.UpdateHandler
-	selfUpdateHandler *handlers.SelfUpdateHandler
+	statsHandler       *handlers.StatsHandler
+	updateHandler      *handlers.UpdateHandler
+	selfUpdateHandler  *handlers.SelfUpdateHandler
+	healthCheckHandler *handlers.HealthCheckHandler
 
 	stopChan      chan struct{}
 	doneChan      chan struct{}
@@ -83,6 +84,12 @@ func NewWebSocketClient(
 	client.selfUpdateHandler = handlers.NewSelfUpdateHandler(
 		myContainerID,
 		cfg.DataPath,
+		log,
+		client.sendEvent,
+	)
+
+	// Initialize health check handler with sendEvent callback
+	client.healthCheckHandler = handlers.NewHealthCheckHandler(
 		log,
 		client.sendEvent,
 	)
@@ -463,6 +470,10 @@ func (c *WebSocketClient) handleConnection(ctx context.Context) error {
 		c.log.Info("Stats collection started")
 	}
 
+	// Start health check handler
+	c.healthCheckHandler.Start(connCtx)
+	c.log.Info("Health check handler started")
+
 	// Ensure cleanup when we exit
 	// IMPORTANT: Order matters here to prevent deadlocks and races:
 	// 1. Cancel context to signal goroutines to stop
@@ -475,6 +486,9 @@ func (c *WebSocketClient) handleConnection(ctx context.Context) error {
 
 		c.statsHandler.StopAll()
 		c.log.Info("Connection cleanup: stats stopped")
+
+		c.healthCheckHandler.Stop()
+		c.log.Info("Connection cleanup: health checks stopped")
 
 		// Wait for message handlers first - they may call backgroundWg.Add()
 		// This prevents the race: backgroundWg.Add() called after Wait() returns
@@ -543,6 +557,22 @@ func (c *WebSocketClient) handleMessage(ctx context.Context, msg *types.Message)
 	// Handle new v2.2.0 container_operation messages
 	if msg.Type == "container_operation" {
 		c.handleContainerOperation(ctx, msg)
+		return
+	}
+
+	// Handle health check config messages
+	if msg.Type == "health_check_config" {
+		c.handleHealthCheckConfig(msg)
+		return
+	}
+
+	if msg.Type == "health_check_configs_sync" {
+		c.handleHealthCheckConfigsSync(msg)
+		return
+	}
+
+	if msg.Type == "health_check_config_remove" {
+		c.handleHealthCheckConfigRemove(msg)
 		return
 	}
 
@@ -842,6 +872,126 @@ func (c *WebSocketClient) sendJSON(data interface{}) error {
 // CheckPendingUpdate checks for and applies pending self-update
 func (c *WebSocketClient) CheckPendingUpdate() error {
 	return c.selfUpdateHandler.CheckAndApplyUpdate()
+}
+
+// handleHealthCheckConfig handles a single health check config update
+func (c *WebSocketClient) handleHealthCheckConfig(msg *types.Message) {
+	payload, ok := msg.Payload.(map[string]interface{})
+	if !ok {
+		c.log.Error("Invalid health_check_config payload")
+		return
+	}
+
+	// Parse config from payload
+	config := c.parseHealthCheckConfig(payload)
+	if config == nil {
+		return
+	}
+
+	c.healthCheckHandler.UpdateConfig(config)
+	c.log.WithFields(logrus.Fields{
+		"container_id": config.ContainerID,
+		"enabled":      config.Enabled,
+	}).Info("Health check config updated")
+}
+
+// handleHealthCheckConfigsSync handles sync of all health check configs
+func (c *WebSocketClient) handleHealthCheckConfigsSync(msg *types.Message) {
+	payload, ok := msg.Payload.(map[string]interface{})
+	if !ok {
+		c.log.Error("Invalid health_check_configs_sync payload")
+		return
+	}
+
+	configsRaw, ok := payload["configs"].([]interface{})
+	if !ok {
+		c.log.Error("Missing configs array in health_check_configs_sync")
+		return
+	}
+
+	var configs []handlers.HealthCheckConfig
+	for _, configRaw := range configsRaw {
+		configMap, ok := configRaw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		config := c.parseHealthCheckConfig(configMap)
+		if config != nil {
+			configs = append(configs, *config)
+		}
+	}
+
+	c.healthCheckHandler.SyncConfigs(configs)
+	c.log.WithField("count", len(configs)).Info("Health check configs synced")
+}
+
+// handleHealthCheckConfigRemove handles removal of a health check config
+func (c *WebSocketClient) handleHealthCheckConfigRemove(msg *types.Message) {
+	payload, ok := msg.Payload.(map[string]interface{})
+	if !ok {
+		c.log.Error("Invalid health_check_config_remove payload")
+		return
+	}
+
+	containerID, ok := payload["container_id"].(string)
+	if !ok || containerID == "" {
+		c.log.Error("Missing container_id in health_check_config_remove")
+		return
+	}
+
+	c.healthCheckHandler.RemoveConfig(containerID)
+	c.log.WithField("container_id", containerID).Info("Health check config removed")
+}
+
+// parseHealthCheckConfig parses a health check config from a map
+func (c *WebSocketClient) parseHealthCheckConfig(data map[string]interface{}) *handlers.HealthCheckConfig {
+	containerID, _ := data["container_id"].(string)
+	if containerID == "" {
+		c.log.Error("Missing container_id in health check config")
+		return nil
+	}
+
+	config := &handlers.HealthCheckConfig{
+		ContainerID: containerID,
+	}
+
+	// Parse optional fields
+	if v, ok := data["host_id"].(string); ok {
+		config.HostID = v
+	}
+	if v, ok := data["enabled"].(bool); ok {
+		config.Enabled = v
+	}
+	if v, ok := data["url"].(string); ok {
+		config.URL = v
+	}
+	if v, ok := data["method"].(string); ok {
+		config.Method = v
+	}
+	if v, ok := data["expected_status_codes"].(string); ok {
+		config.ExpectedStatusCodes = v
+	}
+	if v, ok := data["timeout_seconds"].(float64); ok {
+		config.TimeoutSeconds = int(v)
+	}
+	if v, ok := data["check_interval_seconds"].(float64); ok {
+		config.CheckIntervalSeconds = int(v)
+	}
+	if v, ok := data["follow_redirects"].(bool); ok {
+		config.FollowRedirects = v
+	}
+	if v, ok := data["verify_ssl"].(bool); ok {
+		config.VerifySSL = v
+	}
+	if v, ok := data["headers_json"].(string); ok {
+		config.HeadersJSON = v
+	}
+	if v, ok := data["auth_config_json"].(string); ok {
+		config.AuthConfigJSON = v
+	}
+
+	return config
 }
 
 // closeConnection closes the WebSocket connection

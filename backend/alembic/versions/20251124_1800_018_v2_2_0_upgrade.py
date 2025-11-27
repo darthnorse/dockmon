@@ -15,6 +15,7 @@ CHANGES IN v2.2.0-beta1:
   - Unique constraint on engine_id (prevents duplicate registrations)
   - Status tracking (online/offline/degraded)
   - JSON capabilities field for feature flags
+  - agent_os/agent_arch columns for platform-specific binary downloads
 - Add connection_type column to docker_hosts
   - Values: 'local', 'remote', 'agent'
   - Differentiates connection methods for hosts
@@ -117,6 +118,9 @@ def upgrade() -> None:
             sa.Column('status', sa.String(), nullable=False),  # 'online', 'offline', 'degraded'
             sa.Column('last_seen_at', sa.DateTime(), nullable=False),
             sa.Column('registered_at', sa.DateTime(), nullable=False),
+            # Agent runtime info (for binary downloads during self-update)
+            sa.Column('agent_os', sa.String(), nullable=True),    # linux, darwin, windows (GOOS)
+            sa.Column('agent_arch', sa.String(), nullable=True),  # amd64, arm64, arm (GOARCH)
             sqlite_autoincrement=False,
         )
 
@@ -129,6 +133,14 @@ def upgrade() -> None:
             op.create_index('idx_agent_status', 'agents', ['status'])
         if not index_exists('agents', 'idx_agent_last_seen'):
             op.create_index('idx_agent_last_seen', 'agents', ['last_seen_at'])
+
+    # Defensive: Add agent_os/agent_arch columns if table exists but columns don't
+    # (for beta users who ran migration before these columns were added)
+    if table_exists('agents'):
+        if not column_exists('agents', 'agent_os'):
+            op.add_column('agents', sa.Column('agent_os', sa.String(), nullable=True))
+        if not column_exists('agents', 'agent_arch'):
+            op.add_column('agents', sa.Column('agent_arch', sa.String(), nullable=True))
 
     # Change 3: Add connection_type column to docker_hosts
     # Differentiates: 'local' (Docker socket), 'remote' (mTLS/Docker API), 'agent' (DockMon agent)

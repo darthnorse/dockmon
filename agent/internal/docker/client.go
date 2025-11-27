@@ -284,6 +284,14 @@ func (c *Client) CreateContainer(ctx context.Context, config *container.Config, 
 	return resp.ID, nil
 }
 
+// RenameContainer renames a container
+func (c *Client) RenameContainer(ctx context.Context, containerID, newName string) error {
+	if err := c.cli.ContainerRename(ctx, containerID, newName); err != nil {
+		return fmt.Errorf("failed to rename container: %w", err)
+	}
+	return nil
+}
+
 // parseContainerIDFromCgroup extracts container ID from /proc/self/cgroup
 func parseContainerIDFromCgroup(data string) string {
 	// Handles multiple cgroup formats (v1 and v2)

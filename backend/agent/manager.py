@@ -183,6 +183,11 @@ class AgentManager:
                     existing_agent.capabilities = json.dumps(capabilities)
                     existing_agent.status = "online"
                     existing_agent.last_seen_at = datetime.now(timezone.utc)
+                    # Update agent runtime info (for binary downloads)
+                    if registration_data.get("agent_os"):
+                        existing_agent.agent_os = registration_data.get("agent_os")
+                    if registration_data.get("agent_arch"):
+                        existing_agent.agent_arch = registration_data.get("agent_arch")
 
                     # Update host record with fresh system information
                     host = session.query(DockerHostDB).filter_by(id=existing_agent.host_id).first()
@@ -333,10 +338,13 @@ class AgentManager:
                     capabilities=json.dumps(capabilities),  # Store as JSON string
                     status="online",
                     last_seen_at=now,
-                    registered_at=now
+                    registered_at=now,
+                    # Agent runtime info (for binary downloads)
+                    agent_os=registration_data.get("agent_os"),
+                    agent_arch=registration_data.get("agent_arch")
                 )
                 reg_session.add(agent)
-                logger.info(f"Created agent record: {agent_id[:8]}...")
+                logger.info(f"Created agent record: {agent_id[:8]}... (os={registration_data.get('agent_os')}, arch={registration_data.get('agent_arch')})")
 
                 # Mark token as used
                 token_record = reg_session.query(RegistrationToken).filter_by(token=token).first()

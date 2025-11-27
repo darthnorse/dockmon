@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
@@ -81,11 +82,14 @@ func NewWebSocketClient(
 	)
 
 	// Initialize self-update handler with sendEvent callback
+	// Pass docker client for container mode and signalStop for graceful shutdown
 	client.selfUpdateHandler = handlers.NewSelfUpdateHandler(
 		myContainerID,
 		cfg.DataPath,
 		log,
 		client.sendEvent,
+		dockerClient,
+		client.signalStop,
 	)
 
 	// Initialize health check handler with sendEvent callback
@@ -279,6 +283,10 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 			"self_update":          c.myContainerID != "",
 		},
 	}
+
+	// Add agent runtime info (GOOS/GOARCH) - needed for binary downloads
+	regMsg["agent_os"] = runtime.GOOS     // linux, darwin, windows
+	regMsg["agent_arch"] = runtime.GOARCH // amd64, arm64, arm
 
 	// Add system information if available (aligns with DockerHostDB schema)
 	if systemInfo != nil {

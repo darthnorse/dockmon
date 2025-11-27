@@ -10,32 +10,50 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/darthnorse/dockmon-agent/internal/docker"
+	dockerTypes "github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
 	"github.com/sirupsen/logrus"
 )
 
 // SelfUpdateHandler manages agent self-updates
+// Supports two modes:
+// - Container mode: Updates own container (when running in Docker)
+// - Native mode: Binary swap (when running as system service)
 type SelfUpdateHandler struct {
 	myContainerID string
 	dataDir       string
 	log           *logrus.Logger
 	sendEvent     func(msgType string, payload interface{}) error
+	dockerClient  *docker.Client
+	stopSignal    func() // Signal to stop the agent gracefully
 }
 
 // NewSelfUpdateHandler creates a new self-update handler
-func NewSelfUpdateHandler(myContainerID, dataDir string, log *logrus.Logger, sendEvent func(string, interface{}) error) *SelfUpdateHandler {
+func NewSelfUpdateHandler(
+	myContainerID, dataDir string,
+	log *logrus.Logger,
+	sendEvent func(string, interface{}) error,
+	dockerClient *docker.Client,
+	stopSignal func(),
+) *SelfUpdateHandler {
 	return &SelfUpdateHandler{
 		myContainerID: myContainerID,
 		dataDir:       dataDir,
 		log:           log,
 		sendEvent:     sendEvent,
+		dockerClient:  dockerClient,
+		stopSignal:    stopSignal,
 	}
 }
 
 // SelfUpdateRequest contains parameters for self-update
+// Backend sends both image and binary_url, agent picks based on deployment mode
 type SelfUpdateRequest struct {
-	Version    string `json:"version"`
-	BinaryURL  string `json:"binary_url"`
-	Checksum   string `json:"checksum,omitempty"`
+	Version   string `json:"version"`
+	Image     string `json:"image"`                // For container mode
+	BinaryURL string `json:"binary_url,omitempty"` // For native mode
+	Checksum  string `json:"checksum,omitempty"`
 }
 
 // SelfUpdateProgress represents self-update progress events
@@ -45,7 +63,7 @@ type SelfUpdateProgress struct {
 	Error   string `json:"error,omitempty"`
 }
 
-// UpdateLockFile represents the coordination file for updates
+// UpdateLockFile represents the coordination file for native mode updates
 type UpdateLockFile struct {
 	Version       string    `json:"version"`
 	NewBinaryPath string    `json:"new_binary_path"`
@@ -53,16 +71,149 @@ type UpdateLockFile struct {
 	Timestamp     time.Time `json:"timestamp"`
 }
 
-// PerformSelfUpdate downloads new agent and prepares for update
+// PerformSelfUpdate performs self-update based on deployment mode
 func (h *SelfUpdateHandler) PerformSelfUpdate(ctx context.Context, req SelfUpdateRequest) error {
-	if h.myContainerID == "" {
-		return fmt.Errorf("self-update not available: container ID not detected")
+	h.log.WithFields(logrus.Fields{
+		"version":       req.Version,
+		"image":         req.Image,
+		"binary_url":    req.BinaryURL,
+		"container_id":  h.myContainerID,
+		"container_mode": h.myContainerID != "",
+	}).Info("Starting self-update")
+
+	// Branch based on deployment mode
+	if h.myContainerID != "" {
+		// Container mode: Update own container
+		return h.performContainerSelfUpdate(ctx, req)
+	}
+
+	// Native mode: Binary swap
+	return h.performNativeSelfUpdate(ctx, req)
+}
+
+// performContainerSelfUpdate updates the agent's own container
+// Flow:
+// 1. Pull new image
+// 2. Inspect own container to get config
+// 3. Create new container with same config but new image
+// 4. Start new container
+// 5. Wait for it to be healthy
+// 6. Stop ourselves (old container)
+func (h *SelfUpdateHandler) performContainerSelfUpdate(ctx context.Context, req SelfUpdateRequest) error {
+	if req.Image == "" {
+		return fmt.Errorf("image is required for container self-update")
+	}
+
+	if h.dockerClient == nil {
+		return fmt.Errorf("docker client not available for container self-update")
+	}
+
+	h.log.WithFields(logrus.Fields{
+		"container_id": h.myContainerID,
+		"new_image":    req.Image,
+	}).Info("Performing container-based self-update")
+
+	// Step 1: Pull new image
+	h.sendProgress("pull", fmt.Sprintf("Pulling image %s", req.Image))
+	if err := h.dockerClient.PullImage(ctx, req.Image); err != nil {
+		h.sendProgressError("pull", err)
+		return fmt.Errorf("failed to pull image: %w", err)
+	}
+
+	// Step 2: Inspect own container to get configuration
+	h.sendProgress("inspect", "Inspecting current container")
+	oldContainer, err := h.dockerClient.InspectContainer(ctx, h.myContainerID)
+	if err != nil {
+		h.sendProgressError("inspect", err)
+		return fmt.Errorf("failed to inspect own container: %w", err)
+	}
+
+	originalName := oldContainer.Name
+	// Docker returns name with leading slash, remove it
+	if len(originalName) > 0 && originalName[0] == '/' {
+		originalName = originalName[1:]
+	}
+
+	h.log.WithField("original_name", originalName).Debug("Got container configuration")
+
+	// Step 3: Create new container with same config but new image
+	h.sendProgress("create", "Creating new container")
+	newConfig := h.cloneContainerConfig(&oldContainer, req.Image)
+	newHostConfig := h.cloneHostConfig(oldContainer.HostConfig)
+
+	// Use temporary name - will be renamed after old container is removed
+	tempName := originalName + "-update"
+
+	newContainerID, err := h.dockerClient.CreateContainer(ctx, newConfig, newHostConfig, tempName)
+	if err != nil {
+		h.sendProgressError("create", err)
+		return fmt.Errorf("failed to create new container: %w", err)
+	}
+
+	h.log.WithField("new_container_id", newContainerID[:12]).Info("Created new container")
+
+	// Step 4: Start new container
+	h.sendProgress("start", "Starting new container")
+	if err := h.dockerClient.StartContainer(ctx, newContainerID); err != nil {
+		// Cleanup: remove the failed container
+		h.dockerClient.RemoveContainer(ctx, newContainerID, true)
+		h.sendProgressError("start", err)
+		return fmt.Errorf("failed to start new container: %w", err)
+	}
+
+	// Step 5: Wait for new container to be healthy
+	h.sendProgress("health", "Waiting for new container to be healthy")
+	if err := h.waitForHealthy(ctx, newContainerID, 60); err != nil {
+		h.log.WithError(err).Warn("New container failed health check, rolling back")
+		// Rollback: stop and remove new container
+		h.dockerClient.StopContainer(ctx, newContainerID, 10)
+		h.dockerClient.RemoveContainer(ctx, newContainerID, true)
+		h.sendProgressError("health", err)
+		return fmt.Errorf("new container health check failed: %w", err)
+	}
+
+	h.log.Info("New container is healthy")
+
+	// Step 6: Write cleanup file so new agent can clean up old container
+	cleanupFile := filepath.Join(h.dataDir, "cleanup.json")
+	cleanupData := map[string]string{
+		"old_container_id":   h.myContainerID,
+		"old_container_name": originalName,
+		"new_container_id":   newContainerID,
+		"temp_name":          tempName,
+		"original_name":      originalName,
+	}
+	if data, err := json.MarshalIndent(cleanupData, "", "  "); err == nil {
+		os.WriteFile(cleanupFile, data, 0644)
+	}
+
+	// Step 7: Signal completion and stop ourselves
+	h.sendProgress("complete", "Self-update complete, stopping old container")
+
+	h.log.Info("Self-update successful, stopping old container")
+
+	// Give a moment for the progress event to be sent
+	time.Sleep(500 * time.Millisecond)
+
+	// Signal graceful shutdown - this will cause the agent to exit cleanly
+	// Docker will NOT restart us because we're stopping gracefully
+	if h.stopSignal != nil {
+		h.stopSignal()
+	}
+
+	return nil
+}
+
+// performNativeSelfUpdate performs binary swap for native/systemd deployments
+func (h *SelfUpdateHandler) performNativeSelfUpdate(ctx context.Context, req SelfUpdateRequest) error {
+	if req.BinaryURL == "" {
+		return fmt.Errorf("binary_url is required for native self-update")
 	}
 
 	h.log.WithFields(logrus.Fields{
 		"version":    req.Version,
 		"binary_url": req.BinaryURL,
-	}).Info("Starting self-update")
+	}).Info("Performing native binary self-update")
 
 	// Step 1: Download new binary
 	h.sendProgress("download", fmt.Sprintf("Downloading version %s", req.Version))
@@ -91,7 +242,7 @@ func (h *SelfUpdateHandler) PerformSelfUpdate(ctx context.Context, req SelfUpdat
 	lockFile := UpdateLockFile{
 		Version:       req.Version,
 		NewBinaryPath: newBinaryPath,
-		OldBinaryPath: "/app/agent",  // Current binary path in container
+		OldBinaryPath: "/app/agent", // Current binary path
 		Timestamp:     time.Now(),
 	}
 
@@ -103,28 +254,43 @@ func (h *SelfUpdateHandler) PerformSelfUpdate(ctx context.Context, req SelfUpdat
 
 	h.sendProgress("complete", "Update prepared, agent will restart")
 
-	h.log.Info("Self-update prepared successfully, agent should exit and restart")
+	h.log.Info("Native self-update prepared, signaling shutdown")
+
+	// Signal shutdown so systemd can restart us
+	if h.stopSignal != nil {
+		h.stopSignal()
+	}
 
 	return nil
 }
 
-// CheckAndApplyUpdate checks for pending update on startup
+// CheckAndApplyUpdate checks for pending updates on startup
+// For native mode: applies binary swap from lock file
+// For container mode: cleans up old container from cleanup file
 func (h *SelfUpdateHandler) CheckAndApplyUpdate() error {
+	// Check for native mode update lock
 	lockFilePath := filepath.Join(h.dataDir, "update.lock")
-
-	// Check if lock file exists
-	if _, err := os.Stat(lockFilePath); os.IsNotExist(err) {
-		// No pending update
-		return nil
+	if _, err := os.Stat(lockFilePath); err == nil {
+		return h.applyNativeUpdate(lockFilePath)
 	}
 
-	h.log.Info("Found pending update, applying...")
+	// Check for container mode cleanup
+	cleanupFilePath := filepath.Join(h.dataDir, "cleanup.json")
+	if _, err := os.Stat(cleanupFilePath); err == nil {
+		return h.performContainerCleanup(cleanupFilePath)
+	}
+
+	return nil
+}
+
+// applyNativeUpdate applies a pending native binary update
+func (h *SelfUpdateHandler) applyNativeUpdate(lockFilePath string) error {
+	h.log.Info("Found pending native update, applying...")
 
 	// Read lock file
 	lockFile, err := h.readLockFile(lockFilePath)
 	if err != nil {
 		h.log.WithError(err).Error("Failed to read lock file")
-		// Remove corrupt lock file
 		os.Remove(lockFilePath)
 		return fmt.Errorf("failed to read lock file: %w", err)
 	}
@@ -157,32 +323,211 @@ func (h *SelfUpdateHandler) CheckAndApplyUpdate() error {
 	// Make new binary executable
 	if err := os.Chmod(lockFile.OldBinaryPath, 0755); err != nil {
 		h.log.WithError(err).Error("Failed to make new binary executable")
-		// Continue anyway, it might work
 	}
 
 	// Clean up
 	os.Remove(backupPath)
 	os.Remove(lockFilePath)
 
-	h.log.WithField("version", lockFile.Version).Info("Self-update applied successfully")
+	h.log.WithField("version", lockFile.Version).Info("Native self-update applied successfully")
 
 	return nil
 }
 
+// performContainerCleanup cleans up after container self-update
+func (h *SelfUpdateHandler) performContainerCleanup(cleanupFilePath string) error {
+	h.log.Info("Found container cleanup file, performing cleanup...")
+
+	// Read cleanup file
+	data, err := os.ReadFile(cleanupFilePath)
+	if err != nil {
+		h.log.WithError(err).Error("Failed to read cleanup file")
+		os.Remove(cleanupFilePath)
+		return err
+	}
+
+	var cleanup map[string]string
+	if err := json.Unmarshal(data, &cleanup); err != nil {
+		h.log.WithError(err).Error("Failed to parse cleanup file")
+		os.Remove(cleanupFilePath)
+		return err
+	}
+
+	oldContainerID := cleanup["old_container_id"]
+	originalName := cleanup["original_name"]
+
+	if h.dockerClient == nil {
+		h.log.Warn("Docker client not available for cleanup")
+		os.Remove(cleanupFilePath)
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Stop and remove old container
+	if oldContainerID != "" {
+		h.log.WithField("container_id", oldContainerID[:12]).Info("Removing old container")
+		h.dockerClient.StopContainer(ctx, oldContainerID, 10)
+		if err := h.dockerClient.RemoveContainer(ctx, oldContainerID, true); err != nil {
+			h.log.WithError(err).Warn("Failed to remove old container")
+		}
+	}
+
+	// Rename ourselves to original name
+	if originalName != "" && h.myContainerID != "" {
+		h.log.WithField("name", originalName).Info("Renaming to original name")
+		if err := h.dockerClient.RenameContainer(ctx, h.myContainerID, originalName); err != nil {
+			h.log.WithError(err).Warn("Failed to rename container")
+		}
+	}
+
+	// Clean up the cleanup file
+	os.Remove(cleanupFilePath)
+
+	h.log.Info("Container cleanup completed")
+
+	return nil
+}
+
+// cloneContainerConfig creates a new container config based on existing container
+func (h *SelfUpdateHandler) cloneContainerConfig(inspect *dockerTypes.ContainerJSON, newImage string) *container.Config {
+	config := inspect.Config
+
+	return &container.Config{
+		Hostname:     config.Hostname,
+		Domainname:   config.Domainname,
+		User:         config.User,
+		AttachStdin:  config.AttachStdin,
+		AttachStdout: config.AttachStdout,
+		AttachStderr: config.AttachStderr,
+		Tty:          config.Tty,
+		OpenStdin:    config.OpenStdin,
+		StdinOnce:    config.StdinOnce,
+		Env:          config.Env,
+		Cmd:          config.Cmd,
+		Image:        newImage, // Use new image
+		WorkingDir:   config.WorkingDir,
+		Entrypoint:   config.Entrypoint,
+		Labels:       config.Labels,
+		StopSignal:   config.StopSignal,
+		StopTimeout:  config.StopTimeout,
+	}
+}
+
+// cloneHostConfig creates a new host config based on existing container
+func (h *SelfUpdateHandler) cloneHostConfig(hostConfig *container.HostConfig) *container.HostConfig {
+	return &container.HostConfig{
+		Binds:           hostConfig.Binds,
+		ContainerIDFile: hostConfig.ContainerIDFile,
+		NetworkMode:     hostConfig.NetworkMode,
+		PortBindings:    hostConfig.PortBindings,
+		RestartPolicy:   hostConfig.RestartPolicy,
+		AutoRemove:      hostConfig.AutoRemove,
+		VolumeDriver:    hostConfig.VolumeDriver,
+		VolumesFrom:     hostConfig.VolumesFrom,
+		CapAdd:          hostConfig.CapAdd,
+		CapDrop:         hostConfig.CapDrop,
+		DNS:             hostConfig.DNS,
+		DNSOptions:      hostConfig.DNSOptions,
+		DNSSearch:       hostConfig.DNSSearch,
+		ExtraHosts:      hostConfig.ExtraHosts,
+		GroupAdd:        hostConfig.GroupAdd,
+		IpcMode:         hostConfig.IpcMode,
+		Cgroup:          hostConfig.Cgroup,
+		Links:           hostConfig.Links,
+		OomScoreAdj:     hostConfig.OomScoreAdj,
+		PidMode:         hostConfig.PidMode,
+		Privileged:      hostConfig.Privileged,
+		PublishAllPorts: hostConfig.PublishAllPorts,
+		ReadonlyRootfs:  hostConfig.ReadonlyRootfs,
+		SecurityOpt:     hostConfig.SecurityOpt,
+		UTSMode:         hostConfig.UTSMode,
+		UsernsMode:      hostConfig.UsernsMode,
+		ShmSize:         hostConfig.ShmSize,
+		Sysctls:         hostConfig.Sysctls,
+		Runtime:         hostConfig.Runtime,
+		Isolation:       hostConfig.Isolation,
+		Resources:       hostConfig.Resources,
+		Mounts:          hostConfig.Mounts,
+		MaskedPaths:     hostConfig.MaskedPaths,
+		ReadonlyPaths:   hostConfig.ReadonlyPaths,
+		Init:            hostConfig.Init,
+	}
+}
+
+// waitForHealthy waits for a container to become healthy or timeout
+func (h *SelfUpdateHandler) waitForHealthy(ctx context.Context, containerID string, timeout int) error {
+	deadline := time.Now().Add(time.Duration(timeout) * time.Second)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		if time.Now().After(deadline) {
+			return fmt.Errorf("health check timeout after %ds", timeout)
+		}
+
+		inspect, err := h.dockerClient.InspectContainer(ctx, containerID)
+		if err != nil {
+			return fmt.Errorf("failed to inspect container: %w", err)
+		}
+
+		if !inspect.State.Running {
+			return fmt.Errorf("container stopped unexpectedly")
+		}
+
+		// If no health check defined, wait a few seconds and assume healthy
+		if inspect.State.Health == nil {
+			h.log.Debug("No health check defined, waiting 5 seconds")
+			select {
+			case <-time.After(5 * time.Second):
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+
+		switch inspect.State.Health.Status {
+		case "healthy":
+			h.log.Info("Container is healthy")
+			return nil
+		case "unhealthy":
+			return fmt.Errorf("container is unhealthy")
+		case "starting":
+			h.log.Debug("Container health is starting, waiting...")
+			select {
+			case <-time.After(2 * time.Second):
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		default:
+			h.log.Debugf("Unknown health status: %s", inspect.State.Health.Status)
+			select {
+			case <-time.After(2 * time.Second):
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
+}
+
 // downloadBinary downloads a binary from URL to destination
 func (h *SelfUpdateHandler) downloadBinary(ctx context.Context, url, dest string) error {
-	// Create HTTP client with timeout
 	client := &http.Client{
 		Timeout: 5 * time.Minute,
 	}
 
-	// Create request
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// Execute request
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to download: %w", err)
@@ -193,14 +538,12 @@ func (h *SelfUpdateHandler) downloadBinary(ctx context.Context, url, dest string
 		return fmt.Errorf("download failed with status: %d", resp.StatusCode)
 	}
 
-	// Create destination file
 	out, err := os.Create(dest)
 	if err != nil {
 		return fmt.Errorf("failed to create file: %w", err)
 	}
 	defer out.Close()
 
-	// Copy data
 	_, err = io.Copy(out, resp.Body)
 	if err != nil {
 		return fmt.Errorf("failed to write file: %w", err)

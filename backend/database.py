@@ -148,6 +148,9 @@ class Agent(Base):
     status = Column(String, nullable=False)  # 'online', 'offline', 'degraded'
     last_seen_at = Column(DateTime, default=utcnow, nullable=False)
     registered_at = Column(DateTime, default=utcnow, nullable=False)
+    # Agent runtime info (for binary downloads)
+    agent_os = Column(String, nullable=True)    # linux, darwin, windows (GOOS)
+    agent_arch = Column(String, nullable=True)  # amd64, arm64, arm (GOARCH)
 
     # Relationships
     host = relationship("DockerHostDB", back_populates="agent")

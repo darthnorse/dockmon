@@ -222,16 +222,33 @@ class AgentUpdateExecutor:
         try:
             await progress_callback("initiating", 10, "Sending self-update command to agent")
 
-            # CORRECT command format for self_update
+            # Get agent's platform info for binary URL construction
+            agent_os = "linux"   # Default
+            agent_arch = "amd64"  # Default
+            with self.db.get_session() as session:
+                agent = session.query(Agent).filter_by(id=agent_id).first()
+                if agent:
+                    agent_os = agent.agent_os or "linux"
+                    agent_arch = agent.agent_arch or "amd64"
+
+            # Command format for self_update - supports both container and native modes
+            # Agent picks the right approach based on its deployment:
+            # - Container mode: uses 'image' to update own container
+            # - Native mode: uses 'binary_url' to download and swap binary
+            version = self._extract_version_from_image(update_record.latest_image)
+            binary_url = f"https://github.com/darthnorse/dockmon/releases/download/v{version}/dockmon-agent-{agent_os}-{agent_arch}"
             command = {
                 "type": "command",
                 "command": "self_update",
                 "payload": {
                     "image": update_record.latest_image,
-                    "version": self._extract_version_from_image(update_record.latest_image),
-                    "timeout_sec": 120
+                    "version": version,
+                    # Binary URL for native mode (systemd deployments)
+                    # TODO: Make base URL configurable via settings for self-hosted binary distribution
+                    "binary_url": binary_url,
                 }
             }
+            logger.info(f"Self-update binary URL: {binary_url} (os={agent_os}, arch={agent_arch})")
 
             logger.info(f"Sending self_update command to agent {agent_id}")
 

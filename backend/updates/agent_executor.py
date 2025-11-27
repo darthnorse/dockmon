@@ -21,16 +21,12 @@ from typing import Dict, Optional, Callable, Awaitable
 from database import (
     DatabaseManager,
     ContainerUpdate,
-    AutoRestartConfig,
-    ContainerDesiredState,
-    ContainerHttpHealthCheck,
-    DeploymentMetadata,
-    TagAssignment,
     Agent,
 )
 from utils.keys import make_composite_key
 from agent.command_executor import CommandStatus
 from updates.types import UpdateContext, UpdateResult, ProgressCallback
+from updates.database_updater import update_container_records_after_update
 
 logger = logging.getLogger(__name__)
 
@@ -169,11 +165,14 @@ class AgentUpdateExecutor:
                 new_container_id = old_container_id  # Fallback
 
             # Update database
-            await self._update_database(
-                context.host_id,
-                old_container_id,
-                new_container_id,
-                update_record
+            update_container_records_after_update(
+                db=self.db,
+                host_id=context.host_id,
+                old_container_id=old_container_id,
+                new_container_id=new_container_id,
+                new_image=update_record.latest_image,
+                new_digest=update_record.latest_digest,
+                old_image=update_record.current_image,
             )
 
             await progress_callback("completed", 100, "Update completed successfully")
@@ -413,73 +412,3 @@ class AgentUpdateExecutor:
             logger.warning(f"Error getting container by name: {e}")
 
         return None
-
-    async def _update_database(
-        self,
-        host_id: str,
-        old_container_id: str,
-        new_container_id: str,
-        update_record: ContainerUpdate
-    ):
-        """Update all database records after agent-based container update."""
-        old_composite_key = make_composite_key(host_id, old_container_id)
-        new_composite_key = make_composite_key(host_id, new_container_id)
-
-        logger.info(f"Updating database: {old_composite_key} -> {new_composite_key}")
-
-        with self.db.get_session() as session:
-            # Update ContainerUpdate
-            record = session.query(ContainerUpdate).filter_by(
-                container_id=old_composite_key
-            ).first()
-
-            if record:
-                record.container_id = new_composite_key
-                record.update_available = False
-                record.current_image = update_record.latest_image
-                record.current_digest = update_record.latest_digest
-                record.last_updated_at = datetime.now(timezone.utc)
-                record.updated_at = datetime.now(timezone.utc)
-
-            # Update AutoRestartConfig
-            session.query(AutoRestartConfig).filter_by(
-                host_id=host_id, container_id=old_container_id
-            ).update({
-                "container_id": new_container_id,
-                "updated_at": datetime.now(timezone.utc)
-            })
-
-            # Update ContainerDesiredState
-            session.query(ContainerDesiredState).filter_by(
-                host_id=host_id, container_id=old_container_id
-            ).update({
-                "container_id": new_container_id,
-                "updated_at": datetime.now(timezone.utc)
-            })
-
-            # Update ContainerHttpHealthCheck
-            session.query(ContainerHttpHealthCheck).filter_by(
-                container_id=old_composite_key
-            ).update({
-                "container_id": new_composite_key
-            })
-
-            # Update DeploymentMetadata
-            session.query(DeploymentMetadata).filter_by(
-                container_id=old_composite_key
-            ).update({
-                "container_id": new_composite_key,
-                "updated_at": datetime.now(timezone.utc)
-            })
-
-            # Update TagAssignment
-            session.query(TagAssignment).filter(
-                TagAssignment.subject_type == 'container',
-                TagAssignment.subject_id == old_composite_key
-            ).update({
-                "subject_id": new_composite_key,
-                "last_seen_at": datetime.now(timezone.utc)
-            })
-
-            session.commit()
-            logger.info(f"Database updated successfully")

@@ -20,20 +20,12 @@ import threading
 from datetime import datetime, timezone
 from typing import Dict, Optional, Any
 import docker
-from sqlalchemy.exc import IntegrityError
-
 from database import (
     DatabaseManager,
     ContainerUpdate,
-    AutoRestartConfig,
-    ContainerDesiredState,
-    ContainerHttpHealthCheck,
     GlobalSettings,
-    DeploymentMetadata,
-    TagAssignment,
     DockerHostDB,
 )
-from event_bus import Event, EventType as BusEventType, get_event_bus
 from utils.async_docker import async_docker_call
 from utils.image_pull_progress import ImagePullProgress
 from utils.keys import make_composite_key
@@ -42,6 +34,8 @@ from updates.container_validator import ContainerValidator, ValidationResult
 from updates.types import UpdateContext, UpdateResult
 from updates.docker_executor import DockerUpdateExecutor
 from updates.agent_executor import AgentUpdateExecutor
+from updates.database_updater import update_container_records_after_update
+from updates.event_emitter import UpdateEventEmitter
 from agent.command_executor import CommandStatus
 
 logger = logging.getLogger(__name__)
@@ -94,6 +88,9 @@ class UpdateExecutor:
 
         # Agent executor will be initialized lazily when agent_manager is available
         self._agent_executor = None
+
+        # Initialize event emitter
+        self.event_emitter = UpdateEventEmitter(monitor)
 
     @property
     def agent_executor(self) -> Optional[AgentUpdateExecutor]:
@@ -338,7 +335,7 @@ class UpdateExecutor:
             ):
                 error_message = "DockMon cannot update itself. Please update manually."
                 logger.warning(f"Blocked self-update for DockMon container '{container_name}'")
-                await self._emit_update_failed_event(host_id, container_id, container_name, error_message)
+                await self.event_emitter.emit_failed(host_id, container_id, container_name, error_message)
                 return False
 
             # Create update context
@@ -370,7 +367,7 @@ class UpdateExecutor:
             # Handle result
             if result.success:
                 # Emit completion event
-                await self._emit_update_completed_event(
+                await self.event_emitter.emit_completed(
                     host_id,
                     result.new_container_id or container_id,
                     container_name,
@@ -382,8 +379,14 @@ class UpdateExecutor:
 
                 # Update database if container ID changed
                 if result.new_container_id and result.new_container_id != container_id:
-                    await self._update_database_after_update(
-                        host_id, container_id, result.new_container_id, update_record
+                    update_container_records_after_update(
+                        db=self.db,
+                        host_id=host_id,
+                        old_container_id=container_id,
+                        new_container_id=result.new_container_id,
+                        new_image=update_record.latest_image,
+                        new_digest=update_record.latest_digest,
+                        old_image=update_record.current_image,
                     )
 
                     # Broadcast container recreated event
@@ -394,19 +397,19 @@ class UpdateExecutor:
                 return True
             else:
                 # Emit failure event
-                await self._emit_update_failed_event(
+                await self.event_emitter.emit_failed(
                     host_id, container_id, container_name,
                     result.error_message or "Update failed"
                 )
 
                 if result.rollback_performed:
-                    await self._emit_rollback_completed_event(host_id, container_id, container_name)
+                    await self.event_emitter.emit_rollback_completed(host_id, container_id, container_name)
 
                 return False
 
         except Exception as e:
             logger.error(f"Error executing update: {e}", exc_info=True)
-            await self._emit_update_failed_event(
+            await self.event_emitter.emit_failed(
                 host_id, container_id, container_id, f"Update failed: {str(e)}"
             )
             return False
@@ -453,7 +456,7 @@ class UpdateExecutor:
                     return UpdateResult.failure_result(f"Update blocked: {validation_result.reason}")
 
                 if validation_result.result == ValidationResult.WARN and not force_warn:
-                    await self._emit_update_warning_event(
+                    await self.event_emitter.emit_warning(
                         context.host_id, context.container_id,
                         context.container_name, validation_result.reason
                     )
@@ -463,7 +466,7 @@ class UpdateExecutor:
                 return UpdateResult.failure_result("Container not found")
 
         # Emit started event
-        await self._emit_update_started_event(
+        await self.event_emitter.emit_started(
             context.host_id, context.container_id,
             context.container_name, context.new_image
         )
@@ -494,7 +497,7 @@ class UpdateExecutor:
             return UpdateResult.failure_result("Agent executor not available")
 
         # Emit started event
-        await self._emit_update_started_event(
+        await self.event_emitter.emit_started(
             context.host_id, context.container_id,
             context.container_name, context.new_image
         )
@@ -536,113 +539,6 @@ class UpdateExecutor:
         except Exception as e:
             logger.error(f"Error getting container info: {e}")
             return None
-
-    async def _update_database_after_update(
-        self,
-        host_id: str,
-        old_container_id: str,
-        new_container_id: str,
-        update_record: ContainerUpdate
-    ):
-        """Update all database records after container update."""
-        old_composite_key = make_composite_key(host_id, old_container_id)
-        new_composite_key = make_composite_key(host_id, new_container_id)
-
-        logger.info(f"Updating database: {old_composite_key} -> {new_composite_key}")
-
-        with self.db.get_session() as session:
-            # Update ContainerUpdate
-            record = session.query(ContainerUpdate).filter_by(
-                container_id=old_composite_key
-            ).first()
-
-            if record:
-                # Handle race condition with update checker
-                conflicting = session.query(ContainerUpdate).filter_by(
-                    container_id=new_composite_key
-                ).first()
-                if conflicting:
-                    session.delete(conflicting)
-                    session.flush()
-
-                record.container_id = new_composite_key
-                record.update_available = False
-                record.current_image = update_record.latest_image
-                record.current_digest = update_record.latest_digest
-                record.last_updated_at = datetime.now(timezone.utc)
-                record.updated_at = datetime.now(timezone.utc)
-
-            # Update AutoRestartConfig
-            session.query(AutoRestartConfig).filter_by(
-                host_id=host_id, container_id=old_container_id
-            ).update({
-                "container_id": new_container_id,
-                "updated_at": datetime.now(timezone.utc)
-            })
-
-            # Update ContainerDesiredState
-            session.query(ContainerDesiredState).filter_by(
-                host_id=host_id, container_id=old_container_id
-            ).update({
-                "container_id": new_container_id,
-                "updated_at": datetime.now(timezone.utc)
-            })
-
-            # Update ContainerHttpHealthCheck
-            session.query(ContainerHttpHealthCheck).filter_by(
-                container_id=old_composite_key
-            ).update({
-                "container_id": new_composite_key
-            })
-
-            # Update DeploymentMetadata
-            session.query(DeploymentMetadata).filter_by(
-                container_id=old_composite_key
-            ).update({
-                "container_id": new_composite_key,
-                "updated_at": datetime.now(timezone.utc)
-            })
-
-            # Update TagAssignment
-            new_tag_count = session.query(TagAssignment).filter(
-                TagAssignment.subject_type == 'container',
-                TagAssignment.subject_id == new_composite_key
-            ).count()
-
-            if new_tag_count > 0:
-                # Reattachment already migrated tags
-                session.query(TagAssignment).filter(
-                    TagAssignment.subject_type == 'container',
-                    TagAssignment.subject_id == old_composite_key
-                ).delete()
-            else:
-                session.query(TagAssignment).filter(
-                    TagAssignment.subject_type == 'container',
-                    TagAssignment.subject_id == old_composite_key
-                ).update({
-                    "subject_id": new_composite_key,
-                    "last_seen_at": datetime.now(timezone.utc)
-                })
-
-            try:
-                session.commit()
-                logger.debug(f"Database updated: {old_composite_key} -> {new_composite_key}")
-            except IntegrityError as e:
-                if "tag_assignments" in str(e).lower():
-                    session.rollback()
-                    logger.debug("Tag migration race detected, continuing")
-                else:
-                    raise
-
-        # Invalidate image digest cache
-        try:
-            old_image = update_record.current_image
-            if old_image:
-                invalidated = self.db.invalidate_image_cache(old_image)
-                if invalidated:
-                    logger.debug(f"Invalidated {invalidated} cache entries for {old_image}")
-        except Exception as e:
-            logger.warning(f"Failed to invalidate image cache: {e}")
 
     async def _broadcast_progress(
         self,
@@ -693,141 +589,6 @@ class UpdateExecutor:
             })
         except Exception as e:
             logger.error(f"Error broadcasting container_recreated: {e}")
-
-    async def _emit_update_completed_event(
-        self,
-        host_id: str,
-        container_id: str,
-        container_name: str,
-        previous_image: str,
-        new_image: str,
-        previous_digest: str = None,
-        new_digest: str = None
-    ):
-        """Emit UPDATE_COMPLETED event via EventBus."""
-        try:
-            host_name = self.monitor.hosts.get(host_id).name if host_id in self.monitor.hosts else host_id
-
-            event_bus = get_event_bus(self.monitor)
-            await event_bus.emit(Event(
-                event_type=BusEventType.UPDATE_COMPLETED,
-                scope_type='container',
-                scope_id=make_composite_key(host_id, container_id),
-                scope_name=container_name,
-                host_id=host_id,
-                host_name=host_name,
-                data={
-                    'previous_image': previous_image,
-                    'new_image': new_image,
-                    'current_digest': previous_digest,
-                    'latest_digest': new_digest,
-                }
-            ))
-        except Exception as e:
-            logger.error(f"Error emitting update completion event: {e}")
-
-    async def _emit_update_warning_event(
-        self,
-        host_id: str,
-        container_id: str,
-        container_name: str,
-        warning_message: str
-    ):
-        """Emit UPDATE_SKIPPED_VALIDATION event via EventBus."""
-        try:
-            host_name = self.monitor.hosts.get(host_id).name if host_id in self.monitor.hosts else host_id
-
-            event_bus = get_event_bus(self.monitor)
-            await event_bus.emit(Event(
-                event_type=BusEventType.UPDATE_SKIPPED_VALIDATION,
-                scope_type='container',
-                scope_id=make_composite_key(host_id, container_id),
-                scope_name=container_name,
-                host_id=host_id,
-                host_name=host_name,
-                data={
-                    'message': f"Auto-update skipped: {warning_message}",
-                    'category': 'update_validation',
-                    'reason': warning_message
-                }
-            ))
-        except Exception as e:
-            logger.error(f"Error emitting update warning event: {e}")
-
-    async def _emit_update_failed_event(
-        self,
-        host_id: str,
-        container_id: str,
-        container_name: str,
-        error_message: str
-    ):
-        """Emit UPDATE_FAILED event via EventBus."""
-        try:
-            host_name = self.monitor.hosts.get(host_id).name if host_id in self.monitor.hosts else host_id
-
-            event_bus = get_event_bus(self.monitor)
-            await event_bus.emit(Event(
-                event_type=BusEventType.UPDATE_FAILED,
-                scope_type='container',
-                scope_id=make_composite_key(host_id, container_id),
-                scope_name=container_name,
-                host_id=host_id,
-                host_name=host_name,
-                data={
-                    'error_message': error_message,
-                }
-            ))
-        except Exception as e:
-            logger.error(f"Error emitting update failure event: {e}")
-
-    async def _emit_update_started_event(
-        self,
-        host_id: str,
-        container_id: str,
-        container_name: str,
-        target_image: str
-    ):
-        """Emit UPDATE_STARTED event via EventBus."""
-        try:
-            host_name = self.monitor.hosts.get(host_id).name if host_id in self.monitor.hosts else host_id
-
-            event_bus = get_event_bus(self.monitor)
-            await event_bus.emit(Event(
-                event_type=BusEventType.UPDATE_STARTED,
-                scope_type='container',
-                scope_id=make_composite_key(host_id, container_id),
-                scope_name=container_name,
-                host_id=host_id,
-                host_name=host_name,
-                data={
-                    'target_image': target_image,
-                }
-            ))
-        except Exception as e:
-            logger.error(f"Error emitting update started event: {e}")
-
-    async def _emit_rollback_completed_event(
-        self,
-        host_id: str,
-        container_id: str,
-        container_name: str
-    ):
-        """Emit ROLLBACK_COMPLETED event via EventBus."""
-        try:
-            host_name = self.monitor.hosts.get(host_id).name if host_id in self.monitor.hosts else host_id
-
-            event_bus = get_event_bus(self.monitor)
-            await event_bus.emit(Event(
-                event_type=BusEventType.ROLLBACK_COMPLETED,
-                scope_type='container',
-                scope_id=make_composite_key(host_id, container_id),
-                scope_name=container_name,
-                host_id=host_id,
-                host_name=host_name,
-                data={}
-            ))
-        except Exception as e:
-            logger.error(f"Error emitting rollback completed event: {e}")
 
     async def _re_evaluate_alerts_after_update(
         self,

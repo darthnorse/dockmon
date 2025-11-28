@@ -17,7 +17,7 @@ from typing import Dict, List, Optional, Any
 from sqlalchemy import or_
 from sqlalchemy.orm import joinedload
 
-from database import DatabaseManager, AlertRuleV2, AlertV2
+from database import DatabaseManager, AlertRuleV2, AlertV2, DockerHostDB
 from alerts.engine import AlertEngine, EvaluationContext
 from event_logger import EventLogger, EventContext, EventCategory, EventType, EventSeverity
 from utils.keys import make_composite_key, parse_composite_key
@@ -1194,8 +1194,11 @@ class AlertEvaluationService:
         Called by event logger when host events occur.
         """
         try:
-            # Get host info from event data
-            host_name = event_data.get("host_name", host_id)
+            # Get host name from database (authoritative source for user-defined name)
+            # This ensures alerts always show the user-configured name, not event data
+            with self.db.get_session() as session:
+                host = session.query(DockerHostDB).filter_by(id=host_id).first()
+                host_name = host.name if host else host_id
 
             # Fetch host tags for tag-based selector matching
             host_tags = self.db.get_tags_for_subject('host', host_id)

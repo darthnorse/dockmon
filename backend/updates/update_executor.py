@@ -766,6 +766,10 @@ class UpdateExecutor:
             # These are containers using network_mode: container:this_container
             # They must be recreated to point to the new container ID
             if dependent_containers:
+                await self._broadcast_progress(
+                    host_id, new_container_id, "dependents", 92,
+                    f"Recreating {len(dependent_containers)} dependent container(s)"
+                )
                 logger.info(f"Recreating {len(dependent_containers)} dependent container(s)")
                 failed_dependents = []
 
@@ -785,10 +789,23 @@ class UpdateExecutor:
                         failed_dependents.append(dep['name'])
 
                 if failed_dependents:
-                    logger.warning(
+                    warning_msg = (
                         f"Update succeeded but failed to recreate dependent containers: {', '.join(failed_dependents)}. "
                         f"Manual recreation may be required."
                     )
+                    logger.warning(warning_msg)
+                    # Broadcast warning to UI
+                    if self.monitor and hasattr(self.monitor, 'manager'):
+                        await self.monitor.manager.broadcast({
+                            "type": "container_update_warning",
+                            "data": {
+                                "host_id": host_id,
+                                "container_id": new_container_id,
+                                "container_name": container_name,
+                                "failed_dependents": failed_dependents,
+                                "warning": warning_msg,
+                            }
+                        })
                     # Don't fail the update - main container updated successfully
                     # User can manually recreate dependents if needed
                 else:

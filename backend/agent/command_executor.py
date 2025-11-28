@@ -326,7 +326,7 @@ class AgentCommandExecutor:
             command_with_ids
         )
         send_time = time.time() - send_start
-        logger.info(f"Command sent to agent in {send_time:.3f}s (correlation_id: {correlation_id[:8]}...)")
+        logger.debug(f"Command sent to agent in {send_time:.3f}s (correlation_id: {correlation_id[:8]}...)")
 
         if not send_success:
             # Clean up pending command
@@ -512,7 +512,7 @@ class AgentCommandExecutor:
             started_at = pending.get("started_at")
             if started_at:
                 wait_time = (datetime.now(timezone.utc) - started_at).total_seconds()
-                logger.info(f"Response received after {wait_time:.3f}s (correlation_id: {correlation_id[:8]}...)")
+                logger.debug(f"Response received after {wait_time:.3f}s (correlation_id: {correlation_id[:8]}...)")
             future.set_result(response)
 
     async def cleanup_expired_pending_commands(self, max_age_seconds: int = 300):

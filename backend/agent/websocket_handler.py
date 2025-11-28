@@ -28,7 +28,16 @@ from agent.manager import AgentManager
 from agent.connection_manager import agent_connection_manager
 from agent.command_executor import get_agent_command_executor
 from agent.models import AgentRegistrationRequest
-from database import Agent, ContainerHttpHealthCheck, DatabaseManager
+from database import (
+    Agent,
+    AutoRestartConfig,
+    ContainerDesiredState,
+    ContainerHttpHealthCheck,
+    ContainerUpdate,
+    DatabaseManager,
+    DeploymentMetadata,
+    TagAssignment,
+)
 from event_bus import Event, EventType, get_event_bus
 from event_logger import EventCategory, EventType as LogEventType, EventSeverity, EventContext
 from utils.keys import make_composite_key
@@ -957,14 +966,6 @@ class AgentWebSocketHandler:
 
         Uses a single transaction to ensure atomicity.
         """
-        from database import (
-            ContainerUpdate,
-            AutoRestartConfig,
-            ContainerDesiredState,
-            DeploymentMetadata,
-            TagAssignment,
-        )
-
         try:
             with self.db_manager.get_session() as session:
                 updates_made = []

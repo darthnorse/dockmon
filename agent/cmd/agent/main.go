@@ -74,7 +74,10 @@ func main() {
 	}
 
 	// Initialize WebSocket client
-	wsClient := client.NewWebSocketClient(cfg, dockerClient, engineID, myContainerID, log)
+	wsClient, err := client.NewWebSocketClient(ctx, cfg, dockerClient, engineID, myContainerID, log)
+	if err != nil {
+		log.WithError(err).Fatal("Failed to create WebSocket client")
+	}
 
 	// Check for pending self-update on startup
 	if err := wsClient.CheckPendingUpdate(); err != nil {

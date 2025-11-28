@@ -3,224 +3,825 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/darthnorse/dockmon-agent/internal/docker"
 	dockerTypes "github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/network"
 	"github.com/sirupsen/logrus"
 )
 
-// UpdateHandler manages container updates
+// UpdateHandler manages container updates using struct-copy passthrough
 type UpdateHandler struct {
-	dockerClient *docker.Client
-	log          *logrus.Logger
-	sendEvent    func(msgType string, payload interface{}) error
-}
-
-// NewUpdateHandler creates a new update handler
-func NewUpdateHandler(dockerClient *docker.Client, log *logrus.Logger, sendEvent func(string, interface{}) error) *UpdateHandler {
-	return &UpdateHandler{
-		dockerClient: dockerClient,
-		log:          log,
-		sendEvent:    sendEvent,
-	}
+	dockerClient             *docker.Client
+	log                      *logrus.Logger
+	sendEvent                func(msgType string, payload interface{}) error
+	isPodman                 bool // Detected at init, cached
+	supportsNetworkingConfig bool // API >= 1.44, detected at init, cached
 }
 
 // UpdateRequest contains the parameters for a container update
 type UpdateRequest struct {
 	ContainerID   string `json:"container_id"`
 	NewImage      string `json:"new_image"`
-	StopTimeout   int    `json:"stop_timeout,omitempty"`    // Default: 10s
-	HealthTimeout int    `json:"health_timeout,omitempty"`  // Default: 30s
+	StopTimeout   int    `json:"stop_timeout,omitempty"`   // Default: 30s
+	HealthTimeout int    `json:"health_timeout,omitempty"` // Default: 120s (match Python default)
 }
 
-// UpdateProgress represents update progress events
-type UpdateProgress struct {
-	ContainerID string `json:"container_id"`
-	Stage       string `json:"stage"`
-	Message     string `json:"message"`
-	Error       string `json:"error,omitempty"`
+// UpdateResult contains the result of an update operation
+type UpdateResult struct {
+	OldContainerID string `json:"old_container_id"`
+	NewContainerID string `json:"new_container_id"`
+	ContainerName  string `json:"container_name"`
 }
 
-// UpdateContainer performs a rolling update of a container
-func (h *UpdateHandler) UpdateContainer(ctx context.Context, req UpdateRequest) error {
+// DependentContainer holds info about a container that depends on another
+// via network_mode: container:X
+type DependentContainer struct {
+	Container      dockerTypes.ContainerJSON
+	Name           string
+	ID             string
+	Image          string
+	OldNetworkMode string
+}
+
+// ExtractedConfig holds the extracted container configuration.
+// Mirrors Python's extracted_config dict structure.
+type ExtractedConfig struct {
+	Config           *container.Config
+	HostConfig       *container.HostConfig
+	NetworkingConfig *network.NetworkingConfig
+	AdditionalNets   map[string]*network.EndpointSettings
+	ContainerName    string
+}
+
+// UpdateProgress stages (aligned with Python backend)
+const (
+	StagePulling     = "pulling"
+	StageConfiguring = "configuring"
+	StageBackup      = "backup"
+	StageCreating    = "creating"
+	StageStarting    = "starting"
+	StageHealthCheck = "health_check"
+	StageDependents  = "dependents" // For dependent container recreation
+	StageCleanup     = "cleanup"
+	StageCompleted   = "completed"
+)
+
+// NewUpdateHandler creates a new update handler with runtime detection.
+// Detects Podman and Docker API version at initialization for efficiency.
+func NewUpdateHandler(
+	ctx context.Context,
+	dockerClient *docker.Client,
+	log *logrus.Logger,
+	sendEvent func(string, interface{}) error,
+) (*UpdateHandler, error) {
+	// Detect Podman
+	isPodman, err := dockerClient.IsPodman(ctx)
+	if err != nil {
+		log.WithError(err).Warn("Failed to detect Podman, assuming Docker")
+		isPodman = false
+	}
+
+	if isPodman {
+		log.Info("Detected Podman runtime - will apply compatibility fixes")
+	}
+
+	// Detect API version for networking_config support
+	supportsNetworkingConfig, err := dockerClient.SupportsNetworkingConfig(ctx)
+	if err != nil {
+		log.WithError(err).Warn("Failed to detect API version, assuming legacy mode")
+		supportsNetworkingConfig = false
+	}
+
+	apiVersion, _ := dockerClient.GetAPIVersion(ctx)
+	if supportsNetworkingConfig {
+		log.Infof("Docker API %s supports networking_config at creation", apiVersion)
+	} else {
+		log.Infof("Docker API %s requires manual network connection (legacy mode)", apiVersion)
+	}
+
+	return &UpdateHandler{
+		dockerClient:             dockerClient,
+		log:                      log,
+		sendEvent:                sendEvent,
+		isPodman:                 isPodman,
+		supportsNetworkingConfig: supportsNetworkingConfig,
+	}, nil
+}
+
+// UpdateContainer performs a rolling update of a container using struct-copy passthrough.
+// Returns the update result with old/new container IDs.
+func (h *UpdateHandler) UpdateContainer(ctx context.Context, req UpdateRequest) (*UpdateResult, error) {
+	containerID := req.ContainerID
+	newImage := req.NewImage
+
 	h.log.WithFields(logrus.Fields{
-		"container_id": req.ContainerID[:12],
-		"new_image":    req.NewImage,
+		"container_id": containerID[:12],
+		"new_image":    newImage,
 	}).Info("Starting container update")
 
-	// Default timeouts
+	// Default timeouts (match Python defaults from GlobalSettings)
 	if req.StopTimeout == 0 {
-		req.StopTimeout = 10
+		req.StopTimeout = 30
 	}
 	if req.HealthTimeout == 0 {
-		req.HealthTimeout = 30
+		req.HealthTimeout = 120 // Match Python default
 	}
 
-	// Step 1: Inspect old container to get configuration
-	h.sendProgress(req.ContainerID, "inspect", "Inspecting current container")
-	oldContainer, err := h.dockerClient.InspectContainer(ctx, req.ContainerID)
+	// Step 1: Pull new image
+	h.sendProgress(containerID, StagePulling, fmt.Sprintf("Pulling image %s", newImage))
+	if err := h.dockerClient.PullImage(ctx, newImage); err != nil {
+		return nil, h.fail(containerID, StagePulling, fmt.Errorf("failed to pull image: %w", err))
+	}
+
+	// Step 2: Inspect container to get configuration
+	h.sendProgress(containerID, StageConfiguring, "Reading container configuration")
+	oldContainer, err := h.dockerClient.InspectContainer(ctx, containerID)
 	if err != nil {
-		h.sendProgressError(req.ContainerID, "inspect", err)
-		return fmt.Errorf("failed to inspect container: %w", err)
+		return nil, h.fail(containerID, StageConfiguring, fmt.Errorf("failed to inspect container: %w", err))
 	}
 
-	// Step 2: Pull new image
-	h.sendProgress(req.ContainerID, "pull", fmt.Sprintf("Pulling image %s", req.NewImage))
-	if err := h.dockerClient.PullImage(ctx, req.NewImage); err != nil {
-		h.sendProgressError(req.ContainerID, "pull", err)
-		return fmt.Errorf("failed to pull image: %w", err)
-	}
-
-	// Step 3: Create new container with same config
-	h.sendProgress(req.ContainerID, "create", "Creating new container")
-	newConfig := h.cloneContainerConfig(&oldContainer, req.NewImage)
-	newHostConfig := h.cloneHostConfig(oldContainer.HostConfig)
-
-	// Generate new container name (append -new temporarily)
-	newName := oldContainer.Name + "-new"
-
-	newContainerID, err := h.dockerClient.CreateContainer(ctx, newConfig, newHostConfig, newName)
+	// Step 3: Get image labels for label filtering
+	oldImageLabels, err := h.dockerClient.GetImageLabels(ctx, oldContainer.Image)
 	if err != nil {
-		h.sendProgressError(req.ContainerID, "create", err)
-		return fmt.Errorf("failed to create new container: %w", err)
+		h.log.WithError(err).Warn("Failed to get old image labels, continuing without label filtering")
+		oldImageLabels = make(map[string]string)
+	}
+
+	newImageLabels, err := h.dockerClient.GetImageLabels(ctx, newImage)
+	if err != nil {
+		h.log.WithError(err).Warn("Failed to get new image labels, continuing without label filtering")
+		newImageLabels = make(map[string]string)
+	}
+
+	// Step 4: Find dependent containers BEFORE we stop the parent
+	containerName := strings.TrimPrefix(oldContainer.Name, "/")
+	dependentContainers, err := h.findDependentContainers(ctx, &oldContainer, containerName, containerID)
+	if err != nil {
+		h.log.WithError(err).Warn("Failed to find dependent containers, continuing")
+	}
+	if len(dependentContainers) > 0 {
+		h.log.Infof("Found %d dependent container(s) using network_mode: container:%s",
+			len(dependentContainers), containerName)
+	}
+
+	// Step 5: Extract and transform config using struct copy
+	extractedConfig, err := h.extractConfig(&oldContainer, newImage, oldImageLabels, newImageLabels)
+	if err != nil {
+		return nil, h.fail(containerID, StageConfiguring, err)
+	}
+
+	// Step 6: Create backup (stop + rename)
+	h.sendProgress(containerID, StageBackup, "Stopping container and creating backup")
+	backupName, err := h.createBackup(ctx, containerID, containerName, req.StopTimeout)
+	if err != nil {
+		return nil, h.fail(containerID, StageBackup, err)
+	}
+
+	// Step 7: Create new container with original name
+	h.sendProgress(containerID, StageCreating, "Creating new container")
+
+	var createNetworkConfig *network.NetworkingConfig
+	if h.supportsNetworkingConfig {
+		// API >= 1.44: Can set static IP at creation
+		createNetworkConfig = extractedConfig.NetworkingConfig
+		h.log.Debug("Using networking_config at creation (API >= 1.44)")
+	} else {
+		// API < 1.44: Must connect primary network manually post-creation
+		createNetworkConfig = nil
+		if extractedConfig.NetworkingConfig != nil {
+			h.log.Debug("Will manually connect primary network post-creation (API < 1.44)")
+		}
+	}
+
+	newContainerID, err := h.dockerClient.CreateContainerWithNetwork(
+		ctx,
+		extractedConfig.Config,
+		extractedConfig.HostConfig,
+		createNetworkConfig,
+		containerName,
+	)
+	if err != nil {
+		h.restoreBackup(ctx, backupName, containerName)
+		return nil, h.fail(containerID, StageCreating, fmt.Errorf("failed to create container: %w", err))
 	}
 
 	h.log.Infof("Created new container %s", newContainerID[:12])
 
-	// Step 4: Start new container
-	h.sendProgress(req.ContainerID, "start", "Starting new container")
-	if err := h.dockerClient.StartContainer(ctx, newContainerID); err != nil {
-		// Cleanup: remove the failed container
-		h.dockerClient.RemoveContainer(ctx, newContainerID, true)
-		h.sendProgressError(req.ContainerID, "start", err)
-		return fmt.Errorf("failed to start new container: %w", err)
+	// Step 7b: Connect networks post-creation
+	// For API < 1.44: Connect primary network with static IP/aliases
+	// For all APIs: Connect additional networks (multi-network support)
+	if !h.supportsNetworkingConfig && extractedConfig.NetworkingConfig != nil {
+		// Legacy API: manually connect primary network
+		for networkName, endpointConfig := range extractedConfig.NetworkingConfig.EndpointsConfig {
+			h.log.Debugf("Connecting primary network (legacy API): %s", networkName)
+			if err := h.dockerClient.ConnectNetwork(ctx, newContainerID, networkName, endpointConfig); err != nil {
+				// Primary network failure is critical - rollback
+				h.log.WithError(err).Errorf("Failed to connect primary network %s", networkName)
+				h.dockerClient.RemoveContainer(ctx, newContainerID, true)
+				h.restoreBackup(ctx, backupName, containerName)
+				return nil, h.fail(containerID, StageCreating, fmt.Errorf("failed to connect primary network: %w", err))
+			}
+		}
 	}
 
-	// Step 5: Wait for new container to be healthy
-	h.sendProgress(req.ContainerID, "health", "Waiting for new container to be healthy")
+	// Connect additional networks (always needed for multi-network containers)
+	if len(extractedConfig.AdditionalNets) > 0 {
+		for networkName, endpointConfig := range extractedConfig.AdditionalNets {
+			h.log.Debugf("Connecting to additional network: %s", networkName)
+			if err := h.dockerClient.ConnectNetwork(ctx, newContainerID, networkName, endpointConfig); err != nil {
+				h.log.WithError(err).Warnf("Failed to connect to network %s (continuing)", networkName)
+			}
+		}
+	}
+
+	// Step 8: Start new container
+	h.sendProgress(containerID, StageStarting, "Starting new container")
+	if err := h.dockerClient.StartContainer(ctx, newContainerID); err != nil {
+		h.dockerClient.RemoveContainer(ctx, newContainerID, true)
+		h.restoreBackup(ctx, backupName, containerName)
+		return nil, h.fail(containerID, StageStarting, fmt.Errorf("failed to start container: %w", err))
+	}
+
+	// Step 9: Health check
+	h.sendProgress(containerID, StageHealthCheck, "Waiting for container to be healthy")
 	if err := h.waitForHealthy(ctx, newContainerID, req.HealthTimeout); err != nil {
-		h.log.WithError(err).Warn("New container failed health check, rolling back")
-		// Rollback: stop and remove new container
+		h.log.WithError(err).Warn("Health check failed, rolling back")
 		h.dockerClient.StopContainer(ctx, newContainerID, req.StopTimeout)
 		h.dockerClient.RemoveContainer(ctx, newContainerID, true)
-		h.sendProgressError(req.ContainerID, "health", err)
-		return fmt.Errorf("new container health check failed: %w", err)
+		h.restoreBackup(ctx, backupName, containerName)
+		return nil, h.fail(containerID, StageHealthCheck, fmt.Errorf("health check failed: %w", err))
 	}
 
-	// Step 6: Stop old container
-	h.sendProgress(req.ContainerID, "stop_old", "Stopping old container")
-	if err := h.dockerClient.StopContainer(ctx, req.ContainerID, req.StopTimeout); err != nil {
-		h.log.WithError(err).Warn("Failed to stop old container (continuing anyway)")
-		// Continue anyway - we'll try to remove it
+	// Step 10: Recreate dependent containers with new parent ID
+	var failedDeps []string
+	if len(dependentContainers) > 0 {
+		h.sendProgress(containerID, StageDependents,
+			fmt.Sprintf("Recreating %d dependent container(s)", len(dependentContainers)))
+
+		failedDeps = h.recreateDependentContainers(ctx, dependentContainers, newContainerID, req.StopTimeout)
+		if len(failedDeps) > 0 {
+			h.log.Warnf("Failed to recreate dependent containers: %v", failedDeps)
+			// Note: We continue despite failures - main container update succeeded
+		}
 	}
 
-	// Step 7: Remove old container
-	h.sendProgress(req.ContainerID, "remove_old", "Removing old container")
-	if err := h.dockerClient.RemoveContainer(ctx, req.ContainerID, true); err != nil {
-		h.log.WithError(err).Warn("Failed to remove old container")
-		// Don't fail the update - new container is running
+	// Step 11: Cleanup backup (success path)
+	h.sendProgress(containerID, StageCleanup, "Removing backup container")
+	h.removeBackup(ctx, backupName)
+
+	// Success!
+	result := &UpdateResult{
+		OldContainerID: containerID[:12],
+		NewContainerID: newContainerID[:12],
+		ContainerName:  containerName,
 	}
 
-	// Step 8: Rename new container to original name (optional - Docker will auto-assign name)
-	// Note: We can't easily rename via the API, so the new container keeps the -new suffix
-	// In production, you might want to implement proper naming strategy
+	h.sendProgress(containerID, StageCompleted, fmt.Sprintf("Update complete, new container: %s", newContainerID[:12]))
 
-	h.sendProgress(req.ContainerID, "complete", fmt.Sprintf("Update complete, new container: %s", newContainerID[:12]))
+	// Send completion event with new container ID for database update
+	completionPayload := map[string]interface{}{
+		"old_container_id": containerID[:12],
+		"new_container_id": newContainerID[:12],
+		"container_name":   containerName,
+	}
+	if len(failedDeps) > 0 {
+		completionPayload["failed_dependents"] = failedDeps
+	}
+	h.sendEvent("update_complete", completionPayload)
 
 	h.log.WithFields(logrus.Fields{
-		"old_container": req.ContainerID[:12],
+		"old_container": containerID[:12],
 		"new_container": newContainerID[:12],
+		"name":          containerName,
 	}).Info("Container update completed successfully")
+
+	return result, nil
+}
+
+// extractConfig extracts container configuration using struct-copy passthrough.
+//
+// SHALLOW COPY SAFETY NOTE:
+// Go struct copy (`newHostConfig := *inspect.HostConfig`) creates a shallow copy where
+// pointer fields (slices, maps, nested structs) point to the same underlying data.
+// This is SAFE because:
+// 1. We do NOT modify the original config after copying
+// 2. The original container is being destroyed anyway
+// 3. We only REPLACE pointer fields, never mutate their contents
+func (h *UpdateHandler) extractConfig(
+	inspect *dockerTypes.ContainerJSON,
+	newImage string,
+	oldImageLabels map[string]string,
+	newImageLabels map[string]string,
+) (*ExtractedConfig, error) {
+
+	// STRUCT COPY - preserves ALL fields including DeviceRequests, Healthcheck, Tmpfs, etc.
+	newConfig := *inspect.Config
+	newConfig.Image = newImage
+
+	// STRUCT COPY - preserves ALL fields including DeviceRequests, Resources, etc.
+	newHostConfig := *inspect.HostConfig
+
+	// Apply Podman compatibility fixes
+	if h.isPodman {
+		h.applyPodmanFixes(&newHostConfig)
+	}
+
+	// Handle hostname/mac for container:X network mode
+	networkMode := string(newHostConfig.NetworkMode)
+	if strings.HasPrefix(networkMode, "container:") {
+		newConfig.Hostname = ""
+		newConfig.Domainname = ""
+		newConfig.MacAddress = ""
+		h.log.Debug("Cleared Hostname/Domainname/MacAddress for container: network mode")
+	}
+
+	// Resolve NetworkMode container:ID -> container:name
+	if err := h.resolveNetworkMode(&newHostConfig); err != nil {
+		h.log.WithError(err).Warn("Failed to resolve NetworkMode, using as-is")
+	}
+
+	// Extract user-added labels (filter out old image labels)
+	userLabels := h.extractUserLabels(newConfig.Labels, oldImageLabels)
+	newConfig.Labels = userLabels
+
+	// Extract network configuration
+	primaryNetConfig, additionalNetworks := h.extractNetworkConfig(inspect)
+
+	containerName := strings.TrimPrefix(inspect.Name, "/")
+
+	return &ExtractedConfig{
+		Config:           &newConfig,
+		HostConfig:       &newHostConfig,
+		NetworkingConfig: primaryNetConfig,
+		AdditionalNets:   additionalNetworks,
+		ContainerName:    containerName,
+	}, nil
+}
+
+// extractUserLabels filters container labels to preserve only user-added labels.
+// Removes labels that came from the OLD image so new image labels can take effect.
+func (h *UpdateHandler) extractUserLabels(
+	containerLabels map[string]string,
+	oldImageLabels map[string]string,
+) map[string]string {
+	if containerLabels == nil {
+		return make(map[string]string)
+	}
+
+	userLabels := make(map[string]string)
+	for key, containerValue := range containerLabels {
+		// Keep label if:
+		// 1. It doesn't exist in old image labels (user added it), OR
+		// 2. Its value differs from old image (user modified it)
+		imageValue, existsInImage := oldImageLabels[key]
+		if !existsInImage || containerValue != imageValue {
+			userLabels[key] = containerValue
+		}
+	}
+
+	h.log.Debugf("Label filtering: %d container - %d image defaults = %d user labels preserved",
+		len(containerLabels), len(oldImageLabels), len(userLabels))
+
+	return userLabels
+}
+
+// applyPodmanFixes modifies HostConfig for Podman compatibility.
+func (h *UpdateHandler) applyPodmanFixes(hostConfig *container.HostConfig) {
+	// Fix 1: NanoCpus -> CpuQuota/CpuPeriod
+	if hostConfig.NanoCPUs > 0 && hostConfig.CPUPeriod == 0 {
+		cpuPeriod := int64(100000)
+		cpuQuota := int64(float64(hostConfig.NanoCPUs) / 1e9 * float64(cpuPeriod))
+		hostConfig.CPUPeriod = cpuPeriod
+		hostConfig.CPUQuota = cpuQuota
+		hostConfig.NanoCPUs = 0
+		h.log.Debug("Converted NanoCpus to CpuQuota/CpuPeriod for Podman")
+	}
+
+	// Fix 2: Remove MemorySwappiness for Podman
+	if hostConfig.Resources.MemorySwappiness != nil {
+		hostConfig.Resources.MemorySwappiness = nil
+		h.log.Debug("Removed MemorySwappiness for Podman compatibility")
+	}
+}
+
+// resolveNetworkMode converts container:ID to container:name in NetworkMode.
+func (h *UpdateHandler) resolveNetworkMode(hostConfig *container.HostConfig) error {
+	networkMode := string(hostConfig.NetworkMode)
+	if !strings.HasPrefix(networkMode, "container:") {
+		return nil
+	}
+
+	refID := strings.TrimPrefix(networkMode, "container:")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	refContainer, err := h.dockerClient.InspectContainer(ctx, refID)
+	if err != nil {
+		return fmt.Errorf("failed to resolve container reference %s: %w", refID, err)
+	}
+
+	refName := strings.TrimPrefix(refContainer.Name, "/")
+	hostConfig.NetworkMode = container.NetworkMode("container:" + refName)
+	h.log.Debugf("Resolved NetworkMode to container:%s", refName)
 
 	return nil
 }
 
-// cloneContainerConfig creates a new container config based on existing container
-func (h *UpdateHandler) cloneContainerConfig(inspect *dockerTypes.ContainerJSON, newImage string) *container.Config {
-	config := inspect.Config
+// extractNetworkConfig extracts network configuration from container.
+func (h *UpdateHandler) extractNetworkConfig(
+	inspect *dockerTypes.ContainerJSON,
+) (*network.NetworkingConfig, map[string]*network.EndpointSettings) {
 
-	return &container.Config{
-		Hostname:        config.Hostname,
-		Domainname:      config.Domainname,
-		User:            config.User,
-		AttachStdin:     config.AttachStdin,
-		AttachStdout:    config.AttachStdout,
-		AttachStderr:    config.AttachStderr,
-		Tty:             config.Tty,
-		OpenStdin:       config.OpenStdin,
-		StdinOnce:       config.StdinOnce,
-		Env:             config.Env,
-		Cmd:             config.Cmd,
-		Image:           newImage, // Use new image
-		WorkingDir:      config.WorkingDir,
-		Entrypoint:      config.Entrypoint,
-		Labels:          config.Labels,
-		StopSignal:      config.StopSignal,
-		StopTimeout:     config.StopTimeout,
+	if inspect.NetworkSettings == nil || inspect.NetworkSettings.Networks == nil {
+		return nil, nil
+	}
+
+	networks := inspect.NetworkSettings.Networks
+	networkMode := string(inspect.HostConfig.NetworkMode)
+
+	// Handle special network modes - no network config needed
+	if strings.HasPrefix(networkMode, "container:") || networkMode == "host" || networkMode == "none" {
+		return nil, nil
+	}
+
+	// Filter to custom networks only (exclude bridge, host, none)
+	customNetworks := make(map[string]*network.EndpointSettings)
+	for name, data := range networks {
+		if name != "bridge" && name != "host" && name != "none" {
+			customNetworks[name] = data
+		}
+	}
+
+	if len(customNetworks) == 0 {
+		return nil, nil
+	}
+
+	// Determine primary network
+	primaryNetwork := networkMode
+	if primaryNetwork == "" || primaryNetwork == "default" {
+		primaryNetwork = "bridge"
+	}
+	// If NetworkMode doesn't match a network name, use first custom network
+	if _, exists := customNetworks[primaryNetwork]; !exists && len(customNetworks) > 0 {
+		for name := range customNetworks {
+			primaryNetwork = name
+			break
+		}
+	}
+
+	var primaryNetConfig *network.NetworkingConfig
+	additionalNetworks := make(map[string]*network.EndpointSettings)
+
+	for networkName, networkData := range customNetworks {
+		endpointConfig := h.buildEndpointConfig(networkData)
+
+		if networkName == primaryNetwork {
+			hasConfig := endpointConfig.IPAMConfig != nil ||
+				len(endpointConfig.Aliases) > 0 ||
+				len(endpointConfig.Links) > 0
+
+			if hasConfig {
+				primaryNetConfig = &network.NetworkingConfig{
+					EndpointsConfig: map[string]*network.EndpointSettings{
+						networkName: endpointConfig,
+					},
+				}
+				h.log.Debugf("Primary network %s has static config (IP/aliases/links)", networkName)
+			}
+		} else {
+			additionalNetworks[networkName] = endpointConfig
+		}
+	}
+
+	if len(additionalNetworks) == 0 {
+		additionalNetworks = nil
+	} else {
+		h.log.Debugf("Extracted %d additional networks for post-creation connection", len(additionalNetworks))
+	}
+
+	return primaryNetConfig, additionalNetworks
+}
+
+// buildEndpointConfig creates an EndpointSettings with user-configured values only.
+func (h *UpdateHandler) buildEndpointConfig(data *network.EndpointSettings) *network.EndpointSettings {
+	endpoint := &network.EndpointSettings{}
+
+	// Extract IPAM config (static IPs)
+	if data.IPAMConfig != nil {
+		ipam := &network.EndpointIPAMConfig{}
+		if data.IPAMConfig.IPv4Address != "" {
+			ipam.IPv4Address = data.IPAMConfig.IPv4Address
+		}
+		if data.IPAMConfig.IPv6Address != "" {
+			ipam.IPv6Address = data.IPAMConfig.IPv6Address
+		}
+		if ipam.IPv4Address != "" || ipam.IPv6Address != "" {
+			endpoint.IPAMConfig = ipam
+		}
+	}
+
+	// Filter aliases - remove auto-generated short ID (12 chars)
+	if len(data.Aliases) > 0 {
+		var userAliases []string
+		for _, alias := range data.Aliases {
+			if len(alias) != 12 {
+				userAliases = append(userAliases, alias)
+			}
+		}
+		if len(userAliases) > 0 {
+			endpoint.Aliases = userAliases
+		}
+	}
+
+	// Preserve links
+	if len(data.Links) > 0 {
+		endpoint.Links = data.Links
+	}
+
+	return endpoint
+}
+
+// findDependentContainers finds all containers that depend on this container
+// via network_mode: container:X
+func (h *UpdateHandler) findDependentContainers(
+	ctx context.Context,
+	parentContainer *dockerTypes.ContainerJSON,
+	parentName string,
+	parentID string,
+) ([]DependentContainer, error) {
+	var dependents []DependentContainer
+
+	containers, err := h.dockerClient.ListAllContainers(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list containers: %w", err)
+	}
+
+	for _, c := range containers {
+		// Skip self
+		if c.ID == parentContainer.ID {
+			continue
+		}
+
+		// Inspect to get full config including NetworkMode
+		inspect, err := h.dockerClient.InspectContainer(ctx, c.ID)
+		if err != nil {
+			h.log.WithError(err).Warnf("Failed to inspect container %s", c.ID[:12])
+			continue
+		}
+
+		networkMode := string(inspect.HostConfig.NetworkMode)
+
+		// Check if this container depends on our parent
+		isDependent := networkMode == fmt.Sprintf("container:%s", parentName) ||
+			networkMode == fmt.Sprintf("container:%s", parentID) ||
+			networkMode == fmt.Sprintf("container:%s", parentContainer.ID)
+
+		if isDependent {
+			imageName := inspect.Config.Image
+			if imageName == "" && len(inspect.Image) > 0 {
+				imageName = inspect.Image
+			}
+
+			depName := strings.TrimPrefix(inspect.Name, "/")
+			h.log.Infof("Found dependent container: %s (network_mode: %s)", depName, networkMode)
+
+			dependents = append(dependents, DependentContainer{
+				Container:      inspect,
+				Name:           depName,
+				ID:             inspect.ID[:12],
+				Image:          imageName,
+				OldNetworkMode: networkMode,
+			})
+		}
+	}
+
+	return dependents, nil
+}
+
+// recreateDependentContainers recreates all dependent containers with updated network_mode.
+// Returns list of container names that failed to recreate.
+func (h *UpdateHandler) recreateDependentContainers(
+	ctx context.Context,
+	dependents []DependentContainer,
+	newParentID string,
+	stopTimeout int,
+) []string {
+	var failed []string
+
+	for _, dep := range dependents {
+		if err := h.recreateDependentContainer(ctx, dep, newParentID, stopTimeout); err != nil {
+			h.log.WithError(err).Errorf("Failed to recreate dependent container %s", dep.Name)
+			failed = append(failed, dep.Name)
+		}
+	}
+
+	return failed
+}
+
+// recreateDependentContainer recreates a single dependent container with updated network_mode.
+func (h *UpdateHandler) recreateDependentContainer(
+	ctx context.Context,
+	dep DependentContainer,
+	newParentID string,
+	stopTimeout int,
+) error {
+	h.log.Infof("Recreating dependent container: %s", dep.Name)
+
+	// Get labels for filtering (skip for dependents since we don't have old image labels)
+	emptyLabels := make(map[string]string)
+
+	// Extract config from dependent container
+	extractedConfig, err := h.extractConfig(&dep.Container, dep.Image, emptyLabels, emptyLabels)
+	if err != nil {
+		return fmt.Errorf("failed to extract config: %w", err)
+	}
+
+	// Update NetworkMode to point to new parent
+	oldNetworkMode := string(extractedConfig.HostConfig.NetworkMode)
+	extractedConfig.HostConfig.NetworkMode = container.NetworkMode(fmt.Sprintf("container:%s", newParentID))
+	h.log.Infof("Updated NetworkMode: %s -> container:%s", oldNetworkMode, newParentID[:12])
+
+	// Stop dependent container
+	h.log.Debugf("Stopping dependent container: %s", dep.Name)
+	if err := h.dockerClient.StopContainer(ctx, dep.Container.ID, stopTimeout); err != nil {
+		// Try kill if stop fails
+		h.dockerClient.KillContainer(ctx, dep.Container.ID)
+	}
+
+	// Rename to temp name
+	tempName := fmt.Sprintf("%s-dockmon-temp-%d", dep.Name, time.Now().Unix())
+	if err := h.dockerClient.RenameContainer(ctx, dep.Container.ID, tempName); err != nil {
+		return fmt.Errorf("failed to rename to temp: %w", err)
+	}
+
+	// Create new dependent container
+	newDepID, err := h.dockerClient.CreateContainer(
+		ctx,
+		extractedConfig.Config,
+		extractedConfig.HostConfig,
+		dep.Name,
+	)
+	if err != nil {
+		// Rollback: restore temp container
+		h.dockerClient.RenameContainer(ctx, dep.Container.ID, dep.Name)
+		h.dockerClient.StartContainer(ctx, dep.Container.ID)
+		return fmt.Errorf("failed to create new container: %w", err)
+	}
+
+	// Connect additional networks
+	if len(extractedConfig.AdditionalNets) > 0 {
+		for networkName, endpointConfig := range extractedConfig.AdditionalNets {
+			h.dockerClient.ConnectNetwork(ctx, newDepID, networkName, endpointConfig)
+		}
+	}
+
+	// Start new dependent container
+	if err := h.dockerClient.StartContainer(ctx, newDepID); err != nil {
+		// Rollback
+		h.dockerClient.RemoveContainer(ctx, newDepID, true)
+		h.dockerClient.RenameContainer(ctx, dep.Container.ID, dep.Name)
+		h.dockerClient.StartContainer(ctx, dep.Container.ID)
+		return fmt.Errorf("failed to start new container: %w", err)
+	}
+
+	// Wait a bit and verify it's running
+	time.Sleep(3 * time.Second)
+	newInspect, err := h.dockerClient.InspectContainer(ctx, newDepID)
+	if err != nil || !newInspect.State.Running {
+		// Rollback
+		h.dockerClient.StopContainer(ctx, newDepID, 10)
+		h.dockerClient.RemoveContainer(ctx, newDepID, true)
+		h.dockerClient.RenameContainer(ctx, dep.Container.ID, dep.Name)
+		h.dockerClient.StartContainer(ctx, dep.Container.ID)
+		return fmt.Errorf("new container failed to start properly")
+	}
+
+	// Success - remove old temp container
+	tempContainer, _ := h.dockerClient.GetContainerByName(ctx, tempName)
+	if tempContainer != "" {
+		h.dockerClient.RemoveContainer(ctx, tempContainer, true)
+	}
+
+	h.log.Infof("Successfully recreated dependent container: %s (new ID: %s)", dep.Name, newDepID[:12])
+	return nil
+}
+
+// createBackup stops the container and renames it to a backup name.
+func (h *UpdateHandler) createBackup(
+	ctx context.Context,
+	containerID string,
+	containerName string,
+	stopTimeout int,
+) (string, error) {
+	backupName := fmt.Sprintf("%s-dockmon-backup-%d", containerName, time.Now().Unix())
+
+	// Stop container gracefully
+	h.log.Debugf("Stopping container %s", containerID[:12])
+	if err := h.dockerClient.StopContainer(ctx, containerID, stopTimeout); err != nil {
+		h.log.WithError(err).Warn("Failed to stop container gracefully, continuing with rename")
+	}
+
+	// Rename to backup name to free the original name
+	h.log.Debugf("Renaming container to backup: %s", backupName)
+	if err := h.dockerClient.RenameContainer(ctx, containerID, backupName); err != nil {
+		return "", fmt.Errorf("failed to rename container to backup: %w", err)
+	}
+
+	h.log.Infof("Created backup: %s (original: %s)", backupName, containerName)
+	return backupName, nil
+}
+
+// restoreBackup restores the backup container to its original name and starts it.
+func (h *UpdateHandler) restoreBackup(ctx context.Context, backupName, originalName string) {
+	h.log.Warnf("Restoring backup %s to %s", backupName, originalName)
+
+	// Find backup container
+	backupID, err := h.dockerClient.GetContainerByName(ctx, backupName)
+	if err != nil || backupID == "" {
+		h.log.WithError(err).Errorf("CRITICAL: Failed to find backup container %s", backupName)
+		return
+	}
+
+	// Inspect backup to check its state
+	backupInspect, err := h.dockerClient.InspectContainer(ctx, backupID)
+	if err != nil {
+		h.log.WithError(err).Errorf("Failed to inspect backup container %s", backupName)
+		return
+	}
+
+	// Handle various backup states
+	backupStatus := backupInspect.State.Status
+	h.log.Infof("Backup container %s status: %s", backupName, backupStatus)
+
+	switch backupStatus {
+	case "running":
+		h.log.Warn("Backup is running (unexpected), stopping first")
+		if err := h.dockerClient.StopContainer(ctx, backupID, 10); err != nil {
+			h.dockerClient.KillContainer(ctx, backupID)
+		}
+	case "restarting", "dead":
+		h.log.Warnf("Backup in %s state, killing", backupStatus)
+		h.dockerClient.KillContainer(ctx, backupID)
+	}
+
+	// Remove any container with the original name (failed new container)
+	existingID, _ := h.dockerClient.GetContainerByName(ctx, originalName)
+	if existingID != "" {
+		h.log.Debugf("Removing failed container %s to restore backup", existingID[:12])
+		h.dockerClient.RemoveContainer(ctx, existingID, true)
+	}
+
+	// Rename backup to original name
+	if err := h.dockerClient.RenameContainer(ctx, backupID, originalName); err != nil {
+		h.log.WithError(err).Errorf("CRITICAL: Failed to rename backup to %s", originalName)
+		return
+	}
+
+	// Start the restored container
+	if err := h.dockerClient.StartContainer(ctx, backupID); err != nil {
+		h.log.WithError(err).Errorf("CRITICAL: Failed to start restored container %s", originalName)
+		return
+	}
+
+	h.log.Warnf("Successfully restored backup to %s", originalName)
+}
+
+// removeBackup removes the backup container after successful update.
+func (h *UpdateHandler) removeBackup(ctx context.Context, backupName string) {
+	backupID, err := h.dockerClient.GetContainerByName(ctx, backupName)
+	if err != nil || backupID == "" {
+		h.log.WithError(err).Warnf("Backup container %s not found for cleanup", backupName)
+		return
+	}
+
+	if err := h.dockerClient.RemoveContainer(ctx, backupID, true); err != nil {
+		h.log.WithError(err).Warnf("Failed to remove backup container %s", backupName)
+	} else {
+		h.log.Infof("Removed backup container %s", backupName)
 	}
 }
 
-// cloneHostConfig creates a new host config based on existing container
-func (h *UpdateHandler) cloneHostConfig(hostConfig *container.HostConfig) *container.HostConfig {
-	return &container.HostConfig{
-		Binds:           hostConfig.Binds,
-		ContainerIDFile: hostConfig.ContainerIDFile,
-		NetworkMode:     hostConfig.NetworkMode,
-		PortBindings:    hostConfig.PortBindings,
-		RestartPolicy:   hostConfig.RestartPolicy,
-		AutoRemove:      hostConfig.AutoRemove,
-		VolumeDriver:    hostConfig.VolumeDriver,
-		VolumesFrom:     hostConfig.VolumesFrom,
-		CapAdd:          hostConfig.CapAdd,
-		CapDrop:         hostConfig.CapDrop,
-		DNS:             hostConfig.DNS,
-		DNSOptions:      hostConfig.DNSOptions,
-		DNSSearch:       hostConfig.DNSSearch,
-		ExtraHosts:      hostConfig.ExtraHosts,
-		GroupAdd:        hostConfig.GroupAdd,
-		IpcMode:         hostConfig.IpcMode,
-		Cgroup:          hostConfig.Cgroup,
-		Links:           hostConfig.Links,
-		OomScoreAdj:     hostConfig.OomScoreAdj,
-		PidMode:         hostConfig.PidMode,
-		Privileged:      hostConfig.Privileged,
-		PublishAllPorts: hostConfig.PublishAllPorts,
-		ReadonlyRootfs:  hostConfig.ReadonlyRootfs,
-		SecurityOpt:     hostConfig.SecurityOpt,
-		UTSMode:         hostConfig.UTSMode,
-		UsernsMode:      hostConfig.UsernsMode,
-		ShmSize:         hostConfig.ShmSize,
-		Sysctls:         hostConfig.Sysctls,
-		Runtime:         hostConfig.Runtime,
-		Isolation:       hostConfig.Isolation,
-		Resources:       hostConfig.Resources,
-		Mounts:          hostConfig.Mounts,
-		MaskedPaths:     hostConfig.MaskedPaths,
-		ReadonlyPaths:   hostConfig.ReadonlyPaths,
-		Init:            hostConfig.Init,
-	}
-}
-
-// waitForHealthy waits for a container to become healthy or timeout
+// waitForHealthy waits for a container to become healthy or timeout.
 func (h *UpdateHandler) waitForHealthy(ctx context.Context, containerID string, timeout int) error {
 	deadline := time.Now().Add(time.Duration(timeout) * time.Second)
+	checkInterval := 2 * time.Second
 
 	for {
-		// Check context first
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
 
-		// Check deadline
 		if time.Now().After(deadline) {
 			return fmt.Errorf("health check timeout after %ds", timeout)
 		}
 
-		// Inspect container
 		inspect, err := h.dockerClient.InspectContainer(ctx, containerID)
 		if err != nil {
 			return fmt.Errorf("failed to inspect container: %w", err)
@@ -228,13 +829,12 @@ func (h *UpdateHandler) waitForHealthy(ctx context.Context, containerID string, 
 
 		// Check if container is still running
 		if !inspect.State.Running {
-			return fmt.Errorf("container stopped unexpectedly")
+			return fmt.Errorf("container stopped unexpectedly (exit code: %d)", inspect.State.ExitCode)
 		}
 
-		// If no health check defined, wait a few seconds and assume healthy
+		// If no health check defined, wait 5 seconds and assume healthy
 		if inspect.State.Health == nil {
 			h.log.Debug("No health check defined, waiting 5 seconds")
-			// Use context-aware sleep
 			select {
 			case <-time.After(5 * time.Second):
 				return nil
@@ -243,7 +843,6 @@ func (h *UpdateHandler) waitForHealthy(ctx context.Context, containerID string, 
 			}
 		}
 
-		// Check health status
 		switch inspect.State.Health.Status {
 		case "healthy":
 			h.log.Info("Container is healthy")
@@ -252,32 +851,30 @@ func (h *UpdateHandler) waitForHealthy(ctx context.Context, containerID string, 
 			return fmt.Errorf("container is unhealthy")
 		case "starting":
 			h.log.Debug("Container health is starting, waiting...")
-			// Context-aware sleep
-			select {
-			case <-time.After(2 * time.Second):
-				continue
-			case <-ctx.Done():
-				return ctx.Err()
-			}
 		default:
-			h.log.Debugf("Unknown health status: %s", inspect.State.Health.Status)
-			// Context-aware sleep
-			select {
-			case <-time.After(2 * time.Second):
-				continue
-			case <-ctx.Done():
-				return ctx.Err()
-			}
+			h.log.Debugf("Unknown health status: %s, waiting...", inspect.State.Health.Status)
+		}
+
+		select {
+		case <-time.After(checkInterval):
+			continue
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
 }
 
-// sendProgress sends an update progress event
+// sendProgress sends an update progress event to the backend.
 func (h *UpdateHandler) sendProgress(containerID, stage, message string) {
-	progress := UpdateProgress{
-		ContainerID: containerID,
-		Stage:       stage,
-		Message:     message,
+	shortID := containerID
+	if len(shortID) > 12 {
+		shortID = shortID[:12]
+	}
+
+	progress := map[string]interface{}{
+		"container_id": shortID,
+		"stage":        stage,
+		"message":      message,
 	}
 
 	if err := h.sendEvent("update_progress", progress); err != nil {
@@ -285,16 +882,23 @@ func (h *UpdateHandler) sendProgress(containerID, stage, message string) {
 	}
 }
 
-// sendProgressError sends an update progress error event
-func (h *UpdateHandler) sendProgressError(containerID, stage string, err error) {
-	progress := UpdateProgress{
-		ContainerID: containerID,
-		Stage:       stage,
-		Message:     "Error occurred",
-		Error:       err.Error(),
+// fail sends an error progress event and returns the error.
+func (h *UpdateHandler) fail(containerID, stage string, err error) error {
+	shortID := containerID
+	if len(shortID) > 12 {
+		shortID = shortID[:12]
+	}
+
+	progress := map[string]interface{}{
+		"container_id": shortID,
+		"stage":        stage,
+		"message":      "Error occurred",
+		"error":        err.Error(),
 	}
 
 	if sendErr := h.sendEvent("update_progress", progress); sendErr != nil {
-		h.log.WithError(sendErr).Warn("Failed to send update progress error")
+		h.log.WithError(sendErr).Warn("Failed to send error progress")
 	}
+
+	return err
 }

@@ -6,11 +6,15 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
+	"strings"
+	"sync"
 
 	sharedDocker "github.com/darthnorse/dockmon-shared/docker"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/events"
+	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
@@ -23,6 +27,12 @@ import (
 type Client struct {
 	cli *client.Client
 	log *logrus.Logger
+
+	// Cached values for efficiency - detected once, reused
+	isPodmanCache   *bool  // Podman detection result
+	podmanMu        sync.Mutex
+	apiVersionCache string // Docker API version
+	apiVersionMu    sync.Mutex
 }
 
 // NewClient creates a new Docker client using shared package
@@ -220,6 +230,14 @@ func (c *Client) RemoveContainer(ctx context.Context, containerID string, force 
 	return nil
 }
 
+// KillContainer sends SIGKILL to a container
+func (c *Client) KillContainer(ctx context.Context, containerID string) error {
+	if err := c.cli.ContainerKill(ctx, containerID, "SIGKILL"); err != nil {
+		return fmt.Errorf("failed to kill container: %w", err)
+	}
+	return nil
+}
+
 // GetContainerLogs retrieves container logs
 func (c *Client) GetContainerLogs(ctx context.Context, containerID string, tail string) (string, error) {
 	options := container.LogsOptions{
@@ -290,6 +308,171 @@ func (c *Client) RenameContainer(ctx context.Context, containerID, newName strin
 		return fmt.Errorf("failed to rename container: %w", err)
 	}
 	return nil
+}
+
+// ConnectNetwork connects a container to a network with endpoint configuration.
+// Used for multi-network containers since Docker only allows one network at creation.
+func (c *Client) ConnectNetwork(
+	ctx context.Context,
+	containerID string,
+	networkID string,
+	endpointConfig *network.EndpointSettings,
+) error {
+	return c.cli.NetworkConnect(ctx, networkID, containerID, endpointConfig)
+}
+
+// IsPodman returns true if connected to Podman instead of Docker.
+// Result is cached after first detection for efficiency.
+func (c *Client) IsPodman(ctx context.Context) (bool, error) {
+	c.podmanMu.Lock()
+	defer c.podmanMu.Unlock()
+
+	// Return cached result if available
+	if c.isPodmanCache != nil {
+		return *c.isPodmanCache, nil
+	}
+
+	info, err := c.cli.Info(ctx)
+	if err != nil {
+		return false, fmt.Errorf("failed to get Docker info: %w", err)
+	}
+
+	isPodman := false
+
+	// Check multiple indicators for reliability:
+	// 1. Operating system contains "podman"
+	osLower := strings.ToLower(info.OperatingSystem)
+	if strings.Contains(osLower, "podman") {
+		isPodman = true
+	}
+
+	// 2. Server version components contain "podman"
+	if !isPodman {
+		version, err := c.cli.ServerVersion(ctx)
+		if err == nil {
+			for _, comp := range version.Components {
+				if strings.ToLower(comp.Name) == "podman" {
+					isPodman = true
+					break
+				}
+			}
+		}
+	}
+
+	// Cache the result
+	c.isPodmanCache = &isPodman
+	return isPodman, nil
+}
+
+// GetContainerByName finds a container by name and returns its ID.
+// Returns empty string if not found.
+func (c *Client) GetContainerByName(ctx context.Context, name string) (string, error) {
+	// Remove leading slash if present
+	name = strings.TrimPrefix(name, "/")
+
+	containers, err := c.cli.ContainerList(ctx, container.ListOptions{
+		All:     true,
+		Filters: filters.NewArgs(filters.Arg("name", "^/"+name+"$")),
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to list containers: %w", err)
+	}
+
+	if len(containers) == 0 {
+		return "", nil
+	}
+
+	return containers[0].ID, nil
+}
+
+// ListAllContainers returns all containers (running and stopped).
+// This is the typed version that returns types.Container slice.
+func (c *Client) ListAllContainers(ctx context.Context) ([]types.Container, error) {
+	return c.cli.ContainerList(ctx, container.ListOptions{All: true})
+}
+
+// GetImageLabels returns the labels defined in an image.
+func (c *Client) GetImageLabels(ctx context.Context, imageRef string) (map[string]string, error) {
+	img, _, err := c.cli.ImageInspectWithRaw(ctx, imageRef)
+	if err != nil {
+		return nil, fmt.Errorf("failed to inspect image: %w", err)
+	}
+
+	if img.Config == nil || img.Config.Labels == nil {
+		return make(map[string]string), nil
+	}
+
+	return img.Config.Labels, nil
+}
+
+// CreateContainerWithNetwork creates a new container with full network configuration.
+// networkConfig can be nil for containers using default bridge networking.
+func (c *Client) CreateContainerWithNetwork(
+	ctx context.Context,
+	config *container.Config,
+	hostConfig *container.HostConfig,
+	networkConfig *network.NetworkingConfig,
+	name string,
+) (string, error) {
+	resp, err := c.cli.ContainerCreate(ctx, config, hostConfig, networkConfig, nil, name)
+	if err != nil {
+		return "", fmt.Errorf("failed to create container: %w", err)
+	}
+	return resp.ID, nil
+}
+
+// GetAPIVersion returns the Docker API version string (e.g., "1.44").
+// Result is cached after first call for efficiency.
+func (c *Client) GetAPIVersion(ctx context.Context) (string, error) {
+	c.apiVersionMu.Lock()
+	defer c.apiVersionMu.Unlock()
+
+	// Return cached result if available
+	if c.apiVersionCache != "" {
+		return c.apiVersionCache, nil
+	}
+
+	version, err := c.cli.ServerVersion(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to get server version: %w", err)
+	}
+
+	c.apiVersionCache = version.APIVersion
+	return c.apiVersionCache, nil
+}
+
+// SupportsNetworkingConfig returns true if the Docker API supports
+// networking_config at container creation (API >= 1.44).
+// This determines whether static IPs can be set at creation or require
+// manual network connection post-creation.
+func (c *Client) SupportsNetworkingConfig(ctx context.Context) (bool, error) {
+	apiVersion, err := c.GetAPIVersion(ctx)
+	if err != nil {
+		return false, err
+	}
+
+	// Parse version string (e.g., "1.44" -> major=1, minor=44)
+	parts := strings.Split(apiVersion, ".")
+	if len(parts) < 2 {
+		return false, fmt.Errorf("invalid API version format: %s", apiVersion)
+	}
+
+	major, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return false, fmt.Errorf("invalid major version: %s", parts[0])
+	}
+
+	minor, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return false, fmt.Errorf("invalid minor version: %s", parts[1])
+	}
+
+	// API >= 1.44 supports networking_config at creation
+	if major > 1 || (major == 1 && minor >= 44) {
+		return true, nil
+	}
+
+	return false, nil
 }
 
 // parseContainerIDFromCgroup extracts container ID from /proc/self/cgroup

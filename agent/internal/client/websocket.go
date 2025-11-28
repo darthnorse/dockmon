@@ -51,12 +51,13 @@ type WebSocketClient struct {
 
 // NewWebSocketClient creates a new WebSocket client
 func NewWebSocketClient(
+	ctx context.Context,
 	cfg *config.Config,
 	dockerClient *docker.Client,
 	engineID string,
 	myContainerID string,
 	log *logrus.Logger,
-) *WebSocketClient {
+) (*WebSocketClient, error) {
 	client := &WebSocketClient{
 		cfg:           cfg,
 		docker:        dockerClient,
@@ -75,11 +76,17 @@ func NewWebSocketClient(
 	)
 
 	// Initialize update handler with sendEvent callback
-	client.updateHandler = handlers.NewUpdateHandler(
+	// Creates handler with runtime detection (Podman, API version)
+	var err error
+	client.updateHandler, err = handlers.NewUpdateHandler(
+		ctx,
 		dockerClient,
 		log,
 		client.sendEvent,
 	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create update handler: %w", err)
+	}
 
 	// Initialize self-update handler with sendEvent callback
 	// Pass docker client for container mode and signalStop for graceful shutdown
@@ -98,7 +105,7 @@ func NewWebSocketClient(
 		client.sendEvent,
 	)
 
-	return client
+	return client, nil
 }
 
 // Run starts the WebSocket client with automatic reconnection
@@ -608,8 +615,15 @@ func (c *WebSocketClient) handleMessage(ctx context.Context, msg *types.Message)
 				// Use background context instead of connection context
 				// This allows updates to complete even if connection drops
 				updateCtx := context.Background()
-				if updateErr := c.updateHandler.UpdateContainer(updateCtx, updateReq); updateErr != nil {
+				updateResult, updateErr := c.updateHandler.UpdateContainer(updateCtx, updateReq)
+				if updateErr != nil {
 					c.log.WithError(updateErr).Error("Container update failed")
+				} else {
+					c.log.WithFields(logrus.Fields{
+						"old_container": updateResult.OldContainerID,
+						"new_container": updateResult.NewContainerID,
+						"name":          updateResult.ContainerName,
+					}).Info("Container update completed")
 				}
 			}()
 			result = map[string]string{"status": "update_started"}

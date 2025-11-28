@@ -771,3 +771,227 @@ class TestStateMachinePartialStatus:
 
         assert deployment.status == 'partial'
         assert deployment.completed_at is not None
+
+
+# Phase 3 Tests
+
+class TestComposeProfiles:
+    """Test compose profiles support (Phase 3)"""
+
+    @pytest.fixture
+    def mock_db(self):
+        """Mock database manager"""
+        db = MagicMock()
+        session = MagicMock()
+        db.get_session.return_value.__enter__ = MagicMock(return_value=session)
+        db.get_session.return_value.__exit__ = MagicMock(return_value=False)
+        return db
+
+    @pytest.fixture
+    def executor(self, mock_db):
+        """Create executor with mocked dependencies"""
+        return AgentDeploymentExecutor(database_manager=mock_db)
+
+    @pytest.mark.asyncio
+    async def test_deploy_includes_profiles(self, executor):
+        """Should include profiles in deploy command"""
+        valid_compose = """
+services:
+  web:
+    image: nginx:alpine
+  db:
+    image: postgres:15
+    profiles: [dev]
+"""
+        mock_cmd_executor = MagicMock()
+        mock_cmd_executor.execute_command = AsyncMock(
+            return_value=MagicMock(success=True)
+        )
+
+        with patch.object(executor, '_get_agent_id_for_host', return_value="agent-123"):
+            with patch.object(executor, '_get_command_executor', return_value=mock_cmd_executor):
+                with patch.object(executor, '_update_deployment_status', new_callable=AsyncMock):
+                    result = await executor.deploy(
+                        host_id="host-123",
+                        deployment_id="deploy-123",
+                        compose_content=valid_compose,
+                        project_name="test-project",
+                        profiles=["dev", "debug"],
+                    )
+
+                    assert result is True
+
+                    # Verify profiles were included
+                    call_args = mock_cmd_executor.execute_command.call_args
+                    command = call_args[0][1]
+                    assert command["payload"]["profiles"] == ["dev", "debug"]
+
+    @pytest.mark.asyncio
+    async def test_teardown_includes_profiles(self, executor):
+        """Should include profiles in teardown command"""
+        valid_compose = """
+services:
+  web:
+    image: nginx:alpine
+"""
+        mock_cmd_executor = MagicMock()
+        mock_cmd_executor.execute_command = AsyncMock(
+            return_value=MagicMock(success=True)
+        )
+
+        with patch.object(executor, '_get_agent_id_for_host', return_value="agent-123"):
+            with patch.object(executor, '_get_command_executor', return_value=mock_cmd_executor):
+                result = await executor.teardown(
+                    host_id="host-123",
+                    deployment_id="deploy-123",
+                    project_name="test-project",
+                    compose_content=valid_compose,
+                    profiles=["dev"],
+                )
+
+                assert result is True
+
+                # Verify profiles were included
+                call_args = mock_cmd_executor.execute_command.call_args
+                command = call_args[0][1]
+                assert command["payload"]["profiles"] == ["dev"]
+
+
+class TestHealthAwareDeployments:
+    """Test health-aware deployments (Phase 3)"""
+
+    @pytest.fixture
+    def mock_db(self):
+        """Mock database manager"""
+        db = MagicMock()
+        session = MagicMock()
+        db.get_session.return_value.__enter__ = MagicMock(return_value=session)
+        db.get_session.return_value.__exit__ = MagicMock(return_value=False)
+        return db
+
+    @pytest.fixture
+    def executor(self, mock_db):
+        """Create executor with mocked dependencies"""
+        return AgentDeploymentExecutor(database_manager=mock_db)
+
+    @pytest.mark.asyncio
+    async def test_deploy_with_health_check(self, executor):
+        """Should include health check options in deploy command"""
+        valid_compose = """
+services:
+  web:
+    image: nginx:alpine
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 5s
+      timeout: 3s
+"""
+        mock_cmd_executor = MagicMock()
+        mock_cmd_executor.execute_command = AsyncMock(
+            return_value=MagicMock(success=True)
+        )
+
+        with patch.object(executor, '_get_agent_id_for_host', return_value="agent-123"):
+            with patch.object(executor, '_get_command_executor', return_value=mock_cmd_executor):
+                with patch.object(executor, '_update_deployment_status', new_callable=AsyncMock):
+                    result = await executor.deploy(
+                        host_id="host-123",
+                        deployment_id="deploy-123",
+                        compose_content=valid_compose,
+                        project_name="test-project",
+                        wait_for_healthy=True,
+                        health_timeout=120,
+                    )
+
+                    assert result is True
+
+                    # Verify health check options were included
+                    call_args = mock_cmd_executor.execute_command.call_args
+                    command = call_args[0][1]
+                    assert command["payload"]["wait_for_healthy"] is True
+                    assert command["payload"]["health_timeout"] == 120
+
+
+class TestFineGrainedProgress:
+    """Test fine-grained progress reporting (Phase 3)"""
+
+    @pytest.fixture
+    def mock_db(self):
+        """Mock database manager"""
+        db = MagicMock()
+        session = MagicMock()
+        db.get_session.return_value.__enter__ = MagicMock(return_value=session)
+        db.get_session.return_value.__exit__ = MagicMock(return_value=False)
+        return db
+
+    @pytest.fixture
+    def executor(self, mock_db):
+        """Create executor with mocked dependencies"""
+        return AgentDeploymentExecutor(database_manager=mock_db)
+
+    @pytest.mark.asyncio
+    async def test_handle_service_progress(self, executor):
+        """Should handle service-level progress events"""
+        payload = {
+            "deployment_id": "deploy-123",
+            "stage": "executing",
+            "message": "Deploying services (1/3 running)",
+            "services": [
+                {"name": "web", "status": "running", "image": "nginx:alpine"},
+                {"name": "db", "status": "creating", "image": "postgres:15"},
+                {"name": "redis", "status": "pulling", "image": "redis:7"},
+            ],
+        }
+
+        with patch.object(executor, '_update_deployment_status', new_callable=AsyncMock) as mock_update:
+            with patch.object(executor, '_emit_service_progress', new_callable=AsyncMock) as mock_emit:
+                await executor.handle_deploy_progress(payload)
+
+                # Should update status
+                mock_update.assert_called_once()
+
+                # Should emit service progress
+                mock_emit.assert_called_once_with("deploy-123", payload["services"])
+
+    @pytest.mark.asyncio
+    async def test_progress_calculation_with_services(self, executor):
+        """Should calculate progress based on running services"""
+        payload = {
+            "deployment_id": "deploy-123",
+            "stage": "executing",
+            "message": "Deploying",
+            "services": [
+                {"name": "web", "status": "running"},
+                {"name": "db", "status": "running"},
+                {"name": "redis", "status": "creating"},
+                {"name": "cache", "status": "pulling"},
+            ],
+        }
+
+        with patch.object(executor, '_update_deployment_status', new_callable=AsyncMock) as mock_update:
+            with patch.object(executor, '_emit_service_progress', new_callable=AsyncMock):
+                await executor.handle_deploy_progress(payload)
+
+                # 2/4 services running = 50% of 40 (after 50 base) = 70
+                call_args = mock_update.call_args
+                progress = call_args.kwargs.get("progress") or call_args[1].get("progress")
+                assert progress == 70  # 50 + (2/4 * 40)
+
+    @pytest.mark.asyncio
+    async def test_handle_waiting_for_health_stage(self, executor):
+        """Should handle waiting_for_health stage"""
+        payload = {
+            "deployment_id": "deploy-123",
+            "stage": "waiting_for_health",
+            "message": "Waiting for services to be healthy...",
+        }
+
+        with patch.object(executor, '_update_deployment_status', new_callable=AsyncMock) as mock_update:
+            await executor.handle_deploy_progress(payload)
+
+            mock_update.assert_called_once()
+            call_args = mock_update.call_args
+
+            # Progress should be 80 for waiting_for_health
+            progress = call_args.kwargs.get("progress") or call_args[1].get("progress")
+            assert progress == 80

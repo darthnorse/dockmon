@@ -77,15 +77,13 @@ class TestIPAMIntegration:
 
     def test_compose_ipam_end_to_end(self, docker_client, cleanup_networks):
         """Test full compose IPAM parsing and network creation"""
-        from deployment.executor import DeploymentExecutor
+        from deployment.network_helpers import parse_ipam_config
         from deployment.compose_parser import ComposeParser
-        from unittest.mock import Mock
 
         network_name = 'test-compose-ipam-network'
         cleanup_networks.append(network_name)
 
-        # Create executor and parser
-        executor = DeploymentExecutor(Mock(), Mock(), Mock())
+        # Create parser
         parser = ComposeParser()
 
         # Compose YAML with IPAM
@@ -111,7 +109,7 @@ services:
         network_config = compose_data['networks'][network_name]
 
         # Parse IPAM
-        ipam_config = executor._parse_ipam_config(network_config['ipam'])
+        ipam_config = parse_ipam_config(network_config['ipam'])
 
         # Verify parser output
         assert ipam_config is not None
@@ -132,11 +130,7 @@ services:
 
     def test_ipam_parser_with_compose_format(self, docker_client, cleanup_networks):
         """Test IPAM parser converts compose format to Docker SDK format correctly"""
-        from deployment.executor import DeploymentExecutor
-        from unittest.mock import Mock
-
-        # Create executor to access _parse_ipam_config
-        executor = DeploymentExecutor(Mock(), Mock(), Mock())
+        from deployment.network_helpers import parse_ipam_config
 
         # Compose-style IPAM config
         compose_ipam = {
@@ -150,7 +144,7 @@ services:
         }
 
         # Parse it
-        ipam_config = executor._parse_ipam_config(compose_ipam)
+        ipam_config = parse_ipam_config(compose_ipam)
 
         # Verify it's a valid IPAMConfig
         assert isinstance(ipam_config, IPAMConfig)

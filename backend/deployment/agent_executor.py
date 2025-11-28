@@ -237,6 +237,9 @@ class AgentDeploymentExecutor:
         compose_content: str,
         project_name: str,
         environment: Optional[Dict[str, str]] = None,
+        profiles: Optional[list[str]] = None,
+        wait_for_healthy: bool = False,
+        health_timeout: int = 60,
     ) -> bool:
         """
         Deploy via agent using native compose.
@@ -253,6 +256,9 @@ class AgentDeploymentExecutor:
             compose_content: Docker Compose YAML content
             project_name: Compose project name
             environment: Optional environment variables dict
+            profiles: Optional list of compose profiles to activate (Phase 3)
+            wait_for_healthy: Whether to wait for health checks (Phase 3)
+            health_timeout: Health check timeout in seconds (default 60)
 
         Returns:
             True if deployment succeeded, False if it failed
@@ -289,6 +295,9 @@ class AgentDeploymentExecutor:
                 "compose_content": compose_content,
                 "environment": environment or {},
                 "action": "up",
+                "profiles": profiles or [],
+                "wait_for_healthy": wait_for_healthy,
+                "health_timeout": health_timeout,
             }
         }
 
@@ -337,6 +346,7 @@ class AgentDeploymentExecutor:
         project_name: str,
         compose_content: str,
         remove_volumes: bool = False,
+        profiles: Optional[list[str]] = None,
     ) -> bool:
         """
         Teardown deployment via agent using compose down.
@@ -348,6 +358,7 @@ class AgentDeploymentExecutor:
             compose_content: Docker Compose YAML content (needed for compose down)
             remove_volumes: If True, also remove named volumes. Default False
                            to preserve database data, uploads, etc.
+            profiles: Optional list of compose profiles (needed to teardown profile-specific services)
 
         Returns:
             True if teardown succeeded, False if it failed
@@ -369,6 +380,7 @@ class AgentDeploymentExecutor:
                 "compose_content": compose_content,
                 "action": "down",
                 "remove_volumes": remove_volumes,
+                "profiles": profiles or [],
             }
         }
 
@@ -398,16 +410,19 @@ class AgentDeploymentExecutor:
         Handle deploy_progress event from agent.
 
         Updates deployment status and broadcasts to WebSocket clients.
+        Supports both coarse progress and fine-grained per-service progress (Phase 3).
 
         Args:
             payload: Progress event payload from agent
                 - deployment_id: Deployment composite ID
-                - stage: Current stage (starting, executing, completed, failed)
+                - stage: Current stage (starting, executing, completed, failed, waiting_for_health)
                 - message: Human-readable status message
+                - services: Optional list of service statuses (Phase 3 fine-grained progress)
         """
         deployment_id = payload.get("deployment_id")
         stage = payload.get("stage", "executing")
         message = payload.get("message", "Deploying...")
+        services = payload.get("services")  # Phase 3: per-service progress
 
         if not deployment_id:
             logger.warning("Received deploy_progress without deployment_id")
@@ -417,6 +432,7 @@ class AgentDeploymentExecutor:
         status_map = {
             "starting": "pulling_image",
             "executing": "creating",
+            "waiting_for_health": "starting",  # Phase 3: health check waiting
             "completed": "running",
             "failed": "failed",
         }
@@ -426,10 +442,22 @@ class AgentDeploymentExecutor:
         progress_map = {
             "starting": 20,
             "executing": 50,
+            "waiting_for_health": 80,  # Phase 3: health check waiting
             "completed": 100,
             "failed": 100,
         }
         progress = progress_map.get(stage, 50)
+
+        # If we have service-level progress, calculate more accurate progress
+        if services and len(services) > 0:
+            running_count = sum(1 for s in services if s.get("status") == "running")
+            total_count = len(services)
+            # Map 0-100% of services running to 50-90% overall progress
+            service_progress = 50 + int((running_count / total_count) * 40)
+            progress = service_progress
+            logger.debug(
+                f"Deploy progress for {deployment_id}: {running_count}/{total_count} services running"
+            )
 
         logger.debug(f"Deploy progress for {deployment_id}: {stage} - {message}")
 
@@ -438,6 +466,10 @@ class AgentDeploymentExecutor:
             await self._update_deployment_status(
                 deployment_id, status, progress=progress, stage=message
             )
+
+            # Emit service-level progress if available (Phase 3)
+            if services:
+                await self._emit_service_progress(deployment_id, services)
 
     async def handle_deploy_complete(self, payload: Dict[str, Any]) -> None:
         """
@@ -711,6 +743,31 @@ class AgentDeploymentExecutor:
                 await self.event_bus.emit("deployment_progress", payload)
         except Exception as e:
             logger.error(f"Error broadcasting deployment event: {e}")
+
+    async def _emit_service_progress(
+        self, deployment_id: str, services: list[Dict[str, Any]]
+    ) -> None:
+        """
+        Emit per-service progress event for WebSocket broadcasting (Phase 3).
+
+        This provides fine-grained progress updates showing which services
+        are in which state during deployment.
+
+        Args:
+            deployment_id: Deployment composite ID
+            services: List of service status dicts with name, status, image, message
+        """
+        payload = {
+            "type": "deployment_service_progress",
+            "deployment_id": deployment_id,
+            "services": services,
+        }
+
+        try:
+            if self.event_bus:
+                await self.event_bus.emit("deployment_service_progress", payload)
+        except Exception as e:
+            logger.debug(f"Error broadcasting service progress: {e}")
 
 
 # Global singleton instance (lazy-initialized)

@@ -275,3 +275,219 @@ func TestDeployComposeResultFullFailure(t *testing.T) {
 		t.Errorf("FailedServices count = %d, expected 2", len(result.FailedServices))
 	}
 }
+
+// Phase 3 Tests
+
+func TestDeployComposeRequestProfiles(t *testing.T) {
+	// Test that profiles are included in request
+	req := DeployComposeRequest{
+		DeploymentID:   "test-deployment-123",
+		ProjectName:    "test-project",
+		ComposeContent: "services:\n  web:\n    image: nginx:alpine",
+		Action:         "up",
+		Profiles:       []string{"dev", "debug"},
+	}
+
+	if len(req.Profiles) != 2 {
+		t.Errorf("Profiles count = %d, expected 2", len(req.Profiles))
+	}
+	if req.Profiles[0] != "dev" {
+		t.Errorf("Profiles[0] = %q, expected 'dev'", req.Profiles[0])
+	}
+	if req.Profiles[1] != "debug" {
+		t.Errorf("Profiles[1] = %q, expected 'debug'", req.Profiles[1])
+	}
+}
+
+func TestDeployComposeRequestHealthAware(t *testing.T) {
+	// Test health-aware deployment fields
+	req := DeployComposeRequest{
+		DeploymentID:   "test-deployment-123",
+		ProjectName:    "test-project",
+		ComposeContent: "services:\n  web:\n    image: nginx:alpine",
+		Action:         "up",
+		WaitForHealthy: true,
+		HealthTimeout:  120,
+	}
+
+	if !req.WaitForHealthy {
+		t.Error("WaitForHealthy should be true")
+	}
+	if req.HealthTimeout != 120 {
+		t.Errorf("HealthTimeout = %d, expected 120", req.HealthTimeout)
+	}
+}
+
+func TestDeployStageWaitingHealth(t *testing.T) {
+	// Verify the new waiting_for_health stage constant exists
+	if DeployStageWaitingHealth != "waiting_for_health" {
+		t.Errorf("DeployStageWaitingHealth = %q, expected 'waiting_for_health'", DeployStageWaitingHealth)
+	}
+
+	// Verify it's unique among stages
+	stages := []string{
+		DeployStageStarting,
+		DeployStageExecuting,
+		DeployStageWaitingHealth,
+		DeployStageCompleted,
+		DeployStageFailed,
+	}
+
+	stageSet := make(map[string]bool)
+	for _, stage := range stages {
+		if stageSet[stage] {
+			t.Errorf("Duplicate stage constant: %s", stage)
+		}
+		stageSet[stage] = true
+	}
+}
+
+func TestComposeContainerHealth(t *testing.T) {
+	// Test ComposeContainer with Health field
+	container := ComposeContainer{
+		ID:      "abc123def456",
+		Name:    "test_web_1",
+		Service: "web",
+		State:   "running",
+		Status:  "Up 5 minutes (healthy)",
+		Image:   "nginx:alpine",
+		Health:  "healthy",
+	}
+
+	if container.Health != "healthy" {
+		t.Errorf("Health = %q, expected 'healthy'", container.Health)
+	}
+}
+
+func TestIsContainerHealthy_WithHealthCheck(t *testing.T) {
+	// Mock handler (we only need to test the method logic)
+	h := &DeployHandler{}
+
+	tests := []struct {
+		name     string
+		c        ComposeContainer
+		expected bool
+	}{
+		{
+			name:     "healthy with health field",
+			c:        ComposeContainer{State: "running", Status: "Up", Health: "healthy"},
+			expected: true,
+		},
+		{
+			name:     "unhealthy with health field",
+			c:        ComposeContainer{State: "running", Status: "Up", Health: "unhealthy"},
+			expected: false,
+		},
+		{
+			name:     "starting with health field",
+			c:        ComposeContainer{State: "running", Status: "Up", Health: "starting"},
+			expected: false,
+		},
+		{
+			name:     "healthy in status (compose v2 format)",
+			c:        ComposeContainer{State: "running", Status: "Up 5 minutes (healthy)"},
+			expected: true,
+		},
+		{
+			name:     "unhealthy in status (compose v2 format)",
+			c:        ComposeContainer{State: "running", Status: "Up 5 minutes (unhealthy)"},
+			expected: false,
+		},
+		{
+			name:     "running no health check",
+			c:        ComposeContainer{State: "running", Status: "Up 5 minutes"},
+			expected: true,
+		},
+		{
+			name:     "exited no health check",
+			c:        ComposeContainer{State: "exited", Status: "Exited (1)"},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := h.isContainerHealthy(tt.c)
+			if result != tt.expected {
+				t.Errorf("isContainerHealthy() = %v, expected %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestServiceStatus(t *testing.T) {
+	// Test ServiceStatus struct
+	status := ServiceStatus{
+		Name:    "web",
+		Status:  "running",
+		Image:   "nginx:alpine",
+		Message: "Container started",
+	}
+
+	if status.Name != "web" {
+		t.Errorf("Name = %q, expected 'web'", status.Name)
+	}
+	if status.Status != "running" {
+		t.Errorf("Status = %q, expected 'running'", status.Status)
+	}
+}
+
+func TestMapContainerStateToServiceStatus(t *testing.T) {
+	h := &DeployHandler{}
+
+	tests := []struct {
+		name     string
+		c        ComposeContainer
+		expected string
+	}{
+		{
+			name:     "running container",
+			c:        ComposeContainer{State: "running", Status: "Up 5 minutes"},
+			expected: "running",
+		},
+		{
+			name:     "running with starting health",
+			c:        ComposeContainer{State: "running", Status: "Up", Health: "starting"},
+			expected: "starting",
+		},
+		{
+			name:     "created container",
+			c:        ComposeContainer{State: "created", Status: "Created"},
+			expected: "creating",
+		},
+		{
+			name:     "exited container",
+			c:        ComposeContainer{State: "exited", Status: "Exited (1)"},
+			expected: "failed",
+		},
+		{
+			name:     "dead container",
+			c:        ComposeContainer{State: "dead", Status: "Dead"},
+			expected: "failed",
+		},
+		{
+			name:     "restarting container",
+			c:        ComposeContainer{State: "restarting", Status: "Restarting"},
+			expected: "restarting",
+		},
+		{
+			name:     "healthy container",
+			c:        ComposeContainer{State: "running", Status: "Up (healthy)", Health: "healthy"},
+			expected: "running",
+		},
+		{
+			name:     "unhealthy container",
+			c:        ComposeContainer{State: "running", Status: "Up (unhealthy)", Health: "unhealthy"},
+			expected: "unhealthy",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := h.mapContainerStateToServiceStatus(tt.c)
+			if result != tt.expected {
+				t.Errorf("mapContainerStateToServiceStatus() = %q, expected %q", result, tt.expected)
+			}
+		})
+	}
+}

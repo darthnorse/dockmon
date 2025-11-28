@@ -30,6 +30,9 @@ type DeployComposeRequest struct {
 	Environment    map[string]string `json:"environment,omitempty"`
 	Action         string            `json:"action"`         // "up", "down", "restart"
 	RemoveVolumes  bool              `json:"remove_volumes"` // Only for "down" action, default false
+	Profiles       []string          `json:"profiles,omitempty"` // Compose profiles to activate (Phase 3)
+	WaitForHealthy bool              `json:"wait_for_healthy,omitempty"` // Wait for health checks (Phase 3)
+	HealthTimeout  int               `json:"health_timeout,omitempty"`   // Health check timeout in seconds (default 60)
 }
 
 // DeployComposeResult is sent from agent to backend on completion
@@ -51,13 +54,22 @@ type ServiceResult struct {
 	Error         string `json:"error,omitempty"`
 }
 
-// Deploy progress stages (coarse, no output parsing)
+// Deploy progress stages
 const (
-	DeployStageStarting  = "starting"  // Deployment initiated
-	DeployStageExecuting = "executing" // Compose command running
-	DeployStageCompleted = "completed" // Success - querying containers
-	DeployStageFailed    = "failed"    // Compose returned error
+	DeployStageStarting       = "starting"           // Deployment initiated
+	DeployStageExecuting      = "executing"          // Compose command running
+	DeployStageWaitingHealth  = "waiting_for_health" // Waiting for health checks (Phase 3)
+	DeployStageCompleted      = "completed"          // Success - querying containers
+	DeployStageFailed         = "failed"             // Compose returned error
 )
+
+// ServiceStatus represents the status of a single service during deployment (Phase 3)
+type ServiceStatus struct {
+	Name    string `json:"name"`
+	Status  string `json:"status"`  // "pulling", "creating", "starting", "running", "failed"
+	Image   string `json:"image,omitempty"`
+	Message string `json:"message,omitempty"`
+}
 
 // NewDeployHandler creates a new deploy handler and detects compose command
 func NewDeployHandler(
@@ -189,9 +201,21 @@ func (h *DeployHandler) writeComposeFile(content string) (string, error) {
 func (h *DeployHandler) runComposeUp(ctx context.Context, req DeployComposeRequest, composeFile string) *DeployComposeResult {
 	h.sendProgress(req.DeploymentID, DeployStageExecuting, "Running compose up...")
 
-	// Build command: docker compose -f <file> -p <project> up -d --remove-orphans
+	// Start polling for service progress (Phase 3 - fine-grained progress)
+	progressDone := make(chan struct{})
+	go h.pollServiceProgress(ctx, req.DeploymentID, req.ProjectName, composeFile, req.Profiles, progressDone)
+	defer close(progressDone)
+
+	// Build command: docker compose -f <file> -p <project> [--profile <profile>]... up -d --remove-orphans
 	args := append([]string{}, h.composeCmd[1:]...)
-	args = append(args, "-f", composeFile, "-p", req.ProjectName, "up", "-d", "--remove-orphans")
+	args = append(args, "-f", composeFile, "-p", req.ProjectName)
+
+	// Add profile flags (Phase 3)
+	for _, profile := range req.Profiles {
+		args = append(args, "--profile", profile)
+	}
+
+	args = append(args, "up", "-d", "--remove-orphans")
 
 	stdout, stderr, err := h.runCompose(ctx, req.Environment, args...)
 	if err != nil {
@@ -212,6 +236,20 @@ func (h *DeployHandler) runComposeUp(ctx context.Context, req DeployComposeReque
 		h.runCompose(ctx, nil, cleanupArgs...)
 
 		return h.failResult(req.DeploymentID, errMsg)
+	}
+
+	// Wait for health checks if requested (Phase 3)
+	if req.WaitForHealthy {
+		h.sendProgress(req.DeploymentID, DeployStageWaitingHealth, "Waiting for services to be healthy...")
+		timeout := req.HealthTimeout
+		if timeout <= 0 {
+			timeout = 60 // Default 60 seconds
+		}
+		if err := h.waitForHealthy(ctx, req.ProjectName, composeFile, timeout, req.Profiles); err != nil {
+			h.log.WithError(err).Error("Health check failed")
+			return h.failResult(req.DeploymentID, fmt.Sprintf("Health check failed: %v", err))
+		}
+		h.log.Info("All services healthy")
 	}
 
 	// Discover containers after successful deployment
@@ -334,9 +372,16 @@ func isServiceHealthy(status string) bool {
 func (h *DeployHandler) runComposeDown(ctx context.Context, req DeployComposeRequest, composeFile string) *DeployComposeResult {
 	h.sendProgress(req.DeploymentID, DeployStageExecuting, "Running compose down...")
 
-	// Build command: docker compose -f <file> -p <project> down --remove-orphans [--volumes]
+	// Build command: docker compose -f <file> -p <project> [--profile <profile>]... down --remove-orphans [--volumes]
 	args := append([]string{}, h.composeCmd[1:]...)
-	args = append(args, "-f", composeFile, "-p", req.ProjectName, "down", "--remove-orphans")
+	args = append(args, "-f", composeFile, "-p", req.ProjectName)
+
+	// Add profile flags (Phase 3)
+	for _, profile := range req.Profiles {
+		args = append(args, "--profile", profile)
+	}
+
+	args = append(args, "down", "--remove-orphans")
 	if req.RemoveVolumes {
 		args = append(args, "--volumes")
 		h.log.Warn("Removing volumes as requested (destructive operation)")
@@ -463,6 +508,108 @@ func (h *DeployHandler) sendProgress(deploymentID, stage, message string) {
 	}
 }
 
+// sendServiceProgress sends fine-grained per-service progress (Phase 3)
+func (h *DeployHandler) sendServiceProgress(deploymentID, stage, message string, services []ServiceStatus) {
+	progress := map[string]interface{}{
+		"deployment_id": deploymentID,
+		"stage":         stage,
+		"message":       message,
+		"services":      services,
+	}
+
+	if err := h.sendEvent("deploy_progress", progress); err != nil {
+		h.log.WithError(err).Warn("Failed to send service progress")
+	}
+}
+
+// pollServiceProgress polls compose ps and sends service-level progress (Phase 3)
+func (h *DeployHandler) pollServiceProgress(ctx context.Context, deploymentID, projectName, composeFile string, profiles []string, done <-chan struct{}) {
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-done:
+			return
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			containers, err := h.ComposePsWithProfiles(ctx, projectName, composeFile, profiles)
+			if err != nil {
+				// Compose ps may fail during initial pull phase - that's OK
+				continue
+			}
+
+			if len(containers) == 0 {
+				continue
+			}
+
+			// Build service status list
+			services := make([]ServiceStatus, 0, len(containers))
+			var runningCount, totalCount int
+
+			for _, c := range containers {
+				totalCount++
+				status := h.mapContainerStateToServiceStatus(c)
+				if status == "running" {
+					runningCount++
+				}
+
+				services = append(services, ServiceStatus{
+					Name:   c.Service,
+					Status: status,
+					Image:  c.Image,
+				})
+			}
+
+			message := fmt.Sprintf("Deploying services (%d/%d running)", runningCount, totalCount)
+			h.sendServiceProgress(deploymentID, DeployStageExecuting, message, services)
+		}
+	}
+}
+
+// mapContainerStateToServiceStatus maps compose ps container state to service status
+func (h *DeployHandler) mapContainerStateToServiceStatus(c ComposeContainer) string {
+	state := strings.ToLower(c.State)
+	status := strings.ToLower(c.Status)
+
+	// Check for healthy/unhealthy
+	if strings.Contains(status, "(healthy)") || c.Health == "healthy" {
+		return "running"
+	}
+	if strings.Contains(status, "(unhealthy)") || c.Health == "unhealthy" {
+		return "unhealthy"
+	}
+
+	// Map container states
+	switch state {
+	case "running":
+		// Check if still starting (health check in progress)
+		if c.Health == "starting" {
+			return "starting"
+		}
+		return "running"
+	case "created":
+		return "creating"
+	case "exited", "dead":
+		return "failed"
+	case "restarting":
+		return "restarting"
+	default:
+		// Default based on status string
+		if strings.Contains(status, "pulling") {
+			return "pulling"
+		}
+		if strings.Contains(status, "creating") {
+			return "creating"
+		}
+		if strings.HasPrefix(status, "up") {
+			return "running"
+		}
+		return "unknown"
+	}
+}
+
 // failResult creates a failure result and sends failed progress event
 func (h *DeployHandler) failResult(deploymentID, errorMsg string) *DeployComposeResult {
 	h.sendProgress(deploymentID, DeployStageFailed, errorMsg)
@@ -542,4 +689,138 @@ type ComposeContainer struct {
 	State   string `json:"State"`
 	Status  string `json:"Status"`
 	Image   string `json:"Image"`
+	Health  string `json:"Health,omitempty"` // Health status if container has health check
+}
+
+// ComposePsWithProfiles executes docker compose ps with profile support
+func (h *DeployHandler) ComposePsWithProfiles(ctx context.Context, projectName, composeFile string, profiles []string) ([]ComposeContainer, error) {
+	args := append([]string{}, h.composeCmd[1:]...)
+	args = append(args, "-f", composeFile, "-p", projectName)
+
+	// Add profile flags
+	for _, profile := range profiles {
+		args = append(args, "--profile", profile)
+	}
+
+	args = append(args, "ps", "--format", "json")
+
+	stdout, _, err := h.runCompose(ctx, nil, args...)
+	if err != nil {
+		return nil, fmt.Errorf("compose ps failed: %w", err)
+	}
+
+	// Parse JSON output (each line is a JSON object for compose v2)
+	var containers []ComposeContainer
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+
+		var c ComposeContainer
+		if err := json.Unmarshal([]byte(line), &c); err != nil {
+			h.log.WithError(err).Warn("Failed to parse compose ps output line")
+			continue
+		}
+		containers = append(containers, c)
+	}
+
+	return containers, nil
+}
+
+// waitForHealthy polls compose ps until all services are healthy or timeout
+func (h *DeployHandler) waitForHealthy(ctx context.Context, projectName, composeFile string, timeoutSecs int, profiles []string) error {
+	h.log.WithFields(logrus.Fields{
+		"project_name": projectName,
+		"timeout_secs": timeoutSecs,
+	}).Info("Waiting for services to be healthy")
+
+	deadline := time.Now().Add(time.Duration(timeoutSecs) * time.Second)
+	pollInterval := 2 * time.Second
+
+	for time.Now().Before(deadline) {
+		// Check context cancellation
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		containers, err := h.ComposePsWithProfiles(ctx, projectName, composeFile, profiles)
+		if err != nil {
+			h.log.WithError(err).Debug("Failed to get container status, retrying...")
+			time.Sleep(pollInterval)
+			continue
+		}
+
+		if len(containers) == 0 {
+			h.log.Debug("No containers found yet, retrying...")
+			time.Sleep(pollInterval)
+			continue
+		}
+
+		// Check health status of all containers
+		allHealthy := true
+		var unhealthyServices []string
+
+		for _, c := range containers {
+			healthy := h.isContainerHealthy(c)
+			if !healthy {
+				allHealthy = false
+				unhealthyServices = append(unhealthyServices, c.Service)
+			}
+		}
+
+		if allHealthy {
+			h.log.WithField("container_count", len(containers)).Info("All services are healthy")
+			return nil
+		}
+
+		h.log.WithFields(logrus.Fields{
+			"unhealthy_services": unhealthyServices,
+			"total_services":     len(containers),
+		}).Debug("Waiting for services to be healthy...")
+
+		time.Sleep(pollInterval)
+	}
+
+	// Timeout - get final status for error message
+	containers, _ := h.ComposePsWithProfiles(ctx, projectName, composeFile, profiles)
+	var unhealthyDetails []string
+	for _, c := range containers {
+		if !h.isContainerHealthy(c) {
+			detail := fmt.Sprintf("%s: state=%s, status=%s", c.Service, c.State, c.Status)
+			if c.Health != "" {
+				detail += fmt.Sprintf(", health=%s", c.Health)
+			}
+			unhealthyDetails = append(unhealthyDetails, detail)
+		}
+	}
+
+	return fmt.Errorf("timeout after %d seconds waiting for healthy services. Unhealthy: %s",
+		timeoutSecs, strings.Join(unhealthyDetails, "; "))
+}
+
+// isContainerHealthy checks if a container is considered healthy
+// For containers with health checks: must be "healthy"
+// For containers without health checks: must be "running"
+func (h *DeployHandler) isContainerHealthy(c ComposeContainer) bool {
+	state := strings.ToLower(c.State)
+	status := strings.ToLower(c.Status)
+	health := strings.ToLower(c.Health)
+
+	// If container has a health check defined
+	if health != "" {
+		// Must be explicitly healthy
+		return health == "healthy"
+	}
+
+	// Check status field for health indicators (compose v2 includes health in status)
+	if strings.Contains(status, "health:") || strings.Contains(status, "(healthy)") || strings.Contains(status, "(unhealthy)") {
+		// Has health check - must be healthy
+		return strings.Contains(status, "(healthy)")
+	}
+
+	// No health check defined - just check if running
+	return state == "running" || strings.HasPrefix(status, "up")
 }

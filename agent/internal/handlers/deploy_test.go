@@ -1,65 +1,10 @@
 package handlers
 
 import (
-	"context"
 	"testing"
+
+	"github.com/docker/compose/v2/pkg/api"
 )
-
-func TestDetectComposeCommand(t *testing.T) {
-	ctx := context.Background()
-
-	// Test that detectComposeCommand returns something on a system with compose
-	// Note: This test may pass or fail depending on the system setup
-	cmd := detectComposeCommand(ctx)
-
-	// On most Docker hosts, this will return either ["docker", "compose"] or ["docker-compose"]
-	// On systems without compose, this returns nil
-	if cmd != nil {
-		// If compose is available, verify it's a valid command structure
-		if len(cmd) < 1 {
-			t.Errorf("detectComposeCommand returned empty slice, expected at least one element")
-		}
-	}
-	// If cmd is nil, that's OK - compose isn't installed
-}
-
-func TestParseComposeError(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected string
-	}{
-		{
-			name:     "empty string",
-			input:    "",
-			expected: "",
-		},
-		{
-			name:     "short error",
-			input:    "Error: image not found",
-			expected: "Error: image not found",
-		},
-		{
-			name:     "whitespace only",
-			input:    "   \n  \t  ",
-			expected: "",
-		},
-		{
-			name:     "multiline with truncation",
-			input:    "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\nline13",
-			expected: "line4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\nline13",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := parseComposeError(tt.input)
-			if result != tt.expected {
-				t.Errorf("parseComposeError(%q) = %q, expected %q", tt.input, result, tt.expected)
-			}
-		})
-	}
-}
 
 func TestDeployComposeRequest(t *testing.T) {
 	// Test that DeployComposeRequest struct has all required fields
@@ -142,6 +87,7 @@ func TestDeployStageConstants(t *testing.T) {
 	stages := []string{
 		DeployStageStarting,
 		DeployStageExecuting,
+		DeployStageWaitingHealth,
 		DeployStageCompleted,
 		DeployStageFailed,
 	}
@@ -342,65 +288,37 @@ func TestDeployStageWaitingHealth(t *testing.T) {
 	}
 }
 
-func TestComposeContainerHealth(t *testing.T) {
-	// Test ComposeContainer with Health field
-	container := ComposeContainer{
-		ID:      "abc123def456",
-		Name:    "test_web_1",
-		Service: "web",
-		State:   "running",
-		Status:  "Up 5 minutes (healthy)",
-		Image:   "nginx:alpine",
-		Health:  "healthy",
-	}
-
-	if container.Health != "healthy" {
-		t.Errorf("Health = %q, expected 'healthy'", container.Health)
-	}
-}
-
-func TestIsContainerHealthy_WithHealthCheck(t *testing.T) {
-	// Mock handler (we only need to test the method logic)
+func TestIsContainerHealthy(t *testing.T) {
 	h := &DeployHandler{}
 
 	tests := []struct {
 		name     string
-		c        ComposeContainer
+		c        api.ContainerSummary
 		expected bool
 	}{
 		{
 			name:     "healthy with health field",
-			c:        ComposeContainer{State: "running", Status: "Up", Health: "healthy"},
+			c:        api.ContainerSummary{State: "running", Health: "healthy"},
 			expected: true,
 		},
 		{
 			name:     "unhealthy with health field",
-			c:        ComposeContainer{State: "running", Status: "Up", Health: "unhealthy"},
+			c:        api.ContainerSummary{State: "running", Health: "unhealthy"},
 			expected: false,
 		},
 		{
 			name:     "starting with health field",
-			c:        ComposeContainer{State: "running", Status: "Up", Health: "starting"},
-			expected: false,
-		},
-		{
-			name:     "healthy in status (compose v2 format)",
-			c:        ComposeContainer{State: "running", Status: "Up 5 minutes (healthy)"},
-			expected: true,
-		},
-		{
-			name:     "unhealthy in status (compose v2 format)",
-			c:        ComposeContainer{State: "running", Status: "Up 5 minutes (unhealthy)"},
+			c:        api.ContainerSummary{State: "running", Health: "starting"},
 			expected: false,
 		},
 		{
 			name:     "running no health check",
-			c:        ComposeContainer{State: "running", Status: "Up 5 minutes"},
+			c:        api.ContainerSummary{State: "running"},
 			expected: true,
 		},
 		{
 			name:     "exited no health check",
-			c:        ComposeContainer{State: "exited", Status: "Exited (1)"},
+			c:        api.ContainerSummary{State: "exited"},
 			expected: false,
 		},
 	}
@@ -432,62 +350,21 @@ func TestServiceStatus(t *testing.T) {
 	}
 }
 
-func TestMapContainerStateToServiceStatus(t *testing.T) {
+func TestHasComposeSupport(t *testing.T) {
+	// A newly created handler should report compose support
 	h := &DeployHandler{}
-
-	tests := []struct {
-		name     string
-		c        ComposeContainer
-		expected string
-	}{
-		{
-			name:     "running container",
-			c:        ComposeContainer{State: "running", Status: "Up 5 minutes"},
-			expected: "running",
-		},
-		{
-			name:     "running with starting health",
-			c:        ComposeContainer{State: "running", Status: "Up", Health: "starting"},
-			expected: "starting",
-		},
-		{
-			name:     "created container",
-			c:        ComposeContainer{State: "created", Status: "Created"},
-			expected: "creating",
-		},
-		{
-			name:     "exited container",
-			c:        ComposeContainer{State: "exited", Status: "Exited (1)"},
-			expected: "failed",
-		},
-		{
-			name:     "dead container",
-			c:        ComposeContainer{State: "dead", Status: "Dead"},
-			expected: "failed",
-		},
-		{
-			name:     "restarting container",
-			c:        ComposeContainer{State: "restarting", Status: "Restarting"},
-			expected: "restarting",
-		},
-		{
-			name:     "healthy container",
-			c:        ComposeContainer{State: "running", Status: "Up (healthy)", Health: "healthy"},
-			expected: "running",
-		},
-		{
-			name:     "unhealthy container",
-			c:        ComposeContainer{State: "running", Status: "Up (unhealthy)", Health: "unhealthy"},
-			expected: "unhealthy",
-		},
+	if !h.HasComposeSupport() {
+		t.Error("HasComposeSupport() should return true")
 	}
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := h.mapContainerStateToServiceStatus(tt.c)
-			if result != tt.expected {
-				t.Errorf("mapContainerStateToServiceStatus() = %q, expected %q", result, tt.expected)
-			}
-		})
+func TestGetComposeCommand(t *testing.T) {
+	h := &DeployHandler{}
+	cmd := h.GetComposeCommand()
+	if cmd == "" {
+		t.Error("GetComposeCommand() should return a description")
+	}
+	if cmd != "Docker Compose Go library (embedded)" {
+		t.Errorf("GetComposeCommand() = %q, expected 'Docker Compose Go library (embedded)'", cmd)
 	}
 }

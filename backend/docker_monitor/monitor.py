@@ -1799,9 +1799,9 @@ class DockerMonitor:
                     broadcast_data["container_sparklines"] = container_sparklines
 
                     # Debug: Log sparkline data being sent
-                    logger.info(f"Broadcasting sparklines for {len(container_sparklines)} containers")
+                    logger.debug(f"Broadcasting sparklines for {len(container_sparklines)} containers")
                     for key, sparklines in list(container_sparklines.items())[:2]:  # Log first 2 containers
-                        logger.info(f"  {key}: cpu={len(sparklines['cpu'])}, mem={len(sparklines['mem'])}, net={len(sparklines['net'])}")
+                        logger.debug(f"  {key}: cpu={len(sparklines['cpu'])}, mem={len(sparklines['mem'])}, net={len(sparklines['net'])}")
 
                     # Broadcast update to all connected clients
                     await self.manager.broadcast({

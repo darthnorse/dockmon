@@ -207,7 +207,7 @@ class ContainerDiscovery:
                 # Agent is connected - mark host as online
                 host.status = "online"
                 host.error = None
-                logger.info(f"Agent host {host.name} is connected via agent {agent_id[:8]}...")
+                logger.debug(f"Agent host {host.name} is connected via agent {agent_id[:8]}...")
 
                 # Reset reconnection attempts
                 self.reconnect_attempts[host_id] = 0

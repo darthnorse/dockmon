@@ -601,8 +601,8 @@ class AgentConnector(HostConnector):
 
         # Lazy load dependencies if not provided
         if self._agent_manager is None:
-            from agent.manager import agent_manager
-            self._agent_manager = agent_manager
+            from agent.manager import AgentManager
+            self._agent_manager = AgentManager()
 
         if self._agent_command_executor is None:
             from agent.command_executor import get_agent_command_executor
@@ -925,12 +925,12 @@ def get_host_connector(host_id: str, docker_monitor=None) -> HostConnector:
         # Use agent-based WebSocket connection
         # Lazy-load agent dependencies
         from agent.command_executor import get_agent_command_executor
-        from agent.manager import agent_manager
+        from agent.manager import AgentManager
 
         return AgentConnector(
             host_id,
             agent_command_executor=get_agent_command_executor(),
-            agent_manager=agent_manager
+            agent_manager=AgentManager()
         )
 
     else:

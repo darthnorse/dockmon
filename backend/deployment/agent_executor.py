@@ -207,8 +207,8 @@ class AgentDeploymentExecutor:
     def _get_agent_manager(self):
         """Get or create AgentManager instance."""
         if self._agent_manager is None:
-            from agent.manager import agent_manager
-            self._agent_manager = agent_manager
+            from agent.manager import AgentManager
+            self._agent_manager = AgentManager()
         return self._agent_manager
 
     def _get_agent_id_for_host(self, host_id: str) -> str:

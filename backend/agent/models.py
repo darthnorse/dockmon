@@ -46,7 +46,11 @@ class AgentRegistrationRequest(BaseModel):
     total_memory: Optional[int] = Field(None, gt=0, le=1000000000000000, description="Total memory in bytes (max 1PB)")
     num_cpus: Optional[int] = Field(None, gt=0, le=10000, description="Number of CPUs (max 10k)")
 
-    @field_validator('hostname', 'os_version', 'kernel_version', 'docker_version', 'os_type')
+    # Agent platform fields (for self-update binary selection)
+    agent_os: Optional[str] = Field(None, max_length=20, description="Agent OS (GOOS: linux, darwin, windows)")
+    agent_arch: Optional[str] = Field(None, max_length=20, description="Agent architecture (GOARCH: amd64, arm64, arm)")
+
+    @field_validator('hostname', 'os_version', 'kernel_version', 'docker_version', 'os_type', 'agent_os', 'agent_arch')
     @classmethod
     def sanitize_html(cls, v: Optional[str]) -> Optional[str]:
         """

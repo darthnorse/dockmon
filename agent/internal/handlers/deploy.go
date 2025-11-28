@@ -34,10 +34,12 @@ type DeployComposeRequest struct {
 
 // DeployComposeResult is sent from agent to backend on completion
 type DeployComposeResult struct {
-	DeploymentID string                   `json:"deployment_id"`
-	Success      bool                     `json:"success"`
-	Services     map[string]ServiceResult `json:"services,omitempty"`
-	Error        string                   `json:"error,omitempty"`
+	DeploymentID   string                   `json:"deployment_id"`
+	Success        bool                     `json:"success"`
+	PartialSuccess bool                     `json:"partial_success,omitempty"` // True if some services succeeded but others failed
+	Services       map[string]ServiceResult `json:"services,omitempty"`
+	FailedServices []string                 `json:"failed_services,omitempty"` // List of service names that failed
+	Error          string                   `json:"error,omitempty"`
 }
 
 // ServiceResult contains info about a deployed service
@@ -226,16 +228,106 @@ func (h *DeployHandler) runComposeUp(ctx context.Context, req DeployComposeReque
 		}
 	}
 
-	h.log.WithFields(logrus.Fields{
-		"deployment_id":  req.DeploymentID,
-		"services_count": len(services),
-	}).Info("Compose deployment completed successfully")
+	// Check for partial failures (some services running, others failed)
+	return h.analyzeServiceStatus(req.DeploymentID, services)
+}
 
+// analyzeServiceStatus checks each service status and determines success/partial/failure
+func (h *DeployHandler) analyzeServiceStatus(deploymentID string, services map[string]ServiceResult) *DeployComposeResult {
+	var runningServices []string
+	var failedServices []string
+	var failedErrors []string
+
+	for serviceName, service := range services {
+		// Check if service is healthy (running state)
+		if isServiceHealthy(service.Status) {
+			runningServices = append(runningServices, serviceName)
+		} else {
+			failedServices = append(failedServices, serviceName)
+			// Add error info for failed service
+			errMsg := fmt.Sprintf("%s: %s", serviceName, service.Status)
+			if service.Error != "" {
+				errMsg = fmt.Sprintf("%s: %s (%s)", serviceName, service.Status, service.Error)
+			}
+			failedErrors = append(failedErrors, errMsg)
+		}
+	}
+
+	// Case 1: All services running - full success
+	if len(failedServices) == 0 && len(runningServices) > 0 {
+		h.log.WithFields(logrus.Fields{
+			"deployment_id":  deploymentID,
+			"services_count": len(services),
+		}).Info("Compose deployment completed successfully - all services running")
+
+		return &DeployComposeResult{
+			DeploymentID: deploymentID,
+			Success:      true,
+			Services:     services,
+		}
+	}
+
+	// Case 2: Some services running, some failed - partial success
+	if len(runningServices) > 0 && len(failedServices) > 0 {
+		h.log.WithFields(logrus.Fields{
+			"deployment_id":    deploymentID,
+			"running_services": runningServices,
+			"failed_services":  failedServices,
+		}).Warn("Compose deployment partial success - some services failed")
+
+		errorMsg := fmt.Sprintf("Partial deployment: %d/%d services running. Failed: %s",
+			len(runningServices), len(services), strings.Join(failedErrors, "; "))
+
+		return &DeployComposeResult{
+			DeploymentID:   deploymentID,
+			Success:        false,
+			PartialSuccess: true,
+			Services:       services,
+			FailedServices: failedServices,
+			Error:          errorMsg,
+		}
+	}
+
+	// Case 3: No services running - full failure
+	if len(runningServices) == 0 && len(failedServices) > 0 {
+		h.log.WithFields(logrus.Fields{
+			"deployment_id":   deploymentID,
+			"failed_services": failedServices,
+		}).Error("Compose deployment failed - no services running")
+
+		errorMsg := fmt.Sprintf("All services failed to start: %s", strings.Join(failedErrors, "; "))
+
+		return &DeployComposeResult{
+			DeploymentID:   deploymentID,
+			Success:        false,
+			PartialSuccess: false,
+			Services:       services,
+			FailedServices: failedServices,
+			Error:          errorMsg,
+		}
+	}
+
+	// Case 4: No services discovered (shouldn't happen, but handle gracefully)
+	h.log.WithField("deployment_id", deploymentID).Warn("No services discovered after compose up")
 	return &DeployComposeResult{
-		DeploymentID: req.DeploymentID,
+		DeploymentID: deploymentID,
 		Success:      true,
 		Services:     services,
 	}
+}
+
+// isServiceHealthy checks if a service status indicates healthy/running state
+func isServiceHealthy(status string) bool {
+	status = strings.ToLower(status)
+	// Running states
+	if status == "running" || status == "up" || strings.HasPrefix(status, "up ") {
+		return true
+	}
+	// Also consider "healthy" as running (for services with health checks)
+	if strings.Contains(status, "healthy") && !strings.Contains(status, "unhealthy") {
+		return true
+	}
+	return false
 }
 
 // runComposeDown executes docker compose down

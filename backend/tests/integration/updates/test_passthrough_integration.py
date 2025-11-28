@@ -112,6 +112,7 @@ class TestGPUContainerUpdate:
     refactor. v1 was missing DeviceRequests extraction, breaking GPU containers.
     """
 
+    @pytest.mark.asyncio
     @pytest.mark.integration
     @pytest.mark.skipif(
         not os.path.exists('/usr/bin/nvidia-smi'),
@@ -204,6 +205,7 @@ class TestVolumePassthrough:
     - No duplicate mount errors (Issue #68)
     """
 
+    @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_multiple_bind_mounts_preserved(
         self,
@@ -276,6 +278,7 @@ class TestVolumePassthrough:
         print(f"✅ Volume passthrough preserved: {len(binds)} binds, tmpfs=/tmp")
 
 
+    @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_no_duplicate_mount_errors(
         self,
@@ -368,6 +371,7 @@ class TestStaticIPPreservation:
     retained in the passthrough approach (complex network handling).
     """
 
+    @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_static_ip_preserved(
         self,
@@ -485,6 +489,7 @@ class TestNetworkModeContainer:
     are correctly updated with name resolution.
     """
 
+    @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_network_mode_container_resolution(
         self,
@@ -553,6 +558,7 @@ class TestMultipleNetworks:
     necessary because Docker SDK's networking_config is broken.
     """
 
+    @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_multiple_networks_preserved(
         self,
@@ -648,6 +654,7 @@ class TestFullUpdateWorkflow:
     update process works end-to-end with real containers.
     """
 
+    @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_complete_update_workflow(
         self,
@@ -762,6 +769,7 @@ class TestComplexRealWorld:
     Grafana setup: multiple volumes, networks, secrets, environment variables.
     """
 
+    @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_grafana_like_complex_config(
         self,

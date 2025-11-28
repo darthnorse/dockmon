@@ -569,3 +569,205 @@ class TestContainerIdNormalization:
                 dc_call = mock_dc.call_args
                 assert len(dc_call[1]["container_id"]) == 12
                 assert dc_call[1]["container_id"] == "abc123def456"
+
+
+class TestPartialFailureHandling:
+    """Test handling of partial deployment failures"""
+
+    @pytest.fixture
+    def mock_db(self):
+        """Mock database manager with deployment record"""
+        db = MagicMock()
+        session = MagicMock()
+
+        deployment = MagicMock()
+        deployment.host_id = "host-123"
+
+        session.query.return_value.filter_by.return_value.first.return_value = deployment
+        session.query.return_value.filter.return_value.delete.return_value = None
+
+        db.get_session.return_value.__enter__ = MagicMock(return_value=session)
+        db.get_session.return_value.__exit__ = MagicMock(return_value=False)
+        return db
+
+    @pytest.fixture
+    def executor(self, mock_db):
+        """Create executor with mocked dependencies"""
+        return AgentDeploymentExecutor(database_manager=mock_db)
+
+    @pytest.mark.asyncio
+    async def test_handle_partial_success(self, executor):
+        """Should handle partial success - some services running, others failed"""
+        payload = {
+            "deployment_id": "deploy-123",
+            "success": False,
+            "partial_success": True,
+            "services": {
+                "web": {
+                    "container_id": "abc123def456",
+                    "container_name": "test_web_1",
+                    "image": "nginx:alpine",
+                    "status": "running",
+                },
+                "db": {
+                    "container_id": "xyz789ghi012",
+                    "container_name": "test_db_1",
+                    "image": "postgres:15",
+                    "status": "exited (1)",
+                    "error": "Database init failed",
+                },
+            },
+            "failed_services": ["db"],
+            "error": "Partial deployment: 1/2 services running",
+        }
+
+        with patch.object(executor, '_link_containers_to_deployment', new_callable=AsyncMock) as mock_link:
+            with patch.object(executor, '_update_deployment_status', new_callable=AsyncMock) as mock_update:
+                await executor.handle_deploy_complete(payload)
+
+                # Should link only successful containers (web, not db)
+                mock_link.assert_called_once()
+                linked_services = mock_link.call_args[0][1]
+                assert "web" in linked_services
+                assert "db" not in linked_services
+
+                # Should update status to partial
+                mock_update.assert_called_once()
+                call_args = mock_update.call_args
+                status = call_args[0][1] if len(call_args[0]) > 1 else call_args.kwargs.get("status")
+                assert status == "partial"
+
+    @pytest.mark.asyncio
+    async def test_handle_partial_success_no_running_services(self, executor):
+        """Should handle case where partial_success=True but no services actually running"""
+        payload = {
+            "deployment_id": "deploy-123",
+            "success": False,
+            "partial_success": True,
+            "services": {
+                "web": {
+                    "container_id": "abc123def456",
+                    "container_name": "test_web_1",
+                    "status": "exited (1)",
+                },
+            },
+            "failed_services": ["web"],
+            "error": "All services failed",
+        }
+
+        with patch.object(executor, '_link_containers_to_deployment', new_callable=AsyncMock) as mock_link:
+            with patch.object(executor, '_update_deployment_status', new_callable=AsyncMock) as mock_update:
+                await executor.handle_deploy_complete(payload)
+
+                # Should not link any containers (all failed)
+                mock_link.assert_not_called()
+
+                # Should still update status to partial (as indicated by agent)
+                mock_update.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_handle_full_failure_no_partial(self, executor):
+        """Should handle full failure when partial_success=False"""
+        payload = {
+            "deployment_id": "deploy-123",
+            "success": False,
+            "partial_success": False,
+            "services": {},
+            "error": "Image pull failed",
+        }
+
+        with patch.object(executor, '_link_containers_to_deployment', new_callable=AsyncMock) as mock_link:
+            with patch.object(executor, '_update_deployment_status', new_callable=AsyncMock) as mock_update:
+                await executor.handle_deploy_complete(payload)
+
+                # Should not link any containers
+                mock_link.assert_not_called()
+
+                # Should update status to failed
+                mock_update.assert_called_once()
+                call_args = mock_update.call_args
+                status = call_args[0][1] if len(call_args[0]) > 1 else call_args.kwargs.get("status")
+                assert status == "failed"
+
+    def test_build_partial_failure_message(self, executor):
+        """Should build detailed error message for partial failures"""
+        services = {
+            "web": {"status": "running"},
+            "db": {"status": "exited (1)", "error": "Init failed"},
+            "redis": {"status": "exited (137)"},
+        }
+        failed_services = ["db", "redis"]
+        original_error = "Some services failed"
+
+        message = executor._build_partial_failure_message(services, failed_services, original_error)
+
+        # Verify message contains key info
+        assert "1/3 services running" in message
+        assert "Failed services:" in message
+        assert "db:" in message
+        assert "exited (1)" in message
+        assert "Init failed" in message
+        assert "redis:" in message
+
+    def test_build_partial_failure_message_no_error_details(self, executor):
+        """Should handle services without error details"""
+        services = {
+            "web": {"status": "running"},
+            "db": {"status": "exited (1)"},  # No error field
+        }
+        failed_services = ["db"]
+
+        message = executor._build_partial_failure_message(services, failed_services, None)
+
+        assert "1/2 services running" in message
+        assert "db:" in message
+        assert "exited (1)" in message
+
+
+class TestStateMachinePartialStatus:
+    """Test state machine supports partial status"""
+
+    def test_partial_status_is_valid(self):
+        """Should recognize 'partial' as valid status"""
+        from deployment.state_machine import DeploymentStateMachine
+
+        sm = DeploymentStateMachine()
+        assert sm.validate_state('partial')
+
+    def test_can_transition_to_partial(self):
+        """Should allow transition to partial from execution states"""
+        from deployment.state_machine import DeploymentStateMachine
+
+        sm = DeploymentStateMachine()
+
+        # Can transition to partial from various states
+        assert sm.can_transition('validating', 'partial')
+        assert sm.can_transition('pulling_image', 'partial')
+        assert sm.can_transition('creating', 'partial')
+        assert sm.can_transition('starting', 'partial')
+
+    def test_partial_is_terminal(self):
+        """Should treat partial as terminal state (no transitions out)"""
+        from deployment.state_machine import DeploymentStateMachine
+
+        sm = DeploymentStateMachine()
+
+        # No valid transitions from partial
+        next_states = sm.get_valid_next_states('partial')
+        assert len(next_states) == 0
+
+    def test_partial_sets_completed_at(self):
+        """Should set completed_at when transitioning to partial"""
+        from deployment.state_machine import DeploymentStateMachine
+
+        sm = DeploymentStateMachine()
+
+        # Mock deployment
+        deployment = MagicMock()
+        deployment.status = 'starting'
+        deployment.completed_at = None
+
+        sm.transition(deployment, 'partial')
+
+        assert deployment.status == 'partial'
+        assert deployment.completed_at is not None

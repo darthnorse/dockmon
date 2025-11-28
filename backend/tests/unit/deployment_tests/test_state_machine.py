@@ -309,7 +309,7 @@ class TestStateValidation:
 
         valid_states = [
             'planning', 'validating', 'pulling_image', 'creating',
-            'starting', 'running', 'failed', 'rolled_back'
+            'starting', 'running', 'partial', 'failed', 'rolled_back'
         ]
 
         for state in valid_states:
@@ -335,12 +335,13 @@ class TestStateValidation:
         # planning -> validating
         assert sm.get_valid_next_states('planning') == ['validating']
 
-        # validating -> pulling_image | failed
+        # validating -> pulling_image | failed | partial
         next_states = sm.get_valid_next_states('validating')
-        assert set(next_states) == {'pulling_image', 'failed'}
+        assert set(next_states) == {'pulling_image', 'failed', 'partial'}
 
         # Terminal states have no next states
         assert sm.get_valid_next_states('running') == []
+        assert sm.get_valid_next_states('partial') == []
         assert sm.get_valid_next_states('rolled_back') == []
 
 

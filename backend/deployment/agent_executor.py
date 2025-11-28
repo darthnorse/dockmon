@@ -444,17 +444,22 @@ class AgentDeploymentExecutor:
         Handle deploy_complete event from agent.
 
         Updates database with final status and container IDs.
+        Supports partial success where some services are running but others failed.
 
         Args:
             payload: Completion event payload from agent
                 - deployment_id: Deployment composite ID
-                - success: Whether deployment succeeded
+                - success: Whether deployment fully succeeded
+                - partial_success: Whether deployment partially succeeded (some services running)
                 - services: Dict of service results (service_name -> ServiceResult)
-                - error: Error message if failed
+                - failed_services: List of service names that failed
+                - error: Error message if failed or partial
         """
         deployment_id = payload.get("deployment_id")
         success = payload.get("success", False)
+        partial_success = payload.get("partial_success", False)
         services = payload.get("services", {})
+        failed_services = payload.get("failed_services", [])
         error = payload.get("error")
 
         if not deployment_id:
@@ -463,22 +468,90 @@ class AgentDeploymentExecutor:
 
         logger.info(
             f"Deploy complete for {deployment_id}: success={success}, "
-            f"services={len(services)}, error={error}"
+            f"partial_success={partial_success}, services={len(services)}, "
+            f"failed_services={failed_services}, error={error}"
         )
 
         if success:
-            # Update database with container IDs
+            # Full success - all services running
             await self._link_containers_to_deployment(deployment_id, services)
-
-            # Mark deployment as running
             await self._update_deployment_status(
                 deployment_id, "running", progress=100, stage="Deployment completed"
             )
+
+        elif partial_success:
+            # Partial success - some services running, others failed
+            # Still link the successful containers (don't lose working services)
+            running_services = {
+                name: svc for name, svc in services.items()
+                if name not in failed_services
+            }
+            if running_services:
+                await self._link_containers_to_deployment(deployment_id, running_services)
+
+            # Build detailed error message with per-service status
+            error_details = self._build_partial_failure_message(
+                services, failed_services, error
+            )
+
+            # Mark as partial (some services running but not complete)
+            await self._update_deployment_status(
+                deployment_id,
+                "partial",
+                progress=100,
+                stage="Partial deployment - some services failed",
+                error_message=error_details
+            )
+
         else:
-            # Mark deployment as failed
+            # Full failure - no services running
             await self._update_deployment_status(
                 deployment_id, "failed", error_message=error or "Deployment failed"
             )
+
+    def _build_partial_failure_message(
+        self,
+        services: Dict[str, Any],
+        failed_services: list,
+        original_error: Optional[str]
+    ) -> str:
+        """
+        Build detailed error message for partial deployment failures.
+
+        Args:
+            services: Dict of all service results
+            failed_services: List of service names that failed
+            original_error: Original error message from agent
+
+        Returns:
+            Formatted error message with per-service status
+        """
+        lines = []
+
+        # Count running vs failed
+        running_count = len(services) - len(failed_services)
+        total_count = len(services)
+        lines.append(f"Partial deployment: {running_count}/{total_count} services running")
+
+        # List failed services with their status
+        if failed_services:
+            lines.append("")
+            lines.append("Failed services:")
+            for name in failed_services:
+                svc = services.get(name, {})
+                status = svc.get("status", "unknown")
+                svc_error = svc.get("error", "")
+                if svc_error:
+                    lines.append(f"  - {name}: {status} ({svc_error})")
+                else:
+                    lines.append(f"  - {name}: {status}")
+
+        # Include original error if present and not redundant
+        if original_error and original_error not in "\n".join(lines):
+            lines.append("")
+            lines.append(f"Details: {original_error}")
+
+        return "\n".join(lines)
 
     async def _link_containers_to_deployment(
         self,
@@ -595,7 +668,7 @@ class AgentDeploymentExecutor:
                 deployment.current_stage = stage
             if error_message is not None:
                 deployment.error_message = error_message
-            if status in ("running", "failed", "rolled_back"):
+            if status in ("running", "partial", "failed", "rolled_back"):
                 deployment.completed_at = datetime.now(timezone.utc)
 
             session.commit()

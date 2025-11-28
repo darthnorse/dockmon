@@ -161,3 +161,117 @@ func TestDeployStageConstants(t *testing.T) {
 		stageSet[stage] = true
 	}
 }
+
+func TestIsServiceHealthy(t *testing.T) {
+	tests := []struct {
+		name     string
+		status   string
+		expected bool
+	}{
+		{"running lowercase", "running", true},
+		{"running uppercase", "Running", true},
+		{"up status", "up", true},
+		{"up with duration", "Up 5 minutes", true},
+		{"healthy status", "healthy", true},
+		{"running (healthy)", "running (healthy)", true},
+		{"unhealthy status", "unhealthy", false},
+		{"running (unhealthy)", "running (unhealthy)", false},
+		{"exited status", "exited", false},
+		{"exited with code", "exited (1)", false},
+		{"created status", "created", false},
+		{"dead status", "dead", false},
+		{"paused status", "paused", false},
+		{"empty status", "", false},
+		{"restarting status", "restarting", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isServiceHealthy(tt.status)
+			if result != tt.expected {
+				t.Errorf("isServiceHealthy(%q) = %v, expected %v", tt.status, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestDeployComposeResultPartialSuccess(t *testing.T) {
+	// Test partial success result structure
+	result := DeployComposeResult{
+		DeploymentID:   "test-123",
+		Success:        false,
+		PartialSuccess: true,
+		Services: map[string]ServiceResult{
+			"web": {
+				ContainerID:   "abc123def456",
+				ContainerName: "test_web_1",
+				Image:         "nginx:alpine",
+				Status:        "running",
+			},
+			"db": {
+				ContainerID:   "xyz789ghi012",
+				ContainerName: "test_db_1",
+				Image:         "postgres:15",
+				Status:        "exited (1)",
+				Error:         "Database initialization failed",
+			},
+		},
+		FailedServices: []string{"db"},
+		Error:          "Partial deployment: 1/2 services running. Failed: db: exited (1)",
+	}
+
+	// Verify fields
+	if result.Success {
+		t.Error("Success should be false for partial deployment")
+	}
+	if !result.PartialSuccess {
+		t.Error("PartialSuccess should be true")
+	}
+	if len(result.FailedServices) != 1 {
+		t.Errorf("FailedServices count = %d, expected 1", len(result.FailedServices))
+	}
+	if result.FailedServices[0] != "db" {
+		t.Errorf("FailedServices[0] = %s, expected 'db'", result.FailedServices[0])
+	}
+	if result.Error == "" {
+		t.Error("Error should not be empty for partial deployment")
+	}
+	if result.Services["db"].Error == "" {
+		t.Error("Failed service should have error details")
+	}
+}
+
+func TestDeployComposeResultFullFailure(t *testing.T) {
+	// Test full failure result structure (all services failed)
+	result := DeployComposeResult{
+		DeploymentID:   "test-456",
+		Success:        false,
+		PartialSuccess: false,
+		Services: map[string]ServiceResult{
+			"web": {
+				ContainerID:   "abc123def456",
+				ContainerName: "test_web_1",
+				Image:         "nginx:alpine",
+				Status:        "exited (1)",
+			},
+			"db": {
+				ContainerID:   "xyz789ghi012",
+				ContainerName: "test_db_1",
+				Image:         "postgres:15",
+				Status:        "exited (1)",
+			},
+		},
+		FailedServices: []string{"web", "db"},
+		Error:          "All services failed to start",
+	}
+
+	if result.Success {
+		t.Error("Success should be false")
+	}
+	if result.PartialSuccess {
+		t.Error("PartialSuccess should be false for full failure")
+	}
+	if len(result.FailedServices) != 2 {
+		t.Errorf("FailedServices count = %d, expected 2", len(result.FailedServices))
+	}
+}

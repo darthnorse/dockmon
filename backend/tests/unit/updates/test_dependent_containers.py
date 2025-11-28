@@ -91,6 +91,7 @@ class TestDependentContainerDetection:
         )
         return executor
 
+    @pytest.mark.asyncio
     async def test_find_dependent_by_name(
         self,
         update_executor,
@@ -102,7 +103,8 @@ class TestDependentContainerDetection:
         mock_client = Mock()
 
         # Mock containers.list to return all containers
-        with patch('updates.update_executor.async_docker_call') as mock_async:
+        # Patch in docker_executor where async_docker_call is actually used
+        with patch('updates.docker_executor.async_docker_call') as mock_async:
             mock_async.return_value = [
                 mock_container,
                 mock_dependent_by_name,
@@ -122,6 +124,7 @@ class TestDependentContainerDetection:
             assert dependents[0]['name'] == 'qbittorrent'
             assert dependents[0]['old_network_mode'] == 'container:gluetun'
 
+    @pytest.mark.asyncio
     async def test_find_dependent_by_id(
         self,
         update_executor,
@@ -132,7 +135,7 @@ class TestDependentContainerDetection:
         """Test finding dependent container by container ID"""
         mock_client = Mock()
 
-        with patch('updates.update_executor.async_docker_call') as mock_async:
+        with patch('updates.docker_executor.async_docker_call') as mock_async:
             mock_async.return_value = [
                 mock_container,
                 mock_dependent_by_id,
@@ -151,6 +154,7 @@ class TestDependentContainerDetection:
             assert dependents[0]['name'] == 'transmission'
             assert dependents[0]['old_network_mode'] == 'container:abc123def456'
 
+    @pytest.mark.asyncio
     async def test_find_multiple_dependents(
         self,
         update_executor,
@@ -161,7 +165,7 @@ class TestDependentContainerDetection:
         """Test finding multiple dependent containers"""
         mock_client = Mock()
 
-        with patch('updates.update_executor.async_docker_call') as mock_async:
+        with patch('updates.docker_executor.async_docker_call') as mock_async:
             mock_async.return_value = [
                 mock_container,
                 mock_dependent_by_name,
@@ -181,6 +185,7 @@ class TestDependentContainerDetection:
             assert 'qbittorrent' in names
             assert 'transmission' in names
 
+    @pytest.mark.asyncio
     async def test_no_dependents(
         self,
         update_executor,
@@ -190,7 +195,7 @@ class TestDependentContainerDetection:
         """Test container with no dependents"""
         mock_client = Mock()
 
-        with patch('updates.update_executor.async_docker_call') as mock_async:
+        with patch('updates.docker_executor.async_docker_call') as mock_async:
             mock_async.return_value = [
                 mock_container,
                 mock_independent_container
@@ -206,6 +211,7 @@ class TestDependentContainerDetection:
             # Should find no dependents
             assert len(dependents) == 0
 
+    @pytest.mark.asyncio
     async def test_graceful_error_handling(
         self,
         update_executor,
@@ -215,7 +221,7 @@ class TestDependentContainerDetection:
         mock_client = Mock()
 
         # Mock Docker API failure
-        with patch('updates.update_executor.async_docker_call') as mock_async:
+        with patch('updates.docker_executor.async_docker_call') as mock_async:
             mock_async.side_effect = Exception("Docker API error")
 
             dependents = await update_executor._get_dependent_containers(
@@ -242,12 +248,20 @@ class TestDependentContainerRecreation:
         )
         return executor
 
+    @pytest.mark.asyncio
     async def test_network_mode_updated_correctly(self, update_executor):
         """Test that network_mode is updated to new parent container ID"""
         mock_client = Mock()
 
+        # Mock container with proper attrs structure
+        mock_dep_container = Mock()
+        mock_dep_container.name = 'qbittorrent'
+        mock_dep_container.short_id = 'def456ghi789'
+        mock_dep_container.stop = Mock()
+        mock_dep_container.remove = Mock()
+
         dep_info = {
-            'container': Mock(),
+            'container': mock_dep_container,
             'name': 'qbittorrent',
             'id': 'def456',
             'image': 'linuxserver/qbittorrent:latest',
@@ -267,6 +281,7 @@ class TestDependentContainerRecreation:
 
         new_container = Mock()
         new_container.status = 'running'
+        new_container.start = Mock()
 
         captured_config = {}
 
@@ -274,10 +289,13 @@ class TestDependentContainerRecreation:
             captured_config.update(config)
             return new_container
 
-        # v2.2.0: Mock v2 method instead of v1
-        with patch.object(update_executor, '_extract_container_config_v2', return_value=mock_config):
-            with patch('updates.update_executor.async_docker_call'):
-                with patch.object(update_executor, '_create_container_v2', side_effect=capture_create_call):
+        # Get the docker_executor that UpdateExecutor delegates to
+        docker_executor = update_executor.docker_executor
+
+        # v2.2.0: Mock v2 methods on docker_executor (where delegation goes)
+        with patch.object(docker_executor, '_extract_container_config_v2', return_value=mock_config):
+            with patch('updates.docker_executor.async_docker_call'):
+                with patch.object(docker_executor, '_create_container_v2', side_effect=capture_create_call):
                     with patch('asyncio.sleep'):
                         await update_executor._recreate_dependent_container(
                             mock_client,

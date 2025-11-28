@@ -1215,13 +1215,11 @@ class DockerMonitor:
         """
         import asyncio
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.create_task(self._broadcast_host_status(host_id, status))
-            else:
-                loop.run_until_complete(self._broadcast_host_status(host_id, status))
+            # Try to get running loop (works in async context)
+            loop = asyncio.get_running_loop()
+            asyncio.create_task(self._broadcast_host_status(host_id, status))
         except RuntimeError:
-            # No event loop - skip broadcast
+            # No running loop - skip broadcast (sync context without event loop)
             logger.debug(f"No event loop for host status broadcast: {host_id} -> {status}")
 
     async def _broadcast_host_status(self, host_id: str, status: str):

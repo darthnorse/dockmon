@@ -140,7 +140,7 @@ async def lifespan(app: FastAPI):
     uvicorn_access.addFilter(HealthCheckFilter())
 
     # Ensure default user exists (run in thread pool to avoid blocking event loop)
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, monitor.db.get_or_create_default_user)
 
     # Clean up orphaned certificate directories from legacy bug (run in thread pool to avoid blocking)
@@ -341,7 +341,7 @@ async def lifespan(app: FastAPI):
 
     # Dispose SQLAlchemy engine (run in thread pool to avoid blocking event loop)
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, monitor.db.engine.dispose)
         logger.info("SQLAlchemy engine disposed")
     except Exception as e:

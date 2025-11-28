@@ -69,21 +69,14 @@ class UpdateExecutor:
         self._active_pulls: Dict[str, Dict] = {}
         self._active_pulls_lock = threading.Lock()
 
-        # Store reference to the main event loop
-        self.loop = asyncio.get_event_loop()
+        # Lazy-initialized image pull tracker (avoids asyncio.get_event_loop() deprecation)
+        self._image_pull_tracker = None
 
-        # Initialize shared image pull progress tracker
-        self.image_pull_tracker = ImagePullProgress(
-            self.loop,
-            monitor.manager if monitor and hasattr(monitor, 'manager') else None,
-            progress_callback=self._store_pull_progress
-        )
-
-        # Initialize executors
+        # Initialize docker executor immediately (without tracker - will inject when needed)
         self.docker_executor = DockerUpdateExecutor(
             db=db,
             monitor=monitor,
-            image_pull_tracker=self.image_pull_tracker
+            image_pull_tracker=None  # Will be set lazily in async context
         )
 
         # Agent executor will be initialized lazily when agent_manager is available
@@ -91,6 +84,19 @@ class UpdateExecutor:
 
         # Initialize event emitter
         self.event_emitter = UpdateEventEmitter(monitor)
+
+    def _get_image_pull_tracker(self) -> ImagePullProgress:
+        """Get image pull tracker, initializing lazily in async context."""
+        if self._image_pull_tracker is None:
+            loop = asyncio.get_running_loop()
+            self._image_pull_tracker = ImagePullProgress(
+                loop,
+                self.monitor.manager if self.monitor and hasattr(self.monitor, 'manager') else None,
+                progress_callback=self._store_pull_progress
+            )
+            # Inject into docker_executor for use during image pulls
+            self.docker_executor.image_pull_tracker = self._image_pull_tracker
+        return self._image_pull_tracker
 
     @property
     def agent_executor(self) -> Optional[AgentUpdateExecutor]:

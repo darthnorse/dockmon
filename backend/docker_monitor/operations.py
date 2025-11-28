@@ -632,7 +632,7 @@ class ContainerOperations:
 
         try:
             client = self.clients[host_id]
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
 
             # Get container with timeout
             try:

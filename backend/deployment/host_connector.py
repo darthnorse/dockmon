@@ -456,7 +456,7 @@ class DirectDockerConnector(HostConnector):
 
             # Create image pull tracker (shares code with update system)
             tracker = ImagePullProgress(
-                loop=asyncio.get_event_loop(),
+                loop=asyncio.get_running_loop(),
                 connection_manager=connection_manager,
                 progress_callback=progress_callback
             )

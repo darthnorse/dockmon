@@ -72,14 +72,19 @@ class DeploymentExecutor:
         self.state_machine = DeploymentStateMachine()
         self.security_validator = SecurityValidator()
 
-        # Store event loop for layer progress tracker (thread-safe coroutine execution)
-        self.loop = asyncio.get_event_loop()
+        # Image pull tracker initialized lazily to get running loop in async context
+        self._image_pull_tracker = None
 
-        # Initialize image pull progress tracker (shared with update system)
-        self.image_pull_tracker = ImagePullProgress(
-            self.loop,
-            docker_monitor.manager if hasattr(docker_monitor, 'manager') else None
-        )
+    @property
+    def image_pull_tracker(self) -> ImagePullProgress:
+        """Lazy initialization of image pull tracker to avoid event loop issues."""
+        if self._image_pull_tracker is None:
+            loop = asyncio.get_running_loop()
+            self._image_pull_tracker = ImagePullProgress(
+                loop,
+                self.docker_monitor.manager if hasattr(self.docker_monitor, 'manager') else None
+            )
+        return self._image_pull_tracker
 
     def _generate_deployment_id(self, host_id: str) -> str:
         """

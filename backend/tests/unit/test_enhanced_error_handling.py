@@ -467,7 +467,7 @@ class TestRetryLogic:
 
         async def mock_send_always_fail(agent_id, cmd):
             nonlocal last_attempt_time
-            now = asyncio.get_event_loop().time()
+            now = asyncio.get_running_loop().time()
 
             if last_attempt_time is not None:
                 retry_delays.append(now - last_attempt_time)

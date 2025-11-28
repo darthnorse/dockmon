@@ -402,6 +402,16 @@ class AgentWebSocketHandler:
                 # Must update database records with new ID
                 await self._handle_update_complete(payload)
 
+            elif event_type == "deploy_progress":
+                # Compose deployment progress from agent
+                # Forward to AgentDeploymentExecutor for status updates
+                await self._handle_deploy_progress(payload)
+
+            elif event_type == "deploy_complete":
+                # Compose deployment completed - contains container IDs
+                # Must update database with deployed containers
+                await self._handle_deploy_complete(payload)
+
             else:
                 logger.warning(f"Unknown event type from agent {self.agent_id}: {event_type}")
 
@@ -945,6 +955,63 @@ class AgentWebSocketHandler:
                 logger.error(f"Post-commit error in update_complete (db committed): {e}", exc_info=True)
             else:
                 logger.error(f"Error handling update complete: {e}", exc_info=True)
+
+    async def _handle_deploy_progress(self, payload: dict):
+        """
+        Handle deployment progress event from agent.
+
+        Forwards to AgentDeploymentExecutor for database updates and UI broadcast.
+        """
+        try:
+            from deployment.agent_executor import get_agent_deployment_executor
+
+            executor = get_agent_deployment_executor()
+            await executor.handle_deploy_progress(payload)
+
+            logger.debug(
+                f"Deploy progress for {payload.get('deployment_id')}: "
+                f"{payload.get('stage')} - {payload.get('message')}"
+            )
+
+        except Exception as e:
+            logger.error(f"Error handling deploy progress: {e}", exc_info=True)
+
+    async def _handle_deploy_complete(self, payload: dict):
+        """
+        Handle deployment completion event from agent.
+
+        Forwards to AgentDeploymentExecutor for database updates with container IDs.
+        """
+        try:
+            from deployment.agent_executor import get_agent_deployment_executor
+
+            executor = get_agent_deployment_executor()
+            await executor.handle_deploy_complete(payload)
+
+            deployment_id = payload.get("deployment_id")
+            success = payload.get("success", False)
+            services = payload.get("services", {})
+
+            logger.info(
+                f"Deploy complete for {deployment_id}: success={success}, "
+                f"services={len(services)}"
+            )
+
+            # Broadcast to UI via WebSocket
+            if self.monitor and hasattr(self.monitor, 'manager'):
+                await self.monitor.manager.broadcast({
+                    "type": "deployment_complete",
+                    "data": {
+                        "deployment_id": deployment_id,
+                        "host_id": self.host_id,
+                        "success": success,
+                        "services_count": len(services),
+                        "error": payload.get("error"),
+                    }
+                })
+
+        except Exception as e:
+            logger.error(f"Error handling deploy complete: {e}", exc_info=True)
 
     async def _update_container_database_records(
         self,

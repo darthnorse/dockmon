@@ -23,7 +23,7 @@ from typing import Dict, Any, Optional, List
 from sqlalchemy.orm import Session
 import secrets
 
-from database import Deployment, DeploymentContainer, DeploymentMetadata, DatabaseManager, GlobalSettings
+from database import Deployment, DeploymentContainer, DeploymentMetadata, DatabaseManager, GlobalSettings, DockerHostDB
 from .state_machine import DeploymentStateMachine
 from .security_validator import SecurityValidator, SecurityLevel
 from .host_connector import get_host_connector
@@ -254,6 +254,25 @@ class DeploymentExecutor:
                     # Parse definition
                     definition = json.loads(deployment.definition)
 
+                    # Check if this is an agent-based host (use native compose deployment)
+                    host_connection_type = self._get_host_connection_type(deployment.host_id)
+
+                    if host_connection_type == 'agent':
+                        # Agent hosts use native compose deployment
+                        # This provides 100% compose compatibility and better network resilience
+                        success = await self._execute_agent_deployment(
+                            deployment_id=deployment_id,
+                            host_id=deployment.host_id,
+                            deployment_type=deployment.deployment_type,
+                            definition=definition,
+                            name=deployment.name
+                        )
+                        if not success:
+                            raise RuntimeError("Agent deployment failed - check agent logs for details")
+                        # Agent deployment handles its own state transitions
+                        return True
+
+                    # Direct Docker SDK deployment (local or remote hosts)
                     if deployment.deployment_type == 'container':
                         # Definition is the container config directly (no 'container' wrapper)
                         # ISSUE #4 FIX: Pass deployment_id instead of session
@@ -1011,6 +1030,98 @@ class DeploymentExecutor:
         args['detach'] = True
 
         return args
+
+    def _get_host_connection_type(self, host_id: str) -> str:
+        """
+        Get the connection type for a host.
+
+        Args:
+            host_id: Docker host UUID
+
+        Returns:
+            Connection type: 'local', 'remote', or 'agent'
+        """
+        with self.db.get_session() as session:
+            host = session.query(DockerHostDB).filter_by(id=host_id).first()
+            if not host:
+                raise ValueError(f"Host {host_id} not found")
+            return host.connection_type
+
+    async def _execute_agent_deployment(
+        self,
+        deployment_id: str,
+        host_id: str,
+        deployment_type: str,
+        definition: Dict[str, Any],
+        name: str
+    ) -> bool:
+        """
+        Execute deployment via agent using native Docker Compose.
+
+        For agent-based hosts, we send the compose YAML to the agent which
+        runs `docker compose up` natively. This provides:
+        - 100% Compose compatibility (all features work)
+        - Better network resilience (agent completes in 1 round trip)
+        - Reduced maintenance (Docker Compose team maintains the logic)
+
+        Args:
+            deployment_id: Deployment composite ID
+            host_id: Docker host UUID
+            deployment_type: 'container' or 'stack'
+            definition: Deployment definition dict
+            name: Deployment name (used as compose project name)
+
+        Returns:
+            True if deployment command was sent successfully
+        """
+        from .agent_executor import (
+            get_agent_deployment_executor,
+            container_params_to_compose,
+            validate_compose_for_agent
+        )
+
+        executor = get_agent_deployment_executor()
+
+        # Convert definition to compose YAML based on deployment type
+        if deployment_type == 'container':
+            # Single container - convert to compose format
+            compose_content = container_params_to_compose(definition)
+            logger.info(f"Converted container deployment {deployment_id} to compose format for agent")
+        elif deployment_type == 'stack':
+            # Stack - already has compose_yaml
+            compose_content = definition.get('compose_yaml')
+            if not compose_content:
+                logger.error(f"Stack deployment {deployment_id} missing compose_yaml")
+                return False
+        else:
+            logger.error(f"Unknown deployment_type: {deployment_type}")
+            return False
+
+        # Validate compose content before sending to agent
+        is_valid, error = validate_compose_for_agent(compose_content)
+        if not is_valid:
+            logger.error(f"Compose validation failed for deployment {deployment_id}: {error}")
+            # Update deployment status with validation error
+            with self.db.get_session() as session:
+                deployment = session.query(Deployment).filter_by(id=deployment_id).first()
+                if deployment:
+                    deployment.status = 'failed'
+                    deployment.error_message = error
+                    session.commit()
+            return False
+
+        # Get environment variables from definition (for stack deployments)
+        environment = definition.get('variables', {})
+
+        # Send deployment to agent
+        logger.info(f"Sending deployment {deployment_id} to agent for native compose execution")
+        return await executor.deploy(
+            host_id=host_id,
+            deployment_id=deployment_id,
+            compose_content=compose_content,
+            project_name=name,
+            environment=environment
+        )
 
     async def _rollback_deployment(self, session: Session, deployment: Deployment) -> None:
         """

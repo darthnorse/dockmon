@@ -38,6 +38,7 @@ type WebSocketClient struct {
 	updateHandler      *handlers.UpdateHandler
 	selfUpdateHandler  *handlers.SelfUpdateHandler
 	healthCheckHandler *handlers.HealthCheckHandler
+	deployHandler      *handlers.DeployHandler
 
 	stopChan      chan struct{}
 	doneChan      chan struct{}
@@ -104,6 +105,21 @@ func NewWebSocketClient(
 		log,
 		client.sendEvent,
 	)
+
+	// Initialize deploy handler with sendEvent callback
+	// Note: This may fail if Docker Compose is not installed, which is OK
+	client.deployHandler, err = handlers.NewDeployHandler(
+		ctx,
+		dockerClient,
+		log,
+		client.sendEvent,
+	)
+	if err != nil {
+		log.WithError(err).Warn("Deploy handler not available (Docker Compose not installed)")
+		// Continue without deploy support - not a fatal error
+	} else {
+		log.WithField("compose_cmd", client.deployHandler.GetComposeCommand()).Info("Deploy handler initialized")
+	}
 
 	return client, nil
 }
@@ -288,6 +304,7 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 			"event_streaming":      true,
 			"stats_collection":     true,
 			"self_update":          c.myContainerID != "",
+			"compose_deployments":  c.deployHandler != nil,
 		},
 	}
 
@@ -650,6 +667,30 @@ func (c *WebSocketClient) handleMessage(ctx context.Context, msg *types.Message)
 				}
 			}()
 			result = map[string]string{"status": "self_update_started"}
+		}
+
+	case "deploy_compose":
+		if c.deployHandler == nil {
+			err = fmt.Errorf("compose deployments not available on this agent")
+		} else {
+			var deployReq handlers.DeployComposeRequest
+			if err = protocol.ParseCommand(msg, &deployReq); err == nil {
+				// Run deployment in background and respond immediately
+				// Use background context so deployment continues even if WebSocket disconnects
+				c.backgroundWg.Add(1)
+				go func() {
+					defer c.backgroundWg.Done()
+					// Use background context for deployment
+					deployCtx := context.Background()
+					deployResult := c.deployHandler.DeployCompose(deployCtx, deployReq)
+
+					// Send completion event with result
+					if sendErr := c.sendEvent("deploy_complete", deployResult); sendErr != nil {
+						c.log.WithError(sendErr).Error("Failed to send deploy_complete event")
+					}
+				}()
+				result = map[string]string{"status": "deployment_started"}
+			}
 		}
 
 	default:

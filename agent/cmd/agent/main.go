@@ -66,11 +66,31 @@ func main() {
 	log.WithField("engine_id", engineID).Info("Connected to Docker daemon")
 
 	// Get agent's own container ID (for self-update)
+	// Try cgroup detection first, then fall back to HOSTNAME environment variable
 	myContainerID, err := dockerClient.GetMyContainerID(ctx)
 	if err != nil {
-		log.WithError(err).Warn("Could not determine agent container ID (self-update disabled)")
+		log.WithError(err).Debug("Could not detect container ID from cgroup")
+		// Fallback: Docker sets HOSTNAME to container ID by default
+		if hostname := os.Getenv("HOSTNAME"); hostname != "" && len(hostname) >= 12 {
+			// Verify it looks like a container ID (hex string)
+			isHex := true
+			for _, c := range hostname[:12] {
+				if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+					isHex = false
+					break
+				}
+			}
+			if isHex {
+				myContainerID = hostname[:12]
+				log.WithField("container_id", myContainerID).Info("Using HOSTNAME as container ID")
+			}
+		}
+		if myContainerID == "" {
+			log.Warn("Could not determine agent container ID (container self-update disabled)")
+		}
 	} else {
-		log.WithField("container_id", myContainerID).Info("Detected agent container ID")
+		myContainerID = myContainerID[:12] // Normalize to short ID
+		log.WithField("container_id", myContainerID).Info("Detected agent container ID from cgroup")
 	}
 
 	// Initialize WebSocket client

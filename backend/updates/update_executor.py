@@ -101,11 +101,15 @@ class UpdateExecutor:
     @property
     def agent_executor(self) -> Optional[AgentUpdateExecutor]:
         """Lazy initialization of agent executor."""
-        if self._agent_executor is None and hasattr(self, 'agent_manager'):
+        if self._agent_executor is None:
+            # Import here to avoid circular imports
+            from agent.command_executor import get_agent_command_executor
+            from agent.manager import AgentManager
+
             self._agent_executor = AgentUpdateExecutor(
                 db=self.db,
-                agent_manager=self.agent_manager,
-                agent_command_executor=getattr(self, 'agent_command_executor', None),
+                agent_manager=AgentManager(monitor=self.monitor),
+                agent_command_executor=get_agent_command_executor(),
                 monitor=self.monitor,
             )
         return self._agent_executor

@@ -161,3 +161,38 @@ class UpdateEventEmitter:
             ))
         except Exception as e:
             logger.error(f"Error emitting rollback completed event: {e}")
+
+    async def emit_dependents_failed(
+        self,
+        host_id: str,
+        container_id: str,
+        container_name: str,
+        failed_dependents: list
+    ):
+        """
+        Emit warning about failed dependent container recreation.
+
+        Called when container update succeeded but dependent containers
+        (using network_mode: container:X) failed to be recreated.
+        """
+        try:
+            # Broadcast warning to UI
+            if self.monitor and hasattr(self.monitor, 'manager'):
+                warning_msg = (
+                    f"Container '{container_name}' updated successfully but "
+                    f"{len(failed_dependents)} dependent container(s) failed to recreate: "
+                    f"{', '.join(failed_dependents)}"
+                )
+                await self.monitor.manager.broadcast({
+                    "type": "container_update_warning",
+                    "data": {
+                        "host_id": host_id,
+                        "container_id": container_id,
+                        "container_name": container_name,
+                        "failed_dependents": failed_dependents,
+                        "warning": warning_msg,
+                    }
+                })
+                logger.warning(warning_msg)
+        except Exception as e:
+            logger.error(f"Error emitting dependents failed warning: {e}")

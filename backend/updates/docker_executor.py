@@ -246,7 +246,12 @@ class DockerUpdateExecutor:
                 return UpdateResult.failure_result(error_msg, rollback_performed=rollback_success)
 
             # Step 9: Recreate dependent containers (if any)
+            failed_deps = []
             if dependent_containers:
+                await progress_callback(
+                    "dependents", 92,
+                    f"Recreating {len(dependent_containers)} dependent container(s)"
+                )
                 logger.info(f"Recreating {len(dependent_containers)} dependent container(s)")
                 failed_deps = await self._recreate_dependents(
                     docker_client, dependent_containers, new_container.id, is_podman
@@ -265,7 +270,10 @@ class DockerUpdateExecutor:
 
             await progress_callback("completed", 100, "Update completed successfully")
 
-            return UpdateResult.success_result(new_container_id)
+            return UpdateResult.success_result(
+                new_container_id,
+                failed_dependents=failed_deps if failed_deps else None
+            )
 
         except Exception as e:
             logger.error(f"Error executing Docker update: {e}", exc_info=True)

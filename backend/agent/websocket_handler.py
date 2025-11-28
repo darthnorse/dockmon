@@ -383,6 +383,16 @@ class AgentWebSocketHandler:
                 # Updates database and triggers auto-restart if needed
                 await self._handle_health_check_result(payload)
 
+            elif event_type == "update_progress":
+                # Container update progress from agent
+                # Forward to UI for real-time progress display
+                await self._handle_update_progress(payload)
+
+            elif event_type == "update_complete":
+                # Container update completed - contains new container ID
+                # Must update database records with new ID
+                await self._handle_update_complete(payload)
+
             else:
                 logger.warning(f"Unknown event type from agent {self.agent_id}: {event_type}")
 
@@ -794,6 +804,239 @@ class AgentWebSocketHandler:
 
         except Exception as e:
             logger.error(f"Error triggering auto-restart for {container_id}: {e}", exc_info=True)
+
+    async def _handle_update_progress(self, payload: dict):
+        """
+        Handle update progress event from agent.
+
+        Broadcasts to UI for real-time progress bars during container updates.
+        This uses the existing WebSocket infrastructure but with update-specific data.
+        """
+        try:
+            if not self.monitor or not hasattr(self.monitor, 'manager'):
+                logger.debug(f"WebSocket manager not available for agent {self.agent_id}")
+                return
+
+            container_id = self._truncate_container_id(payload.get("container_id"))
+
+            await self.monitor.manager.broadcast({
+                "type": "container_update_progress",
+                "data": {
+                    "host_id": self.host_id or self.agent_id,
+                    "container_id": container_id,
+                    "stage": payload.get("stage"),
+                    "message": payload.get("message"),
+                    "error": payload.get("error"),
+                }
+            })
+
+            logger.debug(
+                f"Forwarded update progress for {container_id}: "
+                f"{payload.get('stage')} - {payload.get('message')}"
+            )
+
+        except Exception as e:
+            logger.error(f"Error handling update progress: {e}", exc_info=True)
+
+    async def _handle_update_complete(self, payload: dict):
+        """
+        Handle update completion event from agent.
+
+        CRITICAL: Updates all database records from old container ID to new container ID.
+        This maintains database consistency when containers are recreated.
+
+        Per CLAUDE.md: "When a Docker container is recreated, it gets a NEW Docker ID.
+        Database MUST be updated for ALL related tables."
+
+        Also emits event_bus event for other subscribers (event logger, notifications, etc.)
+        """
+        operation_committed = False
+
+        try:
+            old_container_id = self._truncate_container_id(payload.get("old_container_id"))
+            new_container_id = self._truncate_container_id(payload.get("new_container_id"))
+            container_name = payload.get("container_name")
+            failed_dependents = payload.get("failed_dependents", [])
+            host_id = self.host_id or self.agent_id
+
+            logger.info(
+                f"Agent update complete: {container_name} "
+                f"({old_container_id} -> {new_container_id}) on host {host_id}"
+            )
+
+            if failed_dependents:
+                logger.warning(
+                    f"Dependent containers failed to recreate: {failed_dependents}"
+                )
+
+            # Build composite keys
+            old_composite_key = make_composite_key(host_id, old_container_id)
+            new_composite_key = make_composite_key(host_id, new_container_id)
+
+            # Update all database records with new container ID
+            # This is the commitment point
+            await self._update_container_database_records(
+                old_composite_key=old_composite_key,
+                new_composite_key=new_composite_key,
+                new_container_id=new_container_id,
+                container_name=container_name,
+            )
+            operation_committed = True
+
+            # Post-commit operations: event_bus and broadcast
+            # These can fail without affecting the database update
+            try:
+                # Emit event_bus event for other subscribers
+                # (event_logger, notification system, etc.)
+                if self.monitor:
+                    event = Event(
+                        event_type=EventType.UPDATE_COMPLETED,
+                        scope_type='container',
+                        scope_id=new_composite_key,
+                        scope_name=container_name,
+                        host_id=host_id,
+                        host_name=self.agent_hostname or self.agent_id,
+                        data={
+                            "old_container_id": old_container_id,
+                            "new_container_id": new_container_id,
+                            "failed_dependents": failed_dependents,
+                            "source": "agent",
+                        }
+                    )
+                    await get_event_bus(self.monitor).emit(event)
+            except Exception as e:
+                logger.error(f"Event bus emit failed (db already committed): {e}")
+
+            try:
+                # Broadcast completion to UI
+                if self.monitor and hasattr(self.monitor, 'manager'):
+                    broadcast_data = {
+                        "host_id": host_id,
+                        "old_container_id": old_container_id,
+                        "new_container_id": new_container_id,
+                        "container_name": container_name,
+                    }
+                    if failed_dependents:
+                        broadcast_data["failed_dependents"] = failed_dependents
+                        broadcast_data["warning"] = (
+                            f"Container updated but {len(failed_dependents)} dependent container(s) "
+                            f"failed to recreate: {', '.join(failed_dependents)}"
+                        )
+
+                    await self.monitor.manager.broadcast({
+                        "type": "container_update_complete",
+                        "data": broadcast_data
+                    })
+            except Exception as e:
+                logger.error(f"UI broadcast failed (db already committed): {e}")
+
+        except Exception as e:
+            if operation_committed:
+                # Database was updated successfully, just log the post-commit failure
+                logger.error(f"Post-commit error in update_complete (db committed): {e}", exc_info=True)
+            else:
+                logger.error(f"Error handling update complete: {e}", exc_info=True)
+
+    async def _update_container_database_records(
+        self,
+        old_composite_key: str,
+        new_composite_key: str,
+        new_container_id: str,
+        container_name: str,
+    ):
+        """
+        Update all database tables when a container is recreated with a new ID.
+
+        Tables that use container_id as key or reference:
+        - container_updates (container_id is PK)
+        - auto_restart_configs (container_id column)
+        - container_desired_states (container_id column)
+        - container_http_health_checks (container_id is PK)
+        - deployment_metadata (container_id column)
+        - tag_assignments (container_id column)
+
+        Uses a single transaction to ensure atomicity.
+        """
+        from database import (
+            ContainerUpdate,
+            AutoRestartConfig,
+            ContainerDesiredState,
+            DeploymentMetadata,
+            TagAssignment,
+        )
+
+        try:
+            with self.db_manager.get_session() as session:
+                updates_made = []
+
+                # 1. Update container_updates table
+                update_record = session.query(ContainerUpdate).filter_by(
+                    container_id=old_composite_key
+                ).first()
+                if update_record:
+                    update_record.container_id = new_composite_key
+                    updates_made.append("container_updates")
+
+                # 2. Update auto_restart_configs table
+                restart_config = session.query(AutoRestartConfig).filter_by(
+                    container_id=old_composite_key
+                ).first()
+                if restart_config:
+                    restart_config.container_id = new_composite_key
+                    updates_made.append("auto_restart_configs")
+
+                # 3. Update container_desired_states table
+                desired_state = session.query(ContainerDesiredState).filter_by(
+                    container_id=old_composite_key
+                ).first()
+                if desired_state:
+                    desired_state.container_id = new_composite_key
+                    updates_made.append("container_desired_states")
+
+                # 4. Update container_http_health_checks table
+                health_check = session.query(ContainerHttpHealthCheck).filter_by(
+                    container_id=old_composite_key
+                ).first()
+                if health_check:
+                    health_check.container_id = new_composite_key
+                    updates_made.append("container_http_health_checks")
+
+                # 5. Update deployment_metadata table
+                deployment_meta = session.query(DeploymentMetadata).filter_by(
+                    container_id=old_composite_key
+                ).first()
+                if deployment_meta:
+                    deployment_meta.container_id = new_composite_key
+                    updates_made.append("deployment_metadata")
+
+                # 6. Update tag_assignments table
+                tag_assignments = session.query(TagAssignment).filter_by(
+                    container_id=old_composite_key
+                ).all()
+                for tag in tag_assignments:
+                    tag.container_id = new_composite_key
+                if tag_assignments:
+                    updates_made.append(f"tag_assignments ({len(tag_assignments)} records)")
+
+                session.commit()
+
+                if updates_made:
+                    logger.info(
+                        f"Database records updated for container recreation: "
+                        f"{old_composite_key} -> {new_composite_key}. "
+                        f"Tables: {', '.join(updates_made)}"
+                    )
+                else:
+                    logger.debug(
+                        f"No database records found for container {old_composite_key}"
+                    )
+
+        except Exception as e:
+            logger.error(
+                f"Failed to update database records for container recreation: {e}",
+                exc_info=True
+            )
+            raise
 
 
 async def handle_agent_websocket(websocket: WebSocket, monitor=None):

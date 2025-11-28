@@ -6,7 +6,7 @@ and AgentUpdateExecutor to ensure consistent interfaces.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, Callable, Awaitable, Any, Dict
+from typing import Optional, Callable, Awaitable, Any, Dict, List
 from enum import Enum
 
 
@@ -21,6 +21,7 @@ class UpdateStage(Enum):
     CREATING_NEW = "creating_new"
     STARTING_NEW = "starting_new"
     HEALTH_CHECK = "health_check"
+    DEPENDENTS = "dependents"  # Recreating dependent containers
     CLEANUP = "cleanup"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -74,10 +75,22 @@ class UpdateResult:
     backup_container_id: Optional[str] = None
     backup_removed: bool = False
 
+    # Failed dependent containers (network_mode: container:X)
+    # If update succeeded but dependent container recreation failed
+    failed_dependents: Optional[List[str]] = None
+
     @classmethod
-    def success_result(cls, new_container_id: str) -> 'UpdateResult':
+    def success_result(
+        cls,
+        new_container_id: str,
+        failed_dependents: Optional[List[str]] = None
+    ) -> 'UpdateResult':
         """Create a successful result."""
-        return cls(success=True, new_container_id=new_container_id)
+        return cls(
+            success=True,
+            new_container_id=new_container_id,
+            failed_dependents=failed_dependents if failed_dependents else None
+        )
 
     @classmethod
     def failure_result(cls, error_message: str, rollback_performed: bool = False) -> 'UpdateResult':

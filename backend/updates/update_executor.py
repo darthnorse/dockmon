@@ -377,6 +377,15 @@ class UpdateExecutor:
                     update_record.latest_digest
                 )
 
+                # Emit warning if dependent containers failed
+                if result.failed_dependents:
+                    await self.event_emitter.emit_dependents_failed(
+                        host_id,
+                        result.new_container_id or container_id,
+                        container_name,
+                        result.failed_dependents
+                    )
+
                 # Update database if container ID changed
                 if result.new_container_id and result.new_container_id != container_id:
                     update_container_records_after_update(

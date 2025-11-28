@@ -192,7 +192,7 @@ class AgentDeploymentExecutor:
             database_manager: DatabaseManager instance for database sessions
         """
         self.event_bus = event_bus
-        self.db = database_manager or DatabaseManager.get_instance()
+        self.db = database_manager or DatabaseManager()
 
         # Will be initialized lazily
         self._command_executor = None
@@ -786,7 +786,7 @@ def get_agent_deployment_executor() -> AgentDeploymentExecutor:
     if _agent_deployment_executor_instance is None:
         from database import DatabaseManager
         _agent_deployment_executor_instance = AgentDeploymentExecutor(
-            database_manager=DatabaseManager.get_instance()
+            database_manager=DatabaseManager()
         )
         logger.info("AgentDeploymentExecutor singleton initialized")
 

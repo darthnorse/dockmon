@@ -905,7 +905,7 @@ def get_host_connector(host_id: str, docker_monitor=None) -> HostConnector:
     from database import DatabaseManager, DockerHostDB
 
     # Get database manager
-    db = DatabaseManager.get_instance()
+    db = DatabaseManager()
 
     # Query host to determine connection type
     with db.get_session() as session:

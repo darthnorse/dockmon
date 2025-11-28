@@ -1402,20 +1402,46 @@ async def execute_container_update(
                 detail="No update available for this container"
             )
 
-        # Get container for validation (ALWAYS - needed even with force=True)
-        # Get Docker client
-        client = monitor.clients.get(host_id)
-        if not client:
-            raise HTTPException(status_code=404, detail="Docker host not found")
+        # Check if this is an agent-based host
+        db_host = session.query(DockerHostDB).filter_by(id=host_id).first()
+        is_agent_host = db_host and db_host.connection_type == "agent"
 
-        # Get container
-        try:
-            container = await async_docker_call(client.containers.get, short_id)
-            labels = container.labels or {}
-            container_name = container.name.lstrip('/')
-        except Exception as e:
-            logger.error(f"Error getting container for validation: {e}")
-            raise HTTPException(status_code=404, detail=f"Container not found: {short_id}")
+        # Get container info for validation
+        if is_agent_host:
+            # For agent-based hosts, get container name from related tables
+            # Try AutoRestartConfig first (most likely to have container info)
+            auto_restart = session.query(AutoRestartConfig).filter_by(
+                container_id=composite_key
+            ).first()
+            if auto_restart and auto_restart.container_name:
+                container_name = auto_restart.container_name
+            else:
+                # Try ContainerDesiredState
+                desired_state = session.query(ContainerDesiredState).filter_by(
+                    container_id=composite_key
+                ).first()
+                if desired_state and desired_state.container_name:
+                    container_name = desired_state.container_name
+                else:
+                    # Fallback: use container ID as name
+                    container_name = short_id
+            # For agent-based hosts, we don't have direct access to labels
+            # Use empty dict - validation will still work on name and image patterns
+            labels = {}
+            logger.debug(f"Agent-based host: using container info from database (name={container_name})")
+        else:
+            # For local/remote hosts, get container info via Docker client
+            client = monitor.clients.get(host_id)
+            if not client:
+                raise HTTPException(status_code=404, detail="Docker host not found")
+
+            try:
+                container = await async_docker_call(client.containers.get, short_id)
+                labels = container.labels or {}
+                container_name = container.name.lstrip('/')
+            except Exception as e:
+                logger.error(f"Error getting container for validation: {e}")
+                raise HTTPException(status_code=404, detail=f"Container not found: {short_id}")
 
         # Validate update (ALWAYS - force only affects WARN behavior)
         try:

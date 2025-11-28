@@ -61,6 +61,7 @@ type HealthCheckHandler struct {
 	log       *logrus.Logger
 	sendEvent func(msgType string, payload interface{}) error
 	stopChan  chan struct{}
+	stopOnce  sync.Once // Ensures stopChan is only closed once
 	wg        sync.WaitGroup
 }
 
@@ -83,7 +84,9 @@ func (h *HealthCheckHandler) Start(ctx context.Context) {
 
 // Stop stops the health check handler
 func (h *HealthCheckHandler) Stop() {
-	close(h.stopChan)
+	h.stopOnce.Do(func() {
+		close(h.stopChan)
+	})
 	h.wg.Wait()
 	h.log.Info("Health check handler stopped")
 }

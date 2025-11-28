@@ -28,6 +28,7 @@
 
 import { createContext, useContext, useCallback, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
 import { debug } from '@/lib/debug'
 import { useWebSocket, type WebSocketMessage, type WebSocketStatus } from './useWebSocket'
 
@@ -145,6 +146,30 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
         // Deployment events - handled by DeploymentsPage and other components via addMessageHandler
         case 'deployment_progress':
         case 'deployment_layer_progress':
+          break
+
+        // Container update progress - handled by LayerProgressDisplay via addMessageHandler
+        case 'container_update_progress':
+        case 'container_update_layer_progress':
+          break
+
+        // Container update warning - show toast when dependent containers fail
+        case 'container_update_warning':
+          toast.warning(`Update warning for ${message.data.container_name}`, {
+            description: message.data.warning,
+            duration: 10000, // Show for 10 seconds - important information
+          })
+          break
+
+        // Container update complete - refresh container data and show warning if dependents failed
+        case 'container_update_complete':
+          queryClient.invalidateQueries({ queryKey: ['containers'] })
+          if (message.data.failed_dependents && message.data.failed_dependents.length > 0) {
+            toast.warning(`Update warning for ${message.data.container_name}`, {
+              description: message.data.warning || `Failed to recreate ${message.data.failed_dependents.length} dependent container(s)`,
+              duration: 10000,
+            })
+          }
           break
 
         // Heartbeat response (no action needed)

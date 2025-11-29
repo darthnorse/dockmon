@@ -85,8 +85,12 @@ class ContainerValidator:
         # Prevents the "pulling the rug out" scenario where DockMon stops itself
         # and cannot complete the update process
         # Protects: dockmon, dockmon-dev, dockmon-prod, dockmon-backup-*, etc.
+        # EXCEPTION: dockmon-agent uses a dedicated self-update mechanism via WebSocket
         container_name_lower = container_name.lower()
-        if container_name_lower == 'dockmon' or container_name_lower.startswith('dockmon-'):
+        is_dockmon_self = container_name_lower == 'dockmon' or (
+            container_name_lower.startswith('dockmon-') and 'agent' not in container_name_lower
+        )
+        if is_dockmon_self:
             logger.warning(
                 f"Blocked self-update attempt for DockMon container '{container_name}'. "
                 f"DockMon cannot update itself - please update manually."

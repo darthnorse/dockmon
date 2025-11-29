@@ -27,6 +27,7 @@ from updates.changelog_resolver import resolve_changelog_url
 from event_bus import Event, EventType, get_event_bus
 from utils.keys import make_composite_key
 from utils.encryption import decrypt_password
+from utils.container_id import normalize_container_id
 
 logger = logging.getLogger(__name__)
 
@@ -209,7 +210,6 @@ class UpdateChecker:
 
         # Get or create container_update record to get tracking mode
         # DEFENSIVE: Normalize container ID (agents may send 64-char IDs)
-        from utils.container_id import normalize_container_id
         container_id = normalize_container_id(container['id'])
         composite_key = make_composite_key(container['host_id'], container_id)
         tracking_mode = self._get_tracking_mode(composite_key)
@@ -549,7 +549,6 @@ class UpdateChecker:
         Returns:
             Previous latest_digest from database, or None if no record exists (first check)
         """
-        from utils.container_id import normalize_container_id
         container_id = normalize_container_id(container['id'])
         composite_key = make_composite_key(container['host_id'], container_id)
         with self.db.get_session() as session:
@@ -566,7 +565,6 @@ class UpdateChecker:
             container: Container dict
             update_info: Update info dict from _check_container_update
         """
-        from utils.container_id import normalize_container_id
         container_id = normalize_container_id(container['id'])
         composite_key = make_composite_key(container['host_id'], container_id)
 

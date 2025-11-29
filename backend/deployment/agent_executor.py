@@ -785,7 +785,9 @@ def get_agent_deployment_executor() -> AgentDeploymentExecutor:
 
     if _agent_deployment_executor_instance is None:
         from database import DatabaseManager
+        from event_bus import get_event_bus
         _agent_deployment_executor_instance = AgentDeploymentExecutor(
+            event_bus=get_event_bus(),
             database_manager=DatabaseManager()
         )
         logger.info("AgentDeploymentExecutor singleton initialized")

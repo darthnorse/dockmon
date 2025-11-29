@@ -259,13 +259,18 @@ func (h *DeployHandler) runComposeUp(ctx context.Context, req DeployComposeReque
 	// Remove unnecessary resources (like disabled services)
 	project = project.WithoutUnnecessaryResources()
 
-	// Add custom labels for service identification
+	// Set required CustomLabels for compose to track containers
+	// See: https://github.com/docker/compose/issues/11210
+	// The compose library relies on these labels to find containers after creation.
 	for i, s := range project.Services {
-		if s.CustomLabels == nil {
-			s.CustomLabels = make(types.Labels)
+		s.CustomLabels = map[string]string{
+			api.ProjectLabel:     project.Name,
+			api.ServiceLabel:     s.Name,
+			api.VersionLabel:     api.ComposeVersion,
+			api.WorkingDirLabel:  project.WorkingDir,
+			api.ConfigFilesLabel: strings.Join(project.ComposeFiles, ","),
+			api.OneoffLabel:      "False",
 		}
-		s.CustomLabels["com.docker.compose.project"] = project.Name
-		s.CustomLabels["com.docker.compose.service"] = s.Name
 		project.Services[i] = s
 	}
 
@@ -273,6 +278,9 @@ func (h *DeployHandler) runComposeUp(ctx context.Context, req DeployComposeReque
 	upOpts := api.UpOptions{
 		Create: api.CreateOptions{
 			RemoveOrphans: true,
+		},
+		Start: api.StartOptions{
+			Project: project,
 		},
 	}
 

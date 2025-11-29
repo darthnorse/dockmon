@@ -395,7 +395,9 @@ func (h *SelfUpdateHandler) cloneContainerConfig(inspect *dockerTypes.ContainerJ
 	config := inspect.Config
 
 	return &container.Config{
-		Hostname:     config.Hostname,
+		// Don't clone Hostname - let Docker assign a new one so the new container
+		// gets its own identity (container ID detection uses HOSTNAME)
+		Hostname:     "",
 		Domainname:   config.Domainname,
 		User:         config.User,
 		AttachStdin:  config.AttachStdin,

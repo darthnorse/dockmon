@@ -407,6 +407,11 @@ class AgentWebSocketHandler:
                 # Must update database records with new ID
                 await self._handle_update_complete(payload)
 
+            elif event_type == "selfupdate_progress":
+                # Agent self-update progress
+                # Forward to UI for real-time progress display
+                await self._handle_selfupdate_progress(payload)
+
             elif event_type == "deploy_progress":
                 # Compose deployment progress from agent
                 # Forward to AgentDeploymentExecutor for status updates
@@ -894,6 +899,58 @@ class AgentWebSocketHandler:
         except Exception as e:
             logger.error(f"Error handling update layer progress: {e}", exc_info=True)
 
+    async def _handle_selfupdate_progress(self, payload: dict):
+        """
+        Handle agent self-update progress event.
+
+        Broadcasts to UI and logs to event log for real-time progress display
+        during agent self-updates.
+        """
+        try:
+            if not self.monitor or not hasattr(self.monitor, 'manager'):
+                logger.debug(f"WebSocket manager not available for agent {self.agent_id}")
+                return
+
+            stage = payload.get("stage", "")
+            message = payload.get("message", "")
+            error = payload.get("error")
+
+            # Broadcast to UI
+            await self.monitor.manager.broadcast({
+                "type": "agent_update_progress",
+                "data": {
+                    "host_id": self.host_id or self.agent_id,
+                    "agent_id": self.agent_id,
+                    "stage": stage,
+                    "message": message,
+                    "error": error,
+                }
+            })
+
+            # Log to event logger
+            from event_logger import EventLogger
+            event_logger = EventLogger()
+
+            if error:
+                event_logger.log_event(
+                    "agent", "self_update_error",
+                    f"Agent self-update error: {error}",
+                    host_id=self.host_id,
+                    metadata={"stage": stage, "agent_id": self.agent_id}
+                )
+            else:
+                event_logger.log_event(
+                    "agent", "self_update_progress",
+                    f"Agent self-update: {stage} - {message}",
+                    host_id=self.host_id,
+                    metadata={"stage": stage, "agent_id": self.agent_id}
+                )
+
+            logger.info(f"Agent {self.agent_id} self-update progress: {stage} - {message}")
+
+        except Exception as e:
+            logger.error(f"Error handling selfupdate progress: {e}", exc_info=True)
+
     async def _handle_update_complete(self, payload: dict):
         """
         Handle update completion event from agent.
@@ -919,6 +976,20 @@ class AgentWebSocketHandler:
                 f"Agent update complete: {container_name} "
                 f"({old_container_id} -> {new_container_id}) on host {host_id}"
             )
+
+            # Signal pending update registry that update is complete
+            # This unblocks the AgentUpdateExecutor waiting for this event
+            try:
+                from updates.pending_updates import get_pending_updates_registry
+                registry = get_pending_updates_registry()
+                await registry.signal_complete(
+                    host_id=host_id,
+                    old_container_id=old_container_id,
+                    new_container_id=new_container_id,
+                    success=True,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to signal pending update registry: {e}")
 
             if failed_dependents:
                 logger.warning(

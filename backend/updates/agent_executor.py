@@ -27,6 +27,7 @@ from utils.keys import make_composite_key
 from agent.command_executor import CommandStatus
 from updates.types import UpdateContext, UpdateResult, ProgressCallback
 from updates.database_updater import update_container_records_after_update
+from updates.pending_updates import get_pending_updates_registry
 
 logger = logging.getLogger(__name__)
 
@@ -146,41 +147,60 @@ class AgentUpdateExecutor:
 
             logger.info(f"Sending update_container command to agent {agent_id}")
 
-            result = await self.agent_command_executor.execute_command(
-                agent_id,
-                command,
-                timeout=180.0  # 3 minutes for command acknowledgment
-            )
-
-            if result.status != CommandStatus.SUCCESS:
-                error_msg = f"Agent rejected update command: {result.error}"
-                logger.error(error_msg)
-                return UpdateResult.failure_result(error_msg)
-
-            logger.info(f"Agent {agent_id} accepted update command, waiting for completion...")
-            await progress_callback("agent_updating", 20, "Agent is performing update")
-
-            # Wait for update completion via progress polling
-            update_success = await self._wait_for_agent_update_completion(
+            # Register pending update BEFORE sending command
+            # This ensures we're ready to receive the completion event
+            registry = get_pending_updates_registry()
+            pending = await registry.register(
                 context.host_id,
                 context.container_id,
                 context.container_name,
-                timeout=300.0  # 5 minutes for full update
             )
 
-            if not update_success:
-                logger.error(f"Agent update failed or timed out for {context.container_name}")
-                return UpdateResult.failure_result("Agent update failed or timed out")
+            try:
+                result = await self.agent_command_executor.execute_command(
+                    agent_id,
+                    command,
+                    timeout=180.0  # 3 minutes for command acknowledgment
+                )
 
-            # Get new container ID from monitor
-            new_container_info = await self._get_container_info_by_name(
-                context.host_id, context.container_name
-            )
-            if new_container_info:
-                new_container_id = new_container_info.get("id", "")[:12]
-                logger.info(f"New container ID: {new_container_id}")
-            else:
-                new_container_id = old_container_id  # Fallback
+                if result.status != CommandStatus.SUCCESS:
+                    error_msg = f"Agent rejected update command: {result.error}"
+                    logger.error(error_msg)
+                    await registry.unregister(context.host_id, context.container_id)
+                    return UpdateResult.failure_result(error_msg)
+
+                logger.info(f"Agent {agent_id} accepted update command, waiting for completion event...")
+                await progress_callback("agent_updating", 20, "Agent is performing update")
+
+                # Wait for update_complete event from agent (via websocket handler)
+                update_success = await registry.wait_for_completion(
+                    pending,
+                    timeout=300.0  # 5 minutes for full update
+                )
+
+                if not update_success:
+                    error_msg = pending.error or "Agent update failed or timed out"
+                    logger.error(f"Agent update failed for {context.container_name}: {error_msg}")
+                    return UpdateResult.failure_result(error_msg)
+
+                # Get new container ID from the completion event
+                new_container_id = pending.new_container_id
+                if new_container_id:
+                    logger.info(f"New container ID from agent: {new_container_id}")
+                else:
+                    # Fallback to polling if event didn't include new ID
+                    new_container_info = await self._get_container_info_by_name(
+                        context.host_id, context.container_name
+                    )
+                    if new_container_info:
+                        new_container_id = new_container_info.get("id", "")[:12]
+                        logger.info(f"New container ID from poll: {new_container_id}")
+                    else:
+                        new_container_id = old_container_id  # Last resort fallback
+
+            finally:
+                # Always clean up the pending update registration
+                await registry.unregister(context.host_id, context.container_id)
 
             # Update database
             update_container_records_after_update(

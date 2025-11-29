@@ -172,6 +172,12 @@ func (h *UpdateHandler) UpdateContainer(ctx context.Context, req UpdateRequest) 
 	var lastBroadcast time.Time
 	var lastPercent int
 
+	// Speed calculation state (matches Python implementation)
+	lastSpeedCheck := time.Now()
+	var lastTotalBytes int64
+	var speedSamples []float64
+	var currentSpeedMbps float64
+
 	err := h.dockerClient.PullImageWithProgress(ctx, newImage, dockerAuth, func(progress docker.PullProgress) {
 		// Update layer tracking
 		if progress.ID == "" {
@@ -205,8 +211,36 @@ func (h *UpdateHandler) UpdateContainer(ctx context.Context, req UpdateRequest) 
 			overallPercent = int((downloadedBytes * 100) / totalBytes)
 		}
 
-		// Throttle broadcasts: every 500ms OR 5% change OR completion events
+		// Calculate download speed (MB/s) with moving average smoothing
+		// Matches Python implementation in image_pull_progress.py
 		now := time.Now()
+		timeDelta := now.Sub(lastSpeedCheck).Seconds()
+
+		if timeDelta >= 1.0 { // Update speed every second
+			bytesDelta := downloadedBytes - lastTotalBytes
+			if bytesDelta > 0 {
+				// Calculate raw speed in MB/s
+				rawSpeed := float64(bytesDelta) / timeDelta / (1024 * 1024)
+
+				// Apply 3-sample moving average to smooth jitter
+				speedSamples = append(speedSamples, rawSpeed)
+				if len(speedSamples) > 3 {
+					speedSamples = speedSamples[1:] // Remove oldest sample
+				}
+
+				// Calculate smoothed average
+				var sum float64
+				for _, s := range speedSamples {
+					sum += s
+				}
+				currentSpeedMbps = sum / float64(len(speedSamples))
+			}
+
+			lastTotalBytes = downloadedBytes
+			lastSpeedCheck = now
+		}
+
+		// Throttle broadcasts: every 500ms OR 5% change OR completion events
 		isCompletion := strings.Contains(strings.ToLower(progress.Status), "complete") ||
 			progress.Status == "Already exists"
 		shouldBroadcast := now.Sub(lastBroadcast) >= 500*time.Millisecond ||
@@ -214,7 +248,7 @@ func (h *UpdateHandler) UpdateContainer(ctx context.Context, req UpdateRequest) 
 			isCompletion
 
 		if shouldBroadcast {
-			h.sendLayerProgress(containerID, layerStatus, overallPercent)
+			h.sendLayerProgress(containerID, layerStatus, overallPercent, currentSpeedMbps)
 			lastBroadcast = now
 			lastPercent = overallPercent
 		}
@@ -970,7 +1004,7 @@ func (h *UpdateHandler) sendProgress(containerID, stage, message string) {
 }
 
 // sendLayerProgress sends layer-by-layer pull progress to the backend.
-func (h *UpdateHandler) sendLayerProgress(containerID string, layers map[string]*layerProgress, overallPercent int) {
+func (h *UpdateHandler) sendLayerProgress(containerID string, layers map[string]*layerProgress, overallPercent int, speedMbps float64) {
 	shortID := containerID
 	if len(shortID) > 12 {
 		shortID = shortID[:12]
@@ -1031,7 +1065,7 @@ func (h *UpdateHandler) sendLayerProgress(containerID string, layers map[string]
 		"total_layers":     totalLayers,
 		"remaining_layers": 0,
 		"summary":          summary,
-		"speed_mbps":       0.0, // Speed calculation would require timing, skip for now
+		"speed_mbps":       speedMbps,
 	}
 
 	if err := h.sendEvent("update_layer_progress", progress); err != nil {

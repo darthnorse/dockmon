@@ -401,7 +401,7 @@ class DeploymentExecutor:
             validate_compose_for_agent
         )
 
-        executor = get_agent_deployment_executor()
+        executor = get_agent_deployment_executor(self.docker_monitor)
 
         # Convert definition to compose YAML based on deployment type
         if deployment_type == 'container':

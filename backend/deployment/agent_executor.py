@@ -183,15 +183,15 @@ class AgentDeploymentExecutor:
     compatibility without reimplementing compose parsing logic.
     """
 
-    def __init__(self, event_bus=None, database_manager: Optional[DatabaseManager] = None):
+    def __init__(self, monitor=None, database_manager: Optional[DatabaseManager] = None):
         """
         Initialize agent deployment executor.
 
         Args:
-            event_bus: EventBus instance for emitting progress events
+            monitor: DockerMonitor instance for WebSocket broadcasting
             database_manager: DatabaseManager instance for database sessions
         """
-        self.event_bus = event_bus
+        self.monitor = monitor
         self.db = database_manager or DatabaseManager()
 
         # Will be initialized lazily
@@ -737,10 +737,10 @@ class AgentDeploymentExecutor:
         if deployment.error_message:
             payload["error"] = deployment.error_message
 
-        # Broadcast via event bus or connection manager
+        # Broadcast via ConnectionManager (same as DeploymentExecutor)
         try:
-            if self.event_bus:
-                await self.event_bus.emit("deployment_progress", payload)
+            if self.monitor and hasattr(self.monitor, 'manager'):
+                await self.monitor.manager.broadcast(payload)
         except Exception as e:
             logger.error(f"Error broadcasting deployment event: {e}")
 
@@ -764,8 +764,8 @@ class AgentDeploymentExecutor:
         }
 
         try:
-            if self.event_bus:
-                await self.event_bus.emit("deployment_service_progress", payload)
+            if self.monitor and hasattr(self.monitor, 'manager'):
+                await self.monitor.manager.broadcast(payload)
         except Exception as e:
             logger.debug(f"Error broadcasting service progress: {e}")
 
@@ -774,9 +774,13 @@ class AgentDeploymentExecutor:
 _agent_deployment_executor_instance: Optional[AgentDeploymentExecutor] = None
 
 
-def get_agent_deployment_executor() -> AgentDeploymentExecutor:
+def get_agent_deployment_executor(monitor=None) -> AgentDeploymentExecutor:
     """
     Get the global AgentDeploymentExecutor singleton instance.
+
+    Args:
+        monitor: Optional DockerMonitor instance for WebSocket broadcasting.
+                 If provided and singleton exists, updates the monitor reference.
 
     Returns:
         AgentDeploymentExecutor: Global instance
@@ -785,11 +789,13 @@ def get_agent_deployment_executor() -> AgentDeploymentExecutor:
 
     if _agent_deployment_executor_instance is None:
         from database import DatabaseManager
-        from event_bus import get_event_bus
         _agent_deployment_executor_instance = AgentDeploymentExecutor(
-            event_bus=get_event_bus(),
+            monitor=monitor,
             database_manager=DatabaseManager()
         )
         logger.info("AgentDeploymentExecutor singleton initialized")
+    elif monitor is not None and _agent_deployment_executor_instance.monitor is None:
+        # Update monitor if provided later (lazy initialization pattern)
+        _agent_deployment_executor_instance.monitor = monitor
 
     return _agent_deployment_executor_instance

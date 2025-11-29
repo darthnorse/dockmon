@@ -965,7 +965,7 @@ class AgentWebSocketHandler:
         try:
             from deployment.agent_executor import get_agent_deployment_executor
 
-            executor = get_agent_deployment_executor()
+            executor = get_agent_deployment_executor(self.monitor)
             await executor.handle_deploy_progress(payload)
 
             logger.debug(
@@ -985,7 +985,7 @@ class AgentWebSocketHandler:
         try:
             from deployment.agent_executor import get_agent_deployment_executor
 
-            executor = get_agent_deployment_executor()
+            executor = get_agent_deployment_executor(self.monitor)
             await executor.handle_deploy_complete(payload)
 
             deployment_id = payload.get("deployment_id")

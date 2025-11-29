@@ -6,16 +6,18 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/darthnorse/dockmon-agent/internal/config"
+	"github.com/darthnorse/dockmon-agent/internal/docker"
+	"github.com/docker/compose/v2/pkg/api"
 	"github.com/sirupsen/logrus"
 )
 
-// Integration tests for Agent Native Compose Deployments (Phase 3)
-// These tests require Docker and docker-compose to be available.
+// Integration tests for Agent Native Compose Deployments using Docker Compose Go library
+// These tests require Docker to be available.
 //
 // To run these tests:
 //   go test -tags=integration -v ./internal/handlers/...
@@ -25,28 +27,30 @@ import (
 
 func skipIfNoDocker(t *testing.T) {
 	t.Helper()
-	if _, err := exec.LookPath("docker"); err != nil {
-		t.Skip("Docker not available, skipping integration test")
+	// Try to create a docker client - if it fails, Docker is not available
+	cfg := &config.Config{}
+	log := logrus.New()
+	log.SetLevel(logrus.WarnLevel)
+	client, err := docker.NewClient(cfg, log)
+	if err != nil {
+		t.Skipf("Docker not available: %v", err)
 	}
+	client.Close()
 }
 
-func skipIfNoCompose(t *testing.T) {
-	t.Helper()
-	// Check for docker compose (v2)
-	cmd := exec.Command("docker", "compose", "version")
-	if err := cmd.Run(); err != nil {
-		// Check for docker-compose (v1)
-		if _, err := exec.LookPath("docker-compose"); err != nil {
-			t.Skip("Docker Compose not available, skipping integration test")
-		}
-	}
-}
-
-func createTestHandler(t *testing.T) *DeployHandler {
+func createTestHandler(t *testing.T) (*DeployHandler, *docker.Client) {
 	t.Helper()
 
 	ctx := context.Background()
-	log := logrus.NewEntry(logrus.New())
+	log := logrus.New()
+	log.SetLevel(logrus.DebugLevel)
+
+	// Create Docker client
+	cfg := &config.Config{}
+	dockerClient, err := docker.NewClient(cfg, log)
+	if err != nil {
+		t.Fatalf("Failed to create Docker client: %v", err)
+	}
 
 	// Mock sendEvent - collect events for verification
 	events := make([]map[string]interface{}, 0)
@@ -56,194 +60,289 @@ func createTestHandler(t *testing.T) *DeployHandler {
 			"payload": payload,
 		}
 		events = append(events, event)
+		t.Logf("Event: type=%s", msgType)
 		return nil
 	}
 
-	handler := NewDeployHandler(ctx, log, sendEvent)
-	if handler == nil {
-		t.Fatal("Failed to create deploy handler")
+	handler, err := NewDeployHandler(ctx, dockerClient, log, sendEvent)
+	if err != nil {
+		dockerClient.Close()
+		t.Fatalf("Failed to create deploy handler: %v", err)
 	}
 
-	return handler
+	return handler, dockerClient
 }
 
-func TestIntegration_DetectComposeCommand(t *testing.T) {
+func TestIntegration_DeployHandlerCreation(t *testing.T) {
 	skipIfNoDocker(t)
-	skipIfNoCompose(t)
 
-	ctx := context.Background()
-	cmd := detectComposeCommand(ctx)
+	handler, dockerClient := createTestHandler(t)
+	defer dockerClient.Close()
 
-	if cmd == nil {
-		t.Fatal("detectComposeCommand returned nil, but Docker Compose is available")
+	// Verify handler reports compose support
+	if !handler.HasComposeSupport() {
+		t.Error("Handler should report compose support")
 	}
 
-	t.Logf("Detected compose command: %v", cmd)
+	cmd := handler.GetComposeCommand()
+	if cmd != "Docker Compose Go library (embedded)" {
+		t.Errorf("Expected 'Docker Compose Go library (embedded)', got %q", cmd)
+	}
+
+	t.Logf("Deploy handler created successfully, compose method: %s", cmd)
 }
 
-func TestIntegration_ComposePs(t *testing.T) {
+func TestIntegration_DeployComposeUp(t *testing.T) {
 	skipIfNoDocker(t)
-	skipIfNoCompose(t)
 
-	handler := createTestHandler(t)
+	handler, dockerClient := createTestHandler(t)
+	defer dockerClient.Close()
+
 	ctx := context.Background()
+	projectName := "dockmon-integration-test-up"
 
-	// Create a temporary compose file
-	composeContent := `
-services:
-  test-nginx:
-    image: nginx:alpine
-    container_name: dockmon-test-nginx
-`
-	tmpFile, err := os.CreateTemp("", "compose-*.yml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.Remove(tmpFile.Name())
-
-	if _, err := tmpFile.WriteString(composeContent); err != nil {
-		t.Fatal(err)
-	}
-	tmpFile.Close()
-
-	projectName := "dockmon-integration-test"
-
-	// Start the test container
-	args := append([]string{}, handler.composeCmd[1:]...)
-	args = append(args, "-f", tmpFile.Name(), "-p", projectName, "up", "-d")
-	_, _, err = handler.runCompose(ctx, nil, args...)
-	if err != nil {
-		t.Fatalf("Failed to start test container: %v", err)
-	}
-
-	// Cleanup at the end
-	defer func() {
-		cleanupArgs := append([]string{}, handler.composeCmd[1:]...)
-		cleanupArgs = append(cleanupArgs, "-f", tmpFile.Name(), "-p", projectName, "down", "--remove-orphans")
-		handler.runCompose(ctx, nil, cleanupArgs...)
-	}()
-
-	// Wait for container to start
-	time.Sleep(2 * time.Second)
-
-	// Test ComposePs
-	containers, err := handler.ComposePs(ctx, projectName, tmpFile.Name())
-	if err != nil {
-		t.Fatalf("ComposePs failed: %v", err)
-	}
-
-	if len(containers) == 0 {
-		t.Fatal("Expected at least one container")
-	}
-
-	found := false
-	for _, c := range containers {
-		t.Logf("Container: ID=%s, Name=%s, Service=%s, State=%s, Status=%s",
-			c.ID, c.Name, c.Service, c.State, c.Status)
-		if c.Service == "test-nginx" {
-			found = true
-			if c.State != "running" {
-				t.Errorf("Expected container state 'running', got %q", c.State)
-			}
-		}
-	}
-
-	if !found {
-		t.Error("test-nginx service not found in compose ps output")
-	}
-}
-
-func TestIntegration_ComposePsWithProfiles(t *testing.T) {
-	skipIfNoDocker(t)
-	skipIfNoCompose(t)
-
-	handler := createTestHandler(t)
-	ctx := context.Background()
-
-	// Create a compose file with profiles
+	// Simple compose file with nginx
 	composeContent := `
 services:
   web:
     image: nginx:alpine
     container_name: dockmon-test-web
+`
+
+	// Cleanup at the end
+	defer func() {
+		cleanupReq := DeployComposeRequest{
+			DeploymentID:  "cleanup-" + projectName,
+			ProjectName:   projectName,
+			ComposeContent: composeContent,
+			Action:        "down",
+			RemoveVolumes: true,
+		}
+		handler.DeployCompose(ctx, cleanupReq)
+	}()
+
+	// Deploy
+	req := DeployComposeRequest{
+		DeploymentID:   "test-up-" + projectName,
+		ProjectName:    projectName,
+		ComposeContent: composeContent,
+		Action:         "up",
+	}
+
+	result := handler.DeployCompose(ctx, req)
+
+	if !result.Success {
+		t.Fatalf("Deploy failed: %s", result.Error)
+	}
+
+	// Verify service was created
+	if len(result.Services) == 0 {
+		t.Error("Expected at least one service in result")
+	}
+
+	webService, ok := result.Services["web"]
+	if !ok {
+		t.Error("Expected 'web' service in results")
+	} else {
+		t.Logf("Web service: ID=%s, Name=%s, Status=%s",
+			webService.ContainerID, webService.ContainerName, webService.Status)
+
+		if webService.ContainerID == "" {
+			t.Error("Container ID should not be empty")
+		}
+		if len(webService.ContainerID) != 12 {
+			t.Errorf("Container ID should be 12 chars (short format), got %d", len(webService.ContainerID))
+		}
+	}
+}
+
+func TestIntegration_DeployComposeDown(t *testing.T) {
+	skipIfNoDocker(t)
+
+	handler, dockerClient := createTestHandler(t)
+	defer dockerClient.Close()
+
+	ctx := context.Background()
+	projectName := "dockmon-integration-test-down"
+
+	composeContent := `
+services:
+  web:
+    image: nginx:alpine
+`
+
+	// First, deploy
+	upReq := DeployComposeRequest{
+		DeploymentID:   "test-up-" + projectName,
+		ProjectName:    projectName,
+		ComposeContent: composeContent,
+		Action:         "up",
+	}
+
+	upResult := handler.DeployCompose(ctx, upReq)
+	if !upResult.Success {
+		t.Fatalf("Deploy up failed: %s", upResult.Error)
+	}
+
+	// Now tear down
+	downReq := DeployComposeRequest{
+		DeploymentID:   "test-down-" + projectName,
+		ProjectName:    projectName,
+		ComposeContent: composeContent,
+		Action:         "down",
+		RemoveVolumes:  true,
+	}
+
+	downResult := handler.DeployCompose(ctx, downReq)
+
+	if !downResult.Success {
+		t.Fatalf("Deploy down failed: %s", downResult.Error)
+	}
+
+	t.Log("Compose down completed successfully")
+}
+
+func TestIntegration_DeployComposeRestart(t *testing.T) {
+	skipIfNoDocker(t)
+
+	handler, dockerClient := createTestHandler(t)
+	defer dockerClient.Close()
+
+	ctx := context.Background()
+	projectName := "dockmon-integration-test-restart"
+
+	composeContent := `
+services:
+  web:
+    image: nginx:alpine
+`
+
+	// Cleanup at the end
+	defer func() {
+		cleanupReq := DeployComposeRequest{
+			DeploymentID:   "cleanup-" + projectName,
+			ProjectName:    projectName,
+			ComposeContent: composeContent,
+			Action:         "down",
+			RemoveVolumes:  true,
+		}
+		handler.DeployCompose(ctx, cleanupReq)
+	}()
+
+	// First, deploy
+	upReq := DeployComposeRequest{
+		DeploymentID:   "test-up-" + projectName,
+		ProjectName:    projectName,
+		ComposeContent: composeContent,
+		Action:         "up",
+	}
+
+	upResult := handler.DeployCompose(ctx, upReq)
+	if !upResult.Success {
+		t.Fatalf("Deploy up failed: %s", upResult.Error)
+	}
+
+	// Get initial container ID
+	initialID := ""
+	if webService, ok := upResult.Services["web"]; ok {
+		initialID = webService.ContainerID
+	}
+
+	// Restart
+	restartReq := DeployComposeRequest{
+		DeploymentID:   "test-restart-" + projectName,
+		ProjectName:    projectName,
+		ComposeContent: composeContent,
+		Action:         "restart",
+	}
+
+	restartResult := handler.DeployCompose(ctx, restartReq)
+
+	if !restartResult.Success {
+		t.Fatalf("Restart failed: %s", restartResult.Error)
+	}
+
+	// Container ID may or may not change depending on compose behavior
+	t.Logf("Restart completed. Initial ID: %s", initialID)
+	if webService, ok := restartResult.Services["web"]; ok {
+		t.Logf("After restart ID: %s, Status: %s", webService.ContainerID, webService.Status)
+	}
+}
+
+func TestIntegration_DeployComposeWithProfiles(t *testing.T) {
+	skipIfNoDocker(t)
+
+	handler, dockerClient := createTestHandler(t)
+	defer dockerClient.Close()
+
+	ctx := context.Background()
+	projectName := "dockmon-integration-test-profiles"
+
+	// Compose file with profiles
+	composeContent := `
+services:
+  web:
+    image: nginx:alpine
   debug:
     image: alpine:latest
-    container_name: dockmon-test-debug
     profiles:
       - debug
     command: ["sleep", "infinity"]
 `
-	tmpFile, err := os.CreateTemp("", "compose-profiles-*.yml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.Remove(tmpFile.Name())
-
-	if _, err := tmpFile.WriteString(composeContent); err != nil {
-		t.Fatal(err)
-	}
-	tmpFile.Close()
-
-	projectName := "dockmon-profiles-test"
-
-	// Start with debug profile
-	args := append([]string{}, handler.composeCmd[1:]...)
-	args = append(args, "-f", tmpFile.Name(), "-p", projectName, "--profile", "debug", "up", "-d")
-	_, _, err = handler.runCompose(ctx, nil, args...)
-	if err != nil {
-		t.Fatalf("Failed to start containers: %v", err)
-	}
 
 	// Cleanup at the end
 	defer func() {
-		cleanupArgs := append([]string{}, handler.composeCmd[1:]...)
-		cleanupArgs = append(cleanupArgs, "-f", tmpFile.Name(), "-p", projectName, "--profile", "debug", "down", "--remove-orphans")
-		handler.runCompose(ctx, nil, cleanupArgs...)
+		cleanupReq := DeployComposeRequest{
+			DeploymentID:   "cleanup-" + projectName,
+			ProjectName:    projectName,
+			ComposeContent: composeContent,
+			Action:         "down",
+			RemoveVolumes:  true,
+			Profiles:       []string{"debug"},
+		}
+		handler.DeployCompose(ctx, cleanupReq)
 	}()
 
-	// Wait for containers to start
-	time.Sleep(2 * time.Second)
-
-	// Test ComposePsWithProfiles
-	containers, err := handler.ComposePsWithProfiles(ctx, projectName, tmpFile.Name(), []string{"debug"})
-	if err != nil {
-		t.Fatalf("ComposePsWithProfiles failed: %v", err)
+	// Deploy with debug profile
+	req := DeployComposeRequest{
+		DeploymentID:   "test-profiles-" + projectName,
+		ProjectName:    projectName,
+		ComposeContent: composeContent,
+		Action:         "up",
+		Profiles:       []string{"debug"},
 	}
 
-	// Should have both web and debug containers
-	foundWeb := false
-	foundDebug := false
-	for _, c := range containers {
-		t.Logf("Container: Service=%s, State=%s", c.Service, c.State)
-		if c.Service == "web" {
-			foundWeb = true
-		}
-		if c.Service == "debug" {
-			foundDebug = true
-		}
+	result := handler.DeployCompose(ctx, req)
+
+	if !result.Success {
+		t.Fatalf("Deploy failed: %s", result.Error)
 	}
 
-	if !foundWeb {
-		t.Error("web service not found")
+	// Should have both web and debug services
+	if _, ok := result.Services["web"]; !ok {
+		t.Error("Expected 'web' service")
 	}
-	if !foundDebug {
-		t.Error("debug service not found (profile should be active)")
+	if _, ok := result.Services["debug"]; !ok {
+		t.Error("Expected 'debug' service (profile should be active)")
 	}
+
+	t.Logf("Deployed %d services with profiles", len(result.Services))
 }
 
-func TestIntegration_IsContainerHealthy_RealContainer(t *testing.T) {
+func TestIntegration_DeployComposeWithHealthCheck(t *testing.T) {
 	skipIfNoDocker(t)
-	skipIfNoCompose(t)
 
-	handler := createTestHandler(t)
+	handler, dockerClient := createTestHandler(t)
+	defer dockerClient.Close()
+
 	ctx := context.Background()
+	projectName := "dockmon-integration-test-health"
 
-	// Create a compose file with health check
+	// Compose file with health check
 	composeContent := `
 services:
-  healthy-nginx:
+  web:
     image: nginx:alpine
-    container_name: dockmon-test-healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost/"]
       interval: 2s
@@ -251,134 +350,57 @@ services:
       retries: 3
       start_period: 1s
 `
-	tmpFile, err := os.CreateTemp("", "compose-health-*.yml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.Remove(tmpFile.Name())
-
-	if _, err := tmpFile.WriteString(composeContent); err != nil {
-		t.Fatal(err)
-	}
-	tmpFile.Close()
-
-	projectName := "dockmon-health-test"
-
-	// Start container
-	args := append([]string{}, handler.composeCmd[1:]...)
-	args = append(args, "-f", tmpFile.Name(), "-p", projectName, "up", "-d")
-	_, _, err = handler.runCompose(ctx, nil, args...)
-	if err != nil {
-		t.Fatalf("Failed to start container: %v", err)
-	}
 
 	// Cleanup at the end
 	defer func() {
-		cleanupArgs := append([]string{}, handler.composeCmd[1:]...)
-		cleanupArgs = append(cleanupArgs, "-f", tmpFile.Name(), "-p", projectName, "down", "--remove-orphans")
-		handler.runCompose(ctx, nil, cleanupArgs...)
+		cleanupReq := DeployComposeRequest{
+			DeploymentID:   "cleanup-" + projectName,
+			ProjectName:    projectName,
+			ComposeContent: composeContent,
+			Action:         "down",
+			RemoveVolumes:  true,
+		}
+		handler.DeployCompose(ctx, cleanupReq)
 	}()
 
-	// Wait for health check to pass (with timeout)
-	deadline := time.Now().Add(30 * time.Second)
-	healthy := false
-
-	for time.Now().Before(deadline) {
-		containers, err := handler.ComposePs(ctx, projectName, tmpFile.Name())
-		if err != nil {
-			time.Sleep(1 * time.Second)
-			continue
-		}
-
-		for _, c := range containers {
-			if c.Service == "healthy-nginx" {
-				t.Logf("Container status: State=%s, Status=%s, Health=%s", c.State, c.Status, c.Health)
-				if handler.isContainerHealthy(c) {
-					healthy = true
-					break
-				}
-			}
-		}
-
-		if healthy {
-			break
-		}
-		time.Sleep(1 * time.Second)
+	// Deploy with health check waiting
+	req := DeployComposeRequest{
+		DeploymentID:   "test-health-" + projectName,
+		ProjectName:    projectName,
+		ComposeContent: composeContent,
+		Action:         "up",
+		WaitForHealthy: true,
+		HealthTimeout:  30,
 	}
 
-	if !healthy {
-		t.Error("Container did not become healthy within timeout")
+	result := handler.DeployCompose(ctx, req)
+
+	if !result.Success {
+		t.Fatalf("Deploy failed: %s", result.Error)
 	}
+
+	webService, ok := result.Services["web"]
+	if !ok {
+		t.Fatal("Expected 'web' service")
+	}
+
+	t.Logf("Service deployed with health check, status: %s", webService.Status)
 }
 
-func TestIntegration_WaitForHealthy(t *testing.T) {
+func TestIntegration_DeployComposeHealthTimeout(t *testing.T) {
 	skipIfNoDocker(t)
-	skipIfNoCompose(t)
 
-	handler := createTestHandler(t)
+	handler, dockerClient := createTestHandler(t)
+	defer dockerClient.Close()
+
 	ctx := context.Background()
+	projectName := "dockmon-integration-test-health-timeout"
 
-	// Create a compose file with health check
-	composeContent := `
-services:
-  wait-nginx:
-    image: nginx:alpine
-    container_name: dockmon-test-wait
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost/"]
-      interval: 2s
-      timeout: 2s
-      retries: 3
-      start_period: 1s
-`
-	tmpFile, err := os.CreateTemp("", "compose-wait-*.yml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.Remove(tmpFile.Name())
-
-	if _, err := tmpFile.WriteString(composeContent); err != nil {
-		t.Fatal(err)
-	}
-	tmpFile.Close()
-
-	projectName := "dockmon-wait-test"
-
-	// Start container
-	args := append([]string{}, handler.composeCmd[1:]...)
-	args = append(args, "-f", tmpFile.Name(), "-p", projectName, "up", "-d")
-	_, _, err = handler.runCompose(ctx, nil, args...)
-	if err != nil {
-		t.Fatalf("Failed to start container: %v", err)
-	}
-
-	// Cleanup at the end
-	defer func() {
-		cleanupArgs := append([]string{}, handler.composeCmd[1:]...)
-		cleanupArgs = append(cleanupArgs, "-f", tmpFile.Name(), "-p", projectName, "down", "--remove-orphans")
-		handler.runCompose(ctx, nil, cleanupArgs...)
-	}()
-
-	// Test waitForHealthy
-	err = handler.waitForHealthy(ctx, projectName, tmpFile.Name(), 30, nil)
-	if err != nil {
-		t.Errorf("waitForHealthy failed: %v", err)
-	}
-}
-
-func TestIntegration_WaitForHealthy_Timeout(t *testing.T) {
-	skipIfNoDocker(t)
-	skipIfNoCompose(t)
-
-	handler := createTestHandler(t)
-	ctx := context.Background()
-
-	// Create a compose file with a health check that will fail
+	// Compose file with a health check that will fail
 	composeContent := `
 services:
   unhealthy:
     image: alpine:latest
-    container_name: dockmon-test-unhealthy
     command: ["sleep", "infinity"]
     healthcheck:
       test: ["CMD", "false"]
@@ -387,119 +409,193 @@ services:
       retries: 1
       start_period: 0s
 `
-	tmpFile, err := os.CreateTemp("", "compose-unhealthy-*.yml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.Remove(tmpFile.Name())
-
-	if _, err := tmpFile.WriteString(composeContent); err != nil {
-		t.Fatal(err)
-	}
-	tmpFile.Close()
-
-	projectName := "dockmon-unhealthy-test"
-
-	// Start container
-	args := append([]string{}, handler.composeCmd[1:]...)
-	args = append(args, "-f", tmpFile.Name(), "-p", projectName, "up", "-d")
-	_, _, err = handler.runCompose(ctx, nil, args...)
-	if err != nil {
-		t.Fatalf("Failed to start container: %v", err)
-	}
 
 	// Cleanup at the end
 	defer func() {
-		cleanupArgs := append([]string{}, handler.composeCmd[1:]...)
-		cleanupArgs = append(cleanupArgs, "-f", tmpFile.Name(), "-p", projectName, "down", "--remove-orphans")
-		handler.runCompose(ctx, nil, cleanupArgs...)
+		cleanupReq := DeployComposeRequest{
+			DeploymentID:   "cleanup-" + projectName,
+			ProjectName:    projectName,
+			ComposeContent: composeContent,
+			Action:         "down",
+			RemoveVolumes:  true,
+		}
+		handler.DeployCompose(ctx, cleanupReq)
 	}()
 
-	// Test waitForHealthy - should timeout
-	err = handler.waitForHealthy(ctx, projectName, tmpFile.Name(), 5, nil)
-	if err == nil {
-		t.Error("waitForHealthy should have timed out but succeeded")
+	// Deploy with health check waiting - should timeout
+	req := DeployComposeRequest{
+		DeploymentID:   "test-health-timeout-" + projectName,
+		ProjectName:    projectName,
+		ComposeContent: composeContent,
+		Action:         "up",
+		WaitForHealthy: true,
+		HealthTimeout:  5, // Short timeout
 	}
-	if !strings.Contains(err.Error(), "timeout") {
-		t.Errorf("Expected timeout error, got: %v", err)
+
+	result := handler.DeployCompose(ctx, req)
+
+	// Should fail due to health timeout
+	if result.Success {
+		t.Error("Expected deployment to fail due to health timeout")
+	}
+
+	if !strings.Contains(result.Error, "timeout") && !strings.Contains(result.Error, "Health") {
+		t.Errorf("Expected timeout-related error, got: %s", result.Error)
+	}
+
+	t.Logf("Correctly failed with: %s", result.Error)
+}
+
+func TestIntegration_IsContainerHealthy(t *testing.T) {
+	skipIfNoDocker(t)
+
+	handler, dockerClient := createTestHandler(t)
+	defer dockerClient.Close()
+
+	// Test the isContainerHealthy method with various container states
+	tests := []struct {
+		name     string
+		c        api.ContainerSummary
+		expected bool
+	}{
+		{
+			name:     "healthy with health field",
+			c:        api.ContainerSummary{State: "running", Health: "healthy"},
+			expected: true,
+		},
+		{
+			name:     "unhealthy with health field",
+			c:        api.ContainerSummary{State: "running", Health: "unhealthy"},
+			expected: false,
+		},
+		{
+			name:     "starting with health field",
+			c:        api.ContainerSummary{State: "running", Health: "starting"},
+			expected: false,
+		},
+		{
+			name:     "running no health check",
+			c:        api.ContainerSummary{State: "running"},
+			expected: true,
+		},
+		{
+			name:     "exited no health check",
+			c:        api.ContainerSummary{State: "exited"},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := handler.isContainerHealthy(tt.c)
+			if result != tt.expected {
+				t.Errorf("isContainerHealthy() = %v, expected %v", result, tt.expected)
+			}
+		})
 	}
 }
 
-func TestIntegration_MapContainerStateToServiceStatus_RealContainers(t *testing.T) {
+func TestIntegration_PartialDeploymentFailure(t *testing.T) {
 	skipIfNoDocker(t)
-	skipIfNoCompose(t)
 
-	handler := createTestHandler(t)
+	handler, dockerClient := createTestHandler(t)
+	defer dockerClient.Close()
+
 	ctx := context.Background()
+	projectName := "dockmon-integration-test-partial"
 
-	// Create a compose file with multiple containers in different states
+	// Compose file where one service will fail (invalid image)
 	composeContent := `
 services:
-  running:
+  web:
     image: nginx:alpine
-    container_name: dockmon-test-running
-  healthy:
-    image: nginx:alpine
-    container_name: dockmon-test-healthy-map
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost/"]
-      interval: 2s
-      timeout: 2s
-      retries: 3
+  broken:
+    image: this-image-does-not-exist-12345:latest
 `
-	tmpFile, err := os.CreateTemp("", "compose-states-*.yml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.Remove(tmpFile.Name())
-
-	if _, err := tmpFile.WriteString(composeContent); err != nil {
-		t.Fatal(err)
-	}
-	tmpFile.Close()
-
-	projectName := "dockmon-states-test"
-
-	// Start containers
-	args := append([]string{}, handler.composeCmd[1:]...)
-	args = append(args, "-f", tmpFile.Name(), "-p", projectName, "up", "-d")
-	_, _, err = handler.runCompose(ctx, nil, args...)
-	if err != nil {
-		t.Fatalf("Failed to start containers: %v", err)
-	}
 
 	// Cleanup at the end
 	defer func() {
-		cleanupArgs := append([]string{}, handler.composeCmd[1:]...)
-		cleanupArgs = append(cleanupArgs, "-f", tmpFile.Name(), "-p", projectName, "down", "--remove-orphans")
-		handler.runCompose(ctx, nil, cleanupArgs...)
+		cleanupReq := DeployComposeRequest{
+			DeploymentID:   "cleanup-" + projectName,
+			ProjectName:    projectName,
+			ComposeContent: composeContent,
+			Action:         "down",
+			RemoveVolumes:  true,
+		}
+		handler.DeployCompose(ctx, cleanupReq)
 	}()
 
-	// Wait for containers to be ready
-	time.Sleep(3 * time.Second)
-
-	// Get container states
-	containers, err := handler.ComposePs(ctx, projectName, tmpFile.Name())
-	if err != nil {
-		t.Fatalf("ComposePs failed: %v", err)
+	// Deploy - should have partial failure
+	req := DeployComposeRequest{
+		DeploymentID:   "test-partial-" + projectName,
+		ProjectName:    projectName,
+		ComposeContent: composeContent,
+		Action:         "up",
 	}
 
-	for _, c := range containers {
-		status := handler.mapContainerStateToServiceStatus(c)
-		t.Logf("Service %s: State=%s, Status=%s, Health=%s -> mapped to %s",
-			c.Service, c.State, c.Status, c.Health, status)
+	result := handler.DeployCompose(ctx, req)
 
-		// Verify running containers map to "running" or "starting" (health check might still be running)
-		if c.State == "running" {
-			if status != "running" && status != "starting" {
-				t.Errorf("Expected running container to map to 'running' or 'starting', got %q", status)
-			}
-		}
-	}
+	// The compose library may handle this differently - it might fail entirely
+	// or succeed partially. Log the actual behavior.
+	t.Logf("Partial deployment result: Success=%v, PartialSuccess=%v, Error=%s",
+		result.Success, result.PartialSuccess, result.Error)
+	t.Logf("Services: %+v", result.Services)
+	t.Logf("Failed services: %v", result.FailedServices)
 }
 
-// TestIntegration_ServiceProgressJson tests that ServiceStatus serializes correctly
+func TestIntegration_DeployComposeWithEnvVars(t *testing.T) {
+	skipIfNoDocker(t)
+
+	handler, dockerClient := createTestHandler(t)
+	defer dockerClient.Close()
+
+	ctx := context.Background()
+	projectName := "dockmon-integration-test-env"
+
+	// Compose file using environment variables
+	composeContent := `
+services:
+  web:
+    image: ${IMAGE_NAME:-nginx:alpine}
+    environment:
+      - TEST_VAR=${TEST_VAR:-default}
+`
+
+	// Cleanup at the end
+	defer func() {
+		cleanupReq := DeployComposeRequest{
+			DeploymentID:   "cleanup-" + projectName,
+			ProjectName:    projectName,
+			ComposeContent: composeContent,
+			Action:         "down",
+			RemoveVolumes:  true,
+		}
+		handler.DeployCompose(ctx, cleanupReq)
+	}()
+
+	// Deploy with environment variables
+	req := DeployComposeRequest{
+		DeploymentID:   "test-env-" + projectName,
+		ProjectName:    projectName,
+		ComposeContent: composeContent,
+		Action:         "up",
+		Environment: map[string]string{
+			"IMAGE_NAME": "nginx:alpine",
+			"TEST_VAR":   "custom_value",
+		},
+	}
+
+	result := handler.DeployCompose(ctx, req)
+
+	if !result.Success {
+		t.Fatalf("Deploy failed: %s", result.Error)
+	}
+
+	t.Logf("Deployed with environment variables, services: %d", len(result.Services))
+}
+
 func TestIntegration_ServiceProgressJson(t *testing.T) {
+	// Test that ServiceStatus serializes correctly
 	services := []ServiceStatus{
 		{
 			Name:    "web",
@@ -533,5 +629,84 @@ func TestIntegration_ServiceProgressJson(t *testing.T) {
 	}
 	if parsed[0].Name != "web" || parsed[0].Status != "running" {
 		t.Errorf("First service incorrect: %+v", parsed[0])
+	}
+}
+
+func TestIntegration_LongRunningDeployment(t *testing.T) {
+	if os.Getenv("RUN_LONG_TESTS") != "1" {
+		t.Skip("Skipping long-running test (set RUN_LONG_TESTS=1 to enable)")
+	}
+
+	skipIfNoDocker(t)
+
+	handler, dockerClient := createTestHandler(t)
+	defer dockerClient.Close()
+
+	ctx := context.Background()
+	projectName := "dockmon-integration-test-long"
+
+	// Multi-service compose file
+	composeContent := `
+services:
+  web:
+    image: nginx:alpine
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/"]
+      interval: 2s
+      timeout: 2s
+      retries: 3
+  redis:
+    image: redis:alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 3
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_PASSWORD: test
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 2s
+      retries: 5
+`
+
+	// Cleanup at the end
+	defer func() {
+		cleanupReq := DeployComposeRequest{
+			DeploymentID:   "cleanup-" + projectName,
+			ProjectName:    projectName,
+			ComposeContent: composeContent,
+			Action:         "down",
+			RemoveVolumes:  true,
+		}
+		handler.DeployCompose(ctx, cleanupReq)
+	}()
+
+	start := time.Now()
+
+	// Deploy with health check waiting
+	req := DeployComposeRequest{
+		DeploymentID:   "test-long-" + projectName,
+		ProjectName:    projectName,
+		ComposeContent: composeContent,
+		Action:         "up",
+		WaitForHealthy: true,
+		HealthTimeout:  120,
+	}
+
+	result := handler.DeployCompose(ctx, req)
+
+	elapsed := time.Since(start)
+
+	if !result.Success {
+		t.Fatalf("Long deployment failed after %v: %s", elapsed, result.Error)
+	}
+
+	t.Logf("Long deployment completed in %v with %d services", elapsed, len(result.Services))
+	for name, svc := range result.Services {
+		t.Logf("  %s: %s (%s)", name, svc.Status, svc.ContainerID)
 	}
 }

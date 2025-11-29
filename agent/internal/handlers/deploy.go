@@ -123,7 +123,9 @@ func (h *DeployHandler) createComposeService(ctx context.Context) (api.Compose, 
 
 	opts := flags.NewClientOptions()
 	if err := cli.Initialize(opts); err != nil {
-		cli.Client().Close()
+		// Note: Don't call cli.Client().Close() here - Initialize may not have
+		// created the client yet, and calling Close() on nil would panic.
+		// The client is only created during successful Initialize.
 		return nil, nil, fmt.Errorf("failed to initialize Docker CLI: %w", err)
 	}
 
@@ -210,13 +212,19 @@ func (h *DeployHandler) writeComposeFile(content string) (string, error) {
 		return "", fmt.Errorf("failed to create temp file: %w", err)
 	}
 
-	if err := f.Chmod(0600); err != nil {
+	// Use a cleanup function to ensure file handle is always closed on error
+	cleanup := func() {
+		f.Close()
 		os.Remove(f.Name())
+	}
+
+	if err := f.Chmod(0600); err != nil {
+		cleanup()
 		return "", fmt.Errorf("failed to set file permissions: %w", err)
 	}
 
 	if _, err := f.WriteString(content); err != nil {
-		os.Remove(f.Name())
+		cleanup()
 		return "", fmt.Errorf("failed to write content: %w", err)
 	}
 

@@ -179,24 +179,42 @@ export function LayerProgressDisplay({
     return null
   }
 
+  // Determine if we have detailed layer progress or just simple progress
+  // Docker SDK deployments/updates have layerProgress, agent deployments don't
+  const hasDetailedProgress = layerProgress !== null
+
   return (
     <div className="space-y-3 rounded-lg border border-blue-500/50 bg-blue-500/10 p-4" data-testid="layer-progress-display">
       {/* Overall progress bar */}
       <div className="flex items-center justify-between text-sm">
         <span className="font-medium text-blue-400">
-          {layerProgress ? layerProgress.summary : updateProgress?.message}
+          {hasDetailedProgress
+            ? layerProgress.summary
+            : 'Deploying, please wait...'}
         </span>
-        <span className="text-blue-400">
-          {layerProgress ? layerProgress.overall_progress : updateProgress?.progress}%
-        </span>
+        {hasDetailedProgress && (
+          <div className="flex items-center gap-3">
+            {layerProgress.speed_mbps !== undefined && layerProgress.speed_mbps > 0 && (
+              <span className="text-blue-300/70 text-xs">
+                {layerProgress.speed_mbps.toFixed(1)} MB/s
+              </span>
+            )}
+            <span className="text-blue-400">
+              {layerProgress.overall_progress}%
+            </span>
+          </div>
+        )}
       </div>
       <div className="relative h-2 w-full overflow-hidden rounded-full bg-blue-950">
-        <div
-          className="h-full bg-blue-500 transition-all duration-500 ease-out"
-          style={{
-            width: `${layerProgress ? layerProgress.overall_progress : updateProgress?.progress}%`
-          }}
-        />
+        {hasDetailedProgress ? (
+          <div
+            className="h-full bg-blue-500 transition-all duration-500 ease-out"
+            style={{ width: `${layerProgress.overall_progress}%` }}
+          />
+        ) : (
+          /* Indeterminate animated bar for agent deployments */
+          <div className="h-full w-full bg-gradient-to-r from-blue-500/30 via-blue-500 to-blue-500/30 animate-pulse" />
+        )}
       </div>
 
       {/* Collapse/Expand toggle (optional polish) */}

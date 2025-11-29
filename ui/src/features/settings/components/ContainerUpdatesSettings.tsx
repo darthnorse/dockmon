@@ -6,7 +6,7 @@
 import { useState, useEffect } from 'react'
 import { useGlobalSettings, useUpdateGlobalSettings } from '@/hooks/useSettings'
 import { toast } from 'sonner'
-import { RefreshCw, Database, Clock, CheckCircle, XCircle } from 'lucide-react'
+import { RefreshCw, Database, Clock, CheckCircle, XCircle, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { apiClient } from '@/lib/api/client'
 import { ToggleSwitch } from './ToggleSwitch'
@@ -216,6 +216,18 @@ export function ContainerUpdatesSettings() {
       toast.error(`Failed to load cache: ${error instanceof Error ? error.message : 'Unknown error'}`)
     } finally {
       setIsLoadingCache(false)
+    }
+  }
+
+  const handleDeleteCacheEntry = async (cacheKey: string) => {
+    try {
+      await apiClient.delete(`/updates/image-cache/${encodeURIComponent(cacheKey)}`)
+      toast.success('Cache entry deleted')
+      // Refresh cache data
+      const data = await apiClient.get<ImageCacheResponse>('/updates/image-cache')
+      setCacheData(data)
+    } catch (error) {
+      toast.error(`Failed to delete cache entry: ${error instanceof Error ? error.message : 'Unknown error'}`)
     }
   }
 
@@ -456,20 +468,31 @@ export function ContainerUpdatesSettings() {
                           )}
                         </div>
                       </div>
-                      <div className="flex items-center gap-4 mt-2 text-xs text-gray-400">
-                        <div className="flex items-center gap-1">
-                          <Clock className="h-3 w-3" />
-                          TTL: {formatTTL(entry.ttl_seconds)}
+                      <div className="flex items-center justify-between mt-2">
+                        <div className="flex items-center gap-4 text-xs text-gray-400">
+                          <div className="flex items-center gap-1">
+                            <Clock className="h-3 w-3" />
+                            TTL: {formatTTL(entry.ttl_seconds)}
+                          </div>
+                          <div>
+                            {entry.is_expired ? (
+                              <span className="text-red-400">Expired</span>
+                            ) : (
+                              <span className="text-green-400">
+                                Expires in {formatTimeRemaining(entry.remaining_seconds)}
+                              </span>
+                            )}
+                          </div>
                         </div>
-                        <div>
-                          {entry.is_expired ? (
-                            <span className="text-red-400">Expired</span>
-                          ) : (
-                            <span className="text-green-400">
-                              Expires in {formatTimeRemaining(entry.remaining_seconds)}
-                            </span>
-                          )}
-                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleDeleteCacheEntry(entry.cache_key)}
+                          className="h-6 px-2 text-xs text-gray-400 hover:text-red-400 hover:bg-red-400/10"
+                        >
+                          <Trash2 className="h-3 w-3 mr-1" />
+                          Delete
+                        </Button>
                       </div>
                     </div>
                   ))}

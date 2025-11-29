@@ -1314,6 +1314,26 @@ async def get_image_digest_cache(current_user: dict = Depends(get_current_user))
         }
 
 
+@app.delete("/api/updates/image-cache/{cache_key:path}", tags=["container-updates"], dependencies=[Depends(require_scope("write"))])
+async def delete_image_cache_entry(cache_key: str, current_user: dict = Depends(get_current_user)):
+    """
+    Delete a specific image cache entry.
+
+    Useful for forcing a fresh registry lookup for a specific image.
+    """
+    from database import ImageDigestCache
+
+    with monitor.db.get_session() as session:
+        entry = session.query(ImageDigestCache).filter_by(cache_key=cache_key).first()
+        if not entry:
+            raise HTTPException(status_code=404, detail=f"Cache entry not found: {cache_key}")
+
+        session.delete(entry)
+        session.commit()
+
+        return {"message": f"Deleted cache entry: {cache_key}"}
+
+
 @app.post("/api/hosts/{host_id}/containers/{container_id}/check-update", tags=["container-updates"], dependencies=[Depends(require_scope("write"))])
 async def check_container_update(
     host_id: str,

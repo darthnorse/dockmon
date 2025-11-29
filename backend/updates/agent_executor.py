@@ -357,7 +357,9 @@ class AgentUpdateExecutor:
 
                     if agent and agent.status == "online":
                         if agent.last_seen_at:
-                            elapsed = (datetime.now(timezone.utc) - agent.last_seen_at).total_seconds()
+                            # SQLite stores datetimes without timezone, but we know they're UTC
+                            last_seen_utc = agent.last_seen_at.replace(tzinfo=timezone.utc)
+                            elapsed = (datetime.now(timezone.utc) - last_seen_utc).total_seconds()
                             if elapsed < 10:
                                 logger.info(f"Agent {agent_id} reconnected successfully")
                                 return True

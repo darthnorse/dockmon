@@ -1048,7 +1048,8 @@ func (h *UpdateHandler) sendLayerProgress(containerID string, layers map[string]
 		summary = fmt.Sprintf("Downloading %d of %d layers (%d%%)", downloading, totalLayers, overallPercent)
 	} else if extracting > 0 {
 		summary = fmt.Sprintf("Extracting %d of %d layers (%d%%)", extracting, totalLayers, overallPercent)
-	} else if complete == totalLayers {
+	} else if complete+cached == totalLayers && totalLayers > 0 {
+		// All layers are either complete or cached (Already exists)
 		if cached > 0 {
 			summary = fmt.Sprintf("Pull complete (%d layers, %d cached)", totalLayers, cached)
 		} else {

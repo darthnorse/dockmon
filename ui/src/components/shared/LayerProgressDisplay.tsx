@@ -123,12 +123,20 @@ export function LayerProgressDisplay({
 
         // Handle NEW layer progress (enhanced view)
         if (message.type === eventType) {
+          // Build summary with speed appended if not already included
+          // Docker SDK includes speed in summary, agent sends it separately
+          let summary = message.data.summary || ''
+          const speedMbps = message.data.speed_mbps
+          if (speedMbps && speedMbps > 0 && !summary.includes('MB/s')) {
+            summary = `${summary} @ ${speedMbps.toFixed(1)} MB/s`
+          }
+
           setLayerProgress({
             overall_progress: message.data.overall_progress,
             layers: message.data.layers,
             total_layers: message.data.total_layers,
             remaining_layers: message.data.remaining_layers,
-            summary: message.data.summary,
+            summary: summary,
             speed_mbps: message.data.speed_mbps,
           })
         }
@@ -193,16 +201,9 @@ export function LayerProgressDisplay({
             : 'Deploying, please wait...'}
         </span>
         {hasDetailedProgress && (
-          <div className="flex items-center gap-3">
-            {layerProgress.speed_mbps !== undefined && layerProgress.speed_mbps > 0 && (
-              <span className="text-blue-300/70 text-xs">
-                {layerProgress.speed_mbps.toFixed(1)} MB/s
-              </span>
-            )}
-            <span className="text-blue-400">
-              {layerProgress.overall_progress}%
-            </span>
-          </div>
+          <span className="text-blue-400">
+            {layerProgress.overall_progress}%
+          </span>
         )}
       </div>
       <div className="relative h-2 w-full overflow-hidden rounded-full bg-blue-950">

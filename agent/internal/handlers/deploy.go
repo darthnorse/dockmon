@@ -282,7 +282,7 @@ func (h *DeployHandler) runComposeUp(ctx context.Context, req DeployComposeReque
 	}).Info("Executing compose up")
 
 	if err := composeService.Up(ctx, project, upOpts); err != nil {
-		h.log.WithError(err).Error("Compose up failed")
+		h.log.WithField("error", err.Error()).Error("Compose up failed")
 
 		// Attempt cleanup on failure
 		h.log.Warn("Deployment failed, attempting cleanup...")
@@ -299,7 +299,7 @@ func (h *DeployHandler) runComposeUp(ctx context.Context, req DeployComposeReque
 			timeout = 60
 		}
 		if err := h.waitForHealthy(ctx, composeService, req.ProjectName, timeout); err != nil {
-			h.log.WithError(err).Error("Health check failed")
+			h.log.WithField("error", err.Error()).Error("Health check failed")
 			return h.failResult(req.DeploymentID, fmt.Sprintf("Health check failed: %v", err))
 		}
 		h.log.Info("All services healthy")
@@ -348,7 +348,7 @@ func (h *DeployHandler) runComposeDown(ctx context.Context, req DeployComposeReq
 	h.log.WithField("project_name", req.ProjectName).Info("Executing compose down")
 
 	if err := composeService.Down(ctx, req.ProjectName, downOpts); err != nil {
-		h.log.WithError(err).Error("Compose down failed")
+		h.log.WithField("error", err.Error()).Error("Compose down failed")
 		return h.failResult(req.DeploymentID, fmt.Sprintf("Compose down failed: %v", err))
 	}
 
@@ -381,7 +381,7 @@ func (h *DeployHandler) waitForHealthy(ctx context.Context, composeService api.C
 		// Get container status via compose ps
 		containers, err := composeService.Ps(ctx, projectName, api.PsOptions{All: true})
 		if err != nil {
-			h.log.WithError(err).Debug("Failed to get container status, retrying...")
+			h.log.WithField("error", err.Error()).Debug("Failed to get container status, retrying...")
 			time.Sleep(pollInterval)
 			continue
 		}
@@ -600,7 +600,7 @@ func (h *DeployHandler) sendProgress(deploymentID, stage, message string) {
 	}
 
 	if err := h.sendEvent("deploy_progress", progress); err != nil {
-		h.log.WithError(err).Warn("Failed to send deploy progress")
+		h.log.WithField("error", err.Error()).Warn("Failed to send deploy progress")
 	}
 }
 

@@ -152,29 +152,8 @@ func (h *SelfUpdateHandler) performContainerSelfUpdate(ctx context.Context, req 
 
 	h.log.WithField("new_container_id", newContainerID[:12]).Info("Created new container")
 
-	// Step 4: Start new container
-	h.sendProgress("start", "Starting new container")
-	if err := h.dockerClient.StartContainer(ctx, newContainerID); err != nil {
-		// Cleanup: remove the failed container
-		h.dockerClient.RemoveContainer(ctx, newContainerID, true)
-		h.sendProgressError("start", err)
-		return fmt.Errorf("failed to start new container: %w", err)
-	}
-
-	// Step 5: Wait for new container to be healthy
-	h.sendProgress("health", "Waiting for new container to be healthy")
-	if err := h.waitForHealthy(ctx, newContainerID, 60); err != nil {
-		h.log.WithError(err).Warn("New container failed health check, rolling back")
-		// Rollback: stop and remove new container
-		h.dockerClient.StopContainer(ctx, newContainerID, 10)
-		h.dockerClient.RemoveContainer(ctx, newContainerID, true)
-		h.sendProgressError("health", err)
-		return fmt.Errorf("new container health check failed: %w", err)
-	}
-
-	h.log.Info("New container is healthy")
-
-	// Step 6: Write cleanup file so new agent can clean up old container
+	// Step 4: Write cleanup file BEFORE starting new container
+	// This ensures the new agent finds it on startup (race condition fix)
 	cleanupFile := filepath.Join(h.dataDir, "cleanup.json")
 	cleanupData := map[string]string{
 		"old_container_id":   h.myContainerID,
@@ -184,8 +163,35 @@ func (h *SelfUpdateHandler) performContainerSelfUpdate(ctx context.Context, req 
 		"original_name":      originalName,
 	}
 	if data, err := json.MarshalIndent(cleanupData, "", "  "); err == nil {
-		os.WriteFile(cleanupFile, data, 0644)
+		if err := os.WriteFile(cleanupFile, data, 0644); err != nil {
+			h.log.WithError(err).Error("Failed to write cleanup file")
+			// Continue anyway - cleanup can be done manually
+		}
 	}
+
+	// Step 5: Start new container
+	h.sendProgress("start", "Starting new container")
+	if err := h.dockerClient.StartContainer(ctx, newContainerID); err != nil {
+		// Cleanup: remove the failed container and cleanup file
+		h.dockerClient.RemoveContainer(ctx, newContainerID, true)
+		os.Remove(cleanupFile)
+		h.sendProgressError("start", err)
+		return fmt.Errorf("failed to start new container: %w", err)
+	}
+
+	// Step 6: Wait for new container to be healthy
+	h.sendProgress("health", "Waiting for new container to be healthy")
+	if err := h.waitForHealthy(ctx, newContainerID, 60); err != nil {
+		h.log.WithError(err).Warn("New container failed health check, rolling back")
+		// Rollback: stop and remove new container, remove cleanup file
+		h.dockerClient.StopContainer(ctx, newContainerID, 10)
+		h.dockerClient.RemoveContainer(ctx, newContainerID, true)
+		os.Remove(cleanupFile)
+		h.sendProgressError("health", err)
+		return fmt.Errorf("new container health check failed: %w", err)
+	}
+
+	h.log.Info("New container is healthy")
 
 	// Step 7: Signal completion and stop ourselves
 	h.sendProgress("complete", "Self-update complete, stopping old container")

@@ -12,7 +12,7 @@ Architecture (v2.2.0+):
 
 import pytest
 import asyncio
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import MagicMock, AsyncMock, Mock, patch
 from datetime import datetime, timezone
 
 from updates.agent_executor import AgentUpdateExecutor
@@ -193,23 +193,28 @@ class TestAgentSelfUpdateDetection:
             error=None
         )
 
-        # Mock _wait_for_agent_update_completion
-        agent_executor._wait_for_agent_update_completion = AsyncMock(return_value=True)
-        agent_executor._get_container_info_by_name = AsyncMock(return_value={
-            "id": "def456abc123",
-            "state": "running"
-        })
-        agent_executor._update_database = AsyncMock()
+        # Mock the pending updates registry
+        mock_pending = Mock()
+        mock_pending.new_container_id = "def456abc123"
+        mock_pending.success = True
+        mock_pending.error = None
+
+        mock_registry = AsyncMock()
+        mock_registry.register = AsyncMock(return_value=mock_pending)
+        mock_registry.wait_for_completion = AsyncMock(return_value=True)
+        mock_registry.unregister = AsyncMock()
 
         async def progress_callback(stage, percent, message):
             pass
 
-        # Execute
-        await agent_executor.execute(
-            context=normal_context,
-            progress_callback=progress_callback,
-            update_record=normal_update_record,
-        )
+        # Execute with patched registry
+        with patch('updates.agent_executor.get_pending_updates_registry', return_value=mock_registry):
+            with patch('updates.agent_executor.update_container_records_after_update'):
+                await agent_executor.execute(
+                    context=normal_context,
+                    progress_callback=progress_callback,
+                    update_record=normal_update_record,
+                )
 
         # Verify: Should NOT call self-update
         agent_executor.execute_self_update.assert_not_called()

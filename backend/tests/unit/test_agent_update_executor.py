@@ -118,17 +118,22 @@ class TestAgentUpdateExecutorRegistryAuth:
             get_registry_credentials=mock_get_creds,
         )
 
-        # Mock wait for completion to succeed
-        with patch.object(executor, '_wait_for_agent_update_completion', new_callable=AsyncMock) as mock_wait:
-            mock_wait.return_value = True
+        # Mock the pending updates registry to immediately complete
+        mock_pending = Mock()
+        mock_pending.new_container_id = "newcontainer12"
+        mock_pending.success = True
+        mock_pending.error = None
 
-            with patch.object(executor, '_get_container_info_by_name', new_callable=AsyncMock) as mock_get_info:
-                mock_get_info.return_value = {"id": "newcontainer12"}
+        mock_registry = AsyncMock()
+        mock_registry.register = AsyncMock(return_value=mock_pending)
+        mock_registry.wait_for_completion = AsyncMock(return_value=True)
+        mock_registry.unregister = AsyncMock()
 
-                with patch('updates.agent_executor.update_container_records_after_update'):
-                    progress_callback = AsyncMock()
+        with patch('updates.agent_executor.get_pending_updates_registry', return_value=mock_registry):
+            with patch('updates.agent_executor.update_container_records_after_update'):
+                progress_callback = AsyncMock()
 
-                    await executor.execute(update_context, progress_callback, update_record)
+                await executor.execute(update_context, progress_callback, update_record)
 
         # Verify command was called with registry_auth
         mock_command_executor.execute_command.assert_called_once()
@@ -165,16 +170,22 @@ class TestAgentUpdateExecutorRegistryAuth:
             get_registry_credentials=mock_get_creds,
         )
 
-        with patch.object(executor, '_wait_for_agent_update_completion', new_callable=AsyncMock) as mock_wait:
-            mock_wait.return_value = True
+        # Mock the pending updates registry
+        mock_pending = Mock()
+        mock_pending.new_container_id = "newcontainer12"
+        mock_pending.success = True
+        mock_pending.error = None
 
-            with patch.object(executor, '_get_container_info_by_name', new_callable=AsyncMock) as mock_get_info:
-                mock_get_info.return_value = {"id": "newcontainer12"}
+        mock_registry = AsyncMock()
+        mock_registry.register = AsyncMock(return_value=mock_pending)
+        mock_registry.wait_for_completion = AsyncMock(return_value=True)
+        mock_registry.unregister = AsyncMock()
 
-                with patch('updates.agent_executor.update_container_records_after_update'):
-                    progress_callback = AsyncMock()
+        with patch('updates.agent_executor.get_pending_updates_registry', return_value=mock_registry):
+            with patch('updates.agent_executor.update_container_records_after_update'):
+                progress_callback = AsyncMock()
 
-                    await executor.execute(update_context, progress_callback, update_record)
+                await executor.execute(update_context, progress_callback, update_record)
 
         # Verify command was called with registry_auth=None
         call_args = mock_command_executor.execute_command.call_args
@@ -204,16 +215,22 @@ class TestAgentUpdateExecutorRegistryAuth:
             get_registry_credentials=None,  # No callback
         )
 
-        with patch.object(executor, '_wait_for_agent_update_completion', new_callable=AsyncMock) as mock_wait:
-            mock_wait.return_value = True
+        # Mock the pending updates registry
+        mock_pending = Mock()
+        mock_pending.new_container_id = "newcontainer12"
+        mock_pending.success = True
+        mock_pending.error = None
 
-            with patch.object(executor, '_get_container_info_by_name', new_callable=AsyncMock) as mock_get_info:
-                mock_get_info.return_value = {"id": "newcontainer12"}
+        mock_registry = AsyncMock()
+        mock_registry.register = AsyncMock(return_value=mock_pending)
+        mock_registry.wait_for_completion = AsyncMock(return_value=True)
+        mock_registry.unregister = AsyncMock()
 
-                with patch('updates.agent_executor.update_container_records_after_update'):
-                    progress_callback = AsyncMock()
+        with patch('updates.agent_executor.get_pending_updates_registry', return_value=mock_registry):
+            with patch('updates.agent_executor.update_container_records_after_update'):
+                progress_callback = AsyncMock()
 
-                    await executor.execute(update_context, progress_callback, update_record)
+                await executor.execute(update_context, progress_callback, update_record)
 
         # Verify command was called with registry_auth=None
         call_args = mock_command_executor.execute_command.call_args
@@ -249,16 +266,22 @@ class TestAgentUpdateExecutorRegistryAuth:
             get_registry_credentials=mock_get_creds,
         )
 
-        with patch.object(executor, '_wait_for_agent_update_completion', new_callable=AsyncMock) as mock_wait:
-            mock_wait.return_value = True
+        # Mock the pending updates registry
+        mock_pending = Mock()
+        mock_pending.new_container_id = "newcontainer12"
+        mock_pending.success = True
+        mock_pending.error = None
 
-            with patch.object(executor, '_get_container_info_by_name', new_callable=AsyncMock) as mock_get_info:
-                mock_get_info.return_value = {"id": "newcontainer12"}
+        mock_registry = AsyncMock()
+        mock_registry.register = AsyncMock(return_value=mock_pending)
+        mock_registry.wait_for_completion = AsyncMock(return_value=True)
+        mock_registry.unregister = AsyncMock()
 
-                with patch('updates.agent_executor.update_container_records_after_update'):
-                    progress_callback = AsyncMock()
+        with patch('updates.agent_executor.get_pending_updates_registry', return_value=mock_registry):
+            with patch('updates.agent_executor.update_container_records_after_update'):
+                progress_callback = AsyncMock()
 
-                    await executor.execute(update_context, progress_callback, update_record)
+                await executor.execute(update_context, progress_callback, update_record)
 
         # Verify correct image was looked up
         assert len(images_looked_up) == 1
@@ -289,17 +312,23 @@ class TestAgentUpdateExecutorRegistryAuth:
             get_registry_credentials=mock_get_creds,
         )
 
-        with patch.object(executor, '_wait_for_agent_update_completion', new_callable=AsyncMock) as mock_wait:
-            mock_wait.return_value = True
+        # Mock the pending updates registry
+        mock_pending = Mock()
+        mock_pending.new_container_id = "newcontainer12"
+        mock_pending.success = True
+        mock_pending.error = None
 
-            with patch.object(executor, '_get_container_info_by_name', new_callable=AsyncMock) as mock_get_info:
-                mock_get_info.return_value = {"id": "newcontainer12"}
+        mock_registry = AsyncMock()
+        mock_registry.register = AsyncMock(return_value=mock_pending)
+        mock_registry.wait_for_completion = AsyncMock(return_value=True)
+        mock_registry.unregister = AsyncMock()
 
-                with patch('updates.agent_executor.update_container_records_after_update'):
-                    progress_callback = AsyncMock()
+        with patch('updates.agent_executor.get_pending_updates_registry', return_value=mock_registry):
+            with patch('updates.agent_executor.update_container_records_after_update'):
+                progress_callback = AsyncMock()
 
-                    # Should not raise - handles exception gracefully
-                    result = await executor.execute(update_context, progress_callback, update_record)
+                # Should not raise - handles exception gracefully
+                result = await executor.execute(update_context, progress_callback, update_record)
 
         # Update should still succeed (just without auth)
         assert result.success is True

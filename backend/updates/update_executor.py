@@ -652,13 +652,18 @@ class UpdateExecutor:
 _update_executor = None
 
 
-def get_update_executor(db: DatabaseManager = None, monitor=None) -> UpdateExecutor:
-    """Get or create the global UpdateExecutor instance."""
+def get_update_executor(db: DatabaseManager = None, monitor=None) -> Optional[UpdateExecutor]:
+    """Get or create the global UpdateExecutor instance.
+
+    Returns None if called without db and the singleton hasn't been created yet.
+    This allows callers to safely check for executor availability without try/except.
+    """
     global _update_executor
 
     if _update_executor is None:
         if db is None:
-            raise ValueError("db is required to create UpdateExecutor")
+            # Return None instead of raising - allows safe optional access
+            return None
         _update_executor = UpdateExecutor(db=db, monitor=monitor)
     elif monitor is not None and _update_executor.monitor is None:
         _update_executor.monitor = monitor

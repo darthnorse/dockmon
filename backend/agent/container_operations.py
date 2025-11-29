@@ -14,7 +14,7 @@ from typing import Optional, Dict, Any, List
 from fastapi import HTTPException
 
 from agent.command_executor import AgentCommandExecutor, CommandStatus, CommandResult
-from event_logger import EventCategory, EventType, EventSeverity, EventContext
+from event_logger import EventLogger
 
 logger = logging.getLogger(__name__)
 
@@ -830,22 +830,15 @@ class AgentContainerOperations:
         # Database logging + UI broadcast (via EventLogger)
         if self.event_logger:
             try:
-                context = EventContext(
-                    host_id=host_id,
-                    container_id=container_id
-                )
-
-                severity = EventSeverity.INFO if success else EventSeverity.ERROR
-                title = f"Container {action}: {'succeeded' if success else 'failed'}"
-                message = error if error else f"Container {container_id} {action} operation completed"
-
+                # Use IDs as fallback for names (agent operations don't have name context)
                 self.event_logger.log_container_action(
                     action=action,
-                    host_id=host_id,
+                    container_name=container_id,  # Fallback: use ID as name
                     container_id=container_id,
+                    host_name=host_id,  # Fallback: use ID as name
+                    host_id=host_id,
                     success=success,
-                    error=error,
-                    context=context,
+                    error_message=error,  # Correct parameter name
                     triggered_by='user'  # User-initiated action via API
                 )
 

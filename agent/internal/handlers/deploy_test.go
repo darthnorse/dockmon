@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/docker/compose/v2/pkg/api"
@@ -366,5 +367,150 @@ func TestGetComposeCommand(t *testing.T) {
 	}
 	if cmd != "Docker Compose Go library (embedded)" {
 		t.Errorf("GetComposeCommand() = %q, expected 'Docker Compose Go library (embedded)'", cmd)
+	}
+}
+
+// Registry Credentials Tests
+
+func TestDeployComposeRequestWithRegistryCredentials(t *testing.T) {
+	// Test request with registry credentials
+	req := DeployComposeRequest{
+		DeploymentID:   "test-deployment-123",
+		ProjectName:    "test-project",
+		ComposeContent: "services:\n  web:\n    image: ghcr.io/myorg/myapp:latest",
+		Action:         "up",
+		RegistryCredentials: []RegistryCredential{
+			{
+				RegistryURL: "ghcr.io",
+				Username:    "myuser",
+				Password:    "mypassword",
+			},
+		},
+	}
+
+	if len(req.RegistryCredentials) != 1 {
+		t.Errorf("RegistryCredentials count = %d, expected 1", len(req.RegistryCredentials))
+	}
+
+	cred := req.RegistryCredentials[0]
+	if cred.RegistryURL != "ghcr.io" {
+		t.Errorf("RegistryURL = %q, expected 'ghcr.io'", cred.RegistryURL)
+	}
+	if cred.Username != "myuser" {
+		t.Errorf("Username = %q, expected 'myuser'", cred.Username)
+	}
+	if cred.Password != "mypassword" {
+		t.Errorf("Password = %q, expected 'mypassword'", cred.Password)
+	}
+}
+
+func TestDeployComposeRequestMultipleRegistryCredentials(t *testing.T) {
+	// Test request with multiple registry credentials
+	req := DeployComposeRequest{
+		DeploymentID:   "test-deployment-123",
+		ProjectName:    "test-project",
+		ComposeContent: "services:\n  web:\n    image: ghcr.io/myorg/myapp:latest",
+		Action:         "up",
+		RegistryCredentials: []RegistryCredential{
+			{
+				RegistryURL: "ghcr.io",
+				Username:    "ghcruser",
+				Password:    "ghcrpass",
+			},
+			{
+				RegistryURL: "docker.io",
+				Username:    "dockeruser",
+				Password:    "dockerpass",
+			},
+			{
+				RegistryURL: "registry.example.com",
+				Username:    "customuser",
+				Password:    "custompass",
+			},
+		},
+	}
+
+	if len(req.RegistryCredentials) != 3 {
+		t.Errorf("RegistryCredentials count = %d, expected 3", len(req.RegistryCredentials))
+	}
+
+	// Verify all credentials are present
+	registries := make(map[string]bool)
+	for _, cred := range req.RegistryCredentials {
+		registries[cred.RegistryURL] = true
+	}
+
+	expectedRegistries := []string{"ghcr.io", "docker.io", "registry.example.com"}
+	for _, expected := range expectedRegistries {
+		if !registries[expected] {
+			t.Errorf("Expected registry %q not found in credentials", expected)
+		}
+	}
+}
+
+func TestDeployComposeRequestNoRegistryCredentials(t *testing.T) {
+	// Test request without registry credentials
+	req := DeployComposeRequest{
+		DeploymentID:   "test-deployment-123",
+		ProjectName:    "test-project",
+		ComposeContent: "services:\n  web:\n    image: nginx:latest",
+		Action:         "up",
+	}
+
+	if req.RegistryCredentials != nil && len(req.RegistryCredentials) != 0 {
+		t.Errorf("RegistryCredentials should be empty, got %d", len(req.RegistryCredentials))
+	}
+}
+
+func TestRegistryCredentialStruct(t *testing.T) {
+	// Test RegistryCredential struct JSON unmarshaling
+	jsonData := `{
+		"registry_url": "gcr.io",
+		"username": "testuser",
+		"password": "testpass"
+	}`
+
+	var cred RegistryCredential
+	if err := json.Unmarshal([]byte(jsonData), &cred); err != nil {
+		t.Fatalf("failed to unmarshal JSON: %v", err)
+	}
+
+	if cred.RegistryURL != "gcr.io" {
+		t.Errorf("RegistryURL = %q, expected 'gcr.io'", cred.RegistryURL)
+	}
+	if cred.Username != "testuser" {
+		t.Errorf("Username = %q, expected 'testuser'", cred.Username)
+	}
+	if cred.Password != "testpass" {
+		t.Errorf("Password = %q, expected 'testpass'", cred.Password)
+	}
+}
+
+func TestDockerHubRegistryURLNormalization(t *testing.T) {
+	// Test that docker.io is handled properly
+	// When docker.io credentials are provided, they should map to the Docker Hub index URL
+	cred := RegistryCredential{
+		RegistryURL: "docker.io",
+		Username:    "dockeruser",
+		Password:    "dockerpass",
+	}
+
+	// The normalization happens in createComposeService - here we just verify the struct
+	if cred.RegistryURL != "docker.io" {
+		t.Errorf("RegistryURL = %q, expected 'docker.io'", cred.RegistryURL)
+	}
+}
+
+func TestEmptyRegistryURLCredential(t *testing.T) {
+	// Test credential with empty registry URL (should map to Docker Hub)
+	cred := RegistryCredential{
+		RegistryURL: "",
+		Username:    "user",
+		Password:    "pass",
+	}
+
+	// Empty registry URL should be treated as Docker Hub
+	if cred.RegistryURL != "" {
+		t.Errorf("RegistryURL should be empty string, got %q", cred.RegistryURL)
 	}
 }

@@ -24,10 +24,18 @@ type UpdateHandler struct {
 
 // UpdateRequest contains the parameters for a container update
 type UpdateRequest struct {
-	ContainerID   string `json:"container_id"`
-	NewImage      string `json:"new_image"`
-	StopTimeout   int    `json:"stop_timeout,omitempty"`   // Default: 30s
-	HealthTimeout int    `json:"health_timeout,omitempty"` // Default: 120s (match Python default)
+	ContainerID   string        `json:"container_id"`
+	NewImage      string        `json:"new_image"`
+	StopTimeout   int           `json:"stop_timeout,omitempty"`   // Default: 30s
+	HealthTimeout int           `json:"health_timeout,omitempty"` // Default: 120s (match Python default)
+	RegistryAuth  *RegistryAuth `json:"registry_auth,omitempty"`  // Optional registry credentials
+}
+
+// RegistryAuth contains credentials for authenticating with a Docker registry.
+// Passed from backend when pulling images from private registries.
+type RegistryAuth struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
 }
 
 // UpdateResult contains the result of an update operation
@@ -69,6 +77,22 @@ const (
 	StageCleanup     = "cleanup"
 	StageCompleted   = "completed"
 )
+
+// layerProgress tracks progress for a single image layer
+type layerProgress struct {
+	ID      string `json:"id"`
+	Status  string `json:"status"`
+	Current int64  `json:"current"`
+	Total   int64  `json:"total"`
+}
+
+// abs returns the absolute value of an integer
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
 
 // NewUpdateHandler creates a new update handler with runtime detection.
 // Detects Podman and Docker API version at initialization for efficiency.
@@ -131,9 +155,72 @@ func (h *UpdateHandler) UpdateContainer(ctx context.Context, req UpdateRequest) 
 		req.HealthTimeout = 120 // Match Python default
 	}
 
-	// Step 1: Pull new image
+	// Step 1: Pull new image with layer progress
 	h.sendProgress(containerID, StagePulling, fmt.Sprintf("Pulling image %s", newImage))
-	if err := h.dockerClient.PullImage(ctx, newImage); err != nil {
+
+	// Convert registry auth from handlers to docker package type
+	var dockerAuth *docker.RegistryAuth
+	if req.RegistryAuth != nil {
+		dockerAuth = &docker.RegistryAuth{
+			Username: req.RegistryAuth.Username,
+			Password: req.RegistryAuth.Password,
+		}
+	}
+
+	// Track layer progress state for aggregation
+	layerStatus := make(map[string]*layerProgress)
+	var lastBroadcast time.Time
+	var lastPercent int
+
+	err := h.dockerClient.PullImageWithProgress(ctx, newImage, dockerAuth, func(progress docker.PullProgress) {
+		// Update layer tracking
+		if progress.ID == "" {
+			return // Skip non-layer messages
+		}
+
+		layer, exists := layerStatus[progress.ID]
+		if !exists {
+			layer = &layerProgress{}
+			layerStatus[progress.ID] = layer
+		}
+
+		layer.ID = progress.ID
+		layer.Status = progress.Status
+		layer.Current = progress.ProgressDetail.Current
+		if progress.ProgressDetail.Total > 0 {
+			layer.Total = progress.ProgressDetail.Total
+		}
+
+		// Calculate overall progress
+		var totalBytes, downloadedBytes int64
+		for _, l := range layerStatus {
+			if l.Total > 0 {
+				totalBytes += l.Total
+				downloadedBytes += l.Current
+			}
+		}
+
+		overallPercent := 0
+		if totalBytes > 0 {
+			overallPercent = int((downloadedBytes * 100) / totalBytes)
+		}
+
+		// Throttle broadcasts: every 500ms OR 5% change OR completion events
+		now := time.Now()
+		isCompletion := strings.Contains(strings.ToLower(progress.Status), "complete") ||
+			progress.Status == "Already exists"
+		shouldBroadcast := now.Sub(lastBroadcast) >= 500*time.Millisecond ||
+			abs(overallPercent-lastPercent) >= 5 ||
+			isCompletion
+
+		if shouldBroadcast {
+			h.sendLayerProgress(containerID, layerStatus, overallPercent)
+			lastBroadcast = now
+			lastPercent = overallPercent
+		}
+	})
+
+	if err != nil {
 		return nil, h.fail(containerID, StagePulling, fmt.Errorf("failed to pull image: %w", err))
 	}
 
@@ -879,6 +966,76 @@ func (h *UpdateHandler) sendProgress(containerID, stage, message string) {
 
 	if err := h.sendEvent("update_progress", progress); err != nil {
 		h.log.WithError(err).Warn("Failed to send update progress")
+	}
+}
+
+// sendLayerProgress sends layer-by-layer pull progress to the backend.
+func (h *UpdateHandler) sendLayerProgress(containerID string, layers map[string]*layerProgress, overallPercent int) {
+	shortID := containerID
+	if len(shortID) > 12 {
+		shortID = shortID[:12]
+	}
+
+	// Build layer list for frontend (match Python format)
+	layerList := make([]map[string]interface{}, 0, len(layers))
+	var downloading, extracting, complete, cached int
+
+	for _, layer := range layers {
+		percent := 0
+		if layer.Total > 0 {
+			percent = int((layer.Current * 100) / layer.Total)
+		}
+
+		layerList = append(layerList, map[string]interface{}{
+			"id":      layer.ID,
+			"status":  layer.Status,
+			"current": layer.Current,
+			"total":   layer.Total,
+			"percent": percent,
+		})
+
+		// Count layer states for summary
+		switch layer.Status {
+		case "Downloading":
+			downloading++
+		case "Extracting":
+			extracting++
+		case "Already exists":
+			cached++
+		case "Pull complete", "Download complete":
+			complete++
+		}
+	}
+
+	// Build summary message
+	totalLayers := len(layers)
+	var summary string
+	if downloading > 0 {
+		summary = fmt.Sprintf("Downloading %d of %d layers (%d%%)", downloading, totalLayers, overallPercent)
+	} else if extracting > 0 {
+		summary = fmt.Sprintf("Extracting %d of %d layers (%d%%)", extracting, totalLayers, overallPercent)
+	} else if complete == totalLayers {
+		if cached > 0 {
+			summary = fmt.Sprintf("Pull complete (%d layers, %d cached)", totalLayers, cached)
+		} else {
+			summary = fmt.Sprintf("Pull complete (%d layers)", totalLayers)
+		}
+	} else {
+		summary = fmt.Sprintf("Pulling image (%d%%)", overallPercent)
+	}
+
+	progress := map[string]interface{}{
+		"container_id":     shortID,
+		"overall_progress": overallPercent,
+		"layers":           layerList,
+		"total_layers":     totalLayers,
+		"remaining_layers": 0,
+		"summary":          summary,
+		"speed_mbps":       0.0, // Speed calculation would require timing, skip for now
+	}
+
+	if err := h.sendEvent("update_layer_progress", progress); err != nil {
+		h.log.WithError(err).Debug("Failed to send layer progress")
 	}
 }
 

@@ -1,8 +1,11 @@
 package docker
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -17,6 +20,7 @@ import (
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/api/types/registry"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/darthnorse/dockmon-agent/internal/config"
@@ -288,6 +292,93 @@ func (c *Client) PullImage(ctx context.Context, imageName string) error {
 	_, err = io.Copy(io.Discard, reader)
 	if err != nil {
 		return fmt.Errorf("failed to read pull response: %w", err)
+	}
+
+	return nil
+}
+
+// PullProgress represents a layer progress event from Docker image pull.
+// Docker sends JSON lines with progress info for each layer.
+type PullProgress struct {
+	ID             string `json:"id"`              // Layer ID (e.g., "a1b2c3d4e5f6")
+	Status         string `json:"status"`          // Status message (e.g., "Downloading", "Pull complete")
+	Progress       string `json:"progress"`        // Progress bar string (e.g., "[=====>   ]")
+	ProgressDetail struct {
+		Current int64 `json:"current"` // Bytes downloaded
+		Total   int64 `json:"total"`   // Total bytes
+	} `json:"progressDetail"`
+}
+
+// RegistryAuth contains credentials for authenticating with a Docker registry.
+// Used when pulling images from private registries.
+type RegistryAuth struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+// encodeRegistryAuth encodes registry credentials to base64 JSON format
+// required by Docker's ImagePull API.
+func encodeRegistryAuth(auth *RegistryAuth) string {
+	if auth == nil || auth.Username == "" {
+		return ""
+	}
+	authConfig := registry.AuthConfig{
+		Username: auth.Username,
+		Password: auth.Password,
+	}
+	encodedJSON, err := json.Marshal(authConfig)
+	if err != nil {
+		return ""
+	}
+	return base64.URLEncoding.EncodeToString(encodedJSON)
+}
+
+// PullImageWithProgress pulls a Docker image and calls the callback for each progress event.
+// Progress reporting is best-effort - parsing errors don't fail the pull.
+// auth is optional - pass nil for public registries.
+func (c *Client) PullImageWithProgress(ctx context.Context, imageName string, auth *RegistryAuth, onProgress func(PullProgress)) error {
+	pullOpts := image.PullOptions{}
+	if encodedAuth := encodeRegistryAuth(auth); encodedAuth != "" {
+		pullOpts.RegistryAuth = encodedAuth
+		c.log.Debug("Using registry authentication for image pull")
+	}
+
+	reader, err := c.cli.ImagePull(ctx, imageName, pullOpts)
+	if err != nil {
+		return fmt.Errorf("failed to pull image: %w", err)
+	}
+	defer reader.Close()
+
+	// Parse JSON lines from the progress stream
+	scanner := bufio.NewScanner(reader)
+	// Increase buffer size for large progress messages
+	buf := make([]byte, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		var progress PullProgress
+		if err := json.Unmarshal(line, &progress); err != nil {
+			// Best effort - skip malformed lines, don't fail the pull
+			continue
+		}
+
+		// Call progress callback (best effort, ignore panics)
+		if onProgress != nil {
+			func() {
+				defer func() { recover() }()
+				onProgress(progress)
+			}()
+		}
+	}
+
+	// Scanner error doesn't fail the pull - image may already be pulled
+	if err := scanner.Err(); err != nil {
+		c.log.WithError(err).Debug("Scanner error during image pull (non-fatal)")
 	}
 
 	return nil

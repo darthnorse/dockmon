@@ -13,6 +13,7 @@ import (
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/darthnorse/dockmon-agent/internal/docker"
 	dockercli "github.com/docker/cli/cli/command"
+	clitypes "github.com/docker/cli/cli/config/types"
 	"github.com/docker/cli/cli/flags"
 	"github.com/docker/compose/v2/pkg/api"
 	"github.com/docker/compose/v2/pkg/compose"
@@ -29,15 +30,24 @@ type DeployHandler struct {
 
 // DeployComposeRequest is sent from backend to agent
 type DeployComposeRequest struct {
-	DeploymentID   string            `json:"deployment_id"`
-	ProjectName    string            `json:"project_name"`
-	ComposeContent string            `json:"compose_content"`
-	Environment    map[string]string `json:"environment,omitempty"`
-	Action         string            `json:"action"`         // "up", "down", "restart"
-	RemoveVolumes  bool              `json:"remove_volumes"` // Only for "down" action, default false
-	Profiles       []string          `json:"profiles,omitempty"`
-	WaitForHealthy bool              `json:"wait_for_healthy,omitempty"`
-	HealthTimeout  int               `json:"health_timeout,omitempty"`
+	DeploymentID        string                `json:"deployment_id"`
+	ProjectName         string                `json:"project_name"`
+	ComposeContent      string                `json:"compose_content"`
+	Environment         map[string]string     `json:"environment,omitempty"`
+	Action              string                `json:"action"`         // "up", "down", "restart"
+	RemoveVolumes       bool                  `json:"remove_volumes"` // Only for "down" action, default false
+	Profiles            []string              `json:"profiles,omitempty"`
+	WaitForHealthy      bool                  `json:"wait_for_healthy,omitempty"`
+	HealthTimeout       int                   `json:"health_timeout,omitempty"`
+	RegistryCredentials []RegistryCredential  `json:"registry_credentials,omitempty"`
+}
+
+// RegistryCredential holds credentials for a Docker registry.
+// Used to authenticate when pulling images from private registries.
+type RegistryCredential struct {
+	RegistryURL string `json:"registry_url"`
+	Username    string `json:"username"`
+	Password    string `json:"password"`
 }
 
 // DeployComposeResult is sent from agent to backend on completion
@@ -114,8 +124,10 @@ func testComposeLibrary() error {
 	return nil
 }
 
-// createComposeService creates a new compose service connected to Docker
-func (h *DeployHandler) createComposeService(ctx context.Context) (api.Compose, *dockercli.DockerCli, error) {
+// createComposeService creates a new compose service connected to Docker.
+// If registry credentials are provided, they are configured on the CLI
+// so that compose can authenticate when pulling images from private registries.
+func (h *DeployHandler) createComposeService(ctx context.Context, credentials []RegistryCredential) (api.Compose, *dockercli.DockerCli, error) {
 	cli, err := dockercli.NewDockerCli()
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create Docker CLI: %w", err)
@@ -127,6 +139,36 @@ func (h *DeployHandler) createComposeService(ctx context.Context) (api.Compose, 
 		// created the client yet, and calling Close() on nil would panic.
 		// The client is only created during successful Initialize.
 		return nil, nil, fmt.Errorf("failed to initialize Docker CLI: %w", err)
+	}
+
+	// Configure registry credentials on the CLI's in-memory config.
+	// This allows compose to authenticate when pulling images from private registries.
+	if len(credentials) > 0 {
+		configFile := cli.ConfigFile()
+		if configFile.AuthConfigs == nil {
+			configFile.AuthConfigs = make(map[string]clitypes.AuthConfig)
+		}
+
+		for _, cred := range credentials {
+			serverAddr := cred.RegistryURL
+			// Normalize Docker Hub addresses
+			if serverAddr == "" || serverAddr == "docker.io" {
+				serverAddr = "https://index.docker.io/v1/"
+			}
+
+			configFile.AuthConfigs[serverAddr] = clitypes.AuthConfig{
+				Username:      cred.Username,
+				Password:      cred.Password,
+				ServerAddress: serverAddr,
+			}
+			h.log.WithField("registry", cred.RegistryURL).Debug("Configured registry credentials")
+		}
+
+		// Disable external credential stores to ensure our in-memory credentials are used.
+		// This prevents conflicts with any credential helpers configured on the host.
+		configFile.CredentialsStore = ""
+
+		h.log.WithField("count", len(credentials)).Info("Registry credentials configured for compose")
 	}
 
 	composeService := compose.NewComposeService(cli)
@@ -240,9 +282,9 @@ func (h *DeployHandler) writeComposeFile(content string) (string, error) {
 func (h *DeployHandler) runComposeUp(ctx context.Context, req DeployComposeRequest, composeFile string) *DeployComposeResult {
 	h.sendProgress(req.DeploymentID, DeployStageExecuting, "Running compose up...")
 
-	// Create compose service
+	// Create compose service with registry credentials for private image pulls
 	h.mu.Lock()
-	composeService, cli, err := h.createComposeService(ctx)
+	composeService, cli, err := h.createComposeService(ctx, req.RegistryCredentials)
 	h.mu.Unlock()
 
 	if err != nil {
@@ -333,9 +375,9 @@ func (h *DeployHandler) runComposeUp(ctx context.Context, req DeployComposeReque
 func (h *DeployHandler) runComposeDown(ctx context.Context, req DeployComposeRequest, composeFile string) *DeployComposeResult {
 	h.sendProgress(req.DeploymentID, DeployStageExecuting, "Running compose down...")
 
-	// Create compose service
+	// Create compose service (credentials not typically needed for down, but passed for consistency)
 	h.mu.Lock()
-	composeService, cli, err := h.createComposeService(ctx)
+	composeService, cli, err := h.createComposeService(ctx, req.RegistryCredentials)
 	h.mu.Unlock()
 
 	if err != nil {

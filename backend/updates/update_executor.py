@@ -111,6 +111,7 @@ class UpdateExecutor:
                 agent_manager=AgentManager(monitor=self.monitor),
                 agent_command_executor=get_agent_command_executor(),
                 monitor=self.monitor,
+                get_registry_credentials=self._get_registry_credentials,
             )
         return self._agent_executor
 

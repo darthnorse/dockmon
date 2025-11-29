@@ -445,6 +445,18 @@ class DirectDockerConnector(HostConnector):
 
         client = self._get_client()
 
+        # Look up registry credentials for the image
+        auth_config = None
+        try:
+            from utils.registry_credentials import get_registry_credentials
+            from database import DatabaseManager
+            db = DatabaseManager()
+            auth_config = get_registry_credentials(db, image)
+            if auth_config:
+                logger.debug(f"Using registry credentials for deployment image pull: {image}")
+        except Exception as e:
+            logger.warning(f"Failed to get registry credentials for deployment: {e}")
+
         # If deployment_id provided, use layer-by-layer progress tracking
         if deployment_id:
             # Get connection_manager from docker_monitor for WebSocket broadcasting
@@ -467,12 +479,17 @@ class DirectDockerConnector(HostConnector):
                 image=image,
                 host_id=self.host_id,
                 entity_id=deployment_id,
+                auth_config=auth_config,
                 event_type="deployment_layer_progress",
                 timeout=1800  # 30 minutes
             )
         else:
             # Fallback: Simple pull without progress (for backward compatibility)
-            await async_docker_call(client.images.pull, image)
+            # Also use auth_config if available
+            if auth_config:
+                await async_docker_call(client.images.pull, image, auth_config=auth_config)
+            else:
+                await async_docker_call(client.images.pull, image)
 
     async def list_networks(self) -> List[Dict[str, Any]]:
         """List Docker networks"""

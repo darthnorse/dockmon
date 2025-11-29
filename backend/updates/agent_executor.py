@@ -50,6 +50,7 @@ class AgentUpdateExecutor:
         agent_manager=None,
         agent_command_executor=None,
         monitor=None,
+        get_registry_credentials: Callable = None,
     ):
         """
         Initialize Agent update executor.
@@ -59,11 +60,13 @@ class AgentUpdateExecutor:
             agent_manager: AgentManager for getting agent IDs
             agent_command_executor: AgentCommandExecutor for sending commands
             monitor: DockerMonitor instance (for container info)
+            get_registry_credentials: Callback to get registry auth for an image
         """
         self.db = db
         self.agent_manager = agent_manager
         self.agent_command_executor = agent_command_executor
         self.monitor = monitor
+        self.get_registry_credentials = get_registry_credentials
 
     async def execute(
         self,
@@ -113,6 +116,20 @@ class AgentUpdateExecutor:
             # Agent handles the full workflow autonomously (network resilient)
             await progress_callback("initiating", 5, "Sending update command to agent")
 
+            # Look up registry credentials for the image
+            registry_auth = None
+            if self.get_registry_credentials:
+                try:
+                    creds = self.get_registry_credentials(context.new_image)
+                    if creds:
+                        registry_auth = {
+                            "username": creds["username"],
+                            "password": creds["password"]
+                        }
+                        logger.info(f"Including registry credentials for agent image pull")
+                except Exception as e:
+                    logger.warning(f"Failed to get registry credentials, continuing without auth: {e}")
+
             # CORRECT command format for agent
             # Agent expects: type="command", command="update_container", payload={...}
             command = {
@@ -123,6 +140,7 @@ class AgentUpdateExecutor:
                     "new_image": context.new_image,
                     "stop_timeout": 30,
                     "health_timeout": 120,
+                    "registry_auth": registry_auth,
                 }
             }
 

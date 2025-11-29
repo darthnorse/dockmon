@@ -285,6 +285,18 @@ class AgentDeploymentExecutor:
             )
             return False
 
+        # Get all registry credentials for compose deployment
+        # We pass all stored credentials since we don't know which registries
+        # the compose file might reference
+        registry_credentials = []
+        try:
+            from utils.registry_credentials import get_all_registry_credentials
+            registry_credentials = get_all_registry_credentials(self.db)
+            if registry_credentials:
+                logger.info(f"Including {len(registry_credentials)} registry credentials for compose deployment")
+        except Exception as e:
+            logger.warning(f"Failed to get registry credentials for compose deployment: {e}")
+
         # Build deploy_compose command
         command = {
             "type": "command",
@@ -298,6 +310,7 @@ class AgentDeploymentExecutor:
                 "profiles": profiles or [],
                 "wait_for_healthy": wait_for_healthy,
                 "health_timeout": health_timeout,
+                "registry_credentials": registry_credentials,
             }
         }
 
@@ -721,9 +734,20 @@ class AgentDeploymentExecutor:
             "stage": deployment.current_stage or "",
         }
 
+        # Map status to event type (must match frontend expectations)
+        # Frontend expects: deployment_created, deployment_progress, deployment_completed,
+        #                   deployment_failed, deployment_rolled_back
+        status_to_event = {
+            "running": "deployment_completed",
+            "partial": "deployment_completed",  # Partial is still a completion state
+            "failed": "deployment_failed",
+            "rolled_back": "deployment_rolled_back",
+        }
+        event_type = status_to_event.get(deployment.status, "deployment_progress")
+
         # Base payload structure
         payload = {
-            "type": f"deployment_{deployment.status}",
+            "type": event_type,
             "deployment_id": deployment.id,
             "host_id": deployment.host_id,
             "name": deployment.name,

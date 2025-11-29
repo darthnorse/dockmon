@@ -397,6 +397,11 @@ class AgentWebSocketHandler:
                 # Forward to UI for real-time progress display
                 await self._handle_update_progress(payload)
 
+            elif event_type == "update_layer_progress":
+                # Layer-by-layer image pull progress from agent
+                # Forward to UI for real-time layer progress display
+                await self._handle_update_layer_progress(payload)
+
             elif event_type == "update_complete":
                 # Container update completed - contains new container ID
                 # Must update database records with new ID
@@ -857,6 +862,38 @@ class AgentWebSocketHandler:
         except Exception as e:
             logger.error(f"Error handling update progress: {e}", exc_info=True)
 
+    async def _handle_update_layer_progress(self, payload: dict):
+        """
+        Handle layer-by-layer image pull progress from agent.
+
+        Broadcasts detailed layer progress to UI for real-time display during
+        container updates. Uses same format as local Docker SDK updates.
+        """
+        try:
+            if not self.monitor or not hasattr(self.monitor, 'manager'):
+                logger.debug(f"WebSocket manager not available for agent {self.agent_id}")
+                return
+
+            container_id = self._truncate_container_id(payload.get("container_id"))
+
+            # Forward layer progress to UI with correct event type
+            await self.monitor.manager.broadcast({
+                "type": "container_update_layer_progress",
+                "data": {
+                    "host_id": self.host_id or self.agent_id,
+                    "entity_id": container_id,
+                    "overall_progress": payload.get("overall_progress", 0),
+                    "layers": payload.get("layers", []),
+                    "total_layers": payload.get("total_layers", 0),
+                    "remaining_layers": payload.get("remaining_layers", 0),
+                    "summary": payload.get("summary", ""),
+                    "speed_mbps": payload.get("speed_mbps", 0.0),
+                }
+            })
+
+        except Exception as e:
+            logger.error(f"Error handling update layer progress: {e}", exc_info=True)
+
     async def _handle_update_complete(self, payload: dict):
         """
         Handle update completion event from agent.
@@ -997,18 +1034,8 @@ class AgentWebSocketHandler:
                 f"services={len(services)}"
             )
 
-            # Broadcast to UI via WebSocket
-            if self.monitor and hasattr(self.monitor, 'manager'):
-                await self.monitor.manager.broadcast({
-                    "type": "deployment_complete",
-                    "data": {
-                        "deployment_id": deployment_id,
-                        "host_id": self.host_id,
-                        "success": success,
-                        "services_count": len(services),
-                        "error": payload.get("error"),
-                    }
-                })
+            # Note: Broadcast handled by AgentDeploymentExecutor._emit_deployment_event()
+            # which uses correct event type (deployment_completed) and payload format
 
         except Exception as e:
             logger.error(f"Error handling deploy complete: {e}", exc_info=True)

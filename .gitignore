@@ -112,4 +112,3 @@ htmlcov/
 # Compiled Go binaries (built during Docker build)
 stats-service/stats-service
 agent/dockmon-agent-logs-fix
-agent/dockmon-agent

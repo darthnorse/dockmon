@@ -5,7 +5,7 @@
  */
 
 import { useState, useRef, useEffect } from 'react'
-import { X, Search, Check, Bell, Send, MessageSquare, Hash, Smartphone, Mail, Globe } from 'lucide-react'
+import { X, Search, Check, Bell, BellRing, Send, MessageSquare, Hash, Smartphone, Mail, Globe } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { useCreateAlertRule, useUpdateAlertRule } from '../hooks/useAlertRules'
 import { useNotificationChannels } from '../hooks/useNotificationChannels'
@@ -174,6 +174,7 @@ const NOTIFICATION_CHANNELS = [
   { value: 'discord', label: 'Discord', icon: MessageSquare },
   { value: 'slack', label: 'Slack', icon: Hash },
   { value: 'gotify', label: 'Gotify', icon: Bell },
+  { value: 'ntfy', label: 'ntfy', icon: BellRing },
   { value: 'smtp', label: 'Email (SMTP)', icon: Mail },
   { value: 'webhook', label: 'Webhook', icon: Globe },
 ]

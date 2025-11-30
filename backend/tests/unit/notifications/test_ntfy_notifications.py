@@ -46,9 +46,9 @@ class TestNtfyNotifications:
         # Verify URL format: server_url/topic
         assert call_args[0][0] == 'https://ntfy.sh/dockmon-alerts'
 
-        # Verify payload
-        payload = call_args[1]['json']
-        assert payload['message'] == 'Container nginx stopped'
+        # Verify message sent as plain text content
+        content = call_args[1]['content']
+        assert content == 'Container nginx stopped'
 
     @pytest.mark.asyncio
     async def test_ntfy_self_hosted_server(self, notification_service):
@@ -109,9 +109,9 @@ class TestNtfyNotifications:
         result = await notification_service._send_ntfy(config, message, event=mock_event)
 
         assert result is True
-        payload = notification_service.http_client.post.call_args[1]['json']
-        assert 'title' in payload
-        assert 'nginx' in payload['title'] or 'DockMon' in payload['title']
+        headers = notification_service.http_client.post.call_args[1]['headers']
+        assert 'Title' in headers
+        assert 'nginx' in headers['Title'] or 'DockMon' in headers['Title']
 
     @pytest.mark.asyncio
     async def test_ntfy_with_priority(self, notification_service):
@@ -134,10 +134,10 @@ class TestNtfyNotifications:
         result = await notification_service._send_ntfy(config, message, event=mock_event)
 
         assert result is True
-        payload = notification_service.http_client.post.call_args[1]['json']
-        assert 'priority' in payload
+        headers = notification_service.http_client.post.call_args[1]['headers']
+        assert 'Priority' in headers
         # Critical events should have high priority (4 or 5)
-        assert payload['priority'] >= 4
+        assert int(headers['Priority']) >= 4
 
     @pytest.mark.asyncio
     async def test_ntfy_with_access_token(self, notification_service):
@@ -315,10 +315,14 @@ class TestNtfyNotifications:
         result = await notification_service._send_ntfy(config, message)
 
         assert result is True
-        payload = notification_service.http_client.post.call_args[1]['json']
+        call_args = notification_service.http_client.post.call_args
+        # Message sent as plain text body via content= parameter
+        content = call_args[1]['content']
         # Markdown should be stripped
-        assert '**' not in payload['message']
-        assert '`' not in payload['message']
+        assert '**' not in content
+        assert '`' not in content
+        assert 'Alert' in content
+        assert 'nginx' in content
 
     @pytest.mark.asyncio
     async def test_ntfy_strips_emojis(self, notification_service):
@@ -327,7 +331,7 @@ class TestNtfyNotifications:
             'server_url': 'https://ntfy.sh',
             'topic': 'alerts'
         }
-        message = 'Container stopped'
+        message = '\U0001f6a8 Container stopped \U0001f534'  # siren and red circle emojis
 
         mock_response = Mock()
         mock_response.raise_for_status = Mock()
@@ -336,10 +340,11 @@ class TestNtfyNotifications:
         result = await notification_service._send_ntfy(config, message)
 
         assert result is True
-        payload = notification_service.http_client.post.call_args[1]['json']
+        content = notification_service.http_client.post.call_args[1]['content']
         # Common alert emojis should be stripped
-        assert '\U0001f6a8' not in payload['message']  # siren emoji
-        assert '\U0001f534' not in payload['message']  # red circle
+        assert '\U0001f6a8' not in content  # siren emoji
+        assert '\U0001f534' not in content  # red circle
+        assert 'Container stopped' in content
 
     @pytest.mark.asyncio
     async def test_ntfy_default_title(self, notification_service):
@@ -357,8 +362,8 @@ class TestNtfyNotifications:
         result = await notification_service._send_ntfy(config, message, event=None, title="Custom Title")
 
         assert result is True
-        payload = notification_service.http_client.post.call_args[1]['json']
-        assert payload['title'] == 'Custom Title'
+        headers = notification_service.http_client.post.call_args[1]['headers']
+        assert headers['Title'] == 'Custom Title'
 
     @pytest.mark.asyncio
     async def test_ntfy_with_tags(self, notification_service):
@@ -380,6 +385,7 @@ class TestNtfyNotifications:
         result = await notification_service._send_ntfy(config, message, event=mock_event)
 
         assert result is True
-        payload = notification_service.http_client.post.call_args[1]['json']
+        headers = notification_service.http_client.post.call_args[1]['headers']
         # Tags should be present for critical events
-        assert 'tags' in payload
+        assert 'Tags' in headers
+        assert 'warning' in headers['Tags']

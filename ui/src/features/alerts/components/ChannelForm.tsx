@@ -6,7 +6,7 @@
 
 import { useState } from 'react'
 import { NotificationChannel, ChannelCreateRequest } from '../hooks/useNotificationChannels'
-import { Smartphone, Send, MessageSquare, Hash, Bell, Mail, Webhook } from 'lucide-react'
+import { Smartphone, Send, MessageSquare, Hash, Bell, BellRing, Mail, Webhook } from 'lucide-react'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
 interface Props {
@@ -24,6 +24,7 @@ const CHANNEL_TYPES = [
   { value: 'slack', label: 'Slack', icon: Hash },
   { value: 'pushover', label: 'Pushover', icon: Smartphone },
   { value: 'gotify', label: 'Gotify', icon: Bell },
+  { value: 'ntfy', label: 'ntfy', icon: BellRing },
   { value: 'smtp', label: 'Email (SMTP)', icon: Mail },
   { value: 'webhook', label: 'Webhook', icon: Webhook },
 ]
@@ -104,6 +105,14 @@ export function ChannelForm({ channel, onSubmit, onCancel, onTest, isSubmitting,
         }
         if (!formData.config.app_token) {
           newErrors['config.app_token'] = 'App token is required'
+        }
+        break
+      case 'ntfy':
+        if (!formData.config.server_url) {
+          newErrors['config.server_url'] = 'Server URL is required'
+        }
+        if (!formData.config.topic) {
+          newErrors['config.topic'] = 'Topic is required'
         }
         break
       case 'smtp':
@@ -329,6 +338,46 @@ export function ChannelForm({ channel, onSubmit, onCancel, onTest, isSubmitting,
               />
               {errors['config.app_token'] && <p className="mt-1 text-xs text-red-400">{errors['config.app_token']}</p>}
               <p className="mt-1 text-xs text-gray-400">Create an app in Gotify to get token</p>
+            </div>
+          </>
+        )}
+
+        {formData.type === 'ntfy' && (
+          <>
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">Server URL *</label>
+              <input
+                type="url"
+                value={formData.config.server_url || ''}
+                onChange={(e) => handleConfigChange('server_url', e.target.value)}
+                placeholder="https://ntfy.sh"
+                className={`w-full rounded-md border ${errors['config.server_url'] ? 'border-red-500' : 'border-gray-700'} bg-gray-800 px-3 py-2 text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500`}
+              />
+              {errors['config.server_url'] && <p className="mt-1 text-xs text-red-400">{errors['config.server_url']}</p>}
+              <p className="mt-1 text-xs text-gray-400">Use https://ntfy.sh or your self-hosted instance</p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">Topic *</label>
+              <input
+                type="text"
+                value={formData.config.topic || ''}
+                onChange={(e) => handleConfigChange('topic', e.target.value)}
+                placeholder="dockmon-alerts"
+                className={`w-full rounded-md border ${errors['config.topic'] ? 'border-red-500' : 'border-gray-700'} bg-gray-800 px-3 py-2 text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500`}
+              />
+              {errors['config.topic'] && <p className="mt-1 text-xs text-red-400">{errors['config.topic']}</p>}
+              <p className="mt-1 text-xs text-gray-400">The topic/channel name to publish to</p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">Access Token (optional)</label>
+              <input
+                type="password"
+                value={formData.config.access_token || ''}
+                onChange={(e) => handleConfigChange('access_token', e.target.value)}
+                placeholder="tk_..."
+                className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+              <p className="mt-1 text-xs text-gray-400">Required for authenticated servers (Settings &gt; Access tokens)</p>
             </div>
           </>
         )}

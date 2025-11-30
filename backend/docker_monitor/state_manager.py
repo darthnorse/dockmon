@@ -13,6 +13,7 @@ from fastapi import HTTPException
 from database import DatabaseManager
 from utils.keys import make_composite_key
 from utils.async_docker import async_docker_call
+from utils.cache import CACHE_REGISTRY
 from models.docker_models import DockerHost, derive_container_tags
 from models.settings_models import GlobalSettings
 
@@ -167,6 +168,10 @@ class StateManager:
                 logger.info(f"Updated tags for container {container_name} on host {host_id}: ordered={ordered_tags}")
             else:
                 logger.info(f"Updated tags for container {container_name} on host {host_id}: +{tags_to_add}, -{tags_to_remove}")
+
+            # Invalidate container discovery cache so next request gets fresh tags
+            if 'discover_containers_for_host' in CACHE_REGISTRY:
+                CACHE_REGISTRY['discover_containers_for_host'].invalidate()
 
             return {
                 "success": True,

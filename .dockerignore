@@ -3,6 +3,9 @@
 .gitignore
 .github
 
+# Agent (v2.2.0 - not included in main Docker image)
+agent
+
 # Documentation
 README.md
 *.md

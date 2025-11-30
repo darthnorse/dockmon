@@ -3,15 +3,21 @@
 .gitignore
 .github
 
+# Agent (v2.2.0 - not included in main Docker image)
+agent
+
 # Documentation
 README.md
 *.md
 wiki-content
 
-# Tests
+# Tests (never include in Docker image)
+**/tests
 tests
 test-results
 playwright-report
+backend/tests
+ui/tests
 
 # Node modules and build artifacts (exclude from all directories)
 **/node_modules
@@ -45,6 +51,8 @@ venv
 env
 .pytest_cache
 .mypy_cache
+pytest.ini
+backend/pytest.ini
 
 # Backend data (dev database)
 backend/data

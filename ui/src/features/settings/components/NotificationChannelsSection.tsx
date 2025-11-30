@@ -4,7 +4,7 @@
  */
 
 import { useState } from 'react'
-import { Plus, Trash2, Edit, Power, PowerOff, Bell } from 'lucide-react'
+import { Plus, Trash2, Edit, Power, PowerOff, Bell, BellRing } from 'lucide-react'
 import { Smartphone, Send, MessageSquare, Hash, Mail } from 'lucide-react'
 import {
   useNotificationChannels,
@@ -24,6 +24,7 @@ const CHANNEL_ICONS: Record<string, any> = {
   slack: Hash,
   pushover: Smartphone,
   gotify: Bell,
+  ntfy: BellRing,
   smtp: Mail,
 }
 

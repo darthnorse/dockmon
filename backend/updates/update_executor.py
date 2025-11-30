@@ -25,6 +25,7 @@ from utils.container_health import wait_for_container_health
 from utils.image_pull_progress import ImagePullProgress
 from utils.keys import make_composite_key, parse_composite_key
 from utils.network_helpers import manually_connect_networks
+from utils.cache import CACHE_REGISTRY
 from updates.container_validator import ContainerValidator, ValidationResult
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,7 @@ _MANUAL_NETWORKING_CONFIG_KEY = '_dockmon_manual_networking_config'
 
 # Docker container ID length (short format)
 CONTAINER_ID_SHORT_LENGTH = 12
+
 
 
 class UpdateExecutor:
@@ -416,8 +418,26 @@ class UpdateExecutor:
                 update_record.latest_image
             )
 
-            # Step 1b: Inspect new image to get labels for intelligent merge
+            # Step 1b: Inspect OLD image to get its labels (for subtraction)
+            logger.info(f"Inspecting old image labels: {old_container.image}")
+            old_image_labels = {}
+            try:
+                old_image = await async_docker_call(
+                    docker_client.images.get,
+                    old_container.image.id
+                )
+                old_image_labels = old_image.attrs.get("Config", {}).get("Labels", {}) or {}
+                logger.debug(f"Old image has {len(old_image_labels)} labels")
+            except Exception as e:
+                logger.warning(
+                    f"Failed to inspect old image labels: {e}. "
+                    f"Will preserve all container labels (safer fallback)."
+                )
+                # Fallback: empty dict means all container labels are treated as user-added
+
+            # Step 1c: Inspect NEW image to get its labels (for Docker auto-merge)
             logger.info(f"Inspecting new image labels: {update_record.latest_image}")
+            new_image_labels = {}
             try:
                 new_image = await async_docker_call(
                     docker_client.images.get,
@@ -426,13 +446,11 @@ class UpdateExecutor:
                 new_image_labels = new_image.attrs.get("Config", {}).get("Labels", {}) or {}
                 logger.debug(f"New image has {len(new_image_labels)} labels")
             except Exception as e:
-                # If image inspection fails (network issue, image deleted, etc.),
-                # proceed with old labels rather than crashing the update
                 logger.warning(
                     f"Failed to inspect new image labels: {e}. "
-                    f"Proceeding with old container labels only."
+                    f"Container will use old image labels."
                 )
-                new_image_labels = {}  # Fallback: no merge, preserve old labels
+                # Fallback: Docker will use whatever labels it has for the image
 
             # Step 2a: Find dependent containers (network_mode: container:this_container)
             # These must be recreated after update to point to new container ID
@@ -451,9 +469,22 @@ class UpdateExecutor:
 
             # Step 2b: Get full container configuration
             # (reuse old_container fetched during validation to avoid duplicate API call)
+            # v2.2.0: Use passthrough approach for config extraction
             logger.info("Getting container configuration")
             await self._broadcast_progress(host_id, container_id, "configuring", 35, "Reading container configuration")
-            container_config = await self._extract_container_config(old_container, new_image_labels=new_image_labels)
+
+            # Get is_podman flag for extraction (needed for Podman compatibility filtering)
+            is_podman = False
+            if self.monitor and hasattr(self.monitor, 'hosts') and host_id in self.monitor.hosts:
+                is_podman = getattr(self.monitor.hosts[host_id], 'is_podman', False)
+
+            container_config = await self._extract_container_config_v2(
+                old_container,
+                docker_client,  # v2 requires client for NetworkMode resolution
+                old_image_labels=old_image_labels,
+                new_image_labels=new_image_labels,
+                is_podman=is_podman
+            )
 
             # Step 3: Create backup of old container (stop + rename for rollback)
             logger.info(f"Creating backup of {container_name}")
@@ -488,15 +519,27 @@ class UpdateExecutor:
             )
 
             # Step 4: Create new container with updated image
+            # v2.2.0: Use passthrough approach for container creation
             logger.info(f"Creating new container with image {update_record.latest_image}")
             await self._broadcast_progress(host_id, container_id, "creating", 65, "Creating new container")
-            new_container = await self._create_container(
+
+            # is_podman was already retrieved earlier for extraction (line 513)
+            new_container = await self._create_container_v2(
                 docker_client,
                 update_record.latest_image,
-                container_config
+                container_config,
+                is_podman=is_podman
             )
             # Capture SHORT ID (12 chars) for event emission
             new_container_id = new_container.short_id
+
+            # Add new container to updating set to prevent auto-restart interference during rollback
+            # This prevents race condition where auto-restart tries to restart the new container
+            # while rollback is trying to remove it (Issue #69)
+            new_composite_key = make_composite_key(host_id, new_container_id)
+            with self._update_lock:
+                self.updating_containers.add(new_composite_key)
+            logger.debug(f"Added new container {new_composite_key} to updating set (prevents auto-restart during rollback)")
 
             # Step 5: Start new container (IMMEDIATELY to prevent backup from auto-restarting and stealing ports)
             logger.info(f"Starting new container {container_name}")
@@ -723,6 +766,10 @@ class UpdateExecutor:
             # These are containers using network_mode: container:this_container
             # They must be recreated to point to the new container ID
             if dependent_containers:
+                await self._broadcast_progress(
+                    host_id, new_container_id, "dependents", 92,
+                    f"Recreating {len(dependent_containers)} dependent container(s)"
+                )
                 logger.info(f"Recreating {len(dependent_containers)} dependent container(s)")
                 failed_dependents = []
 
@@ -732,7 +779,8 @@ class UpdateExecutor:
                         success = await self._recreate_dependent_container(
                             docker_client,
                             dep,
-                            new_container.id  # Full container ID for network_mode
+                            new_container.id,  # Full container ID for network_mode
+                            is_podman=is_podman  # Pass Podman flag (Issue #20)
                         )
                         if not success:
                             failed_dependents.append(dep['name'])
@@ -741,10 +789,23 @@ class UpdateExecutor:
                         failed_dependents.append(dep['name'])
 
                 if failed_dependents:
-                    logger.warning(
+                    warning_msg = (
                         f"Update succeeded but failed to recreate dependent containers: {', '.join(failed_dependents)}. "
                         f"Manual recreation may be required."
                     )
+                    logger.warning(warning_msg)
+                    # Broadcast warning to UI
+                    if self.monitor and hasattr(self.monitor, 'manager'):
+                        await self.monitor.manager.broadcast({
+                            "type": "container_update_warning",
+                            "data": {
+                                "host_id": host_id,
+                                "container_id": new_container_id,
+                                "container_name": container_name,
+                                "failed_dependents": failed_dependents,
+                                "warning": warning_msg,
+                            }
+                        })
                     # Don't fail the update - main container updated successfully
                     # User can manually recreate dependents if needed
                 else:
@@ -753,6 +814,11 @@ class UpdateExecutor:
             # Step 10: Cleanup backup container on success
             logger.info(f"Update successful, cleaning up backup container {backup_name}")
             await self._cleanup_backup_container(docker_client, backup_container, backup_name)
+
+            # Step 11: Invalidate cache to ensure fresh container discovery
+            for name, fn in CACHE_REGISTRY.items():
+                fn.invalidate()
+                logger.debug(f"Invalidated cache: {name}")
 
             logger.info(f"Successfully updated container {container_name}")
             await self._broadcast_progress(host_id, new_container_id, "completed", 100, "Update completed successfully")
@@ -814,9 +880,16 @@ class UpdateExecutor:
 
         finally:
             # Always remove from updating set when done (whether success or failure)
+            # Remove both old and new container IDs to prevent auto-restart interference (Issue #69)
             with self._update_lock:
-                self.updating_containers.discard(composite_key)
-            logger.debug(f"Removed {composite_key} from updating containers set")
+                self.updating_containers.discard(composite_key)  # Remove OLD container ID
+                # Remove NEW container ID if it was created (defensive check for early failures)
+                if 'new_container_id' in locals() and new_container_id:
+                    new_composite_key = make_composite_key(host_id, new_container_id)
+                    self.updating_containers.discard(new_composite_key)  # Remove NEW container ID
+                    logger.debug(f"Removed both old ({composite_key}) and new ({new_composite_key}) containers from updating set")
+                else:
+                    logger.debug(f"Removed {composite_key} from updating containers set (new container was not created)")
 
             # Re-evaluate alerts that may have been suppressed during the update
             # Use new container ID if available, otherwise fall back to old ID
@@ -912,312 +985,159 @@ class UpdateExecutor:
             logger.error(f"Error pulling image {image}: {e}")
             raise
 
-    def _merge_labels(
+    def _extract_user_labels(
         self,
-        old_labels: Dict[str, str],
-        new_image_labels: Dict[str, str] = None
+        old_container_labels: Dict[str, str],
+        old_image_labels: Dict[str, str]
     ) -> Dict[str, str]:
         """
-        Merge container labels for update operation.
+        Extract user-added labels by filtering out old image defaults.
 
-        Strategy: Preserve all old labels, but override with fresh image labels.
-        This ensures:
-        - Image metadata labels (version, created, etc.) are updated
-        - Compose labels (com.docker.compose.*) are preserved
-        - DockMon tracking labels (dockmon.*) are preserved
-        - User custom labels are preserved
+        This preserves user customizations while allowing new image labels to take effect.
+        Approach inspired by industry standard practices (Watchtower, Diun).
 
-        Note on label removal: Labels present in old container but not in new image
-        are PRESERVED. We cannot distinguish between "user added" vs "old image had it",
-        so preservation is safer (don't delete user data). Stale image labels are
-        unlikely since images typically add labels, not remove them.
+        Strategy:
+        1. Start with all container labels (includes image + user labels)
+        2. Remove labels that match old image defaults
+        3. Return only user-added/customized labels
+        4. Docker will automatically merge these with new image labels during creation
+
+        This fixes issues where stale image labels (removed from new image) would
+        persist and cause application failures (e.g., Immich Issue #69).
 
         Args:
-            old_labels: Labels from old container
-            new_image_labels: Labels from new image (optional)
+            old_container_labels: All labels from old container
+            old_image_labels: Labels from old image (for identifying defaults)
 
         Returns:
-            Merged labels dict
+            Dict with only user-added labels (compose, custom, infrastructure)
+
+        Example:
+            Old container: {"version": "1.0", "env": "prod", "author": "custom"}
+            Old image: {"version": "1.0", "author": "me"}
+            Result: {"env": "prod", "author": "custom"}
+            (version removed - matched image, env kept - user added, author kept - customized)
+
+            Then Docker creates container with new image:
+            New image: {"version": "2.0", "author": "newauthor"}
+            Final container: {"version": "2.0", "author": "custom", "env": "prod"}
+            (Docker merges new image labels + our extracted user labels)
         """
         # Defensive: Handle None inputs (Docker returns None for no labels)
-        if old_labels is None:
-            old_labels = {}
-        if new_image_labels is None:
-            new_image_labels = {}
+        if old_container_labels is None:
+            old_container_labels = {}
+        if old_image_labels is None:
+            old_image_labels = {}
 
-        if not new_image_labels:
-            # No new image labels provided - return old labels
-            return old_labels.copy() if old_labels else {}
+        # Start with all container labels
+        user_labels = old_container_labels.copy()
 
-        # Merge: old labels first, then override with new image labels
-        # When same key exists in both, new_image_labels wins (image is source of truth)
-        merged = {
-            **old_labels,        # Preserve compose, dockmon, custom labels
-            **new_image_labels   # Update image metadata labels
-        }
+        # Remove labels that match old image defaults
+        # (these will come from new image automatically)
+        for key, image_value in old_image_labels.items():
+            container_value = user_labels.get(key)
+            if container_value == image_value:
+                # Label matches old image default - remove it
+                # New image will provide updated value automatically
+                user_labels.pop(key, None)
 
-        logger.debug(
-            f"Label merge: {len(old_labels)} old + {len(new_image_labels)} image = "
-            f"{len(merged)} merged"
+        logger.info(
+            f"Label extraction: {len(old_container_labels)} container - "
+            f"{len(old_image_labels)} image defaults = "
+            f"{len(user_labels)} user labels to preserve"
         )
 
-        return merged
+        return user_labels
 
-    async def _extract_container_config(self, container, new_image_labels: Dict[str, str] = None) -> Dict[str, Any]:
+    def _extract_network_config(self, attrs: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
-        Extract container configuration for recreation.
+        Extract network configuration from container attributes.
 
-        Args:
-            container: Container object to extract config from
-            new_image_labels: Optional dict of labels from new image (for merging during updates)
+        Returns network configuration dict with 'network', 'network_mode',
+        and optionally '_dockmon_manual_networking_config' for complex setups.
 
-        Returns a dict with all necessary config to recreate the container.
+        This is extracted as a helper to support both v1 (field-by-field) and
+        v2 (passthrough) extraction approaches.
         """
-        attrs = container.attrs
-        config = attrs["Config"]
-        host_config = attrs["HostConfig"]
-        networking = attrs["NetworkSettings"]
+        networking = attrs.get("NetworkSettings", {})
+        host_config = attrs.get("HostConfig", {})
+        network_mode = host_config.get("NetworkMode")
+
+        result = {
+            "network": None,
+            "network_mode": None,
+        }
 
         def _extract_ipam_config(network_data):
-            """
-            Extract IPAM configuration only if user-configured (not auto-assigned).
-
-            Returns IPAMConfig dict if IPs were user-configured, None otherwise.
-            """
-            # Only preserve IPs if IPAMConfig exists in original config
-            # If IPAMConfig is null, IPs are auto-assigned by Docker
-            if not network_data.get("IPAMConfig"):
+            """Extract IPAM configuration only if user-configured (not auto-assigned)."""
+            # IPAMConfig exists when user explicitly set static IP
+            ipam_config_raw = network_data.get("IPAMConfig")
+            if not ipam_config_raw:
                 return None
 
+            # IPAMConfig dict contains the user's configuration
+            # Extract IPv4 and IPv6 addresses if present
             ipam_config = {}
-            if network_data.get("IPAddress"):
-                ipam_config["IPv4Address"] = network_data["IPAddress"]
-            if network_data.get("GlobalIPv6Address"):
-                ipam_config["IPv6Address"] = network_data["GlobalIPv6Address"]
+            if ipam_config_raw.get("IPv4Address"):
+                ipam_config["IPv4Address"] = ipam_config_raw["IPv4Address"]
+            if ipam_config_raw.get("IPv6Address"):
+                ipam_config["IPv6Address"] = ipam_config_raw["IPv6Address"]
 
             return ipam_config if ipam_config else None
 
-        # Extract network_mode early to check for conflicts
-        network_mode = host_config.get("NetworkMode")
-
-        # Docker field conflicts - these combinations are rejected by Docker API
-        # Handle during extraction to avoid runtime errors during container creation
-
-        # hostname conflicts with network_mode: container:X
-        # When using shared network mode, hostname comes from the network provider
-        hostname = None
-        if not (network_mode and network_mode.startswith("container:")):
-            hostname = config.get("Hostname")
-
-        # mac_address conflicts with network_mode: container:X
-        # MAC address comes from the network provider in shared mode
-        mac_address = None
-        if not (network_mode and network_mode.startswith("container:")):
-            mac_address = config.get("MacAddress")
-
-        container_config = {
-            "name": attrs["Name"].lstrip("/"),
-            "hostname": hostname,
-            "mac_address": mac_address,
-            "user": config.get("User"),
-            "detach": True,
-            "stdin_open": config.get("OpenStdin", False),
-            "tty": config.get("Tty", False),
-            "environment": config.get("Env", []),
-            "command": config.get("Cmd"),
-            "entrypoint": config.get("Entrypoint"),
-            "working_dir": config.get("WorkingDir"),
-            "labels": self._merge_labels(
-                old_labels=config.get("Labels", {}),
-                new_image_labels=new_image_labels
-            ),
-            "ports": {},
-            "volumes": {},
-            "network": None,
-            "restart_policy": host_config.get("RestartPolicy", {}),
-            "privileged": host_config.get("Privileged", False),
-            "cap_add": host_config.get("CapAdd"),
-            "cap_drop": host_config.get("CapDrop"),
-            "devices": host_config.get("Devices"),
-            "security_opt": host_config.get("SecurityOpt"),
-            "tmpfs": host_config.get("Tmpfs"),
-            "ulimits": host_config.get("Ulimits"),
-            "dns": host_config.get("Dns"),
-            "extra_hosts": host_config.get("ExtraHosts"),
-            "ipc_mode": host_config.get("IpcMode"),
-            "pid_mode": host_config.get("PidMode"),
-            "shm_size": host_config.get("ShmSize"),
-            # Phase 2: Critical config preservation (Issue #64)
-            "healthcheck": config.get("Healthcheck"),
-            "runtime": host_config.get("Runtime"),
-            "cpu_period": host_config.get("CpuPeriod"),
-            "cpu_quota": host_config.get("CpuQuota"),
-            "cpu_shares": host_config.get("CpuShares"),
-            "cpuset_cpus": host_config.get("CpusetCpus"),
-            "cpuset_mems": host_config.get("CpusetMems"),
-            "mem_limit": host_config.get("Memory"),
-            "mem_reservation": host_config.get("MemoryReservation"),
-            "memswap_limit": host_config.get("MemorySwap"),
-            "nano_cpus": host_config.get("NanoCpus"),
-            "oom_kill_disable": host_config.get("OomKillDisable"),
-            "pids_limit": host_config.get("PidsLimit"),
-            # Phase 3: High priority config (Issue #64)
-            "stop_timeout": host_config.get("StopTimeout"),
-            "read_only": host_config.get("ReadonlyRootfs"),
-            "sysctls": host_config.get("Sysctls"),
-            "group_add": host_config.get("GroupAdd"),
-            "log_config": host_config.get("LogConfig"),
-            "userns_mode": host_config.get("UsernsMode"),
-            "init": host_config.get("Init"),
-            "domainname": config.get("Domainname"),
-            "storage_opt": host_config.get("StorageOpt"),
-        }
-
-        # Extract port bindings (skip if using host networking - ports are ignored anyway)
-        if host_config.get("PortBindings") and network_mode != "host":
-            container_config["ports"] = host_config["PortBindings"]
-
-        # Extract volume bindings from legacy Binds format
-        if host_config.get("Binds"):
-            for bind in host_config["Binds"]:
-                parts = bind.split(":")
-                if len(parts) >= 2:
-                    host_path = parts[0]
-                    container_path = parts[1]
-                    mode = parts[2] if len(parts) > 2 else "rw"
-                    # CRITICAL: Use host_path as key (where data lives on host)
-                    # and container_path as bind value (where it mounts in container)
-                    container_config["volumes"][host_path] = {
-                        "bind": container_path,
-                        "mode": mode
-                    }
-
-        # Extract mounts from modern Docker API (Mounts array)
-        # This handles bind mounts and named volumes that may not be
-        # present in the legacy Binds format
-        mounts = attrs.get('Mounts', [])
-        for mount in mounts:
-            mount_type = mount.get('Type', '')
-            source = mount.get('Source', '')
-            # Handle both field names - Docker API returns 'Destination' for most mounts
-            # but Docker Compose secrets use 'Target'
-            destination = mount.get('Destination') or mount.get('Target', '')
-
-            # Handle both Mode string and ReadOnly boolean
-            # Docker secrets use ReadOnly: true, regular mounts use Mode: 'ro'
-            if mount.get('ReadOnly'):
-                mode = 'ro'
-            elif mount.get('RW') is False:
-                mode = 'ro'
-            else:
-                mode = mount.get('Mode') or 'rw'
-
-            if mount_type == 'bind' and source and destination:
-                # Bind mount: use host path as key
-                # Skip if already extracted from Binds
-                if source in container_config["volumes"]:
-                    logger.debug(f"Skipping duplicate bind mount: {source}")
-                    continue
-                container_config["volumes"][source] = {
-                    "bind": destination,
-                    "mode": mode
-                }
-                logger.debug(f"Extracted bind mount: {source} -> {destination} ({mode})")
-            elif mount_type == 'volume' and destination:
-                # Named volume: use volume name (not source path)
-                # Source is /var/lib/docker/volumes/name/_data but we need just the name
-                volume_name = mount.get('Name', '')
-                if not volume_name:
-                    logger.debug(f"Skipping volume mount without name: {mount}")
-                    continue
-                # Skip if already extracted from Binds
-                if volume_name in container_config["volumes"]:
-                    logger.debug(f"Skipping duplicate volume: {volume_name}")
-                    continue
-                container_config["volumes"][volume_name] = {
-                    "bind": destination,
-                    "mode": mode
-                }
-                logger.debug(f"Extracted named volume: {volume_name} -> {destination} ({mode})")
-            elif mount_type == 'bind':
-                # Log skipped mounts for debugging
-                logger.warning(
-                    f"Skipping bind mount with missing source or destination: "
-                    f"source={source}, destination={destination}, mount={mount}"
-                )
-
         # Extract network configuration
-        # CRITICAL: Preserve full endpoint configuration including static IPs
-        # HYBRID APPROACH: Use same logic as stack_orchestrator for consistency
         networks = networking.get("Networks", {})
         if networks:
             # Filter out network_mode pseudo-networks (bridge, host, none)
-            # These are represented as network_mode, not actual custom networks
-            # Only preserve real custom networks created by users
             custom_networks = {k: v for k, v in networks.items() if k not in ['bridge', 'host', 'none']}
 
             if not custom_networks:
                 # Only on default bridge network - don't preserve
                 pass
             elif len(custom_networks) == 1:
-                # Single custom network - check if it has advanced config
+                # Single custom network
                 network_name, network_data = list(custom_networks.items())[0]
-                # Check for user-configured static IP (IPAMConfig), not auto-assigned IP (IPAddress)
-                # Every container on a network has IPAddress, but only user-configured ones have IPAMConfig
                 has_static_ip = bool(network_data.get("IPAMConfig"))
 
-                # Preserve all aliases except container ID (12 chars - Docker auto-adds this)
-                # We keep container name and service name aliases for Docker Compose service discovery
+                # Preserve aliases except container ID (12 chars)
                 all_aliases = network_data.get("Aliases", []) or []
                 preserved_aliases = [a for a in all_aliases if len(a) != CONTAINER_ID_SHORT_LENGTH]
 
                 if has_static_ip or preserved_aliases:
                     # Has config to preserve - use manual connection format
-                    # BUT also set network to avoid creating on bridge
-                    container_config["network"] = network_name
+                    result["network"] = network_name
 
                     endpoint_config = {}
-
-                    # Extract user-configured static IPs (not auto-assigned)
                     ipam_config = _extract_ipam_config(network_data)
                     if ipam_config:
                         endpoint_config["IPAMConfig"] = ipam_config
-                        logger.debug(f"Preserving user-configured IP for {network_name}")
 
                     if preserved_aliases:
                         endpoint_config["Aliases"] = preserved_aliases
-                        logger.debug(f"Preserving aliases for {network_name}: {preserved_aliases}")
 
                     if network_data.get("Links"):
                         endpoint_config["Links"] = network_data["Links"]
 
-                    container_config[_MANUAL_NETWORKING_CONFIG_KEY] = {
+                    result[_MANUAL_NETWORKING_CONFIG_KEY] = {
                         "EndpointsConfig": {network_name: endpoint_config}
                     }
-                    logger.debug(f"Extracted advanced network config for {network_name}")
                 else:
-                    # Simple single network - use 'network' parameter
-                    container_config["network"] = network_name
-                    logger.debug(f"Extracted simple network: {network_name}")
+                    # Simple single network
+                    result["network"] = network_name
 
             else:
-                # Multiple custom networks - use manual connection format
+                # Multiple custom networks
                 endpoints_config = {}
-
-                # Set first network as primary to avoid creating on bridge
                 primary_network = list(custom_networks.keys())[0]
-                container_config["network"] = primary_network
+                result["network"] = primary_network
 
                 for network_name, network_data in custom_networks.items():
                     endpoint_config = {}
 
-                    # Extract user-configured static IPs (not auto-assigned)
                     ipam_config = _extract_ipam_config(network_data)
                     if ipam_config:
                         endpoint_config["IPAMConfig"] = ipam_config
-                        logger.debug(f"Preserving user-configured IP for {network_name}")
 
-                    # Extract ALL network aliases (filter out just container ID)
                     if network_data.get("Aliases"):
                         preserved_aliases = [
                             a for a in network_data["Aliases"]
@@ -1226,148 +1146,222 @@ class UpdateExecutor:
                         if preserved_aliases:
                             endpoint_config["Aliases"] = preserved_aliases
 
-                    # Extract links (legacy)
                     if network_data.get("Links"):
                         endpoint_config["Links"] = network_data["Links"]
 
                     endpoints_config[network_name] = endpoint_config
 
-                container_config[_MANUAL_NETWORKING_CONFIG_KEY] = {
+                result[_MANUAL_NETWORKING_CONFIG_KEY] = {
                     "EndpointsConfig": endpoints_config
                 }
-                logger.debug(f"Extracted multiple network config: {list(custom_networks.keys())}")
 
-        # Extract network_mode (v2.1.8 - Quick Wins)
-        # NOTE: devices, extra_hosts, cap_add, cap_drop already extracted above (lines 818-820, 825)
-        if "NetworkMode" in host_config:
-            network_mode = host_config["NetworkMode"]
+        # Extract network_mode
+        if network_mode and network_mode not in ["default"]:
+            # Check for conflict with custom networks
+            if (_MANUAL_NETWORKING_CONFIG_KEY not in result and not result.get("network")):
+                result["network_mode"] = network_mode
 
-            # Filter Docker auto-defaults
-            # "default" = Docker's automatic setting (don't preserve)
-            # Everything else = potentially user-set (preserve)
-            if network_mode and network_mode not in ["default"]:
-                # CRITICAL: Check for conflict with custom networks
-                # Cannot have both network_mode and networking_config (static IPs, etc.)
-                # Defense-in-depth: Check both manual networking AND simple network parameter
-                # Note: container_config["network"] is set to None by default (line 816),
-                # so we check for truthiness, not just existence
-                if (_MANUAL_NETWORKING_CONFIG_KEY not in container_config and
-                    not container_config.get("network")):
-                    container_config["network_mode"] = network_mode
-                    logger.debug(f"Extracted network_mode: {network_mode}")
-                else:
-                    logger.debug(
-                        f"Container has custom network config, "
-                        f"skipping network_mode extraction (mutually exclusive)"
-                    )
+        return result
 
-        return container_config
+    async def _extract_container_config_v2(
+        self,
+        container,
+        client: docker.DockerClient,
+        old_image_labels: Dict[str, str] = None,
+        new_image_labels: Dict[str, str] = None,
+        is_podman: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Extract container configuration using passthrough approach (v2.2.0).
 
-    async def _create_container(
+        This method uses a passthrough approach similar to Watchtower, eliminating
+        complex field-by-field extraction and transformation. The HostConfig is
+        passed directly to the low-level API, preserving ALL Docker fields including
+        GPU support (DeviceRequests), missing in v1.
+
+        Key differences from v1 (_extract_container_config):
+        - HostConfig passed through directly (all 35+ fields preserved automatically)
+        - Volume transformation eliminated (no duplicate mount bugs)
+        - GPU support fixed (DeviceRequests preserved)
+        - Label handling fixed (extracts user labels, prevents stale image labels)
+        - Future-proof (new Docker features work automatically)
+
+        Args:
+            container: Docker container object
+            client: Docker client (needed for NetworkMode resolution)
+            old_image_labels: Labels from old image (for identifying user-added labels)
+            new_image_labels: Labels from new image (informational only, for logging)
+            is_podman: True if target host runs Podman (for compatibility filtering)
+
+        Returns:
+            Dict with config, host_config, labels, network_config
+        """
+        attrs = container.attrs
+        config = attrs['Config']
+        host_config = attrs['HostConfig'].copy()  # Copy to avoid mutation
+
+        # === ONLY modify what MUST be modified ===
+
+        # 1. Handle Podman compatibility (IMPORTANT: Use PascalCase for raw HostConfig!)
+        if is_podman:
+            # Remove unsupported fields
+            nano_cpus = host_config.pop('NanoCpus', None)
+            host_config.pop('MemorySwappiness', None)
+
+            # Convert NanoCpus to CpuPeriod/CpuQuota if it was set
+            if nano_cpus and not host_config.get('CpuPeriod'):
+                cpu_period = 100000
+                cpu_quota = int(nano_cpus / 1e9 * cpu_period)
+                host_config['CpuPeriod'] = cpu_period  # PascalCase
+                host_config['CpuQuota'] = cpu_quota    # PascalCase
+
+        # 2. Resolve container:ID to container:name in NetworkMode
+        if host_config.get('NetworkMode', '').startswith('container:'):
+            ref_id = host_config['NetworkMode'].split(':')[1]
+            try:
+                ref_container = await async_docker_call(client.containers.get, ref_id)
+                host_config['NetworkMode'] = f"container:{ref_container.name}"
+                logger.debug(f"Resolved NetworkMode: container:{ref_id[:12]}... → container:{ref_container.name}")
+            except Exception as e:
+                logger.warning(f"Failed to resolve NetworkMode container:{ref_id[:12]}...: {e}")
+                pass  # Keep original if can't resolve
+
+        # 3. Extract user-added labels (subtract old image defaults from container labels)
+        # Docker will automatically merge these with new image labels during container creation
+        if old_image_labels is None:
+            old_image_labels = {}
+        labels = self._extract_user_labels(
+            old_container_labels=config.get('Labels', {}),
+            old_image_labels=old_image_labels
+        )
+
+        # 4. Extract network configuration (reuse existing logic)
+        network_config = self._extract_network_config(attrs)
+
+        return {
+            'config': config,
+            'host_config': host_config,  # DIRECT PASSTHROUGH!
+            'labels': labels,
+            'network': network_config.get('network'),
+            'network_mode_override': network_config.get('network_mode'),
+            _MANUAL_NETWORKING_CONFIG_KEY: network_config.get(_MANUAL_NETWORKING_CONFIG_KEY),
+            'container_name': attrs.get('Name', '').lstrip('/'),  # Extract container name
+        }
+
+    async def _create_container_v2(
         self,
         client: docker.DockerClient,
         image: str,
-        config: Dict[str, Any]
+        extracted_config: Dict[str, Any],
+        is_podman: bool = False  # Not used here but kept for API consistency
     ) -> Any:
         """
-        Create new container with given config.
+        Create container using low-level API with passthrough (v2.2.0).
 
-        Preserves all network configuration including static IPs, aliases, and links.
-        Bug Fix: Manually connects networks since Docker SDK networking_config doesn't work.
+        This method uses the low-level API (client.api.create_container) instead of
+        the high-level API (client.containers.create), allowing direct passthrough
+        of HostConfig without field-by-field mapping.
+
+        Key differences from v1 (_create_container):
+        - Uses low-level API for raw dict passthrough
+        - HostConfig passed directly (no transformation)
+        - Volumes in Binds format preserved (no duplicate mount errors)
+        - GPU DeviceRequests preserved automatically
+
+        API Version-Aware Networking (v2.2.0):
+        - Docker API >= 1.44: Uses networking_config at creation (efficient)
+        - Docker API < 1.44: Falls back to manual network connection post-creation
+        See: https://docs.docker.com/engine/api/version-history/#v144-api-changes
+
+        Args:
+            client: Docker client instance
+            image: Image name for the new container
+            extracted_config: Config dict from _extract_container_config_v2()
+            is_podman: Unused (filtering done in extraction phase)
+
+        Returns:
+            Docker container object
         """
         try:
-            # Extract manual network connection instructions (if present)
-            manual_networks = config.pop(_MANUAL_NETWORKS_KEY, None)
-            manual_networking_config = config.pop(_MANUAL_NETWORKING_CONFIG_KEY, None)
+            config = extracted_config['config']
+            host_config = extracted_config['host_config']
+            network_mode = host_config.get('NetworkMode', '')
 
-            # Build create parameters
-            create_params = {
-                "image": image,
-                "name": config["name"],
-                "hostname": config.get("hostname"),
-                "user": config.get("user"),
-                "detach": config.get("detach", True),
-                "stdin_open": config.get("stdin_open", False),
-                "tty": config.get("tty", False),
-                "environment": config.get("environment"),
-                "command": config.get("command"),
-                "entrypoint": config.get("entrypoint"),
-                "working_dir": config.get("working_dir"),
-                "labels": config.get("labels"),
-                "ports": config.get("ports"),
-                "volumes": config.get("volumes"),
-                "restart_policy": config.get("restart_policy"),
-                "privileged": config.get("privileged", False),
-                "cap_add": config.get("cap_add"),
-                "cap_drop": config.get("cap_drop"),
-                "devices": config.get("devices"),
-                "security_opt": config.get("security_opt"),
-                "tmpfs": config.get("tmpfs"),
-                "ulimits": config.get("ulimits"),
-                "dns": config.get("dns"),
-                "extra_hosts": config.get("extra_hosts"),
-                "ipc_mode": config.get("ipc_mode"),
-                "pid_mode": config.get("pid_mode"),
-                "shm_size": config.get("shm_size"),
-                "network_mode": config.get("network_mode"),  # v2.1.8 - Quick Wins
-                "mac_address": config.get("mac_address"),  # Issue #64 - Was extracted but not passed
-                # Phase 2: Critical config preservation (Issue #64)
-                "healthcheck": config.get("healthcheck"),
-                "runtime": config.get("runtime"),
-                "cpu_period": config.get("cpu_period"),
-                "cpu_quota": config.get("cpu_quota"),
-                "cpu_shares": config.get("cpu_shares"),
-                "cpuset_cpus": config.get("cpuset_cpus"),
-                "cpuset_mems": config.get("cpuset_mems"),
-                "mem_limit": config.get("mem_limit"),
-                "mem_reservation": config.get("mem_reservation"),
-                "memswap_limit": config.get("memswap_limit"),
-                "nano_cpus": config.get("nano_cpus"),
-                "oom_kill_disable": config.get("oom_kill_disable"),
-                "pids_limit": config.get("pids_limit"),
-                # Phase 3: High priority config (Issue #64)
-                # Note: stop_timeout is not supported by Docker SDK containers.create()
-                # It can only be set when calling container.stop(timeout=N)
-                "read_only": config.get("read_only"),
-                "sysctls": config.get("sysctls"),
-                "group_add": config.get("group_add"),
-                "log_config": config.get("log_config"),
-                "userns_mode": config.get("userns_mode"),
-                "init": config.get("init"),
-                "domainname": config.get("domainname"),
-                "storage_opt": config.get("storage_opt"),
-            }
+            # Override network_mode if explicitly set in network config
+            if extracted_config.get('network_mode_override'):
+                host_config['NetworkMode'] = extracted_config['network_mode_override']
+                network_mode = extracted_config['network_mode_override']
 
-            # CRITICAL: Network configuration (Bug Fix: Use hybrid approach)
-            # Simple single network can use 'network' parameter
-            if config.get("network"):
-                create_params["network"] = config["network"]
+            # Get manual networking config for version-aware handling
+            manual_networking_config = extracted_config.get(_MANUAL_NETWORKING_CONFIG_KEY)
 
-            # Create container
-            container = await async_docker_call(
-                client.containers.create,
-                **create_params
+            # Detect Docker API version for network handling strategy
+            # API >= 1.44 supports multiple networks at creation time
+            # API < 1.44 requires manual connection post-creation
+            from packaging import version
+            api_version = version.parse(client.api.api_version)
+            use_networking_config = api_version >= version.parse("1.44")
+
+            # Determine networking_config parameter based on API version
+            networking_config = None
+            if use_networking_config and manual_networking_config:
+                # Modern API - pass full network config at creation (efficient!)
+                networking_config = manual_networking_config
+                logger.debug(f"Using networking_config at creation (API {client.api.api_version} >= 1.44)")
+            else:
+                # Legacy API or no manual config - will connect networks manually after creation
+                if manual_networking_config:
+                    logger.debug(f"Will manually connect networks post-creation (API {client.api.api_version} < 1.44)")
+
+            # Use low-level API for direct passthrough
+            # Container name is extracted during config extraction
+            container_name = extracted_config.get('container_name', '')
+            response = await async_docker_call(
+                client.api.create_container,
+                image=image,
+                name=container_name,
+                hostname=config.get('Hostname') if not network_mode.startswith('container:') else None,
+                user=config.get('User'),
+                environment=config.get('Env'),
+                command=config.get('Cmd'),
+                entrypoint=config.get('Entrypoint'),
+                working_dir=config.get('WorkingDir'),
+                labels=extracted_config['labels'],
+                host_config=host_config,  # DIRECT PASSTHROUGH! (All HostConfig fields preserved)
+                networking_config=networking_config,  # API version-aware: Used for API >= 1.44
+                healthcheck=config.get('Healthcheck'),
+                stop_signal=config.get('StopSignal'),
+                domainname=config.get('Domainname'),
+                mac_address=config.get('MacAddress') if not network_mode.startswith('container:') else None,
+                tty=config.get('Tty', False),
+                stdin_open=config.get('OpenStdin', False),
             )
 
-            # Manually connect to networks if needed (Bug fix: networking_config doesn't work)
-            # This must happen BEFORE starting the container
-            try:
-                await manually_connect_networks(
-                    container=container,
-                    manual_networks=manual_networks,
-                    manual_networking_config=manual_networking_config,
-                    client=client,
-                    async_docker_call=async_docker_call
-                )
-            except Exception:
-                # Clean up: remove container since we failed to configure it properly
-                await async_docker_call(container.remove, force=True)
-                raise
+            container_id = response['Id']
 
-            return container
+            # Manual network connection for legacy API or when networking_config wasn't used
+            if not use_networking_config and manual_networking_config:
+                try:
+                    await manually_connect_networks(
+                        container=client.containers.get(container_id),
+                        manual_networks=None,  # Not used in v2 (was for stack orchestrator)
+                        manual_networking_config=manual_networking_config,
+                        client=client,
+                        async_docker_call=async_docker_call
+                    )
+                except Exception:
+                    # Clean up: remove container since we failed to configure networks
+                    try:
+                        await async_docker_call(client.containers.get(container_id).remove, force=True)
+                    except Exception:
+                        pass
+                    raise
+
+            return client.containers.get(container_id)
         except Exception as e:
-            logger.error(f"Error creating container: {e}")
+            logger.error(f"Error creating container (v2 passthrough): {e}")
             raise
+
 
     async def _rename_container_to_backup(
         self,
@@ -1393,7 +1387,7 @@ class UpdateExecutor:
         try:
             # Generate backup name with timestamp
             timestamp = int(time.time())
-            backup_name = f"{original_name}-backup-{timestamp}"
+            backup_name = f"{original_name}-dockmon-backup-{timestamp}"
 
             logger.info(f"Creating backup: stopping and renaming {original_name} to {backup_name}")
 
@@ -1979,7 +1973,8 @@ class UpdateExecutor:
         self,
         client: docker.DockerClient,
         dep_info: dict,
-        new_parent_container_id: str
+        new_parent_container_id: str,
+        is_podman: bool = False
     ) -> bool:
         """
         Recreate a dependent container with updated network_mode.
@@ -2002,6 +1997,7 @@ class UpdateExecutor:
             client: Docker SDK client instance
             dep_info: Dict with dependent container info (from _get_dependent_containers)
             new_parent_container_id: Full container ID of new parent (for network_mode)
+            is_podman: True if target host runs Podman (for compatibility filtering)
 
         Returns:
             True if recreation succeeded, False otherwise
@@ -2012,15 +2008,21 @@ class UpdateExecutor:
         try:
             logger.info(f"Recreating dependent container: {dep_name}")
 
-            # Step 1: Extract current configuration
-            config = await self._extract_container_config(dep_container)
+            # Step 1: Extract current configuration (v2.2.0: Use passthrough approach)
+            config = await self._extract_container_config_v2(
+                dep_container,
+                client,  # v2 requires client for NetworkMode resolution
+                new_image_labels=None,  # No image update for dependent containers
+                is_podman=is_podman
+            )
 
             # Step 2: Update network_mode to point to new parent container
+            # v2.2.0: Modify HostConfig directly (passthrough approach)
             # Use full container ID (not short ID) for network_mode
-            old_network_mode = config.get('network_mode', '')
-            config['network_mode'] = f'container:{new_parent_container_id}'
+            old_network_mode = config['host_config'].get('NetworkMode', '')
+            config['host_config']['NetworkMode'] = f'container:{new_parent_container_id}'
             logger.info(
-                f"Updated network_mode: {old_network_mode} → {config['network_mode']}"
+                f"Updated network_mode: {old_network_mode} → {config['host_config']['NetworkMode']}"
             )
 
             # Step 3: Extract networks (for restoration after network_mode removed)
@@ -2041,12 +2043,13 @@ class UpdateExecutor:
             logger.info(f"Renaming to temporary: {temp_name}")
             await async_docker_call(dep_container.rename, temp_name)
 
-            # Step 6: Create new container with updated config
+            # Step 6: Create new container with updated config (v2.2.0: Use passthrough approach)
             logger.info(f"Creating new dependent container: {dep_name}")
-            new_dep_container = await self._create_container(
+            new_dep_container = await self._create_container_v2(
                 client,
                 dep_info['image'],
-                config
+                config,
+                is_podman=is_podman
             )
 
             # Step 7: Start new container

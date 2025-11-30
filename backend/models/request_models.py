@@ -151,7 +151,7 @@ class NotificationChannelCreate(BaseModel):
         if not v or not v.strip():
             raise ValueError('Channel type cannot be empty')
 
-        valid_types = {'telegram', 'discord', 'pushover', 'slack', 'gotify', 'smtp', 'webhook'}
+        valid_types = {'telegram', 'discord', 'pushover', 'slack', 'gotify', 'ntfy', 'smtp', 'webhook'}
         v = v.strip().lower()
 
         if v not in valid_types:
@@ -221,6 +221,21 @@ class NotificationChannelCreate(BaseModel):
             server_url = v.get('server_url', '')
             if not (server_url.startswith('http://') or server_url.startswith('https://')):
                 raise ValueError('Gotify server URL must start with http:// or https://')
+
+        elif channel_type == 'ntfy':
+            required_keys = {'server_url', 'topic'}
+            if not all(key in v for key in required_keys):
+                raise ValueError(f'ntfy config must contain: {required_keys}')
+
+            # Validate server URL
+            server_url = v.get('server_url', '')
+            if not (server_url.startswith('http://') or server_url.startswith('https://')):
+                raise ValueError('ntfy server URL must start with http:// or https://')
+
+            # Validate topic is not empty
+            topic = v.get('topic', '')
+            if not topic.strip():
+                raise ValueError('ntfy topic cannot be empty')
 
         elif channel_type == 'smtp':
             required_keys = {'smtp_host', 'from_email', 'to_email'}

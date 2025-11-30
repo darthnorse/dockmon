@@ -19,6 +19,7 @@ from event_bus import Event, EventType as BusEventType, get_event_bus
 from stats_client import get_stats_client
 from utils.keys import make_composite_key
 from utils.ip_extraction import extract_container_ips
+from utils.cache import async_ttl_cache
 
 logger = logging.getLogger(__name__)
 
@@ -319,6 +320,7 @@ class ContainerDiscovery:
             logger.debug(f"Host {host.name} still offline (attempt {attempts + 1}). Next retry in {next_attempt_in}s")
             return False
 
+    @async_ttl_cache(ttl_seconds=5)
     async def discover_containers_for_host(self, host_id: str, get_auto_restart_status_fn) -> List[Container]:
         """
         Discover all containers for a single host.

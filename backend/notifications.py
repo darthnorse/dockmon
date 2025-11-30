@@ -407,6 +407,114 @@ class NotificationService:
             logger.error(f"Failed to send Gotify notification: {e}")
             return False
 
+    async def _send_ntfy(self, config: Dict[str, Any], message: str, event=None, title: str = "DockMon Alert") -> bool:
+        """Send notification via ntfy (https://ntfy.sh or self-hosted)
+
+        ntfy is a simple HTTP-based pub-sub notification service.
+        API docs: https://docs.ntfy.sh/publish/
+
+        Config fields:
+            server_url (required): Base URL (e.g., https://ntfy.sh or https://ntfy.example.com)
+            topic (required): The notification topic/channel name
+            access_token (optional): Bearer token for authenticated servers
+            username (optional): Username for basic auth
+            password (optional): Password for basic auth
+        """
+        try:
+            # Validate required config fields
+            server_url = config.get('server_url', '').strip()
+            topic = config.get('topic', '').strip()
+
+            if not server_url:
+                logger.error("ntfy config missing server_url")
+                return False
+
+            if not topic:
+                logger.error("ntfy config missing topic")
+                return False
+
+            # Validate server URL format
+            if not server_url.startswith(('http://', 'https://')):
+                logger.error(f"ntfy server_url must start with http:// or https://: {server_url}")
+                return False
+
+            # Strip markdown formatting for plain text
+            plain_message = re.sub(r'\*\*(.*?)\*\*', r'\1', message)
+            plain_message = re.sub(r'`(.*?)`', r'\1', plain_message)
+            plain_message = re.sub(r'[^\x00-\x7F]+', '', plain_message)  # Remove non-ASCII (emojis)
+
+            # Determine priority (1-5: min, low, default, high, urgent)
+            priority = 3  # default
+            if event:
+                if hasattr(event, 'new_state') and event.new_state in ['exited', 'dead']:
+                    priority = 5  # urgent for critical states
+                elif hasattr(event, 'event_type') and event.event_type in ['die', 'oom', 'kill']:
+                    priority = 5  # urgent for critical events
+
+            # Build URL: server_url/topic
+            base_url = server_url.rstrip('/')
+            url = f"{base_url}/{topic}"
+
+            # Determine title
+            notification_title = title
+            if event and hasattr(event, 'container_name') and event.container_name:
+                notification_title = f"DockMon: {event.container_name}"
+
+            # Create payload
+            payload = {
+                'message': plain_message,
+                'title': notification_title,
+                'priority': priority,
+            }
+
+            # Add tags for critical events
+            if event:
+                tags = []
+                if hasattr(event, 'event_type'):
+                    if event.event_type in ['die', 'oom', 'kill']:
+                        tags.append('warning')
+                    elif event.event_type in ['start', 'restart']:
+                        tags.append('white_check_mark')
+                if tags:
+                    payload['tags'] = tags
+
+            # Build headers
+            headers = {}
+
+            # Handle authentication
+            access_token = config.get('access_token', '').strip()
+            username = config.get('username', '').strip()
+            password = config.get('password', '').strip()
+
+            if access_token:
+                headers['Authorization'] = f'Bearer {access_token}'
+            elif username and password:
+                # Use basic auth via httpx
+                import base64
+                credentials = base64.b64encode(f"{username}:{password}".encode()).decode()
+                headers['Authorization'] = f'Basic {credentials}'
+
+            # Send request
+            if headers:
+                response = await self.http_client.post(url, json=payload, headers=headers)
+            else:
+                response = await self.http_client.post(url, json=payload)
+
+            response.raise_for_status()
+
+            logger.info("ntfy notification sent successfully")
+            return True
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"ntfy HTTP error {e.response.status_code}: {e}")
+            return False
+        except httpx.RequestError as e:
+            logger.error(f"ntfy connection error: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to send ntfy notification: {e}")
+            return False
+
     async def _send_smtp(self, config: Dict[str, Any], message: str, event=None, title: str = "DockMon Alert") -> bool:
         """Send notification via SMTP (Email)"""
         try:
@@ -701,6 +809,8 @@ class NotificationService:
                 success = await self._send_slack(channel_config, test_message, test_event)
             elif channel_type == 'gotify':
                 success = await self._send_gotify(channel_config, test_message, test_event)
+            elif channel_type == 'ntfy':
+                success = await self._send_ntfy(channel_config, test_message, test_event)
             elif channel_type == 'smtp':
                 success = await self._send_smtp(channel_config, test_message, test_event)
             elif channel_type == 'webhook':
@@ -830,6 +940,9 @@ class NotificationService:
                                 success_count += 1
                         elif channel.type == "gotify":
                             if await self._send_gotify(channel.config, message, title=alert.title):
+                                success_count += 1
+                        elif channel.type == "ntfy":
+                            if await self._send_ntfy(channel.config, message, title=alert.title):
                                 success_count += 1
                         elif channel.type == "smtp":
                             if await self._send_smtp(channel.config, message, title=alert.title):

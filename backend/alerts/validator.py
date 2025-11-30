@@ -33,7 +33,7 @@ class AlertRuleValidator:
     VALID_SCOPES = {'host', 'container', 'group'}
     VALID_SEVERITIES = {'info', 'warning', 'critical'}
     VALID_OPERATORS = {'>=', '<=', '==', '>', '<', '!='}
-    VALID_NOTIFICATION_CHANNELS = {'slack', 'discord', 'telegram', 'pushover', 'email', 'gotify'}
+    VALID_NOTIFICATION_CHANNELS = {'slack', 'discord', 'telegram', 'pushover', 'email', 'gotify', 'ntfy'}
 
     # Percentage-based metrics
     PERCENTAGE_METRICS = {

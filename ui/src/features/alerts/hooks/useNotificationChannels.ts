@@ -8,7 +8,7 @@ import { apiClient } from '@/lib/api/client'
 export interface NotificationChannel {
   id: number
   name: string
-  type: 'telegram' | 'discord' | 'slack' | 'pushover' | 'gotify' | 'smtp'
+  type: 'telegram' | 'discord' | 'slack' | 'pushover' | 'gotify' | 'ntfy' | 'smtp' | 'webhook'
   config: Record<string, any>
   enabled: boolean
   created_at: string

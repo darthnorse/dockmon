@@ -179,13 +179,14 @@ class HostConnector(ABC):
         pass
 
     @abstractmethod
-    async def create_network(self, name: str, driver: str = "bridge") -> str:
+    async def create_network(self, name: str, driver: str = "bridge", ipam = None) -> str:
         """
         Create Docker network.
 
         Args:
             name: Network name
             driver: Network driver (bridge, overlay, etc.)
+            ipam: Optional IPAMConfig for subnet/gateway configuration
 
         Returns:
             Network ID
@@ -488,10 +489,10 @@ class DirectDockerConnector(HostConnector):
             for net in networks
         ]
 
-    async def create_network(self, name: str, driver: str = "bridge") -> str:
-        """Create Docker network"""
+    async def create_network(self, name: str, driver: str = "bridge", ipam = None) -> str:
+        """Create Docker network with optional IPAM configuration"""
         client = self._get_client()
-        network = await async_docker_call(client.networks.create, name, driver=driver)
+        network = await async_docker_call(client.networks.create, name, driver=driver, ipam=ipam)
         return network.id
 
     async def list_volumes(self) -> List[Dict[str, Any]]:

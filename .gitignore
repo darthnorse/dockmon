@@ -18,9 +18,9 @@ wiki-repo/
 # Documentation (internal development docs)
 docs/
 
-# Test Infrastructure (Development Only)
-# Test source code is kept private for development
-backend/tests/
+# Test Infrastructure
+# Backend tests are committed (for CI/CD, test infrastructure)
+# Frontend tests excluded (need refactoring)
 ui/tests/
 ui/src/**/*.test.tsx
 ui/src/**/*.test.ts
@@ -33,7 +33,6 @@ baseline*.log
 pre-refactor*.log
 post-refactor*.log
 .pytest_cache/
-pytest.ini
 requirements-test.txt
 vitest.config.ts
 coverage/

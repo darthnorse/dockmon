@@ -271,8 +271,8 @@ class GlobalSettings(Base):
     auto_update_enabled_default = Column(Boolean, default=False)  # Enable auto-updates by default for new containers
     update_check_interval_hours = Column(Integer, default=24)  # How often to check for updates (hours)
     update_check_time = Column(Text, default="02:00")  # Time of day to run checks (HH:MM format, 24-hour)
-    skip_compose_containers = Column(Boolean, default=True)  # Skip Docker Compose-managed containers
-    health_check_timeout_seconds = Column(Integer, default=60)  # Health check timeout (seconds)
+    skip_compose_containers = Column(Boolean, default=False)  # Skip Docker Compose-managed containers (v2.1.9: default changed to False)
+    health_check_timeout_seconds = Column(Integer, default=180)  # Health check timeout (seconds) - increased from 60s in v2.1.9
 
     # Image pruning settings (v2.1+)
     prune_images_enabled = Column(Boolean, default=True)  # Enable automatic image pruning

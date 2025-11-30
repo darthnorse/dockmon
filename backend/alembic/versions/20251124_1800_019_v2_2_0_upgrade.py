@@ -1,7 +1,7 @@
 """v2.2.0-beta1 upgrade - Agent infrastructure for remote Docker host monitoring
 
-Revision ID: 018_v2_2_0
-Revises: 017_v2_1_9_beta1
+Revision ID: 019_v2_2_0
+Revises: 018_v2_1_9
 Create Date: 2025-11-24
 
 CHANGES IN v2.2.0-beta1:
@@ -45,8 +45,8 @@ from sqlalchemy import inspect
 
 
 # revision identifiers, used by Alembic.
-revision = '018_v2_2_0'
-down_revision = '017_v2_1_9_beta1'
+revision = '019_v2_2_0'
+down_revision = '018_v2_1_9'
 branch_labels = None
 depends_on = None
 
@@ -203,7 +203,7 @@ def downgrade() -> None:
     if table_exists('global_settings'):
         op.execute(
             sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-            .bindparams(version='2.1.9-beta1', id=1)
+            .bindparams(version='2.1.9', id=1)
         )
 
     # Remove check_from column from container_http_health_checks

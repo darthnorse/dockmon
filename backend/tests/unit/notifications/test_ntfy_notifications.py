@@ -300,8 +300,8 @@ class TestNtfyNotifications:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_ntfy_strips_markdown_formatting(self, notification_service):
-        """Test that markdown formatting is stripped for plain text"""
+    async def test_ntfy_preserves_markdown_formatting(self, notification_service):
+        """Test that markdown formatting is preserved with markdown mode enabled"""
         config = {
             'server_url': 'https://ntfy.sh',
             'topic': 'alerts'
@@ -316,9 +316,10 @@ class TestNtfyNotifications:
 
         assert result is True
         payload = notification_service.http_client.post.call_args[1]['json']
-        # Markdown should be stripped
-        assert '**' not in payload['message']
-        assert '`' not in payload['message']
+        # Markdown should be preserved and markdown mode enabled
+        assert '**Alert**' in payload['message']
+        assert '`nginx`' in payload['message']
+        assert payload.get('markdown') is True
 
     @pytest.mark.asyncio
     async def test_ntfy_strips_emojis(self, notification_service):

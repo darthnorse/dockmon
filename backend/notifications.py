@@ -438,10 +438,8 @@ class NotificationService:
                 logger.error(f"ntfy server_url must start with http:// or https://: {server_url}")
                 return False
 
-            # Strip markdown formatting for plain text
-            plain_message = re.sub(r'\*\*(.*?)\*\*', r'\1', message)
-            plain_message = re.sub(r'`(.*?)`', r'\1', plain_message)
-            plain_message = re.sub(r'[^\x00-\x7F]+', '', plain_message)  # Remove non-ASCII (emojis)
+            # Clean up message - remove emojis but keep markdown for ntfy
+            clean_message = re.sub(r'[^\x00-\x7F]+', '', message).strip()
 
             # Determine priority (1-5: min, low, default, high, urgent)
             priority = 3  # default
@@ -460,11 +458,12 @@ class NotificationService:
             if event and hasattr(event, 'container_name') and event.container_name:
                 notification_title = f"DockMon: {event.container_name}"
 
-            # Create payload
+            # Create payload - ntfy supports markdown natively
             payload = {
-                'message': plain_message,
+                'message': clean_message,
                 'title': notification_title,
                 'priority': priority,
+                'markdown': True,
             }
 
             # Add tags for critical events

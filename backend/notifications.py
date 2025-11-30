@@ -438,16 +438,18 @@ class NotificationService:
                 logger.error(f"ntfy server_url must start with http:// or https://: {server_url}")
                 return False
 
-            # Clean up message - remove emojis but keep markdown for ntfy
+            # Clean up message - remove emojis, convert markdown bold to plain text
             clean_message = re.sub(r'[^\x00-\x7F]+', '', message).strip()
+            clean_message = re.sub(r'\*\*(.*?)\*\*', r'\1', clean_message)  # Remove **bold**
+            clean_message = re.sub(r'`(.*?)`', r'\1', clean_message)  # Remove `code`
 
             # Determine priority (1-5: min, low, default, high, urgent)
-            priority = 3  # default
+            priority = '3'  # default (string for header)
             if event:
                 if hasattr(event, 'new_state') and event.new_state in ['exited', 'dead']:
-                    priority = 5  # urgent for critical states
+                    priority = '5'  # urgent for critical states
                 elif hasattr(event, 'event_type') and event.event_type in ['die', 'oom', 'kill']:
-                    priority = 5  # urgent for critical events
+                    priority = '5'  # urgent for critical events
 
             # Build URL: server_url/topic
             base_url = server_url.rstrip('/')
@@ -458,12 +460,10 @@ class NotificationService:
             if event and hasattr(event, 'container_name') and event.container_name:
                 notification_title = f"DockMon: {event.container_name}"
 
-            # Create payload - ntfy supports markdown natively
-            payload = {
-                'message': clean_message,
-                'title': notification_title,
-                'priority': priority,
-                'markdown': True,
+            # Build headers - ntfy header-based API (more compatible)
+            headers = {
+                'Title': notification_title,
+                'Priority': priority,
             }
 
             # Add tags for critical events
@@ -475,10 +475,7 @@ class NotificationService:
                     elif event.event_type in ['start', 'restart']:
                         tags.append('white_check_mark')
                 if tags:
-                    payload['tags'] = tags
-
-            # Build headers
-            headers = {}
+                    headers['Tags'] = ','.join(tags)
 
             # Handle authentication
             access_token = config.get('access_token', '').strip()
@@ -488,16 +485,14 @@ class NotificationService:
             if access_token:
                 headers['Authorization'] = f'Bearer {access_token}'
             elif username and password:
-                # Use basic auth via httpx
                 import base64
                 credentials = base64.b64encode(f"{username}:{password}".encode()).decode()
                 headers['Authorization'] = f'Basic {credentials}'
 
-            # Send request
-            if headers:
-                response = await self.http_client.post(url, json=payload, headers=headers)
-            else:
-                response = await self.http_client.post(url, json=payload)
+            logger.debug(f"ntfy request to {url} with headers {headers}")
+
+            # Send request - message as plain text body (not JSON)
+            response = await self.http_client.post(url, content=clean_message, headers=headers)
 
             response.raise_for_status()
 

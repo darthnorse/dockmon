@@ -54,6 +54,7 @@ export function useContainerTagEditor({
   const queryClient = useQueryClient()
   const [isEditing, setIsEditing] = useState(false)
   const [editedTags, setEditedTags] = useState<string[]>([])
+  const [originalTags, setOriginalTags] = useState<string[]>([])  // Snapshot at edit start
   const [tagSuggestions, setTagSuggestions] = useState<string[]>([])
   const [isLoading, setIsLoading] = useState(false)
 
@@ -75,6 +76,7 @@ export function useContainerTagEditor({
   }, [])
 
   const handleStartEdit = () => {
+    setOriginalTags([...currentTags])  // Capture snapshot for comparison
     setEditedTags([...currentTags])
     setIsEditing(true)
   }
@@ -88,8 +90,8 @@ export function useContainerTagEditor({
     setIsLoading(true)
 
     try {
-      // Check if tags changed at all
-      const tagsChanged = JSON.stringify(editedTags) !== JSON.stringify(currentTags)
+      // Check if tags changed at all (compare against snapshot, not live prop)
+      const tagsChanged = JSON.stringify(editedTags) !== JSON.stringify(originalTags)
 
       if (!tagsChanged) {
         toast.info('No changes to save')
@@ -99,9 +101,9 @@ export function useContainerTagEditor({
 
       // Check if order changed (tags are same but in different order)
       const sameTagsDifferentOrder =
-        editedTags.length === currentTags.length &&
-        editedTags.every(tag => currentTags.includes(tag)) &&
-        JSON.stringify(editedTags) !== JSON.stringify(currentTags)
+        editedTags.length === originalTags.length &&
+        editedTags.every(tag => originalTags.includes(tag)) &&
+        JSON.stringify(editedTags) !== JSON.stringify(originalTags)
 
       // Use ordered mode if reordering, delta mode if adding/removing
       if (sameTagsDifferentOrder) {
@@ -111,8 +113,8 @@ export function useContainerTagEditor({
         })
       } else {
         // Delta mode: calculate add/remove (backwards compatible)
-        const tagsToAdd = editedTags.filter(tag => !currentTags.includes(tag))
-        const tagsToRemove = currentTags.filter(tag => !editedTags.includes(tag))
+        const tagsToAdd = editedTags.filter(tag => !originalTags.includes(tag))
+        const tagsToRemove = originalTags.filter(tag => !editedTags.includes(tag))
 
         await apiClient.patch(`/hosts/${hostId}/containers/${containerId}/tags`, {
           tags_to_add: tagsToAdd,

@@ -2253,6 +2253,7 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
         "show_container_alerts_on_hosts": getattr(settings, 'show_container_alerts_on_hosts', False),
         "unused_tag_retention_days": getattr(settings, 'unused_tag_retention_days', 30),
         "event_retention_days": getattr(settings, 'event_retention_days', 60),
+        "event_suppression_patterns": getattr(settings, 'event_suppression_patterns', None),
         "alert_retention_days": getattr(settings, 'alert_retention_days', 90),
         "update_check_time": getattr(settings, 'update_check_time', "02:00"),
         "skip_compose_containers": getattr(settings, 'skip_compose_containers', True),
@@ -2306,6 +2307,11 @@ async def update_settings(
     if 'show_container_stats' in validated_dict and old_show_container_stats != updated.show_container_stats:
         logger.info(f"Container stats collection {'enabled' if updated.show_container_stats else 'disabled'}")
 
+    # Reload event suppression patterns if updated
+    if 'event_suppression_patterns' in validated_dict:
+        monitor.event_logger.reload_suppression_patterns()
+        logger.info("Event suppression patterns reloaded")
+
     # Broadcast blackout status change to all clients
     is_blackout, window_name = monitor.notification_service.blackout_manager.is_in_blackout_window()
     await monitor.manager.broadcast({
@@ -2336,6 +2342,7 @@ async def update_settings(
         "show_container_alerts_on_hosts": getattr(updated, 'show_container_alerts_on_hosts', False),
         "unused_tag_retention_days": getattr(updated, 'unused_tag_retention_days', 30),
         "event_retention_days": getattr(updated, 'event_retention_days', 60),
+        "event_suppression_patterns": getattr(updated, 'event_suppression_patterns', None),
         "alert_retention_days": getattr(updated, 'alert_retention_days', 90),
         "update_check_time": getattr(updated, 'update_check_time', "02:00"),
         "skip_compose_containers": getattr(updated, 'skip_compose_containers', True),
@@ -4451,11 +4458,17 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
                     containers,
                     monitor.settings
                 )
+                # Get agent host IDs to exclude from stats-service (they use WebSocket for stats)
+                agent_host_ids = {
+                    host_id for host_id, host in monitor.hosts.items()
+                    if host.connection_type == "agent"
+                }
                 await monitor.stats_manager.sync_container_streams(
                     containers,
                     containers_needing_stats,
                     stats_client,
-                    _handle_task_exception
+                    _handle_task_exception,
+                    agent_host_ids
                 )
                 logger.info(f"Started stats streams for {len(containers_needing_stats)} containers (first viewer connected)")
 

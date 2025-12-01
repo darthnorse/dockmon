@@ -27,7 +27,7 @@ class AgentContainerOperations:
     through agents via the AgentCommandExecutor.
     """
 
-    def __init__(self, command_executor: AgentCommandExecutor, db, agent_manager, event_logger=None):
+    def __init__(self, command_executor: AgentCommandExecutor, db, agent_manager, event_logger=None, monitor=None):
         """
         Initialize agent container operations.
 
@@ -36,11 +36,13 @@ class AgentContainerOperations:
             db: DatabaseManager instance
             agent_manager: AgentManager instance
             event_logger: EventLogger instance (for logging user actions to database)
+            monitor: DockerMonitor instance (for container name lookup)
         """
         self.command_executor = command_executor
         self.db = db
         self.agent_manager = agent_manager
         self.event_logger = event_logger
+        self.monitor = monitor
 
     def _handle_operation_result(
         self,
@@ -802,7 +804,7 @@ class AgentContainerOperations:
             # Fail safe: if we can't check, assume it might be DockMon
             return False
 
-    def _log_event(self, action: str, host_id: str, container_id: str, success: bool, error: str = None):
+    def _log_event(self, action: str, host_id: str, container_id: str, success: bool, error: str = None, container_name: str = None):
         """
         Log container operation event (TODO #6).
 
@@ -814,32 +816,55 @@ class AgentContainerOperations:
             container_id: Container ID
             success: Whether operation succeeded
             error: Error message if failed
+            container_name: Container name (optional, looked up from monitor if not provided)
         """
+        # Look up friendly names
+        host_name = host_id  # Fallback
+        if self.db:
+            try:
+                host = self.db.get_host(host_id)
+                if host:
+                    host_name = host.name
+            except Exception as e:
+                logger.debug(f"Could not look up host name for {host_id}: {e}")
+
+        # Look up container name from monitor's in-memory cache
+        if not container_name and self.monitor:
+            try:
+                for c in self.monitor.get_last_containers():
+                    if c.host_id == host_id and c.short_id == container_id[:12]:
+                        container_name = c.name
+                        break
+            except Exception as e:
+                logger.debug(f"Could not look up container name from monitor for {container_id}: {e}")
+
+        # Use provided container_name or fall back to ID
+        resolved_container_name = container_name or container_id
+
         # Console logging (keep existing)
         if success:
             logger.info(
                 f"Container operation '{action}' successful: "
-                f"host={host_id}, container={container_id}"
+                f"host={host_name}, container={resolved_container_name}"
             )
         else:
             logger.error(
                 f"Container operation '{action}' failed: "
-                f"host={host_id}, container={container_id}, error={error}"
+                f"host={host_name}, container={resolved_container_name}, error={error}"
             )
 
         # Database logging + UI broadcast (via EventLogger)
         if self.event_logger:
             try:
-                # Use IDs as fallback for names (agent operations don't have name context)
                 self.event_logger.log_container_action(
                     action=action,
-                    container_name=container_id,  # Fallback: use ID as name
+                    container_name=resolved_container_name,
                     container_id=container_id,
-                    host_name=host_id,  # Fallback: use ID as name
+                    host_name=host_name,
                     host_id=host_id,
                     success=success,
-                    error_message=error,  # Correct parameter name
-                    triggered_by='user'  # User-initiated action via API
+                    error_message=error,
+                    triggered_by='user'
                 )
 
             except Exception as e:

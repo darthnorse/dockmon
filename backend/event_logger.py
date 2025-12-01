@@ -4,6 +4,7 @@ Provides structured logging for all system activities
 """
 
 import asyncio
+import fnmatch
 import logging
 import time
 import uuid
@@ -96,6 +97,7 @@ class EventLogger:
         self.RECENT_EVENTS_TTL = 300  # 5 minutes
         self.MAX_CORRELATIONS = 1000  # Hard limit for active correlations (Issue #2 fix)
         self.CORRELATION_TTL = 3600  # 1 hour in seconds (Issue #2 fix)
+        self._suppression_patterns: List[str] = []  # Glob patterns for container names to suppress
 
     async def start(self):
         """Start the event processing task"""
@@ -107,6 +109,47 @@ class EventLogger:
         if not self._correlation_cleanup_task:
             self._correlation_cleanup_task = asyncio.create_task(self._correlation_cleanup_loop())
             logger.info("Correlation cleanup task started")
+
+        # Load suppression patterns from database
+        self.reload_suppression_patterns()
+
+    def reload_suppression_patterns(self) -> None:
+        """
+        Reload event suppression patterns from database settings.
+
+        Call this after settings are updated to refresh the cached patterns.
+        Patterns are glob-style (e.g., "runner-*", "*-tmp", "*cronjob*").
+        """
+        try:
+            settings = self.db.get_settings()
+            if settings and settings.event_suppression_patterns:
+                self._suppression_patterns = list(settings.event_suppression_patterns)
+                logger.info(f"Loaded {len(self._suppression_patterns)} event suppression patterns")
+            else:
+                self._suppression_patterns = []
+        except Exception as e:
+            logger.error(f"Failed to load event suppression patterns: {e}")
+            self._suppression_patterns = []
+
+    def _should_suppress_container_event(self, container_name: str) -> bool:
+        """
+        Check if events for this container should be suppressed.
+
+        Args:
+            container_name: The container name to check against patterns
+
+        Returns:
+            True if the container name matches any suppression pattern
+        """
+        if not container_name or not self._suppression_patterns:
+            return False
+
+        for pattern in self._suppression_patterns:
+            if fnmatch.fnmatch(container_name, pattern):
+                logger.debug(f"Suppressing event for container '{container_name}' (matches pattern '{pattern}')")
+                return True
+
+        return False
 
     async def stop(self):
         """Stop the event processing task"""
@@ -154,6 +197,11 @@ class EventLogger:
 
         if context is None:
             context = EventContext()
+
+        # Check if this container event should be suppressed based on name patterns
+        if category == EventCategory.CONTAINER and context.container_name:
+            if self._should_suppress_container_event(context.container_name):
+                return
 
         event_data = {
             'correlation_id': context.correlation_id,

@@ -1585,11 +1585,17 @@ class DockerMonitor:
                             containers,
                             self.settings
                         )
+                        # Get agent host IDs to exclude from stats-service (they use WebSocket for stats)
+                        agent_host_ids = {
+                            host_id for host_id, host in self.hosts.items()
+                            if host.connection_type == "agent"
+                        }
                         await self.stats_manager.sync_container_streams(
                             containers,
                             containers_needing_stats,
                             stats_client,
-                            _handle_task_exception
+                            _handle_task_exception,
+                            agent_host_ids
                         )
                         logger.debug(f"Periodic stream sync: {len(self.stats_manager.streaming_containers)} active streams")
                     except Exception as e:

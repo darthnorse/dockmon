@@ -180,6 +180,9 @@ class GlobalSettingsUpdate(BaseModel):
     alert_retention_days: Optional[int] = Field(None, ge=0, le=730, description="Alert retention days (0=forever, max 730)")
     unused_tag_retention_days: Optional[int] = Field(None, ge=0, le=365, description="Unused tag retention (0=never, max 365)")
 
+    # Event suppression (v2.2.0+)
+    event_suppression_patterns: Optional[List[str]] = Field(None, description="Glob patterns for container names to suppress from event log")
+
     # Notification settings
     enable_notifications: Optional[bool] = None
     alert_template: Optional[str] = Field(None, max_length=5000)

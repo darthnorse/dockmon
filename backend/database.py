@@ -289,8 +289,8 @@ class GlobalSettings(Base):
     polling_interval = Column(Integer, default=2)
     connection_timeout = Column(Integer, default=10)
     event_retention_days = Column(Integer, default=60)  # Keep events for 60 days (max 365)
+    event_suppression_patterns = Column(JSON, nullable=True)  # Glob patterns for container names to suppress from event log (e.g., ["runner-*", "*-tmp"])
     enable_notifications = Column(Boolean, default=True)
-    auto_cleanup_events = Column(Boolean, default=True)  # Auto cleanup old events
     unused_tag_retention_days = Column(Integer, default=30)  # Delete unused tags after N days (0 = never)
     alert_template = Column(Text, nullable=True)  # Global notification template (default)
     alert_template_metric = Column(Text, nullable=True)  # Metric-based alert template
@@ -1678,6 +1678,38 @@ class DatabaseManager:
                 return (config.desired_state, config.web_ui_url)
             return ('unspecified', None)
 
+    def get_container_name(self, host_id: str, container_id: str) -> Optional[str]:
+        """
+        Look up container name from database tables.
+
+        Searches AutoRestartConfig and ContainerDesiredState tables for the container name.
+
+        Args:
+            host_id: Docker host ID
+            container_id: Container ID (short 12-char format)
+
+        Returns:
+            Container name if found, None otherwise
+        """
+        with self.get_session() as session:
+            # Try AutoRestartConfig first
+            config = session.query(AutoRestartConfig).filter(
+                AutoRestartConfig.host_id == host_id,
+                AutoRestartConfig.container_id == container_id
+            ).first()
+            if config and config.container_name:
+                return config.container_name
+
+            # Try ContainerDesiredState
+            desired = session.query(ContainerDesiredState).filter(
+                ContainerDesiredState.host_id == host_id,
+                ContainerDesiredState.container_id == container_id
+            ).first()
+            if desired and desired.container_name:
+                return desired.container_name
+
+            return None
+
     def set_desired_state(self, host_id: str, container_id: str, container_name: str, desired_state: str, web_ui_url: str = None):
         """Set desired state for a container"""
         with self.get_session() as session:
@@ -2803,7 +2835,7 @@ class DatabaseManager:
                 ALLOWED_SETTINGS = {
                     'max_retries', 'retry_delay', 'default_auto_restart',
                     'polling_interval', 'connection_timeout', 'event_retention_days',
-                    'alert_retention_days', 'unused_tag_retention_days',
+                    'event_suppression_patterns', 'alert_retention_days', 'unused_tag_retention_days',
                     'enable_notifications', 'alert_template', 'alert_template_metric',
                     'alert_template_state_change', 'alert_template_health', 'alert_template_update',
                     'blackout_windows', 'timezone_offset', 'show_host_stats',

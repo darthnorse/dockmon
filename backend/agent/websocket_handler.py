@@ -533,7 +533,10 @@ class AgentWebSocketHandler:
         """
         Handle container lifecycle event from agent.
 
-        Emits via EventBus: database logging, alert triggers, UI broadcast.
+        Updates monitor's _container_states synchronously (like local Docker events do)
+        to prevent "state drift detected" warnings during polling.
+
+        Then emits via EventBus: database logging, alert triggers, UI broadcast.
         """
         try:
             if not self.monitor:
@@ -565,6 +568,26 @@ class AgentWebSocketHandler:
 
             # Create composite key using utility function (validates 12-char format)
             composite_key = make_composite_key(self.host_id, container_id)
+
+            # Update _container_states synchronously BEFORE emitting EventBus event
+            # This matches how local Docker events work (see monitor.py process_docker_events)
+            # and prevents "State drift detected" warnings during polling
+            state_map = {
+                'start': 'running',
+                'stop': 'exited',
+                'die': 'exited',
+                'kill': 'exited',
+                'pause': 'paused',
+                'unpause': 'running',
+                'restart': 'running',
+            }
+            new_state = state_map.get(action)
+            if new_state and hasattr(self.monitor, '_state_lock'):
+                async with self.monitor._state_lock:
+                    self.monitor._container_states[composite_key] = new_state
+                    self.monitor._container_state_timestamps[composite_key] = datetime.now(timezone.utc)
+                    self.monitor._container_state_sources[composite_key] = 'event'
+                logger.debug(f"Updated _container_states for {container_name}: {new_state} (agent event)")
 
             # Emit via EventBus (automatic: database, alerts, UI broadcast)
             event = Event(

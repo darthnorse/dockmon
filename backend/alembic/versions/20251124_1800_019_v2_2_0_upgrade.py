@@ -30,6 +30,11 @@ CHANGES IN v2.2.0-beta1:
   - Values: 'backend' (default) or 'agent'
   - Enables health checks to be performed by remote agent
 - Add indexes for performance (engine_id, host_id, status)
+- Add event_suppression_patterns column to global_settings
+  - JSON array of glob patterns (e.g., ["runner-*", "*-cronjob-*"])
+  - Events from containers matching these patterns are not logged
+  - Reduces database size for users with many temporary containers
+- Remove unused auto_cleanup_events column from global_settings
 - Update app_version to '2.2.0-beta1'
 
 NEW FEATURES:
@@ -188,7 +193,23 @@ def upgrade() -> None:
                 sa.Column('check_from', sa.Text(), server_default='backend', nullable=False)
             )
 
-    # Change 7: Update app_version
+    # Change 7: Add event_suppression_patterns column to global_settings
+    # Stores JSON array of glob patterns for container name matching
+    if table_exists('global_settings'):
+        if not column_exists('global_settings', 'event_suppression_patterns'):
+            op.add_column('global_settings',
+                sa.Column('event_suppression_patterns', sa.JSON(), nullable=True)
+            )
+
+    # Change 8: Remove unused auto_cleanup_events column from global_settings
+    # This column was defined but never used anywhere in the codebase
+    if table_exists('global_settings'):
+        if column_exists('global_settings', 'auto_cleanup_events'):
+            # SQLite requires batch mode for DROP COLUMN
+            with op.batch_alter_table('global_settings') as batch_op:
+                batch_op.drop_column('auto_cleanup_events')
+
+    # Change 9: Update app_version
     if table_exists('global_settings'):
         op.execute(
             sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
@@ -205,6 +226,19 @@ def downgrade() -> None:
             sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
             .bindparams(version='2.1.9', id=1)
         )
+
+    # Restore auto_cleanup_events column
+    if table_exists('global_settings'):
+        if not column_exists('global_settings', 'auto_cleanup_events'):
+            op.add_column('global_settings',
+                sa.Column('auto_cleanup_events', sa.Boolean(), server_default='1', nullable=True)
+            )
+
+    # Remove event_suppression_patterns column
+    if table_exists('global_settings'):
+        if column_exists('global_settings', 'event_suppression_patterns'):
+            with op.batch_alter_table('global_settings') as batch_op:
+                batch_op.drop_column('event_suppression_patterns')
 
     # Remove check_from column from container_http_health_checks
     if table_exists('container_http_health_checks'):

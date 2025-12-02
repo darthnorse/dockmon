@@ -346,9 +346,14 @@ class AgentManager:
                 reg_session.add(agent)
                 logger.info(f"Created agent record: {agent_id[:8]}... (os={registration_data.get('agent_os')}, arch={registration_data.get('agent_arch')})")
 
-                # Mark token as used
-                token_record = reg_session.query(RegistrationToken).filter_by(token=token).first()
+                # Mark token as used (with locking to prevent TOCTOU race)
+                # Use with_for_update() to lock the row - concurrent registrations will wait
+                token_record = reg_session.query(RegistrationToken).filter_by(token=token).with_for_update().first()
                 if token_record:
+                    # Re-check token hasn't been used by concurrent registration
+                    if token_record.used:
+                        reg_session.rollback()
+                        return {"success": False, "error": "Registration token has already been used"}
                     token_record.used = True
                     token_record.used_at = now
 

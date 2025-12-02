@@ -398,6 +398,7 @@ func (c *WebSocketClient) handleConnection(ctx context.Context) error {
 	// Create connection-scoped context that we cancel when disconnecting
 	// This ensures background goroutines (event streaming) stop when connection drops
 	connCtx, connCancel := context.WithCancel(ctx)
+	defer connCancel() // Ensure context is cancelled on any exit path
 
 	// Configure ping/pong for connection health monitoring
 	// This detects stale connections (NAT timeout, firewall changes, network partitions)

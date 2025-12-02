@@ -2273,8 +2273,8 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
         "update_available": update_available  # Server-side semver comparison
     }
 
-@app.post("/api/settings", tags=["system"])
-@app.put("/api/settings", tags=["system"])
+@app.post("/api/settings", tags=["system"], dependencies=[Depends(require_scope("admin"))])
+@app.put("/api/settings", tags=["system"], dependencies=[Depends(require_scope("admin"))])
 async def update_settings(
     settings: GlobalSettingsUpdate,
     current_user: dict = Depends(get_current_user),
@@ -2763,7 +2763,7 @@ async def get_alert_rules_v2(current_user: dict = Depends(get_current_user)):
     }
 
 
-@app.post("/api/alerts/rules", tags=["alerts"])
+@app.post("/api/alerts/rules", tags=["alerts"], dependencies=[Depends(require_scope("admin"))])
 async def create_alert_rule_v2(
     rule: AlertRuleV2Create,
     current_user: dict = Depends(get_current_user),
@@ -2838,7 +2838,7 @@ async def create_alert_rule_v2(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.put("/api/alerts/rules/{rule_id}", tags=["alerts"])
+@app.put("/api/alerts/rules/{rule_id}", tags=["alerts"], dependencies=[Depends(require_scope("admin"))])
 async def update_alert_rule_v2(
     rule_id: str,
     updates: AlertRuleV2Update,
@@ -2876,7 +2876,7 @@ async def update_alert_rule_v2(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.delete("/api/alerts/rules/{rule_id}", tags=["alerts"])
+@app.delete("/api/alerts/rules/{rule_id}", tags=["alerts"], dependencies=[Depends(require_scope("admin"))])
 async def delete_alert_rule_v2(
     rule_id: str,
     current_user: dict = Depends(get_current_user),
@@ -3065,7 +3065,7 @@ async def get_notification_channels(current_user: dict = Depends(get_current_use
         "updated_at": ch.updated_at.isoformat() + 'Z'
     } for ch in channels]
 
-@app.post("/api/notifications/channels", tags=["notifications"])
+@app.post("/api/notifications/channels", tags=["notifications"], dependencies=[Depends(require_scope("admin"))])
 async def create_notification_channel(channel: NotificationChannelCreate, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
     """Create a new notification channel"""
     try:
@@ -3096,7 +3096,7 @@ async def create_notification_channel(channel: NotificationChannelCreate, curren
         logger.error(f"Failed to create notification channel: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
-@app.put("/api/notifications/channels/{channel_id}", tags=["notifications"])
+@app.put("/api/notifications/channels/{channel_id}", tags=["notifications"], dependencies=[Depends(require_scope("admin"))])
 async def update_notification_channel(channel_id: int, updates: NotificationChannelUpdate, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
     """Update a notification channel"""
     try:
@@ -3123,7 +3123,7 @@ async def update_notification_channel(channel_id: int, updates: NotificationChan
 
 # V1 alert system endpoint removed - V2 alerts don't get orphaned when channels are deleted
 
-@app.delete("/api/notifications/channels/{channel_id}", tags=["notifications"])
+@app.delete("/api/notifications/channels/{channel_id}", tags=["notifications"], dependencies=[Depends(require_scope("admin"))])
 async def delete_notification_channel(channel_id: int, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
     """Delete a notification channel"""
     try:
@@ -4011,7 +4011,7 @@ async def get_host_events(host_id: str, limit: int = 50, current_user: dict = De
         logger.error(f"Failed to get events for host {host_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.delete("/api/events/cleanup", tags=["events"])
+@app.delete("/api/events/cleanup", tags=["events"], dependencies=[Depends(require_scope("admin"))])
 async def cleanup_old_events(days: int = 30, current_user: dict = Depends(get_current_user)):
     """Clean up old events - DANGEROUS: Can delete audit logs"""
     try:

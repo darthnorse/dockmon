@@ -254,7 +254,7 @@ class DockerUpdateExecutor:
                 )
                 logger.info(f"Recreating {len(dependent_containers)} dependent container(s)")
                 failed_deps = await self._recreate_dependents(
-                    docker_client, dependent_containers, new_container.id, is_podman
+                    docker_client, dependent_containers, new_container_id, is_podman
                 )
                 if failed_deps:
                     logger.warning(f"Failed to recreate dependents: {failed_deps}")

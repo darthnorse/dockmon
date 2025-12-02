@@ -77,7 +77,7 @@ func (h *StatsHandler) StartContainerStats(parentCtx context.Context, containerI
 	// Start stats collection in goroutine
 	go h.collectStats(ctx, containerID, containerName)
 
-	h.log.Infof("Started stats collection for container %s (%s)", containerName, containerID[:12])
+	h.log.Infof("Started stats collection for container %s (%s)", containerName, safeShortID(containerID))
 	return nil
 }
 
@@ -89,7 +89,7 @@ func (h *StatsHandler) StopContainerStats(containerID string) {
 	if cancel, exists := h.streams[containerID]; exists {
 		cancel()
 		delete(h.streams, containerID)
-		h.log.Infof("Stopped stats collection for container %s", containerID[:12])
+		h.log.Infof("Stopped stats collection for container %s", safeShortID(containerID))
 	}
 }
 
@@ -100,7 +100,7 @@ func (h *StatsHandler) StopAll() {
 
 	for containerID, cancel := range h.streams {
 		cancel()
-		h.log.Debugf("Stopped stats stream for %s", containerID[:12])
+		h.log.Debugf("Stopped stats stream for %s", safeShortID(containerID))
 	}
 	h.streams = make(map[string]context.CancelFunc)
 	h.log.Info("Stopped all stats collection")
@@ -117,7 +117,7 @@ func (h *StatsHandler) collectStats(ctx context.Context, containerID, containerN
 	// Docker stats stream (stream = true)
 	stream, err := h.dockerClient.ContainerStats(ctx, containerID, true)
 	if err != nil {
-		h.log.Errorf("Failed to open stats stream for %s: %v", containerID[:12], err)
+		h.log.Errorf("Failed to open stats stream for %s: %v", safeShortID(containerID), err)
 		return
 	}
 	defer stream.Body.Close()
@@ -127,12 +127,12 @@ func (h *StatsHandler) collectStats(ctx context.Context, containerID, containerN
 	for {
 		select {
 		case <-ctx.Done():
-			h.log.Debugf("Stats collection cancelled for %s", containerID[:12])
+			h.log.Debugf("Stats collection cancelled for %s", safeShortID(containerID))
 			return
 		default:
 			var stats container.StatsResponse
 			if err := decoder.Decode(&stats); err != nil {
-				h.log.Errorf("Failed to decode stats for %s: %v", containerID[:12], err)
+				h.log.Errorf("Failed to decode stats for %s: %v", safeShortID(containerID), err)
 				return
 			}
 
@@ -164,6 +164,6 @@ func (h *StatsHandler) processStats(stat *container.StatsResponse, containerID, 
 
 	// Send to backend via WebSocket
 	if err := h.sendMessage("container_stats", statsMsg); err != nil {
-		h.log.Errorf("Failed to send stats for %s: %v", containerID[:12], err)
+		h.log.Errorf("Failed to send stats for %s: %v", safeShortID(containerID), err)
 	}
 }

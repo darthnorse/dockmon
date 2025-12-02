@@ -13,6 +13,15 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// safeShortID safely truncates a container ID to 12 characters.
+// Returns the original string if it's shorter than 12 characters.
+func safeShortID(id string) string {
+	if len(id) >= 12 {
+		return id[:12]
+	}
+	return id
+}
+
 // UpdateHandler manages container updates using struct-copy passthrough
 type UpdateHandler struct {
 	dockerClient             *docker.Client
@@ -143,7 +152,7 @@ func (h *UpdateHandler) UpdateContainer(ctx context.Context, req UpdateRequest) 
 	newImage := req.NewImage
 
 	h.log.WithFields(logrus.Fields{
-		"container_id": containerID[:12],
+		"container_id": safeShortID(containerID),
 		"new_image":    newImage,
 	}).Info("Starting container update")
 
@@ -330,7 +339,7 @@ func (h *UpdateHandler) UpdateContainer(ctx context.Context, req UpdateRequest) 
 		return nil, h.fail(containerID, StageCreating, fmt.Errorf("failed to create container: %w", err))
 	}
 
-	h.log.Infof("Created new container %s", newContainerID[:12])
+	h.log.Infof("Created new container %s", safeShortID(newContainerID))
 
 	// Step 7b: Connect networks post-creation
 	// For API < 1.44: Connect primary network with static IP/aliases
@@ -396,17 +405,17 @@ func (h *UpdateHandler) UpdateContainer(ctx context.Context, req UpdateRequest) 
 
 	// Success!
 	result := &UpdateResult{
-		OldContainerID: containerID[:12],
-		NewContainerID: newContainerID[:12],
+		OldContainerID: safeShortID(containerID),
+		NewContainerID: safeShortID(newContainerID),
 		ContainerName:  containerName,
 	}
 
-	h.sendProgress(containerID, StageCompleted, fmt.Sprintf("Update complete, new container: %s", newContainerID[:12]))
+	h.sendProgress(containerID, StageCompleted, fmt.Sprintf("Update complete, new container: %s", safeShortID(newContainerID)))
 
 	// Send completion event with new container ID for database update
 	completionPayload := map[string]interface{}{
-		"old_container_id": containerID[:12],
-		"new_container_id": newContainerID[:12],
+		"old_container_id": safeShortID(containerID),
+		"new_container_id": safeShortID(newContainerID),
 		"container_name":   containerName,
 	}
 	if len(failedDeps) > 0 {
@@ -415,8 +424,8 @@ func (h *UpdateHandler) UpdateContainer(ctx context.Context, req UpdateRequest) 
 	h.sendEvent("update_complete", completionPayload)
 
 	h.log.WithFields(logrus.Fields{
-		"old_container": containerID[:12],
-		"new_container": newContainerID[:12],
+		"old_container": safeShortID(containerID),
+		"new_container": safeShortID(newContainerID),
 		"name":          containerName,
 	}).Info("Container update completed successfully")
 
@@ -691,7 +700,7 @@ func (h *UpdateHandler) findDependentContainers(
 		// Inspect to get full config including NetworkMode
 		inspect, err := h.dockerClient.InspectContainer(ctx, c.ID)
 		if err != nil {
-			h.log.WithError(err).Warnf("Failed to inspect container %s", c.ID[:12])
+			h.log.WithError(err).Warnf("Failed to inspect container %s", safeShortID(c.ID))
 			continue
 		}
 
@@ -714,7 +723,7 @@ func (h *UpdateHandler) findDependentContainers(
 			dependents = append(dependents, DependentContainer{
 				Container:      inspect,
 				Name:           depName,
-				ID:             inspect.ID[:12],
+				ID:             safeShortID(inspect.ID),
 				Image:          imageName,
 				OldNetworkMode: networkMode,
 			})
@@ -765,7 +774,7 @@ func (h *UpdateHandler) recreateDependentContainer(
 	// Update NetworkMode to point to new parent
 	oldNetworkMode := string(extractedConfig.HostConfig.NetworkMode)
 	extractedConfig.HostConfig.NetworkMode = container.NetworkMode(fmt.Sprintf("container:%s", newParentID))
-	h.log.Infof("Updated NetworkMode: %s -> container:%s", oldNetworkMode, newParentID[:12])
+	h.log.Infof("Updated NetworkMode: %s -> container:%s", oldNetworkMode, safeShortID(newParentID))
 
 	// Stop dependent container
 	h.log.Debugf("Stopping dependent container: %s", dep.Name)
@@ -828,7 +837,7 @@ func (h *UpdateHandler) recreateDependentContainer(
 		h.dockerClient.RemoveContainer(ctx, tempContainer, true)
 	}
 
-	h.log.Infof("Successfully recreated dependent container: %s (new ID: %s)", dep.Name, newDepID[:12])
+	h.log.Infof("Successfully recreated dependent container: %s (new ID: %s)", dep.Name, safeShortID(newDepID))
 	return nil
 }
 
@@ -842,7 +851,7 @@ func (h *UpdateHandler) createBackup(
 	backupName := fmt.Sprintf("%s-dockmon-backup-%d", containerName, time.Now().Unix())
 
 	// Stop container gracefully
-	h.log.Debugf("Stopping container %s", containerID[:12])
+	h.log.Debugf("Stopping container %s", safeShortID(containerID))
 	if err := h.dockerClient.StopContainer(ctx, containerID, stopTimeout); err != nil {
 		h.log.WithError(err).Warn("Failed to stop container gracefully, continuing with rename")
 	}
@@ -893,7 +902,7 @@ func (h *UpdateHandler) restoreBackup(ctx context.Context, backupName, originalN
 	// Remove any container with the original name (failed new container)
 	existingID, _ := h.dockerClient.GetContainerByName(ctx, originalName)
 	if existingID != "" {
-		h.log.Debugf("Removing failed container %s to restore backup", existingID[:12])
+		h.log.Debugf("Removing failed container %s to restore backup", safeShortID(existingID))
 		h.dockerClient.RemoveContainer(ctx, existingID, true)
 	}
 

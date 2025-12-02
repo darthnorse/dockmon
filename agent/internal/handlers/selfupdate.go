@@ -150,7 +150,7 @@ func (h *SelfUpdateHandler) performContainerSelfUpdate(ctx context.Context, req 
 		return fmt.Errorf("failed to create new container: %w", err)
 	}
 
-	h.log.WithField("new_container_id", newContainerID[:12]).Info("Created new container")
+	h.log.WithField("new_container_id", safeShortID(newContainerID)).Info("Created new container")
 
 	// Step 4: Write cleanup file BEFORE starting new container
 	// This ensures the new agent finds it on startup (race condition fix)
@@ -373,7 +373,7 @@ func (h *SelfUpdateHandler) performContainerCleanup(cleanupFilePath string) erro
 
 	// Stop and remove old container
 	if oldContainerID != "" {
-		h.log.WithField("container_id", oldContainerID[:12]).Info("Removing old container")
+		h.log.WithField("container_id", safeShortID(oldContainerID)).Info("Removing old container")
 		h.dockerClient.StopContainer(ctx, oldContainerID, 10)
 		if err := h.dockerClient.RemoveContainer(ctx, oldContainerID, true); err != nil {
 			h.log.WithError(err).Warn("Failed to remove old container")

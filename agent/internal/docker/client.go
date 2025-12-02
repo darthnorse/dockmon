@@ -244,6 +244,13 @@ func (c *Client) KillContainer(ctx context.Context, containerID string) error {
 
 // GetContainerLogs retrieves container logs
 func (c *Client) GetContainerLogs(ctx context.Context, containerID string, tail string) (string, error) {
+	// First, inspect the container to check if it's running with TTY
+	// TTY containers return raw logs without multiplexing headers
+	inspect, err := c.cli.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return "", fmt.Errorf("failed to inspect container: %w", err)
+	}
+
 	options := container.LogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
@@ -257,14 +264,24 @@ func (c *Client) GetContainerLogs(ctx context.Context, containerID string, tail 
 	}
 	defer logs.Close()
 
-	// Docker returns logs in a multiplexed stream format with 8-byte headers
-	// Use stdcopy to demultiplex stdout and stderr streams
+	// Check if container is using TTY mode
+	// TTY mode returns raw logs, non-TTY uses multiplexed format with 8-byte headers
+	if inspect.Config != nil && inspect.Config.Tty {
+		// TTY mode: read raw logs directly
+		var buf bytes.Buffer
+		if _, err := io.Copy(&buf, logs); err != nil {
+			return "", fmt.Errorf("failed to read logs: %w", err)
+		}
+		return buf.String(), nil
+	}
+
+	// Non-TTY mode: demultiplex stdout/stderr streams
 	var stdout, stderr bytes.Buffer
 	if _, err := stdcopy.StdCopy(&stdout, &stderr, logs); err != nil {
 		return "", fmt.Errorf("failed to demultiplex logs: %w", err)
 	}
 
-	// Combine stdout and stderr (interleaved, similar to Docker CLI)
+	// Combine stdout and stderr
 	result := stdout.String() + stderr.String()
 	return result, nil
 }

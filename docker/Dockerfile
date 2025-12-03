@@ -2,7 +2,7 @@
 # Multi-stage build: Go stats service + Python backend + React frontend
 
 # Stage 1: Build Go stats service
-FROM golang:1.23-alpine AS go-builder
+FROM golang:1.24-alpine AS go-builder
 
 WORKDIR /build
 
@@ -56,7 +56,8 @@ LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.vendor="darthnorse"
 
 # Install runtime dependencies and build dependencies (temporarily for Python packages with C extensions)
-RUN apk add --no-cache \
+RUN apk upgrade --no-cache \
+    && apk add --no-cache \
     # Runtime dependencies
     nginx \
     curl \
@@ -79,6 +80,9 @@ WORKDIR /app
 # Copy Go stats service binary from builder
 COPY --from=go-builder /build/stats-service /usr/local/bin/stats-service
 RUN chmod +x /usr/local/bin/stats-service
+
+# Upgrade pip to latest version for security fixes
+RUN pip install --no-cache-dir --upgrade pip
 
 # Install supervisor 4.3.0 from PyPI (removes pkg_resources dependency)
 RUN pip install --no-cache-dir supervisor==4.3.0

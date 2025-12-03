@@ -27,10 +27,10 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     ./cmd/agent
 
 # Runtime stage
-FROM alpine:3.19
+FROM alpine:3.21
 
 # Install runtime dependencies (su-exec for dropping privileges)
-RUN apk add --no-cache ca-certificates tzdata su-exec
+RUN apk upgrade --no-cache && apk add --no-cache ca-certificates tzdata su-exec
 
 # Create non-root user
 RUN addgroup -g 1000 agent && \

@@ -48,8 +48,8 @@ func LoadFromEnv() (*Config, error) {
 		PermanentToken:     os.Getenv("PERMANENT_TOKEN"),
 		InsecureSkipVerify: getEnvBool("INSECURE_SKIP_VERIFY", false),
 
-		// Docker (defaults work for standard socket)
-		DockerHost:       getEnvOrDefault("DOCKER_HOST", "unix:///var/run/docker.sock"),
+		// Docker/Podman (auto-detects socket if DOCKER_HOST not set)
+		DockerHost:       getEnvOrDefault("DOCKER_HOST", detectContainerSocket()),
 		DockerCertPath:   os.Getenv("DOCKER_CERT_PATH"),
 		DockerTLSVerify:  getEnvBool("DOCKER_TLS_VERIFY", false),
 
@@ -119,4 +119,24 @@ func getEnvDuration(key string, defaultValue time.Duration) time.Duration {
 		}
 	}
 	return defaultValue
+}
+
+// detectContainerSocket finds the first available container runtime socket.
+// Checks common locations for Docker and Podman in order of preference.
+func detectContainerSocket() string {
+	// Common socket paths in order of preference
+	sockets := []string{
+		"/var/run/docker.sock",     // Docker (most common)
+		"/run/docker.sock",         // Docker (alternative location)
+		"/run/podman/podman.sock",  // Podman rootful
+	}
+
+	for _, sock := range sockets {
+		if info, err := os.Stat(sock); err == nil && (info.Mode()&os.ModeSocket) != 0 {
+			return "unix://" + sock
+		}
+	}
+
+	// Fallback to Docker default (will error if not available, but that's expected)
+	return "unix:///var/run/docker.sock"
 }

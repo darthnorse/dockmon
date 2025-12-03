@@ -719,11 +719,17 @@ func (c *WebSocketClient) handleContainerOperation(ctx context.Context, msg *typ
 	// Correlation ID is in msg.ID (Message struct), not in payload
 	correlationID := msg.ID
 
-	c.log.WithFields(logrus.Fields{
+	// Log read-only operations at DEBUG level (high frequency), state-changing at INFO
+	logEntry := c.log.WithFields(logrus.Fields{
 		"action":         action,
 		"container_id":   containerID,
 		"correlation_id": correlationID,
-	}).Info("Handling container operation")
+	})
+	if action == "get_logs" || action == "inspect" {
+		logEntry.Debug("Handling container operation")
+	} else {
+		logEntry.Info("Handling container operation")
+	}
 
 	// Execute operation
 	var err error

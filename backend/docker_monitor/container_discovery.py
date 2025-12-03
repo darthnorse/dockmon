@@ -456,7 +456,7 @@ class ContainerDiscovery:
                             status = "unknown"
 
                         # Extract labels and compose metadata
-                        labels = dc_data.get("Labels", {}) or {}
+                        labels = dc_data.get("Labels") or {}
                         compose_project = labels.get("com.docker.compose.project")
                         compose_service = labels.get("com.docker.compose.service")
 

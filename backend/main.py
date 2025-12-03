@@ -1140,7 +1140,8 @@ async def update_container_tags(
         container.name,
         tags_to_add=request.tags_to_add,
         tags_to_remove=request.tags_to_remove,
-        ordered_tags=request.ordered_tags
+        ordered_tags=request.ordered_tags,
+        container_labels=container.labels
     )
 
     logger.info(f"User {current_user.get('username')} updated tags for container {container.name}")

@@ -113,7 +113,8 @@ class StateManager:
         container_name: str,
         tags_to_add: list[str] = None,
         tags_to_remove: list[str] = None,
-        ordered_tags: list[str] = None
+        ordered_tags: list[str] = None,
+        container_labels: dict = None
     ) -> dict:
         """
         Update container custom tags in database.
@@ -129,20 +130,26 @@ class StateManager:
             tags_to_add: List of tags to add (delta mode)
             tags_to_remove: List of tags to remove (delta mode)
             ordered_tags: Complete ordered list of tags (ordered mode)
+            container_labels: Container labels (optional, required for agent hosts)
 
         Returns:
             dict with success status and updated tags list
         """
-        if host_id not in self.clients:
+        # Check if this is an agent host (has host entry but no Docker client)
+        is_agent_host = host_id in self.hosts and host_id not in self.clients
+
+        if not is_agent_host and host_id not in self.clients:
             raise HTTPException(status_code=404, detail="Host not found")
 
         try:
-            # Verify container exists (async to prevent event loop blocking)
-            client = self.clients[host_id]
-            container = await async_docker_call(client.containers.get, container_id)
-
-            # Get labels to derive compose/swarm tags
-            labels = container.labels if container.labels else {}
+            if is_agent_host:
+                # Agent host: use labels passed from caller (from get_containers())
+                labels = container_labels if container_labels else {}
+            else:
+                # Docker SDK host: verify container exists and get labels
+                client = self.clients[host_id]
+                container = await async_docker_call(client.containers.get, container_id)
+                labels = container.labels if container.labels else {}
 
             # Update custom tags in database (supports both modes)
             container_key = make_composite_key(host_id, container_id)

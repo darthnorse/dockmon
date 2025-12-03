@@ -1324,7 +1324,8 @@ class DockerMonitor:
         container_name: str,
         tags_to_add: list[str] = None,
         tags_to_remove: list[str] = None,
-        ordered_tags: list[str] = None
+        ordered_tags: list[str] = None,
+        container_labels: dict = None
     ) -> dict:
         """
         Update container custom tags in database
@@ -1337,7 +1338,8 @@ class DockerMonitor:
             host_id, container_id, container_name,
             tags_to_add=tags_to_add,
             tags_to_remove=tags_to_remove,
-            ordered_tags=ordered_tags
+            ordered_tags=ordered_tags,
+            container_labels=container_labels
         )
 
 

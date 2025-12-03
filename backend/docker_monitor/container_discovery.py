@@ -6,6 +6,7 @@ Handles container scanning, reconnection logic, and stats population
 import logging
 import os
 import time
+import traceback
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
@@ -436,7 +437,8 @@ class ContainerDiscovery:
                         container_id = dc_data.get("Id", "")[:12]  # Use short ID (12 chars)
 
                         # Container name (remove leading slash)
-                        names = dc_data.get("Names", [])
+                        # Use `or []` pattern to handle both missing keys AND null values
+                        names = dc_data.get("Names") or []
                         container_name = names[0].lstrip("/") if names else "unknown"
 
                         # Image name
@@ -484,7 +486,8 @@ class ContainerDiscovery:
                         # Extract ports - convert Docker API format to string list
                         # Docker API returns: [{"PrivatePort": 80, "PublicPort": 8080, "Type": "tcp", "IP": "0.0.0.0"}]
                         # We need: ["8080:80/tcp"]
-                        ports_data = dc_data.get("Ports", [])
+                        # Use `or []` pattern to handle both missing keys AND null values
+                        ports_data = dc_data.get("Ports") or []
                         ports = []
                         for port in ports_data:
                             private_port = port.get("PrivatePort")
@@ -499,12 +502,14 @@ class ContainerDiscovery:
                                 ports.append(f"{private_port}/{port_type}")
 
                         # Extract mounts/volumes - use existing helper function
-                        mounts = dc_data.get("Mounts", [])
+                        # Use `or []` pattern to handle both missing keys AND null values
+                        mounts = dc_data.get("Mounts") or []
                         volumes = parse_container_volumes(mounts)
 
                         # Restart policy (from HostConfig)
-                        host_config = dc_data.get("HostConfig", {})
-                        restart_policy_data = host_config.get("RestartPolicy", {})
+                        # Use `or {}` pattern to handle both missing keys AND null values
+                        host_config = dc_data.get("HostConfig") or {}
+                        restart_policy_data = host_config.get("RestartPolicy") or {}
                         restart_policy = restart_policy_data.get("Name", "no")
 
                         # Convert created timestamp if it's an int (Unix timestamp)
@@ -516,10 +521,12 @@ class ContainerDiscovery:
                             created_str = str(created_value) if created_value else ""
 
                         # Extract RepoDigests from agent response (v2.2.0+ agents)
-                        repo_digests = dc_data.get("RepoDigests", [])
+                        # Use `or []` pattern to handle both missing keys AND null values
+                        repo_digests = dc_data.get("RepoDigests") or []
 
                         # Extract Docker network IPs (GitHub Issue #37)
-                        network_settings = dc_data.get("NetworkSettings", {})
+                        # Use `or {}` pattern to handle both missing keys AND null values
+                        network_settings = dc_data.get("NetworkSettings") or {}
                         docker_ip, docker_ips = extract_container_ips(network_settings)
 
                         # Create Container object
@@ -550,7 +557,9 @@ class ContainerDiscovery:
                         containers.append(container)
 
                     except Exception as e:
-                        logger.error(f"Error parsing agent container data: {e}")
+                        # Log container info to help debug which container is failing
+                        container_info = f"id={dc_data.get('Id', 'unknown')[:12]}, names={dc_data.get('Names', 'unknown')}"
+                        logger.error(f"Error parsing agent container data ({container_info}): {e}\n{traceback.format_exc()}")
                         continue
 
                 logger.debug(f"Discovered {len(containers)} containers from agent {agent_id[:8]}... for host {host.name}")

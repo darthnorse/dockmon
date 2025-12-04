@@ -232,13 +232,20 @@ RestartSec=10
 WantedBy=multi-user.target`
     : ''
 
-  const systemdInstructions = `# 1. Download the agent binary
-curl -L -o /usr/local/bin/dockmon-agent \\
-  https://github.com/darthnorse/dockmon/releases/latest/download/dockmon-agent-linux-amd64
-chmod +x /usr/local/bin/dockmon-agent
+  const systemdInstructions = `# 1. Download the agent binary (adjust architecture if needed)
+ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+sudo curl -L -o /usr/local/bin/dockmon-agent \\
+  https://github.com/darthnorse/dockmon/releases/latest/download/dockmon-agent-linux-\${ARCH}
+sudo chmod +x /usr/local/bin/dockmon-agent
+
+# Alternative: Extract from Docker image (if release not available)
+# docker pull ghcr.io/darthnorse/dockmon-agent:latest
+# docker create --name temp-agent ghcr.io/darthnorse/dockmon-agent:latest
+# sudo docker cp temp-agent:/app/dockmon-agent /usr/local/bin/dockmon-agent
+# docker rm temp-agent
 
 # 2. Create data directory
-mkdir -p /var/lib/dockmon-agent
+sudo mkdir -p /var/lib/dockmon-agent
 
 # 3. Create the systemd service file
 sudo nano /etc/systemd/system/dockmon-agent.service

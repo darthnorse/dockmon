@@ -489,8 +489,6 @@ class NotificationService:
                 credentials = base64.b64encode(f"{username}:{password}".encode()).decode()
                 headers['Authorization'] = f'Basic {credentials}'
 
-            logger.debug(f"ntfy request to {url} with headers {headers}")
-
             # Send request - message as plain text body (not JSON)
             response = await self.http_client.post(url, content=clean_message, headers=headers)
 

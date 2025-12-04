@@ -289,7 +289,10 @@ class AlertEngine:
                     continue
 
                 # Check if we should suppress this alert during container update
-                if rule.suppress_during_updates and context.scope_type == "container":
+                # IMPORTANT: Never suppress update-related alerts (update_completed, update_available, update_failed)
+                # These are specifically about the update process and MUST fire during updates
+                update_related_kinds = {"update_completed", "update_available", "update_failed"}
+                if rule.suppress_during_updates and context.scope_type == "container" and rule.kind not in update_related_kinds:
                     # scope_id is composite key (host_id:container_id), extract SHORT ID
                     _, container_id = parse_composite_key(context.scope_id)
                     is_updating = self._is_container_updating(context.host_id, container_id)

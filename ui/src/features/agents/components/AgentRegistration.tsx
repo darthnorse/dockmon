@@ -39,53 +39,11 @@ export function AgentRegistration() {
   ghcr.io/darthnorse/dockmon-agent:latest`
     : ''
 
-  const systemdService = token
-    ? `[Unit]
-Description=DockMon Agent
-Documentation=https://github.com/darthnorse/dockmon
-After=network-online.target docker.service
-Wants=network-online.target
-Requires=docker.service
-
-[Service]
-Type=simple
-Environment="DOCKMON_URL=https://YOUR_DOCKMON_HOST"
-Environment="REGISTRATION_TOKEN=${token}"
-Environment="DATA_PATH=/var/lib/dockmon-agent"
-ExecStart=/usr/local/bin/dockmon-agent
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target`
+  const systemdInstallCommand = token
+    ? `curl -fsSL https://raw.githubusercontent.com/darthnorse/dockmon/main/scripts/install-agent.sh | \\
+  sudo DOCKMON_URL=https://YOUR_DOCKMON_HOST \\
+  REGISTRATION_TOKEN=${token} bash`
     : ''
-
-  const systemdInstructions = `# 1. Download the agent binary (adjust architecture if needed)
-ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
-sudo curl -L -o /usr/local/bin/dockmon-agent \\
-  https://github.com/darthnorse/dockmon/releases/latest/download/dockmon-agent-linux-\${ARCH}
-sudo chmod +x /usr/local/bin/dockmon-agent
-
-# Alternative: Extract from Docker image (if release not available)
-# docker pull ghcr.io/darthnorse/dockmon-agent:latest
-# docker create --name temp-agent ghcr.io/darthnorse/dockmon-agent:latest
-# sudo docker cp temp-agent:/app/dockmon-agent /usr/local/bin/dockmon-agent
-# docker rm temp-agent
-
-# 2. Create data directory
-sudo mkdir -p /var/lib/dockmon-agent
-
-# 3. Create the systemd service file
-sudo nano /etc/systemd/system/dockmon-agent.service
-# (paste the service file content below)
-
-# 4. Enable and start the service
-sudo systemctl daemon-reload
-sudo systemctl enable dockmon-agent
-sudo systemctl start dockmon-agent
-
-# 5. Check status
-sudo systemctl status dockmon-agent`
 
   const formatExpiry = (isoString: string) => {
     const date = new Date(isoString)
@@ -201,49 +159,28 @@ sudo systemctl status dockmon-agent`
               )}
 
               {installMethod === 'systemd' && (
-                <div className="space-y-4">
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium">Installation Steps</label>
-                    <div className="relative">
-                      <pre className="rounded bg-muted p-4 text-xs font-mono overflow-x-auto whitespace-pre-wrap">
-                        {systemdInstructions}
-                      </pre>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="absolute top-2 right-2"
-                        onClick={() => handleCopy(systemdInstructions, 'instructions')}
-                      >
-                        {copied === 'instructions' ? (
-                          <Check className="h-4 w-4 mr-1" />
-                        ) : (
-                          <Copy className="h-4 w-4 mr-1" />
-                        )}
-                        Copy
-                      </Button>
-                    </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium">Systemd Service File</label>
-                    <div className="relative">
-                      <pre className="rounded bg-muted p-4 text-xs font-mono overflow-x-auto whitespace-pre-wrap">
-                        {systemdService}
-                      </pre>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="absolute top-2 right-2"
-                        onClick={() => handleCopy(systemdService, 'systemd')}
-                      >
-                        {copied === 'systemd' ? (
-                          <Check className="h-4 w-4 mr-1" />
-                        ) : (
-                          <Copy className="h-4 w-4 mr-1" />
-                        )}
-                        Copy
-                      </Button>
-                    </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Install Command</label>
+                  <p className="text-xs text-muted-foreground">
+                    Run this command on your remote host to install the agent as a systemd service:
+                  </p>
+                  <div className="relative">
+                    <pre className="rounded bg-muted p-4 text-sm font-mono overflow-x-auto whitespace-pre-wrap">
+                      {systemdInstallCommand}
+                    </pre>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="absolute top-2 right-2"
+                      onClick={() => handleCopy(systemdInstallCommand, 'systemd')}
+                    >
+                      {copied === 'systemd' ? (
+                        <Check className="h-4 w-4 mr-1" />
+                      ) : (
+                        <Copy className="h-4 w-4 mr-1" />
+                      )}
+                      Copy
+                    </Button>
                   </div>
                 </div>
               )}

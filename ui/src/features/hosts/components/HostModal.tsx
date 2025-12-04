@@ -212,7 +212,7 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
 
   const systemdInstallCommand = token
     ? `curl -fsSL https://raw.githubusercontent.com/darthnorse/dockmon/main/scripts/install-agent.sh | \\
-  sudo DOCKMON_URL=${dockmonUrl} \\
+  DOCKMON_URL=${dockmonUrl} \\
   REGISTRATION_TOKEN=${token} \\
   TZ=${timezone}${isHttps ? ' \\\n  INSECURE_SKIP_VERIFY=true' : ''} bash`
     : ''
@@ -441,7 +441,7 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
               <div className="space-y-2">
                 <label className="text-sm font-medium">Install Command</label>
                 <p className="text-xs text-muted-foreground">
-                  Run this command on your remote host to install the agent as a systemd service:
+                  Run this command as root on your remote host to install the agent as a systemd service:
                 </p>
                 <div className="relative">
                   <pre className="rounded bg-muted p-4 text-sm font-mono overflow-x-auto whitespace-pre-wrap">

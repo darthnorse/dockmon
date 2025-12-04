@@ -41,7 +41,7 @@ export function AgentRegistration() {
 
   const systemdInstallCommand = token
     ? `curl -fsSL https://raw.githubusercontent.com/darthnorse/dockmon/main/scripts/install-agent.sh | \\
-  sudo DOCKMON_URL=https://YOUR_DOCKMON_HOST \\
+  DOCKMON_URL=https://YOUR_DOCKMON_HOST \\
   REGISTRATION_TOKEN=${token} bash`
     : ''
 
@@ -162,7 +162,7 @@ export function AgentRegistration() {
                 <div className="space-y-2">
                   <label className="text-sm font-medium">Install Command</label>
                   <p className="text-xs text-muted-foreground">
-                    Run this command on your remote host to install the agent as a systemd service:
+                    Run this command as root on your remote host to install the agent as a systemd service:
                   </p>
                   <div className="relative">
                     <pre className="rounded bg-muted p-4 text-sm font-mono overflow-x-auto whitespace-pre-wrap">

@@ -3,9 +3,9 @@
 # DockMon Agent Install Script
 # https://github.com/darthnorse/dockmon
 #
-# Usage:
+# Usage (run as root):
 #   curl -fsSL https://raw.githubusercontent.com/darthnorse/dockmon/main/scripts/install-agent.sh | \
-#     sudo DOCKMON_URL=https://your-server REGISTRATION_TOKEN=your-token bash
+#     DOCKMON_URL=https://your-server REGISTRATION_TOKEN=your-token bash
 #
 # Optional environment variables:
 #   DOCKMON_URL          - Required. URL of your DockMon server

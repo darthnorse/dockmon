@@ -97,13 +97,10 @@ fi
 chmod +x "$INSTALL_PATH"
 log_info "Installed binary to $INSTALL_PATH"
 
-# Verify binary
-if ! "$INSTALL_PATH" --version &>/dev/null 2>&1; then
-    # Some binaries don't have --version, just check it's executable
-    if ! file "$INSTALL_PATH" | grep -q "executable"; then
-        log_error "Downloaded file is not a valid executable"
-        exit 1
-    fi
+# Verify binary is executable (don't run it - agent requires config)
+if ! file "$INSTALL_PATH" | grep -q "executable"; then
+    log_error "Downloaded file is not a valid executable"
+    exit 1
 fi
 
 # Create data directory

@@ -87,8 +87,9 @@ if ! curl -fsSL -o "$INSTALL_PATH" "$DOWNLOAD_URL"; then
         exit 1
     fi
 
-    docker pull ghcr.io/darthnorse/dockmon-agent:latest
-    docker create --name temp-dockmon-agent ghcr.io/darthnorse/dockmon-agent:latest
+    # TODO: Change back to :latest before merging to main
+    docker pull ghcr.io/darthnorse/dockmon-agent:feature-v2.2.0-agent
+    docker create --name temp-dockmon-agent ghcr.io/darthnorse/dockmon-agent:feature-v2.2.0-agent
     docker cp temp-dockmon-agent:/app/dockmon-agent "$INSTALL_PATH"
     docker rm temp-dockmon-agent
 fi

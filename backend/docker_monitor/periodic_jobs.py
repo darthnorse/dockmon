@@ -478,10 +478,11 @@ class PeriodicJobsManager:
                     update_stats = await executor.execute_auto_updates()
 
                     # Log execution results
-                    if update_stats['attempted'] > 0:
+                    # Note: 'total' is the number of containers eligible for auto-update
+                    if update_stats['total'] > 0:
                         self.event_logger.log_system_event(
                             "Container Auto-Update",
-                            f"Attempted {update_stats['attempted']} auto-updates, {update_stats['successful']} successful, {update_stats['failed']} failed",
+                            f"Processed {update_stats['total']} auto-updates: {update_stats['successful']} successful, {update_stats['failed']} failed, {update_stats['skipped']} skipped",
                             EventSeverity.INFO if update_stats['failed'] == 0 else EventSeverity.WARNING,
                             EventType.STARTUP
                         )

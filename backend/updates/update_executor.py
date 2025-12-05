@@ -617,18 +617,10 @@ class UpdateExecutor:
         container_name: str
     ):
         """Re-evaluate alerts after container update completes."""
-        try:
-            if not self.monitor or not hasattr(self.monitor, 'alert_evaluation_service'):
-                return
-
-            logger.debug(f"Re-evaluating alerts for {container_name} after update")
-            await self.monitor.alert_evaluation_service.evaluate_container(
-                host_id=host_id,
-                container_id=container_id,
-                container_name=container_name
-            )
-        except Exception as e:
-            logger.error(f"Error re-evaluating alerts after update: {e}")
+        # Note: Per-container alert evaluation was intended here but never implemented.
+        # Alerts are evaluated periodically by the evaluation service, so the updated
+        # container will be picked up on the next cycle. No immediate action needed.
+        logger.debug(f"Container {container_name} updated; alerts will re-evaluate on next cycle")
 
     async def cleanup_stale_pull_progress(self):
         """Remove pull progress older than 10 minutes."""

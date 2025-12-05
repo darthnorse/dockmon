@@ -40,7 +40,7 @@ export function AgentRegistration() {
     : ''
 
   const systemdInstallCommand = token
-    ? `curl -fsSL https://raw.githubusercontent.com/darthnorse/dockmon/main/scripts/install-agent.sh | \\
+    ? `curl -fsSL https://raw.githubusercontent.com/darthnorse/dockmon/feature/v2.2.0-agent/scripts/install-agent.sh | \\
   DOCKMON_URL=https://YOUR_DOCKMON_HOST \\
   REGISTRATION_TOKEN=${token} bash`
     : ''

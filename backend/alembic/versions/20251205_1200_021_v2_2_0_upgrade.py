@@ -1,7 +1,7 @@
 """v2.2.0-beta1 upgrade - Agent infrastructure for remote Docker host monitoring
 
-Revision ID: 019_v2_2_0
-Revises: 018_v2_1_9
+Revision ID: 021_v2_2_0
+Revises: 020_v2_1_10
 Create Date: 2025-11-24
 
 CHANGES IN v2.2.0-beta1:
@@ -50,8 +50,8 @@ from sqlalchemy import inspect
 
 
 # revision identifiers, used by Alembic.
-revision = '019_v2_2_0'
-down_revision = '018_v2_1_9'
+revision = '021_v2_2_0'
+down_revision = '020_v2_1_10'
 branch_labels = None
 depends_on = None
 

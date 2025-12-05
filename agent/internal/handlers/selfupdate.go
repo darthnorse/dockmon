@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -233,8 +235,22 @@ func (h *SelfUpdateHandler) performNativeSelfUpdate(ctx context.Context, req Sel
 	// Step 2: Verify checksum if provided
 	if req.Checksum != "" {
 		h.sendProgress("verify", "Verifying checksum")
-		// TODO: Implement checksum verification
-		h.log.Warn("Checksum verification not yet implemented")
+
+		actualChecksum, err := h.computeFileChecksum(newBinaryPath)
+		if err != nil {
+			h.sendProgressError("verify", err)
+			os.Remove(newBinaryPath)
+			return fmt.Errorf("failed to compute checksum: %w", err)
+		}
+
+		if actualChecksum != req.Checksum {
+			err := fmt.Errorf("checksum mismatch: expected %s, got %s", req.Checksum, actualChecksum)
+			h.sendProgressError("verify", err)
+			os.Remove(newBinaryPath)
+			return err
+		}
+
+		h.log.Info("Checksum verified successfully")
 	}
 
 	// Step 3: Make binary executable
@@ -630,4 +646,20 @@ func (h *SelfUpdateHandler) sendProgressError(stage string, err error) {
 	if sendErr := h.sendEvent("selfupdate_progress", progress); sendErr != nil {
 		h.log.WithError(sendErr).Warn("Failed to send self-update progress error")
 	}
+}
+
+// computeFileChecksum computes SHA256 checksum of a file
+func (h *SelfUpdateHandler) computeFileChecksum(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to open file: %w", err)
+	}
+	defer f.Close()
+
+	hash := sha256.New()
+	if _, err := io.Copy(hash, f); err != nil {
+		return "", fmt.Errorf("failed to compute hash: %w", err)
+	}
+
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }

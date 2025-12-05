@@ -273,7 +273,22 @@ class AgentUpdateExecutor:
             # - Container mode: uses 'image' to update own container
             # - Native mode: uses 'binary_url' to download and swap binary
             version = self._extract_version_from_image(update_record.latest_image)
-            binary_url = f"https://github.com/darthnorse/dockmon/releases/download/v{version}/dockmon-agent-{agent_os}-{agent_arch}"
+            # Agent releases use agent-v* tag pattern (e.g., agent-v1.0.0)
+            binary_url = f"https://github.com/darthnorse/dockmon/releases/download/agent-v{version}/dockmon-agent-{agent_os}-{agent_arch}"
+
+            # Fetch checksum for binary verification (security)
+            checksum = None
+            try:
+                from updates.dockmon_update_checker import get_dockmon_update_checker
+                checker = get_dockmon_update_checker(self.db)
+                checksum = await checker.fetch_agent_checksum(version, agent_arch)
+                if checksum:
+                    logger.info(f"Fetched checksum for agent binary: {checksum[:16]}...")
+                else:
+                    logger.warning(f"No checksum available for agent v{version} ({agent_arch})")
+            except Exception as e:
+                logger.warning(f"Failed to fetch checksum, continuing without: {e}")
+
             command = {
                 "type": "command",
                 "command": "self_update",
@@ -281,8 +296,9 @@ class AgentUpdateExecutor:
                     "image": update_record.latest_image,
                     "version": version,
                     # Binary URL for native mode (systemd deployments)
-                    # TODO: Make base URL configurable via settings for self-hosted binary distribution
                     "binary_url": binary_url,
+                    # Checksum for verification (optional but recommended)
+                    "checksum": checksum,
                 }
             }
             logger.info(f"Self-update binary URL: {binary_url} (os={agent_os}, arch={agent_arch})")

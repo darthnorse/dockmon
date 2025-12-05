@@ -84,6 +84,7 @@ export function HostDetailsModal({
 
   if (!open || !hostId || !host) return null
 
+  // Build tabs array
   const tabs = [
     {
       id: 'overview',

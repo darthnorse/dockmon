@@ -37,6 +37,7 @@ import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
 import { useSidebarCollapsed } from '@/lib/hooks/useUserPreferences'
 import { UserMenu } from './UserMenu'
 import { DockMonUpdateBanner } from './DockMonUpdateBanner'
+import { AgentUpdateBanner } from './AgentUpdateBanner'
 
 interface NavItem {
   label: string
@@ -157,6 +158,9 @@ export function Sidebar() {
           isCollapsed && 'px-2'
         )}
       >
+        {/* Agent Update Notification */}
+        <AgentUpdateBanner isCollapsed={isCollapsed} />
+
         {/* DockMon Update Notification */}
         <DockMonUpdateBanner isCollapsed={isCollapsed} />
 

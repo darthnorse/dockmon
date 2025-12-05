@@ -5,9 +5,12 @@
  * - Large performance charts (CPU, Memory, Network)
  * - Time range selector
  * - Right sidebar with Host Information and Events
+ * - Agent info and updates for agent-based hosts
  */
 
-import { Cpu, MemoryStick, Network, Calendar, AlertCircle } from 'lucide-react'
+import { useState } from 'react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { Cpu, MemoryStick, Network, Calendar, AlertCircle, ArrowUpCircle, RefreshCw } from 'lucide-react'
 import { useHostMetrics, useHostSparklines } from '@/lib/stats/StatsProvider'
 import { MiniChart } from '@/lib/charts/MiniChart'
 import { TagInput } from '@/components/TagInput'
@@ -15,6 +18,7 @@ import { TagChip } from '@/components/TagChip'
 import { Button } from '@/components/ui/button'
 import { useHostTagEditor } from '@/hooks/useHostTagEditor'
 import { useHostEvents } from '@/hooks/useEvents'
+import { apiClient } from '@/lib/api/client'
 import type { Host } from '@/types/api'
 
 interface HostOverviewTabProps {
@@ -22,11 +26,45 @@ interface HostOverviewTabProps {
   host: Host
 }
 
+interface AgentInfo {
+  id: string
+  version: string
+  arch: string | null
+  os: string | null
+  status: string
+  update_available: boolean
+  latest_version: string | null
+  is_container_mode: boolean
+  last_seen_at: string | null
+}
+
 export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
+  const queryClient = useQueryClient()
+  const [updateTriggered, setUpdateTriggered] = useState(false)
+
   const metrics = useHostMetrics(hostId)
   const sparklines = useHostSparklines(hostId)
   const { data: eventsData, isLoading: isLoadingEvents, error: eventsError } = useHostEvents(hostId, 3)
   const events = eventsData?.events ?? []
+
+  // Fetch agent info for agent-based hosts
+  const { data: agent } = useQuery({
+    queryKey: ['host-agent', hostId],
+    queryFn: () => apiClient.get<AgentInfo>(`/hosts/${hostId}/agent`),
+    enabled: host.connection_type === 'agent',
+    refetchInterval: 10000,
+  })
+
+  // Trigger agent update mutation
+  const triggerUpdate = useMutation({
+    mutationFn: async () => {
+      await apiClient.post(`/hosts/${hostId}/containers/dockmon-agent/execute-update`)
+    },
+    onSuccess: () => {
+      setUpdateTriggered(true)
+      queryClient.invalidateQueries({ queryKey: ['host-agent', hostId] })
+    },
+  })
 
   const currentTags = host.tags || []
 
@@ -66,6 +104,59 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="p-6">
+        {/* Agent Update Banner - shown at top when update available */}
+        {agent?.update_available && !updateTriggered && (
+          <div className="rounded-lg border bg-amber-500/10 border-amber-500/30 p-3 mb-6">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <ArrowUpCircle className="h-4 w-4 text-amber-500" />
+                <div>
+                  <div className="text-sm font-medium">Agent update available</div>
+                  <div className="text-xs text-muted-foreground">
+                    v{agent.latest_version} (current: v{agent.version})
+                  </div>
+                </div>
+              </div>
+              {!agent.is_container_mode && (
+                <Button
+                  onClick={() => triggerUpdate.mutate()}
+                  disabled={triggerUpdate.isPending}
+                  size="sm"
+                >
+                  {triggerUpdate.isPending ? (
+                    <>
+                      <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                      Updating...
+                    </>
+                  ) : (
+                    'Update Agent'
+                  )}
+                </Button>
+              )}
+            </div>
+            {agent.is_container_mode && (
+              <div className="mt-2 text-xs text-muted-foreground">
+                This agent runs in a container. Update DockMon to update the agent.
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Agent Update In Progress */}
+        {updateTriggered && (
+          <div className="rounded-lg border bg-blue-500/10 border-blue-500/30 p-3 mb-6">
+            <div className="flex items-center gap-2">
+              <RefreshCw className="h-4 w-4 text-blue-500 animate-spin" />
+              <div>
+                <div className="text-sm font-medium">Agent update in progress</div>
+                <div className="text-xs text-muted-foreground">
+                  Agent will reconnect shortly...
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="grid grid-cols-2 gap-6">
           {/* LEFT COLUMN */}
           <div className="space-y-6">
@@ -93,6 +184,24 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
                   <span className="text-muted-foreground">Memory</span>
                   <span>{host.total_memory ? formatBytes(host.total_memory) : '—'}</span>
                 </div>
+                {/* Agent info - only for agent-based hosts */}
+                {host.connection_type === 'agent' && agent && (
+                  <>
+                    <div className="border-t border-border my-2" />
+                    <div className="flex justify-between text-sm">
+                      <span className="text-muted-foreground">Agent Version</span>
+                      <span>v{agent.version}</span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-muted-foreground">Agent Platform</span>
+                      <span>{agent.os || 'linux'}/{agent.arch || 'amd64'}</span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-muted-foreground">Agent Deployment</span>
+                      <span>{agent.is_container_mode ? 'Container' : 'Systemd'}</span>
+                    </div>
+                  </>
+                )}
               </div>
             </div>
 

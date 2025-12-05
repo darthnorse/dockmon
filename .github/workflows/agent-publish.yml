@@ -3,7 +3,7 @@ name: Build and Publish Agent
 on:
   push:
     tags:
-      - 'v*.*.*'
+      - 'agent-v*'  # Agent releases use agent-v* pattern (e.g., agent-v1.0.0)
     branches:
       - dev
       - main
@@ -38,7 +38,11 @@ jobs:
       - name: Get version info
         id: version
         run: |
-          if [[ $GITHUB_REF == refs/tags/* ]]; then
+          if [[ $GITHUB_REF == refs/tags/agent-v* ]]; then
+            # Extract version from agent-v* tag (e.g., agent-v1.0.0 -> 1.0.0)
+            VERSION=${GITHUB_REF#refs/tags/agent-v}
+          elif [[ $GITHUB_REF == refs/tags/* ]]; then
+            # Fallback for other tag formats
             VERSION=${GITHUB_REF#refs/tags/v}
           else
             VERSION="dev"
@@ -63,6 +67,14 @@ jobs:
             -o dist/dockmon-agent-linux-arm64 \
             ./cmd/agent
 
+      - name: Generate checksums
+        run: |
+          cd agent/dist
+          sha256sum dockmon-agent-linux-amd64 > checksums.txt
+          sha256sum dockmon-agent-linux-arm64 >> checksums.txt
+          echo "Generated checksums:"
+          cat checksums.txt
+
       - name: Upload binaries as artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -77,6 +89,7 @@ jobs:
           files: |
             agent/dist/dockmon-agent-linux-amd64
             agent/dist/dockmon-agent-linux-arm64
+            agent/dist/checksums.txt
 
   # Build and push Docker images
   build-docker:
@@ -118,7 +131,10 @@ jobs:
       - name: Get version
         id: version
         run: |
-          if [[ $GITHUB_REF == refs/tags/* ]]; then
+          if [[ $GITHUB_REF == refs/tags/agent-v* ]]; then
+            # Extract version from agent-v* tag (e.g., agent-v1.0.0 -> 1.0.0)
+            VERSION=${GITHUB_REF#refs/tags/agent-v}
+          elif [[ $GITHUB_REF == refs/tags/* ]]; then
             VERSION=${GITHUB_REF#refs/tags/v}
           elif [[ $GITHUB_REF == refs/heads/main ]]; then
             VERSION="latest"

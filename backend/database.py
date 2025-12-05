@@ -66,6 +66,7 @@ class UserPrefs(Base):
     theme = Column(String, default="dark")
     defaults_json = Column(Text, nullable=True)  # JSON string of default preferences
     dismissed_dockmon_update_version = Column(Text, nullable=True)  # Version user dismissed (v2.0.1+)
+    dismissed_agent_update_version = Column(Text, nullable=True)  # Agent version user dismissed (v2.2.0+)
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
@@ -327,6 +328,11 @@ class GlobalSettings(Base):
     # DockMon update notifications (v2.0.1+)
     latest_available_version = Column(Text, nullable=True)  # Latest DockMon version from GitHub
     last_dockmon_update_check_at = Column(DateTime, nullable=True)  # Last time we checked GitHub
+
+    # Agent update notifications (v2.2.0+)
+    latest_agent_version = Column(Text, nullable=True)  # Latest agent version from GitHub
+    latest_agent_release_url = Column(Text, nullable=True)  # URL to agent release page
+    last_agent_update_check_at = Column(DateTime, nullable=True)  # Last time we checked for agent updates
 
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 

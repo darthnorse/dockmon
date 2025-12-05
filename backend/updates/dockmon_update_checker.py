@@ -1,21 +1,30 @@
 """
 DockMon Application Update Checker
 
-Checks GitHub for new DockMon releases (NOT container updates).
+Checks GitHub for new DockMon and Agent releases (NOT container updates).
 Runs every 6 hours (hardcoded) to notify users of available application updates.
+
+Supports two release patterns:
+- DockMon: v2.2.0 (standard semver with v prefix)
+- Agent: agent-v1.0.0 (agent-prefixed semver)
 """
 
 import asyncio
 import logging
 import os
+import re
 import aiohttp
 from datetime import datetime, timezone
-from typing import Optional, Dict
+from typing import Optional, Dict, List, Tuple
 from packaging.version import parse as parse_version, InvalidVersion
 
 from database import DatabaseManager, GlobalSettings
 
 logger = logging.getLogger(__name__)
+
+# Tag patterns for release filtering (strict semver, excludes prereleases)
+DOCKMON_TAG_PATTERN = re.compile(r'^v(\d+\.\d+\.\d+)$')
+AGENT_TAG_PATTERN = re.compile(r'^agent-v(\d+\.\d+\.\d+)$')
 
 
 def normalize_version(version: str) -> str:
@@ -33,16 +42,19 @@ def normalize_version(version: str) -> str:
 
 
 class DockMonUpdateChecker:
-    """Check GitHub for DockMon application updates"""
+    """Check GitHub for DockMon and Agent application updates"""
 
     # Hardcoded constants
     GITHUB_REPO = "darthnorse/dockmon"
-    GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+    GITHUB_RELEASES_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
+    GITHUB_LATEST_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
     CHECK_INTERVAL_HOURS = 6  # Hardcoded: Check every 6 hours
     REQUEST_TIMEOUT = 10  # Seconds
 
     def __init__(self, db_manager: DatabaseManager):
         self.db = db_manager
+        self._releases_cache: Optional[List[Dict]] = None
+        self._cache_time: Optional[datetime] = None
 
     async def check_for_update(self) -> Dict[str, any]:
         """
@@ -164,7 +176,7 @@ class DockMonUpdateChecker:
             }
 
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(self.GITHUB_API_URL, headers=headers) as response:
+                async with session.get(self.GITHUB_LATEST_URL, headers=headers) as response:
                     if response.status == 404:
                         logger.warning(f"GitHub repository not found: {self.GITHUB_REPO}")
                         return None, None
@@ -203,6 +215,219 @@ class DockMonUpdateChecker:
         except Exception as e:
             logger.error(f"Unexpected error fetching DockMon release: {e}", exc_info=True)
             return None, None
+
+    async def check_for_agent_update(self) -> Dict[str, any]:
+        """
+        Check GitHub for latest Agent release.
+
+        Returns:
+            {
+                'latest_version': '1.0.0',
+                'release_url': 'https://github.com/.../releases/tag/agent-v1.0.0',
+                'error': None
+            }
+        """
+        try:
+            # DEBUG/TESTING: Allow override via environment variable
+            test_version = os.environ.get('AGENT_TEST_VERSION')
+            if test_version:
+                logger.warning(f"TEST MODE: Simulating Agent version {test_version} available")
+                return {
+                    'latest_version': test_version,
+                    'release_url': f"https://github.com/{self.GITHUB_REPO}/releases/tag/agent-v{test_version}",
+                    'error': None
+                }
+
+            # Fetch all releases and find latest agent release
+            releases = await self._fetch_all_releases()
+            if not releases:
+                return {
+                    'latest_version': None,
+                    'release_url': None,
+                    'error': 'Failed to fetch releases from GitHub'
+                }
+
+            agent_release = self._find_latest_by_pattern(releases, AGENT_TAG_PATTERN)
+            if not agent_release:
+                logger.debug("No agent releases found on GitHub")
+                return {
+                    'latest_version': None,
+                    'release_url': None,
+                    'error': None  # Not an error - agent may not have releases yet
+                }
+
+            # Update database cache
+            with self.db.get_session() as session:
+                settings = session.query(GlobalSettings).first()
+                if settings:
+                    settings.latest_agent_version = agent_release['version']
+                    settings.latest_agent_release_url = agent_release['html_url']
+                    settings.last_agent_update_check_at = datetime.now(timezone.utc)
+                    session.commit()
+
+            logger.debug(f"Latest agent version from GitHub: {agent_release['version']}")
+
+            return {
+                'latest_version': agent_release['version'],
+                'release_url': agent_release['html_url'],
+                'error': None
+            }
+
+        except Exception as e:
+            logger.error(f"Error checking for Agent updates: {e}", exc_info=True)
+            return {
+                'latest_version': None,
+                'release_url': None,
+                'error': str(e)
+            }
+
+    async def check_all_updates(self) -> Dict[str, Dict]:
+        """
+        Check for both DockMon and Agent updates in a single call.
+
+        Returns:
+            {
+                'dockmon': { check_for_update() result },
+                'agent': { check_for_agent_update() result }
+            }
+        """
+        dockmon_result = await self.check_for_update()
+        agent_result = await self.check_for_agent_update()
+
+        return {
+            'dockmon': dockmon_result,
+            'agent': agent_result
+        }
+
+    async def _fetch_all_releases(self) -> Optional[List[Dict]]:
+        """
+        Fetch all releases from GitHub API (with caching).
+
+        Returns:
+            List of release objects, or None on failure
+        """
+        # Check cache (valid for 5 minutes)
+        if self._releases_cache and self._cache_time:
+            cache_age = (datetime.now(timezone.utc) - self._cache_time).total_seconds()
+            if cache_age < 300:  # 5 minute cache
+                return self._releases_cache
+
+        try:
+            timeout = aiohttp.ClientTimeout(total=self.REQUEST_TIMEOUT)
+            headers = {
+                'Accept': 'application/vnd.github.v3+json',
+                'User-Agent': 'DockMon-Update-Checker'
+            }
+
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                # Fetch first page (100 releases should be enough)
+                async with session.get(
+                    f"{self.GITHUB_RELEASES_URL}?per_page=100",
+                    headers=headers
+                ) as response:
+                    if response.status != 200:
+                        logger.warning(f"GitHub API returned status {response.status}")
+                        return None
+
+                    releases = await response.json()
+
+                    # Cache the result
+                    self._releases_cache = releases
+                    self._cache_time = datetime.now(timezone.utc)
+
+                    return releases
+
+        except Exception as e:
+            logger.error(f"Error fetching releases from GitHub: {e}", exc_info=True)
+            return None
+
+    def _find_latest_by_pattern(
+        self,
+        releases: List[Dict],
+        pattern: re.Pattern
+    ) -> Optional[Dict]:
+        """
+        Find the latest release matching a tag pattern.
+
+        Args:
+            releases: List of GitHub release objects
+            pattern: Regex pattern to match tag names
+
+        Returns:
+            Dict with 'version', 'html_url', 'tag_name' or None
+        """
+        matching = []
+
+        for release in releases:
+            # Skip drafts and prereleases
+            if release.get('draft') or release.get('prerelease'):
+                continue
+
+            tag_name = release.get('tag_name', '')
+            match = pattern.match(tag_name)
+            if match:
+                matching.append({
+                    'version': match.group(1),
+                    'html_url': release.get('html_url'),
+                    'tag_name': tag_name,
+                })
+
+        if not matching:
+            return None
+
+        # Sort by semver and return latest
+        try:
+            matching.sort(
+                key=lambda x: parse_version(normalize_version(x['version'])),
+                reverse=True
+            )
+            return matching[0]
+        except Exception as e:
+            logger.warning(f"Error sorting versions: {e}")
+            # Fallback: return first match (GitHub returns newest first)
+            return matching[0] if matching else None
+
+    async def fetch_agent_checksum(self, version: str, arch: str) -> Optional[str]:
+        """
+        Fetch checksum for agent binary from release assets.
+
+        Args:
+            version: Agent version (e.g., '1.0.0')
+            arch: Architecture ('amd64' or 'arm64')
+
+        Returns:
+            SHA256 checksum string, or None if not found
+        """
+        tag = f"agent-v{version}"
+        url = f"https://github.com/{self.GITHUB_REPO}/releases/download/{tag}/checksums.txt"
+
+        try:
+            timeout = aiohttp.ClientTimeout(total=self.REQUEST_TIMEOUT)
+            headers = {'User-Agent': 'DockMon-Update-Checker'}
+
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url, headers=headers) as response:
+                    if response.status != 200:
+                        logger.warning(f"Failed to fetch checksums for {tag}: HTTP {response.status}")
+                        return None
+
+                    content = await response.text()
+
+                    # Parse checksums.txt: "sha256hash  filename"
+                    for line in content.strip().split('\n'):
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            checksum, filename = parts[0], parts[1]
+                            if f"linux-{arch}" in filename:
+                                logger.debug(f"Found checksum for {arch}: {checksum[:16]}...")
+                                return checksum
+
+                    logger.warning(f"No checksum found for linux-{arch} in {tag}")
+                    return None
+
+        except Exception as e:
+            logger.error(f"Error fetching agent checksum: {e}", exc_info=True)
+            return None
 
 
 # Singleton instance

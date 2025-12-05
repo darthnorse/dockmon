@@ -30,6 +30,7 @@ from agent.command_executor import get_agent_command_executor
 from agent.models import AgentRegistrationRequest
 from database import (
     Agent,
+    ContainerHttpHealthCheck,
     DatabaseManager,
 )
 from event_bus import Event, EventType, get_event_bus

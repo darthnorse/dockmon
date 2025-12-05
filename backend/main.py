@@ -981,6 +981,66 @@ async def get_host_metrics(host_id: str, current_user: dict = Depends(get_curren
         logger.error(f"Error fetching metrics for host {host_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.get("/api/hosts/{host_id}/agent", tags=["hosts"])
+async def get_host_agent_info(host_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    Get agent info for a host including update availability.
+
+    Returns agent metadata, capabilities, and whether an update is available.
+    Only returns data for agent-based hosts.
+    """
+    # Get host from monitor (same pattern as other host endpoints)
+    host = monitor.hosts.get(host_id)
+    if not host:
+        raise HTTPException(status_code=404, detail="Host not found")
+
+    if host.connection_type != 'agent':
+        raise HTTPException(status_code=400, detail="Host is not agent-based")
+
+    # Query agent and settings from database
+    with monitor.db.get_session() as session:
+        agent = session.query(Agent).filter_by(host_id=host_id).first()
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+
+        settings = session.query(GlobalSettingsDB).first()
+        latest_version = getattr(settings, 'latest_agent_version', None) if settings else None
+
+        # Determine if update available
+        update_available = False
+        if latest_version and agent.version:
+            try:
+                update_available = parse_version(latest_version) > parse_version(agent.version)
+            except Exception:
+                pass
+
+        # Check deployment mode from capabilities (JSON stored as text)
+        capabilities = {}
+        if agent.capabilities:
+            try:
+                capabilities = json.loads(agent.capabilities) if isinstance(agent.capabilities, str) else agent.capabilities
+            except Exception:
+                pass
+
+        # self_update capability = true means container mode (has container ID)
+        # self_update capability = false means native/systemd mode
+        is_container_mode = capabilities.get('self_update', False)
+
+        return {
+            "id": agent.id,
+            "version": agent.version,
+            "arch": agent.agent_arch,
+            "os": agent.agent_os,
+            "status": agent.status,
+            "capabilities": capabilities,
+            "update_available": update_available,
+            "latest_version": latest_version,
+            "is_container_mode": is_container_mode,
+            "last_seen_at": agent.last_seen_at.isoformat() + 'Z' if agent.last_seen_at else None,
+        }
+
+
 @app.get("/api/containers", tags=["containers"])
 async def get_containers(host_id: Optional[str] = None, current_user: dict = Depends(get_current_user)):
     """Get all containers"""
@@ -2213,6 +2273,7 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
 
     # Fetch user's dismissed version for update notifications
     dismissed_dockmon_update_version = None
+    dismissed_agent_update_version = None
     session = monitor.db.get_session()
     try:
         user = session.query(User).filter(User.username == username).first()
@@ -2220,8 +2281,29 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
             prefs = session.query(UserPrefs).filter(UserPrefs.user_id == user.id).first()
             if prefs:
                 dismissed_dockmon_update_version = prefs.dismissed_dockmon_update_version
+                dismissed_agent_update_version = getattr(prefs, 'dismissed_agent_update_version', None)
     finally:
         session.close()
+
+    # Count agents that need updates
+    agents_needing_update = 0
+    latest_agent_version = getattr(settings, 'latest_agent_version', None)
+    if latest_agent_version:
+        try:
+            session = monitor.db.get_session()
+            try:
+                agents = session.query(Agent).filter(Agent.status == 'online').all()
+                for agent in agents:
+                    if agent.version:
+                        try:
+                            if parse_version(latest_agent_version) > parse_version(agent.version):
+                                agents_needing_update += 1
+                        except Exception:
+                            pass
+            finally:
+                session.close()
+        except Exception as e:
+            logger.warning(f"Error counting agents needing updates: {e}")
 
     # Calculate update_available using semver comparison
     update_available = False
@@ -2271,7 +2353,16 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
             if getattr(settings, 'last_dockmon_update_check_at', None) else None
         ),
         "dismissed_dockmon_update_version": dismissed_dockmon_update_version,  # User-specific
-        "update_available": update_available  # Server-side semver comparison
+        "update_available": update_available,  # Server-side semver comparison
+        # Agent update notifications (v2.2.0+)
+        "latest_agent_version": latest_agent_version,
+        "latest_agent_release_url": getattr(settings, 'latest_agent_release_url', None),
+        "last_agent_update_check_at": (
+            settings.last_agent_update_check_at.isoformat() + 'Z'
+            if getattr(settings, 'last_agent_update_check_at', None) else None
+        ),
+        "dismissed_agent_update_version": dismissed_agent_update_version,  # User-specific
+        "agents_needing_update": agents_needing_update,  # Count of online agents with outdated versions
     }
 
 @app.post("/api/settings", tags=["system"], dependencies=[Depends(require_scope("admin"))])
@@ -3633,6 +3724,60 @@ async def dismiss_dockmon_update(request: Request, current_user: dict = Depends(
     except Exception as e:
         logger.error(f"Failed to dismiss DockMon update: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/user/dismiss-agent-update", tags=["user-preferences"])
+async def dismiss_agent_update(request: Request, current_user: dict = Depends(get_current_user)):
+    """Dismiss Agent update notification for current user"""
+    username = current_user.get('username')
+
+    if not username:
+        logger.error(f"No username in current_user: {current_user}")
+        raise HTTPException(status_code=401, detail="Username not found in session")
+
+    try:
+        body = await request.json()
+        version = body.get('version')
+
+        if not version:
+            raise HTTPException(status_code=400, detail="Version is required")
+
+        # Validate version format (semver)
+        try:
+            parse_version(version)
+        except InvalidVersion:
+            raise HTTPException(status_code=400, detail="Invalid version format")
+
+        session = monitor.db.get_session()
+        try:
+            # Get user
+            user = session.query(User).filter(User.username == username).first()
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            # Get or create user prefs
+            prefs = session.query(UserPrefs).filter(UserPrefs.user_id == user.id).first()
+            if not prefs:
+                prefs = UserPrefs(user_id=user.id)
+                session.add(prefs)
+
+            # Update dismissed version
+            prefs.dismissed_agent_update_version = version
+            prefs.updated_at = datetime.now(timezone.utc)
+            session.commit()
+
+            logger.info(f"User '{username}' dismissed Agent update notification for version {version}")
+            return {"success": True, "dismissed_version": version}
+
+        finally:
+            session.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to dismiss Agent update: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # ==================== Phase 4c: Dashboard Hosts with Stats ====================
 

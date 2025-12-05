@@ -38,6 +38,18 @@ export interface GlobalSettings {
   prune_images_enabled: boolean
   image_retention_count: number
   image_prune_grace_hours: number
+  // DockMon update notifications
+  app_version?: string
+  latest_available_version?: string | null
+  last_dockmon_update_check_at?: string | null
+  dismissed_dockmon_update_version?: string | null
+  update_available?: boolean
+  // Agent update notifications (v2.2.0+)
+  latest_agent_version?: string | null
+  latest_agent_release_url?: string | null
+  last_agent_update_check_at?: string | null
+  dismissed_agent_update_version?: string | null
+  agents_needing_update?: number
 }
 
 export interface TemplateVariable {

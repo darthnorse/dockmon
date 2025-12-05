@@ -910,15 +910,16 @@ class PeriodicJobsManager:
 
     async def check_dockmon_update_once(self):
         """
-        Check for DockMon updates once (called on startup).
+        Check for DockMon and Agent updates once (called on startup).
         Does not loop - just runs a single check.
         """
         try:
-            logger.info("Checking for DockMon updates on startup...")
+            logger.info("Checking for DockMon and Agent updates on startup...")
 
             checker = get_dockmon_update_checker(self.db)
-            result = await checker.check_for_update()
 
+            # Check DockMon updates
+            result = await checker.check_for_update()
             if result.get('update_available'):
                 logger.info(
                     f"DockMon update available: "
@@ -929,25 +930,33 @@ class PeriodicJobsManager:
             else:
                 logger.info(f"DockMon is up to date: {result['current_version']}")
 
+            # Also check Agent updates
+            agent_result = await checker.check_for_agent_update()
+            if agent_result.get('latest_version'):
+                logger.info(f"Latest Agent version from GitHub: {agent_result['latest_version']}")
+            elif agent_result.get('error'):
+                logger.debug(f"Agent update check failed: {agent_result['error']}")
+
         except Exception as e:
-            logger.warning(f"Error checking for DockMon updates on startup: {e}")
+            logger.warning(f"Error checking for updates on startup: {e}")
 
     async def check_dockmon_updates_periodic(self):
         """
-        Periodic task: Check for DockMon application updates from GitHub.
+        Periodic task: Check for DockMon and Agent updates from GitHub.
         Runs every 6 hours (hardcoded).
 
         This is separate from container update checks (which run daily at configured time).
-        Checks GitHub releases for new DockMon versions and caches result in database.
+        Checks GitHub releases for new DockMon/Agent versions and caches result in database.
         Frontend polls settings to detect updates and show notification banner.
         """
         while True:
             try:
-                logger.debug("Running periodic DockMon update check...")
+                logger.debug("Running periodic DockMon and Agent update check...")
 
                 checker = get_dockmon_update_checker(self.db)
-                result = await checker.check_for_update()
 
+                # Check DockMon updates
+                result = await checker.check_for_update()
                 if result.get('update_available'):
                     logger.info(
                         f"DockMon update available: "
@@ -961,11 +970,18 @@ class PeriodicJobsManager:
                         f"DockMon is up to date: {result['current_version']}"
                     )
 
+                # Also check Agent updates
+                agent_result = await checker.check_for_agent_update()
+                if agent_result.get('latest_version'):
+                    logger.debug(f"Latest Agent version: {agent_result['latest_version']}")
+                elif agent_result.get('error'):
+                    logger.warning(f"Agent update check failed: {agent_result['error']}")
+
                 # Sleep for 6 hours before next check
                 await asyncio.sleep(6 * 60 * 60)
 
             except Exception as e:
-                logger.error(f"Error in DockMon update checker: {e}", exc_info=True)
+                logger.error(f"Error in update checker: {e}", exc_info=True)
                 # Wait 1 hour before retrying on error
                 await asyncio.sleep(60 * 60)
 

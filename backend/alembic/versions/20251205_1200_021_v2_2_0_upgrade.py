@@ -35,6 +35,12 @@ CHANGES IN v2.2.0-beta1:
   - Events from containers matching these patterns are not logged
   - Reduces database size for users with many temporary containers
 - Remove unused auto_cleanup_events column from global_settings
+- Add agent version tracking to global_settings
+  - latest_agent_version: Latest available agent version from GitHub
+  - latest_agent_release_url: URL to release page
+  - last_agent_update_check_at: Last time we checked for agent updates
+- Add dismissed_agent_update_version to user_prefs
+  - Allows per-user dismissal of agent update notifications
 - Update app_version to '2.2.0-beta1'
 
 NEW FEATURES:
@@ -43,6 +49,7 @@ NEW FEATURES:
 - Remote Docker host monitoring without direct Docker socket access
 - Agent-based container updates (network resilient)
 - Agent self-update capability
+- Agent update notifications (systemd deployments)
 """
 from alembic import op
 import sqlalchemy as sa
@@ -209,7 +216,31 @@ def upgrade() -> None:
             with op.batch_alter_table('global_settings') as batch_op:
                 batch_op.drop_column('auto_cleanup_events')
 
-    # Change 9: Update app_version
+    # Change 9: Add agent version tracking to global_settings
+    # Enables tracking of latest available agent version from GitHub
+    if table_exists('global_settings'):
+        if not column_exists('global_settings', 'latest_agent_version'):
+            op.add_column('global_settings',
+                sa.Column('latest_agent_version', sa.Text(), nullable=True)
+            )
+        if not column_exists('global_settings', 'latest_agent_release_url'):
+            op.add_column('global_settings',
+                sa.Column('latest_agent_release_url', sa.Text(), nullable=True)
+            )
+        if not column_exists('global_settings', 'last_agent_update_check_at'):
+            op.add_column('global_settings',
+                sa.Column('last_agent_update_check_at', sa.DateTime(), nullable=True)
+            )
+
+    # Change 10: Add agent update dismissal to user_prefs
+    # Allows users to dismiss agent update notifications per version
+    if table_exists('user_prefs'):
+        if not column_exists('user_prefs', 'dismissed_agent_update_version'):
+            op.add_column('user_prefs',
+                sa.Column('dismissed_agent_update_version', sa.Text(), nullable=True)
+            )
+
+    # Change 11: Update app_version
     if table_exists('global_settings'):
         op.execute(
             sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
@@ -226,6 +257,24 @@ def downgrade() -> None:
             sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
             .bindparams(version='2.1.9', id=1)
         )
+
+    # Remove agent update dismissal from user_prefs
+    if table_exists('user_prefs'):
+        if column_exists('user_prefs', 'dismissed_agent_update_version'):
+            with op.batch_alter_table('user_prefs') as batch_op:
+                batch_op.drop_column('dismissed_agent_update_version')
+
+    # Remove agent version tracking from global_settings
+    if table_exists('global_settings'):
+        if column_exists('global_settings', 'last_agent_update_check_at'):
+            with op.batch_alter_table('global_settings') as batch_op:
+                batch_op.drop_column('last_agent_update_check_at')
+        if column_exists('global_settings', 'latest_agent_release_url'):
+            with op.batch_alter_table('global_settings') as batch_op:
+                batch_op.drop_column('latest_agent_release_url')
+        if column_exists('global_settings', 'latest_agent_version'):
+            with op.batch_alter_table('global_settings') as batch_op:
+                batch_op.drop_column('latest_agent_version')
 
     # Restore auto_cleanup_events column
     if table_exists('global_settings'):

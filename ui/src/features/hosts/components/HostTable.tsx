@@ -56,6 +56,7 @@ import { useHostMetrics, useContainerCounts } from '@/lib/stats/StatsProvider'
 import { useSimplifiedWorkflow, useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
 import { useHostAlertCounts, type AlertSeverityCounts } from '@/features/alerts/hooks/useAlerts'
 import { useQueryClient } from '@tanstack/react-query'
+import { useGlobalSettings } from '@/hooks/useSettings'
 
 // Status icon component
 function StatusIcon({ status }: { status: string }) {
@@ -118,12 +119,41 @@ function SecurityIndicator({ url, securityStatus }: { url: string; securityStatu
   return null
 }
 
-// Agent indicator component for agent-based connections
-function AgentIndicator({ connectionType }: { connectionType?: 'agent' | 'remote' | null | undefined }) {
+// Agent indicator component for agent-based connections with update badge
+function AgentIndicator({
+  connectionType,
+  agentVersion,
+  latestVersion,
+}: {
+  connectionType?: 'agent' | 'remote' | null | undefined
+  agentVersion?: string | null | undefined
+  latestVersion?: string | null | undefined
+}) {
   if (connectionType === 'agent') {
+    // Check if update available
+    let updateAvailable = false
+    if (latestVersion && agentVersion) {
+      try {
+        // Simple version comparison (assumes semver format x.y.z)
+        const current = agentVersion.split('.').map(Number)
+        const latest = latestVersion.split('.').map(Number)
+        const [currMajor = 0, currMinor = 0, currPatch = 0] = current
+        const [latestMajor = 0, latestMinor = 0, latestPatch = 0] = latest
+        updateAvailable =
+          latestMajor > currMajor ||
+          (latestMajor === currMajor && latestMinor > currMinor) ||
+          (latestMajor === currMajor && latestMinor === currMinor && latestPatch > currPatch)
+      } catch {
+        // Invalid version format
+      }
+    }
+
     return (
-      <div title="Agent Connection (WebSocket)">
+      <div className="relative" title={updateAvailable ? `Agent update available (v${latestVersion})` : 'Agent Connection (WebSocket)'}>
         <Radio className="h-4 w-4 text-[--accent] opacity-80" />
+        {updateAvailable && (
+          <span className="absolute -top-1 -right-1 h-2 w-2 rounded-full bg-amber-500 animate-pulse" />
+        )}
       </div>
     )
   }
@@ -294,6 +324,7 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
   const queryClient = useQueryClient()
   const { data: preferences } = useUserPreferences()
   const updatePreferences = useUpdatePreferences()
+  const { data: settings } = useGlobalSettings()  // For latest agent version
   const [sorting, setSorting] = useState<SortingState>(preferences?.host_table_sort || [])
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
   const [searchParams, setSearchParams] = useSearchParams()
@@ -471,7 +502,11 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
                 >
                   {host.name}
                 </button>
-                <AgentIndicator connectionType={host.connection_type} />
+                <AgentIndicator
+                  connectionType={host.connection_type}
+                  agentVersion={host.agent?.version}
+                  latestVersion={settings?.latest_agent_version}
+                />
                 <SecurityIndicator url={host.url} securityStatus={host.security_status} />
               </div>
               {host.tags && host.tags.length > 0 && (

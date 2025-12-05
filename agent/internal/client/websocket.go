@@ -35,6 +35,7 @@ type WebSocketClient struct {
 	hostID        string
 
 	statsHandler       *handlers.StatsHandler
+	hostStatsHandler   *handlers.HostStatsHandler
 	updateHandler      *handlers.UpdateHandler
 	selfUpdateHandler  *handlers.SelfUpdateHandler
 	healthCheckHandler *handlers.HealthCheckHandler
@@ -75,6 +76,16 @@ func NewWebSocketClient(
 		log,
 		client.sendEvent,
 	)
+
+	// Initialize host stats handler for systemd agents (not container mode)
+	// This collects real host metrics from /proc instead of aggregating container stats
+	if myContainerID == "" {
+		client.hostStatsHandler = handlers.NewHostStatsHandler(
+			log,
+			client.sendJSON,
+		)
+		log.Info("Host stats handler initialized (systemd mode)")
+	}
 
 	// Initialize update handler with sendEvent callback
 	// Creates handler with runtime detection (Podman, API version)
@@ -501,6 +512,16 @@ func (c *WebSocketClient) handleConnection(ctx context.Context) error {
 		c.log.WithError(err).Warn("Failed to start stats collection")
 	} else {
 		c.log.Info("Stats collection started")
+	}
+
+	// Start host stats collection for systemd agents
+	if c.hostStatsHandler != nil {
+		c.backgroundWg.Add(1)
+		go func() {
+			defer c.backgroundWg.Done()
+			c.hostStatsHandler.StartCollection(connCtx, 2*time.Second)
+		}()
+		c.log.Info("Host stats collection started (systemd mode)")
 	}
 
 	// Start health check handler

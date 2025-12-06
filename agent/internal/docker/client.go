@@ -72,6 +72,12 @@ func (c *Client) Close() error {
 	return c.cli.Close()
 }
 
+// RawClient returns the underlying Docker SDK client.
+// This is used by the shared update package which requires the raw client.
+func (c *Client) RawClient() *client.Client {
+	return c.cli
+}
+
 // SystemInfo contains Docker host system information
 type SystemInfo struct {
 	Hostname        string  // Docker host's hostname (not container hostname)

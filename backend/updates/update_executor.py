@@ -36,6 +36,13 @@ from updates.docker_executor import DockerUpdateExecutor
 from updates.agent_executor import AgentUpdateExecutor
 from updates.database_updater import update_container_records_after_update
 from updates.event_emitter import UpdateEventEmitter
+from updates.update_client import (
+    UpdateClient,
+    UpdateServiceUnavailable,
+    UpdateServiceError,
+    RegistryAuth as UpdateRegistryAuth,
+    is_update_service_available,
+)
 from agent.command_executor import CommandStatus
 
 logger = logging.getLogger(__name__)
@@ -73,11 +80,16 @@ class UpdateExecutor:
         self._image_pull_tracker = None
 
         # Initialize docker executor immediately (without tracker - will inject when needed)
+        # NOTE: DockerUpdateExecutor is kept for backward compatibility and as fallback
+        # when Go update service is unavailable
         self.docker_executor = DockerUpdateExecutor(
             db=db,
             monitor=monitor,
             image_pull_tracker=None  # Will be set lazily in async context
         )
+
+        # Initialize Go update service client
+        self.update_client = UpdateClient()
 
         # Agent executor will be initialized lazily when agent_manager is available
         self._agent_executor = None
@@ -450,8 +462,8 @@ class UpdateExecutor:
         force: bool,
         force_warn: bool
     ) -> UpdateResult:
-        """Execute update via Docker SDK executor."""
-        # Get Docker client
+        """Execute update via Go update service or fallback to Docker SDK executor."""
+        # Get Docker client for validation
         docker_client = await self._get_docker_client(context.host_id)
         if not docker_client:
             return UpdateResult.failure_result("Docker client unavailable for host")
@@ -491,6 +503,114 @@ class UpdateExecutor:
             context.container_name, context.new_image
         )
 
+        # Try Go update service first, fallback to Docker SDK executor
+        if is_update_service_available():
+            return await self._execute_go_update(context, progress_callback, update_record)
+        else:
+            logger.info("Go update service unavailable, falling back to Docker SDK executor")
+            return await self._execute_docker_sdk_update(context, progress_callback, update_record, docker_client)
+
+    async def _execute_go_update(
+        self,
+        context: UpdateContext,
+        progress_callback,
+        update_record: ContainerUpdate,
+    ) -> UpdateResult:
+        """Execute update via Go update service."""
+        try:
+            # Get TLS credentials for remote hosts
+            docker_host = None
+            tls_ca_cert = None
+            tls_cert = None
+            tls_key = None
+
+            with self.db.get_session() as session:
+                host = session.query(DockerHostDB).filter_by(id=context.host_id).first()
+                if host and host.connection_type == 'remote':
+                    docker_host = host.docker_url
+                    tls_ca_cert = host.tls_ca
+                    tls_cert = host.tls_cert
+                    tls_key = host.tls_key
+
+            # Get registry credentials
+            registry_auth = None
+            creds = self._get_registry_credentials(context.new_image)
+            if creds:
+                registry_auth = UpdateRegistryAuth(
+                    username=creds.get('username', ''),
+                    password=creds.get('password', ''),
+                )
+
+            # Get global settings for timeouts
+            with self.db.get_session() as session:
+                settings = session.query(GlobalSettings).first()
+                health_timeout = settings.health_check_timeout if settings else 120
+                stop_timeout = settings.stop_timeout if settings else 30
+
+            # Progress callback wrapper
+            async def on_progress(event):
+                await progress_callback(event.stage, event.progress, event.message)
+
+            async def on_pull_progress(event):
+                # Broadcast pull progress
+                await self._broadcast_pull_progress(
+                    context.host_id,
+                    context.container_id,
+                    event.overall_progress,
+                    event.summary,
+                    event.speed_mbps
+                )
+
+            # Execute via Go service
+            result = await self.update_client.update_with_progress(
+                container_id=context.container_id,
+                new_image=context.new_image,
+                progress_callback=on_progress,
+                pull_progress_callback=on_pull_progress,
+                stop_timeout=stop_timeout,
+                health_timeout=health_timeout,
+                docker_host=docker_host,
+                tls_ca_cert=tls_ca_cert,
+                tls_cert=tls_cert,
+                tls_key=tls_key,
+                registry_auth=registry_auth,
+            )
+
+            if result.success:
+                return UpdateResult(
+                    success=True,
+                    new_container_id=result.new_container_id,
+                    failed_dependents=result.failed_dependents,
+                )
+            else:
+                return UpdateResult(
+                    success=False,
+                    error_message=result.error or "Update failed",
+                    rollback_performed=result.rolled_back,
+                )
+
+        except UpdateServiceUnavailable as e:
+            logger.error(f"Go update service unavailable: {e}")
+            return UpdateResult.failure_result(f"Update service unavailable: {e}")
+        except UpdateServiceError as e:
+            logger.error(f"Go update service error: {e}")
+            return UpdateResult(
+                success=False,
+                error_message=str(e),
+                rollback_performed=e.rolled_back,
+            )
+        except Exception as e:
+            logger.error(f"Unexpected error during Go update: {e}", exc_info=True)
+            return UpdateResult.failure_result(f"Update failed: {e}")
+
+    async def _execute_docker_sdk_update(
+        self,
+        context: UpdateContext,
+        progress_callback,
+        update_record: ContainerUpdate,
+        docker_client,
+    ) -> UpdateResult:
+        """Fallback: Execute update via Docker SDK executor."""
         # Get Podman flag
         is_podman = False
         if self.monitor and hasattr(self.monitor, 'hosts') and context.host_id in self.monitor.hosts:
@@ -505,6 +625,32 @@ class UpdateExecutor:
             is_podman=is_podman,
             get_registry_credentials=self._get_registry_credentials,
         )
+
+    async def _broadcast_pull_progress(
+        self,
+        host_id: str,
+        container_id: str,
+        progress: int,
+        message: str,
+        speed_mbps: float
+    ):
+        """Broadcast image pull progress to WebSocket clients."""
+        try:
+            if not self.monitor or not hasattr(self.monitor, 'manager'):
+                return
+
+            await self.monitor.manager.broadcast({
+                "type": "container_update_pull_progress",
+                "data": {
+                    "host_id": host_id,
+                    "container_id": container_id,
+                    "progress": progress,
+                    "message": message,
+                    "speed_mbps": speed_mbps
+                }
+            })
+        except Exception as e:
+            logger.error(f"Error broadcasting pull progress: {e}")
 
     async def _execute_agent_update(
         self,

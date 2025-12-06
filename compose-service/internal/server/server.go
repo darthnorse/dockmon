@@ -451,8 +451,8 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 // handleUpdateJSON handles update with JSON response (no streaming)
 func (s *Server) handleUpdateJSON(w http.ResponseWriter, r *http.Request, req UpdateHTTPRequest) {
 	startTime := time.Now()
-	metrics.Global.IncrementActive()
-	defer metrics.Global.DecrementActive()
+	metrics.Global.IncrementActiveUpdates()
+	defer metrics.Global.DecrementActiveUpdates()
 
 	s.log.WithFields(logrus.Fields{
 		"container_id": req.ContainerID,
@@ -494,7 +494,7 @@ func (s *Server) handleUpdateJSON(w http.ResponseWriter, r *http.Request, req Up
 
 	// Record metrics
 	duration := time.Since(startTime)
-	metrics.Global.RecordDeployment(result.Success, false, duration)
+	metrics.Global.RecordUpdate(result.Success)
 
 	s.log.WithFields(logrus.Fields{
 		"container_id":   req.ContainerID,
@@ -511,8 +511,8 @@ func (s *Server) handleUpdateJSON(w http.ResponseWriter, r *http.Request, req Up
 // handleUpdateSSE handles update with SSE streaming progress
 func (s *Server) handleUpdateSSE(w http.ResponseWriter, r *http.Request, req UpdateHTTPRequest) {
 	startTime := time.Now()
-	metrics.Global.IncrementActive()
-	defer metrics.Global.DecrementActive()
+	metrics.Global.IncrementActiveUpdates()
+	defer metrics.Global.DecrementActiveUpdates()
 
 	// Determine operation timeout
 	timeout := time.Duration(req.Timeout) * time.Second
@@ -631,7 +631,7 @@ func (s *Server) handleUpdateSSE(w http.ResponseWriter, r *http.Request, req Upd
 		case result := <-resultCh:
 			// Record metrics
 			duration := time.Since(startTime)
-			metrics.Global.RecordDeployment(result.Success, false, duration)
+			metrics.Global.RecordUpdate(result.Success)
 
 			s.log.WithFields(logrus.Fields{
 				"container_id":  req.ContainerID,

@@ -363,7 +363,7 @@ func (u *Updater) sendPullProgress(containerID string, layers map[string]*LayerP
 		return
 	}
 
-	// Build layer list
+	// Build layer list with status counts
 	layerList := make([]*LayerProgress, 0, len(layers))
 	var downloading, extracting, complete, cached int
 
@@ -382,8 +382,20 @@ func (u *Updater) sendPullProgress(containerID string, layers map[string]*LayerP
 		}
 	}
 
+	// Sort layers by priority (active layers first) for consistent display
+	// Priority: Downloading > Extracting > Waiting > Pull complete > Already exists
+	sortLayersByPriority(layerList)
+
+	// Truncate to 20 layers for network efficiency (matches Python behavior)
+	// UI only displays top 15, so sending all 50+ layers is wasteful
+	totalLayers := len(layerList)
+	remainingLayers := 0
+	if len(layerList) > 20 {
+		remainingLayers = len(layerList) - 20
+		layerList = layerList[:20]
+	}
+
 	// Build summary message
-	totalLayers := len(layers)
 	var summary string
 	if downloading > 0 {
 		summary = fmt.Sprintf("Downloading %d of %d layers (%d%%)", downloading, totalLayers, overallPercent)
@@ -404,9 +416,45 @@ func (u *Updater) sendPullProgress(containerID string, layers map[string]*LayerP
 		OverallProgress: overallPercent,
 		Layers:          layerList,
 		TotalLayers:     totalLayers,
+		RemainingLayers: remainingLayers,
 		Summary:         summary,
 		SpeedMbps:       speedMbps,
 	})
+}
+
+// sortLayersByPriority sorts layers by status priority (active layers first).
+func sortLayersByPriority(layers []*LayerProgress) {
+	priorityMap := map[string]int{
+		"Downloading":       0,
+		"Extracting":        1,
+		"Verifying Checksum": 2,
+		"Download complete":  3,
+		"Pull complete":      4,
+		"Already exists":     5,
+		"Waiting":            6,
+		"Pulling fs layer":   7,
+	}
+
+	// Simple insertion sort (typically < 50 layers)
+	for i := 1; i < len(layers); i++ {
+		j := i
+		for j > 0 {
+			pi := priorityMap[layers[j-1].Status]
+			pj := priorityMap[layers[j].Status]
+			// Use 99 for unknown statuses to sort them last
+			if pi == 0 && layers[j-1].Status != "Downloading" {
+				pi = 99
+			}
+			if pj == 0 && layers[j].Status != "Downloading" {
+				pj = 99
+			}
+			if pi <= pj {
+				break
+			}
+			layers[j-1], layers[j] = layers[j], layers[j-1]
+			j--
+		}
+	}
 }
 
 // sendProgress sends a progress event if callback is registered.

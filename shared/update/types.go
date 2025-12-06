@@ -60,6 +60,7 @@ type PullProgressEvent struct {
 	OverallProgress int              `json:"overall_progress"` // 0-100
 	Layers          []*LayerProgress `json:"layers"`
 	TotalLayers     int              `json:"total_layers"`
+	RemainingLayers int              `json:"remaining_layers"` // Layers not sent (truncated for network efficiency)
 	Summary         string           `json:"summary"`
 	SpeedMbps       float64          `json:"speed_mbps,omitempty"`
 }

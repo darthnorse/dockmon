@@ -181,7 +181,7 @@ func (h *UpdateHandler) sendLayerProgress(event update.PullProgressEvent) {
 		"overall_progress": event.OverallProgress,
 		"layers":           layerList,
 		"total_layers":     event.TotalLayers,
-		"remaining_layers": 0,
+		"remaining_layers": event.RemainingLayers,
 		"summary":          event.Summary,
 		"speed_mbps":       event.SpeedMbps,
 	}

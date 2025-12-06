@@ -167,14 +167,11 @@ async def lifespan(app: FastAPI):
     monitor.monitoring_task = asyncio.create_task(monitor.monitor_containers())
     monitor.maintenance_task = asyncio.create_task(monitor.run_daily_maintenance())
 
-    # Check for DockMon updates on startup, then periodically every 6 hours
+    # Check for DockMon updates on startup (subsequent checks tied to container update schedule)
     # Store task reference and add error callback (Issue #1 fix)
     monitor.update_check_task = asyncio.create_task(monitor.periodic_jobs.check_dockmon_update_once())
     monitor.update_check_task.add_done_callback(_handle_task_exception)
     logger.info("Started DockMon update checker task")
-
-    monitor.dockmon_update_task = asyncio.create_task(monitor.periodic_jobs.check_dockmon_updates_periodic())
-    logger.info("Started DockMon update periodic task")
 
     # Start engine_id validation task (populates engine_id for existing hosts, detects VM clones)
     monitor.engine_id_validation_task = asyncio.create_task(monitor.periodic_jobs.validate_engine_ids_periodic())
@@ -265,16 +262,6 @@ async def lifespan(app: FastAPI):
                 logger.info("Update check task cancelled successfully")
             except Exception as e:
                 logger.error(f"Error during update check task shutdown: {e}")
-
-    # Cancel DockMon update checker task
-    if hasattr(monitor, 'dockmon_update_task') and monitor.dockmon_update_task:
-        monitor.dockmon_update_task.cancel()
-        try:
-            await monitor.dockmon_update_task
-        except asyncio.CancelledError:
-            logger.info("DockMon update task cancelled successfully")
-        except Exception as e:
-            logger.error(f"Error during DockMon update task shutdown: {e}")
 
     # Stop blackout monitoring
     try:

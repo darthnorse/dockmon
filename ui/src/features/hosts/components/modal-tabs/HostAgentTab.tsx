@@ -59,9 +59,8 @@ export function HostAgentTab({ hostId }: HostAgentTabProps) {
   // Trigger agent update
   const triggerUpdate = useMutation({
     mutationFn: async () => {
-      // The update is triggered via container updates mechanism
-      // For systemd agents, it will download and swap the binary
-      await apiClient.post(`/hosts/${hostId}/containers/dockmon-agent/execute-update`)
+      // Trigger self-update via agent WebSocket command
+      await apiClient.post(`/hosts/${hostId}/agent/update`)
     },
     onSuccess: () => {
       setUpdateTriggered(true)

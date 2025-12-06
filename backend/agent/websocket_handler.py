@@ -945,24 +945,22 @@ class AgentWebSocketHandler:
                 }
             })
 
-            # Log to event logger
-            from event_logger import EventLogger
-            event_logger = EventLogger()
-
-            if error:
-                event_logger.log_event(
-                    "agent", "self_update_error",
-                    f"Agent self-update error: {error}",
-                    host_id=self.host_id,
-                    metadata={"stage": stage, "agent_id": self.agent_id}
-                )
-            else:
-                event_logger.log_event(
-                    "agent", "self_update_progress",
-                    f"Agent self-update: {stage} - {message}",
-                    host_id=self.host_id,
-                    metadata={"stage": stage, "agent_id": self.agent_id}
-                )
+            # Log to event logger (use monitor's event_logger if available)
+            if self.monitor and hasattr(self.monitor, 'event_logger'):
+                if error:
+                    self.monitor.event_logger.log_event(
+                        "agent", "self_update_error",
+                        f"Agent self-update error: {error}",
+                        host_id=self.host_id,
+                        metadata={"stage": stage, "agent_id": self.agent_id}
+                    )
+                else:
+                    self.monitor.event_logger.log_event(
+                        "agent", "self_update_progress",
+                        f"Agent self-update: {stage} - {message}",
+                        host_id=self.host_id,
+                        metadata={"stage": stage, "agent_id": self.agent_id}
+                    )
 
             logger.info(f"Agent {self.agent_id} self-update progress: {stage} - {message}")
 

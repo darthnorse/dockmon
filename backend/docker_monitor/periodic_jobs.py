@@ -488,6 +488,25 @@ class PeriodicJobsManager:
                         )
                         logger.info(f"Auto-update execution complete: {update_stats}")
 
+                # Also check DockMon and Agent updates (tied to container update schedule)
+                try:
+                    dockmon_checker = get_dockmon_update_checker(self.db)
+
+                    # Check DockMon updates
+                    dockmon_result = await dockmon_checker.check_for_update()
+                    if dockmon_result.get('update_available'):
+                        logger.info(
+                            f"DockMon update available: "
+                            f"{dockmon_result['current_version']} → {dockmon_result['latest_version']}"
+                        )
+
+                    # Check Agent updates
+                    agent_result = await dockmon_checker.check_for_agent_update()
+                    if agent_result.get('latest_version'):
+                        logger.debug(f"Latest Agent version: {agent_result['latest_version']}")
+                except Exception as e:
+                    logger.warning(f"Error checking DockMon/Agent updates: {e}")
+
                 # Update last check time
                 self._last_update_check = now
 
@@ -554,6 +573,26 @@ class PeriodicJobsManager:
             # Update last check time
             self._last_update_check = datetime.now(timezone.utc)
             logger.info(f"Manual update check complete: {stats}")
+
+            # Also check DockMon and Agent updates (tied to container update schedule)
+            try:
+                checker = get_dockmon_update_checker(self.db)
+
+                # Check DockMon updates
+                dockmon_result = await checker.check_for_update()
+                if dockmon_result.get('update_available'):
+                    logger.info(
+                        f"DockMon update available: "
+                        f"{dockmon_result['current_version']} → {dockmon_result['latest_version']}"
+                    )
+
+                # Check Agent updates
+                agent_result = await checker.check_for_agent_update()
+                if agent_result.get('latest_version'):
+                    logger.debug(f"Latest Agent version: {agent_result['latest_version']}")
+            except Exception as e:
+                logger.warning(f"Error checking DockMon/Agent updates: {e}")
+
             return stats
 
         except Exception as e:
@@ -939,51 +978,6 @@ class PeriodicJobsManager:
 
         except Exception as e:
             logger.warning(f"Error checking for updates on startup: {e}")
-
-    async def check_dockmon_updates_periodic(self):
-        """
-        Periodic task: Check for DockMon and Agent updates from GitHub.
-        Runs every 6 hours (hardcoded).
-
-        This is separate from container update checks (which run daily at configured time).
-        Checks GitHub releases for new DockMon/Agent versions and caches result in database.
-        Frontend polls settings to detect updates and show notification banner.
-        """
-        while True:
-            try:
-                logger.debug("Running periodic DockMon and Agent update check...")
-
-                checker = get_dockmon_update_checker(self.db)
-
-                # Check DockMon updates
-                result = await checker.check_for_update()
-                if result.get('update_available'):
-                    logger.info(
-                        f"DockMon update available: "
-                        f"{result['current_version']} → {result['latest_version']}"
-                    )
-                    # Frontend will detect via settings polling
-                elif result.get('error'):
-                    logger.warning(f"DockMon update check failed: {result['error']}")
-                else:
-                    logger.debug(
-                        f"DockMon is up to date: {result['current_version']}"
-                    )
-
-                # Also check Agent updates
-                agent_result = await checker.check_for_agent_update()
-                if agent_result.get('latest_version'):
-                    logger.debug(f"Latest Agent version: {agent_result['latest_version']}")
-                elif agent_result.get('error'):
-                    logger.warning(f"Agent update check failed: {agent_result['error']}")
-
-                # Sleep for 6 hours before next check
-                await asyncio.sleep(6 * 60 * 60)
-
-            except Exception as e:
-                logger.error(f"Error in update checker: {e}", exc_info=True)
-                # Wait 1 hour before retrying on error
-                await asyncio.sleep(60 * 60)
 
     async def cleanup_expired_image_cache(self) -> int:
         """

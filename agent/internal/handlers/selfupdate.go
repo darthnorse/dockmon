@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/darthnorse/dockmon-agent/internal/docker"
@@ -290,6 +291,12 @@ func (h *SelfUpdateHandler) performNativeSelfUpdate(ctx context.Context, req Sel
 	if h.stopSignal != nil {
 		h.stopSignal()
 	}
+
+	// For native mode, we need to actually exit the process so systemd restarts us
+	// The stopSignal only closes the WebSocket connection, but main.go waits on sigChan
+	// Send SIGTERM to ourselves to trigger proper shutdown
+	h.log.Info("Sending SIGTERM to self for native restart")
+	syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
 
 	return nil
 }

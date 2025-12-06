@@ -8,7 +8,7 @@ import time
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
-from pydantic import BaseModel, Field, validator, root_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ContainerHostPair(BaseModel):
@@ -29,8 +29,9 @@ class DesiredStateRequest(BaseModel):
     desired_state: str = Field(..., pattern='^(should_run|on_demand|unspecified)$')
     web_ui_url: Optional[str] = None
 
-    @validator('desired_state')
-    def validate_desired_state(cls, v):
+    @field_validator('desired_state')
+    @classmethod
+    def validate_desired_state(cls, v: str) -> str:
         """Validate desired state value"""
         valid_states = {'should_run', 'on_demand', 'unspecified'}
         if v not in valid_states:
@@ -41,15 +42,16 @@ class DesiredStateRequest(BaseModel):
 class AlertRuleCreate(BaseModel):
     """Request model for creating alert rules"""
     name: str = Field(..., min_length=1, max_length=100)
-    containers: Optional[List[ContainerHostPair]] = Field(None, max_items=100)
-    trigger_events: Optional[List[str]] = Field(None, max_items=20)  # Docker events
-    trigger_states: Optional[List[str]] = Field(None, max_items=10)  # Docker states
-    notification_channels: List[int] = Field(..., min_items=1, max_items=20)
+    containers: Optional[List[ContainerHostPair]] = Field(None, max_length=100)
+    trigger_events: Optional[List[str]] = Field(None, max_length=20)  # Docker events
+    trigger_states: Optional[List[str]] = Field(None, max_length=10)  # Docker states
+    notification_channels: List[int] = Field(..., min_length=1, max_length=20)
     cooldown_minutes: int = Field(15, ge=1, le=1440)  # 1 min to 24 hours
     enabled: bool = True
 
-    @validator('name')
-    def validate_name(cls, v):
+    @field_validator('name')
+    @classmethod
+    def validate_name(cls, v: str) -> str:
         """Validate rule name for security"""
         if not v or not v.strip():
             raise ValueError('Rule name cannot be empty')
@@ -59,8 +61,9 @@ class AlertRuleCreate(BaseModel):
             raise ValueError('Rule name contains invalid characters')
         return sanitized
 
-    @validator('trigger_events')
-    def validate_trigger_events(cls, v):
+    @field_validator('trigger_events')
+    @classmethod
+    def validate_trigger_events(cls, v: Optional[List[str]]) -> Optional[List[str]]:
         """Validate Docker events"""
         if not v:
             return v  # Events are optional
@@ -81,8 +84,9 @@ class AlertRuleCreate(BaseModel):
 
         return v
 
-    @validator('trigger_states')
-    def validate_trigger_states(cls, v):
+    @field_validator('trigger_states')
+    @classmethod
+    def validate_trigger_states(cls, v: Optional[List[str]]) -> Optional[List[str]]:
         """Validate container states"""
         if not v:
             return v  # States are optional now
@@ -94,16 +98,18 @@ class AlertRuleCreate(BaseModel):
 
         return v
 
-    def __init__(self, **data):
-        """Custom validation to ensure at least one trigger is specified"""
-        super().__init__(**data)
+    @model_validator(mode='after')
+    def validate_triggers(self):
+        """Ensure at least one trigger is specified"""
         events = self.trigger_events or []
         states = self.trigger_states or []
         if not events and not states:
             raise ValueError('At least one trigger event or state is required')
+        return self
 
-    @validator('notification_channels')
-    def validate_notification_channels(cls, v):
+    @field_validator('notification_channels')
+    @classmethod
+    def validate_notification_channels(cls, v: List[int]) -> List[int]:
         """Validate notification channel IDs"""
         if not v:
             raise ValueError('At least one notification channel is required')
@@ -131,11 +137,12 @@ class NotificationChannelCreate(BaseModel):
     """Request model for creating notification channels"""
     name: str = Field(..., min_length=1, max_length=100)
     type: str = Field(..., min_length=1, max_length=20)
-    config: Dict[str, Any] = Field(..., min_items=1, max_items=10)
+    config: Dict[str, Any] = Field(..., min_length=1, max_length=10)
     enabled: bool = True
 
-    @validator('name')
-    def validate_name(cls, v):
+    @field_validator('name')
+    @classmethod
+    def validate_name(cls, v: str) -> str:
         """Validate channel name for security"""
         if not v or not v.strip():
             raise ValueError('Channel name cannot be empty')
@@ -145,8 +152,9 @@ class NotificationChannelCreate(BaseModel):
             raise ValueError('Channel name contains invalid characters')
         return sanitized
 
-    @validator('type')
-    def validate_type(cls, v):
+    @field_validator('type')
+    @classmethod
+    def validate_type(cls, v: str) -> str:
         """Validate notification type"""
         if not v or not v.strip():
             raise ValueError('Channel type cannot be empty')
@@ -159,13 +167,14 @@ class NotificationChannelCreate(BaseModel):
 
         return v
 
-    @validator('config')
-    def validate_config(cls, v, values):
+    @model_validator(mode='after')
+    def validate_config(self):
         """Validate channel configuration based on type"""
+        v = self.config
         if not v:
             raise ValueError('Configuration cannot be empty')
 
-        channel_type = values.get('type', '').lower()
+        channel_type = self.type.lower() if self.type else ''
 
         # Validate configuration based on channel type
         if channel_type == 'telegram':
@@ -292,7 +301,7 @@ class NotificationChannelCreate(BaseModel):
                 if len(value) > 1000:
                     raise ValueError(f'Configuration value for {key} is too long (max 1000 characters)')
 
-        return v
+        return self
 
 
 class NotificationChannelUpdate(BaseModel):
@@ -322,27 +331,30 @@ class BatchJobCreate(BaseModel):
     """Request model for creating batch jobs"""
     scope: str = Field(..., pattern='^container$')  # Only 'container' for now
     action: str = Field(..., pattern='^(start|stop|restart|add-tags|remove-tags|set-auto-restart|set-auto-update|set-desired-state|check-updates|delete-containers|update-containers)$')  # Container actions
-    ids: List[str] = Field(..., min_items=1, max_items=100)  # Container IDs
+    ids: List[str] = Field(..., min_length=1, max_length=100)  # Container IDs
     params: Optional[Dict[str, Any]] = None  # Optional parameters (e.g., tags, enabled, desired_state)
     dry_run: bool = False  # Not implemented in Phase 1
 
-    @validator('scope')
-    def validate_scope(cls, v):
+    @field_validator('scope')
+    @classmethod
+    def validate_scope(cls, v: str) -> str:
         """Validate batch job scope"""
         if v != 'container':
             raise ValueError('Only "container" scope is supported')
         return v
 
-    @validator('action')
-    def validate_action(cls, v):
+    @field_validator('action')
+    @classmethod
+    def validate_action(cls, v: str) -> str:
         """Validate batch job action"""
         valid_actions = {'start', 'stop', 'restart', 'add-tags', 'remove-tags', 'set-auto-restart', 'set-auto-update', 'set-desired-state', 'check-updates', 'delete-containers', 'update-containers'}
         if v not in valid_actions:
             raise ValueError(f'Invalid action. Must be one of: {valid_actions}')
         return v
 
-    @validator('ids')
-    def validate_ids(cls, v):
+    @field_validator('ids')
+    @classmethod
+    def validate_ids(cls, v: List[str]) -> List[str]:
         """Validate container IDs"""
         if not v:
             raise ValueError('At least one container ID is required')
@@ -360,30 +372,38 @@ class TagUpdateBase(BaseModel):
     2. Ordered mode: ordered_tags (new - for reordering)
     """
     # Mode 1: Delta operations (backwards compatible)
-    tags_to_add: Optional[List[str]] = Field(default=None, max_items=50)
-    tags_to_remove: Optional[List[str]] = Field(default=None, max_items=50)
+    tags_to_add: Optional[List[str]] = Field(default=None, max_length=50)
+    tags_to_remove: Optional[List[str]] = Field(default=None, max_length=50)
 
     # Mode 2: Ordered list (new - for reordering)
-    ordered_tags: Optional[List[str]] = Field(default=None, max_items=50)
+    ordered_tags: Optional[List[str]] = Field(default=None, max_length=50)
 
-    @validator('tags_to_add', 'tags_to_remove', 'ordered_tags', each_item=True)
-    def validate_tag(cls, v):
-        """Validate individual tag format"""
-        if not v or not v.strip():
-            raise ValueError('Tag cannot be empty')
-        if len(v) > 50:
-            raise ValueError('Tag cannot exceed 50 characters')
-        # Allow alphanumeric, dash, underscore, colon, dot
-        if not all(c.isalnum() or c in '-_:.' for c in v):
-            raise ValueError('Tag can only contain alphanumeric characters, dash, underscore, colon, and dot')
-        return v.strip().lower()
+    @field_validator('tags_to_add', 'tags_to_remove', 'ordered_tags')
+    @classmethod
+    def validate_tags_list(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        """Validate tag list and individual tag format"""
+        if v is None:
+            return v
 
-    @root_validator(skip_on_failure=True)
-    def validate_tags(cls, values):
+        validated_tags = []
+        for tag in v:
+            if not tag or not tag.strip():
+                raise ValueError('Tag cannot be empty')
+            if len(tag) > 50:
+                raise ValueError('Tag cannot exceed 50 characters')
+            # Allow alphanumeric, dash, underscore, colon, dot
+            if not all(c.isalnum() or c in '-_:.' for c in tag):
+                raise ValueError('Tag can only contain alphanumeric characters, dash, underscore, colon, and dot')
+            validated_tags.append(tag.strip().lower())
+
+        return validated_tags
+
+    @model_validator(mode='after')
+    def validate_tags(self):
         """Ensure only one mode is used and at least one operation specified"""
-        tags_to_add = values.get('tags_to_add')
-        tags_to_remove = values.get('tags_to_remove')
-        ordered_tags = values.get('ordered_tags')
+        tags_to_add = self.tags_to_add
+        tags_to_remove = self.tags_to_remove
+        ordered_tags = self.ordered_tags
 
         # Check mutual exclusivity
         if ordered_tags is not None and (tags_to_add or tags_to_remove):
@@ -393,28 +413,20 @@ class TagUpdateBase(BaseModel):
         if ordered_tags is None and not tags_to_add and not tags_to_remove:
             raise ValueError('Must provide either ordered_tags or tags_to_add/tags_to_remove')
 
-        # Convert empty lists to None for cleaner handling
-        if tags_to_add is not None and len(tags_to_add) == 0:
-            values['tags_to_add'] = []
-        if tags_to_remove is not None and len(tags_to_remove) == 0:
-            values['tags_to_remove'] = []
-
-        # Check for conflicts in delta mode only
-        ordered_tags = values.get('ordered_tags')
-        tags_to_add = values.get('tags_to_add', [])
-        tags_to_remove = values.get('tags_to_remove', [])
-
         # Only validate delta operations if not using ordered mode
         if ordered_tags is None:
-            if not tags_to_add and not tags_to_remove:
+            add_list = tags_to_add or []
+            remove_list = tags_to_remove or []
+
+            if not add_list and not remove_list:
                 raise ValueError('At least one tag operation (add or remove) is required')
 
             # Check for conflicts (adding and removing the same tag)
-            conflicts = set(tags_to_add) & set(tags_to_remove)
+            conflicts = set(add_list) & set(remove_list)
             if conflicts:
                 raise ValueError(f'Cannot add and remove the same tag(s): {", ".join(conflicts)}')
 
-        return values
+        return self
 
 
 class ContainerTagUpdate(TagUpdateBase):
@@ -444,8 +456,9 @@ class HttpHealthCheckConfig(BaseModel):
     max_restart_attempts: int = Field(default=3, ge=1, le=10)  # v2.0.2+
     restart_retry_delay_seconds: int = Field(default=120, ge=30, le=600)  # v2.0.2+
 
-    @validator('url')
-    def validate_url(cls, v):
+    @field_validator('url')
+    @classmethod
+    def validate_url(cls, v: str) -> str:
         """Validate URL format"""
         if not v or not v.strip():
             raise ValueError('URL cannot be empty')
@@ -462,8 +475,9 @@ class HttpHealthCheckConfig(BaseModel):
 
         return v
 
-    @validator('expected_status_codes')
-    def validate_status_codes(cls, v):
+    @field_validator('expected_status_codes')
+    @classmethod
+    def validate_status_codes(cls, v: str) -> str:
         """Validate status codes format (e.g., "200", "200-299", "200,201,204")"""
         if not v or not v.strip():
             raise ValueError('Expected status codes cannot be empty')

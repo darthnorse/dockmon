@@ -9,7 +9,7 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, Field, validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 logger = logging.getLogger(__name__)
@@ -78,11 +78,12 @@ class DockerHostConfig(BaseModel):
     tls_key: Optional[str] = Field(None, max_length=10000)
     tls_ca: Optional[str] = Field(None, max_length=10000)
     # Phase 3d - Host organization
-    tags: Optional[list[str]] = Field(None, max_items=50)  # Max 50 tags per host
+    tags: Optional[list[str]] = Field(None, max_length=50)  # Max 50 tags per host
     description: Optional[str] = Field(None, max_length=1000)  # Optional description
 
-    @validator('name')
-    def validate_name(cls, v):
+    @field_validator('name')
+    @classmethod
+    def validate_name(cls, v: str) -> str:
         """Validate host name for security"""
         if not v or not v.strip():
             raise ValueError('Host name cannot be empty')
@@ -92,8 +93,9 @@ class DockerHostConfig(BaseModel):
             raise ValueError('Host name contains invalid characters')
         return sanitized
 
-    @validator('url')
-    def validate_url(cls, v):
+    @field_validator('url')
+    @classmethod
+    def validate_url(cls, v: str) -> str:
         """Validate Docker URL for security - prevent SSRF attacks"""
         if not v or not v.strip():
             raise ValueError('URL cannot be empty')
@@ -143,8 +145,9 @@ class DockerHostConfig(BaseModel):
 
         return v
 
-    @validator('tls_cert', 'tls_key', 'tls_ca')
-    def validate_certificate(cls, v):
+    @field_validator('tls_cert', 'tls_key', 'tls_ca')
+    @classmethod
+    def validate_certificate(cls, v: Optional[str]) -> Optional[str]:
         """Validate TLS certificate data"""
         if v is None:
             return v

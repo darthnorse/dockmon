@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from typing import Optional, List
 
-from pydantic import BaseModel, Field, validator, ConfigDict
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 
 from typing import Optional, List
@@ -29,8 +29,9 @@ class GlobalSettings(BaseModel):
     show_container_stats: bool = Field(True)  # Show container statistics on dashboard
     alert_retention_days: int = Field(90, ge=0, le=365)  # Keep resolved alerts for N days (0 = keep forever)
 
-    @validator('max_retries')
-    def validate_max_retries(cls, v):
+    @field_validator('max_retries')
+    @classmethod
+    def validate_max_retries(cls, v: int) -> int:
         """Validate retry count to prevent resource exhaustion"""
         if v < 0:
             raise ValueError('Max retries cannot be negative')
@@ -38,8 +39,9 @@ class GlobalSettings(BaseModel):
             raise ValueError('Max retries cannot exceed 10 to prevent resource exhaustion')
         return v
 
-    @validator('retry_delay')
-    def validate_retry_delay(cls, v):
+    @field_validator('retry_delay')
+    @classmethod
+    def validate_retry_delay(cls, v: int) -> int:
         """Validate retry delay to prevent system overload"""
         if v < 5:
             raise ValueError('Retry delay must be at least 5 seconds')
@@ -47,8 +49,9 @@ class GlobalSettings(BaseModel):
             raise ValueError('Retry delay cannot exceed 300 seconds')
         return v
 
-    @validator('polling_interval')
-    def validate_polling_interval(cls, v):
+    @field_validator('polling_interval')
+    @classmethod
+    def validate_polling_interval(cls, v: int) -> int:
         """Validate polling interval to prevent system overload"""
         if v < 1:
             raise ValueError('Polling interval must be at least 1 second')
@@ -56,8 +59,9 @@ class GlobalSettings(BaseModel):
             raise ValueError('Polling interval cannot exceed 300 seconds')
         return v
 
-    @validator('connection_timeout')
-    def validate_connection_timeout(cls, v):
+    @field_validator('connection_timeout')
+    @classmethod
+    def validate_connection_timeout(cls, v: int) -> int:
         """Validate connection timeout"""
         if v < 1:
             raise ValueError('Connection timeout must be at least 1 second')
@@ -214,8 +218,9 @@ class GlobalSettingsUpdate(BaseModel):
 
     model_config = ConfigDict(extra="forbid")  # Reject unknown keys (typos, attacks)
 
-    @validator('blackout_windows')
-    def validate_blackout_windows(cls, v):
+    @field_validator('blackout_windows')
+    @classmethod
+    def validate_blackout_windows(cls, v: Optional[List[dict]]) -> Optional[List[dict]]:
         """Validate blackout window structure"""
         if v is None:
             return v

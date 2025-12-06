@@ -201,9 +201,18 @@ func (h *UpdateHandler) UpdateContainer(ctx context.Context, req UpdateRequest) 
 
 		layer.ID = progress.ID
 		layer.Status = progress.Status
-		layer.Current = progress.ProgressDetail.Current
-		if progress.ProgressDetail.Total > 0 {
-			layer.Total = progress.ProgressDetail.Total
+
+		// Handle completion events specially - Docker sends empty ProgressDetail
+		// for "Pull complete" and "Already exists", which would reset Current to 0
+		// and break the overall progress calculation (matches Python implementation)
+		if progress.Status == "Pull complete" || progress.Status == "Already exists" {
+			// Mark as fully downloaded by setting current = total
+			layer.Current = layer.Total
+		} else {
+			layer.Current = progress.ProgressDetail.Current
+			if progress.ProgressDetail.Total > 0 {
+				layer.Total = progress.ProgressDetail.Total
+			}
 		}
 
 		// Calculate overall progress

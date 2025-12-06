@@ -44,6 +44,8 @@ jobs:
           elif [[ $GITHUB_REF == refs/tags/* ]]; then
             # Fallback for other tag formats
             VERSION=${GITHUB_REF#refs/tags/v}
+          elif [[ $GITHUB_REF == refs/heads/feature/* ]] || [[ $GITHUB_REF == refs/heads/feat/* ]]; then
+            VERSION="dev-${GITHUB_SHA:0:7}"
           else
             VERSION="dev"
           fi
@@ -140,8 +142,13 @@ jobs:
             VERSION="latest"
           elif [[ $GITHUB_REF == refs/heads/dev ]]; then
             VERSION="dev"
-          else
+          elif [[ $GITHUB_REF == refs/heads/feature/* ]] || [[ $GITHUB_REF == refs/heads/feat/* ]]; then
+            # Feature branches get dev-<short-sha>
+            VERSION="dev-${GITHUB_SHA:0:7}"
+          elif [[ $GITHUB_EVENT_NAME == "pull_request" ]]; then
             VERSION="pr-${{ github.event.number }}"
+          else
+            VERSION="dev-${GITHUB_SHA:0:7}"
           fi
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "commit=${GITHUB_SHA:0:7}" >> $GITHUB_OUTPUT

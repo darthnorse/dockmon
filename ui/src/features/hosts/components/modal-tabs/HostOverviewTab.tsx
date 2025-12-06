@@ -58,7 +58,7 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
   // Trigger agent update mutation
   const triggerUpdate = useMutation({
     mutationFn: async () => {
-      await apiClient.post(`/hosts/${hostId}/containers/dockmon-agent/execute-update`)
+      await apiClient.post(`/hosts/${hostId}/agent/update`)
     },
     onSuccess: () => {
       setUpdateTriggered(true)

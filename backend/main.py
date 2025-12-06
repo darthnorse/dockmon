@@ -1041,6 +1041,120 @@ async def get_host_agent_info(host_id: str, current_user: dict = Depends(get_cur
         }
 
 
+@app.post("/api/hosts/{host_id}/agent/update", tags=["hosts"], dependencies=[Depends(require_scope("write"))])
+async def trigger_agent_update(host_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    Trigger agent self-update.
+
+    For systemd agents: Downloads new binary and restarts
+    For container agents: Updates the agent container
+
+    This endpoint finds the agent container by image name (dockmon-agent)
+    and triggers the appropriate update mechanism.
+    """
+    from updates.update_executor import get_update_executor
+    from updates.types import UpdateContext
+
+    # Verify host is agent-based
+    host = monitor.hosts.get(host_id)
+    if not host:
+        raise HTTPException(status_code=404, detail="Host not found")
+
+    if host.connection_type != 'agent':
+        raise HTTPException(status_code=400, detail="Host is not agent-based")
+
+    # Get agent info
+    with monitor.db.get_session() as session:
+        agent = session.query(Agent).filter_by(host_id=host_id).first()
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+
+        settings = session.query(GlobalSettingsDB).first()
+        latest_version = getattr(settings, 'latest_agent_version', None) if settings else None
+
+        if not latest_version:
+            raise HTTPException(status_code=400, detail="No latest agent version available")
+
+        # Check if update is available
+        try:
+            if not (parse_version(latest_version) > parse_version(agent.version or "0.0.0")):
+                raise HTTPException(status_code=400, detail="Agent is already up to date")
+        except Exception:
+            pass  # Continue if version parsing fails
+
+        # Get agent platform info
+        agent_os = agent.agent_os or "linux"
+        agent_arch = agent.agent_arch or "amd64"
+        agent_id = agent.id
+
+        # Check deployment mode from capabilities
+        capabilities = {}
+        if agent.capabilities:
+            try:
+                capabilities = json.loads(agent.capabilities) if isinstance(agent.capabilities, str) else agent.capabilities
+            except Exception:
+                pass
+
+        is_container_mode = capabilities.get('self_update', False)
+
+    logger.info(f"Triggering agent update for host {host_id}: v{agent.version} -> v{latest_version} (container_mode={is_container_mode})")
+
+    # For container mode, find the agent container and use standard update flow
+    # For systemd mode, send self_update command directly
+    try:
+        from agent.command_executor import get_agent_command_executor
+
+        command_executor = get_agent_command_executor()
+
+        # Construct self-update command
+        binary_url = f"https://github.com/darthnorse/dockmon/releases/download/agent-v{latest_version}/dockmon-agent-{agent_os}-{agent_arch}"
+
+        # Fetch checksum for security
+        checksum = None
+        try:
+            from updates.dockmon_update_checker import get_dockmon_update_checker
+            checker = get_dockmon_update_checker(monitor.db)
+            checksum = await checker.fetch_agent_checksum(latest_version, agent_arch)
+        except Exception as e:
+            logger.warning(f"Failed to fetch checksum: {e}")
+
+        command = {
+            "type": "command",
+            "command": "self_update",
+            "payload": {
+                "image": f"ghcr.io/darthnorse/dockmon-agent:{latest_version}",
+                "version": latest_version,
+                "binary_url": binary_url,
+                "checksum": checksum,
+            }
+        }
+
+        result = await command_executor.execute_command(
+            agent_id,
+            command,
+            timeout=150.0
+        )
+
+        if result.status.value != "success":
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to send update command: {result.error}"
+            )
+
+        return {
+            "success": True,
+            "message": "Agent update initiated",
+            "current_version": agent.version,
+            "target_version": latest_version
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error triggering agent update: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/containers", tags=["containers"])
 async def get_containers(host_id: Optional[str] = None, current_user: dict = Depends(get_current_user)):
     """Get all containers"""

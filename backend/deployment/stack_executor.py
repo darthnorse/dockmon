@@ -1,25 +1,66 @@
 """
 Docker Compose stack deployment executor.
 
-Handles multi-service stack deployments from Docker Compose files:
-parse -> validate -> create networks/volumes -> deploy services in dependency order.
+Handles multi-service stack deployments from Docker Compose files.
+Uses Go Compose Service for full compatibility when available,
+with fallback to Python implementation.
 
-Extracted from executor.py for maintainability.
+Deployment paths:
+- Go Compose Service (preferred): Full Docker Compose SDK compatibility
+- Python fallback: Manual reimplementation for when Go service is unavailable
 """
 
 import logging
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
-from database import Deployment
+from database import DatabaseManager, Deployment, DockerHostDB
 from .host_connector import get_host_connector
 from .compose_parser import ComposeParser, ComposeParseError
 from .compose_validator import ComposeValidator, ComposeValidationError
 from .stack_orchestrator import StackOrchestrator, StackOrchestrationError
 from .network_helpers import parse_ipam_config, reconcile_existing_network
+from .compose_client import (
+    ComposeClient,
+    DeployResult,
+    ProgressEvent,
+    ComposeServiceError,
+    ComposeServiceUnavailable,
+    is_compose_service_available,
+)
 
 logger = logging.getLogger(__name__)
+
+# Cache compose service availability to avoid repeated checks
+_compose_service_checked = False
+_compose_service_available = False
+
+
+def _check_compose_service_available() -> bool:
+    """
+    Check if Go compose service is available.
+
+    Caches the result to avoid repeated checks during a single deployment.
+    """
+    global _compose_service_checked, _compose_service_available
+
+    if not _compose_service_checked:
+        _compose_service_available = is_compose_service_available()
+        _compose_service_checked = True
+        if _compose_service_available:
+            logger.info("Go compose service available - using for stack deployments")
+        else:
+            logger.info("Go compose service unavailable - using Python fallback")
+
+    return _compose_service_available
+
+
+def reset_compose_service_check() -> None:
+    """Reset compose service availability check (for testing or after service restart)."""
+    global _compose_service_checked, _compose_service_available
+    _compose_service_checked = False
+    _compose_service_available = False
 
 
 async def execute_stack_deployment(
@@ -34,8 +75,8 @@ async def execute_stack_deployment(
     """
     Execute Docker Compose stack deployment.
 
-    Deploys multi-service stacks from Docker Compose files.
-    Creates networks, volumes, and services in correct dependency order.
+    Uses Go Compose Service when available for full Docker Compose SDK compatibility.
+    Falls back to Python implementation if Go service is unavailable.
 
     Args:
         session: Database session
@@ -58,21 +99,239 @@ async def execute_stack_deployment(
     if not compose_yaml:
         raise RuntimeError("Stack deployment requires 'compose_yaml' in definition")
 
-    # Parse and validate compose file
+    # Step 1: Validate YAML safety (always done in Python for security)
+    parser = ComposeParser()
+    validator = ComposeValidator()
+
+    try:
+        await update_progress(session, deployment, 5, 'Validating compose file')
+        validator.validate_yaml_safety(compose_yaml)
+
+        # Step 2: Apply variable substitution (Python handles templates)
+        await update_progress(session, deployment, 10, 'Processing compose file')
+        if variables:
+            compose_yaml = parser.substitute_variables(compose_yaml, variables)
+
+    except (ComposeParseError, ComposeValidationError) as e:
+        logger.warning(f"Compose validation failed for deployment {deployment.id}: {e}")
+        raise RuntimeError(f"Compose validation failed: {e}")
+
+    # Check if Go compose service is available
+    if _check_compose_service_available():
+        # Use Go compose service (full Docker Compose SDK)
+        await _execute_via_go_service(
+            session=session,
+            deployment=deployment,
+            compose_yaml=compose_yaml,
+            variables=variables,
+            state_machine=state_machine,
+            update_progress=update_progress,
+            create_deployment_metadata=create_deployment_metadata,
+        )
+    else:
+        # Fallback to Python implementation
+        await _execute_via_python_fallback(
+            session=session,
+            deployment=deployment,
+            compose_yaml=compose_yaml,
+            variables=variables,
+            docker_monitor=docker_monitor,
+            state_machine=state_machine,
+            update_progress=update_progress,
+            create_deployment_metadata=create_deployment_metadata,
+        )
+
+
+async def _execute_via_go_service(
+    session: Session,
+    deployment: Deployment,
+    compose_yaml: str,
+    variables: Dict[str, str],
+    state_machine,
+    update_progress: Callable,
+    create_deployment_metadata: Callable,
+) -> None:
+    """
+    Execute stack deployment via Go Compose Service.
+
+    Uses the official Docker Compose SDK for full compatibility.
+    """
+    logger.info(f"Executing deployment {deployment.id} via Go compose service")
+
+    # Get host connection info
+    host_info = _get_host_connection_info(deployment.host_id)
+
+    # Build project name from deployment name
+    project_name = deployment.name.lower().replace(' ', '-')
+
+    # Create compose client
+    client = ComposeClient()
+
+    # Progress callback that updates database and broadcasts to WebSocket
+    async def on_progress(event: ProgressEvent):
+        await update_progress(
+            session,
+            deployment,
+            event.progress,
+            event.message
+        )
+
+    try:
+        # Transition to pulling state
+        state_machine.transition(deployment, 'pulling_image')
+
+        # Execute deployment with progress streaming
+        result = await client.deploy_with_progress(
+            deployment_id=str(deployment.id),
+            project_name=project_name,
+            compose_yaml=compose_yaml,
+            progress_callback=on_progress,
+            action="up",
+            environment=variables,
+            wait_for_healthy=True,
+            health_timeout=120,
+            docker_host=host_info.get('docker_host'),
+            tls_ca_cert=host_info.get('tls_ca_cert'),
+            tls_cert=host_info.get('tls_cert'),
+            tls_key=host_info.get('tls_key'),
+            registry_credentials=host_info.get('registry_credentials'),
+        )
+
+        # Handle result
+        if result.success or result.partial_success:
+            # Link containers to deployment
+            if result.services:
+                for service_name, service_info in result.services.items():
+                    container_id = service_info.get('container_id', '')[:12]
+                    if container_id:
+                        create_deployment_metadata(
+                            session,
+                            deployment.id,
+                            deployment.host_id,
+                            container_id,
+                            service_name=service_name
+                        )
+                        logger.info(
+                            f"Linked container {container_id} to deployment "
+                            f"{deployment.id} (service: {service_name})"
+                        )
+
+            # Complete state transitions
+            state_machine.transition(deployment, 'creating')
+            state_machine.transition(deployment, 'starting')
+
+            if result.partial_success:
+                # Some services failed - log warning but don't fail
+                failed = result.failed_services or []
+                logger.warning(
+                    f"Deployment {deployment.id} partially succeeded - "
+                    f"failed services: {failed}"
+                )
+                await update_progress(
+                    session, deployment, 100,
+                    f'Stack deployment completed (some services failed: {", ".join(failed)})'
+                )
+            else:
+                await update_progress(
+                    session, deployment, 100, 'Stack deployment completed'
+                )
+
+            deployment.committed = True
+            session.commit()
+
+            service_count = len(result.services) if result.services else 0
+            logger.info(
+                f"Stack deployment {deployment.id} completed via Go service - "
+                f"{service_count} services created"
+            )
+
+        else:
+            # Deployment failed
+            error_msg = result.error or "Deployment failed"
+            logger.error(f"Go compose service deployment failed: {error_msg}")
+            raise RuntimeError(f"Stack deployment failed: {error_msg}")
+
+    except ComposeServiceUnavailable:
+        # Go service became unavailable - reset check and try Python fallback
+        logger.warning(
+            f"Go compose service became unavailable during deployment {deployment.id}, "
+            "falling back to Python"
+        )
+        reset_compose_service_check()
+        raise RuntimeError(
+            "Go compose service unavailable - please retry deployment"
+        )
+
+    except ComposeServiceError as e:
+        logger.error(f"Compose service error: {e.message}")
+        raise RuntimeError(f"Stack deployment failed: {e.message}")
+
+
+def _get_host_connection_info(host_id: str) -> Dict[str, Any]:
+    """
+    Get Docker host connection info for compose service.
+
+    Returns:
+        Dict with docker_host, tls certs (for mTLS), and registry credentials
+    """
+    from security.encryption import EncryptionManager
+
+    db = DatabaseManager()
+    encryption = EncryptionManager()
+
+    with db.get_session() as session:
+        host = session.query(DockerHostDB).filter_by(id=host_id).first()
+        if not host:
+            raise ValueError(f"Host {host_id} not found")
+
+        result: Dict[str, Any] = {}
+
+        # For remote hosts, include Docker URL and TLS certs
+        if host.connection_type == 'remote':
+            result['docker_host'] = host.docker_url
+
+            # Decrypt TLS certificates if present
+            if host.tls_ca_cert:
+                result['tls_ca_cert'] = encryption.decrypt(host.tls_ca_cert)
+            if host.tls_cert:
+                result['tls_cert'] = encryption.decrypt(host.tls_cert)
+            if host.tls_key:
+                result['tls_key'] = encryption.decrypt(host.tls_key)
+
+        # Get registry credentials for this host
+        # TODO: Implement registry credentials lookup
+        result['registry_credentials'] = None
+
+        return result
+
+
+async def _execute_via_python_fallback(
+    session: Session,
+    deployment: Deployment,
+    compose_yaml: str,
+    variables: Dict[str, str],
+    docker_monitor,
+    state_machine,
+    update_progress: Callable,
+    create_deployment_metadata: Callable,
+) -> None:
+    """
+    Execute stack deployment using Python implementation (fallback).
+
+    This is the original implementation used when Go service is unavailable.
+    """
+    logger.info(f"Executing deployment {deployment.id} via Python fallback")
+
+    # Parse compose file for Python implementation
     parser = ComposeParser()
     validator = ComposeValidator()
     orchestrator = StackOrchestrator()
 
     try:
-        # Step 1: Validate YAML safety
-        await update_progress(session, deployment, 5, 'Validating compose file')
-        validator.validate_yaml_safety(compose_yaml)
+        # Parse with variable substitution already applied
+        compose_data = parser.parse(compose_yaml)
 
-        # Step 2: Parse compose file with variable substitution
-        await update_progress(session, deployment, 10, 'Parsing compose file')
-        compose_data = parser.parse(compose_yaml, variables=variables)
-
-        # Step 3: Validate compose structure and dependencies
+        # Validate compose structure and dependencies
         await update_progress(session, deployment, 15, 'Validating dependencies')
         validator.validate_required_fields(compose_data)
         validator.validate_service_configuration(compose_data)
@@ -86,10 +345,10 @@ async def execute_stack_deployment(
     connector = get_host_connector(deployment.host_id, docker_monitor)
 
     # Track created resources for rollback
-    created_networks = []
-    created_volumes = []
-    created_services = []
-    container_ids = {}  # service_name -> container_short_id
+    created_networks: List[str] = []
+    created_volumes: List[str] = []
+    created_services: List[str] = []
+    container_ids: Dict[str, str] = {}
 
     try:
         # Step 4: Create networks
@@ -111,7 +370,6 @@ async def execute_stack_deployment(
         )
 
         # Step 7: Deployment complete
-        # Transition through required states
         state_machine.transition(deployment, 'pulling_image')
         state_machine.transition(deployment, 'creating')
         state_machine.transition(deployment, 'starting')
@@ -120,13 +378,12 @@ async def execute_stack_deployment(
         session.commit()
 
         logger.info(
-            f"Stack deployment {deployment.id} completed successfully - "
+            f"Stack deployment {deployment.id} completed via Python fallback - "
             f"{len(created_services)} services created"
         )
 
     except Exception as e:
         logger.error(f"Stack deployment {deployment.id} failed: {e}")
-        # Note: Rollback handled by execute_deployment's exception handler
         raise
 
 

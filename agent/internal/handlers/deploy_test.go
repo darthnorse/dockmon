@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/darthnorse/dockmon-shared/compose"
 	"github.com/docker/compose/v2/pkg/api"
 )
 
@@ -34,7 +35,7 @@ func TestDeployComposeResult(t *testing.T) {
 	successResult := DeployComposeResult{
 		DeploymentID: "test-123",
 		Success:      true,
-		Services: map[string]ServiceResult{
+		Services: map[string]compose.ServiceResult{
 			"web": {
 				ContainerID:   "abc123def456",
 				ContainerName: "test_web_1",
@@ -70,7 +71,7 @@ func TestDeployComposeResult(t *testing.T) {
 }
 
 func TestServiceResult(t *testing.T) {
-	result := ServiceResult{
+	result := compose.ServiceResult{
 		ContainerID:   "123456789012", // 12 chars
 		ContainerName: "test_container",
 		Image:         "nginx:alpine",
@@ -86,11 +87,11 @@ func TestServiceResult(t *testing.T) {
 func TestDeployStageConstants(t *testing.T) {
 	// Verify stage constants are defined
 	stages := []string{
-		DeployStageStarting,
-		DeployStageExecuting,
-		DeployStageWaitingHealth,
-		DeployStageCompleted,
-		DeployStageFailed,
+		compose.DeployStageStarting,
+		compose.DeployStageExecuting,
+		compose.DeployStageWaitingHealth,
+		compose.DeployStageCompleted,
+		compose.DeployStageFailed,
 	}
 
 	for _, stage := range stages {
@@ -134,9 +135,9 @@ func TestIsServiceHealthy(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := isServiceHealthy(tt.status)
+			result := compose.IsServiceHealthy(tt.status)
 			if result != tt.expected {
-				t.Errorf("isServiceHealthy(%q) = %v, expected %v", tt.status, result, tt.expected)
+				t.Errorf("IsServiceHealthy(%q) = %v, expected %v", tt.status, result, tt.expected)
 			}
 		})
 	}
@@ -148,7 +149,7 @@ func TestDeployComposeResultPartialSuccess(t *testing.T) {
 		DeploymentID:   "test-123",
 		Success:        false,
 		PartialSuccess: true,
-		Services: map[string]ServiceResult{
+		Services: map[string]compose.ServiceResult{
 			"web": {
 				ContainerID:   "abc123def456",
 				ContainerName: "test_web_1",
@@ -194,7 +195,7 @@ func TestDeployComposeResultFullFailure(t *testing.T) {
 		DeploymentID:   "test-456",
 		Success:        false,
 		PartialSuccess: false,
-		Services: map[string]ServiceResult{
+		Services: map[string]compose.ServiceResult{
 			"web": {
 				ContainerID:   "abc123def456",
 				ContainerName: "test_web_1",
@@ -267,17 +268,17 @@ func TestDeployComposeRequestHealthAware(t *testing.T) {
 
 func TestDeployStageWaitingHealth(t *testing.T) {
 	// Verify the new waiting_for_health stage constant exists
-	if DeployStageWaitingHealth != "waiting_for_health" {
-		t.Errorf("DeployStageWaitingHealth = %q, expected 'waiting_for_health'", DeployStageWaitingHealth)
+	if compose.DeployStageWaitingHealth != "waiting_for_health" {
+		t.Errorf("DeployStageWaitingHealth = %q, expected 'waiting_for_health'", compose.DeployStageWaitingHealth)
 	}
 
 	// Verify it's unique among stages
 	stages := []string{
-		DeployStageStarting,
-		DeployStageExecuting,
-		DeployStageWaitingHealth,
-		DeployStageCompleted,
-		DeployStageFailed,
+		compose.DeployStageStarting,
+		compose.DeployStageExecuting,
+		compose.DeployStageWaitingHealth,
+		compose.DeployStageCompleted,
+		compose.DeployStageFailed,
 	}
 
 	stageSet := make(map[string]bool)
@@ -290,8 +291,6 @@ func TestDeployStageWaitingHealth(t *testing.T) {
 }
 
 func TestIsContainerHealthy(t *testing.T) {
-	h := &DeployHandler{}
-
 	tests := []struct {
 		name     string
 		c        api.ContainerSummary
@@ -326,9 +325,9 @@ func TestIsContainerHealthy(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := h.isContainerHealthy(tt.c)
+			result := compose.IsContainerHealthy(tt.c)
 			if result != tt.expected {
-				t.Errorf("isContainerHealthy() = %v, expected %v", result, tt.expected)
+				t.Errorf("IsContainerHealthy() = %v, expected %v", result, tt.expected)
 			}
 		})
 	}
@@ -336,7 +335,7 @@ func TestIsContainerHealthy(t *testing.T) {
 
 func TestServiceStatus(t *testing.T) {
 	// Test ServiceStatus struct
-	status := ServiceStatus{
+	status := compose.ServiceStatus{
 		Name:    "web",
 		Status:  "running",
 		Image:   "nginx:alpine",
@@ -379,7 +378,7 @@ func TestDeployComposeRequestWithRegistryCredentials(t *testing.T) {
 		ProjectName:    "test-project",
 		ComposeContent: "services:\n  web:\n    image: ghcr.io/myorg/myapp:latest",
 		Action:         "up",
-		RegistryCredentials: []RegistryCredential{
+		RegistryCredentials: []compose.RegistryCredential{
 			{
 				RegistryURL: "ghcr.io",
 				Username:    "myuser",
@@ -411,7 +410,7 @@ func TestDeployComposeRequestMultipleRegistryCredentials(t *testing.T) {
 		ProjectName:    "test-project",
 		ComposeContent: "services:\n  web:\n    image: ghcr.io/myorg/myapp:latest",
 		Action:         "up",
-		RegistryCredentials: []RegistryCredential{
+		RegistryCredentials: []compose.RegistryCredential{
 			{
 				RegistryURL: "ghcr.io",
 				Username:    "ghcruser",
@@ -470,7 +469,7 @@ func TestRegistryCredentialStruct(t *testing.T) {
 		"password": "testpass"
 	}`
 
-	var cred RegistryCredential
+	var cred compose.RegistryCredential
 	if err := json.Unmarshal([]byte(jsonData), &cred); err != nil {
 		t.Fatalf("failed to unmarshal JSON: %v", err)
 	}
@@ -489,7 +488,7 @@ func TestRegistryCredentialStruct(t *testing.T) {
 func TestDockerHubRegistryURLNormalization(t *testing.T) {
 	// Test that docker.io is handled properly
 	// When docker.io credentials are provided, they should map to the Docker Hub index URL
-	cred := RegistryCredential{
+	cred := compose.RegistryCredential{
 		RegistryURL: "docker.io",
 		Username:    "dockeruser",
 		Password:    "dockerpass",
@@ -503,7 +502,7 @@ func TestDockerHubRegistryURLNormalization(t *testing.T) {
 
 func TestEmptyRegistryURLCredential(t *testing.T) {
 	// Test credential with empty registry URL (should map to Docker Hub)
-	cred := RegistryCredential{
+	cred := compose.RegistryCredential{
 		RegistryURL: "",
 		Username:    "user",
 		Password:    "pass",

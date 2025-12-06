@@ -58,9 +58,27 @@ class ComposeParser:
 
         return data
 
-    def _substitute_variables(self, yaml_content: str, variables: dict) -> str:
+    def substitute_variables(self, yaml_content: str, variables: dict) -> str:
         """
         Substitute ${VAR} and ${VAR:-default} syntax with values.
+
+        Public method for use when passing YAML to external services (e.g., Go compose service).
+
+        Args:
+            yaml_content: YAML string with variables
+            variables: Dict of variable values
+
+        Returns:
+            YAML string with variables substituted
+
+        Raises:
+            ComposeParseError: If required variable is missing
+        """
+        return self._substitute_variables(yaml_content, variables)
+
+    def _substitute_variables(self, yaml_content: str, variables: dict) -> str:
+        """
+        Internal variable substitution implementation.
 
         Args:
             yaml_content: YAML string with variables

@@ -11,7 +11,7 @@
  * - Deployment mode indicator (container vs systemd)
  */
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowUpCircle,
@@ -55,6 +55,13 @@ export function HostAgentTab({ hostId }: HostAgentTabProps) {
     queryFn: () => apiClient.get<AgentInfo>(`/hosts/${hostId}/agent`),
     refetchInterval: 10000, // Poll every 10s
   })
+
+  // Reset updateTriggered when agent reconnects with new version (update_available becomes false)
+  useEffect(() => {
+    if (updateTriggered && agent && !agent.update_available) {
+      setUpdateTriggered(false)
+    }
+  }, [agent?.update_available, updateTriggered])
 
   // Trigger agent update
   const triggerUpdate = useMutation({

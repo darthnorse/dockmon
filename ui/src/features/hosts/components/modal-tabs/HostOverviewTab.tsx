@@ -8,7 +8,7 @@
  * - Agent info and updates for agent-based hosts
  */
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Cpu, MemoryStick, Network, Calendar, AlertCircle, ArrowUpCircle, RefreshCw } from 'lucide-react'
 import { useHostMetrics, useHostSparklines } from '@/lib/stats/StatsProvider'
@@ -54,6 +54,13 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
     enabled: host.connection_type === 'agent',
     refetchInterval: 10000,
   })
+
+  // Reset updateTriggered when agent reconnects with new version (update_available becomes false)
+  useEffect(() => {
+    if (updateTriggered && agent && !agent.update_available) {
+      setUpdateTriggered(false)
+    }
+  }, [agent?.update_available, updateTriggered])
 
   // Trigger agent update mutation
   const triggerUpdate = useMutation({

@@ -10,6 +10,7 @@
 # Optional environment variables:
 #   DOCKMON_URL          - Required. URL of your DockMon server
 #   REGISTRATION_TOKEN   - Required. One-time registration token from DockMon
+#   AGENT_VERSION        - Optional. Agent version to install (default: latest agent-v* release)
 #   TZ                   - Optional. Timezone (default: UTC)
 #   INSECURE_SKIP_VERIFY - Optional. Skip TLS verification (default: false)
 #   DATA_PATH            - Optional. Data directory (default: /var/lib/dockmon-agent)
@@ -75,9 +76,27 @@ if systemctl is-active --quiet dockmon-agent 2>/dev/null; then
     systemctl stop dockmon-agent
 fi
 
+# Determine agent version to install
+if [ -z "$AGENT_VERSION" ]; then
+    log_info "Finding latest agent release..."
+    # Query GitHub API for latest agent-v* release
+    LATEST_TAG=$(curl -fsSL "https://api.github.com/repos/darthnorse/dockmon/releases" | \
+        grep -o '"tag_name": "agent-v[^"]*"' | head -1 | cut -d'"' -f4)
+
+    if [ -n "$LATEST_TAG" ]; then
+        AGENT_VERSION="${LATEST_TAG#agent-v}"
+        log_info "Latest agent version: $AGENT_VERSION"
+    else
+        log_warn "No agent release found, will try Docker image fallback"
+        AGENT_VERSION="latest"
+    fi
+else
+    log_info "Using specified agent version: $AGENT_VERSION"
+fi
+
 # Download binary
-log_info "Downloading DockMon agent..."
-DOWNLOAD_URL="https://github.com/darthnorse/dockmon/releases/latest/download/dockmon-agent-linux-${ARCH}"
+log_info "Downloading DockMon agent v${AGENT_VERSION}..."
+DOWNLOAD_URL="https://github.com/darthnorse/dockmon/releases/download/agent-v${AGENT_VERSION}/dockmon-agent-linux-${ARCH}"
 
 if ! curl -fsSL -o "$INSTALL_PATH" "$DOWNLOAD_URL"; then
     log_warn "Release download failed, trying to extract from Docker image..."
@@ -87,9 +106,15 @@ if ! curl -fsSL -o "$INSTALL_PATH" "$DOWNLOAD_URL"; then
         exit 1
     fi
 
-    # TODO: Change back to :latest before merging to main
-    docker pull ghcr.io/darthnorse/dockmon-agent:feature-v2.2.0-agent
-    docker create --name temp-dockmon-agent ghcr.io/darthnorse/dockmon-agent:feature-v2.2.0-agent
+    # Use version tag or latest
+    DOCKER_TAG="${AGENT_VERSION}"
+    if [ "$DOCKER_TAG" = "latest" ]; then
+        DOCKER_TAG="latest"
+    fi
+
+    log_info "Pulling Docker image ghcr.io/darthnorse/dockmon-agent:${DOCKER_TAG}..."
+    docker pull "ghcr.io/darthnorse/dockmon-agent:${DOCKER_TAG}"
+    docker create --name temp-dockmon-agent "ghcr.io/darthnorse/dockmon-agent:${DOCKER_TAG}"
     docker cp temp-dockmon-agent:/app/dockmon-agent "$INSTALL_PATH"
     docker rm temp-dockmon-agent
 fi

@@ -157,10 +157,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=ref,event=branch,suffix=-${{ steps.platform.outputs.suffix }}
-            type=ref,event=pr,suffix=-${{ steps.platform.outputs.suffix }}
-            type=match,pattern=agent-v(.*),group=1,suffix=-${{ steps.platform.outputs.suffix }}
-            type=sha,prefix={{branch}}-,suffix=-${{ steps.platform.outputs.suffix }}
+            type=raw,value=${{ steps.version.outputs.version }},suffix=-${{ steps.platform.outputs.suffix }}
 
       - name: Build and push Docker image
         id: build

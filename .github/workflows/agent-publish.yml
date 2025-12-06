@@ -159,7 +159,7 @@ jobs:
           tags: |
             type=ref,event=branch,suffix=-${{ steps.platform.outputs.suffix }}
             type=ref,event=pr,suffix=-${{ steps.platform.outputs.suffix }}
-            type=semver,pattern={{version}},suffix=-${{ steps.platform.outputs.suffix }}
+            type=match,pattern=agent-v(.*),group=1,suffix=-${{ steps.platform.outputs.suffix }}
             type=sha,prefix={{branch}}-,suffix=-${{ steps.platform.outputs.suffix }}
 
       - name: Build and push Docker image

@@ -2,8 +2,8 @@
 Update Executor Service (Router)
 
 Routes container updates to the appropriate executor based on host connection type:
-- Docker SDK executor for local and mTLS remote hosts
-- Agent executor for agent-based remote hosts
+- Go update service for local and mTLS remote hosts (via compose-service)
+- Agent executor for agent-based remote hosts (via WebSocket)
 
 This module handles:
 1. Routing decisions based on host connection type
@@ -17,8 +17,7 @@ import asyncio
 import logging
 import time
 import threading
-from datetime import datetime, timezone
-from typing import Dict, Optional, Any
+from typing import Dict, Optional
 import docker
 from database import (
     DatabaseManager,
@@ -27,12 +26,10 @@ from database import (
     DockerHostDB,
 )
 from utils.async_docker import async_docker_call
-from utils.image_pull_progress import ImagePullProgress
 from utils.keys import make_composite_key
 from utils.cache import CACHE_REGISTRY
 from updates.container_validator import ContainerValidator, ValidationResult
 from updates.types import UpdateContext, UpdateResult
-from updates.docker_executor import DockerUpdateExecutor
 from updates.agent_executor import AgentUpdateExecutor
 from updates.database_updater import update_container_records_after_update
 from updates.event_emitter import UpdateEventEmitter
@@ -41,7 +38,6 @@ from updates.update_client import (
     UpdateServiceUnavailable,
     UpdateServiceError,
     RegistryAuth as UpdateRegistryAuth,
-    is_update_service_available,
 )
 from agent.command_executor import CommandStatus
 
@@ -56,7 +52,7 @@ class UpdateExecutor:
     Service that routes container updates to appropriate executors.
 
     Routes to:
-    - DockerUpdateExecutor: Local hosts, mTLS remote hosts (direct Docker access)
+    - Go update service: Local hosts, mTLS remote hosts (via compose-service)
     - AgentUpdateExecutor: Agent-based remote hosts (WebSocket communication)
 
     Handles common concerns:
@@ -76,18 +72,6 @@ class UpdateExecutor:
         self._active_pulls: Dict[str, Dict] = {}
         self._active_pulls_lock = threading.Lock()
 
-        # Lazy-initialized image pull tracker (avoids asyncio.get_event_loop() deprecation)
-        self._image_pull_tracker = None
-
-        # Initialize docker executor immediately (without tracker - will inject when needed)
-        # NOTE: DockerUpdateExecutor is kept for backward compatibility and as fallback
-        # when Go update service is unavailable
-        self.docker_executor = DockerUpdateExecutor(
-            db=db,
-            monitor=monitor,
-            image_pull_tracker=None  # Will be set lazily in async context
-        )
-
         # Initialize Go update service client
         self.update_client = UpdateClient()
 
@@ -96,19 +80,6 @@ class UpdateExecutor:
 
         # Initialize event emitter
         self.event_emitter = UpdateEventEmitter(monitor)
-
-    def _get_image_pull_tracker(self) -> ImagePullProgress:
-        """Get image pull tracker, initializing lazily in async context."""
-        if self._image_pull_tracker is None:
-            loop = asyncio.get_running_loop()
-            self._image_pull_tracker = ImagePullProgress(
-                loop,
-                self.monitor.manager if self.monitor and hasattr(self.monitor, 'manager') else None,
-                progress_callback=self._store_pull_progress
-            )
-            # Inject into docker_executor for use during image pulls
-            self.docker_executor.image_pull_tracker = self._image_pull_tracker
-        return self._image_pull_tracker
 
     @property
     def agent_executor(self) -> Optional[AgentUpdateExecutor]:
@@ -126,45 +97,6 @@ class UpdateExecutor:
                 get_registry_credentials=self._get_registry_credentials,
             )
         return self._agent_executor
-
-    # Delegation methods for backward compatibility with tests
-    # These forward to DockerUpdateExecutor which now owns these methods
-
-    def _extract_user_labels(self, old_container_labels, old_image_labels):
-        """Delegate to DockerUpdateExecutor for backward compatibility."""
-        return self.docker_executor._extract_user_labels(old_container_labels, old_image_labels)
-
-    def _extract_network_config(self, attrs):
-        """Delegate to DockerUpdateExecutor for backward compatibility."""
-        return self.docker_executor._extract_network_config(attrs)
-
-    async def _extract_container_config_v2(self, container, client, **kwargs):
-        """Delegate to DockerUpdateExecutor for backward compatibility."""
-        return await self.docker_executor._extract_container_config_v2(container, client, **kwargs)
-
-    async def _create_container_v2(self, client, image, extracted_config, **kwargs):
-        """Delegate to DockerUpdateExecutor for backward compatibility."""
-        return await self.docker_executor._create_container_v2(client, image, extracted_config, **kwargs)
-
-    async def _rename_container_to_backup(self, client, container, original_name):
-        """Delegate to DockerUpdateExecutor for backward compatibility."""
-        return await self.docker_executor._rename_container_to_backup(client, container, original_name)
-
-    async def _rollback_container(self, client, backup_container, backup_name, original_name, new_container=None):
-        """Delegate to DockerUpdateExecutor for backward compatibility."""
-        return await self.docker_executor._rollback_container(client, backup_container, backup_name, original_name, new_container)
-
-    async def _cleanup_backup_container(self, client, backup_container, backup_name):
-        """Delegate to DockerUpdateExecutor for backward compatibility."""
-        return await self.docker_executor._cleanup_backup_container(client, backup_container, backup_name)
-
-    async def _get_dependent_containers(self, client, container, container_name, container_id):
-        """Delegate to DockerUpdateExecutor for backward compatibility."""
-        return await self.docker_executor._get_dependent_containers(client, container, container_name, container_id)
-
-    async def _recreate_dependent_container(self, client, dep_info, new_parent_container_id, is_podman=False):
-        """Delegate to DockerUpdateExecutor for backward compatibility."""
-        return await self.docker_executor._recreate_dependent_container(client, dep_info, new_parent_container_id, is_podman)
 
     # Agent-related delegation methods for backward compatibility with tests
 
@@ -462,7 +394,7 @@ class UpdateExecutor:
         force: bool,
         force_warn: bool
     ) -> UpdateResult:
-        """Execute update via Go update service or fallback to Docker SDK executor."""
+        """Execute update via Go update service (compose-service)."""
         # Get Docker client for validation
         docker_client = await self._get_docker_client(context.host_id)
         if not docker_client:
@@ -503,12 +435,8 @@ class UpdateExecutor:
             context.container_name, context.new_image
         )
 
-        # Try Go update service first, fallback to Docker SDK executor
-        if is_update_service_available():
-            return await self._execute_go_update(context, progress_callback, update_record)
-        else:
-            logger.info("Go update service unavailable, falling back to Docker SDK executor")
-            return await self._execute_docker_sdk_update(context, progress_callback, update_record, docker_client)
+        # Execute via Go update service
+        return await self._execute_go_update(context, progress_callback, update_record)
 
     async def _execute_go_update(
         self,
@@ -577,6 +505,11 @@ class UpdateExecutor:
             )
 
             if result.success:
+                # Invalidate caches to avoid stale data after update
+                for name, fn in CACHE_REGISTRY.items():
+                    fn.invalidate()
+                    logger.debug(f"Invalidated cache: {name}")
+
                 return UpdateResult(
                     success=True,
                     new_container_id=result.new_container_id,
@@ -602,29 +535,6 @@ class UpdateExecutor:
         except Exception as e:
             logger.error(f"Unexpected error during Go update: {e}", exc_info=True)
             return UpdateResult.failure_result(f"Update failed: {e}")
-
-    async def _execute_docker_sdk_update(
-        self,
-        context: UpdateContext,
-        progress_callback,
-        update_record: ContainerUpdate,
-        docker_client,
-    ) -> UpdateResult:
-        """Fallback: Execute update via Docker SDK executor."""
-        # Get Podman flag
-        is_podman = False
-        if self.monitor and hasattr(self.monitor, 'hosts') and context.host_id in self.monitor.hosts:
-            is_podman = getattr(self.monitor.hosts[context.host_id], 'is_podman', False)
-
-        # Execute via Docker executor
-        return await self.docker_executor.execute(
-            context=context,
-            docker_client=docker_client,
-            progress_callback=progress_callback,
-            update_record=update_record,
-            is_podman=is_podman,
-            get_registry_credentials=self._get_registry_credentials,
-        )
 
     async def _broadcast_pull_progress(
         self,

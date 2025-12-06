@@ -5,8 +5,15 @@ on:
     types: [published]
 
 jobs:
-  docker:
-    runs-on: ubuntu-latest
+  build:
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
@@ -31,20 +38,12 @@ jobs:
           username: ${{ secrets.GHCR_USERNAME }}
           password: ${{ secrets.GHCR_TOKEN }}
 
-      - name: Lowercase repository owner
-        id: lowercase
-        run: echo "owner=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
-
-      - name: Check if prerelease
-        id: prerelease
+      - name: Extract platform suffix
+        id: platform
         run: |
-          TAG="${{ github.ref_name }}"
-          # Check if tag contains alpha, beta, rc, or dev (case insensitive)
-          if [[ "$TAG" =~ (alpha|beta|rc|dev) ]]; then
-            echo "is_prerelease=true" >> $GITHUB_OUTPUT
-          else
-            echo "is_prerelease=false" >> $GITHUB_OUTPUT
-          fi
+          PLATFORM="${{ matrix.platform }}"
+          SUFFIX="${PLATFORM#linux/}"
+          echo "suffix=$SUFFIX" >> $GITHUB_OUTPUT
 
       - name: Extract metadata (tags, labels)
         id: meta
@@ -54,8 +53,7 @@ jobs:
             ${{ secrets.DOCKERHUB_USERNAME }}/dockmon
             ghcr.io/${{ secrets.GHCR_USERNAME }}/dockmon
           tags: |
-            type=ref,event=tag
-            type=raw,value=latest,enable=${{ steps.prerelease.outputs.is_prerelease == 'false' }}
+            type=semver,pattern={{version}},suffix=-${{ steps.platform.outputs.suffix }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
@@ -65,9 +63,89 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          platforms: linux/amd64,linux/arm64
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          platforms: ${{ matrix.platform }}
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+
+  manifest:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ secrets.GHCR_USERNAME }}
+          password: ${{ secrets.GHCR_TOKEN }}
+
+      - name: Create and push multi-arch manifest
+        run: |
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"  # Remove 'v' prefix
+          MAJOR=$(echo $VERSION | cut -d. -f1)
+          MINOR=$(echo $VERSION | cut -d. -f1-2)
+
+          # Check if prerelease
+          IS_PRERELEASE="${{ github.event.release.prerelease }}"
+
+          # Docker Hub manifests
+          DH_REPO="${{ secrets.DOCKERHUB_USERNAME }}/dockmon"
+
+          # Create version manifest
+          docker buildx imagetools create -t $DH_REPO:$VERSION \
+            $DH_REPO:$VERSION-amd64 \
+            $DH_REPO:$VERSION-arm64
+
+          # Create major.minor manifest
+          docker buildx imagetools create -t $DH_REPO:$MINOR \
+            $DH_REPO:$VERSION-amd64 \
+            $DH_REPO:$VERSION-arm64
+
+          # Create major manifest
+          docker buildx imagetools create -t $DH_REPO:$MAJOR \
+            $DH_REPO:$VERSION-amd64 \
+            $DH_REPO:$VERSION-arm64
+
+          # Create latest manifest (only for non-prerelease)
+          if [ "$IS_PRERELEASE" != "true" ]; then
+            docker buildx imagetools create -t $DH_REPO:latest \
+              $DH_REPO:$VERSION-amd64 \
+              $DH_REPO:$VERSION-arm64
+          fi
+
+          # GHCR manifests
+          GHCR_REPO="ghcr.io/${{ secrets.GHCR_USERNAME }}/dockmon"
+
+          docker buildx imagetools create -t $GHCR_REPO:$VERSION \
+            $GHCR_REPO:$VERSION-amd64 \
+            $GHCR_REPO:$VERSION-arm64
+
+          docker buildx imagetools create -t $GHCR_REPO:$MINOR \
+            $GHCR_REPO:$VERSION-amd64 \
+            $GHCR_REPO:$VERSION-arm64
+
+          docker buildx imagetools create -t $GHCR_REPO:$MAJOR \
+            $GHCR_REPO:$VERSION-amd64 \
+            $GHCR_REPO:$VERSION-arm64
+
+          if [ "$IS_PRERELEASE" != "true" ]; then
+            docker buildx imagetools create -t $GHCR_REPO:latest \
+              $GHCR_REPO:$VERSION-amd64 \
+              $GHCR_REPO:$VERSION-arm64
+          fi
+
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Update Docker Hub description
         uses: peter-evans/dockerhub-description@v4

@@ -368,6 +368,15 @@ func (h *SelfUpdateHandler) applyNativeUpdate(lockFilePath string) error {
 
 	h.log.WithField("version", lockFile.Version).Info("Native self-update applied successfully")
 
+	// Exec into the new binary to run the updated version
+	// This replaces the current process with the new binary
+	h.log.Info("Restarting with new binary...")
+	if err := syscall.Exec(lockFile.OldBinaryPath, os.Args, os.Environ()); err != nil {
+		h.log.WithError(err).Error("Failed to exec into new binary, will continue with old version")
+		return fmt.Errorf("failed to exec new binary: %w", err)
+	}
+
+	// This line is never reached - exec replaces the process
 	return nil
 }
 

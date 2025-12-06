@@ -259,12 +259,20 @@ func (h *SelfUpdateHandler) performNativeSelfUpdate(ctx context.Context, req Sel
 		return fmt.Errorf("failed to make binary executable: %w", err)
 	}
 
-	// Step 4: Write update lock file
+	// Step 4: Detect current binary path and write update lock file
 	h.sendProgress("prepare", "Preparing update coordination")
+
+	// Detect current binary path dynamically (works for both container and systemd)
+	currentBinaryPath, err := os.Executable()
+	if err != nil {
+		h.sendProgressError("prepare", err)
+		return fmt.Errorf("failed to detect current binary path: %w", err)
+	}
+
 	lockFile := UpdateLockFile{
 		Version:       req.Version,
 		NewBinaryPath: newBinaryPath,
-		OldBinaryPath: "/app/agent", // Current binary path
+		OldBinaryPath: currentBinaryPath,
 		Timestamp:     time.Now(),
 	}
 

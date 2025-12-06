@@ -20,6 +20,7 @@ env:
 
 jobs:
   # Build standalone binaries for systemd/bare-metal deployment
+  # Go has native cross-compilation - no QEMU needed
   build-binaries:
     runs-on: ubuntu-latest
     permissions:
@@ -93,14 +94,19 @@ jobs:
             agent/dist/dockmon-agent-linux-arm64
             agent/dist/checksums.txt
 
-  # Build and push Docker images
+  # Build Docker images using native runners (no QEMU)
   build-docker:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
-      id-token: write
-      attestations: write
 
     steps:
       - name: Checkout repository
@@ -117,24 +123,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=sha,prefix={{branch}}-
-
       - name: Get version
         id: version
         run: |
           if [[ $GITHUB_REF == refs/tags/agent-v* ]]; then
-            # Extract version from agent-v* tag (e.g., agent-v1.0.0 -> 1.0.0)
             VERSION=${GITHUB_REF#refs/tags/agent-v}
           elif [[ $GITHUB_REF == refs/tags/* ]]; then
             VERSION=${GITHUB_REF#refs/tags/v}
@@ -143,7 +135,6 @@ jobs:
           elif [[ $GITHUB_REF == refs/heads/dev ]]; then
             VERSION="dev"
           elif [[ $GITHUB_REF == refs/heads/feature/* ]] || [[ $GITHUB_REF == refs/heads/feat/* ]]; then
-            # Feature branches get dev-<short-sha>
             VERSION="dev-${GITHUB_SHA:0:7}"
           elif [[ $GITHUB_EVENT_NAME == "pull_request" ]]; then
             VERSION="pr-${{ github.event.number }}"
@@ -153,27 +144,115 @@ jobs:
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "commit=${GITHUB_SHA:0:7}" >> $GITHUB_OUTPUT
 
+      - name: Extract platform suffix
+        id: platform
+        run: |
+          PLATFORM="${{ matrix.platform }}"
+          SUFFIX="${PLATFORM#linux/}"
+          echo "suffix=$SUFFIX" >> $GITHUB_OUTPUT
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch,suffix=-${{ steps.platform.outputs.suffix }}
+            type=ref,event=pr,suffix=-${{ steps.platform.outputs.suffix }}
+            type=semver,pattern={{version}},suffix=-${{ steps.platform.outputs.suffix }}
+            type=sha,prefix={{branch}}-,suffix=-${{ steps.platform.outputs.suffix }}
+
       - name: Build and push Docker image
         id: build
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./agent/Dockerfile.multiarch
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platform }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             VERSION=${{ steps.version.outputs.version }}
             COMMIT=${{ steps.version.outputs.commit }}
-          # Caching disabled - monitoring tool needs guaranteed fresh builds
-          # cache-from: type=gha
-          # cache-to: type=gha,mode=max
 
-      - name: Generate artifact attestation
-        if: github.event_name != 'pull_request'
-        uses: actions/attest-build-provenance@v1
+  # Create multi-arch manifests
+  manifest:
+    needs: build-docker
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Log into registry ${{ env.REGISTRY }}
+        uses: docker/login-action@v3
         with:
-          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          subject-digest: ${{ steps.build.outputs.digest }}
-          push-to-registry: true
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get version info
+        id: version
+        run: |
+          if [[ $GITHUB_REF == refs/tags/agent-v* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/agent-v}
+            IS_RELEASE="true"
+          elif [[ $GITHUB_REF == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/v}
+            IS_RELEASE="true"
+          elif [[ $GITHUB_REF == refs/heads/main ]]; then
+            VERSION="main"
+            IS_RELEASE="false"
+          elif [[ $GITHUB_REF == refs/heads/dev ]]; then
+            VERSION="dev"
+            IS_RELEASE="false"
+          elif [[ $GITHUB_REF == refs/heads/feature/* ]] || [[ $GITHUB_REF == refs/heads/feat/* ]]; then
+            # Extract branch name for feature branches
+            BRANCH=${GITHUB_REF#refs/heads/}
+            # Replace / with - for valid tag
+            VERSION="${BRANCH//\//-}"
+            IS_RELEASE="false"
+          else
+            VERSION="dev"
+            IS_RELEASE="false"
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "is_release=${IS_RELEASE}" >> $GITHUB_OUTPUT
+
+      - name: Create and push multi-arch manifest
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          IS_RELEASE="${{ steps.version.outputs.is_release }}"
+          REPO="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+
+          echo "Creating manifest for ${REPO}:${VERSION}"
+
+          # Create main version manifest
+          docker buildx imagetools create -t ${REPO}:${VERSION} \
+            ${REPO}:${VERSION}-amd64 \
+            ${REPO}:${VERSION}-arm64
+
+          # For releases, also create semver tags
+          if [ "$IS_RELEASE" == "true" ]; then
+            MAJOR=$(echo $VERSION | cut -d. -f1)
+            MINOR=$(echo $VERSION | cut -d. -f1-2)
+
+            # Create major.minor manifest
+            docker buildx imagetools create -t ${REPO}:${MINOR} \
+              ${REPO}:${VERSION}-amd64 \
+              ${REPO}:${VERSION}-arm64
+
+            # Create major manifest (only if >= 1.0.0)
+            if [ "$MAJOR" != "0" ]; then
+              docker buildx imagetools create -t ${REPO}:${MAJOR} \
+                ${REPO}:${VERSION}-amd64 \
+                ${REPO}:${VERSION}-arm64
+            fi
+
+            # Create latest manifest
+            docker buildx imagetools create -t ${REPO}:latest \
+              ${REPO}:${VERSION}-amd64 \
+              ${REPO}:${VERSION}-arm64
+          fi

@@ -1910,8 +1910,12 @@ class DockerMonitor:
             db_hosts = self.db.get_hosts(active_only=True)
 
             # Detect and warn about duplicate hosts (same URL)
+            # Skip agent:// URLs since all agent hosts use this placeholder
             seen_urls = {}
             for host in db_hosts:
+                # Agent hosts all use agent:// placeholder - not a real duplicate
+                if host.url == 'agent://':
+                    continue
                 if host.url in seen_urls:
                     logger.warning(
                         f"Duplicate host detected: '{host.name}' ({host.id}) and "
@@ -2014,6 +2018,24 @@ class DockerMonitor:
                 try:
                     # Load tags from normalized schema
                     tags = self.db.get_tags_for_subject('host', db_host.id)
+
+                    # Agent hosts connect via WebSocket, not Docker socket/TCP
+                    # Add them in offline mode - they'll connect when agent calls back
+                    if db_host.connection_type == 'agent' or db_host.url == 'agent://':
+                        host = DockerHost(
+                            id=db_host.id,
+                            name=db_host.name,
+                            url=db_host.url,
+                            connection_type='agent',
+                            status="offline",
+                            client=None,
+                            tags=tags,
+                            description=db_host.description
+                        )
+                        host.security_status = db_host.security_status or "unknown"
+                        self.hosts[db_host.id] = host
+                        logger.debug(f"Added agent host {db_host.name} in offline mode - waiting for WebSocket connection")
+                        continue
 
                     config = DockerHostConfig(
                         name=db_host.name,

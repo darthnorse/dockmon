@@ -114,3 +114,5 @@ htmlcov/
 stats-service/stats-service
 agent/dockmon-agent-logs-fix
 agent/dockmon-agent
+agent/agent
+agent/dockmon-agent

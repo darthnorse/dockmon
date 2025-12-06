@@ -20,8 +20,8 @@ from utils.network_helpers import manually_connect_networks
 
 logger = logging.getLogger(__name__)
 
-# Import constants from stack_orchestrator (same keys used for network config)
-# Import moved here to avoid circular dependency
+# Constants for manual network handling in container configs
+# Used when containers need to be connected to networks after creation
 _MANUAL_NETWORKS_KEY = '_dockmon_manual_networks'
 _MANUAL_NETWORKING_CONFIG_KEY = '_dockmon_manual_networking_config'
 

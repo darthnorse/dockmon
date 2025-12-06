@@ -20,9 +20,18 @@ from database import (
 )
 from .host_connector import get_host_connector
 from .build_args import build_container_create_args
-from .network_helpers import is_named_volume
 
 logger = logging.getLogger(__name__)
+
+
+def is_named_volume(path: str) -> bool:
+    """
+    Check if volume is a named volume (not a bind mount).
+
+    Named volumes: 'my_volume', 'db_data'
+    Bind mounts: '/host/path', './relative/path', '../parent/path'
+    """
+    return not (path.startswith('/') or path.startswith('.'))
 
 
 async def execute_container_deployment(

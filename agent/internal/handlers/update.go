@@ -22,7 +22,6 @@ type UpdateHandler struct {
 	dockerClient *docker.Client
 	log          *logrus.Logger
 	sendEvent    func(msgType string, payload interface{}) error
-	updater      *update.Updater
 }
 
 // UpdateRequest contains the parameters for a container update
@@ -51,23 +50,15 @@ type UpdateResult struct {
 
 // NewUpdateHandler creates a new update handler using the shared update package.
 func NewUpdateHandler(
-	ctx context.Context,
 	dockerClient *docker.Client,
 	log *logrus.Logger,
 	sendEvent func(string, interface{}) error,
-) (*UpdateHandler, error) {
-	// Detect runtime options using the shared package
-	options := update.DetectOptions(ctx, dockerClient.RawClient(), log)
-
-	// Create updater from shared package (callbacks will be set per-update)
-	updater := update.NewUpdater(dockerClient.RawClient(), log, options)
-
+) *UpdateHandler {
 	return &UpdateHandler{
 		dockerClient: dockerClient,
 		log:          log,
 		sendEvent:    sendEvent,
-		updater:      updater,
-	}, nil
+	}
 }
 
 // UpdateContainer performs a rolling update of a container using the shared update package.

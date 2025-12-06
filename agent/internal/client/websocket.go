@@ -88,17 +88,11 @@ func NewWebSocketClient(
 	}
 
 	// Initialize update handler with sendEvent callback
-	// Creates handler with runtime detection (Podman, API version)
-	var err error
-	client.updateHandler, err = handlers.NewUpdateHandler(
-		ctx,
+	client.updateHandler = handlers.NewUpdateHandler(
 		dockerClient,
 		log,
 		client.sendEvent,
 	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create update handler: %w", err)
-	}
 
 	// Initialize self-update handler with sendEvent callback
 	// Pass docker client for container mode and signalStop for graceful shutdown
@@ -119,6 +113,7 @@ func NewWebSocketClient(
 
 	// Initialize deploy handler with sendEvent callback
 	// Note: This may fail if Docker Compose is not installed, which is OK
+	var err error
 	client.deployHandler, err = handlers.NewDeployHandler(
 		ctx,
 		dockerClient,

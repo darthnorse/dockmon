@@ -15,7 +15,6 @@ This module handles:
 
 import asyncio
 import logging
-import time
 import threading
 from typing import Dict, Optional
 import docker
@@ -67,10 +66,6 @@ class UpdateExecutor:
         self.monitor = monitor
         self.updating_containers = set()  # Track containers being updated
         self._update_lock = threading.Lock()
-
-        # Track active image pulls for WebSocket reconnection
-        self._active_pulls: Dict[str, Dict] = {}
-        self._active_pulls_lock = threading.Lock()
 
         # Initialize Go update service client
         self.update_client = UpdateClient()
@@ -139,16 +134,6 @@ class UpdateExecutor:
         """Check if a container is currently being updated."""
         composite_key = make_composite_key(host_id, container_id)
         return composite_key in self.updating_containers
-
-    def _store_pull_progress(self, host_id: str, entity_id: str, progress_data: Dict):
-        """Callback for ImagePullProgress to store progress in _active_pulls."""
-        composite_key = make_composite_key(host_id, entity_id)
-        with self._active_pulls_lock:
-            self._active_pulls[composite_key] = {
-                'host_id': host_id,
-                'container_id': entity_id,
-                **progress_data
-            }
 
     def _get_registry_credentials(self, image_name: str) -> Optional[Dict[str, str]]:
         """Get credentials for registry from image name."""
@@ -677,24 +662,6 @@ class UpdateExecutor:
         # Alerts are evaluated periodically by the evaluation service, so the updated
         # container will be picked up on the next cycle. No immediate action needed.
         logger.debug(f"Container {container_name} updated; alerts will re-evaluate on next cycle")
-
-    async def cleanup_stale_pull_progress(self):
-        """Remove pull progress older than 10 minutes."""
-        try:
-            cutoff = time.time() - 600
-
-            with self._active_pulls_lock:
-                stale_keys = [
-                    key for key, data in self._active_pulls.items()
-                    if data.get('updated', 0) < cutoff
-                ]
-                for key in stale_keys:
-                    del self._active_pulls[key]
-
-            if stale_keys:
-                logger.debug(f"Cleaned up {len(stale_keys)} stale pull progress entries")
-        except Exception as e:
-            logger.error(f"Error cleaning up stale pull progress: {e}")
 
 
 # Global singleton instance

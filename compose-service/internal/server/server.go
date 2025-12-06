@@ -385,8 +385,8 @@ func (s *Server) createDockerClient(req compose.DeployRequest) (*client.Client, 
 	)
 }
 
-// createDockerClientForUpdate creates a Docker client based on the update request
-func (s *Server) createDockerClientForUpdate(req update.UpdateRequest, dockerHost, caCert, cert, key string) (*client.Client, error) {
+// createDockerClientForUpdate creates a Docker client for the update endpoint
+func (s *Server) createDockerClientForUpdate(dockerHost, caCert, cert, key string) (*client.Client, error) {
 	if dockerHost == "" {
 		// Local Docker socket
 		return sharedDocker.CreateLocalClient()
@@ -461,7 +461,6 @@ func (s *Server) handleUpdateJSON(w http.ResponseWriter, r *http.Request, req Up
 
 	// Create Docker client
 	dockerClient, err := s.createDockerClientForUpdate(
-		update.UpdateRequest{ContainerID: req.ContainerID, NewImage: req.NewImage},
 		req.DockerHost, req.TLSCACert, req.TLSCert, req.TLSKey,
 	)
 	if err != nil {
@@ -544,7 +543,6 @@ func (s *Server) handleUpdateSSE(w http.ResponseWriter, r *http.Request, req Upd
 
 	// Create Docker client
 	dockerClient, err := s.createDockerClientForUpdate(
-		update.UpdateRequest{ContainerID: req.ContainerID, NewImage: req.NewImage},
 		req.DockerHost, req.TLSCACert, req.TLSCert, req.TLSKey,
 	)
 	if err != nil {

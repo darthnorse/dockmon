@@ -112,6 +112,7 @@ async def _execute_via_go_service(
 
     # Progress callback that updates database and broadcasts to WebSocket
     async def on_progress(event: ProgressEvent):
+        logger.info(f"[PROGRESS] Deployment {deployment.id}: {event.progress}% - {event.stage}: {event.message}")
         await update_progress(
             session,
             deployment,
@@ -213,10 +214,9 @@ def _get_host_connection_info(host_id: str) -> Dict[str, Any]:
     Returns:
         Dict with docker_host, tls certs (for mTLS), and registry credentials
     """
-    from security.encryption import EncryptionManager
+    from utils.encryption import decrypt_password
 
     db = DatabaseManager()
-    encryption = EncryptionManager()
 
     with db.get_session() as session:
         host = session.query(DockerHostDB).filter_by(id=host_id).first()
@@ -231,11 +231,11 @@ def _get_host_connection_info(host_id: str) -> Dict[str, Any]:
 
             # Decrypt TLS certificates if present
             if host.tls_ca_cert:
-                result['tls_ca_cert'] = encryption.decrypt(host.tls_ca_cert)
+                result['tls_ca_cert'] = decrypt_password(host.tls_ca_cert)
             if host.tls_cert:
-                result['tls_cert'] = encryption.decrypt(host.tls_cert)
+                result['tls_cert'] = decrypt_password(host.tls_cert)
             if host.tls_key:
-                result['tls_key'] = encryption.decrypt(host.tls_key)
+                result['tls_key'] = decrypt_password(host.tls_key)
 
         # Get registry credentials for this host
         # TODO: Implement registry credentials lookup

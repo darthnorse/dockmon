@@ -590,7 +590,10 @@ class DeploymentExecutor:
         # Broadcast via ConnectionManager
         try:
             if self.docker_monitor and hasattr(self.docker_monitor, 'manager'):
+                logger.info(f"[BROADCAST] {event_type}: {deployment.id} - {progress['overall_percent']}% {progress['stage']}")
                 await self.docker_monitor.manager.broadcast(payload)
+            else:
+                logger.warning(f"[BROADCAST] No manager available for {event_type}")
         except Exception as e:
             logger.error(f"Error broadcasting deployment event: {e}")
 

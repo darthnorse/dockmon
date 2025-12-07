@@ -457,21 +457,23 @@ class UpdateExecutor:
             # Get global settings for timeouts
             with self.db.get_session() as session:
                 settings = session.query(GlobalSettings).first()
-                health_timeout = settings.health_check_timeout if settings else 120
-                stop_timeout = settings.stop_timeout if settings else 30
+                health_timeout = settings.health_check_timeout_seconds if settings else 180
+                stop_timeout = 30  # Default stop timeout (not configurable)
 
             # Progress callback wrapper
             async def on_progress(event):
                 await progress_callback(event.stage, event.progress, event.message)
 
             async def on_pull_progress(event):
-                # Broadcast pull progress
+                # Broadcast pull progress with full layer details
                 await self._broadcast_pull_progress(
                     context.host_id,
                     context.container_id,
                     event.overall_progress,
                     event.summary,
-                    event.speed_mbps
+                    event.speed_mbps,
+                    event.layers,
+                    event.total_layers,
                 )
 
             # Execute via Go service
@@ -525,22 +527,28 @@ class UpdateExecutor:
         self,
         host_id: str,
         container_id: str,
-        progress: int,
-        message: str,
-        speed_mbps: float
+        overall_progress: int,
+        summary: str,
+        speed_mbps: float,
+        layers: list = None,
+        total_layers: int = 0,
     ):
         """Broadcast image pull progress to WebSocket clients."""
         try:
             if not self.monitor or not hasattr(self.monitor, 'manager'):
                 return
 
+            # Format matches frontend LayerProgressData interface
             await self.monitor.manager.broadcast({
-                "type": "container_update_pull_progress",
+                "type": "container_update_layer_progress",
                 "data": {
                     "host_id": host_id,
-                    "container_id": container_id,
-                    "progress": progress,
-                    "message": message,
+                    "entity_id": container_id,  # Frontend expects entity_id
+                    "overall_progress": overall_progress,
+                    "layers": layers or [],
+                    "total_layers": total_layers,
+                    "remaining_layers": max(0, total_layers - len(layers or [])),
+                    "summary": summary,
                     "speed_mbps": speed_mbps
                 }
             })

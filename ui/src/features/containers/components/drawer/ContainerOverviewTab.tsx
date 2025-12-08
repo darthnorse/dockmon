@@ -12,7 +12,7 @@
 import { useEffect, useState, useMemo } from 'react'
 import { Circle, Cpu, MemoryStick, Network } from 'lucide-react'
 import { useContainer, useContainerSparklines } from '@/lib/stats/StatsProvider'
-import { MiniChart } from '@/lib/charts/MiniChart'
+import { ResponsiveMiniChart } from '@/lib/charts/ResponsiveMiniChart'
 import { TagEditor } from './TagEditor'
 import { toast } from 'sonner'
 import { apiClient } from '@/lib/api/client'
@@ -315,14 +315,14 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
             </span>
           </div>
           {cpuData.length > 0 ? (
-            <MiniChart
+            <ResponsiveMiniChart
               data={cpuData}
               color="cpu"
-              height={50}
-              width={420}
+              height={100}
+              showAxes={true}
             />
           ) : (
-            <div className="h-[50px] flex items-center justify-center bg-muted/20 rounded text-xs text-muted-foreground">
+            <div className="h-[100px] flex items-center justify-center bg-muted/20 rounded text-xs text-muted-foreground">
               {container.state === 'running' ? 'Collecting data...' : 'No data available'}
             </div>
           )}
@@ -340,14 +340,14 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
             </span>
           </div>
           {memData.length > 0 ? (
-            <MiniChart
+            <ResponsiveMiniChart
               data={memData}
               color="memory"
-              height={50}
-              width={420}
+              height={100}
+              showAxes={true}
             />
           ) : (
-            <div className="h-[50px] flex items-center justify-center bg-muted/20 rounded text-xs text-muted-foreground">
+            <div className="h-[100px] flex items-center justify-center bg-muted/20 rounded text-xs text-muted-foreground">
               {container.state === 'running' ? 'Collecting data...' : 'No data available'}
             </div>
           )}
@@ -367,14 +367,14 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
             </span>
           </div>
           {netData.length > 0 ? (
-            <MiniChart
+            <ResponsiveMiniChart
               data={netData}
               color="network"
-              height={50}
-              width={420}
+              height={100}
+              showAxes={true}
             />
           ) : (
-            <div className="h-[50px] flex items-center justify-center bg-muted/20 rounded text-xs text-muted-foreground">
+            <div className="h-[100px] flex items-center justify-center bg-muted/20 rounded text-xs text-muted-foreground">
               {container.state === 'running' ? 'Collecting data...' : 'No data available'}
             </div>
           )}

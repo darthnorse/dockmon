@@ -6,7 +6,7 @@
 
 import { Cpu, MemoryStick, Network } from 'lucide-react'
 import { DrawerSection } from '@/components/ui/drawer'
-import { MiniChart } from '@/lib/charts/MiniChart'
+import { ResponsiveMiniChart } from '@/lib/charts/ResponsiveMiniChart'
 import { useHostMetrics, useHostSparklines } from '@/lib/stats/StatsProvider'
 
 interface HostPerformanceSectionProps {
@@ -43,14 +43,14 @@ export function HostPerformanceSection({ hostId }: HostPerformanceSectionProps) 
             </span>
           </div>
           {sparklines?.cpu && sparklines.cpu.length > 0 ? (
-            <MiniChart
+            <ResponsiveMiniChart
               data={sparklines.cpu}
               color="cpu"
-              height={50}
-              width={520}
+              height={100}
+              showAxes={true}
             />
           ) : (
-            <div className="h-[50px] flex items-center justify-center bg-muted rounded text-xs text-muted-foreground">
+            <div className="h-[100px] flex items-center justify-center bg-muted rounded text-xs text-muted-foreground">
               No data available
             </div>
           )}
@@ -70,14 +70,14 @@ export function HostPerformanceSection({ hostId }: HostPerformanceSectionProps) 
             </span>
           </div>
           {sparklines?.mem && sparklines.mem.length > 0 ? (
-            <MiniChart
+            <ResponsiveMiniChart
               data={sparklines.mem}
               color="memory"
-              height={50}
-              width={520}
+              height={100}
+              showAxes={true}
             />
           ) : (
-            <div className="h-[50px] flex items-center justify-center bg-muted rounded text-xs text-muted-foreground">
+            <div className="h-[100px] flex items-center justify-center bg-muted rounded text-xs text-muted-foreground">
               No data available
             </div>
           )}
@@ -97,14 +97,14 @@ export function HostPerformanceSection({ hostId }: HostPerformanceSectionProps) 
             </span>
           </div>
           {sparklines?.net && sparklines.net.length > 0 ? (
-            <MiniChart
+            <ResponsiveMiniChart
               data={sparklines.net}
               color="network"
-              height={50}
-              width={520}
+              height={100}
+              showAxes={true}
             />
           ) : (
-            <div className="h-[50px] flex items-center justify-center bg-muted rounded text-xs text-muted-foreground">
+            <div className="h-[100px] flex items-center justify-center bg-muted rounded text-xs text-muted-foreground">
               No data available
             </div>
           )}

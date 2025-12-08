@@ -12,7 +12,7 @@ import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Cpu, MemoryStick, Network, Calendar, AlertCircle, ArrowUpCircle, RefreshCw } from 'lucide-react'
 import { useHostMetrics, useHostSparklines } from '@/lib/stats/StatsProvider'
-import { MiniChart } from '@/lib/charts/MiniChart'
+import { ResponsiveMiniChart } from '@/lib/charts/ResponsiveMiniChart'
 import { TagInput } from '@/components/TagInput'
 import { TagChip } from '@/components/TagChip'
 import { Button } from '@/components/ui/button'
@@ -342,16 +342,16 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
                 </span>
               </div>
               {sparklines?.cpu && sparklines.cpu.length > 0 ? (
-                <div className="h-[100px] w-full overflow-hidden">
-                  <MiniChart
+                <div className="h-[120px] w-full">
+                  <ResponsiveMiniChart
                     data={sparklines.cpu}
                     color="cpu"
-                    height={100}
-                    width={780}
+                    height={120}
+                    showAxes={true}
                   />
                 </div>
               ) : (
-                <div className="h-[100px] flex items-center justify-center text-muted-foreground text-xs">
+                <div className="h-[120px] flex items-center justify-center text-muted-foreground text-xs">
                   No data available
                 </div>
               )}
@@ -371,16 +371,16 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
                 </span>
               </div>
               {sparklines?.mem && sparklines.mem.length > 0 ? (
-                <div className="h-[100px] w-full overflow-hidden">
-                  <MiniChart
+                <div className="h-[120px] w-full">
+                  <ResponsiveMiniChart
                     data={sparklines.mem}
                     color="memory"
-                    height={100}
-                    width={780}
+                    height={120}
+                    showAxes={true}
                   />
                 </div>
               ) : (
-                <div className="h-[100px] flex items-center justify-center text-muted-foreground text-xs">
+                <div className="h-[120px] flex items-center justify-center text-muted-foreground text-xs">
                   No data available
                 </div>
               )}
@@ -400,16 +400,16 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
                 </span>
               </div>
               {sparklines?.net && sparklines.net.length > 0 ? (
-                <div className="h-[100px] w-full overflow-hidden">
-                  <MiniChart
+                <div className="h-[120px] w-full">
+                  <ResponsiveMiniChart
                     data={sparklines.net}
                     color="network"
-                    height={100}
-                    width={780}
+                    height={120}
+                    showAxes={true}
                   />
                 </div>
               ) : (
-                <div className="h-[100px] flex items-center justify-center text-muted-foreground text-xs">
+                <div className="h-[120px] flex items-center justify-center text-muted-foreground text-xs">
                   No data available
                 </div>
               )}

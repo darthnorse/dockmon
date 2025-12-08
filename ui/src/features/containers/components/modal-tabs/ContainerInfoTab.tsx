@@ -21,7 +21,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { Cpu, MemoryStick, Network } from 'lucide-react'
 import type { Container } from '../../types'
 import { useContainerSparklines } from '@/lib/stats/StatsProvider'
-import { MiniChart } from '@/lib/charts/MiniChart'
+import { ResponsiveMiniChart } from '@/lib/charts/ResponsiveMiniChart'
 import { toast } from 'sonner'
 import { apiClient } from '@/lib/api/client'
 import { TagInput } from '@/components/TagInput'
@@ -440,11 +440,11 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
                 </span>
               </div>
               {cpuData.length > 0 ? (
-                <div className="h-[100px] w-full overflow-hidden">
-                  <MiniChart data={cpuData} color="cpu" height={100} width={780} />
+                <div className="h-[120px] w-full">
+                  <ResponsiveMiniChart data={cpuData} color="cpu" height={120} showAxes={true} />
                 </div>
               ) : (
-                <div className="h-[100px] flex items-center justify-center text-muted-foreground text-xs">
+                <div className="h-[120px] flex items-center justify-center text-muted-foreground text-xs">
                   No data available
                 </div>
               )}
@@ -463,11 +463,11 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
                 </span>
               </div>
               {memData.length > 0 ? (
-                <div className="h-[100px] w-full overflow-hidden">
-                  <MiniChart data={memData} color="memory" height={100} width={780} />
+                <div className="h-[120px] w-full">
+                  <ResponsiveMiniChart data={memData} color="memory" height={120} showAxes={true} />
                 </div>
               ) : (
-                <div className="h-[100px] flex items-center justify-center text-muted-foreground text-xs">
+                <div className="h-[120px] flex items-center justify-center text-muted-foreground text-xs">
                   No data available
                 </div>
               )}
@@ -485,11 +485,11 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
                 </span>
               </div>
               {netData.length > 0 ? (
-                <div className="h-[100px] w-full overflow-hidden">
-                  <MiniChart data={netData} color="network" height={100} width={780} />
+                <div className="h-[120px] w-full">
+                  <ResponsiveMiniChart data={netData} color="network" height={120} showAxes={true} />
                 </div>
               ) : (
-                <div className="h-[100px] flex items-center justify-center text-muted-foreground text-xs">
+                <div className="h-[120px] flex items-center justify-center text-muted-foreground text-xs">
                   No data available
                 </div>
               )}

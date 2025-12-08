@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
 
 from sqlalchemy.exc import IntegrityError
-from database import DatabaseManager, ContainerUpdate, GlobalSettings, RegistryCredential
+from database import DatabaseManager, ContainerUpdate, GlobalSettings, RegistryCredential, UpdatePolicy
 
 # Image cache TTL configuration (in seconds)
 # Can be overridden via environment variables
@@ -120,12 +120,20 @@ class UpdateChecker:
 
         logger.info(f"Found {len(containers)} containers to check")
 
+        # Load ignore patterns once before the loop
+        ignore_patterns = self._get_ignore_patterns()
+
         # Check each container
         for container in containers:
             try:
                 # Skip compose containers if configured
                 if skip_compose and self._is_compose_container(container):
                     logger.debug(f"Skipping compose container: {container['name']}")
+                    continue
+
+                # Skip containers matching ignore patterns (Issue #85)
+                if self._matches_ignore_pattern(container, ignore_patterns):
+                    logger.debug(f"Skipping ignored container: {container['name']}")
                     continue
 
                 # Check for update
@@ -724,6 +732,43 @@ class UpdateChecker:
             label.startswith("com.docker.compose")
             for label in labels.keys()
         )
+
+    def _get_ignore_patterns(self) -> List[str]:
+        """
+        Get list of patterns with action='ignore' for skipping update checks.
+
+        Returns:
+            List of pattern strings to match against container/image names
+        """
+        with self.db.get_session() as session:
+            patterns = session.query(UpdatePolicy).filter_by(
+                enabled=True,
+                action='ignore'
+            ).all()
+            return [p.pattern.lower() for p in patterns]
+
+    def _matches_ignore_pattern(self, container: Dict, ignore_patterns: List[str]) -> bool:
+        """
+        Check if container matches any ignore pattern.
+
+        Args:
+            container: Container dict with 'name' and 'image' keys
+            ignore_patterns: List of pattern strings (lowercase)
+
+        Returns:
+            True if container name or image matches any ignore pattern
+        """
+        if not ignore_patterns:
+            return False
+
+        container_name = container.get('name', '').lower()
+        image_name = container.get('image', '').lower()
+
+        for pattern in ignore_patterns:
+            if pattern in container_name or pattern in image_name:
+                return True
+
+        return False
 
 
 # Global singleton instance

@@ -1989,6 +1989,7 @@ async def get_update_policies(current_user: dict = Depends(get_current_user)):
                 "id": policy.id,
                 "pattern": policy.pattern,
                 "enabled": policy.enabled,
+                "action": policy.action or 'warn',  # 'warn' or 'ignore'
                 "created_at": policy.created_at.isoformat() + 'Z' if policy.created_at else None,
                 "updated_at": policy.updated_at.isoformat() + 'Z' if policy.updated_at else None,
             })
@@ -2032,6 +2033,7 @@ async def toggle_update_policy_category(
 @app.post("/api/update-policies/custom", tags=["container-updates"], dependencies=[Depends(require_scope("admin"))])
 async def create_custom_update_policy(
     pattern: str = Query(..., description="Pattern to match against image/container name"),
+    action: str = Query("warn", description="Action: 'warn' (show confirmation) or 'ignore' (skip update checks)"),
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -2039,7 +2041,14 @@ async def create_custom_update_policy(
 
     Args:
         pattern: Pattern to match (case-insensitive substring match)
+        action: 'warn' to show confirmation, 'ignore' to skip from update checks
     """
+    # Validate action
+    if action not in ('warn', 'ignore'):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Action must be 'warn' or 'ignore'"
+        )
 
     with monitor.db.get_session() as session:
         # Check if pattern already exists
@@ -2058,17 +2067,62 @@ async def create_custom_update_policy(
         policy = UpdatePolicy(
             category="custom",
             pattern=pattern,
-            enabled=True
+            enabled=True,
+            action=action
         )
         session.add(policy)
         session.commit()
 
-        logger.info(f"Created custom update policy pattern: {pattern}")
+        logger.info(f"Created custom update policy pattern: {pattern} (action={action})")
 
         return {
             "success": True,
             "id": policy.id,
-            "pattern": pattern
+            "pattern": pattern,
+            "action": action
+        }
+
+
+@app.put("/api/update-policies/{policy_id}/action", tags=["container-updates"], dependencies=[Depends(require_scope("admin"))])
+async def update_policy_action(
+    policy_id: int,
+    action: str = Query(..., description="Action: 'warn' (show confirmation) or 'ignore' (skip update checks)"),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Update the action for an update policy pattern.
+
+    Args:
+        policy_id: Policy ID to update
+        action: 'warn' to show confirmation, 'ignore' to skip from update checks
+    """
+    # Validate action
+    if action not in ('warn', 'ignore'):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Action must be 'warn' or 'ignore'"
+        )
+
+    with monitor.db.get_session() as session:
+        policy = session.query(UpdatePolicy).filter_by(id=policy_id).first()
+
+        if not policy:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Policy {policy_id} not found"
+            )
+
+        old_action = policy.action
+        policy.action = action
+        session.commit()
+
+        logger.info(f"Updated policy {policy.pattern} action: {old_action} -> {action}")
+
+        return {
+            "success": True,
+            "id": policy.id,
+            "pattern": policy.pattern,
+            "action": action
         }
 
 

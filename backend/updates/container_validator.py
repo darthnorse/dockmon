@@ -27,6 +27,7 @@ class ValidationResult(Enum):
     ALLOW = "allow"   # Update can proceed without warning
     WARN = "warn"     # Show warning but allow user to proceed
     BLOCK = "block"   # Prevent update entirely
+    IGNORE = "ignore" # Skip from automatic update checks (manual checks still allowed)
 
 
 @dataclass
@@ -149,9 +150,12 @@ class ContainerValidator:
             image_name_lower = image_name.lower()
 
             if pattern_lower in container_name_lower or pattern_lower in image_name_lower:
-                # Pattern matched - block or warn based on category
-                # All patterns default to WARN (user can proceed with confirmation)
-                result = ValidationResult.WARN
+                # Pattern matched - use action from pattern (defaults to 'warn')
+                action = getattr(pattern, 'action', 'warn') or 'warn'
+                try:
+                    result = ValidationResult(action.lower())
+                except ValueError:
+                    result = ValidationResult.WARN  # Fallback for invalid action values
                 logger.info(
                     f"Container {container_name} validation: {result.value} "
                     f"(matched pattern: {pattern.pattern} in category: {pattern.category})"

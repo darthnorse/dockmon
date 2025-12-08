@@ -42,6 +42,9 @@ CHANGES IN v2.2.0-beta1:
 - Add dismissed_agent_update_version to user_prefs
   - Allows per-user dismissal of agent update notifications
 - Update app_version to '2.2.0-beta1'
+- Add action column to update_policies table
+  - Values: 'warn' (default) or 'ignore'
+  - 'ignore' excludes containers from automatic update checks
 
 NEW FEATURES:
 - Agent registration via time-limited tokens
@@ -247,11 +250,26 @@ def upgrade() -> None:
             .bindparams(version='2.2.0-beta1', id=1)
         )
 
+    # Change 12: Add action column to update_policies table
+    # Allows patterns to specify 'warn' (require confirmation) or 'ignore' (skip from update checks)
+    if table_exists('update_policies'):
+        if not column_exists('update_policies', 'action'):
+            op.add_column('update_policies',
+                sa.Column('action', sa.Text(), server_default='warn', nullable=False)
+            )
+
 
 def downgrade() -> None:
     """Remove v2.2.0-beta1 agent infrastructure"""
 
     # Reverse order of upgrade
+
+    # Remove action column from update_policies
+    if table_exists('update_policies'):
+        if column_exists('update_policies', 'action'):
+            with op.batch_alter_table('update_policies') as batch_op:
+                batch_op.drop_column('action')
+
     if table_exists('global_settings'):
         op.execute(
             sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")

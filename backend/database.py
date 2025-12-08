@@ -466,6 +466,7 @@ class UpdatePolicy(Base):
     category = Column(Text, nullable=False)  # 'databases', 'proxies', 'monitoring', 'custom', 'critical'
     pattern = Column(Text, nullable=False)   # Pattern to match against image/container name
     enabled = Column(Boolean, nullable=False, default=True)
+    action = Column(Text, nullable=False, default='warn')  # 'warn' (show confirmation) or 'ignore' (skip update checks)
 
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)

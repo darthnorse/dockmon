@@ -277,28 +277,30 @@ export function EventsPage() {
   return (
     <div ref={containerRef} className="flex-1 flex flex-col h-full overflow-hidden">
       {/* Header */}
-      <div className="border-b border-border bg-surface px-6 py-4">
-        <div className="flex items-center justify-between mb-4">
-          <h1 className="text-2xl font-bold">Event Log</h1>
-          <div className="flex items-center gap-2">
+      <div className="border-b border-border bg-surface px-3 sm:px-4 md:px-6 py-4 pt-20 md:pt-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+          <h1 className="text-xl sm:text-2xl font-bold">Event Log</h1>
+          <div className="flex items-center gap-2 overflow-x-auto pb-1">
             <button
               onClick={exportToCSV}
               disabled={events.length === 0}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-border bg-surface-1 hover:bg-surface-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex items-center gap-2 px-2.5 sm:px-3 py-1.5 rounded-lg border border-border bg-surface-1 hover:bg-surface-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
             >
               <Download className="h-3.5 w-3.5" />
-              <span>Export CSV</span>
+              <span className="hidden sm:inline">Export CSV</span>
+              <span className="sm:hidden">Export</span>
             </button>
             <button
               onClick={toggleSortOrder}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-border bg-surface-1 hover:bg-surface-2 text-sm"
+              className="flex items-center gap-2 px-2.5 sm:px-3 py-1.5 rounded-lg border border-border bg-surface-1 hover:bg-surface-2 text-sm whitespace-nowrap"
             >
               <ArrowUpDown className="h-3.5 w-3.5" />
-              <span>{sortOrder === 'desc' ? 'Newest First' : 'Oldest First'}</span>
+              <span className="hidden sm:inline">{sortOrder === 'desc' ? 'Newest First' : 'Oldest First'}</span>
+              <span className="sm:hidden">{sortOrder === 'desc' ? 'Newest' : 'Oldest'}</span>
             </button>
             <button
               onClick={resetFilters}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-border bg-surface-1 hover:bg-surface-2 text-sm"
+              className="flex items-center gap-2 px-2.5 sm:px-3 py-1.5 rounded-lg border border-border bg-surface-1 hover:bg-surface-2 text-sm whitespace-nowrap"
             >
               <X className="h-3.5 w-3.5" />
               <span>Reset</span>
@@ -307,7 +309,7 @@ export function EventsPage() {
         </div>
 
         {/* Filters Row */}
-        <div className="grid grid-cols-6 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
           {/* Time Range */}
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1.5">TIME RANGE</label>

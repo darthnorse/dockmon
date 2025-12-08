@@ -192,15 +192,15 @@ export function EventRow({ event, showMetadata = true, compact = false, onContai
 
   // Full view for tables
   return (
-    <div className="px-6 py-2 grid grid-cols-[200px_120px_1fr] gap-4 hover:bg-surface-1 transition-colors items-start group">
-      {/* Timestamp */}
-      <div className="text-sm font-mono text-muted-foreground pt-0.5">
+    <div className="px-3 sm:px-6 py-2 grid grid-cols-[100px_80px_1fr] sm:grid-cols-[140px_100px_1fr] lg:grid-cols-[200px_120px_1fr] gap-2 sm:gap-4 hover:bg-surface-1 transition-colors items-start group">
+      {/* Timestamp - Allow wrapping on mobile */}
+      <div className="text-xs sm:text-sm font-mono text-muted-foreground pt-0.5 leading-tight">
         {formatTimestamp(event.timestamp)}
       </div>
 
       {/* Severity */}
       <div className="pt-0.5">
-        <span className={`text-sm font-medium ${severityColors.text}`}>
+        <span className={`text-xs sm:text-sm font-medium ${severityColors.text}`}>
           {formatSeverity(event.severity)}
         </span>
       </div>
@@ -209,7 +209,7 @@ export function EventRow({ event, showMetadata = true, compact = false, onContai
       <div className="flex items-start justify-between gap-4 min-w-0">
         <div className="flex-1 min-w-0">
           {/* Main message with inline colored states */}
-          <div className="text-sm leading-relaxed">
+          <div className="text-xs sm:text-sm line-clamp-2">
             <span className="text-foreground">{event.title}</span>
             {event.message && (
               <>

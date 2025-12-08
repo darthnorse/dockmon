@@ -180,14 +180,14 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
 
       {/* Identity Section */}
       <div className="space-y-3">
-        <div className="flex justify-between text-sm">
+        <div className="flex flex-col sm:flex-row sm:justify-between gap-1 sm:gap-2 text-sm">
           <span className="text-muted-foreground">Host</span>
-          <span className="text-foreground">{container.host_name || '-'}</span>
+          <span className="text-foreground break-all">{container.host_name || '-'}</span>
         </div>
 
-        <div className="flex justify-between text-sm">
+        <div className="flex flex-col sm:flex-row sm:justify-between gap-1 sm:gap-2 text-sm">
           <span className="text-muted-foreground">Image</span>
-          <span className="text-foreground font-mono">{container.image || '-'}</span>
+          <span className="text-foreground font-mono text-xs sm:text-sm break-all">{container.image || '-'}</span>
         </div>
 
         {/* Tags Row */}
@@ -268,7 +268,7 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
       <div className="border-t border-border pt-4 space-y-2">
         <h4 className="text-sm font-medium text-foreground mb-3">Information</h4>
 
-        <div className="flex justify-between text-sm">
+        <div className="flex flex-col sm:flex-row sm:justify-between gap-1 sm:gap-2 text-sm">
           <span className="text-muted-foreground">Created</span>
           <span className="text-foreground">
             {container.created
@@ -282,7 +282,7 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
           </span>
         </div>
 
-        <div className="flex justify-between text-sm">
+        <div className="flex flex-col sm:flex-row sm:justify-between gap-1 sm:gap-2 text-sm">
           <span className="text-muted-foreground">Uptime</span>
           <span className="text-foreground">{uptime || '-'}</span>
         </div>

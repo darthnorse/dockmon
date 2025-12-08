@@ -110,10 +110,10 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="p-6">
+      <div className="p-3 sm:p-4 md:p-6">
         {/* Agent Update Banner - shown at top when update available */}
         {agent?.update_available && !updateTriggered && (
-          <div className="rounded-lg border bg-amber-500/10 border-amber-500/30 p-3 mb-6">
+          <div className="rounded-lg border bg-amber-500/10 border-amber-500/30 p-3 mb-4 sm:mb-6">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <ArrowUpCircle className="h-4 w-4 text-amber-500" />
@@ -151,7 +151,7 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
 
         {/* Agent Update In Progress */}
         {updateTriggered && (
-          <div className="rounded-lg border bg-blue-500/10 border-blue-500/30 p-3 mb-6">
+          <div className="rounded-lg border bg-blue-500/10 border-blue-500/30 p-3 mb-4 sm:mb-6">
             <div className="flex items-center gap-2">
               <RefreshCw className="h-4 w-4 text-blue-500 animate-spin" />
               <div>
@@ -164,38 +164,38 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
           </div>
         )}
 
-        <div className="grid grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
           {/* LEFT COLUMN */}
-          <div className="space-y-6">
+          <div className="space-y-4 sm:space-y-6">
             {/* Host Information */}
             <div>
-              <h4 className="text-lg font-medium text-foreground mb-3">Host Information</h4>
+              <h4 className="text-base sm:text-lg font-medium text-foreground mb-3">Host Information</h4>
               <div className="space-y-2">
                 {/* Show IP for agent hosts (systemd mode), URL for others */}
                 {host.connection_type === 'agent' && host.host_ip ? (
-                  <div className="flex justify-between text-sm">
+                  <div className="flex flex-col sm:flex-row sm:justify-between gap-1 sm:gap-2 text-sm">
                     <span className="text-muted-foreground">IP Address</span>
-                    <span>{host.host_ip}</span>
+                    <span className="font-mono text-xs break-all">{host.host_ip}</span>
                   </div>
                 ) : (
-                  <div className="flex justify-between text-sm">
+                  <div className="flex flex-col sm:flex-row sm:justify-between gap-1 sm:gap-2 text-sm">
                     <span className="text-muted-foreground">Address</span>
-                    <span>{host.url || '—'}</span>
+                    <span className="font-mono text-xs break-all">{host.url || '—'}</span>
                   </div>
                 )}
-                <div className="flex justify-between text-sm">
+                <div className="flex flex-col sm:flex-row sm:justify-between gap-1 sm:gap-2 text-sm">
                   <span className="text-muted-foreground">OS</span>
                   <span>{host.os_version || 'Unknown'}</span>
                 </div>
-                <div className="flex justify-between text-sm">
+                <div className="flex flex-col sm:flex-row sm:justify-between gap-1 sm:gap-2 text-sm">
                   <span className="text-muted-foreground">{host.is_podman ? 'Podman' : 'Docker'} Version</span>
                   <span>{host.docker_version || '—'}</span>
                 </div>
-                <div className="flex justify-between text-sm">
+                <div className="flex flex-col sm:flex-row sm:justify-between gap-1 sm:gap-2 text-sm">
                   <span className="text-muted-foreground">CPU</span>
                   <span>{host.num_cpus || '—'}</span>
                 </div>
-                <div className="flex justify-between text-sm">
+                <div className="flex flex-col sm:flex-row sm:justify-between gap-1 sm:gap-2 text-sm">
                   <span className="text-muted-foreground">Memory</span>
                   <span>{host.total_memory ? formatBytes(host.total_memory) : '—'}</span>
                 </div>
@@ -298,15 +298,16 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
               ) : (
                 <div className="border border-border rounded-lg overflow-hidden">
                   {/* Mini table header */}
-                  <div className="bg-surface-2 px-3 py-1.5 grid grid-cols-[80px_60px_1fr] gap-2 text-xs font-medium text-muted-foreground border-b border-border">
+                  <div className="bg-surface-2 px-3 py-1.5 grid grid-cols-[60px_60px_1fr] sm:grid-cols-[80px_70px_1fr] gap-2 text-xs font-medium text-muted-foreground border-b border-border">
                     <div>TIME</div>
-                    <div>SEVERITY</div>
+                    <div className="hidden sm:block">SEVERITY</div>
+                    <div className="sm:hidden">SEV</div>
                     <div>DETAILS</div>
                   </div>
                   {/* Events */}
                   <div className="divide-y divide-border bg-surface-1">
                     {events.map((event) => (
-                      <div key={event.id} className="px-3 py-2 grid grid-cols-[80px_60px_1fr] gap-2 text-xs hover:bg-surface-2 transition-colors">
+                      <div key={event.id} className="px-3 py-2 grid grid-cols-[60px_60px_1fr] sm:grid-cols-[80px_70px_1fr] gap-2 text-xs hover:bg-surface-2 transition-colors">
                         <div className="font-mono text-muted-foreground truncate">
                           {new Date(event.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
                         </div>
@@ -330,10 +331,10 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
           </div>
 
           {/* RIGHT COLUMN */}
-          <div className="space-y-6">
+          <div className="space-y-4 sm:space-y-6">
             {/* Live Stats Header */}
-            <div className="-mb-3">
-              <h4 className="text-lg font-medium text-foreground">Live Stats</h4>
+            <div className="-mb-2 sm:-mb-3">
+              <h4 className="text-base sm:text-lg font-medium text-foreground">Live Stats</h4>
             </div>
 
             {/* CPU Usage */}

@@ -665,7 +665,7 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
   }
 
   return (
-    <div className={`rounded-md border ${selectedHostIds.size > 0 ? 'pb-32' : ''}`}>
+    <div className={`overflow-x-auto rounded-md border ${selectedHostIds.size > 0 ? 'pb-32' : ''}`}>
       <table className="w-full" data-testid="hosts-table">
         <thead className="bg-muted/50 sticky top-0 z-10">
           {table.getHeaderGroups().map((headerGroup) => (

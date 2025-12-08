@@ -38,14 +38,14 @@ export function SettingsPage() {
   return (
     <div className="flex h-full flex-col bg-[#0a0e14]">
       {/* Header */}
-      <div className="border-b border-gray-800 bg-[#0d1117] px-6 py-4">
-        <h1 className="text-2xl font-bold text-white">Settings</h1>
+      <div className="border-b border-gray-800 bg-[#0d1117] px-3 sm:px-4 md:px-6 py-4 mt-12 md:mt-0">
+        <h1 className="text-xl sm:text-2xl font-bold text-white">Settings</h1>
         <p className="text-sm text-gray-400 mt-1">Manage your preferences and configuration</p>
       </div>
 
       {/* Tabs */}
       <div className="border-b border-gray-800 bg-[#0d1117]">
-        <div className="flex gap-1 px-6">
+        <div className="flex gap-1 px-3 sm:px-4 md:px-6 overflow-x-auto">
           {TABS.map((tab) => {
             const Icon = tab.icon
             const isActive = activeTab === tab.id
@@ -69,7 +69,7 @@ export function SettingsPage() {
 
       {/* Content */}
       <div className="flex-1 overflow-auto">
-        <div className="container mx-auto max-w-4xl px-6 py-6">
+        <div className="container mx-auto max-w-4xl px-3 sm:px-4 md:px-6 py-4 sm:py-6">
           {activeTab === 'dashboard' && <DashboardSettings />}
           {activeTab === 'alerts' && (
             <div className="space-y-8">

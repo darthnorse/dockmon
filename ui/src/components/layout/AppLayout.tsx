@@ -6,15 +6,18 @@
  * - Responsive padding based on sidebar state
  * - Handles sidebar collapsed state via database (syncs across devices)
  * - Manages upgrade welcome notice for v1 → v2 migrations
+ * - Mobile: Sidebar becomes overlay with hamburger menu
  */
 
 import { useState, useEffect } from 'react'
 import { Outlet } from 'react-router-dom'
+import { Menu } from 'lucide-react'
 import { Sidebar } from './Sidebar'
 import { BlackoutBanner } from './BlackoutBanner'
 import { MigrationBanner } from './MigrationBanner'
 import { UpgradeWelcomeModal } from '@/components/UpgradeWelcomeModal'
 import { AppVersionProvider } from '@/lib/contexts/AppVersionContext'
+import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { useSidebarCollapsed } from '@/lib/hooks/useUserPreferences'
 import { apiClient } from '@/lib/api/client'
@@ -24,6 +27,9 @@ export function AppLayout() {
 
   // Track local sidebar state (updates faster than DB sync)
   const [isCollapsed, setIsCollapsed] = useState(dbCollapsed)
+
+  // Mobile menu state
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
 
   // Upgrade notice state
   const [showUpgradeNotice, setShowUpgradeNotice] = useState(false)
@@ -84,14 +90,36 @@ export function AppLayout() {
         {/* Host migration notification banner */}
         <MigrationBanner />
 
-        <Sidebar />
+        {/* Mobile Menu Button */}
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => setIsMobileMenuOpen(true)}
+          className="fixed left-4 top-4 z-50 md:hidden"
+          aria-label="Open menu"
+        >
+          <Menu className="h-5 w-5" />
+        </Button>
+
+        {/* Mobile Backdrop */}
+        {isMobileMenuOpen && (
+          <div
+            className="fixed inset-0 z-40 bg-black/50 md:hidden"
+            onClick={() => setIsMobileMenuOpen(false)}
+            aria-hidden="true"
+          />
+        )}
+
+        <Sidebar isMobileMenuOpen={isMobileMenuOpen} onMobileClose={() => setIsMobileMenuOpen(false)} />
 
         {/* Main Content Area */}
         <main
           className={cn(
             'min-h-screen transition-all duration-300',
-            isCollapsed ? 'pl-18' : 'pl-60'
+            // No padding on mobile, normal padding on desktop
+            'md:pl-18 md:data-[expanded=true]:pl-60'
           )}
+          data-expanded={!isCollapsed}
         >
           <Outlet />
         </main>

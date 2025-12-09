@@ -89,12 +89,12 @@ export function HostOverviewSection({ host }: HostOverviewSectionProps) {
             {host.connection_type === 'agent' && host.host_ip ? (
               <>
                 <label className="text-xs font-medium text-muted-foreground">IP Address</label>
-                <p className="text-sm mt-1 font-mono text-muted-foreground">{host.host_ip}</p>
+                <p className="text-sm mt-1">{host.host_ip}</p>
               </>
             ) : (
               <>
                 <label className="text-xs font-medium text-muted-foreground">Endpoint</label>
-                <p className="text-sm mt-1 font-mono text-muted-foreground">{host.url}</p>
+                <p className="text-sm mt-1">{host.url}</p>
               </>
             )}
           </div>

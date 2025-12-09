@@ -175,12 +175,12 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
                 {host.connection_type === 'agent' && host.host_ip ? (
                   <div className="flex justify-between text-sm">
                     <span className="text-muted-foreground">IP Address</span>
-                    <span className="font-mono text-xs">{host.host_ip}</span>
+                    <span>{host.host_ip}</span>
                   </div>
                 ) : (
                   <div className="flex justify-between text-sm">
                     <span className="text-muted-foreground">Address</span>
-                    <span className="font-mono text-xs">{host.url || '—'}</span>
+                    <span>{host.url || '—'}</span>
                   </div>
                 )}
                 <div className="flex justify-between text-sm">

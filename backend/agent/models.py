@@ -50,7 +50,10 @@ class AgentRegistrationRequest(BaseModel):
     agent_os: Optional[str] = Field(None, max_length=20, description="Agent OS (GOOS: linux, darwin, windows)")
     agent_arch: Optional[str] = Field(None, max_length=20, description="Agent architecture (GOARCH: amd64, arm64, arm)")
 
-    @field_validator('hostname', 'os_version', 'kernel_version', 'docker_version', 'os_type', 'agent_os', 'agent_arch')
+    # Host network info (systemd agents only - container agents would report Docker network IPs)
+    host_ip: Optional[str] = Field(None, max_length=45, description="Host IP address (IPv4 or IPv6)")
+
+    @field_validator('hostname', 'os_version', 'kernel_version', 'docker_version', 'os_type', 'agent_os', 'agent_arch', 'host_ip')
     @classmethod
     def sanitize_html(cls, v: Optional[str]) -> Optional[str]:
         """

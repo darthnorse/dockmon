@@ -327,6 +327,14 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 		regMsg["daemon_started_at"] = systemInfo.DaemonStartedAt
 		regMsg["total_memory"] = systemInfo.TotalMemory
 		regMsg["num_cpus"] = systemInfo.NumCPUs
+
+		// Only include host_ip for systemd agents (not running in a container)
+		// Container agents would report Docker network IPs which aren't useful
+		if c.myContainerID == "" && systemInfo.HostIP != "" {
+			regMsg["host_ip"] = systemInfo.HostIP
+			c.log.WithField("host_ip", systemInfo.HostIP).Info("Added host IP to registration (systemd mode)")
+		}
+
 		c.log.Info("Added system information to registration message")
 	} else {
 		c.log.Warn("Skipping system information - systemInfo is nil")

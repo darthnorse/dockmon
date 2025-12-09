@@ -211,6 +211,8 @@ class AgentManager:
                             host.total_memory = registration_data.get("total_memory")
                         if registration_data.get("num_cpus"):
                             host.num_cpus = registration_data.get("num_cpus")
+                        if registration_data.get("host_ip"):
+                            host.host_ip = registration_data.get("host_ip")
 
                     # Capture IDs before commit (for monitor notification)
                     agent_id = existing_agent.id
@@ -322,7 +324,8 @@ class AgentManager:
                     docker_version=registration_data.get("docker_version"),
                     daemon_started_at=registration_data.get("daemon_started_at"),
                     total_memory=registration_data.get("total_memory"),
-                    num_cpus=registration_data.get("num_cpus")
+                    num_cpus=registration_data.get("num_cpus"),
+                    host_ip=registration_data.get("host_ip"),  # For systemd agents only
                 )
                 reg_session.add(host)
                 reg_session.flush()  # Ensure host exists before creating agent
@@ -469,7 +472,8 @@ class AgentManager:
                     docker_version=registration_data.get("docker_version") or existing_host.docker_version,
                     daemon_started_at=registration_data.get("daemon_started_at") or existing_host.daemon_started_at,
                     total_memory=registration_data.get("total_memory") or existing_host.total_memory,
-                    num_cpus=registration_data.get("num_cpus") or existing_host.num_cpus
+                    num_cpus=registration_data.get("num_cpus") or existing_host.num_cpus,
+                    host_ip=registration_data.get("host_ip"),  # For systemd agents only
                 )
                 session.add(new_host)
                 session.flush()

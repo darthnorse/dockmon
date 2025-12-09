@@ -189,6 +189,7 @@ class DockerHostDB(Base):
     connection_type = Column(String, nullable=False, server_default='local')  # 'local', 'remote', 'agent'
     engine_id = Column(String, nullable=True, index=True)  # Docker engine ID for migration detection
     replaced_by_host_id = Column(String, ForeignKey('docker_hosts.id', ondelete='SET NULL'), nullable=True)  # Migration tracking
+    host_ip = Column(String, nullable=True)  # Host IP address (for systemd agents only)
 
     # Relationships
     auto_restart_configs = relationship("AutoRestartConfig", back_populates="host", cascade="all, delete-orphan")

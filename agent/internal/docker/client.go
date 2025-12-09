@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -80,7 +81,8 @@ func (c *Client) RawClient() *client.Client {
 
 // SystemInfo contains Docker host system information
 type SystemInfo struct {
-	Hostname        string  // Docker host's hostname (not container hostname)
+	Hostname        string // Docker host's hostname (not container hostname)
+	HostIP          string // Primary host IP (for systemd agents only)
 	OSType          string
 	OSVersion       string
 	KernelVersion   string
@@ -88,6 +90,60 @@ type SystemInfo struct {
 	DaemonStartedAt string
 	TotalMemory     int64
 	NumCPUs         int
+}
+
+// GetHostIP detects the primary non-loopback IPv4 address of the host.
+// Filters out Docker/container-related interfaces (docker0, veth*, br-*).
+// Returns empty string if no suitable IP is found.
+func GetHostIP() string {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+
+	for _, iface := range interfaces {
+		// Skip loopback, down interfaces, and Docker-related interfaces
+		if iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		if iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+
+		name := iface.Name
+		// Skip Docker/container interfaces
+		if name == "docker0" || name == "docker_gwbridge" ||
+			strings.HasPrefix(name, "veth") ||
+			strings.HasPrefix(name, "br-") ||
+			strings.HasPrefix(name, "virbr") {
+			continue
+		}
+
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+
+			// Skip loopback and non-IPv4
+			if ip == nil || ip.IsLoopback() || ip.To4() == nil {
+				continue
+			}
+
+			// Found a valid IPv4 address
+			return ip.String()
+		}
+	}
+
+	return ""
 }
 
 // GetEngineID returns the unique Docker engine ID
@@ -115,7 +171,8 @@ func (c *Client) GetSystemInfo(ctx context.Context) (*SystemInfo, error) {
 	}
 
 	sysInfo := &SystemInfo{
-		Hostname:      info.Name,  // Docker host's actual hostname
+		Hostname:      info.Name, // Docker host's actual hostname
+		HostIP:        GetHostIP(),
 		OSType:        info.OSType,
 		OSVersion:     info.OperatingSystem,
 		KernelVersion: info.KernelVersion,

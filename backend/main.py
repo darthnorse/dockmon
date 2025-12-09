@@ -589,6 +589,7 @@ async def get_hosts(current_user: dict = Depends(get_current_user)):
                     host_dict['daemon_started_at'] = agent_host_db.daemon_started_at
                     host_dict['total_memory'] = agent_host_db.total_memory
                     host_dict['num_cpus'] = agent_host_db.num_cpus
+                    host_dict['host_ip'] = agent_host_db.host_ip  # For systemd agents only
 
                 # Override status with real-time connection state
                 host_dict['status'] = 'online' if is_connected else 'offline'
@@ -632,6 +633,7 @@ async def get_hosts(current_user: dict = Depends(get_current_user)):
                     'daemon_started_at': agent_host.daemon_started_at,
                     'total_memory': agent_host.total_memory,
                     'num_cpus': agent_host.num_cpus,
+                    'host_ip': agent_host.host_ip,  # For systemd agents only
                     'tags': agent_host.tags or [],
                     'container_count': 0,  # Will be populated by stats
                     'last_checked': agent_host.updated_at.isoformat() + 'Z' if agent_host.updated_at else None,
@@ -3989,7 +3991,16 @@ async def get_dashboard_hosts(
             # Get actual host total memory (convert from bytes to GB)
             # FIX: Use real host memory instead of hard-coded 16 GB
             host_total_memory_gb = (host.total_memory / (1024 ** 3)) if host.total_memory else 16.0
-            mem_percent = (total_mem_used / host_total_memory_gb * 100) if running_containers and host_total_memory_gb > 0 else 0
+
+            # For agent-based hosts without containers, use agent's host-level stats
+            # For hosts with containers, derive from container stats
+            if running_containers:
+                mem_percent = (total_mem_used / host_total_memory_gb * 100) if host_total_memory_gb > 0 else 0
+            elif host.connection_type == 'agent' and sparklines.get("mem"):
+                # Use agent's direct host stats
+                mem_percent = sparklines["mem"][-1]
+            else:
+                mem_percent = 0
 
             # Parse tags
             tags = []

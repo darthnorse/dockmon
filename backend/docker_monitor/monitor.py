@@ -1774,6 +1774,21 @@ class DockerMonitor:
 
                                 # Get sparklines for this host (last 30 points)
                                 host_sparklines[host_id] = self.stats_history.get_sparklines(host_id, num_points=30)
+                            else:
+                                # No running containers - check if this is an agent-based host
+                                # Agent-based hosts send host-level stats directly, not derived from containers
+                                if host.connection_type == 'agent':
+                                    sparklines = self.stats_history.get_sparklines(host_id, num_points=30)
+                                    if sparklines.get("cpu") or sparklines.get("mem"):
+                                        # Agent has sent stats - use them
+                                        host_sparklines[host_id] = sparklines
+                                        # Also populate metrics from latest sparkline values
+                                        host_metrics[host_id] = {
+                                            "cpu_percent": sparklines["cpu"][-1] if sparklines["cpu"] else 0,
+                                            "mem_percent": sparklines["mem"][-1] if sparklines["mem"] else 0,
+                                            "mem_bytes": 0,  # Can't calculate without containers
+                                            "net_bytes_per_sec": sparklines["net"][-1] if sparklines["net"] else 0
+                                        }
 
                         broadcast_data["host_metrics"] = host_metrics
                         broadcast_data["host_sparklines"] = host_sparklines

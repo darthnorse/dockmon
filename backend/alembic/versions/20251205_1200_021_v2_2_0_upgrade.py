@@ -26,6 +26,9 @@ CHANGES IN v2.2.0-beta1:
   - Foreign key to docker_hosts.id
   - Tracks which host replaced this one during migration
   - Enables audit trail of host migrations
+- Add host_ip column to docker_hosts
+  - Stores host IP address for systemd agents
+  - Container agents don't provide this (would return Docker network IPs)
 - Add check_from column to container_http_health_checks
   - Values: 'backend' (default) or 'agent'
   - Enables health checks to be performed by remote agent
@@ -192,6 +195,15 @@ def upgrade() -> None:
         if not column_exists('docker_hosts', 'replaced_by_host_id'):
             op.add_column('docker_hosts',
                 sa.Column('replaced_by_host_id', sa.String(), nullable=True)
+            )
+
+    # Change 5b: Add host_ip column to docker_hosts
+    # Stores the host's IP address (for systemd agents only)
+    # Container agents don't provide this as they'd return Docker network IPs
+    if table_exists('docker_hosts'):
+        if not column_exists('docker_hosts', 'host_ip'):
+            op.add_column('docker_hosts',
+                sa.Column('host_ip', sa.String(), nullable=True)
             )
 
     # Change 6: Add check_from column to container_http_health_checks

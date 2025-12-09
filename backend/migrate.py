@@ -223,9 +223,9 @@ def _validate_schema(engine, version: str):
         '014_v2_1_8_hotfix_1': {
             'tag_assignments_columns': ['order_index'],
         },
-        '018_v2_2_0': {
+        '021_v2_2_0': {
             'tables': ['registration_tokens', 'agents'],
-            'docker_hosts_columns': ['connection_type', 'engine_id', 'replaced_by_host_id'],
+            'docker_hosts_columns': ['connection_type', 'engine_id', 'replaced_by_host_id', 'host_ip'],
         },
         # Add validations for future versions here:
     }

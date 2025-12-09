@@ -75,6 +75,7 @@ export interface Host {
   // System resources
   total_memory?: number | null  // Total memory in bytes
   num_cpus?: number | null  // Number of CPUs
+  host_ip?: string | null  // Host IP address (for systemd agents only)
   // Podman compatibility (Issue #20)
   is_podman?: boolean  // True if host runs Podman instead of Docker
   // Connection type (v2.2.0)

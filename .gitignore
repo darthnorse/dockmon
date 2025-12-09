@@ -116,3 +116,4 @@ agent/dockmon-agent-logs-fix
 agent/dockmon-agent
 agent/agent
 agent/dockmon-agent
+compose-service/compose-service

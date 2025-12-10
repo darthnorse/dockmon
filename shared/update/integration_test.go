@@ -695,3 +695,176 @@ func TestIntegration_DependentContainerDetection(t *testing.T) {
 
 	t.Log("Dependent container detection: OK")
 }
+
+// =============================================================================
+// Integration Test: Preserve Stopped State After Update (Issue #90)
+// =============================================================================
+
+func TestIntegration_PreserveStoppedStateAfterUpdate(t *testing.T) {
+	cli := getDockerClient(t)
+	ctx := context.Background()
+	log := logrus.New()
+	log.SetLevel(logrus.DebugLevel)
+
+	// Pull alpine image
+	pullImage(t, cli, "alpine:3.18")
+	pullImage(t, cli, "alpine:3.19")
+
+	containerName := fmt.Sprintf("dockmon-test-stopped-%d", time.Now().Unix())
+
+	// Create container with alpine:3.18
+	resp, err := cli.ContainerCreate(ctx,
+		&container.Config{
+			Image: "alpine:3.18",
+			Cmd:   []string{"sleep", "300"},
+		},
+		nil, nil, nil, containerName,
+	)
+	if err != nil {
+		t.Fatalf("Failed to create container: %v", err)
+	}
+	defer removeContainer(cli, resp.ID)
+
+	// Start container then stop it (simulates a stopped container)
+	if err := cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+		t.Fatalf("Failed to start container: %v", err)
+	}
+
+	// Stop the container - this is the state we want to preserve
+	timeout := 5
+	if err := cli.ContainerStop(ctx, resp.ID, container.StopOptions{Timeout: &timeout}); err != nil {
+		t.Fatalf("Failed to stop container: %v", err)
+	}
+
+	// Verify container is stopped
+	inspect, err := cli.ContainerInspect(ctx, resp.ID)
+	if err != nil {
+		t.Fatalf("Failed to inspect container: %v", err)
+	}
+	if inspect.State.Running {
+		t.Fatal("Container should be stopped before update")
+	}
+
+	// Create updater
+	updater := NewUpdater(cli, log, UpdaterOptions{
+		OnProgress: func(e ProgressEvent) {
+			t.Logf("Progress: %s - %s", e.Stage, e.Message)
+		},
+	})
+
+	// Perform update
+	result := updater.Update(ctx, UpdateRequest{
+		ContainerID:   resp.ID,
+		NewImage:      "alpine:3.19",
+		StopTimeout:   10,
+		HealthTimeout: 30,
+	})
+
+	if !result.Success {
+		t.Fatalf("Update failed: %s", result.Error)
+	}
+
+	// Clean up new container
+	defer removeContainer(cli, result.NewContainerID)
+
+	// Verify new container exists and is STOPPED (not running)
+	// The update should have restored the stopped state
+	newInspect, err := cli.ContainerInspect(ctx, result.NewContainerID)
+	if err != nil {
+		t.Fatalf("Failed to inspect new container: %v", err)
+	}
+
+	if newInspect.State.Running {
+		t.Error("Container should remain stopped after update (was stopped before)")
+	}
+
+	// Verify image was updated
+	if newInspect.Config.Image != "alpine:3.19" {
+		t.Errorf("Image should be alpine:3.19, got %s", newInspect.Config.Image)
+	}
+
+	t.Log("Preserve stopped state after update: OK")
+}
+
+// =============================================================================
+// Integration Test: Running Container Stays Running After Update
+// =============================================================================
+
+func TestIntegration_RunningContainerStaysRunning(t *testing.T) {
+	cli := getDockerClient(t)
+	ctx := context.Background()
+	log := logrus.New()
+	log.SetLevel(logrus.DebugLevel)
+
+	// Pull alpine image
+	pullImage(t, cli, "alpine:3.18")
+	pullImage(t, cli, "alpine:3.19")
+
+	containerName := fmt.Sprintf("dockmon-test-running-%d", time.Now().Unix())
+
+	// Create container with alpine:3.18
+	resp, err := cli.ContainerCreate(ctx,
+		&container.Config{
+			Image: "alpine:3.18",
+			Cmd:   []string{"sleep", "300"},
+		},
+		nil, nil, nil, containerName,
+	)
+	if err != nil {
+		t.Fatalf("Failed to create container: %v", err)
+	}
+	defer removeContainer(cli, resp.ID)
+
+	// Start container and keep it running
+	if err := cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+		t.Fatalf("Failed to start container: %v", err)
+	}
+
+	// Verify container is running
+	inspect, err := cli.ContainerInspect(ctx, resp.ID)
+	if err != nil {
+		t.Fatalf("Failed to inspect container: %v", err)
+	}
+	if !inspect.State.Running {
+		t.Fatal("Container should be running before update")
+	}
+
+	// Create updater
+	updater := NewUpdater(cli, log, UpdaterOptions{
+		OnProgress: func(e ProgressEvent) {
+			t.Logf("Progress: %s - %s", e.Stage, e.Message)
+		},
+	})
+
+	// Perform update
+	result := updater.Update(ctx, UpdateRequest{
+		ContainerID:   resp.ID,
+		NewImage:      "alpine:3.19",
+		StopTimeout:   10,
+		HealthTimeout: 30,
+	})
+
+	if !result.Success {
+		t.Fatalf("Update failed: %s", result.Error)
+	}
+
+	// Clean up new container
+	defer removeContainer(cli, result.NewContainerID)
+
+	// Verify new container is RUNNING (was running before)
+	newInspect, err := cli.ContainerInspect(ctx, result.NewContainerID)
+	if err != nil {
+		t.Fatalf("Failed to inspect new container: %v", err)
+	}
+
+	if !newInspect.State.Running {
+		t.Error("Container should remain running after update (was running before)")
+	}
+
+	// Verify image was updated
+	if newInspect.Config.Image != "alpine:3.19" {
+		t.Errorf("Image should be alpine:3.19, got %s", newInspect.Config.Image)
+	}
+
+	t.Log("Running container stays running after update: OK")
+}

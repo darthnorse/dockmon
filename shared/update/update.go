@@ -66,6 +66,10 @@ func (u *Updater) Update(ctx context.Context, req UpdateRequest) *UpdateResult {
 		return u.failResult(containerID, StageConfiguring, fmt.Errorf("failed to inspect container: %w", err))
 	}
 
+	// Capture original running state to restore after update
+	// See: https://github.com/darthnorse/dockmon/issues/90
+	wasRunning := oldContainer.State.Running
+
 	// Step 3: Get image labels for label filtering
 	oldImageLabels, err := GetImageLabels(ctx, u.cli, oldContainer.Image)
 	if err != nil {
@@ -181,7 +185,18 @@ func (u *Updater) Update(ctx context.Context, req UpdateRequest) *UpdateResult {
 		return u.failResultRolledBack(containerID, StageHealthCheck, fmt.Errorf("health check failed: %w", err))
 	}
 
-	// Step 10: Recreate dependent containers with new parent ID
+	// Step 10: Restore original stopped state if container wasn't running before update
+	// This ensures stopped containers remain stopped after update (Issue #90)
+	if !wasRunning {
+		u.log.Info("Container was stopped before update, restoring stopped state")
+		stopTimeout := req.StopTimeout
+		if err := u.cli.ContainerStop(ctx, newContainerID, container.StopOptions{Timeout: &stopTimeout}); err != nil {
+			u.log.WithError(err).Warn("Failed to stop container after update (was originally stopped)")
+			// Continue anyway - update succeeded, just state restoration failed
+		}
+	}
+
+	// Step 11: Recreate dependent containers with new parent ID
 	var failedDeps []string
 	if len(dependentContainers) > 0 {
 		u.sendProgress(StageDependents,
@@ -194,7 +209,7 @@ func (u *Updater) Update(ctx context.Context, req UpdateRequest) *UpdateResult {
 		}
 	}
 
-	// Step 11: Cleanup backup (success path)
+	// Step 12: Cleanup backup (success path)
 	u.sendProgress(StageCleanup, "Removing backup container")
 	RemoveBackup(ctx, u.cli, u.log, backupName)
 

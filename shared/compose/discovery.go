@@ -50,9 +50,11 @@ func DiscoverContainers(
 			shortID = shortID[:12]
 		}
 
-		status := c.State
+		// Use c.Status which includes health info (e.g., "Up 9 minutes (unhealthy)")
+		// c.State only contains basic state like "running" without health details
+		status := c.Status
 		if status == "" {
-			status = c.Status
+			status = c.State
 		}
 
 		services[serviceName] = ServiceResult{

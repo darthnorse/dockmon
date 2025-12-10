@@ -843,7 +843,7 @@ class Deployment(Base):
         UniqueConstraint('host_id', 'name', name='uq_deployment_host_name'),  # Unique name per host
         # Status must be one of the valid deployment states
         CheckConstraint(
-            "status IN ('planning', 'validating', 'pulling_image', 'creating', 'starting', 'running', 'failed', 'rolled_back')",
+            "status IN ('planning', 'validating', 'pulling_image', 'creating', 'starting', 'running', 'partial', 'failed', 'rolled_back')",
             name='ck_deployment_valid_status'
         ),
         Index('idx_deployment_user_id', 'user_id'),  # Filter deployments by user (authorization checks)

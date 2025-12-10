@@ -15,6 +15,7 @@ export type DeploymentStatus =
   | 'creating'        // Creating container
   | 'starting'        // Starting container
   | 'running'         // Container running successfully (terminal state)
+  | 'partial'         // Some services running, others failed (terminal state)
   | 'failed'          // Failed during execution
   | 'rolled_back'     // Failed and rolled back (before commitment point)
 

@@ -123,10 +123,17 @@ func IsContainerHealthy(c api.ContainerSummary) bool {
 // IsServiceHealthy checks if a service status indicates healthy/running state
 func IsServiceHealthy(status string) bool {
 	status = strings.ToLower(status)
+
+	// First check for explicit unhealthy - this takes precedence
+	if strings.Contains(status, "unhealthy") {
+		return false
+	}
+
+	// Now check for healthy states
 	if status == "running" || status == "up" || strings.HasPrefix(status, "up ") {
 		return true
 	}
-	if strings.Contains(status, "healthy") && !strings.Contains(status, "unhealthy") {
+	if strings.Contains(status, "healthy") {
 		return true
 	}
 	return false

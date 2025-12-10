@@ -101,6 +101,7 @@ export function DeploymentsPage() {
     creating: 'Creating',
     starting: 'Starting',
     running: 'Deployed',
+    partial: 'Partial',
     failed: 'Failed',
     rolled_back: 'Rolled Back',
   }
@@ -143,7 +144,7 @@ export function DeploymentsPage() {
       // When deployment reaches a final state, refetch to get container_ids and other final data
       // Use prefix matching (['deployments']) to ensure all deployment queries are invalidated
       // regardless of filter state changes
-      if (status === 'running' || status === 'failed' || status === 'rolled_back') {
+      if (status === 'running' || status === 'partial' || status === 'failed' || status === 'rolled_back') {
         queryClient.invalidateQueries({ queryKey: ['deployments'] })
       }
     }
@@ -155,15 +156,15 @@ export function DeploymentsPage() {
   }, [addMessageHandler, handleDeploymentUpdate])
 
   const handleExecute = (deployment: Deployment) => {
-    if (deployment.status !== 'planning' && deployment.status !== 'failed' && deployment.status !== 'rolled_back') {
+    if (deployment.status !== 'planning' && deployment.status !== 'failed' && deployment.status !== 'rolled_back' && deployment.status !== 'partial') {
       return
     }
     executeDeployment.mutate(deployment.id)
   }
 
   const handleEdit = (deployment: Deployment) => {
-    // Allow editing in planning, failed, and rolled_back states
-    if (deployment.status !== 'planning' && deployment.status !== 'failed' && deployment.status !== 'rolled_back') {
+    // Allow editing in planning, failed, rolled_back, and partial states
+    if (deployment.status !== 'planning' && deployment.status !== 'failed' && deployment.status !== 'rolled_back' && deployment.status !== 'partial') {
       return
     }
     setDeploymentToEdit(deployment)
@@ -272,6 +273,7 @@ export function DeploymentsPage() {
             <SelectItem value="creating">Creating</SelectItem>
             <SelectItem value="starting">Starting</SelectItem>
             <SelectItem value="running">Deployed</SelectItem>
+            <SelectItem value="partial">Partial</SelectItem>
             <SelectItem value="failed">Failed</SelectItem>
             <SelectItem value="rolled_back">Rolled Back</SelectItem>
           </SelectContent>
@@ -405,6 +407,16 @@ export function DeploymentsPage() {
                         100%
                       </span>
                     )}
+                    {deployment.status === 'partial' && deployment.error_message && (
+                      <div className="text-sm text-amber-600 font-medium max-w-sm" data-testid="deployment-partial">
+                        {deployment.error_message}
+                      </div>
+                    )}
+                    {deployment.status === 'partial' && !deployment.error_message && (
+                      <span className="text-xs text-amber-600" data-testid="deployment-partial">
+                        Some services failed
+                      </span>
+                    )}
                     {deployment.status === 'failed' && deployment.error_message && (
                       <div className="text-sm text-destructive font-medium max-w-sm" data-testid="deployment-error">
                         {deployment.error_message}
@@ -452,7 +464,7 @@ export function DeploymentsPage() {
                         </Button>
                       </>
                     )}
-                    {(deployment.status === 'failed' || deployment.status === 'rolled_back') && (
+                    {(deployment.status === 'failed' || deployment.status === 'rolled_back' || deployment.status === 'partial') && (
                       <>
                         <Button
                           variant="ghost"
@@ -471,12 +483,12 @@ export function DeploymentsPage() {
                           data-testid={`execute-deployment-${deployment.name}`}
                         >
                           <Play className="h-4 w-4 mr-1" />
-                          Execute
+                          Retry
                         </Button>
                       </>
                     )}
 
-                    {deployment.status === 'running' && (
+                    {(deployment.status === 'running' || deployment.status === 'partial') && (
                       <Button
                         variant="outline"
                         size="sm"
@@ -489,7 +501,7 @@ export function DeploymentsPage() {
                       </Button>
                     )}
 
-                    {(deployment.status === 'running' || deployment.status === 'failed' || deployment.status === 'rolled_back' || deployment.status === 'planning') && (
+                    {(deployment.status === 'running' || deployment.status === 'partial' || deployment.status === 'failed' || deployment.status === 'rolled_back' || deployment.status === 'planning') && (
                       <Button
                         variant="ghost"
                         size="sm"
@@ -603,6 +615,11 @@ function StatusBadge({ status }: { status: DeploymentStatus }) {
       variant: 'default',
       icon: <CheckCircle className="h-3 w-3" />,
       label: 'Deployed',
+    },
+    partial: {
+      variant: 'outline',
+      icon: <AlertCircle className="h-3 w-3 text-amber-500" />,
+      label: 'Partial',
     },
     failed: {
       variant: 'destructive',

@@ -280,14 +280,14 @@ async def execute_deployment(
             if not deployment:
                 raise HTTPException(status_code=404, detail="Deployment not found")
 
-            # Only allow execution from 'planning', 'failed', or 'rolled_back' status
+            # Only allow execution from 'planning', 'failed', 'rolled_back', or 'partial' status
             # These are the states where a new execution attempt makes sense
             # In-progress states (validating, pulling_image, creating, starting) cannot be re-executed
             # Terminal success state (running) cannot be re-executed
-            if deployment.status not in ('planning', 'failed', 'rolled_back'):
+            if deployment.status not in ('planning', 'failed', 'rolled_back', 'partial'):
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Cannot execute deployment in status '{deployment.status}'. Only 'planning', 'failed', or 'rolled_back' deployments can be executed."
+                    detail=f"Cannot execute deployment in status '{deployment.status}'. Only 'planning', 'failed', 'rolled_back', or 'partial' deployments can be executed."
                 )
 
             # Lock is held during this critical section - prevents other threads from modifying
@@ -415,8 +415,8 @@ async def update_deployment(
             if not deployment:
                 raise HTTPException(status_code=404, detail="Deployment not found")
 
-            # Allow editing in 'planning', 'failed', or 'rolled_back' states
-            editable_statuses = ['planning', 'failed', 'rolled_back']
+            # Allow editing in 'planning', 'failed', 'rolled_back', or 'partial' states
+            editable_statuses = ['planning', 'failed', 'rolled_back', 'partial']
             if deployment.status not in editable_statuses:
                 raise HTTPException(
                     status_code=400,
@@ -426,8 +426,8 @@ async def update_deployment(
             # NOTE: Security validation removed - will be performed during execution
             # No need to validate on update since user is just editing configuration
 
-            # If retrying a failed/rolled_back deployment, reset error state and progress
-            if deployment.status in ['failed', 'rolled_back']:
+            # If retrying a failed/rolled_back/partial deployment, reset error state and progress
+            if deployment.status in ['failed', 'rolled_back', 'partial']:
                 deployment.status = 'planning'  # Reset to planning for retry
                 deployment.error_message = None  # Clear previous error
                 deployment.progress_percent = 0  # Reset progress indicator

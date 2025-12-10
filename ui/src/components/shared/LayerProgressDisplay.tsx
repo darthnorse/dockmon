@@ -92,20 +92,26 @@ export function LayerProgressDisplay({
   // Listen for WebSocket progress messages
   const handleProgressMessage = useCallback(
     (message: any) => {
-      if (
-        message.data?.host_id === hostId &&
-        message.data?.entity_id === entityId
-      ) {
-        // Handle OLD simple progress (backward compatible)
+      // Support both message structures:
+      // 1. Container updates: message.data.host_id, message.data.entity_id
+      // 2. Deployments: message.host_id, message.deployment_id
+      const msgHostId = message.data?.host_id || message.host_id
+      const msgEntityId = message.data?.entity_id || message.deployment_id
+
+      if (msgHostId === hostId && msgEntityId === entityId) {
+        // Handle simple progress (container updates use message.data, deployments use message.progress)
         if (simpleProgressEventType && message.type === simpleProgressEventType) {
+          // Deployment progress structure
+          const progress = message.progress || message.data
           setUpdateProgress({
-            stage: message.data.stage,
-            progress: message.data.progress,
-            message: message.data.message,
+            stage: progress?.stage || message.data?.stage,
+            progress: progress?.overall_percent ?? message.data?.progress,
+            message: progress?.stage || message.data?.message || 'Processing...',
           })
 
           // Clear progress when update completes
-          if (message.data.stage === 'completed') {
+          const stage = progress?.stage || message.data?.stage
+          if (stage === 'completed' || message.status === 'running') {
             // Clear any existing timeout first
             if (completionTimeoutId) {
               clearTimeout(completionTimeoutId)
@@ -198,13 +204,15 @@ export function LayerProgressDisplay({
         <span className="font-medium text-blue-400">
           {hasDetailedProgress
             ? layerProgress.summary
-            : 'Deploying, please wait...'}
+            : updateProgress?.message || 'Deploying, please wait...'}
         </span>
-        {hasDetailedProgress && (
-          <span className="text-blue-400">
-            {layerProgress.overall_progress}%
-          </span>
-        )}
+        <span className="text-blue-400">
+          {hasDetailedProgress
+            ? `${layerProgress.overall_progress}%`
+            : updateProgress?.progress !== undefined
+              ? `${updateProgress.progress}%`
+              : ''}
+        </span>
       </div>
       <div className="relative h-2 w-full overflow-hidden rounded-full bg-blue-950">
         {hasDetailedProgress ? (
@@ -212,8 +220,14 @@ export function LayerProgressDisplay({
             className="h-full bg-blue-500 transition-all duration-500 ease-out"
             style={{ width: `${layerProgress.overall_progress}%` }}
           />
+        ) : updateProgress?.progress !== undefined ? (
+          /* Simple progress bar when we have progress percentage but no layer details */
+          <div
+            className="h-full bg-blue-500 transition-all duration-500 ease-out"
+            style={{ width: `${updateProgress.progress}%` }}
+          />
         ) : (
-          /* Indeterminate animated bar for agent deployments */
+          /* Indeterminate animated bar when no progress data at all */
           <div className="h-full w-full bg-gradient-to-r from-blue-500/30 via-blue-500 to-blue-500/30 animate-pulse" />
         )}
       </div>

@@ -165,17 +165,21 @@ async def _execute_via_go_service(
             state_machine.transition(deployment, 'starting')
 
             if result.partial_success:
-                # Some services failed - log warning but don't fail
+                # Some services failed - transition to partial state (not running)
                 failed = result.failed_services or []
                 logger.warning(
                     f"Deployment {deployment.id} partially succeeded - "
                     f"failed services: {failed}"
                 )
+                # Transition to 'partial' terminal state instead of 'running'
+                state_machine.transition(deployment, 'partial')
                 await update_progress(
                     session, deployment, 100,
-                    f'Stack deployment completed (some services failed: {", ".join(failed)})'
+                    f'Partial deployment - some services failed: {", ".join(failed)}'
                 )
             else:
+                # Full success - transition to running
+                state_machine.transition(deployment, 'running')
                 await update_progress(
                     session, deployment, 100, 'Stack deployment completed'
                 )

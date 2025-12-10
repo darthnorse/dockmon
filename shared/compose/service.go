@@ -264,7 +264,33 @@ func (s *Service) runComposeUp(ctx context.Context, req DeployRequest, composeFi
 		}
 		if err := WaitForHealthy(ctx, composeService, req.ProjectName, timeout, s.log, s.progressFn); err != nil {
 			s.logError("Health check failed", err)
-			return s.failResult(req.DeploymentID, fmt.Sprintf("Health check failed: %v", err))
+
+			// Don't just fail - discover containers and check for partial success
+			// Some containers may be running even if health checks failed
+			services, discoverErr := DiscoverContainers(ctx, s.dockerClient, req.ProjectName, s.log)
+			if discoverErr != nil {
+				s.logWarn("Failed to discover containers after health check failure")
+				return s.failResult(req.DeploymentID, fmt.Sprintf("Health check failed: %v", err))
+			}
+
+			// Use AnalyzeServiceStatus to properly detect partial success
+			result := AnalyzeServiceStatus(req.DeploymentID, services, s.log)
+
+			// Override the error message to include health check failure info
+			if result.PartialSuccess {
+				result.Error = NewInternalError(fmt.Sprintf("Health check failed: %v. %s",
+					err, result.Error.Message))
+			} else if !result.Success {
+				result.Error = NewInternalError(fmt.Sprintf("Health check failed: %v", err))
+			}
+
+			s.sendProgress(ProgressEvent{
+				Stage:    StageFailed,
+				Progress: 100,
+				Message:  fmt.Sprintf("Health check failed: %v", err),
+			})
+
+			return result
 		}
 		s.logInfo("All services healthy", nil)
 	}

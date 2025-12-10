@@ -3986,7 +3986,12 @@ async def get_dashboard_hosts(
 
             # Get real sparkline data from stats history buffer (Phase 4c)
             # Uses EMA smoothing (α = 0.3) and maintains 60-90s of history
-            sparklines = monitor.stats_history.get_sparklines(host.id, num_points=30)
+            # Only use sparklines for online hosts to avoid showing stale data
+            if host.status == 'online':
+                sparklines = monitor.stats_history.get_sparklines(host.id, num_points=30)
+            else:
+                # Offline hosts get empty sparklines (no stale data)
+                sparklines = {"cpu": [], "mem": [], "net": []}
 
             # Get actual host total memory (convert from bytes to GB)
             # FIX: Use real host memory instead of hard-coded 16 GB
@@ -3994,10 +3999,11 @@ async def get_dashboard_hosts(
 
             # For agent-based hosts without containers, use agent's host-level stats
             # For hosts with containers, derive from container stats
+            # Only use sparklines for online hosts
             if running_containers:
                 mem_percent = (total_mem_used / host_total_memory_gb * 100) if host_total_memory_gb > 0 else 0
-            elif host.connection_type == 'agent' and sparklines.get("mem"):
-                # Use agent's direct host stats
+            elif host.connection_type == 'agent' and host.status == 'online' and sparklines.get("mem"):
+                # Use agent's direct host stats (only if online)
                 mem_percent = sparklines["mem"][-1]
             else:
                 mem_percent = 0

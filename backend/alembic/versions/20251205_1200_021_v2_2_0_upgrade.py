@@ -270,6 +270,22 @@ def upgrade() -> None:
                 sa.Column('action', sa.Text(), server_default='warn', nullable=False)
             )
 
+    # Change 13: Update deployments table CHECK constraint to include 'partial' status
+    # The 'partial' status is used when some services in a stack deployment succeed but others fail
+    # SQLite requires recreating the table to modify CHECK constraints
+    if table_exists('deployments'):
+        bind = op.get_bind()
+        # Check if constraint already includes 'partial'
+        result = bind.execute(sa.text(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='deployments'"
+        )).fetchone()
+        if result and "'partial'" not in result[0]:
+            # Use batch mode to recreate table with updated CHECK constraint
+            with op.batch_alter_table('deployments', recreate='always') as batch_op:
+                # The batch_alter_table with recreate='always' will use the new model definition
+                # which includes 'partial' in the CHECK constraint
+                pass  # Just recreating triggers constraint update from model
+
 
 def downgrade() -> None:
     """Remove v2.2.0-beta1 agent infrastructure"""

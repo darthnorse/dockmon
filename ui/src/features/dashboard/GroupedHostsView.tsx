@@ -11,7 +11,7 @@
  */
 
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
-import GridLayout, { WidthProvider, type Layout } from 'react-grid-layout'
+import { Responsive as ResponsiveGridLayout, WidthProvider, type Layout, type Layouts } from 'react-grid-layout'
 import { ChevronDown, ChevronRight, GripVertical } from 'lucide-react'
 import {
   DndContext,
@@ -36,7 +36,7 @@ import { useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPre
 import type { Host } from '@/types/api'
 import 'react-grid-layout/css/styles.css'
 
-const ResponsiveGridLayout = WidthProvider(GridLayout)
+const ResponsiveGrid = WidthProvider(ResponsiveGridLayout)
 
 interface GroupedHostsViewProps {
   hosts: Host[]
@@ -51,11 +51,52 @@ interface HostGroup {
   hosts: Host[]
 }
 
-// Generate default layout for hosts within a group
-function generateGroupLayout(hosts: Host[], mode: 'standard' | 'expanded'): Layout[] {
+// Generate default layouts for hosts within a group with responsive breakpoints
+function generateGroupLayouts(hosts: Host[], mode: 'standard' | 'expanded'): Layouts {
+  const layouts: Layouts = {}
+
   if (mode === 'standard') {
-    // Standard mode: 4 columns (3 units each)
-    return hosts.map((host, index) => ({
+    // Mobile (xs): 1 column
+    layouts.xs = hosts.map((host, index) => ({
+      i: host.id,
+      x: 0,
+      y: index * 8,
+      w: 12,
+      h: 8,
+      minW: 12,
+      minH: 6,
+      maxW: 12,
+      maxH: 20,
+    }))
+
+    // Tablet (sm): 2 columns
+    layouts.sm = hosts.map((host, index) => ({
+      i: host.id,
+      x: (index % 2) * 6,
+      y: Math.floor(index / 2) * 8,
+      w: 6,
+      h: 8,
+      minW: 6,
+      minH: 6,
+      maxW: 12,
+      maxH: 20,
+    }))
+
+    // Desktop (md): 3 columns
+    layouts.md = hosts.map((host, index) => ({
+      i: host.id,
+      x: (index % 3) * 4,
+      y: Math.floor(index / 3) * 8,
+      w: 4,
+      h: 8,
+      minW: 3,
+      minH: 6,
+      maxW: 12,
+      maxH: 20,
+    }))
+
+    // Large desktop (lg): 4 columns
+    layouts.lg = hosts.map((host, index) => ({
       i: host.id,
       x: (index % 4) * 3,
       y: Math.floor(index / 4) * 8,
@@ -67,8 +108,48 @@ function generateGroupLayout(hosts: Host[], mode: 'standard' | 'expanded'): Layo
       maxH: 20,
     }))
   } else {
-    // Expanded mode: 3 columns (4 units each)
-    return hosts.map((host, index) => ({
+    // Expanded mode
+    // Mobile (xs): 1 column
+    layouts.xs = hosts.map((host, index) => ({
+      i: host.id,
+      x: 0,
+      y: index * 10,
+      w: 12,
+      h: 10,
+      minW: 12,
+      minH: 6,
+      maxW: 12,
+      maxH: 30,
+    }))
+
+    // Tablet (sm): 2 columns
+    layouts.sm = hosts.map((host, index) => ({
+      i: host.id,
+      x: (index % 2) * 6,
+      y: Math.floor(index / 2) * 10,
+      w: 6,
+      h: 10,
+      minW: 6,
+      minH: 6,
+      maxW: 12,
+      maxH: 30,
+    }))
+
+    // Desktop (md+): 3 columns
+    layouts.md = hosts.map((host, index) => ({
+      i: host.id,
+      x: (index % 3) * 4,
+      y: Math.floor(index / 3) * 10,
+      w: 4,
+      h: 10,
+      minW: 3,
+      minH: 6,
+      maxW: 12,
+      maxH: 30,
+    }))
+
+    // Large desktop (lg): 3 columns
+    layouts.lg = hosts.map((host, index) => ({
       i: host.id,
       x: (index % 3) * 4,
       y: Math.floor(index / 3) * 10,
@@ -80,6 +161,8 @@ function generateGroupLayout(hosts: Host[], mode: 'standard' | 'expanded'): Layo
       maxH: 30,
     }))
   }
+
+  return layouts
 }
 
 export function GroupedHostsView({ hosts, onHostClick, onViewDetails, onEditHost, mode = 'expanded' }: GroupedHostsViewProps) {
@@ -287,34 +370,36 @@ function GroupSection({
 }: GroupSectionProps) {
   const layoutKey = `groupLayout_${group.tag}_${mode}`
 
-  // Get layout for this group from the groupLayouts nested object
-  const layout = useMemo(() => {
+  // Get layouts for this group from the groupLayouts nested object
+  const layouts = useMemo(() => {
     const groupLayouts = dashboardPrefs?.dashboard?.groupLayouts || {}
-    const storedLayout = groupLayouts[layoutKey] as Layout[] | undefined
+    const storedLayouts = groupLayouts[layoutKey] as Layouts | undefined
 
-    if (storedLayout && storedLayout.length === group.hosts.length) {
+    if (storedLayouts) {
       const hostIds = new Set(group.hosts.map((h) => h.id))
-      const allIdsValid = storedLayout.every((item) => hostIds.has(item.i))
+      const hasValidLayouts = Object.values(storedLayouts).every(
+        (layout) => layout && layout.length === group.hosts.length && layout.every((item) => hostIds.has(item.i))
+      )
 
-      if (allIdsValid) {
-        return storedLayout
+      if (hasValidLayouts) {
+        return storedLayouts
       }
     }
 
-    return generateGroupLayout(group.hosts, mode)
+    return generateGroupLayouts(group.hosts, mode)
   }, [group.hosts, dashboardPrefs?.dashboard?.groupLayouts, mode, layoutKey])
 
-  const [currentLayout, setCurrentLayout] = useState<Layout[]>(layout)
+  const [currentLayouts, setCurrentLayouts] = useState<Layouts>(layouts)
 
-  // Update currentLayout when layout memo changes
+  // Update currentLayouts when layouts memo changes
   useEffect(() => {
-    setCurrentLayout(layout)
-  }, [layout])
+    setCurrentLayouts(layouts)
+  }, [layouts])
 
   // Handle layout change
   const handleLayoutChange = useCallback(
-    (newLayout: Layout[]) => {
-      setCurrentLayout(newLayout)
+    (_currentLayout: Layout[], allLayouts: Layouts) => {
+      setCurrentLayouts(allLayouts)
 
       if (!hasLoadedPrefs) {
         return
@@ -325,7 +410,7 @@ function GroupSection({
       updateDashboardPrefs({
         groupLayouts: {
           ...currentGroupLayouts,
-          [layoutKey]: newLayout,
+          [layoutKey]: allLayouts,
         },
       })
     },
@@ -410,11 +495,12 @@ function GroupSection({
       {/* Group Content */}
       {!isCollapsed && (
         <div className="p-4">
-          <ResponsiveGridLayout
+          <ResponsiveGrid
             className="layout"
-            layout={currentLayout}
+            layouts={currentLayouts}
             onLayoutChange={handleLayoutChange}
-            cols={12}
+            breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 0 }}
+            cols={{ lg: 12, md: 12, sm: 12, xs: 12 }}
             rowHeight={36}
             draggableHandle=".host-card-drag-handle"
             compactType="vertical"
@@ -454,7 +540,7 @@ function GroupSection({
                 />
               </div>
             ))}
-          </ResponsiveGridLayout>
+          </ResponsiveGrid>
         </div>
       )}
     </div>

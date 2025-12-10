@@ -45,16 +45,16 @@ export function HostsPage() {
   }
 
   return (
-    <div className="container mx-auto p-6 space-y-6">
+    <div className="container mx-auto p-3 sm:p-4 md:p-6 pt-16 md:pt-6 space-y-4 sm:space-y-6">
       {/* Page Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold">Hosts</h1>
+          <h1 className="text-xl sm:text-2xl font-bold">Hosts</h1>
           <p className="text-sm text-muted-foreground mt-1">
             Manage your Docker hosts and connections
           </p>
         </div>
-        <Button onClick={handleAddHost} className="flex items-center gap-2" data-testid="add-host-button">
+        <Button onClick={handleAddHost} className="flex items-center gap-2 w-full sm:w-auto" data-testid="add-host-button">
           <Plus className="h-4 w-4" />
           Add Host
         </Button>
@@ -62,7 +62,7 @@ export function HostsPage() {
 
       {/* Search and Filters */}
       <div className="flex items-center gap-4">
-        <div className="relative flex-1 max-w-md">
+        <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
             type="text"

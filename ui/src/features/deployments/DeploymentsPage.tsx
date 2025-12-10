@@ -201,17 +201,17 @@ export function DeploymentsPage() {
   }
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-3 sm:p-4 md:p-6 pt-16 md:pt-6 space-y-4 sm:space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold">Deployments</h1>
+          <h1 className="text-xl sm:text-2xl font-bold">Deployments</h1>
           <p className="text-sm text-muted-foreground mt-1">
             Deploy and manage containers across your Docker hosts
           </p>
         </div>
 
-        <div className="flex gap-3">
+        <div className="flex gap-2 sm:gap-3 flex-wrap">
           <Button
             variant="outline"
             onClick={() => navigate('/templates')}

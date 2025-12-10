@@ -1604,23 +1604,23 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   return (
     <div className={`space-y-4 ${selectedContainerIds.size > 0 ? 'pb-[280px]' : ''}`}>
       {/* Search and Filters */}
-      <div className="flex items-center justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4">
         {/* Left: Search */}
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-2 sm:gap-4 flex-1">
           <Input
             placeholder="Search containers..."
             value={globalFilter ?? ''}
             onChange={(e) => setGlobalFilter(e.target.value)}
-            className="max-w-md"
+            className="flex-1 sm:max-w-md"
             data-testid="containers-search-input"
           />
-          <div className="text-sm text-muted-foreground whitespace-nowrap">
+          <div className="text-sm text-muted-foreground whitespace-nowrap hidden sm:block">
             {table.getFilteredRowModel().rows.length} container(s)
           </div>
         </div>
 
         {/* Right: Filter dropdowns */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           {/* Clear Filters Button */}
           {hasActiveFilters && (
             <Button

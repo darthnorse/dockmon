@@ -124,6 +124,57 @@ class ApiKey(Base):
         return f"<ApiKey(id={self.id}, name='{self.name}', prefix='{self.key_prefix}', scopes='{self.scopes}')>"
 
 
+class ActionToken(Base):
+    """
+    One-time action tokens for notification links (v2.2.0).
+
+    Enables users to trigger container updates directly from notification links
+    (e.g., Pushover, Telegram, email) without exposing API keys in URLs.
+
+    SECURITY:
+    - Tokens are hashed (SHA256) before storage - NEVER store plaintext
+    - Single-use: token invalidated after first use
+    - Time-limited: 24-hour default expiration
+    - Scoped: tied to specific action and parameters
+
+    LIFECYCLE:
+    1. Generated when update notification is sent
+    2. Included in notification URL
+    3. Validated when user clicks link
+    4. Executed on user confirmation
+    5. Cleaned up by periodic job (expired/used tokens)
+    """
+    __tablename__ = "action_tokens"
+
+    # Primary key
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # Token storage (SECURITY CRITICAL)
+    token_hash = Column(Text, nullable=False, unique=True, index=True)  # SHA256 hash
+    token_prefix = Column(Text, nullable=False)  # First 12 chars for logs
+
+    # Owner (who created/can use this token)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+
+    # Action specification
+    action_type = Column(Text, nullable=False)  # 'container_update', 'container_restart', etc.
+    action_params = Column(Text, nullable=False)  # JSON: {host_id, container_id, ...}
+
+    # Lifecycle timestamps
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+    expires_at = Column(DateTime, nullable=False, index=True)  # Indexed for cleanup queries
+
+    # Usage tracking
+    used_at = Column(DateTime, nullable=True)  # NULL if unused
+    used_from_ip = Column(Text, nullable=True)  # IP that used the token
+
+    # Manual revocation (for future admin UI)
+    revoked_at = Column(DateTime, nullable=True)
+
+    def __repr__(self):
+        return f"<ActionToken(id={self.id}, prefix='{self.token_prefix}', action='{self.action_type}')>"
+
+
 class RegistrationToken(Base):
     """Agent registration tokens (v2.2.0)"""
     __tablename__ = "registration_tokens"
@@ -334,6 +385,10 @@ class GlobalSettings(Base):
     latest_agent_version = Column(Text, nullable=True)  # Latest agent version from GitHub
     latest_agent_release_url = Column(Text, nullable=True)  # URL to agent release page
     last_agent_update_check_at = Column(DateTime, nullable=True)  # Last time we checked for agent updates
+
+    # External access URL for notification action links (v2.2.0+)
+    # Example: "https://dockmon.example.com" - used to generate action URLs in notifications
+    external_url = Column(Text, nullable=True)
 
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 

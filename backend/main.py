@@ -479,6 +479,10 @@ app.include_router(deployment_routes.template_router)  # v2.1 template endpoints
 from auth import api_key_routes
 app.include_router(api_key_routes.router)  # API key management
 
+# Action token routes (v2.2.0+) - notification action links
+from auth import action_token_routes
+app.include_router(action_token_routes.router)  # One-time action tokens
+
 @app.get("/", tags=["system"])
 async def root(current_user: dict = Depends(get_current_user)):
     """Backend API root - frontend is served separately"""
@@ -3307,6 +3311,7 @@ async def get_template_variables(current_user: dict = Depends(get_current_user))
             {"name": "{NEW_IMAGE}", "description": "Image after update (for completed updates)"},
             {"name": "{CHANGELOG_URL}", "description": "Changelog/release notes URL (GitHub releases, etc.)"},
             {"name": "{ERROR_MESSAGE}", "description": "Error message (for failed updates or health checks)"},
+            {"name": "{ACTION_URL}", "description": "One-click action URL (e.g., update container from notification)"},
 
             # Health checks (HTTP/HTTPS monitoring)
             {"name": "{HEALTH_CHECK_URL}", "description": "Health check URL being monitored"},

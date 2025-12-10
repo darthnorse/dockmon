@@ -29,6 +29,7 @@ import { SettingsPage } from '@/features/settings/SettingsPage'
 import { ChangePasswordModal } from '@/features/auth/ChangePasswordModal'
 import { DeploymentsPage } from '@/features/deployments/DeploymentsPage'
 import { TemplatesPage } from '@/features/deployments/TemplatesPage'
+import { QuickActionPage } from '@/features/quick-action/QuickActionPage'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { LoadingSkeleton } from '@/components/layout/LoadingSkeleton'
 import { useState, useEffect } from 'react'
@@ -87,6 +88,9 @@ function AppRoutes() {
         path="/login"
         element={isAuthenticated ? <Navigate to="/" replace /> : <LoginPage />}
       />
+
+      {/* Public route - Quick Action (notification links) */}
+      <Route path="/quick-action" element={<QuickActionPage />} />
 
       {/* Protected routes - All use AppLayout with sidebar + WebSocket + Stats */}
       <Route

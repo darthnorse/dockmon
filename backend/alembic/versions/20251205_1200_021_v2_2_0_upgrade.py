@@ -48,6 +48,10 @@ CHANGES IN v2.2.0-beta1:
 - Add action column to update_policies table
   - Values: 'warn' (default) or 'ignore'
   - 'ignore' excludes containers from automatic update checks
+- Create action_tokens table (notification action links)
+  - One-time tokens for triggering updates from notification links
+  - SHA256 hashed storage, single-use, time-limited (24h default)
+  - Enables mobile-friendly update workflow via Pushover/Telegram/etc.
 
 NEW FEATURES:
 - Agent registration via time-limited tokens
@@ -121,6 +125,33 @@ def upgrade() -> None:
             op.create_index('idx_registration_token_user', 'registration_tokens', ['created_by_user_id'])
         if not index_exists('registration_tokens', 'idx_registration_token_expires'):
             op.create_index('idx_registration_token_expires', 'registration_tokens', ['expires_at'])
+
+    # Change 1b: Create action_tokens table
+    # One-time tokens for triggering actions (e.g., container updates) from notification links
+    if not table_exists('action_tokens'):
+        op.create_table(
+            'action_tokens',
+            sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
+            sa.Column('token_hash', sa.Text(), nullable=False, unique=True),  # SHA256 hash
+            sa.Column('token_prefix', sa.Text(), nullable=False),  # First 12 chars for logs
+            sa.Column('user_id', sa.Integer(), sa.ForeignKey('users.id', ondelete='CASCADE'), nullable=False),
+            sa.Column('action_type', sa.Text(), nullable=False),  # 'container_update', etc.
+            sa.Column('action_params', sa.Text(), nullable=False),  # JSON parameters
+            sa.Column('created_at', sa.DateTime(), nullable=False),
+            sa.Column('expires_at', sa.DateTime(), nullable=False),
+            sa.Column('used_at', sa.DateTime(), nullable=True),
+            sa.Column('used_from_ip', sa.Text(), nullable=True),
+            sa.Column('revoked_at', sa.DateTime(), nullable=True),
+            sqlite_autoincrement=True,
+        )
+
+        # Add indexes for performance
+        if not index_exists('action_tokens', 'idx_action_token_hash'):
+            op.create_index('idx_action_token_hash', 'action_tokens', ['token_hash'], unique=True)
+        if not index_exists('action_tokens', 'idx_action_token_expires'):
+            op.create_index('idx_action_token_expires', 'action_tokens', ['expires_at'])
+        if not index_exists('action_tokens', 'idx_action_token_user'):
+            op.create_index('idx_action_token_user', 'action_tokens', ['user_id'])
 
     # Change 2: Create agents table
     # Stores agent registration info and lifecycle management
@@ -270,7 +301,14 @@ def upgrade() -> None:
                 sa.Column('action', sa.Text(), server_default='warn', nullable=False)
             )
 
-    # Change 13: Update deployments table CHECK constraint to include 'partial' status
+    # Change 13b: Add external_url to global_settings (for notification action links)
+    if table_exists('global_settings'):
+        if not column_exists('global_settings', 'external_url'):
+            op.add_column('global_settings',
+                sa.Column('external_url', sa.Text(), nullable=True)
+            )
+
+    # Change 14: Update deployments table CHECK constraint to include 'partial' status
     # The 'partial' status is used when some services in a stack deployment succeed but others fail
     # SQLite requires recreating the table to modify CHECK constraints
     if table_exists('deployments'):
@@ -297,6 +335,12 @@ def downgrade() -> None:
         if column_exists('update_policies', 'action'):
             with op.batch_alter_table('update_policies') as batch_op:
                 batch_op.drop_column('action')
+
+    # Remove external_url from global_settings
+    if table_exists('global_settings'):
+        if column_exists('global_settings', 'external_url'):
+            with op.batch_alter_table('global_settings') as batch_op:
+                batch_op.drop_column('external_url')
 
     if table_exists('global_settings'):
         op.execute(
@@ -370,6 +414,18 @@ def downgrade() -> None:
             op.drop_index('idx_agent_host_id', 'agents')
         # Drop table
         op.drop_table('agents')
+
+    # Drop action_tokens table
+    if table_exists('action_tokens'):
+        # Drop indexes first
+        if index_exists('action_tokens', 'idx_action_token_user'):
+            op.drop_index('idx_action_token_user', 'action_tokens')
+        if index_exists('action_tokens', 'idx_action_token_expires'):
+            op.drop_index('idx_action_token_expires', 'action_tokens')
+        if index_exists('action_tokens', 'idx_action_token_hash'):
+            op.drop_index('idx_action_token_hash', 'action_tokens')
+        # Drop table
+        op.drop_table('action_tokens')
 
     # Drop registration_tokens table
     if table_exists('registration_tokens'):

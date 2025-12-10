@@ -218,6 +218,12 @@ class PeriodicJobsManager:
                         EventType.STARTUP
                     )
 
+                # Clean up expired action tokens (v2.2.0+)
+                from auth.action_token_auth import cleanup_expired_action_tokens
+                action_tokens_deleted = cleanup_expired_action_tokens(self.db)
+                if action_tokens_deleted > 0:
+                    logger.info(f"Cleaned up {action_tokens_deleted} expired action tokens")
+
                 # Clean up stale container state dictionaries (prevent memory leak)
                 if self.monitor:
                     await self.monitor.cleanup_stale_container_state()

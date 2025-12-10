@@ -17,6 +17,7 @@ from database import DatabaseManager, NotificationChannel, AlertV2, Notification
 from event_logger import EventSeverity, EventCategory, EventType
 from utils.keys import parse_composite_key
 from blackout_manager import BlackoutManager
+from auth.action_token_auth import generate_action_token
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +102,7 @@ class NotificationService:
     # _get_default_template, _format_message
     # V2 alert system (AlertEngine) handles all alert processing via send_alert_v2()
 
-    async def _send_telegram(self, config: Dict[str, Any], message: str, event=None) -> bool:
+    async def _send_telegram(self, config: Dict[str, Any], message: str, event=None, action_url: str = '') -> bool:
         """Send notification via Telegram
 
         Uses HTML parse mode instead of Markdown for better compatibility.
@@ -111,6 +112,7 @@ class NotificationService:
             config: Telegram channel configuration
             message: Message text to send
             event: Optional event object (unused, for signature consistency)
+            action_url: Optional action URL to include as inline button
         """
         try:
             # Support both 'token' and 'bot_token' for backward compatibility
@@ -164,6 +166,14 @@ class NotificationService:
                 # Regular chat (no topic)
                 payload['chat_id'] = chat_id
 
+            # Add inline keyboard button for action URL (v2.2.0+)
+            if action_url:
+                payload['reply_markup'] = {
+                    'inline_keyboard': [[
+                        {'text': 'Update Now', 'url': action_url}
+                    ]]
+                }
+
             response = await self.http_client.post(url, json=payload)
             response.raise_for_status()
 
@@ -183,13 +193,14 @@ class NotificationService:
             logger.error(f"Failed to send Telegram notification: {e}")
             return False
 
-    async def _send_discord(self, config: Dict[str, Any], message: str, event=None) -> bool:
+    async def _send_discord(self, config: Dict[str, Any], message: str, event=None, action_url: str = '') -> bool:
         """Send notification via Discord webhook
 
         Args:
             config: Discord channel configuration
             message: Message text to send
             event: Optional event object (unused, for signature consistency)
+            action_url: Optional action URL to include as button
         """
         try:
             webhook_url = config.get('webhook_url')
@@ -200,6 +211,10 @@ class NotificationService:
 
             # Convert markdown to Discord format
             discord_message = message.replace('`', '`').replace('**', '**')
+
+            # Add action URL as link if provided (Discord webhook buttons require application)
+            if action_url:
+                discord_message += f"\n\n[Update Now]({action_url})"
 
             payload = {
                 'content': discord_message,
@@ -227,8 +242,15 @@ class NotificationService:
             return False
 
     async def _send_pushover(self, config: Dict[str, Any], message: str,
-                           event) -> bool:
-        """Send notification via Pushover"""
+                           event, action_url: str = '') -> bool:
+        """Send notification via Pushover
+
+        Args:
+            config: Pushover channel configuration (app_token, user_key, url)
+            message: Formatted message to send
+            event: Alert title string or legacy event object
+            action_url: Optional one-click action URL (e.g., for container updates)
+        """
         try:
             app_token = config.get('app_token')
             user_key = config.get('user_key')
@@ -256,14 +278,18 @@ class NotificationService:
             else:
                 title = f"DockMon: {event.container_name}"
 
+            # Use action_url if provided, otherwise fall back to config URL
+            url = action_url if action_url else config.get('url', '')
+            url_title = 'Update Now' if action_url else 'Open DockMon'
+
             payload = {
                 'token': app_token,
                 'user': user_key,
                 'message': plain_message,
                 'title': title,
                 'priority': priority,
-                'url': config.get('url', ''),
-                'url_title': 'Open DockMon'
+                'url': url,
+                'url_title': url_title
             }
 
             response = await self.http_client.post(
@@ -279,8 +305,15 @@ class NotificationService:
             logger.error(f"Failed to send Pushover notification: {e}")
             return False
 
-    async def _send_slack(self, config: Dict[str, Any], message: str, event=None) -> bool:
-        """Send notification via Slack webhook"""
+    async def _send_slack(self, config: Dict[str, Any], message: str, event=None, action_url: str = '') -> bool:
+        """Send notification via Slack webhook
+
+        Args:
+            config: Slack channel configuration
+            message: Message text to send
+            event: Optional event object (for color determination)
+            action_url: Optional action URL to include as button
+        """
         try:
             webhook_url = config.get('webhook_url')
 
@@ -317,6 +350,15 @@ class NotificationService:
                 'footer_icon': 'https://raw.githubusercontent.com/docker/compose/v2/logo.png'
             }
 
+            # Add action button if URL provided (v2.2.0+)
+            if action_url:
+                attachment['actions'] = [{
+                    'type': 'button',
+                    'text': 'Update Now',
+                    'url': action_url,
+                    'style': 'primary'
+                }]
+
             # Only include timestamp if event is provided
             if event and hasattr(event, 'timestamp') and event.timestamp:
                 attachment['ts'] = int(event.timestamp.timestamp())
@@ -344,8 +386,16 @@ class NotificationService:
             logger.error(f"Failed to send Slack notification: {e}")
             return False
 
-    async def _send_gotify(self, config: Dict[str, Any], message: str, event=None, title: str = "DockMon Alert") -> bool:
-        """Send notification via Gotify"""
+    async def _send_gotify(self, config: Dict[str, Any], message: str, event=None, title: str = "DockMon Alert", action_url: str = '') -> bool:
+        """Send notification via Gotify
+
+        Args:
+            config: Gotify channel configuration
+            message: Message text to send
+            event: Optional event object (for priority determination)
+            title: Notification title
+            action_url: Optional action URL (added to message as Gotify doesn't support click actions)
+        """
         try:
             # Validate required config fields
             server_url = config.get('server_url', '').strip()
@@ -369,6 +419,11 @@ class NotificationService:
             plain_message = re.sub(r'`(.*?)`', r'\1', plain_message)
             plain_message = re.sub(r'[🚨🔴🟢💀⚠️🏥✅🔄📢]', '', plain_message)  # Remove emojis
 
+            # Add action URL to message (Gotify supports click URL via extras)
+            extras = {}
+            if action_url:
+                extras['client::notification'] = {'click': {'url': action_url}}
+
             # Determine priority (0-10, default 5)
             priority = 5
             if event and hasattr(event, 'new_state') and event.new_state in ['exited', 'dead']:
@@ -389,6 +444,8 @@ class NotificationService:
                 'message': plain_message,
                 'priority': priority
             }
+            if extras:
+                payload['extras'] = extras
 
             # Send request with timeout
             response = await self.http_client.post(url, json=payload)
@@ -407,7 +464,7 @@ class NotificationService:
             logger.error(f"Failed to send Gotify notification: {e}")
             return False
 
-    async def _send_ntfy(self, config: Dict[str, Any], message: str, event=None, title: str = "DockMon Alert") -> bool:
+    async def _send_ntfy(self, config: Dict[str, Any], message: str, event=None, title: str = "DockMon Alert", action_url: str = '') -> bool:
         """Send notification via ntfy (https://ntfy.sh or self-hosted)
 
         ntfy is a simple HTTP-based pub-sub notification service.
@@ -419,6 +476,13 @@ class NotificationService:
             access_token (optional): Bearer token for authenticated servers
             username (optional): Username for basic auth
             password (optional): Password for basic auth
+
+        Args:
+            config: ntfy channel configuration
+            message: Message text to send
+            event: Optional event object (for priority/tags)
+            title: Notification title
+            action_url: Optional action URL to include as button
         """
         try:
             # Validate required config fields
@@ -477,6 +541,11 @@ class NotificationService:
                 if tags:
                     headers['Tags'] = ','.join(tags)
 
+            # Add action button if URL provided (ntfy action header format)
+            if action_url:
+                # ntfy action format: "view, Update Now, <url>"
+                headers['Actions'] = f'view, Update Now, {action_url}'
+
             # Handle authentication
             access_token = config.get('access_token', '').strip()
             username = config.get('username', '').strip()
@@ -507,8 +576,16 @@ class NotificationService:
             logger.error(f"Failed to send ntfy notification: {e}")
             return False
 
-    async def _send_smtp(self, config: Dict[str, Any], message: str, event=None, title: str = "DockMon Alert") -> bool:
-        """Send notification via SMTP (Email)"""
+    async def _send_smtp(self, config: Dict[str, Any], message: str, event=None, title: str = "DockMon Alert", action_url: str = '') -> bool:
+        """Send notification via SMTP (Email)
+
+        Args:
+            config: SMTP channel configuration
+            message: Message text to send
+            event: Optional event object
+            title: Email subject prefix
+            action_url: Optional action URL to include as button in email
+        """
         try:
             # Import SMTP libraries (only when needed to avoid dependency issues)
             try:
@@ -583,6 +660,14 @@ class NotificationService:
             html_text = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', html_text)
             html_text = re.sub(r'`(.*?)`', r'<code style="background:#f5f5f5;color:#333;padding:2px 6px;border-radius:3px;font-family:monospace;">\1</code>', html_text)
 
+            # Build action button HTML if URL provided
+            action_button_html = ''
+            if action_url:
+                action_button_html = f'''
+        <div style="margin-top:20px;text-align:center;">
+            <a href="{action_url}" style="display:inline-block;padding:12px 24px;background:#3b82f6;color:#ffffff;text-decoration:none;border-radius:6px;font-weight:500;font-size:14px;">Update Now</a>
+        </div>'''
+
             html_body = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -593,7 +678,7 @@ class NotificationService:
     <div style="max-width:600px;margin:20px auto;background:#ffffff;padding:24px;border-radius:8px;border:1px solid #e0e0e0;box-shadow:0 1px 3px rgba(0,0,0,0.1);">
         <div style="line-height:1.6;font-size:14px;">
             {html_text}
-        </div>
+        </div>{action_button_html}
         <div style="margin-top:20px;padding-top:20px;border-top:1px solid #e0e0e0;font-size:12px;color:#666;">
             Sent by DockMon Container Monitoring
         </div>
@@ -649,7 +734,7 @@ class NotificationService:
             logger.error(f"Failed to send SMTP notification: {e}")
             return False
 
-    async def _send_webhook(self, config: Dict[str, Any], message: str, event=None, title: str = "DockMon Alert") -> bool:
+    async def _send_webhook(self, config: Dict[str, Any], message: str, event=None, title: str = "DockMon Alert", action_url: str = '') -> bool:
         """Send notification via webhook (HTTP POST/PUT)
 
         Allows users to integrate DockMon alerts with any custom endpoint or service.
@@ -664,6 +749,7 @@ class NotificationService:
             message: Formatted alert message (supports markdown)
             event: Optional event object (for additional context)
             title: Alert title (default: "DockMon Alert")
+            action_url: Optional action URL to include in payload
 
         Returns:
             True if webhook delivered successfully (2xx response)
@@ -709,6 +795,10 @@ class NotificationService:
                 payload['container'] = event.container_name
             if event and hasattr(event, 'host_name'):
                 payload['host'] = event.host_name
+
+            # Add action URL if provided (v2.2.0+)
+            if action_url:
+                payload['action_url'] = action_url
 
             # Send request based on payload format
             if payload_format == 'json':
@@ -896,8 +986,52 @@ class NotificationService:
             # Determine which template to use (priority: custom > category > global)
             template = self._get_template_for_alert_v2(alert, rule)
 
+            # Get settings for action URL generation
+            settings = self.db.get_settings()
+
+            # Generate action URL for update_available alerts (v2.2.0+)
+            action_url = ''
+            if alert.kind == 'update_available' and settings and settings.external_url:
+                try:
+                    # Extract host_id and container_id from scope_id
+                    if alert.scope_type == 'container' and alert.scope_id:
+                        host_id, container_id = parse_composite_key(alert.scope_id)
+
+                        # Parse event_context for image info
+                        current_image = ''
+                        new_image = ''
+                        if hasattr(alert, 'event_context_json') and alert.event_context_json:
+                            try:
+                                event_ctx = json.loads(alert.event_context_json)
+                                current_image = event_ctx.get('current_image', '')
+                                new_image = event_ctx.get('latest_image', '')
+                            except json.JSONDecodeError:
+                                pass
+
+                        # Generate one-time action token
+                        plaintext_token, _ = generate_action_token(
+                            db=self.db,
+                            user_id=rule.user_id,
+                            action_type='container_update',
+                            action_params={
+                                'host_id': host_id,
+                                'container_id': container_id,
+                                'container_name': alert.container_name,
+                                'host_name': alert.host_name,
+                                'current_image': current_image,
+                                'new_image': new_image
+                            }
+                        )
+
+                        # Build action URL
+                        base_url = settings.external_url.rstrip('/')
+                        action_url = f"{base_url}/quick-action?token={plaintext_token}"
+                        logger.debug(f"Generated action URL for update_available alert {alert.id}")
+                except Exception as e:
+                    logger.warning(f"Failed to generate action URL for alert {alert.id}: {e}")
+
             # Format the message with alert variables
-            message = self._format_message_v2(alert, rule, template)
+            message = self._format_message_v2(alert, rule, template, action_url=action_url)
 
             # Send to each configured channel
             for channel_id in channel_ids:
@@ -919,28 +1053,28 @@ class NotificationService:
 
                     try:
                         if channel.type == "telegram":
-                            if await self._send_telegram(channel.config, message):
+                            if await self._send_telegram(channel.config, message, action_url=action_url):
                                 success_count += 1
                         elif channel.type == "discord":
-                            if await self._send_discord(channel.config, message):
+                            if await self._send_discord(channel.config, message, action_url=action_url):
                                 success_count += 1
                         elif channel.type == "slack":
-                            if await self._send_slack(channel.config, message):
+                            if await self._send_slack(channel.config, message, action_url=action_url):
                                 success_count += 1
                         elif channel.type == "pushover":
-                            if await self._send_pushover(channel.config, message, alert.title):
+                            if await self._send_pushover(channel.config, message, alert.title, action_url=action_url):
                                 success_count += 1
                         elif channel.type == "gotify":
-                            if await self._send_gotify(channel.config, message, title=alert.title):
+                            if await self._send_gotify(channel.config, message, title=alert.title, action_url=action_url):
                                 success_count += 1
                         elif channel.type == "ntfy":
-                            if await self._send_ntfy(channel.config, message, title=alert.title):
+                            if await self._send_ntfy(channel.config, message, title=alert.title, action_url=action_url):
                                 success_count += 1
                         elif channel.type == "smtp":
-                            if await self._send_smtp(channel.config, message, title=alert.title):
+                            if await self._send_smtp(channel.config, message, title=alert.title, action_url=action_url):
                                 success_count += 1
                         elif channel.type == "webhook":
-                            if await self._send_webhook(channel.config, message, title=alert.title):
+                            if await self._send_webhook(channel.config, message, title=alert.title, action_url=action_url):
                                 success_count += 1
                         else:
                             logger.warning(f"Unknown channel type '{channel.type}' for channel {channel.name}")
@@ -1110,8 +1244,15 @@ class NotificationService:
         except (ValueError, TypeError):
             return str(exit_code) if exit_code is not None else ''
 
-    def _format_message_v2(self, alert, rule, template):
-        """Format message for v2 alert with variable substitution"""
+    def _format_message_v2(self, alert, rule, template, action_url: str = ''):
+        """Format message for v2 alert with variable substitution
+
+        Args:
+            alert: AlertV2 database object
+            rule: AlertRuleV2 database object
+            template: Message template string
+            action_url: Optional URL for one-click action (e.g., update container)
+        """
         # Get timezone offset from settings
         settings = self.db.get_settings()
         tz_offset_minutes = settings.timezone_offset if settings else 0
@@ -1198,6 +1339,9 @@ class NotificationService:
             '{CONSECUTIVE_FAILURES}': '',
             '{FAILURE_THRESHOLD}': '',
             '{RESPONSE_TIME}': '',
+
+            # Action URL for notification links (v2.2.0+)
+            '{ACTION_URL}': action_url if action_url else '',
         }
 
         # Optional labels

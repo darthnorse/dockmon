@@ -760,9 +760,11 @@ class AlertEvaluationService:
                     logger.debug(f"Container {composite_key} not found in cache")
                     continue
 
-                # Fetch container tags for tag-based selector matching
-                # Tags are stored with composite key: host_id:container_id
-                container_tags = self.db.get_tags_for_subject('container', composite_key)
+                # Use container's tags which include both user-created (from DB) and
+                # derived tags (from Docker labels like compose:*, swarm:*, dockmon.tag)
+                # This enables tag-based alert filtering to work with label-defined tags
+                # See: https://github.com/darthnorse/dockmon/issues/88
+                container_tags = container.tags or []
 
                 # Create evaluation context
                 # Use composite key for scope_id to prevent cross-host collisions
@@ -1123,10 +1125,23 @@ class AlertEvaluationService:
             # Get desired_state from database
             desired_state = self.db.get_desired_state(host_id, container_id) or 'unspecified'
 
-            # Fetch container tags for tag-based selector matching
-            # Tags are stored with composite key: host_id:container_id
+            # Get container tags - try cache first for derived tags (from Docker labels),
+            # fall back to database for user-created tags only
+            # This enables tag-based alert filtering to work with label-defined tags
+            # See: https://github.com/darthnorse/dockmon/issues/88
             composite_key = make_composite_key(host_id, container_id)
-            container_tags = self.db.get_tags_for_subject('container', composite_key)
+            container_tags = []
+
+            # Try to get container from cache (includes both user and derived tags)
+            cached_containers = self.monitor.get_last_containers()
+            for c in cached_containers:
+                if c.host_id == host_id and c.short_id == container_id:
+                    container_tags = c.tags or []
+                    break
+
+            # Fallback: if not in cache, use database (user tags only)
+            if not container_tags:
+                container_tags = self.db.get_tags_for_subject('container', composite_key)
 
             # Create evaluation context with the data passed in
             # Use composite key for scope_id to prevent cross-host collisions

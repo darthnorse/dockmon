@@ -291,8 +291,11 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
   const containerDropdownRef = useRef<HTMLDivElement>(null)
 
   // Tag selector state (always available, not scope-dependent)
+  // Tags now include source metadata to distinguish user-created vs derived (from Docker labels)
+  // See: https://github.com/darthnorse/dockmon/issues/88
+  type TagWithSource = { name: string; source: 'user' | 'derived'; color?: string | null }
   const [tagSearchInput, setTagSearchInput] = useState('')
-  const [availableTags, setAvailableTags] = useState<string[]>([])
+  const [availableTags, setAvailableTags] = useState<TagWithSource[]>([])
   const [selectedTags, setSelectedTags] = useState<string[]>(() => {
     // Initialize with existing tags if editing - check selectors not labels_json
     if (rule) {
@@ -315,20 +318,26 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
   })
 
   // Fetch available tags based on scope (host or container)
+  // For containers, include derived tags from Docker labels (compose:*, swarm:*, dockmon.tag)
   useEffect(() => {
     const fetchTags = async () => {
       try {
         // Use different endpoints based on scope to get only relevant tags
+        // For containers, include derived tags from Docker labels
         const endpoint = formData.scope === 'host'
           ? `/api/hosts/tags/suggest?q=${tagSearchInput}&limit=50`
-          : `/api/tags/suggest?q=${tagSearchInput}&limit=50`
+          : `/api/tags/suggest?q=${tagSearchInput}&limit=50&include_derived=true`
         const res = await fetch(endpoint)
         const data = await res.json()
-        // Tags API returns objects like {id, name, color, kind}, extract just the names
-        const tagNames = Array.isArray(data.tags)
-          ? data.tags.map((t: string | { name: string }) => typeof t === 'string' ? t : t.name)
+        // Tags API returns objects with {name, source, color} when include_derived=true
+        const tags: TagWithSource[] = Array.isArray(data.tags)
+          ? data.tags.map((t: string | TagWithSource) =>
+              typeof t === 'string'
+                ? { name: t, source: 'user' as const, color: null }
+                : { name: t.name, source: t.source || 'user', color: t.color }
+            )
           : []
-        setAvailableTags(tagNames)
+        setAvailableTags(tags)
       } catch (err) {
         console.error('Failed to fetch tags:', err)
       }
@@ -819,15 +828,16 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                     <div className="text-sm text-gray-400 text-center py-2">No tags found</div>
                   ) : (
                     availableTags.map((tag) => {
-                      const isSelected = selectedTags.includes(tag)
+                      const isSelected = selectedTags.includes(tag.name)
+                      const isDerived = tag.source === 'derived'
                       return (
                         <button
-                          key={tag}
+                          key={tag.name}
                           type="button"
                           onClick={() => {
                             const newTags = isSelected
-                              ? selectedTags.filter((t) => t !== tag)
-                              : [...selectedTags, tag]
+                              ? selectedTags.filter((t) => t !== tag.name)
+                              : [...selectedTags, tag.name]
                             setSelectedTags(newTags)
                           }}
                           className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 hover:bg-gray-800 rounded transition-colors"
@@ -841,7 +851,10 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                           >
                             {isSelected && <Check className="h-3 w-3 text-white" />}
                           </div>
-                          <span className="text-white">{tag}</span>
+                          <span className={isDerived ? 'text-gray-300 italic' : 'text-white'}>{tag.name}</span>
+                          {isDerived && (
+                            <span className="text-xs text-gray-500 ml-auto">(from label)</span>
+                          )}
                         </button>
                       )
                     })

@@ -2223,6 +2223,7 @@ async def set_container_update_policy(
 async def suggest_tags(
     q: str = "",
     limit: int = 20,
+    include_derived: bool = False,
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -2230,11 +2231,71 @@ async def suggest_tags(
 
     Returns a list of existing container tags that match the query string.
     Used by the bulk tag management UI for containers.
+
+    Args:
+        q: Search query to filter tags
+        limit: Maximum number of tags to return
+        include_derived: If True, also include derived tags from Docker labels
+                        (compose:*, swarm:*, dockmon.tag). These are marked with
+                        source='derived' vs source='user' for database tags.
     """
-    tags = monitor.db.get_all_tags_v2(query=q, limit=limit, subject_type="container")
-    # Extract just the tag names for autocomplete
-    tag_names = [tag['name'] for tag in tags]
-    return {"tags": tag_names}
+    # Get user-created tags from database
+    db_tags = monitor.db.get_all_tags_v2(query=q, limit=limit, subject_type="container")
+
+    if not include_derived:
+        # Original behavior: just return tag names
+        tag_names = [tag['name'] for tag in db_tags]
+        return {"tags": tag_names}
+
+    # Build result with source metadata
+    result_tags = []
+    seen_names = set()
+
+    # Add database tags with source='user'
+    for tag in db_tags:
+        tag_name = tag['name']
+        if tag_name not in seen_names:
+            result_tags.append({
+                'name': tag_name,
+                'source': 'user',
+                'color': tag.get('color')
+            })
+            seen_names.add(tag_name)
+
+    # Collect derived tags from all cached containers
+    containers = monitor.get_last_containers()
+    for container in containers:
+        if not container.tags:
+            continue
+        for tag in container.tags:
+            # Skip if already seen (user tags take precedence)
+            if tag in seen_names:
+                continue
+            # Check if this is a derived tag (compose:*, swarm:*, or from dockmon.tag label)
+            # User-created tags would already be in the database
+            is_derived = (
+                tag.startswith('compose:') or
+                tag.startswith('swarm:') or
+                tag not in seen_names  # Tags from dockmon.tag label that aren't in DB
+            )
+            if is_derived:
+                # Apply search filter
+                if q and q.lower() not in tag.lower():
+                    continue
+                result_tags.append({
+                    'name': tag,
+                    'source': 'derived',
+                    'color': None
+                })
+                seen_names.add(tag)
+
+    # Sort: user tags first, then derived, alphabetically within each group
+    result_tags.sort(key=lambda t: (0 if t['source'] == 'user' else 1, t['name']))
+
+    # Apply limit
+    result_tags = result_tags[:limit]
+
+    return {"tags": result_tags}
 
 @app.get("/api/hosts/tags/suggest", tags=["tags"])
 async def suggest_host_tags(

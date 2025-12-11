@@ -683,6 +683,58 @@ class AgentManager:
                         alert.dedup_key = new_dedup_key
                         transferred_count += 1
 
+                # Transfer deployments (must be done BEFORE DeploymentMetadata due to FK)
+                # Deployment.id is composite: {host_id}:{deployment_short_id}
+                from database import Deployment, DeploymentContainer
+                deployments = session.query(Deployment).filter_by(host_id=old_host_id).all()
+                deployment_id_map = {}  # Map old deployment_id -> new deployment_id
+                for dep in deployments:
+                    # Extract deployment short ID from composite key
+                    old_dep_id = dep.id
+                    if ':' in old_dep_id:
+                        _, deployment_short_id = old_dep_id.split(':', 1)
+                        new_dep_id = f"{new_host_id}:{deployment_short_id}"
+                        deployment_id_map[old_dep_id] = new_dep_id
+
+                        # Create new deployment with updated composite key
+                        new_dep = Deployment(
+                            id=new_dep_id,
+                            host_id=new_host_id,
+                            user_id=dep.user_id,
+                            deployment_type=dep.deployment_type,
+                            name=dep.name,
+                            status=dep.status,
+                            definition=dep.definition,
+                            error_message=dep.error_message,
+                            progress_percent=dep.progress_percent,
+                            current_stage=dep.current_stage,
+                            created_at=dep.created_at,
+                            updated_at=dep.updated_at,
+                            started_at=dep.started_at,
+                            completed_at=dep.completed_at,
+                            created_by=dep.created_by,
+                            committed=dep.committed,
+                            rollback_on_failure=dep.rollback_on_failure
+                        )
+                        session.add(new_dep)
+                        session.flush()  # Ensure new deployment exists for FK references
+                        transferred_count += 1
+
+                        # Transfer associated DeploymentContainers (FK references deployment_id)
+                        dep_containers = session.query(DeploymentContainer).filter_by(deployment_id=old_dep_id).all()
+                        for dc in dep_containers:
+                            new_dc = DeploymentContainer(
+                                deployment_id=new_dep_id,
+                                container_id=dc.container_id,  # Short container ID, no host prefix
+                                service_name=dc.service_name,
+                                created_at=dc.created_at
+                            )
+                            session.add(new_dc)
+                            session.delete(dc)
+
+                        # Delete old deployment (after containers moved)
+                        session.delete(dep)
+
                 # Transfer deployment metadata (tracks which containers were created by deployments)
                 from database import DeploymentMetadata
                 deployment_metadata = session.query(DeploymentMetadata).filter_by(host_id=old_host_id).all()
@@ -693,13 +745,14 @@ class AgentManager:
                         _, short_container_id = old_composite.split(':', 1)
                         new_composite = f"{new_host_id}:{short_container_id}"
 
+                        # Map deployment_id to new ID if it was migrated
+                        new_deployment_id = deployment_id_map.get(dm.deployment_id, dm.deployment_id)
+
                         # Create new record with updated composite key
-                        # Note: deployment_id remains unchanged (points to old deployment for historical tracking)
-                        # If old deployment is deleted, FK constraint will SET NULL automatically
                         new_dm = DeploymentMetadata(
                             container_id=new_composite,
                             host_id=new_host_id,
-                            deployment_id=dm.deployment_id,  # Keep link to original deployment
+                            deployment_id=new_deployment_id,
                             is_managed=dm.is_managed,
                             service_name=dm.service_name
                         )

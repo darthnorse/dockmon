@@ -494,6 +494,11 @@ class DockerMonitor:
                 # Serialize tags as JSON for database storage
                 tags_json = json.dumps(config.tags) if config.tags else None
 
+                # Determine connection type based on URL
+                # - unix:// -> local (localhost via Docker socket)
+                # - tcp:// -> remote (network connection to remote host)
+                connection_type = 'local' if config.url.startswith('unix://') else 'remote'
+
                 db_host = self.db.add_host({
                     'id': host.id,
                     'name': config.name,
@@ -512,7 +517,8 @@ class DockerMonitor:
                     'total_memory': host.total_memory,
                     'num_cpus': host.num_cpus,
                     'is_podman': host.is_podman,
-                    'engine_id': engine_id
+                    'engine_id': engine_id,
+                    'connection_type': connection_type
                 })
 
             # Register host with stats and event services

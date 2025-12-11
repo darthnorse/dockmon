@@ -454,3 +454,114 @@ def test_migration_rejects_local_connection(agent_manager, registration_token, d
     with agent_manager.db_manager.get_session() as session:
         agents = session.query(Agent).filter_by(engine_id="engine-local-123").all()
         assert len(agents) == 0
+
+
+def test_agent_migration_preserves_deployments(agent_manager, registration_token, existing_mtls_host, db_manager):
+    """
+    Test that deployments and deployment containers are transferred during migration.
+
+    Deployments have composite IDs: {host_id}:{deployment_short_id}
+    DeploymentContainers reference deployment_id via FK.
+    DeploymentMetadata.deployment_id should be updated to new deployment ID.
+    """
+    from database import Deployment, DeploymentContainer, DeploymentMetadata, User
+
+    # Create a test user for the deployment
+    with db_manager.get_session() as session:
+        user = session.query(User).first()
+        if not user:
+            user = User(
+                username="deployuser",
+                password_hash="$2b$12$test_hash_placeholder",
+                created_at=datetime.now(timezone.utc)
+            )
+            session.add(user)
+            session.flush()
+        user_id = user.id
+
+        # Create a deployment on the old host
+        old_deployment_id = f"existing-host-id:deploy123456"
+        deployment = Deployment(
+            id=old_deployment_id,
+            host_id="existing-host-id",
+            user_id=user_id,
+            deployment_type="container",
+            name="test-nginx",
+            status="running",
+            definition='{"image": "nginx:latest"}',
+            progress_percent=100,
+            committed=True
+        )
+        session.add(deployment)
+        session.flush()
+
+        # Create deployment container
+        dep_container = DeploymentContainer(
+            deployment_id=old_deployment_id,
+            container_id="abc123456789",
+            service_name=None,
+            created_at=datetime.now(timezone.utc)
+        )
+        session.add(dep_container)
+
+        # Create deployment metadata
+        dep_metadata = DeploymentMetadata(
+            container_id="existing-host-id:abc123456789",
+            host_id="existing-host-id",
+            deployment_id=old_deployment_id,
+            is_managed=True,
+            service_name=None
+        )
+        session.add(dep_metadata)
+        session.commit()
+
+    # Register agent with same engine_id (triggers migration)
+    registration_data = {
+        "token": registration_token,
+        "engine_id": "engine-12345",
+        "hostname": "remote-agent",
+        "version": "1.0.0",
+        "proto_version": "1.0",
+        "capabilities": {},
+        "os_type": "linux",
+    }
+
+    result = agent_manager.register_agent(registration_data)
+    assert result["success"] is True
+    assert result["migration_detected"] is True
+
+    new_host_id = result["host_id"]
+    new_deployment_id = f"{new_host_id}:deploy123456"
+
+    # Verify deployment was migrated with new composite key
+    with db_manager.get_session() as session:
+        # Old deployment should be gone
+        old_dep = session.query(Deployment).filter_by(id=old_deployment_id).first()
+        assert old_dep is None
+
+        # New deployment should exist with new host_id
+        new_dep = session.query(Deployment).filter_by(id=new_deployment_id).first()
+        assert new_dep is not None
+        assert new_dep.host_id == new_host_id
+        assert new_dep.name == "test-nginx"
+        assert new_dep.status == "running"
+
+        # Deployment container should reference new deployment_id
+        dep_container = session.query(DeploymentContainer).filter_by(deployment_id=new_deployment_id).first()
+        assert dep_container is not None
+        assert dep_container.container_id == "abc123456789"
+
+        # Old deployment container should be gone
+        old_dep_container = session.query(DeploymentContainer).filter_by(deployment_id=old_deployment_id).first()
+        assert old_dep_container is None
+
+        # Deployment metadata should reference new deployment_id
+        new_metadata_composite = f"{new_host_id}:abc123456789"
+        dep_metadata = session.query(DeploymentMetadata).filter_by(container_id=new_metadata_composite).first()
+        assert dep_metadata is not None
+        assert dep_metadata.deployment_id == new_deployment_id
+        assert dep_metadata.host_id == new_host_id
+
+        # Old metadata should be gone
+        old_metadata = session.query(DeploymentMetadata).filter_by(container_id="existing-host-id:abc123456789").first()
+        assert old_metadata is None

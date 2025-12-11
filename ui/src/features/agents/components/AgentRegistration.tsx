@@ -36,7 +36,7 @@ export function AgentRegistration() {
   -v /var/run/docker.sock:/var/run/docker.sock:ro \\
   -e DOCKMON_URL=https://YOUR_DOCKMON_HOST \\
   -e REGISTRATION_TOKEN=${token} \\
-  ghcr.io/darthnorse/dockmon-agent:latest`
+  ghcr.io/darthnorse/dockmon-agent:0.0.7`
     : ''
 
   const systemdInstallCommand = token

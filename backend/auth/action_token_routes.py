@@ -15,7 +15,7 @@ SECURITY:
 import logging
 from typing import Optional, Dict, Any
 
-from fastapi import APIRouter, HTTPException, Request, Depends
+from fastapi import APIRouter, Request, Depends
 from pydantic import BaseModel, Field
 
 from auth.action_token_auth import validate_action_token

@@ -783,6 +783,16 @@ class AgentManager:
 
                 logger.info(f"Migration completed successfully: {old_host_name} → {agent_name}")
 
+                # Add new host to monitor's in-memory hosts dict
+                # This is critical - without this, the host exists in DB but not in self.hosts,
+                # so container discovery will skip it until backend restarts
+                if self.monitor:
+                    self.monitor.add_agent_host(
+                        host_id=new_host_id,
+                        name=agent_name
+                    )
+                    logger.info(f"Added new agent host to monitor: {agent_name} ({new_host_id[:8]}...)")
+
                 # Return success with migration info
                 return {
                     "success": True,

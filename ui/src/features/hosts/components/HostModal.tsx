@@ -56,6 +56,7 @@ import { cn } from '@/lib/utils'
 type InstallMethod = 'docker' | 'systemd'
 
 // Zod schema for host form
+// URL validation is relaxed to allow empty for agent hosts (validated in onSubmit)
 const hostSchema = z.object({
   name: z
     .string()
@@ -64,9 +65,8 @@ const hostSchema = z.object({
     .regex(/^[a-zA-Z0-9][a-zA-Z0-9 ._-]*$/, 'Host name contains invalid characters'),
   url: z
     .string()
-    .min(1, 'Address/Endpoint is required')
-    .regex(
-      /^(tcp|unix|http|https):\/\/.+/,
+    .refine(
+      (val) => val === '' || val === 'agent://' || /^(tcp|unix|http|https):\/\/.+/.test(val),
       'URL must start with tcp://, unix://, http://, or https://'
     ),
   enableTls: z.boolean(),
@@ -121,6 +121,9 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
 
   // Check if host has existing certificates
   const hostHasCerts = host?.security_status === 'secure'
+
+  // Check if this is an agent-based host (can't edit URL or TLS settings)
+  const isAgentHost = host?.connection_type === 'agent'
 
   const {
     register,
@@ -284,12 +287,14 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
   const onSubmit = async (data: HostFormData) => {
     const config: HostConfig = {
       name: data.name,
-      url: data.url,
+      // For agent hosts, keep the existing URL (agent://)
+      url: isAgentHost ? host!.url : data.url,
       tags: [],
       description: data.description || null,
     }
 
-    if (data.enableTls) {
+    // Only include TLS config for non-agent hosts
+    if (!isAgentHost && data.enableTls) {
       if (host && hostHasCerts) {
         config.tls_ca = replaceCa ? (data.tls_ca || null) : null
         config.tls_cert = replaceCert ? (data.tls_cert || null) : null
@@ -518,22 +523,30 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
         {/* Address/Endpoint */}
         <div>
           <label htmlFor="url" className="block text-sm font-medium mb-1">
-            Address / Endpoint <span className="text-destructive">*</span>
+            Address / Endpoint {!isAgentHost && <span className="text-destructive">*</span>}
           </label>
-          <Input
-            id="url"
-            {...register('url')}
-            placeholder="tcp://192.168.1.20:2376 or unix:///var/run/docker.sock"
-            className={errors.url ? 'border-destructive' : ''}
-            data-testid="host-url-input"
-          />
-          {errors.url && (
-            <p className="text-xs text-destructive mt-1">{errors.url.message}</p>
+          {isAgentHost ? (
+            <div className="w-full rounded-md border border-input bg-muted px-3 py-2 text-sm text-muted-foreground">
+              agent:// (managed by agent)
+            </div>
+          ) : (
+            <>
+              <Input
+                id="url"
+                {...register('url')}
+                placeholder="tcp://192.168.1.20:2376 or unix:///var/run/docker.sock"
+                className={errors.url ? 'border-destructive' : ''}
+                data-testid="host-url-input"
+              />
+              {errors.url && (
+                <p className="text-xs text-destructive mt-1">{errors.url.message}</p>
+              )}
+            </>
           )}
         </div>
 
-        {/* TLS Toggle or UNIX Socket Note */}
-        {watchUrl?.startsWith('unix://') ? (
+        {/* TLS Toggle or UNIX Socket Note - hidden for agent hosts */}
+        {isAgentHost ? null : watchUrl?.startsWith('unix://') ? (
           <div className="rounded-lg border border-border p-3 bg-muted/10">
             <p className="text-sm text-muted-foreground">
               Local UNIX socket — TLS not applicable
@@ -755,7 +768,11 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
               {host ? 'Edit Host' : 'Add Host'}
             </h2>
             <p className="text-sm text-muted-foreground mt-1">
-              {host ? 'Update connection details for this Docker host' : 'Choose how to connect your Docker host'}
+              {host
+                ? isAgentHost
+                  ? 'Update name and description for this agent-managed host'
+                  : 'Update connection details for this Docker host'
+                : 'Choose how to connect your Docker host'}
             </p>
           </div>
           <button

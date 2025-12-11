@@ -1017,6 +1017,30 @@ class DockerMonitor:
             if not updated_db_host:
                 raise Exception(f"Host {host_id} not found in database")
 
+            # Agent hosts don't need Docker client - just update in-memory host object
+            if config.url.startswith("agent://"):
+                # Update or create in-memory host object for agent
+                host = DockerHost(
+                    id=host_id,
+                    name=config.name,
+                    url=config.url,
+                    connection_type="agent",
+                    security_status="secure",  # Agents use WebSocket with TLS
+                    tags=config.tags or [],
+                    description=config.description,
+                    # Preserve system info from database
+                    os_type=updated_db_host.os_type,
+                    os_version=updated_db_host.os_version,
+                    kernel_version=updated_db_host.kernel_version,
+                    docker_version=updated_db_host.docker_version,
+                    daemon_started_at=updated_db_host.daemon_started_at,
+                    total_memory=updated_db_host.total_memory,
+                    num_cpus=updated_db_host.num_cpus,
+                )
+                self.hosts[host_id] = host
+                logger.info(f"Updated agent host: {config.name} ({host_id[:8]}...)")
+                return host
+
             # Create new Docker client with updated config
             if config.url.startswith("unix://"):
                 client = docker.DockerClient(base_url=config.url)

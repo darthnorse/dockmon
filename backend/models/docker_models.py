@@ -103,9 +103,10 @@ class DockerHostConfig(BaseModel):
         v = v.strip()
 
         # Only allow specific protocols
-        allowed_protocols = ['tcp://', 'unix://', 'http://', 'https://']
+        # agent:// is for agent-managed hosts (read-only, can't be changed)
+        allowed_protocols = ['tcp://', 'unix://', 'http://', 'https://', 'agent://']
         if not any(v.startswith(proto) for proto in allowed_protocols):
-            raise ValueError('URL must use tcp://, unix://, http:// or https:// protocol')
+            raise ValueError('URL must use tcp://, unix://, http://, https://, or agent:// protocol')
 
         # Block ONLY the most dangerous SSRF targets (cloud metadata & loopback)
         # Allow private networks (10.*, 172.16-31.*, 192.168.*) for legitimate Docker hosts

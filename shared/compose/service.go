@@ -236,7 +236,20 @@ func (s *Service) runComposeUp(ctx context.Context, req DeployRequest, composeFi
 
 	s.sendProgress(ProgressEvent{
 		Stage:    StageStarting,
-		Progress: 60,
+		Progress: 50,
+		Message:  "Building images (if needed)...",
+	})
+
+	// Build images if compose file has build: directives
+	// This is a no-op if there are no build directives
+	if err := composeService.Build(ctx, project, api.BuildOptions{}); err != nil {
+		s.logError("Compose build failed", err)
+		return s.failResult(req.DeploymentID, fmt.Sprintf("Compose build failed: %v", err))
+	}
+
+	s.sendProgress(ProgressEvent{
+		Stage:    StageStarting,
+		Progress: 70,
 		Message:  "Starting services...",
 	})
 

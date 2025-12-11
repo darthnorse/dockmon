@@ -153,8 +153,6 @@ class ActionToken(Base):
     token_hash = Column(Text, nullable=False, unique=True, index=True)  # SHA256 hash
     token_prefix = Column(Text, nullable=False)  # First 12 chars for logs
 
-    # Owner (who created/can use this token)
-    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
 
     # Action specification
     action_type = Column(Text, nullable=False)  # 'container_update', 'container_restart', etc.
@@ -2906,7 +2904,9 @@ class DatabaseManager:
                     'auto_update_enabled_default', 'update_check_interval_hours',
                     'update_check_time', 'skip_compose_containers', 'health_check_timeout_seconds',
                     # Image pruning settings (v2.1+)
-                    'prune_images_enabled', 'image_retention_count', 'image_prune_grace_hours'
+                    'prune_images_enabled', 'image_retention_count', 'image_prune_grace_hours',
+                    # External URL for notification action links (v2.2.0+)
+                    'external_url'
                 }
 
                 for key, value in updates.items():

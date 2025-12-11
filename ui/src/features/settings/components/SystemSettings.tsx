@@ -20,6 +20,7 @@ export function SystemSettings() {
   const [unusedTagRetentionDays, setUnusedTagRetentionDays] = useState(settings?.unused_tag_retention_days ?? 30)
   const [eventRetentionDays, setEventRetentionDays] = useState(settings?.event_retention_days ?? 60)
   const [alertRetentionDays, setAlertRetentionDays] = useState(settings?.alert_retention_days ?? 90)
+  const [externalUrl, setExternalUrl] = useState(settings?.external_url ?? '')
 
   // Sync state when settings load from API
   useEffect(() => {
@@ -32,6 +33,7 @@ export function SystemSettings() {
       setUnusedTagRetentionDays(settings.unused_tag_retention_days ?? 30)
       setEventRetentionDays(settings.event_retention_days ?? 60)
       setAlertRetentionDays(settings.alert_retention_days ?? 90)
+      setExternalUrl(settings.external_url ?? '')
     }
   }, [settings])
 
@@ -125,8 +127,55 @@ export function SystemSettings() {
     }
   }
 
+  const handleExternalUrlBlur = async () => {
+    // Normalize: trim and remove trailing slash
+    const normalizedUrl = externalUrl.trim().replace(/\/+$/, '')
+    if (normalizedUrl !== (settings?.external_url ?? '')) {
+      try {
+        // Save empty string as null to clear the override
+        await updateSettings.mutateAsync({ external_url: normalizedUrl || null })
+        setExternalUrl(normalizedUrl)
+        toast.success('External URL updated')
+      } catch (error) {
+        toast.error('Failed to update external URL')
+      }
+    }
+  }
+
   return (
     <div className="space-y-6">
+      {/* External Access */}
+      <div>
+        <div className="mb-4">
+          <h3 className="text-lg font-semibold text-white">External Access</h3>
+          <p className="text-xs text-gray-400 mt-1">Configure how DockMon is accessed from outside your network</p>
+        </div>
+        <div className="space-y-4">
+          <div>
+            <label htmlFor="external-url" className="block text-sm font-medium text-gray-300 mb-2">
+              External URL
+            </label>
+            <input
+              id="external-url"
+              type="url"
+              value={externalUrl}
+              onChange={(e) => setExternalUrl(e.target.value)}
+              onBlur={handleExternalUrlBlur}
+              placeholder={settings?.external_url_from_env || 'https://dockmon.example.com'}
+              className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            <p className="mt-1 text-xs text-gray-400">
+              The URL used to access DockMon from outside (e.g., https://dockmon.example.com). Used for action links in notifications.
+              {settings?.external_url_from_env && (
+                <span className="block mt-1 text-gray-500">
+                  Environment default: {settings.external_url_from_env}
+                </span>
+              )}
+            </p>
+          </div>
+        </div>
+      </div>
+
       {/* Monitoring */}
       <div>
         <div className="mb-4">

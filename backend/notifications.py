@@ -990,8 +990,11 @@ class NotificationService:
             settings = self.db.get_settings()
 
             # Generate action URL for update_available alerts (v2.2.0+)
+            # Priority: database value > env var
+            from config.settings import AppConfig
+            external_url = (settings.external_url if settings else None) or AppConfig.EXTERNAL_URL
             action_url = ''
-            if alert.kind == 'update_available' and settings and settings.external_url:
+            if alert.kind == 'update_available' and external_url:
                 try:
                     # Extract host_id and container_id from scope_id
                     if alert.scope_type == 'container' and alert.scope_id:
@@ -1011,7 +1014,6 @@ class NotificationService:
                         # Generate one-time action token
                         plaintext_token, _ = generate_action_token(
                             db=self.db,
-                            user_id=rule.user_id,
                             action_type='container_update',
                             action_params={
                                 'host_id': host_id,
@@ -1024,7 +1026,7 @@ class NotificationService:
                         )
 
                         # Build action URL
-                        base_url = settings.external_url.rstrip('/')
+                        base_url = external_url.rstrip('/')
                         action_url = f"{base_url}/quick-action?token={plaintext_token}"
                         logger.debug(f"Generated action URL for update_available alert {alert.id}")
                 except Exception as e:

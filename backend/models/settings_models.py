@@ -216,6 +216,9 @@ class GlobalSettingsUpdate(BaseModel):
     image_retention_count: Optional[int] = Field(None, ge=0, le=10, description="Keep last N versions per image (0=only in-use images, 1-10=keep N versions)")
     image_prune_grace_hours: Optional[int] = Field(None, ge=1, le=168, description="Don't remove images newer than N hours (1-168)")
 
+    # External URL for notification action links (v2.2.0+)
+    external_url: Optional[str] = Field(None, max_length=500, description="External URL for notification action links (e.g., https://dockmon.example.com)")
+
     model_config = ConfigDict(extra="forbid")  # Reject unknown keys (typos, attacks)
 
     @field_validator('blackout_windows')

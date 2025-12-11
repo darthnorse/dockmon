@@ -26,7 +26,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Tuple, Dict, Any
 
-from database import ActionToken, User, DatabaseManager
+from database import ActionToken, DatabaseManager
 from security.audit import security_audit
 
 logger = logging.getLogger(__name__)
@@ -34,12 +34,10 @@ logger = logging.getLogger(__name__)
 # Token configuration
 ACTION_TOKEN_PREFIX = "dockmon_action_"
 ACTION_TOKEN_TTL_HOURS = 24
-ACTION_TOKEN_MAX_PER_USER = 100  # Prevent token table bloat
 
 
 def generate_action_token(
     db: DatabaseManager,
-    user_id: int,
     action_type: str,
     action_params: Dict[str, Any],
     ttl_hours: int = ACTION_TOKEN_TTL_HOURS
@@ -49,7 +47,6 @@ def generate_action_token(
 
     Args:
         db: Database manager
-        user_id: Owner of the token
         action_type: Type of action ('container_update', 'container_restart', etc.)
         action_params: Action-specific parameters (host_id, container_id, etc.)
         ttl_hours: Token validity period in hours
@@ -80,32 +77,10 @@ def generate_action_token(
     action_params_json = json.dumps(action_params)
 
     with db.get_session() as session:
-        # Check token limit per user (prevent bloat)
-        active_count = session.query(ActionToken).filter(
-            ActionToken.user_id == user_id,
-            ActionToken.used_at.is_(None),
-            ActionToken.revoked_at.is_(None),
-            ActionToken.expires_at > now
-        ).count()
-
-        if active_count >= ACTION_TOKEN_MAX_PER_USER:
-            # Clean up oldest tokens for this user
-            oldest_tokens = session.query(ActionToken).filter(
-                ActionToken.user_id == user_id,
-                ActionToken.used_at.is_(None),
-                ActionToken.revoked_at.is_(None)
-            ).order_by(ActionToken.created_at.asc()).limit(10).all()
-
-            for old_token in oldest_tokens:
-                old_token.revoked_at = now
-            session.flush()
-            logger.info(f"Revoked {len(oldest_tokens)} old action tokens for user {user_id} (limit reached)")
-
         # Create token record
         token_record = ActionToken(
             token_hash=token_hash,
             token_prefix=token_prefix,
-            user_id=user_id,
             action_type=action_type,
             action_params=action_params_json,
             created_at=now,
@@ -116,7 +91,7 @@ def generate_action_token(
 
         token_id = token_record.id
 
-    logger.debug(f"Generated action token {token_prefix}... for user {user_id}, action={action_type}")
+    logger.debug(f"Generated action token {token_prefix}..., action={action_type}")
 
     return (plaintext_token, token_id)
 
@@ -228,12 +203,6 @@ def validate_action_token(
             )
             return {"valid": False, "reason": "expired"}
 
-        # Verify user still exists
-        user = session.query(User).filter(User.id == token_record.user_id).first()
-        if not user:
-            logger.warning(f"Action token for deleted user from {client_ip}")
-            return {"valid": False, "reason": "user_deleted"}
-
         # Parse action params
         try:
             action_params = json.loads(token_record.action_params)
@@ -251,7 +220,7 @@ def validate_action_token(
             security_audit.log_event(
                 event_type="action_token_used",
                 severity="info",
-                user_id=token_record.user_id,
+                user_id=None,
                 client_ip=client_ip,
                 details={
                     "token_id": token_record.id,
@@ -268,8 +237,6 @@ def validate_action_token(
         return {
             "valid": True,
             "token_id": token_record.id,
-            "user_id": token_record.user_id,
-            "username": user.username,
             "action_type": token_record.action_type,
             "action_params": action_params,
             "created_at": token_record.created_at.isoformat() + "Z",

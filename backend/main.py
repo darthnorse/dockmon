@@ -2585,6 +2585,10 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
         ),
         "dismissed_agent_update_version": dismissed_agent_update_version,  # User-specific
         "agents_needing_update": agents_needing_update,  # Count of online agents with outdated versions
+        # External URL for notification action links (v2.2.0+)
+        # Priority: database value > env var > None
+        "external_url": getattr(settings, 'external_url', None) or AppConfig.EXTERNAL_URL,
+        "external_url_from_env": AppConfig.EXTERNAL_URL,  # Show env var value for UI placeholder
     }
 
 @app.post("/api/settings", tags=["system"], dependencies=[Depends(require_scope("admin"))])
@@ -2664,7 +2668,10 @@ async def update_settings(
         # Image pruning settings (v2.1+)
         "prune_images_enabled": getattr(updated, 'prune_images_enabled', True),
         "image_retention_count": getattr(updated, 'image_retention_count', 2),
-        "image_prune_grace_hours": getattr(updated, 'image_prune_grace_hours', 48)
+        "image_prune_grace_hours": getattr(updated, 'image_prune_grace_hours', 48),
+        # External URL for notification action links (v2.2.0+)
+        "external_url": getattr(updated, 'external_url', None) or AppConfig.EXTERNAL_URL,
+        "external_url_from_env": AppConfig.EXTERNAL_URL,
     }
 
 

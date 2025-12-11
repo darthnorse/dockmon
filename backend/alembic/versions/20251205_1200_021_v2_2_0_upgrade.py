@@ -134,7 +134,6 @@ def upgrade() -> None:
             sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
             sa.Column('token_hash', sa.Text(), nullable=False, unique=True),  # SHA256 hash
             sa.Column('token_prefix', sa.Text(), nullable=False),  # First 12 chars for logs
-            sa.Column('user_id', sa.Integer(), sa.ForeignKey('users.id', ondelete='CASCADE'), nullable=False),
             sa.Column('action_type', sa.Text(), nullable=False),  # 'container_update', etc.
             sa.Column('action_params', sa.Text(), nullable=False),  # JSON parameters
             sa.Column('created_at', sa.DateTime(), nullable=False),
@@ -150,8 +149,6 @@ def upgrade() -> None:
             op.create_index('idx_action_token_hash', 'action_tokens', ['token_hash'], unique=True)
         if not index_exists('action_tokens', 'idx_action_token_expires'):
             op.create_index('idx_action_token_expires', 'action_tokens', ['expires_at'])
-        if not index_exists('action_tokens', 'idx_action_token_user'):
-            op.create_index('idx_action_token_user', 'action_tokens', ['user_id'])
 
     # Change 2: Create agents table
     # Stores agent registration info and lifecycle management
@@ -418,8 +415,6 @@ def downgrade() -> None:
     # Drop action_tokens table
     if table_exists('action_tokens'):
         # Drop indexes first
-        if index_exists('action_tokens', 'idx_action_token_user'):
-            op.drop_index('idx_action_token_user', 'action_tokens')
         if index_exists('action_tokens', 'idx_action_token_expires'):
             op.drop_index('idx_action_token_expires', 'action_tokens')
         if index_exists('action_tokens', 'idx_action_token_hash'):

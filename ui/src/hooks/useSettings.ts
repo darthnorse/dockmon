@@ -50,6 +50,9 @@ export interface GlobalSettings {
   last_agent_update_check_at?: string | null
   dismissed_agent_update_version?: string | null
   agents_needing_update?: number
+  // External URL for notification action links (v2.2.0+)
+  external_url?: string | null
+  external_url_from_env?: string | null
 }
 
 export interface TemplateVariable {

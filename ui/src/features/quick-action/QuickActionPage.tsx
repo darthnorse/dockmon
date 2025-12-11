@@ -2,18 +2,18 @@
  * Quick Action Page
  *
  * Standalone page for executing one-time action tokens from notification links.
- * Does not require authentication - the token IS the authentication.
+ * Requires authentication - redirects to login if not authenticated.
  *
  * Flow:
  * 1. User clicks link in notification (Pushover, Telegram, etc.)
- * 2. Page loads with token from URL params
- * 3. Validates token and shows action details
+ * 2. If not logged in -> redirect to login with return URL
+ * 3. After login -> validates token and shows action details
  * 4. User confirms -> executes action
  * 5. Shows success/failure result
  */
 
 import { useState, useEffect } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams, useNavigate } from 'react-router-dom'
 import { Container, ArrowRight, CheckCircle2, XCircle, Loader2, Clock, AlertTriangle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 
@@ -49,6 +49,7 @@ type PageState = 'loading' | 'invalid' | 'ready' | 'executing' | 'success' | 'er
 
 export function QuickActionPage() {
   const [searchParams] = useSearchParams()
+  const navigate = useNavigate()
   const token = searchParams.get('token')
 
   const [state, setState] = useState<PageState>('loading')
@@ -69,7 +70,17 @@ export function QuickActionPage() {
 
   const validateToken = async () => {
     try {
-      const response = await fetch(`/api/v2/action-tokens/${encodeURIComponent(token!)}/info`)
+      const response = await fetch(`/api/v2/action-tokens/${encodeURIComponent(token!)}/info`, {
+        credentials: 'include'  // Include session cookie
+      })
+
+      // If not authenticated, redirect to login with return URL
+      if (response.status === 401) {
+        const returnUrl = encodeURIComponent(window.location.pathname + window.location.search)
+        navigate(`/login?redirect=${returnUrl}`)
+        return
+      }
+
       const data: TokenInfo = await response.json()
 
       setTokenInfo(data)
@@ -87,25 +98,70 @@ export function QuickActionPage() {
   }
 
   const executeAction = async () => {
-    if (!token) return
+    if (!token || !tokenInfo?.action_params) return
 
     setState('executing')
 
     try {
-      const response = await fetch(`/api/v2/action-tokens/${encodeURIComponent(token!)}/execute`, {
+      // Step 1: Consume the token (validates and marks as used)
+      const consumeResponse = await fetch(`/api/v2/action-tokens/${encodeURIComponent(token!)}/consume`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({ confirmed: true }),
       })
 
-      const data: ExecuteResult = await response.json()
-      setExecuteResult(data)
+      if (consumeResponse.status === 401) {
+        const returnUrl = encodeURIComponent(window.location.pathname + window.location.search)
+        navigate(`/login?redirect=${returnUrl}`)
+        return
+      }
 
-      if (data.success) {
+      const consumeData = await consumeResponse.json()
+      if (!consumeData.success) {
+        setState('error')
+        setErrorMessage(consumeData.error || 'Token validation failed')
+        return
+      }
+
+      // Step 2: Call the EXISTING update endpoint (same code path as manual updates)
+      const { host_id, container_id } = tokenInfo.action_params
+      if (!host_id || !container_id) {
+        setState('error')
+        setErrorMessage('Missing host or container information')
+        return
+      }
+
+      const updateResponse = await fetch(
+        `/api/hosts/${encodeURIComponent(host_id)}/containers/${encodeURIComponent(container_id)}/execute-update?force=true`,
+        {
+          method: 'POST',
+          credentials: 'include',
+        }
+      )
+
+      if (updateResponse.status === 401) {
+        const returnUrl = encodeURIComponent(window.location.pathname + window.location.search)
+        navigate(`/login?redirect=${returnUrl}`)
+        return
+      }
+
+      const updateData = await updateResponse.json()
+
+      if (updateData.status === 'success') {
+        setExecuteResult({
+          success: true,
+          action_type: 'container_update',
+          result: {
+            message: updateData.message,
+            previous_image: updateData.previous_image,
+            new_image: updateData.new_image,
+          }
+        })
         setState('success')
       } else {
         setState('error')
-        setErrorMessage(data.error || 'Action failed')
+        setErrorMessage(updateData.detail || updateData.message || 'Update failed')
       }
     } catch (error) {
       setState('error')
@@ -123,8 +179,6 @@ export function QuickActionPage() {
         return 'This link has been revoked'
       case 'not_found':
         return 'Invalid or unknown link'
-      case 'user_deleted':
-        return 'User account no longer exists'
       default:
         return 'Invalid link'
     }

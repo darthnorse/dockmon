@@ -133,12 +133,12 @@ def test_agent_migration_success(agent_manager, registration_token, existing_mtl
         assert old_host.is_active == False  # Migrated hosts are marked inactive
         assert old_host.replaced_by_host_id == result["host_id"]
 
-    # Check new agent host created
+    # Check new agent host created with original host's name (for continuity)
     with agent_manager.db_manager.get_session() as session:
         new_host = session.query(DockerHostDB).filter_by(id=result["host_id"]).first()
         assert new_host.connection_type == "agent"
         assert new_host.engine_id == "engine-12345"
-        assert new_host.name == "remote-agent"
+        assert new_host.name == "Local Docker"  # Inherits name from migrated host
 
     # Note: Migration notifications are handled by WebSocket broadcast in websocket_handler.py
     # Event bus is not used for migration events after refactor phase

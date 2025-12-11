@@ -24,7 +24,7 @@ jobs:
   build-binaries:
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # Needed for release uploads
+      contents: read
 
     steps:
       - name: Checkout repository
@@ -84,15 +84,6 @@ jobs:
           name: agent-binaries
           path: agent/dist/
           retention-days: 30
-
-      - name: Upload to release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v1
-        with:
-          files: |
-            agent/dist/dockmon-agent-linux-amd64
-            agent/dist/dockmon-agent-linux-arm64
-            agent/dist/checksums.txt
 
   # Build Docker images using native runners (no QEMU)
   build-docker:

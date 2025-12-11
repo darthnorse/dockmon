@@ -1637,6 +1637,17 @@ class DatabaseManager:
                 # Run centralized cleanup
                 cleanup_stats = self.cleanup_host_data(session, host_id, host_name)
 
+                # Delete any old migrated hosts that point to this host
+                # This allows re-migration of the same engine_id after deleting the agent host
+                migrated_hosts = session.query(DockerHostDB).filter(
+                    DockerHostDB.replaced_by_host_id == host_id,
+                    DockerHostDB.is_active == False
+                ).all()
+                for migrated_host in migrated_hosts:
+                    logger.info(f"Deleting migrated host record {migrated_host.name} ({migrated_host.id[:8]}...)")
+                    session.delete(migrated_host)
+                cleanup_stats['migrated_hosts'] = len(migrated_hosts)
+
                 # Delete the host itself
                 session.delete(host)
                 session.commit()

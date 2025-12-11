@@ -455,8 +455,14 @@ class AgentManager:
                 if not existing_host:
                     return {"success": False, "error": "Migration failed: existing host not found"}
 
-                # Step 1: Create new agent host
-                agent_name = hostname if hostname else f"Agent-{engine_id[:12]}"
+                # Step 1: Rename old host to avoid name collision
+                # The old host record is kept for migration tracking but marked inactive
+                old_name_backup = existing_host.name
+                existing_host.name = f"{existing_host.name} (migrated)"
+                session.flush()
+
+                # Step 2: Create new agent host with the original name
+                agent_name = old_name_backup
                 new_host = DockerHostDB(
                     id=new_host_id,
                     name=agent_name,

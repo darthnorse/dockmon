@@ -178,6 +178,136 @@ if [ "$SYSTEM_TYPE" = "unknown" ] || [ -z "$SYSTEM_TYPE" ]; then
     detect_system
 fi
 
+# Security check: Detect if Docker is exposed insecurely
+check_insecure_docker() {
+    print_info "Checking for insecure Docker configuration..."
+
+    INSECURE_DETECTED=false
+
+    # Check if port 2375 (insecure Docker) is listening on all interfaces
+    if command -v ss &> /dev/null; then
+        if ss -tlnp 2>/dev/null | grep -q ":2375.*0\.0\.0\.0"; then
+            INSECURE_DETECTED=true
+        fi
+    elif command -v netstat &> /dev/null; then
+        if netstat -tlnp 2>/dev/null | grep -q ":2375.*0\.0\.0\.0"; then
+            INSECURE_DETECTED=true
+        fi
+    fi
+
+    if [ "$INSECURE_DETECTED" = true ]; then
+        echo ""
+        print_error "========================================"
+        print_error "SECURITY WARNING: Insecure Docker Detected!"
+        print_error "========================================"
+        echo ""
+        print_warn "Your Docker daemon is configured to accept remote connections"
+        print_warn "on port 2375 WITHOUT TLS encryption. This is a serious security risk!"
+        echo ""
+        print_warn "Anyone who can reach port 2375 has COMPLETE control over your system."
+        echo ""
+
+        # Recommend Agent instead of mTLS
+        print_info "========================================"
+        print_info "RECOMMENDATION: Use the DockMon Agent"
+        print_info "========================================"
+        echo ""
+        echo "Instead of configuring mTLS, we recommend installing the DockMon Agent:"
+        echo ""
+        echo "  - No need to expose any ports"
+        echo "  - Agent connects outbound to your DockMon server"
+        echo "  - Works through NAT and firewalls"
+        echo "  - Simpler setup with token-based authentication"
+        echo ""
+        echo "To install the Agent, generate a token in DockMon's Add Host dialog"
+        echo "and run the provided docker command on this host."
+        echo ""
+        echo "See: https://github.com/darthnorse/dockmon/wiki/Remote-Docker-Setup"
+        echo ""
+
+        read -p "Do you want to disable insecure remote Docker access? (Y/n): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+            disable_insecure_docker
+        else
+            print_warn "Continuing with mTLS setup. The insecure configuration will remain until you configure mTLS."
+        fi
+        echo ""
+    fi
+}
+
+# Disable insecure Docker remote access
+disable_insecure_docker() {
+    print_info "Disabling insecure Docker remote access..."
+
+    case $SYSTEM_TYPE in
+        systemd)
+            # Check for systemd override
+            if [ -f /etc/systemd/system/docker.service.d/override.conf ]; then
+                print_info "Found Docker systemd override, checking configuration..."
+
+                # Check if it contains insecure TCP binding
+                if grep -q "tcp://0\.0\.0\.0:2375" /etc/systemd/system/docker.service.d/override.conf; then
+                    print_info "Removing insecure TCP binding from systemd override..."
+
+                    # Backup the file
+                    BACKUP_FILE="/etc/systemd/system/docker.service.d/override.conf.insecure-backup-$(date +%Y%m%d-%H%M%S)"
+                    run_as_root cp /etc/systemd/system/docker.service.d/override.conf "$BACKUP_FILE"
+                    print_info "Backed up to: $BACKUP_FILE"
+
+                    # Create new override with only unix socket
+                    cat <<EOF | run_as_root tee /etc/systemd/system/docker.service.d/override.conf > /dev/null
+[Service]
+ExecStart=
+ExecStart=/usr/bin/dockerd -H unix:///var/run/docker.sock
+EOF
+
+                    print_info "Restarting Docker daemon..."
+                    run_as_root systemctl daemon-reload
+                    run_as_root systemctl restart docker
+
+                    sleep 2
+
+                    # Verify it's no longer listening
+                    if ss -tlnp 2>/dev/null | grep -q ":2375"; then
+                        print_error "Port 2375 is still open. Manual intervention may be required."
+                    else
+                        print_info "Docker is now only accessible via local Unix socket."
+                        print_info "Remote access has been disabled."
+                    fi
+                else
+                    print_warn "Override file exists but doesn't contain the expected insecure configuration."
+                    print_warn "Please check /etc/systemd/system/docker.service.d/override.conf manually."
+                fi
+            else
+                # Check daemon.json
+                if [ -f /etc/docker/daemon.json ]; then
+                    print_warn "Docker configuration found in /etc/docker/daemon.json"
+                    print_warn "Please manually remove any 'hosts' entries that expose port 2375"
+                    print_warn "Then restart Docker: sudo systemctl restart docker"
+                else
+                    print_warn "Could not find Docker override configuration."
+                    print_warn "The insecure binding may be in a non-standard location."
+                fi
+            fi
+            ;;
+        unraid)
+            print_info "For unRAID, please update /boot/config/docker.cfg:"
+            echo ""
+            echo "1. Edit /boot/config/docker.cfg"
+            echo "2. Remove or comment out any DOCKER_OPTS with tcp://0.0.0.0:2375"
+            echo "3. Restart Docker via Settings → Docker"
+            ;;
+        *)
+            print_warn "Automatic disabling not available for $SYSTEM_TYPE"
+            print_warn "Please manually configure Docker to only listen on the Unix socket."
+            ;;
+    esac
+}
+
+# Run security check
+check_insecure_docker
+
 # Override cert directory if not custom set and system detected
 if [ -z "$CUSTOM_CERT_DIR" ]; then
     case $SYSTEM_TYPE in

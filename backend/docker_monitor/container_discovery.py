@@ -477,8 +477,19 @@ class ContainerDiscovery:
                             except Exception as e:
                                 logger.warning(f"Failed to reattach tags: {e}")
 
-                        # Load current tags from database
-                        tags = self.db.get_tags_for_subject('container', container_key)
+                        # Derive tags from labels (compose:*, swarm:*, dockmon.tag)
+                        derived_tags = derive_container_tags(labels)
+
+                        # Get custom tags from database
+                        custom_tags = self.db.get_tags_for_subject('container', container_key)
+
+                        # Combine tags: custom tags first, then derived (remove duplicates)
+                        tags = []
+                        seen = set()
+                        for tag in custom_tags + derived_tags:
+                            if tag not in seen:
+                                tags.append(tag)
+                                seen.add(tag)
 
                         # Get auto-restart status
                         auto_restart = get_auto_restart_status_fn(host_id, container_id)

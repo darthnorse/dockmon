@@ -188,7 +188,7 @@ class RegistrationToken(Base):
     expires_at = Column(DateTime, nullable=False)  # 15 minute expiry
 
     # Multi-use support (v2.2.0-beta3)
-    max_uses = Column(Integer, nullable=True, default=1)  # 1 = single use, NULL = unlimited
+    max_uses = Column(Integer, nullable=True)  # 1 = single use, NULL = unlimited (no default - always set explicitly)
     use_count = Column(Integer, nullable=False, default=0)  # How many agents have registered
     last_used_at = Column(DateTime, nullable=True)  # Last registration timestamp
 

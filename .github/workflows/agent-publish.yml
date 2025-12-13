@@ -1,0 +1,202 @@
+name: Build and Publish Agent
+
+on:
+  push:
+    tags:
+      - 'agent-v*'  # Agent releases use agent-v* pattern (e.g., agent-v1.0.0)
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}-agent
+
+jobs:
+  # Build standalone binaries for systemd/bare-metal deployment
+  # Go has native cross-compilation - no QEMU needed
+  build-binaries:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache-dependency-path: agent/go.sum
+
+      - name: Get version info
+        id: version
+        run: |
+          # Extract version from tag (e.g., agent-v1.0.0 -> 1.0.0)
+          VERSION=${GITHUB_REF#refs/tags/agent-v}
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "commit=${GITHUB_SHA:0:7}" >> $GITHUB_OUTPUT
+
+      - name: Build binaries
+        run: |
+          cd agent
+          mkdir -p dist
+
+          # Build for linux/amd64
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -ldflags="-s -w -X main.version=${{ steps.version.outputs.version }} -X main.commit=${{ steps.version.outputs.commit }}" \
+            -o dist/dockmon-agent-linux-amd64 \
+            ./cmd/agent
+
+          # Build for linux/arm64
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
+            -ldflags="-s -w -X main.version=${{ steps.version.outputs.version }} -X main.commit=${{ steps.version.outputs.commit }}" \
+            -o dist/dockmon-agent-linux-arm64 \
+            ./cmd/agent
+
+      - name: Generate checksums
+        run: |
+          cd agent/dist
+          sha256sum dockmon-agent-linux-amd64 > checksums.txt
+          sha256sum dockmon-agent-linux-arm64 >> checksums.txt
+          echo "Generated checksums:"
+          cat checksums.txt
+
+      - name: Upload binaries as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-binaries
+          path: agent/dist/
+          retention-days: 30
+
+  # Build Docker images using native runners (no QEMU)
+  build-docker:
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log into registry ${{ env.REGISTRY }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get version
+        id: version
+        run: |
+          # Extract version from tag (e.g., agent-v1.0.0 -> 1.0.0)
+          VERSION=${GITHUB_REF#refs/tags/agent-v}
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "commit=${GITHUB_SHA:0:7}" >> $GITHUB_OUTPUT
+
+      - name: Extract platform suffix
+        id: platform
+        run: |
+          PLATFORM="${{ matrix.platform }}"
+          SUFFIX="${PLATFORM#linux/}"
+          echo "suffix=$SUFFIX" >> $GITHUB_OUTPUT
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ steps.version.outputs.version }},suffix=-${{ steps.platform.outputs.suffix }}
+
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./agent/Dockerfile.multiarch
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            COMMIT=${{ steps.version.outputs.commit }}
+
+  # Create multi-arch manifests
+  manifest:
+    needs: build-docker
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Log into registry ${{ env.REGISTRY }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get version info
+        id: version
+        run: |
+          # Extract version from tag (e.g., agent-v1.0.0 -> 1.0.0)
+          VERSION=${GITHUB_REF#refs/tags/agent-v}
+
+          # Check if this is a pre-release (contains -alpha, -beta, -rc, etc.)
+          if [[ "$VERSION" == *"-"* ]]; then
+            IS_PRERELEASE="true"
+          else
+            IS_PRERELEASE="false"
+          fi
+
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "is_prerelease=${IS_PRERELEASE}" >> $GITHUB_OUTPUT
+
+      - name: Create and push multi-arch manifest
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          IS_PRERELEASE="${{ steps.version.outputs.is_prerelease }}"
+          REPO="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+
+          echo "Creating manifest for ${REPO}:${VERSION}"
+          echo "Is pre-release: ${IS_PRERELEASE}"
+
+          # Create version manifest (always)
+          docker buildx imagetools create -t ${REPO}:${VERSION} \
+            ${REPO}:${VERSION}-amd64 \
+            ${REPO}:${VERSION}-arm64
+
+          # For stable releases (not pre-releases), also create semver and latest tags
+          if [ "$IS_PRERELEASE" == "false" ]; then
+            MAJOR=$(echo $VERSION | cut -d. -f1)
+            MINOR=$(echo $VERSION | cut -d. -f1-2)
+
+            # Create major.minor manifest
+            docker buildx imagetools create -t ${REPO}:${MINOR} \
+              ${REPO}:${VERSION}-amd64 \
+              ${REPO}:${VERSION}-arm64
+
+            # Create major manifest (only if >= 1.0.0)
+            if [ "$MAJOR" != "0" ]; then
+              docker buildx imagetools create -t ${REPO}:${MAJOR} \
+                ${REPO}:${VERSION}-amd64 \
+                ${REPO}:${VERSION}-arm64
+            fi
+
+            # Create latest manifest
+            docker buildx imagetools create -t ${REPO}:latest \
+              ${REPO}:${VERSION}-amd64 \
+              ${REPO}:${VERSION}-arm64
+          fi

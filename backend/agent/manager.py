@@ -108,6 +108,34 @@ class AgentManager:
             logger.info(f"Token {token[:8]}... is valid")
             return True
 
+    def cleanup_expired_registration_tokens(self) -> int:
+        """
+        Clean up expired registration tokens.
+
+        Deletes tokens that have expired (past their expires_at time).
+        Called by periodic_jobs to prevent token accumulation.
+
+        Returns:
+            int: Number of tokens deleted
+        """
+        now = datetime.now(timezone.utc)
+
+        with self.db_manager.get_session() as session:
+            # Find and delete expired tokens
+            # SQLite stores naive datetimes, so we compare against naive UTC
+            expired_tokens = session.query(RegistrationToken).filter(
+                RegistrationToken.expires_at < now.replace(tzinfo=None)
+            ).all()
+
+            count = len(expired_tokens)
+            if count > 0:
+                for token in expired_tokens:
+                    session.delete(token)
+                session.commit()
+                logger.info(f"Cleaned up {count} expired registration tokens")
+
+            return count
+
     def validate_permanent_token(self, token: str) -> bool:
         """
         Validate permanent token (agent_id) exists.

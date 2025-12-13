@@ -224,6 +224,13 @@ class PeriodicJobsManager:
                 if action_tokens_deleted > 0:
                     logger.info(f"Cleaned up {action_tokens_deleted} expired action tokens")
 
+                # Clean up expired registration tokens (v2.2.0+)
+                from agent.manager import AgentManager
+                agent_manager = AgentManager()
+                registration_tokens_deleted = agent_manager.cleanup_expired_registration_tokens()
+                if registration_tokens_deleted > 0:
+                    logger.info(f"Cleaned up {registration_tokens_deleted} expired registration tokens")
+
                 # Clean up stale container state dictionaries (prevent memory leak)
                 if self.monitor:
                     await self.monitor.cleanup_stale_container_state()

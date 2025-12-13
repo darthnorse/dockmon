@@ -4669,26 +4669,36 @@ async def delete_registry_credential(
 
 # ==================== Agent Management Routes (v2.2.0) ====================
 
+class GenerateTokenRequest(BaseModel):
+    """Request body for generating registration token"""
+    multi_use: bool = False  # If True, token can be used by unlimited agents
+
+
 @app.post("/api/agent/generate-token")
 async def generate_agent_registration_token(
     request: Request,
+    body: GenerateTokenRequest = GenerateTokenRequest(),
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Generate a single-use registration token for agent registration.
+    Generate a registration token for agent registration.
 
-    Token expires after 15 minutes and can only be used once.
+    Token expires after 15 minutes.
+    By default, token can only be used once. Set multi_use=true to allow
+    unlimited agents to register with the same token (within the 15 minute window).
     """
     try:
         agent_manager = AgentManager()  # Creates short-lived sessions internally
         token_record = agent_manager.generate_registration_token(
-            user_id=current_user["user_id"]
+            user_id=current_user["user_id"],
+            multi_use=body.multi_use
         )
 
         return {
             "success": True,
             "token": token_record.token,
-            "expires_at": token_record.expires_at.isoformat() + 'Z'
+            "expires_at": token_record.expires_at.isoformat() + 'Z',
+            "multi_use": body.multi_use
         }
 
     except Exception as e:

@@ -134,7 +134,8 @@ class TestTokenValidation:
             created_by_user_id=1,
             created_at=datetime.now(timezone.utc) - timedelta(minutes=20),
             expires_at=datetime.now(timezone.utc) - timedelta(minutes=1),
-            used=False
+            max_uses=1,
+            use_count=0
         )
         db_session.add(expired_token)
         db_session.commit()
@@ -146,26 +147,27 @@ class TestTokenValidation:
 
             assert is_valid is False
 
-    def test_validate_used_token(self, db_session, mock_db_manager):
-        """Should reject already-used token"""
+    def test_validate_exhausted_token(self, db_session, mock_db_manager):
+        """Should reject token that has reached max uses"""
         from agent.manager import AgentManager
 
-        # Create used token
-        used_token = RegistrationToken(
-            token="used-token-uuid",
+        # Create exhausted token (use_count >= max_uses)
+        exhausted_token = RegistrationToken(
+            token="exhausted-token-uuid",
             created_by_user_id=1,
             created_at=datetime.now(timezone.utc),
             expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
-            used=True,
-            used_at=datetime.now(timezone.utc)
+            max_uses=1,
+            use_count=1,
+            last_used_at=datetime.now(timezone.utc)
         )
-        db_session.add(used_token)
+        db_session.add(exhausted_token)
         db_session.commit()
 
         with patch.object(AgentManager, '__init__', lambda self: setattr(self, 'db_manager', mock_db_manager)):
             manager = AgentManager()
 
-            is_valid = manager.validate_registration_token("used-token-uuid")
+            is_valid = manager.validate_registration_token("exhausted-token-uuid")
 
             assert is_valid is False
 
@@ -223,10 +225,10 @@ class TestAgentRegistration:
             assert host.connection_type == "agent"
             assert host.agent.id == result["agent_id"]
 
-            # Verify token marked as used
+            # Verify token use count incremented
             token = db_session.query(RegistrationToken).filter_by(token=token_record.token).first()
-            assert token.used is True
-            assert token.used_at is not None
+            assert token.use_count == 1
+            assert token.last_used_at is not None
 
     def test_register_agent_with_expired_token(self, db_session, mock_db_manager):
         """Should reject registration with expired token"""
@@ -238,7 +240,8 @@ class TestAgentRegistration:
             created_by_user_id=1,
             created_at=datetime.now(timezone.utc) - timedelta(minutes=20),
             expires_at=datetime.now(timezone.utc) - timedelta(minutes=1),
-            used=False
+            max_uses=1,
+            use_count=0
         )
         db_session.add(expired_token)
         db_session.commit()

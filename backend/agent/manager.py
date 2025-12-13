@@ -37,12 +37,13 @@ class AgentManager:
         self.db_manager = DatabaseManager()  # Creates sessions as needed
         self.monitor = monitor  # For adding hosts to monitor on registration
 
-    def generate_registration_token(self, user_id: int) -> RegistrationToken:
+    def generate_registration_token(self, user_id: int, multi_use: bool = False) -> RegistrationToken:
         """
-        Generate a single-use registration token with 15-minute expiry.
+        Generate a registration token with 15-minute expiry.
 
         Args:
             user_id: ID of user creating the token
+            multi_use: If True, token can be used by unlimited agents (within expiry window)
 
         Returns:
             RegistrationToken: Created token record
@@ -50,7 +51,10 @@ class AgentManager:
         now = datetime.now(timezone.utc)
         token = str(uuid.uuid4())  # 36 characters with hyphens (e.g., 550e8400-e29b-41d4-a716-446655440000)
 
-        logger.info(f"Generating registration token for user {user_id}: {token[:8]}...")
+        # max_uses: 1 = single use (default), None = unlimited
+        max_uses = None if multi_use else 1
+
+        logger.info(f"Generating registration token for user {user_id}: {token[:8]}... (multi_use={multi_use})")
 
         with self.db_manager.get_session() as session:
             token_record = RegistrationToken(
@@ -58,15 +62,16 @@ class AgentManager:
                 created_by_user_id=user_id,
                 created_at=now,
                 expires_at=now + timedelta(minutes=15),
-                used=False,
-                used_at=None
+                max_uses=max_uses,
+                use_count=0,
+                last_used_at=None
             )
 
             session.add(token_record)
             session.commit()
             session.refresh(token_record)
 
-            logger.info(f"Successfully created registration token {token[:8]}... (expires: {token_record.expires_at})")
+            logger.info(f"Successfully created registration token {token[:8]}... (expires: {token_record.expires_at}, max_uses={max_uses})")
 
             return token_record
 
@@ -89,8 +94,8 @@ class AgentManager:
                 logger.warning(f"Token {token[:8]}... not found in database")
                 return False
 
-            if token_record.used:
-                logger.warning(f"Token {token[:8]}... already used")
+            if token_record.is_exhausted:
+                logger.warning(f"Token {token[:8]}... has reached max uses ({token_record.use_count}/{token_record.max_uses})")
                 return False
 
             now = datetime.now(timezone.utc)
@@ -160,9 +165,9 @@ class AgentManager:
             with self.db_manager.get_session() as session:
                 token_record = session.query(RegistrationToken).filter_by(token=token).first()
                 if token_record:
-                    # Check if already used first
-                    if token_record.used:
-                        return {"success": False, "error": "Registration token has already been used"}
+                    # Check if token has reached max uses
+                    if token_record.is_exhausted:
+                        return {"success": False, "error": "Registration token has reached maximum uses"}
                     # SQLite stores datetimes as naive, make it timezone-aware for comparison
                     expires_at = token_record.expires_at.replace(tzinfo=timezone.utc) if token_record.expires_at.tzinfo is None else token_record.expires_at
                     if expires_at <= datetime.now(timezone.utc):
@@ -349,16 +354,16 @@ class AgentManager:
                 reg_session.add(agent)
                 logger.info(f"Created agent record: {agent_id[:8]}... (os={registration_data.get('agent_os')}, arch={registration_data.get('agent_arch')})")
 
-                # Mark token as used (with locking to prevent TOCTOU race)
+                # Increment token use count (with locking to prevent TOCTOU race)
                 # Use with_for_update() to lock the row - concurrent registrations will wait
                 token_record = reg_session.query(RegistrationToken).filter_by(token=token).with_for_update().first()
                 if token_record:
-                    # Re-check token hasn't been used by concurrent registration
-                    if token_record.used:
+                    # Re-check token hasn't reached max uses by concurrent registration
+                    if token_record.is_exhausted:
                         reg_session.rollback()
-                        return {"success": False, "error": "Registration token has already been used"}
-                    token_record.used = True
-                    token_record.used_at = now
+                        return {"success": False, "error": "Registration token has reached maximum uses"}
+                    token_record.use_count += 1
+                    token_record.last_used_at = now
 
                 # Commit in the dedicated session (context manager will close it)
                 reg_session.commit()
@@ -776,11 +781,11 @@ class AgentManager:
                 existing_host.updated_at = now
                 logger.info(f"Marked old host {old_host_name} as migrated")
 
-                # Step 5: Mark token as used
+                # Step 5: Increment token use count
                 token_record = session.query(RegistrationToken).filter_by(token=token).first()
                 if token_record:
-                    token_record.used = True
-                    token_record.used_at = now
+                    token_record.use_count += 1
+                    token_record.last_used_at = now
 
                 # Commit all changes atomically
                 session.commit()

@@ -70,7 +70,8 @@ def registration_token(db_manager):
             created_by_user_id=user.id,
             created_at=now,
             expires_at=now.replace(year=now.year + 1),  # Far future
-            used=False
+            max_uses=1,
+            use_count=0
         )
         session.add(token)
         session.commit()

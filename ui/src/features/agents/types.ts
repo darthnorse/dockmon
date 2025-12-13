@@ -28,6 +28,7 @@ export interface RegistrationTokenResponse {
   success: boolean
   token: string
   expires_at: string  // ISO timestamp
+  multi_use: boolean  // If true, token can be used by unlimited agents
 }
 
 export interface AgentListResponse {

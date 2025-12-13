@@ -93,6 +93,7 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [copied, setCopied] = useState<string | null>(null)
   const [installMethod, setInstallMethod] = useState<InstallMethod>('docker')
+  const [multiUse, setMultiUse] = useState(false)
 
   const addMutation = useAddHost()
   const updateMutation = useUpdateHost()
@@ -189,6 +190,7 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
 
   const token = generateToken.data?.token
   const expiresAt = generateToken.data?.expires_at
+  const isMultiUse = generateToken.data?.multi_use
 
   const handleCopy = async (text: string, id: string) => {
     await navigator.clipboard.writeText(text)
@@ -350,10 +352,29 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
             Deploy a lightweight agent on your remote Docker host. The agent connects to DockMon via WebSocket - no need to expose Docker ports or configure mTLS certificates.
           </p>
           <p className="text-sm font-medium text-green-600 dark:text-green-500">
-            ✓ Recommended: This is the preferred and most secure method
+            Recommended: This is the preferred and most secure method
           </p>
+
+          <div className="flex items-center gap-2 py-2">
+            <input
+              type="checkbox"
+              id="multiUse"
+              checked={multiUse}
+              onChange={(e) => setMultiUse(e.target.checked)}
+              className="h-4 w-4"
+            />
+            <label htmlFor="multiUse" className="text-sm">
+              Allow multiple agents to use this token
+            </label>
+          </div>
+          {multiUse && (
+            <p className="text-xs text-muted-foreground -mt-1">
+              Useful for batch deployments. All agents must register within 15 minutes.
+            </p>
+          )}
+
           <Button
-            onClick={() => generateToken.mutate()}
+            onClick={() => generateToken.mutate({ multiUse })}
             disabled={generateToken.isPending}
           >
             {generateToken.isPending ? 'Generating Token...' : 'Generate Registration Token'}
@@ -364,8 +385,9 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
           <Alert>
             <Terminal className="h-4 w-4" />
             <AlertDescription>
-              Token generated! Expires in{' '}
+              {isMultiUse ? 'Multi-use token' : 'Token'} generated! Expires in{' '}
               <strong>{expiresAt && formatExpiry(expiresAt)}</strong>
+              {isMultiUse && ' — can be used by multiple agents'}
             </AlertDescription>
           </Alert>
 

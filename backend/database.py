@@ -174,7 +174,11 @@ class ActionToken(Base):
 
 
 class RegistrationToken(Base):
-    """Agent registration tokens (v2.2.0)"""
+    """Agent registration tokens (v2.2.0+)
+
+    Supports both single-use tokens (default) and multi-use tokens for
+    batch agent deployments.
+    """
     __tablename__ = "registration_tokens"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -182,8 +186,18 @@ class RegistrationToken(Base):
     created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     created_at = Column(DateTime, default=utcnow, nullable=False)
     expires_at = Column(DateTime, nullable=False)  # 15 minute expiry
-    used = Column(Boolean, default=False, nullable=False)
-    used_at = Column(DateTime, nullable=True)
+
+    # Multi-use support (v2.2.0-beta3)
+    max_uses = Column(Integer, nullable=True, default=1)  # 1 = single use, NULL = unlimited
+    use_count = Column(Integer, nullable=False, default=0)  # How many agents have registered
+    last_used_at = Column(DateTime, nullable=True)  # Last registration timestamp
+
+    @property
+    def is_exhausted(self) -> bool:
+        """Check if token has reached its max uses"""
+        if self.max_uses is None:
+            return False  # Unlimited
+        return self.use_count >= self.max_uses
 
 class Agent(Base):
     """DockMon Agent instances (v2.2.0)"""

@@ -19,13 +19,14 @@ const API_BASE = '/api'
  */
 export function useGenerateToken() {
   return useMutation({
-    mutationFn: async (): Promise<RegistrationTokenResponse> => {
+    mutationFn: async (options?: { multiUse?: boolean }): Promise<RegistrationTokenResponse> => {
       const response = await fetch(`${API_BASE}/agent/generate-token`, {
         method: 'POST',
         credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
         },
+        body: JSON.stringify({ multi_use: options?.multiUse ?? false }),
       })
 
       if (!response.ok) {
@@ -35,8 +36,11 @@ export function useGenerateToken() {
 
       return response.json()
     },
-    onSuccess: () => {
-      toast.success('Registration token generated')
+    onSuccess: (data) => {
+      const message = data.multi_use
+        ? 'Multi-use registration token generated'
+        : 'Registration token generated'
+      toast.success(message)
     },
     onError: (error: Error) => {
       toast.error(`Failed to generate token: ${error.message}`)

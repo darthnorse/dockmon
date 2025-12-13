@@ -74,7 +74,8 @@ class TestRegistrationTokenGeneration:
             assert token_record.token is not None
             assert len(token_record.token) == 36  # UUID format
             assert token_record.created_by_user_id == user_id
-            assert token_record.used is False
+            assert token_record.use_count == 0
+            assert token_record.max_uses == 1  # Default single-use
             # DB returns naive datetime, so compare as naive (both are UTC)
             assert token_record.expires_at > datetime.now(timezone.utc).replace(tzinfo=None)
 

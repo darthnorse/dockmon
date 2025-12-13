@@ -25,7 +25,6 @@ import docker
 from docker import DockerClient
 from docker.errors import DockerException, APIError
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Depends, status, Cookie, Response, Query
-from pydantic import BaseModel
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_redoc_html
@@ -65,7 +64,8 @@ from models.docker_models import DockerHostConfig, DockerHost
 from models.settings_models import GlobalSettings, AlertRule, AlertRuleV2Create, AlertRuleV2Update, GlobalSettingsUpdate
 from models.request_models import (
     AutoRestartRequest, DesiredStateRequest, AlertRuleCreate, AlertRuleUpdate,
-    NotificationChannelCreate, NotificationChannelUpdate, EventLogFilter, BatchJobCreate, ContainerTagUpdate, HostTagUpdate, HttpHealthCheckConfig
+    NotificationChannelCreate, NotificationChannelUpdate, EventLogFilter, BatchJobCreate,
+    ContainerTagUpdate, HostTagUpdate, HttpHealthCheckConfig, GenerateTokenRequest
 )
 from security.audit import security_audit
 from security.rate_limiting import rate_limiter, rate_limit_auth, rate_limit_hosts, rate_limit_containers, rate_limit_notifications, rate_limit_default
@@ -4669,11 +4669,6 @@ async def delete_registry_credential(
 
 
 # ==================== Agent Management Routes (v2.2.0) ====================
-
-class GenerateTokenRequest(BaseModel):
-    """Request body for generating registration token"""
-    multi_use: bool = False  # If True, token can be used by unlimited agents
-
 
 @app.post("/api/agent/generate-token")
 async def generate_agent_registration_token(

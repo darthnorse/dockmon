@@ -439,6 +439,11 @@ class HostTagUpdate(TagUpdateBase):
     pass
 
 
+class GenerateTokenRequest(BaseModel):
+    """Request model for generating agent registration token"""
+    multi_use: bool = False  # If True, token can be used by unlimited agents
+
+
 class HttpHealthCheckConfig(BaseModel):
     """Request model for HTTP health check configuration"""
     enabled: bool = Field(default=False)

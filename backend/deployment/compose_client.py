@@ -141,6 +141,8 @@ class ComposeClient:
         environment: Optional[Dict[str, str]] = None,
         profiles: Optional[List[str]] = None,
         remove_volumes: bool = False,
+        force_recreate: bool = False,
+        pull_images: bool = False,
         wait_for_healthy: bool = False,
         health_timeout: int = 60,
         timeout: int = 1800,
@@ -161,6 +163,8 @@ class ComposeClient:
             environment: Environment variables to pass
             profiles: Compose profiles to activate
             remove_volumes: Remove volumes on "down" action
+            force_recreate: Force recreate containers even if unchanged
+            pull_images: Pull images before starting (for redeploy)
             wait_for_healthy: Wait for health checks to pass
             health_timeout: Health check timeout in seconds
             timeout: Operation timeout in seconds
@@ -181,6 +185,8 @@ class ComposeClient:
             "environment": environment or {},
             "profiles": profiles or [],
             "remove_volumes": remove_volumes,
+            "force_recreate": force_recreate,
+            "pull_images": pull_images,
             "wait_for_healthy": wait_for_healthy,
             "health_timeout": health_timeout,
             "timeout": timeout,
@@ -242,6 +248,8 @@ class ComposeClient:
         environment: Optional[Dict[str, str]] = None,
         profiles: Optional[List[str]] = None,
         remove_volumes: bool = False,
+        force_recreate: bool = False,
+        pull_images: bool = False,
         wait_for_healthy: bool = False,
         health_timeout: int = 60,
         timeout: int = 1800,
@@ -271,6 +279,8 @@ class ComposeClient:
             "environment": environment or {},
             "profiles": profiles or [],
             "remove_volumes": remove_volumes,
+            "force_recreate": force_recreate,
+            "pull_images": pull_images,
             "wait_for_healthy": wait_for_healthy,
             "health_timeout": health_timeout,
             "timeout": timeout,

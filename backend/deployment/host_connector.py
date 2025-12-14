@@ -13,10 +13,12 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional, Callable
 import logging
 
+from database import DatabaseManager
 from utils.async_docker import async_docker_call
 from utils.container_health import wait_for_container_health
 from utils.image_pull_progress import ImagePullProgress
 from utils.network_helpers import manually_connect_networks
+from utils.registry_credentials import get_registry_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -448,8 +450,6 @@ class DirectDockerConnector(HostConnector):
         # Look up registry credentials for the image
         auth_config = None
         try:
-            from utils.registry_credentials import get_registry_credentials
-            from database import DatabaseManager
             db = DatabaseManager()
             auth_config = get_registry_credentials(db, image)
             if auth_config:

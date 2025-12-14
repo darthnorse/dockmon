@@ -26,6 +26,7 @@ from database import (
     DatabaseManager,
 )
 from agent.command_executor import get_agent_command_executor, RetryPolicy
+from utils.registry_credentials import get_all_registry_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -238,6 +239,8 @@ class AgentDeploymentExecutor:
         project_name: str,
         environment: Optional[Dict[str, str]] = None,
         profiles: Optional[list[str]] = None,
+        force_recreate: bool = False,
+        pull_images: bool = False,
         wait_for_healthy: bool = False,
         health_timeout: int = 60,
     ) -> bool:
@@ -256,8 +259,10 @@ class AgentDeploymentExecutor:
             compose_content: Docker Compose YAML content
             project_name: Compose project name
             environment: Optional environment variables dict
-            profiles: Optional list of compose profiles to activate (Phase 3)
-            wait_for_healthy: Whether to wait for health checks (Phase 3)
+            profiles: Optional list of compose profiles to activate
+            force_recreate: Force recreate containers even if unchanged
+            pull_images: Pull images before starting (for redeploy)
+            wait_for_healthy: Whether to wait for health checks
             health_timeout: Health check timeout in seconds (default 60)
 
         Returns:
@@ -290,7 +295,6 @@ class AgentDeploymentExecutor:
         # the compose file might reference
         registry_credentials = []
         try:
-            from utils.registry_credentials import get_all_registry_credentials
             registry_credentials = get_all_registry_credentials(self.db)
             if registry_credentials:
                 logger.info(f"Including {len(registry_credentials)} registry credentials for compose deployment")
@@ -308,6 +312,8 @@ class AgentDeploymentExecutor:
                 "environment": environment or {},
                 "action": "up",
                 "profiles": profiles or [],
+                "force_recreate": force_recreate,
+                "pull_images": pull_images,
                 "wait_for_healthy": wait_for_healthy,
                 "health_timeout": health_timeout,
                 "registry_credentials": registry_credentials,

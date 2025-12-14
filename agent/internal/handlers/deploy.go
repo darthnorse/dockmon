@@ -22,15 +22,17 @@ type DeployHandler struct {
 // DeployComposeRequest is sent from backend to agent
 // This wraps the shared compose.DeployRequest for backward compatibility
 type DeployComposeRequest struct {
-	DeploymentID        string                      `json:"deployment_id"`
-	ProjectName         string                      `json:"project_name"`
-	ComposeContent      string                      `json:"compose_content"`
-	Environment         map[string]string           `json:"environment,omitempty"`
-	Action              string                      `json:"action"`         // "up", "down", "restart"
-	RemoveVolumes       bool                        `json:"remove_volumes"` // Only for "down" action, default false
-	Profiles            []string                    `json:"profiles,omitempty"`
-	WaitForHealthy      bool                        `json:"wait_for_healthy,omitempty"`
-	HealthTimeout       int                         `json:"health_timeout,omitempty"`
+	DeploymentID        string                       `json:"deployment_id"`
+	ProjectName         string                       `json:"project_name"`
+	ComposeContent      string                       `json:"compose_content"`
+	Environment         map[string]string            `json:"environment,omitempty"`
+	Action              string                       `json:"action"`         // "up", "down", "restart"
+	RemoveVolumes       bool                         `json:"remove_volumes"` // Only for "down" action, default false
+	ForceRecreate       bool                         `json:"force_recreate,omitempty"` // Force recreate containers
+	PullImages          bool                         `json:"pull_images,omitempty"`    // Pull images before starting
+	Profiles            []string                     `json:"profiles,omitempty"`
+	WaitForHealthy      bool                         `json:"wait_for_healthy,omitempty"`
+	HealthTimeout       int                          `json:"health_timeout,omitempty"`
 	RegistryCredentials []compose.RegistryCredential `json:"registry_credentials,omitempty"`
 }
 
@@ -99,6 +101,8 @@ func (h *DeployHandler) DeployCompose(ctx context.Context, req DeployComposeRequ
 		Profiles:            req.Profiles,
 		Action:              req.Action,
 		RemoveVolumes:       req.RemoveVolumes,
+		ForceRecreate:       req.ForceRecreate,
+		PullImages:          req.PullImages,
 		WaitForHealthy:      req.WaitForHealthy,
 		HealthTimeout:       req.HealthTimeout,
 		RegistryCredentials: req.RegistryCredentials,

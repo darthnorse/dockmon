@@ -125,7 +125,7 @@ function AgentIndicator({
   agentVersion,
   latestVersion,
 }: {
-  connectionType?: 'agent' | 'remote' | null | undefined
+  connectionType?: 'local' | 'agent' | 'remote' | null | undefined
   agentVersion?: string | null | undefined
   latestVersion?: string | null | undefined
 }) {

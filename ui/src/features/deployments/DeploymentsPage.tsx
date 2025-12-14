@@ -10,7 +10,7 @@
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { Plus, Trash2, Play, Edit, AlertCircle, CheckCircle, XCircle, Loader2, Layers, Bookmark, Search } from 'lucide-react'
+import { Plus, Trash2, Play, Edit, AlertCircle, CheckCircle, XCircle, Loader2, Layers, Bookmark, Search, Download, RefreshCw } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useQueryClient, useQuery } from '@tanstack/react-query'
 import { apiClient } from '@/lib/api/client'
@@ -42,9 +42,10 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
-import { useDeployments, useExecuteDeployment, useDeleteDeployment } from './hooks/useDeployments'
+import { useDeployments, useExecuteDeployment, useDeleteDeployment, useRedeployDeployment } from './hooks/useDeployments'
 import { DeploymentForm } from './components/DeploymentForm'
 import { SaveAsTemplateDialog } from './components/SaveAsTemplateDialog'
+import { ImportStackModal } from './components/ImportStackModal'
 import { LayerProgressDisplay } from '@/components/shared/LayerProgressDisplay'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
 import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
@@ -62,8 +63,10 @@ export function DeploymentsPage() {
   const [filters, setFilters] = useState<DeploymentFilters>({})
   const [searchQuery, setSearchQuery] = useState('')
   const [showNewDeploymentForm, setShowNewDeploymentForm] = useState(false)
+  const [showImportModal, setShowImportModal] = useState(false)
   const [deploymentToEdit, setDeploymentToEdit] = useState<Deployment | null>(null)
   const [deploymentToDelete, setDeploymentToDelete] = useState<Deployment | null>(null)
+  const [deploymentToRedeploy, setDeploymentToRedeploy] = useState<Deployment | null>(null)
   const [deploymentToSave, setDeploymentToSave] = useState<Deployment | null>(null)
   const [hostModalOpen, setHostModalOpen] = useState(false)
   const [selectedHostId, setSelectedHostId] = useState<string | null>(null)
@@ -75,6 +78,7 @@ export function DeploymentsPage() {
     queryFn: () => apiClient.get('/containers'),
   })
   const executeDeployment = useExecuteDeployment()
+  const redeployDeployment = useRedeployDeployment()
   const deleteDeployment = useDeleteDeployment()
 
   // Client-side search filtering
@@ -186,6 +190,21 @@ export function DeploymentsPage() {
     }
   }
 
+  const handleRedeploy = (deployment: Deployment) => {
+    // Only allow redeploy for running or partial deployments
+    if (deployment.status !== 'running' && deployment.status !== 'partial') {
+      return
+    }
+    setDeploymentToRedeploy(deployment)
+  }
+
+  const confirmRedeploy = () => {
+    if (deploymentToRedeploy) {
+      redeployDeployment.mutate(deploymentToRedeploy.id)
+      setDeploymentToRedeploy(null)
+    }
+  }
+
   const handleSaveAsTemplate = (deployment: Deployment) => {
     setDeploymentToSave(deployment)
   }
@@ -221,6 +240,16 @@ export function DeploymentsPage() {
           >
             <Layers className="h-4 w-4" />
             Templates
+          </Button>
+
+          <Button
+            variant="outline"
+            onClick={() => setShowImportModal(true)}
+            className="gap-2"
+            data-testid="import-stack-button"
+          >
+            <Download className="h-4 w-4" />
+            Import Stack
           </Button>
 
           <Button
@@ -489,16 +518,29 @@ export function DeploymentsPage() {
                     )}
 
                     {(deployment.status === 'running' || deployment.status === 'partial') && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleSaveAsTemplate(deployment)}
-                        data-testid="save-as-template"
-                        title="Save as New Template"
-                      >
-                        <Bookmark className="h-4 w-4 mr-1" />
-                        Save as New Template
-                      </Button>
+                      <>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleRedeploy(deployment)}
+                          disabled={redeployDeployment.isPending}
+                          data-testid={`redeploy-deployment-${deployment.name}`}
+                          title="Redeploy - pull latest images and recreate containers"
+                        >
+                          <RefreshCw className="h-4 w-4 mr-1" />
+                          Redeploy
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleSaveAsTemplate(deployment)}
+                          data-testid="save-as-template"
+                          title="Save as New Template"
+                        >
+                          <Bookmark className="h-4 w-4 mr-1" />
+                          Save as New Template
+                        </Button>
+                      </>
                     )}
 
                     {(deployment.status === 'running' || deployment.status === 'partial' || deployment.status === 'failed' || deployment.status === 'rolled_back' || deployment.status === 'planning') && (
@@ -560,11 +602,42 @@ export function DeploymentsPage() {
         </AlertDialogContent>
       </AlertDialog>
 
+      {/* Redeploy Confirmation Dialog */}
+      <AlertDialog open={!!deploymentToRedeploy} onOpenChange={(open) => !open && setDeploymentToRedeploy(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Redeploy Stack</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to redeploy "<strong>{deploymentToRedeploy?.name}</strong>"?
+              <br /><br />
+              This will:
+              <ul className="list-disc list-inside mt-2 space-y-1">
+                <li>Pull the latest images for all services</li>
+                <li>Recreate all containers with the new images</li>
+                <li>Brief service interruption during container recreation</li>
+              </ul>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmRedeploy}>
+              Redeploy
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {/* Save as Template Dialog */}
       <SaveAsTemplateDialog
         deployment={deploymentToSave}
         isOpen={!!deploymentToSave}
         onClose={() => setDeploymentToSave(null)}
+      />
+
+      {/* Import Stack Modal */}
+      <ImportStackModal
+        isOpen={showImportModal}
+        onClose={() => setShowImportModal(false)}
       />
 
       {/* Host Details Modal */}

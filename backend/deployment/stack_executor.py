@@ -10,7 +10,9 @@ from typing import Any, Callable, Dict
 
 from sqlalchemy.orm import Session
 
-from database import DatabaseManager, Deployment, DockerHostDB
+from database import DatabaseManager, Deployment, DockerHostDB, DeploymentMetadata, DeploymentContainer
+from utils.encryption import decrypt_password
+from utils.registry_credentials import get_all_registry_credentials
 from .compose_parser import ComposeParser, ComposeParseError
 from .compose_validator import ComposeValidator, ComposeValidationError
 from .compose_client import (
@@ -31,6 +33,8 @@ async def execute_stack_deployment(
     state_machine,
     update_progress: Callable,
     create_deployment_metadata: Callable,
+    force_recreate: bool = False,
+    pull_images: bool = False,
 ) -> None:
     """
     Execute Docker Compose stack deployment via Go Compose Service.
@@ -43,6 +47,8 @@ async def execute_stack_deployment(
         state_machine: DeploymentStateMachine instance
         update_progress: Async callback to update progress
         create_deployment_metadata: Callback to create metadata records
+        force_recreate: Force recreate containers even if unchanged (for redeploy)
+        pull_images: Pull latest images before starting (for redeploy/update)
 
     Raises:
         RuntimeError: If validation, parsing, or deployment fails
@@ -82,6 +88,8 @@ async def execute_stack_deployment(
         state_machine=state_machine,
         update_progress=update_progress,
         create_deployment_metadata=create_deployment_metadata,
+        force_recreate=force_recreate,
+        pull_images=pull_images,
     )
 
 
@@ -93,6 +101,8 @@ async def _execute_via_go_service(
     state_machine,
     update_progress: Callable,
     create_deployment_metadata: Callable,
+    force_recreate: bool = False,
+    pull_images: bool = False,
 ) -> None:
     """
     Execute stack deployment via Go Compose Service.
@@ -132,6 +142,8 @@ async def _execute_via_go_service(
             progress_callback=on_progress,
             action="up",
             environment=variables,
+            force_recreate=force_recreate,
+            pull_images=pull_images,
             wait_for_healthy=True,
             health_timeout=120,
             docker_host=host_info.get('docker_host'),
@@ -143,7 +155,17 @@ async def _execute_via_go_service(
 
         # Handle result
         if result.success or result.partial_success:
-            # Link containers to deployment
+            # Clear old deployment_metadata records (for redeploy - containers have new IDs)
+            session.query(DeploymentMetadata).filter(
+                DeploymentMetadata.deployment_id == deployment.id
+            ).delete()
+
+            # Clear old deployment_containers records
+            session.query(DeploymentContainer).filter(
+                DeploymentContainer.deployment_id == deployment.id
+            ).delete()
+
+            # Link containers to deployment with new IDs
             if result.services:
                 for service_name, service_info in result.services.items():
                     container_id = service_info.get('container_id', '')[:12]
@@ -218,8 +240,6 @@ def _get_host_connection_info(host_id: str) -> Dict[str, Any]:
     Returns:
         Dict with docker_host, tls certs (for mTLS), and registry credentials
     """
-    from utils.encryption import decrypt_password
-
     db = DatabaseManager()
 
     with db.get_session() as session:
@@ -241,8 +261,18 @@ def _get_host_connection_info(host_id: str) -> Dict[str, Any]:
             if host.tls_key:
                 result['tls_key'] = decrypt_password(host.tls_key)
 
-        # Get registry credentials for this host
-        # TODO: Implement registry credentials lookup
-        result['registry_credentials'] = None
+        # Get all registry credentials for compose deployment
+        # We pass all credentials since we don't know which registries
+        # the compose file might reference
+        try:
+            credentials = get_all_registry_credentials(db)
+            if credentials:
+                result['registry_credentials'] = credentials
+                logger.debug(f"Including {len(credentials)} registry credentials for stack deployment")
+            else:
+                result['registry_credentials'] = None
+        except Exception as e:
+            logger.warning(f"Failed to get registry credentials for stack deployment: {e}")
+            result['registry_credentials'] = None
 
         return result

@@ -219,7 +219,12 @@ class DeploymentExecutor:
 
             return deployment_id
 
-    async def execute_deployment(self, deployment_id: str) -> bool:
+    async def execute_deployment(
+        self,
+        deployment_id: str,
+        force_recreate: bool = False,
+        pull_images: bool = False
+    ) -> bool:
         """
         Execute a deployment (pull image, create container, start container).
 
@@ -227,6 +232,8 @@ class DeploymentExecutor:
 
         Args:
             deployment_id: Composite deployment ID
+            force_recreate: Force recreate containers even if unchanged (for redeploy)
+            pull_images: Pull latest images before starting (for redeploy/update)
 
         Returns:
             True if deployment succeeded, False if it failed
@@ -266,7 +273,9 @@ class DeploymentExecutor:
                             host_id=deployment.host_id,
                             deployment_type=deployment.deployment_type,
                             definition=definition,
-                            name=deployment.name
+                            name=deployment.name,
+                            force_recreate=force_recreate,
+                            pull_images=pull_images
                         )
                         if not success:
                             raise RuntimeError(
@@ -294,6 +303,8 @@ class DeploymentExecutor:
                             state_machine=self.state_machine,
                             update_progress=self._update_progress,
                             create_deployment_metadata=self._create_deployment_metadata,
+                            force_recreate=force_recreate,
+                            pull_images=pull_images,
                         )
                     else:
                         raise ValueError(f"Unknown deployment_type: {deployment.deployment_type}")
@@ -377,7 +388,9 @@ class DeploymentExecutor:
         host_id: str,
         deployment_type: str,
         definition: Dict[str, Any],
-        name: str
+        name: str,
+        force_recreate: bool = False,
+        pull_images: bool = False
     ) -> bool:
         """
         Execute deployment via agent using native Docker Compose.
@@ -391,6 +404,8 @@ class DeploymentExecutor:
             deployment_type: 'container' or 'stack'
             definition: Deployment definition dict
             name: Deployment name (used as compose project name)
+            force_recreate: Force recreate containers even if unchanged
+            pull_images: Pull latest images before starting
 
         Returns:
             True if deployment command was sent successfully
@@ -443,7 +458,9 @@ class DeploymentExecutor:
             deployment_id=deployment_id,
             compose_content=compose_content,
             project_name=name,
-            environment=environment
+            environment=environment,
+            force_recreate=force_recreate,
+            pull_images=pull_images
         )
 
     async def _rollback_deployment(self, session: Session, deployment: Deployment) -> None:

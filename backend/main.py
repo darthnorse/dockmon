@@ -227,6 +227,7 @@ async def lifespan(app: FastAPI):
     deployment_routes.set_deployment_executor(deployment_executor)
     deployment_routes.set_template_manager(template_manager)
     deployment_routes.set_database_manager(monitor.db)
+    deployment_routes.set_docker_monitor(monitor)
     logger.info("Deployment services initialized")
 
     yield
@@ -562,8 +563,10 @@ async def get_hosts(current_user: dict = Depends(get_current_user)):
         agents = db.query(Agent).all()
         agent_by_host = {agent.host_id: agent for agent in agents}
 
-        # Get all agent-type hosts from database
-        agent_hosts_db = db.query(DockerHostDB).filter_by(connection_type='agent').all()
+        # Get all hosts from database (single query, O(1) lookups)
+        all_hosts_db = db.query(DockerHostDB).all()
+        hosts_by_id = {h.id: h for h in all_hosts_db}
+        agent_hosts_db = [h for h in all_hosts_db if h.connection_type == 'agent']
 
         # Track which host IDs we've seen from monitor.hosts
         seen_host_ids = set()
@@ -577,6 +580,7 @@ async def get_hosts(current_user: dict = Depends(get_current_user)):
 
             # Check if this host has an agent
             agent = agent_by_host.get(host_id)
+            db_host = hosts_by_id.get(host_id)
 
             if agent:
                 # Host is connected via agent - use real-time connection status
@@ -584,17 +588,16 @@ async def get_hosts(current_user: dict = Depends(get_current_user)):
                 logger.info(f"Agent {agent.id[:8]}... - DB status: {agent.status}, connection_manager.is_connected: {is_connected}, total connections: {agent_connection_manager.get_connection_count()}")
 
                 # Get system info from database for this agent host
-                agent_host_db = db.query(DockerHostDB).filter_by(id=host_id).first()
-                if agent_host_db:
+                if db_host:
                     # Override with database system info (agent-collected data)
-                    host_dict['os_type'] = agent_host_db.os_type
-                    host_dict['os_version'] = agent_host_db.os_version
-                    host_dict['kernel_version'] = agent_host_db.kernel_version
-                    host_dict['docker_version'] = agent_host_db.docker_version
-                    host_dict['daemon_started_at'] = agent_host_db.daemon_started_at
-                    host_dict['total_memory'] = agent_host_db.total_memory
-                    host_dict['num_cpus'] = agent_host_db.num_cpus
-                    host_dict['host_ip'] = agent_host_db.host_ip  # For systemd agents only
+                    host_dict['os_type'] = db_host.os_type
+                    host_dict['os_version'] = db_host.os_version
+                    host_dict['kernel_version'] = db_host.kernel_version
+                    host_dict['docker_version'] = db_host.docker_version
+                    host_dict['daemon_started_at'] = db_host.daemon_started_at
+                    host_dict['total_memory'] = db_host.total_memory
+                    host_dict['num_cpus'] = db_host.num_cpus
+                    host_dict['host_ip'] = db_host.host_ip  # For systemd agents only
 
                 # Override status with real-time connection state
                 host_dict['status'] = 'online' if is_connected else 'offline'
@@ -611,8 +614,14 @@ async def get_hosts(current_user: dict = Depends(get_current_user)):
                     'registered_at': agent.registered_at.isoformat() + 'Z' if agent.registered_at else None
                 }
             else:
-                # Host is connected via remote Docker (TCP/socket)
-                host_dict['connection_type'] = 'remote'
+                # Host is connected via remote Docker (TCP/socket) or local socket
+                # Use database connection_type if available, otherwise infer from URL
+                if db_host and db_host.connection_type:
+                    host_dict['connection_type'] = db_host.connection_type
+                else:
+                    # Fallback: infer from URL
+                    url = host_dict.get('url', '')
+                    host_dict['connection_type'] = 'local' if url.startswith('unix://') else 'remote'
                 host_dict['agent'] = None
 
             enriched_hosts.append(host_dict)

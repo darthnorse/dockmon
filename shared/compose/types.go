@@ -17,6 +17,10 @@ type DeployRequest struct {
 	Action        string `json:"action"`                   // "up", "down", "restart"
 	RemoveVolumes bool   `json:"remove_volumes,omitempty"` // Only for "down" action
 
+	// Redeploy options (for "up" action)
+	ForceRecreate bool `json:"force_recreate,omitempty"` // Force recreate containers even if unchanged
+	PullImages    bool `json:"pull_images,omitempty"`    // Pull images before starting
+
 	// Health check options
 	WaitForHealthy bool `json:"wait_for_healthy,omitempty"`
 	HealthTimeout  int  `json:"health_timeout,omitempty"` // seconds, default 60

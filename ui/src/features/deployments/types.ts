@@ -320,3 +320,86 @@ export interface DeploymentFilters {
   limit?: number
   offset?: number
 }
+
+// ==================== Import Stack Types ====================
+
+/**
+ * A stack discovered from container labels (from GET /known-stacks)
+ */
+export interface KnownStack {
+  name: string
+  hosts: string[]
+  host_names: string[]
+  container_count: number
+  services: string[]
+}
+
+/**
+ * API request to import an existing stack
+ */
+export interface ImportDeploymentRequest {
+  compose_content: string
+  env_content?: string
+  project_name?: string
+}
+
+/**
+ * API response from import operation
+ */
+export interface ImportDeploymentResponse {
+  success: boolean
+  deployments_created: Deployment[]
+  requires_name_selection: boolean
+  known_stacks?: KnownStack[]
+}
+
+// ==================== Scan Compose Dirs Types ====================
+
+/**
+ * Request to scan directories for compose files
+ */
+export interface ScanComposeDirsRequest {
+  paths?: string[]
+  recursive?: boolean
+  max_depth?: number
+}
+
+/**
+ * Metadata about a discovered compose file
+ */
+export interface ComposeFileInfo {
+  path: string
+  project_name: string
+  services: string[]
+  size: number
+  modified: string
+}
+
+/**
+ * Response from directory scan
+ */
+export interface ScanComposeDirsResponse {
+  success: boolean
+  compose_files: ComposeFileInfo[]
+  error?: string
+}
+
+// ==================== Read Compose File Types ====================
+
+/**
+ * Request to read a compose file's content
+ */
+export interface ReadComposeFileRequest {
+  path: string
+}
+
+/**
+ * Response containing compose file content
+ */
+export interface ReadComposeFileResponse {
+  success: boolean
+  path: string
+  content?: string
+  env_content?: string
+  error?: string
+}

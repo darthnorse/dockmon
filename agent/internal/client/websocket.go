@@ -40,6 +40,7 @@ type WebSocketClient struct {
 	selfUpdateHandler  *handlers.SelfUpdateHandler
 	healthCheckHandler *handlers.HealthCheckHandler
 	deployHandler      *handlers.DeployHandler
+	scanHandler        *handlers.ScanHandler
 
 	stopChan      chan struct{}
 	doneChan      chan struct{}
@@ -126,6 +127,10 @@ func NewWebSocketClient(
 	} else {
 		log.WithField("compose_cmd", client.deployHandler.GetComposeCommand()).Info("Deploy handler initialized")
 	}
+
+	// Initialize scan handler for directory scanning
+	client.scanHandler = handlers.NewScanHandler(log, client.sendEvent)
+	log.Info("Scan handler initialized")
 
 	return client, nil
 }
@@ -716,6 +721,22 @@ func (c *WebSocketClient) handleMessage(ctx context.Context, msg *types.Message)
 				}()
 				result = map[string]string{"status": "deployment_started"}
 			}
+		}
+
+	case "scan_compose_dirs":
+		var scanReq handlers.ScanComposeDirsRequest
+		if err = protocol.ParseCommand(msg, &scanReq); err == nil {
+			// Run scan synchronously (it's fast) and return result
+			scanResult := c.scanHandler.ScanComposeDirs(ctx, scanReq)
+			result = scanResult
+		}
+
+	case "read_compose_file":
+		var readReq handlers.ReadComposeFileRequest
+		if err = protocol.ParseCommand(msg, &readReq); err == nil {
+			// Run read synchronously (it's fast) and return result
+			readResult := c.scanHandler.ReadComposeFile(ctx, readReq)
+			result = readResult
 		}
 
 	default:

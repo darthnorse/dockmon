@@ -8,6 +8,9 @@ Used by both update checker (registry API) and update executor (Docker pulls).
 import logging
 from typing import Optional, Dict, List
 
+from database import RegistryCredential
+from utils.encryption import decrypt_password
+
 logger = logging.getLogger(__name__)
 
 
@@ -30,9 +33,6 @@ def get_registry_credentials(db, image_name: str) -> Optional[Dict[str, str]]:
         registry.example.com:5000/app:v1 → registry.example.com:5000 → lookup
     """
     try:
-        from database import RegistryCredential
-        from utils.encryption import decrypt_password
-
         # Extract registry URL using same logic as registry_adapter
         registry_url = "docker.io"  # Default for Docker Hub
 
@@ -91,9 +91,6 @@ def get_all_registry_credentials(db) -> List[Dict[str, str]]:
         List of dicts with {registry_url, username, password} for each stored credential
     """
     try:
-        from database import RegistryCredential
-        from utils.encryption import decrypt_password
-
         credentials = []
 
         with db.get_session() as session:

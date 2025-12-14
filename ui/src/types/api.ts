@@ -79,7 +79,7 @@ export interface Host {
   // Podman compatibility (Issue #20)
   is_podman?: boolean  // True if host runs Podman instead of Docker
   // Connection type (v2.2.0)
-  connection_type?: 'agent' | 'remote'
+  connection_type?: 'local' | 'agent' | 'remote'
   agent?: {
     agent_id: string
     engine_id: string

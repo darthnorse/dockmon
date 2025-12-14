@@ -39,8 +39,8 @@ class TestGetRegistryCredentials:
             yield test_db
         mock_db.get_session = get_session_cm
 
-        # Act
-        with patch('utils.encryption.decrypt_password', return_value="decrypted_secret"):
+        # Act - patch where function is used, not where defined
+        with patch('utils.registry_credentials.decrypt_password', return_value="decrypted_secret"):
             result = get_registry_credentials(mock_db, "ghcr.io/myorg/myapp:latest")
 
         # Assert
@@ -85,8 +85,8 @@ class TestGetRegistryCredentials:
             yield test_db
         mock_db.get_session = get_session_cm
 
-        # Act
-        with patch('utils.encryption.decrypt_password', return_value="docker_secret"):
+        # Act - patch where function is used, not where defined
+        with patch('utils.registry_credentials.decrypt_password', return_value="docker_secret"):
             result = get_registry_credentials(mock_db, "nginx:latest")
 
         # Assert
@@ -113,8 +113,8 @@ class TestGetRegistryCredentials:
             yield test_db
         mock_db.get_session = get_session_cm
 
-        # Act
-        with patch('utils.encryption.decrypt_password', side_effect=Exception("Decryption failed")):
+        # Act - patch where function is used, not where defined
+        with patch('utils.registry_credentials.decrypt_password', side_effect=Exception("Decryption failed")):
             result = get_registry_credentials(mock_db, "ghcr.io/myorg/myapp:latest")
 
         # Assert
@@ -150,8 +150,8 @@ class TestGetAllRegistryCredentials:
             yield test_db
         mock_db.get_session = get_session_cm
 
-        # Act
-        with patch('utils.encryption.decrypt_password', side_effect=["secret1", "secret2"]):
+        # Act - patch where function is used, not where defined
+        with patch('utils.registry_credentials.decrypt_password', side_effect=["secret1", "secret2"]):
             result = get_all_registry_credentials(mock_db)
 
         # Assert
@@ -207,7 +207,7 @@ class TestGetAllRegistryCredentials:
                 return "secret1"
             raise Exception("Decryption failed")
 
-        with patch('utils.encryption.decrypt_password', side_effect=mock_decrypt):
+        with patch('utils.registry_credentials.decrypt_password', side_effect=mock_decrypt):
             result = get_all_registry_credentials(mock_db)
 
         # Assert: Only the successful one is returned
@@ -234,7 +234,7 @@ class TestGetAllRegistryCredentials:
             yield test_db
         mock_db.get_session = get_session_cm
 
-        with patch('utils.encryption.decrypt_password', return_value="admin_secret"):
+        with patch('utils.registry_credentials.decrypt_password', return_value="admin_secret"):
             result = get_all_registry_credentials(mock_db)
 
         # Assert structure

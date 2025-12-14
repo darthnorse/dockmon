@@ -219,10 +219,36 @@ func (s *Service) runComposeUp(ctx context.Context, req DeployRequest, composeFi
 		TotalSvcs: len(project.Services),
 	})
 
+	// Pull images if requested (for redeploy/update)
+	if req.PullImages {
+		s.sendProgress(ProgressEvent{
+			Stage:    StagePullingImage,
+			Progress: 30,
+			Message:  "Pulling images...",
+		})
+
+		pullOpts := api.PullOptions{
+			IgnoreFailures: false,
+		}
+		if err := composeService.Pull(ctx, project, pullOpts); err != nil {
+			s.logError("Image pull failed", err)
+			return s.failResult(req.DeploymentID, fmt.Sprintf("Image pull failed: %v", err))
+		}
+		s.logInfo("Images pulled successfully", nil)
+	}
+
+	// Configure recreate behavior
+	recreatePolicy := api.RecreateDiverged // Default: recreate only if config changed
+	if req.ForceRecreate {
+		recreatePolicy = api.RecreateForce // Force: always recreate containers
+		s.logInfo("Force recreate enabled - all containers will be recreated", nil)
+	}
+
 	// Execute up
 	upOpts := api.UpOptions{
 		Create: api.CreateOptions{
 			RemoveOrphans: true,
+			Recreate:      recreatePolicy,
 		},
 		Start: api.StartOptions{
 			Project: project,

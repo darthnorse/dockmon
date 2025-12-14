@@ -585,7 +585,7 @@ async def get_hosts(current_user: dict = Depends(get_current_user)):
             if agent:
                 # Host is connected via agent - use real-time connection status
                 is_connected = agent_connection_manager.is_connected(agent.id)
-                logger.info(f"Agent {agent.id[:8]}... - DB status: {agent.status}, connection_manager.is_connected: {is_connected}, total connections: {agent_connection_manager.get_connection_count()}")
+                logger.debug(f"Agent {agent.id[:8]}... - DB status: {agent.status}, connection_manager.is_connected: {is_connected}, total connections: {agent_connection_manager.get_connection_count()}")
 
                 # Get system info from database for this agent host
                 if db_host:
@@ -655,7 +655,7 @@ async def get_hosts(current_user: dict = Depends(get_current_user)):
 
                 if agent:
                     is_connected = agent_connection_manager.is_connected(agent.id)
-                    logger.info(f"Agent-only host: Agent {agent.id[:8]}... - DB status: {agent.status}, connection_manager.is_connected: {is_connected}")
+                    logger.debug(f"Agent-only host: Agent {agent.id[:8]}... - DB status: {agent.status}, connection_manager.is_connected: {is_connected}")
 
                     # Set real-time connection status
                     host_dict['status'] = 'online' if is_connected else 'offline'

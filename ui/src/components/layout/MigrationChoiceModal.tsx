@@ -173,10 +173,27 @@ export function MigrationChoiceModal() {
           </div>
 
           {/* Info note */}
-          <div className="text-xs text-muted-foreground bg-surface-2 rounded p-3">
-            <strong>Note:</strong> The selected host will be marked as migrated and its settings
-            (tags, auto-restart configs, desired states, etc.) will be transferred to the new agent.
-            The old host will remain in the system for reference but will be inactive.
+          <div className="text-xs text-muted-foreground bg-surface-2 rounded p-3 space-y-2">
+            <p>
+              <strong>Migration:</strong> The selected host will be marked as migrated and its settings
+              (tags, auto-restart configs, desired states, etc.) will be transferred to the new agent.
+              The old host will remain in the system for reference but will be inactive.
+            </p>
+            <p className="text-warning">
+              <strong>Important:</strong> You can only migrate ONE host per duplicate engine ID.
+              Other cloned hosts will fail to register as agents until you regenerate their Docker engine ID.
+            </p>
+            <p>
+              To fix other cloned hosts: <code className="px-1 py-0.5 bg-surface-1 rounded text-foreground">rm /etc/docker/key.json</code> and restart Docker.{' '}
+              <a
+                href="https://github.com/darthnorse/dockmon/wiki/Cloned-VMs-and-Duplicate-Engine-IDs"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-primary hover:underline"
+              >
+                Learn more
+              </a>
+            </p>
           </div>
         </div>
 

@@ -1083,7 +1083,8 @@ async def _scan_agent_dirs(host_id: str, request: Optional[ScanComposeDirsReques
     response_data = result.response or {}
     compose_files = []
 
-    for file_info in response_data.get("compose_files", []):
+    # Handle null compose_files from Go (nil slice marshals to null, not [])
+    for file_info in (response_data.get("compose_files") or []):
         # Convert modified timestamp to ISO format
         modified = file_info.get("modified", "")
         if isinstance(modified, str) and not modified.endswith("Z"):

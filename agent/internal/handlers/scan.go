@@ -80,7 +80,8 @@ func (h *ScanHandler) ScanComposeDirs(ctx context.Context, req ScanComposeDirsRe
 		req.MaxDepth = 5 // Deep enough for /var/lib/docker/volumes/<name>/_data/compose/
 	}
 
-	var composeFiles []ComposeFileInfo
+	// Initialize as empty slice (not nil) so JSON marshals to [] not null
+	composeFiles := []ComposeFileInfo{}
 
 	for _, basePath := range req.Paths {
 		// Validate path is safe to scan

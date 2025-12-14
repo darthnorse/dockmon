@@ -4795,7 +4795,7 @@ async def get_agent_status(
         raise HTTPException(status_code=500, detail=f"Failed to get agent status: {str(e)}")
 
 
-@app.post("/api/agent/{agent_id}/migrate-from/{source_host_id}")
+@app.post("/api/agent/{agent_id}/migrate-from/{source_host_id}", dependencies=[Depends(require_scope("admin"))])
 async def migrate_agent_from_host(
     agent_id: str,
     source_host_id: str,
@@ -4807,6 +4807,8 @@ async def migrate_agent_from_host(
 
     Used when multiple remote hosts share the same Docker engine_id (cloned VMs)
     and the user needs to choose which host to migrate settings from.
+
+    Requires admin scope as it modifies host state.
     """
     try:
         result = monitor.agent_manager.migrate_from_host(agent_id, source_host_id)

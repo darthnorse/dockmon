@@ -4811,7 +4811,7 @@ async def migrate_agent_from_host(
     Requires admin scope as it modifies host state.
     """
     try:
-        agent_manager = AgentManager(db_manager=monitor.db, monitor=monitor)
+        agent_manager = AgentManager(monitor=monitor)
         result = agent_manager.migrate_from_host(agent_id, source_host_id)
 
         if not result["success"]:

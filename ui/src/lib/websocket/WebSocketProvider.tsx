@@ -132,6 +132,11 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
           queryClient.invalidateQueries({ queryKey: ['dashboard', 'hosts'] })
           break
 
+        // Migration choice needed (cloned VMs) - handled by MigrationChoiceModal component
+        case 'migration_choice_needed':
+          queryClient.invalidateQueries({ queryKey: ['hosts'] })
+          break
+
         // Auto-restart events
         case 'auto_restart_success':
         case 'auto_restart_failed':

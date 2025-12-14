@@ -45,6 +45,7 @@ export type WebSocketMessage =
   | { type: 'host_removed'; data: unknown }
   | { type: 'host_status_changed'; data: { host_id: string; status: 'online' | 'offline' } }
   | { type: 'host_migrated'; data: { old_host_id: string; old_host_name: string; new_host_id: string; new_host_name: string } }
+  | { type: 'migration_choice_needed'; data: { agent_id: string; host_id: string; host_name: string; candidates: Array<{ host_id: string; host_name: string }> } }
   | { type: 'auto_restart_success'; data: unknown }
   | { type: 'auto_restart_failed'; data: unknown }
   | { type: 'blackout_status_changed'; data: unknown }

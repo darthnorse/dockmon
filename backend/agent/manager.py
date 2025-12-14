@@ -280,7 +280,8 @@ class AgentManager:
             existing_agent = session.query(Agent).filter_by(engine_id=engine_id).first()
             if existing_agent:
                 logger.warning(f"Agent registration rejected: engine_id {engine_id[:12]}... already registered. "
-                              "This may be a cloned VM with duplicate Docker engine ID.")
+                              "This may be a cloned VM with duplicate Docker engine ID. "
+                              "Fix: delete /etc/docker/key.json and restart Docker to generate a unique engine ID, then reinstall the agent.")
                 return {
                     "success": False,
                     "error": "Agent with this engine_id is already registered. "

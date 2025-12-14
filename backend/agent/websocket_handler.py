@@ -282,6 +282,25 @@ class AgentWebSocketHandler:
                         except Exception as e:
                             logger.error(f"Error during migration cleanup: {e}", exc_info=True)
 
+                    # Broadcast migration choice needed if multiple hosts share engine_id
+                    if result.get("migration_choice_required") and self.monitor:
+                        candidates = result.get("migration_candidates", [])
+                        new_host_name = validated_data.hostname
+
+                        try:
+                            await self.monitor.manager.broadcast({
+                                "type": "migration_choice_needed",
+                                "data": {
+                                    "agent_id": result["agent_id"],
+                                    "host_id": result["host_id"],
+                                    "host_name": new_host_name,
+                                    "candidates": candidates
+                                }
+                            })
+                            logger.info(f"Broadcast migration choice needed: {len(candidates)} candidates for agent {new_host_name}")
+                        except Exception as e:
+                            logger.error(f"Failed to broadcast migration choice needed: {e}")
+
                 return result
 
             except ValidationError as e:

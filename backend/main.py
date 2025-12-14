@@ -4795,6 +4795,48 @@ async def get_agent_status(
         raise HTTPException(status_code=500, detail=f"Failed to get agent status: {str(e)}")
 
 
+@app.post("/api/agent/{agent_id}/migrate-from/{source_host_id}")
+async def migrate_agent_from_host(
+    agent_id: str,
+    source_host_id: str,
+    request: Request,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Migrate settings from an existing mTLS host to an agent.
+
+    Used when multiple remote hosts share the same Docker engine_id (cloned VMs)
+    and the user needs to choose which host to migrate settings from.
+    """
+    try:
+        result = monitor.agent_manager.migrate_from_host(agent_id, source_host_id)
+
+        if not result["success"]:
+            raise HTTPException(status_code=400, detail=result.get("error", "Migration failed"))
+
+        # Broadcast migration notification to frontend
+        try:
+            await monitor.manager.broadcast({
+                "type": "host_migrated",
+                "data": {
+                    "old_host_id": result["migrated_from"]["host_id"],
+                    "old_host_name": result["migrated_from"]["host_name"],
+                    "new_host_id": result["host_id"],
+                    "new_host_name": None  # Frontend can look up agent name
+                }
+            })
+        except Exception as e:
+            logger.warning(f"Failed to broadcast migration notification: {e}")
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Migration failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Migration failed: {str(e)}")
+
+
 @app.websocket("/api/agent/ws")
 async def agent_websocket_endpoint(websocket: WebSocket):
     """

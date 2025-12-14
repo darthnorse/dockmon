@@ -272,59 +272,72 @@ class AgentManager:
                 else:
                     return {"success": False, "error": "Permanent token does not match engine_id"}
 
+        # Track migration candidates for multi-host scenarios (user must choose)
+        migration_candidates = None
+
         # Check if engine_id already registered as agent
         with self.db_manager.get_session() as session:
             existing_agent = session.query(Agent).filter_by(engine_id=engine_id).first()
             if existing_agent:
-                return {"success": False, "error": "Agent with this engine_id is already registered"}
-
-            # Check for migration: engine_id matches existing host
-            existing_host = session.query(DockerHostDB).filter_by(engine_id=engine_id).first()
-            if existing_host:
-                # Migration detected - but we need to validate connection type
-                logger.info(f"Duplicate engine_id detected: {engine_id[:12]}... matches existing host {existing_host.name} ({existing_host.id[:8]}...), connection_type={existing_host.connection_type}")
-
-                # REJECT migration for local connections
-                # Local Docker socket is the ONLY way to manage localhost
-                # Agents are ONLY for remote hosts
-                if existing_host.connection_type == 'local':
-                    logger.warning(f"Migration rejected: Cannot migrate local Docker socket connection to agent. "
-                                  f"Host '{existing_host.name}' uses local socket - agents are only for remote hosts.")
-                    return {
-                        "success": False,
-                        "error": "Migration not supported for local Docker connections. "
-                                "Agents are only for remote hosts. "
-                                "Local Docker monitoring via socket is the preferred method for localhost."
-                    }
-
-                # ALLOW migration for remote connections only
-                if existing_host.connection_type == 'remote':
-                    # Reject if host already migrated (has replaced_by_host_id set)
-                    if existing_host.replaced_by_host_id is not None:
-                        logger.warning(f"Migration rejected: Host {existing_host.name} has already been migrated")
-                        return {"success": False, "error": f"Host with this engine_id has already been migrated"}
-
-                    # Perform migration
-                    logger.info(f"Migration allowed: remote host {existing_host.name} → agent")
-                    migration_result = self._migrate_host_to_agent(
-                        existing_host=existing_host,
-                        engine_id=engine_id,
-                        hostname=hostname,
-                        version=version,
-                        proto_version=proto_version,
-                        capabilities=capabilities,
-                        registration_data=registration_data,
-                        token=token
-                    )
-
-                    return migration_result
-
-                # For any other connection type (including 'agent'), reject
-                logger.error(f"Unexpected connection type '{existing_host.connection_type}' for engine_id {engine_id[:12]}...")
+                logger.warning(f"Agent registration rejected: engine_id {engine_id[:12]}... already registered. "
+                              "This may be a cloned VM with duplicate Docker engine ID.")
                 return {
                     "success": False,
-                    "error": f"Host with this engine_id already exists with connection type '{existing_host.connection_type}'"
+                    "error": "Agent with this engine_id is already registered. "
+                            "If this is a cloned VM, delete /etc/docker/key.json and restart Docker to generate a unique engine ID, then reinstall the agent."
                 }
+
+            # Check for migration: find ALL hosts with matching engine_id
+            matching_hosts = session.query(DockerHostDB).filter_by(engine_id=engine_id).all()
+
+            # Separate by connection type
+            local_hosts = [h for h in matching_hosts if h.connection_type == 'local']
+            remote_hosts = [h for h in matching_hosts if h.connection_type == 'remote' and h.replaced_by_host_id is None]
+            already_migrated = [h for h in matching_hosts if h.connection_type == 'remote' and h.replaced_by_host_id is not None]
+
+            # REJECT if any local host matches - local Docker socket is the only way to manage localhost
+            if local_hosts:
+                host = local_hosts[0]
+                logger.warning(f"Migration rejected: Cannot migrate local Docker socket connection to agent. "
+                              f"Host '{host.name}' uses local socket - agents are only for remote hosts.")
+                return {
+                    "success": False,
+                    "error": "Migration not supported for local Docker connections. "
+                            "Agents are only for remote hosts. "
+                            "Local Docker monitoring via socket is the preferred method for localhost."
+                }
+
+            # If multiple remote hosts match, don't auto-migrate - user must choose
+            if len(remote_hosts) > 1:
+                logger.info(f"Multiple remote hosts ({len(remote_hosts)}) share engine_id {engine_id[:12]}... - "
+                           "registration will proceed but migration requires user choice")
+                # Build candidate list for frontend (extract data while session is open)
+                migration_candidates = [
+                    {"host_id": h.id, "host_name": h.name}
+                    for h in remote_hosts
+                ]
+                # Don't auto-migrate, continue to register the agent
+                # The frontend will show a modal for user to choose which host to migrate from
+
+            # If exactly one remote host matches, auto-migrate
+            elif len(remote_hosts) == 1:
+                existing_host = remote_hosts[0]
+                logger.info(f"Migration allowed: remote host {existing_host.name} → agent")
+                migration_result = self._migrate_host_to_agent(
+                    existing_host=existing_host,
+                    engine_id=engine_id,
+                    hostname=hostname,
+                    version=version,
+                    proto_version=proto_version,
+                    capabilities=capabilities,
+                    registration_data=registration_data,
+                    token=token
+                )
+                return migration_result
+
+            # Log if we found already-migrated hosts
+            if already_migrated:
+                logger.debug(f"Found {len(already_migrated)} already-migrated host(s) with engine_id {engine_id[:12]}...")
 
         # Generate IDs
         agent_id = str(uuid.uuid4())
@@ -407,12 +420,20 @@ class AgentManager:
                         security_status="unknown"
                     )
 
-                return {
+                result = {
                     "success": True,
                     "agent_id": agent_id,
                     "host_id": host_id,
                     "permanent_token": agent_id  # Use agent_id as permanent token for reconnection
                 }
+
+                # Include migration candidates if user needs to choose
+                if migration_candidates:
+                    result["migration_candidates"] = migration_candidates
+                    result["migration_choice_required"] = True
+                    logger.info(f"Agent {agent_id[:8]}... registered with {len(migration_candidates)} migration candidates - user must choose")
+
+                return result
 
             except IntegrityError as e:
                 reg_session.rollback()
@@ -848,4 +869,309 @@ class AgentManager:
             except Exception as e:
                 session.rollback()
                 logger.error(f"Migration failed: {e}", exc_info=True)
+                return {"success": False, "error": f"Migration failed: {str(e)}"}
+
+    def migrate_from_host(self, agent_id: str, source_host_id: str) -> dict:
+        """
+        Migrate settings from an existing mTLS host to an already-registered agent.
+
+        This is used when multiple remote hosts share the same engine_id (cloned VMs)
+        and the user needs to choose which host to migrate from.
+
+        Args:
+            agent_id: ID of the registered agent
+            source_host_id: ID of the source mTLS host to migrate from
+
+        Returns:
+            Dict with success status and migration details
+        """
+        from database import (
+            AutoRestartConfig, TagAssignment, ContainerDesiredState,
+            ContainerUpdate, ContainerHttpHealthCheck, AlertV2,
+            Deployment, DeploymentContainer, DeploymentMetadata
+        )
+
+        logger.info(f"Starting delayed migration: source host {source_host_id[:8]}... → agent {agent_id[:8]}...")
+
+        with self.db_manager.get_session() as session:
+            try:
+                # Find the agent and its host
+                agent = session.query(Agent).filter_by(id=agent_id).first()
+                if not agent:
+                    return {"success": False, "error": "Agent not found"}
+
+                new_host_id = agent.host_id
+                new_host = session.query(DockerHostDB).filter_by(id=new_host_id).first()
+                if not new_host:
+                    return {"success": False, "error": "Agent host not found"}
+
+                # Find the source host
+                source_host = session.query(DockerHostDB).filter_by(id=source_host_id).first()
+                if not source_host:
+                    return {"success": False, "error": "Source host not found"}
+
+                # Validate source host is remote and not already migrated
+                if source_host.connection_type != 'remote':
+                    return {"success": False, "error": "Source host is not a remote/mTLS host"}
+                if source_host.replaced_by_host_id is not None:
+                    return {"success": False, "error": "Source host has already been migrated"}
+
+                old_host_id = source_host_id
+                old_host_name = source_host.name
+                agent_name = new_host.name
+                now = datetime.now(timezone.utc)
+                transferred_count = 0
+
+                # Transfer auto-restart configs
+                auto_restarts = session.query(AutoRestartConfig).filter_by(host_id=old_host_id).all()
+                for ar in auto_restarts:
+                    old_composite = ar.container_id
+                    if ':' in old_composite:
+                        _, short_container_id = old_composite.split(':', 1)
+                        new_composite = f"{new_host_id}:{short_container_id}"
+                        new_ar = AutoRestartConfig(
+                            container_id=new_composite,
+                            host_id=new_host_id,
+                            container_name=ar.container_name,
+                            enabled=ar.enabled,
+                            max_retries=ar.max_retries,
+                            retry_delay=ar.retry_delay,
+                            restart_count=ar.restart_count,
+                            last_restart=ar.last_restart
+                        )
+                        session.add(new_ar)
+                        session.delete(ar)
+                        transferred_count += 1
+
+                # Transfer container tags
+                tag_assignments = session.query(TagAssignment).filter(
+                    TagAssignment.subject_type == 'container',
+                    TagAssignment.subject_id.like(f"{old_host_id}:%")
+                ).all()
+                for tag_assignment in tag_assignments:
+                    old_composite = tag_assignment.subject_id
+                    if ':' in old_composite:
+                        _, short_container_id = old_composite.split(':', 1)
+                        new_composite = f"{new_host_id}:{short_container_id}"
+                        new_assignment = TagAssignment(
+                            tag_id=tag_assignment.tag_id,
+                            subject_type='container',
+                            subject_id=new_composite,
+                            compose_project=tag_assignment.compose_project,
+                            compose_service=tag_assignment.compose_service,
+                            host_id_at_attach=new_host_id,
+                            container_name_at_attach=tag_assignment.container_name_at_attach,
+                            last_seen_at=tag_assignment.last_seen_at
+                        )
+                        session.add(new_assignment)
+                        session.delete(tag_assignment)
+                        transferred_count += 1
+
+                # Transfer desired states
+                desired_states = session.query(ContainerDesiredState).filter_by(host_id=old_host_id).all()
+                for ds in desired_states:
+                    old_composite = ds.container_id
+                    if ':' in old_composite:
+                        _, short_container_id = old_composite.split(':', 1)
+                        new_composite = f"{new_host_id}:{short_container_id}"
+                        new_ds = ContainerDesiredState(
+                            container_id=new_composite,
+                            host_id=new_host_id,
+                            container_name=ds.container_name,
+                            desired_state=ds.desired_state,
+                            custom_tags=ds.custom_tags,
+                            web_ui_url=ds.web_ui_url
+                        )
+                        session.add(new_ds)
+                        session.delete(ds)
+                        transferred_count += 1
+
+                # Transfer container updates
+                container_updates = session.query(ContainerUpdate).filter_by(host_id=old_host_id).all()
+                for cu in container_updates:
+                    old_composite = cu.container_id
+                    if ':' in old_composite:
+                        _, short_container_id = old_composite.split(':', 1)
+                        new_composite = f"{new_host_id}:{short_container_id}"
+                        new_cu = ContainerUpdate(
+                            container_id=new_composite,
+                            host_id=new_host_id,
+                            current_image=cu.current_image,
+                            current_digest=cu.current_digest,
+                            latest_image=cu.latest_image,
+                            latest_digest=cu.latest_digest,
+                            update_available=cu.update_available,
+                            floating_tag_mode=cu.floating_tag_mode,
+                            auto_update_enabled=cu.auto_update_enabled,
+                            update_policy=cu.update_policy,
+                            health_check_strategy=cu.health_check_strategy,
+                            health_check_url=cu.health_check_url,
+                            last_checked_at=cu.last_checked_at,
+                            last_updated_at=cu.last_updated_at,
+                            registry_url=cu.registry_url,
+                            platform=cu.platform,
+                            changelog_url=cu.changelog_url,
+                            changelog_source=cu.changelog_source,
+                            changelog_checked_at=cu.changelog_checked_at,
+                            registry_page_url=cu.registry_page_url,
+                            registry_page_source=cu.registry_page_source
+                        )
+                        session.add(new_cu)
+                        session.delete(cu)
+                        transferred_count += 1
+
+                # Transfer HTTP health checks
+                health_checks = session.query(ContainerHttpHealthCheck).filter_by(host_id=old_host_id).all()
+                for hc in health_checks:
+                    old_composite = hc.container_id
+                    if ':' in old_composite:
+                        _, short_container_id = old_composite.split(':', 1)
+                        new_composite = f"{new_host_id}:{short_container_id}"
+                        new_hc = ContainerHttpHealthCheck(
+                            container_id=new_composite,
+                            host_id=new_host_id,
+                            enabled=hc.enabled,
+                            url=hc.url,
+                            method=hc.method,
+                            expected_status_codes=hc.expected_status_codes,
+                            timeout_seconds=hc.timeout_seconds,
+                            check_interval_seconds=hc.check_interval_seconds,
+                            follow_redirects=hc.follow_redirects,
+                            verify_ssl=hc.verify_ssl,
+                            headers_json=hc.headers_json,
+                            auth_config_json=hc.auth_config_json,
+                            current_status=hc.current_status,
+                            last_checked_at=hc.last_checked_at,
+                            last_success_at=hc.last_success_at,
+                            last_failure_at=hc.last_failure_at,
+                            consecutive_successes=hc.consecutive_successes,
+                            consecutive_failures=hc.consecutive_failures,
+                            last_response_time_ms=hc.last_response_time_ms,
+                            last_error_message=hc.last_error_message,
+                            auto_restart_on_failure=hc.auto_restart_on_failure,
+                            failure_threshold=hc.failure_threshold,
+                            success_threshold=hc.success_threshold,
+                            max_restart_attempts=hc.max_restart_attempts,
+                            restart_retry_delay_seconds=hc.restart_retry_delay_seconds
+                        )
+                        session.add(new_hc)
+                        session.delete(hc)
+                        transferred_count += 1
+
+                # Transfer container alerts
+                alerts = session.query(AlertV2).filter(
+                    AlertV2.scope_type == 'container',
+                    AlertV2.scope_id.like(f"{old_host_id}:%")
+                ).all()
+                for alert in alerts:
+                    old_composite = alert.scope_id
+                    if ':' in old_composite:
+                        _, short_container_id = old_composite.split(':', 1)
+                        new_composite = f"{new_host_id}:{short_container_id}"
+                        old_dedup_key = alert.dedup_key
+                        new_dedup_key = old_dedup_key.replace(old_composite, new_composite)
+                        alert.scope_id = new_composite
+                        alert.dedup_key = new_dedup_key
+                        transferred_count += 1
+
+                # Transfer deployments
+                deployment_id_map = {}
+                deployments = session.query(Deployment).filter_by(host_id=old_host_id).all()
+                for dep in deployments:
+                    old_dep_id = dep.id
+                    if ':' in old_dep_id:
+                        _, short_dep_id = old_dep_id.split(':', 1)
+                        new_dep_id = f"{new_host_id}:{short_dep_id}"
+                        deployment_id_map[old_dep_id] = new_dep_id
+                        new_dep = Deployment(
+                            id=new_dep_id,
+                            host_id=new_host_id,
+                            user_id=dep.user_id,
+                            name=dep.name,
+                            compose_content=dep.compose_content,
+                            env_content=dep.env_content,
+                            status=dep.status,
+                            error_message=dep.error_message,
+                            created_at=dep.created_at,
+                            updated_at=dep.updated_at
+                        )
+                        session.add(new_dep)
+
+                        # Transfer deployment containers
+                        dep_containers = session.query(DeploymentContainer).filter_by(deployment_id=old_dep_id).all()
+                        for dc in dep_containers:
+                            old_composite = dc.container_id
+                            if ':' in old_composite:
+                                _, short_container_id = old_composite.split(':', 1)
+                                new_composite = f"{new_host_id}:{short_container_id}"
+                                new_dc = DeploymentContainer(
+                                    deployment_id=new_dep_id,
+                                    container_id=new_composite,
+                                    service_name=dc.service_name,
+                                    created_at=dc.created_at
+                                )
+                                session.add(new_dc)
+                                session.delete(dc)
+
+                        session.delete(dep)
+                        transferred_count += 1
+
+                # Transfer deployment metadata
+                deployment_metadata = session.query(DeploymentMetadata).filter_by(host_id=old_host_id).all()
+                for dm in deployment_metadata:
+                    old_composite = dm.container_id
+                    if ':' in old_composite:
+                        _, short_container_id = old_composite.split(':', 1)
+                        new_composite = f"{new_host_id}:{short_container_id}"
+                        new_deployment_id = deployment_id_map.get(dm.deployment_id, dm.deployment_id)
+                        new_dm = DeploymentMetadata(
+                            container_id=new_composite,
+                            host_id=new_host_id,
+                            deployment_id=new_deployment_id,
+                            is_managed=dm.is_managed,
+                            service_name=dm.service_name
+                        )
+                        session.add(new_dm)
+                        session.delete(dm)
+                        transferred_count += 1
+
+                logger.info(f"Transferred {transferred_count} settings from {old_host_name} to {agent_name}")
+
+                # Mark source host as migrated
+                source_host.replaced_by_host_id = new_host_id
+                source_host.is_active = False
+                source_host.name = f"{source_host.name} (migrated)"
+                source_host.updated_at = now
+                logger.info(f"Marked source host {old_host_name} as migrated")
+
+                # Commit all changes
+                session.commit()
+                logger.info(f"Delayed migration completed: {old_host_name} → {agent_name}")
+
+                # Clean up old host from monitor
+                if self.monitor:
+                    if old_host_id in self.monitor.hosts:
+                        del self.monitor.hosts[old_host_id]
+                        logger.info(f"Removed old host {old_host_name} from monitor")
+                    if old_host_id in self.monitor.clients:
+                        try:
+                            self.monitor.clients[old_host_id].close()
+                        except Exception:
+                            pass
+                        del self.monitor.clients[old_host_id]
+
+                return {
+                    "success": True,
+                    "agent_id": agent_id,
+                    "host_id": new_host_id,
+                    "migrated_from": {
+                        "host_id": old_host_id,
+                        "host_name": old_host_name
+                    },
+                    "transferred_count": transferred_count
+                }
+
+            except Exception as e:
+                session.rollback()
+                logger.error(f"Delayed migration failed: {e}", exc_info=True)
                 return {"success": False, "error": f"Migration failed: {str(e)}"}

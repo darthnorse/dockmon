@@ -251,7 +251,7 @@ def _get_host_connection_info(host_id: str) -> Dict[str, Any]:
 
         # For remote hosts, include Docker URL and TLS certs
         if host.connection_type == 'remote':
-            result['docker_host'] = host.docker_url
+            result['docker_host'] = host.url
 
             # Decrypt TLS certificates if present
             if host.tls_ca_cert:

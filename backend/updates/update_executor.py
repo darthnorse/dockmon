@@ -440,7 +440,7 @@ class UpdateExecutor:
             with self.db.get_session() as session:
                 host = session.query(DockerHostDB).filter_by(id=context.host_id).first()
                 if host and host.connection_type == 'remote':
-                    docker_host = host.docker_url
+                    docker_host = host.url
                     tls_ca_cert = host.tls_ca
                     tls_cert = host.tls_cert
                     tls_key = host.tls_key

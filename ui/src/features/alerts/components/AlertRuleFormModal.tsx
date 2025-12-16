@@ -114,7 +114,7 @@ const RULE_KINDS = [
   {
     value: 'container_stopped',
     label: 'Container Stopped/Died',
-    description: 'Alert when container stops or crashes (any exit code). Use clear duration to avoid false positives during restarts.',
+    description: 'Alert when container stops or crashes (any exit code). Use grace period to avoid false positives during restarts.',
     category: 'Container State',
     requiresMetric: false,
     scopes: ['container']
@@ -432,16 +432,15 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
         if (formData.clear_duration_seconds !== undefined && formData.clear_duration_seconds !== null) {
           requestData.clear_duration_seconds = formData.clear_duration_seconds
         }
+        // Duration and occurrences only for metric-driven rules (sliding window)
+        requestData.duration_seconds = formData.duration_seconds
+        requestData.occurrences = formData.occurrences
       } else {
-        // For non-metric (event-driven) rules, add clear_duration_seconds
+        // For non-metric (event-driven) rules, only add grace period (clear_duration_seconds)
         if (formData.clear_duration_seconds !== undefined && formData.clear_duration_seconds !== null) {
           requestData.clear_duration_seconds = formData.clear_duration_seconds
         }
       }
-
-      // Duration and occurrences apply to ALL rule types (for rate-limiting)
-      requestData.duration_seconds = formData.duration_seconds
-      requestData.occurrences = formData.occurrences
 
       // Add selectors - Tag-based OR individual selection (mutually exclusive)
       if (formData.scope === 'host') {
@@ -631,13 +630,9 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
 
     // Timing Configuration
     if (!requiresMetric) {
-      // For event-driven rules, show duration/occurrences if non-default
-      if (formData.duration_seconds > 0 || formData.occurrences > 1) {
-        parts.push(`Duration: ${formData.duration_seconds}s (${formData.occurrences} occurrence${formData.occurrences > 1 ? 's' : ''})`)
-      }
-      // Show clear duration for event-driven rules
+      // For event-driven rules, show grace period
       if (formData.clear_duration_seconds !== undefined && formData.clear_duration_seconds !== null && formData.clear_duration_seconds > 0) {
-        parts.push(`Clear Duration: ${formData.clear_duration_seconds}s`)
+        parts.push(`Grace Period: ${formData.clear_duration_seconds}s`)
       }
     } else {
       // For metric-driven rules, show clear threshold/duration if set
@@ -1264,39 +1259,42 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
           <div className="space-y-4 rounded-lg border border-gray-700 bg-gray-800/30 p-4">
             <h3 className="text-sm font-semibold text-white">Timing Configuration</h3>
 
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Duration (seconds) *</label>
-                <input
-                  type="number"
-                  value={formData.duration_seconds}
-                  onChange={(e) => handleChange('duration_seconds', parseInt(e.target.value))}
-                  required
-                  min={1}
-                  className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
-                <p className="mt-1 text-xs text-gray-500">How long condition must be true</p>
-              </div>
+            {/* Duration and Occurrences - Only for metric-driven rules */}
+            {requiresMetric && (
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-1">Duration (seconds) *</label>
+                  <input
+                    type="number"
+                    value={formData.duration_seconds}
+                    onChange={(e) => handleChange('duration_seconds', parseInt(e.target.value))}
+                    required
+                    min={1}
+                    className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                  <p className="mt-1 text-xs text-gray-500">How long condition must be true</p>
+                </div>
 
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Occurrences *</label>
-                <input
-                  type="number"
-                  value={formData.occurrences}
-                  onChange={(e) => handleChange('occurrences', parseInt(e.target.value))}
-                  required
-                  min={1}
-                  max={100}
-                  className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
-                <p className="mt-1 text-xs text-gray-500">Breaches needed to trigger alert</p>
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-1">Occurrences *</label>
+                  <input
+                    type="number"
+                    value={formData.occurrences}
+                    onChange={(e) => handleChange('occurrences', parseInt(e.target.value))}
+                    required
+                    min={1}
+                    max={100}
+                    className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                  <p className="mt-1 text-xs text-gray-500">Breaches needed to trigger alert</p>
+                </div>
               </div>
-            </div>
+            )}
 
             <div className="grid grid-cols-2 gap-4">
               {!requiresMetric && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">Clear Duration (seconds)</label>
+                <div className="col-span-2">
+                  <label className="block text-sm font-medium text-gray-300 mb-1">Grace Period (seconds)</label>
                   <input
                     type="number"
                     value={formData.clear_duration_seconds || ''}
@@ -1306,13 +1304,13 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                     className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                   />
                   <p className="mt-1 text-xs text-gray-400">
-                    Time window for transient issues. If the condition clears within this period, the alert will auto-resolve
-                    without sending notifications. Useful for brief outages like container restarts. Default: 30 seconds.
+                    Grace period before sending notifications. If the condition resolves within this period (e.g., container restarts),
+                    the alert auto-clears without sending notifications. Set to 0 for immediate alerts. Default: 30 seconds.
                   </p>
                 </div>
               )}
 
-              <div className={!requiresMetric ? '' : 'col-span-2'}>
+              <div className={!requiresMetric ? 'col-span-2' : 'col-span-2'}>
                 <label className="block text-sm font-medium text-gray-300 mb-1">Cooldown (seconds) *</label>
                 <input
                   type="number"

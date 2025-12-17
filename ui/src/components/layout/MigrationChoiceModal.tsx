@@ -184,7 +184,7 @@ export function MigrationChoiceModal() {
               Other cloned hosts will fail to register as agents until you regenerate their Docker engine ID.
             </p>
             <p>
-              To fix other cloned hosts: <code className="px-1 py-0.5 bg-surface-1 rounded text-foreground">rm /etc/docker/key.json</code> and restart Docker.{' '}
+              To fix other cloned hosts: <code className="px-1 py-0.5 bg-surface-1 rounded text-foreground">rm /var/lib/docker/engine-id</code> (or <code className="px-1 py-0.5 bg-surface-1 rounded text-foreground">/etc/docker/key.json</code> on older systems) and restart Docker.{' '}
               <a
                 href="https://github.com/darthnorse/dockmon/wiki/Cloned-VMs-and-Duplicate-Engine-IDs"
                 target="_blank"

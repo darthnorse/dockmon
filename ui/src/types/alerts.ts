@@ -90,6 +90,7 @@ export interface AlertRule {
   grace_seconds: number
   cooldown_seconds: number
   auto_resolve: boolean
+  auto_resolve_on_clear: boolean
   suppress_during_updates: boolean
   host_selector_json?: string | null
   container_selector_json?: string | null
@@ -118,6 +119,7 @@ export interface AlertRuleRequest {
   grace_seconds?: number
   cooldown_seconds?: number
   auto_resolve?: boolean
+  auto_resolve_on_clear?: boolean
   suppress_during_updates?: boolean
   host_selector_json?: string
   container_selector_json?: string

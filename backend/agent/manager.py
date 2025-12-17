@@ -281,11 +281,11 @@ class AgentManager:
             if existing_agent:
                 logger.warning(f"Agent registration rejected: engine_id {engine_id[:12]}... already registered. "
                               "This may be a cloned VM with duplicate Docker engine ID. "
-                              "Fix: delete /etc/docker/key.json and restart Docker to generate a unique engine ID, then reinstall the agent.")
+                              "Fix: delete /var/lib/docker/engine-id (or /etc/docker/key.json on older systems) and restart Docker to generate a unique engine ID, then reinstall the agent.")
                 return {
                     "success": False,
                     "error": "Agent with this engine_id is already registered. "
-                            "If this is a cloned VM, delete /etc/docker/key.json and restart Docker to generate a unique engine ID, then reinstall the agent."
+                            "If this is a cloned VM, delete /var/lib/docker/engine-id (or /etc/docker/key.json on older systems) and restart Docker to generate a unique engine ID, then reinstall the agent."
                 }
 
             # Check for migration: find ALL hosts with matching engine_id

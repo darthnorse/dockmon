@@ -116,7 +116,8 @@ class AlertRuleV2Create(BaseModel):
     cooldown_seconds: int = Field(300, ge=0)
 
     # Behavior flags
-    auto_resolve: Optional[bool] = False  # Auto-resolve alert after notification (for update alerts)
+    auto_resolve: Optional[bool] = False  # Resolve immediately after notification (notification-only mode)
+    auto_resolve_on_clear: Optional[bool] = False  # Clear when condition resolves (e.g., container restarts)
     suppress_during_updates: Optional[bool] = False  # Suppress alert during container updates
 
     # Selectors (JSON strings)
@@ -148,7 +149,8 @@ class AlertRuleV2Update(BaseModel):
     depends_on_json: Optional[str] = None  # JSON array of condition dependencies
 
     # Behavior flags
-    auto_resolve: Optional[bool] = None  # Auto-resolve alert after notification (for update alerts)
+    auto_resolve: Optional[bool] = None  # Resolve immediately after notification (notification-only mode)
+    auto_resolve_on_clear: Optional[bool] = None  # Clear when condition resolves (e.g., container restarts)
     suppress_during_updates: Optional[bool] = None  # Suppress alert during container updates
 
     host_selector_json: Optional[str] = None

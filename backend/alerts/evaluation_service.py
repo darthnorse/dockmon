@@ -1073,16 +1073,16 @@ class AlertEvaluationService:
                     AlertV2.kind.in_(kinds_to_clear)
                 ).all()
 
-                # Filter to only alerts whose rules have auto_resolve=True
+                # Filter to only alerts whose rules have auto_resolve_on_clear=True
                 alerts_to_clear = []
                 for alert in alerts_to_check:
                     rule = session.query(AlertRuleV2).filter(AlertRuleV2.id == alert.rule_id).first()
-                    if rule and rule.auto_resolve:
+                    if rule and rule.auto_resolve_on_clear:
                         alerts_to_clear.append(alert)
                     else:
                         logger.debug(
                             f"Skipping auto-clear for alert {alert.id} ({alert.title}) - "
-                            f"rule auto_resolve={rule.auto_resolve if rule else None}"
+                            f"rule auto_resolve_on_clear={rule.auto_resolve_on_clear if rule else None}"
                         )
 
                 if alerts_to_clear:

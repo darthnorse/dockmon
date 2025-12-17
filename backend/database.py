@@ -589,7 +589,8 @@ class AlertRuleV2(Base):
     severity = Column(String, nullable=False)  # 'info' | 'warning' | 'critical'
     cooldown_seconds = Column(Integer, default=300)
     depends_on_json = Column(Text, nullable=True)  # JSON: ["host_missing", ...]
-    auto_resolve = Column(Boolean, default=False)  # Auto-resolve alert immediately after notification (for update alerts)
+    auto_resolve = Column(Boolean, default=False)  # Resolve immediately after notification (for notification-only mode)
+    auto_resolve_on_clear = Column(Boolean, default=False)  # Clear when condition resolves (e.g., container restarts)
     suppress_during_updates = Column(Boolean, default=False)  # Suppress this alert during container updates, re-evaluate after update completes
 
     # Notifications

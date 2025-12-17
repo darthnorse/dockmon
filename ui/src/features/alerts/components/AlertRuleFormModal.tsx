@@ -47,6 +47,7 @@ interface AlertRuleFormData {
   notify_channels: string[]
   custom_template: string | null
   auto_resolve_updates: boolean
+  auto_resolve_on_clear: boolean
   suppress_during_updates: boolean
 }
 
@@ -274,6 +275,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       custom_template: rule?.custom_template !== undefined ? rule.custom_template : null,
       // Auto-resolve defaults to false - user can enable for any alert type
       auto_resolve_updates: rule?.auto_resolve ?? false,
+      auto_resolve_on_clear: rule?.auto_resolve_on_clear ?? false,
       // Default suppress_during_updates to true for container-scoped rules
       suppress_during_updates: rule?.suppress_during_updates ?? (scope === 'container'),
     }
@@ -496,8 +498,9 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
         requestData.custom_template = formData.custom_template
       }
 
-      // Add auto_resolve flag for all alert types
+      // Add auto_resolve flags for all alert types
       requestData.auto_resolve = formData.auto_resolve_updates || false
+      requestData.auto_resolve_on_clear = formData.auto_resolve_on_clear || false
 
       // Add suppress_during_updates flag for container-scoped rules
       if (formData.scope === 'container') {
@@ -1326,9 +1329,31 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
           </div>
           )}
 
-          {/* Auto-Resolve Option - Available for all alert types */}
+          {/* Auto-Resolve Options - Available for all alert types */}
           <div className="space-y-4 rounded-lg border border-gray-700 bg-gray-800/30 p-4">
             <h3 className="text-sm font-semibold text-white">Auto-Resolve Behavior</h3>
+
+            {/* Auto-resolve on clear (condition-based) */}
+            <div className="flex items-start gap-3">
+              <input
+                type="checkbox"
+                id="auto_resolve_on_clear"
+                checked={formData.auto_resolve_on_clear || false}
+                onChange={(e) => handleChange('auto_resolve_on_clear', e.target.checked)}
+                className="mt-1 h-4 w-4 rounded border-gray-600 bg-gray-800 text-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-gray-900"
+              />
+              <div className="flex-1">
+                <label htmlFor="auto_resolve_on_clear" className="block text-sm font-medium text-gray-300 cursor-pointer">
+                  Auto-resolve when condition clears
+                </label>
+                <p className="mt-1 text-xs text-gray-400">
+                  Automatically resolve alerts when the condition is no longer true (e.g., container restarts, becomes healthy).
+                  Recommended for most alert types.
+                </p>
+              </div>
+            </div>
+
+            {/* Auto-resolve after notification (notification-only mode) */}
             <div className="flex items-start gap-3">
               <input
                 type="checkbox"
@@ -1339,10 +1364,10 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
               />
               <div className="flex-1">
                 <label htmlFor="auto_resolve_updates" className="block text-sm font-medium text-gray-300 cursor-pointer">
-                  Automatically resolve alert after notification
+                  Resolve immediately after notification
                 </label>
                 <p className="mt-1 text-xs text-gray-400">
-                  Alert will be auto-resolved immediately after sending notification. Use this if you only want to be notified without keeping alerts in the DockMon alert list.
+                  Alert will be auto-resolved immediately after sending notification. Use this for notification-only mode if you don't want alerts to accumulate in the DockMon alert list.
                 </p>
               </div>
             </div>

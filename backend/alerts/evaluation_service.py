@@ -1219,6 +1219,16 @@ class AlertEvaluationService:
             host_tags = self.db.get_tags_for_subject('host', host_id)
             logger.debug(f"Host {host_name} has tags: {host_tags}")
 
+            # Auto-clear opposite-state alerts before evaluating new rules
+            # If host reconnected, clear any host_disconnected/host_down alerts
+            if event_type == "connection":
+                await self._auto_clear_alerts_by_kind(
+                    scope_type="host",
+                    scope_id=host_id,
+                    kinds_to_clear=["host_disconnected", "host_down"],
+                    reason="Host reconnected"
+                )
+
             # Create evaluation context
             context = EvaluationContext(
                 scope_type="host",

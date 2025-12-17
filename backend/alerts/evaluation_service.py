@@ -1049,10 +1049,11 @@ class AlertEvaluationService:
         Auto-clear open alerts of specific kinds for a scope.
 
         This is used for auto-resolving alerts when opposite conditions occur:
-        - Container starts → clear container_stopped alerts (if rule.auto_resolve=True)
-        - Container becomes healthy → clear unhealthy alerts (if rule.auto_resolve=True)
+        - Container starts → clear container_stopped alerts (if rule.auto_resolve_on_clear=True)
+        - Container becomes healthy → clear unhealthy alerts (if rule.auto_resolve_on_clear=True)
+        - Host reconnects → clear host_disconnected/host_down alerts (if rule.auto_resolve_on_clear=True)
 
-        Only alerts whose rules have auto_resolve=True will be cleared.
+        Only alerts whose rules have auto_resolve_on_clear=True will be cleared.
 
         Args:
             scope_type: "container" or "host"

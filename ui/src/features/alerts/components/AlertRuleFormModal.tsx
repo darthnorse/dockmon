@@ -1212,7 +1212,12 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                       <div className="px-3 py-2 text-sm text-gray-400">No containers found</div>
                     ) : (
                       filteredContainers.map((container: Container) => {
-                        const isSelected = formData.container_selector_all || formData.container_selector_included.includes(container.name)
+                        // Issue #99: Use composite key (host_id:name) to differentiate same-named containers on different hosts
+                        const containerKey = `${container.host_id}:${container.name}`
+                        // Check both composite key (new format) and name-only (legacy format) for backward compatibility
+                        const isSelected = formData.container_selector_all ||
+                          formData.container_selector_included.includes(containerKey) ||
+                          formData.container_selector_included.includes(container.name)
                         return (
                           <button
                             key={container.id}
@@ -1220,15 +1225,18 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                             onClick={() => {
                               if (formData.container_selector_all) {
                                 // When "all" is selected, clicking switches to include mode with all except this one
-                                const allExcept = filteredContainers.filter(c => c.name !== container.name).map(c => c.name)
+                                const allExcept = filteredContainers
+                                  .filter(c => `${c.host_id}:${c.name}` !== containerKey)
+                                  .map(c => `${c.host_id}:${c.name}`)
                                 handleChange('container_selector_included', allExcept)
                                 handleChange('container_selector_all', false)
                               } else {
                                 // Manual include mode - toggle this container
-                                const newNames = isSelected
-                                  ? formData.container_selector_included.filter((n: string) => n !== container.name)
-                                  : [...formData.container_selector_included, container.name]
-                                handleChange('container_selector_included', newNames)
+                                const newKeys = isSelected
+                                  // Filter out both composite key (new) and name (legacy) to handle both formats
+                                  ? formData.container_selector_included.filter((k: string) => k !== containerKey && k !== container.name)
+                                  : [...formData.container_selector_included, containerKey]
+                                handleChange('container_selector_included', newKeys)
                               }
                             }}
                             className="w-full px-3 py-2 text-left text-sm flex items-center gap-2 hover:bg-gray-700 transition-colors"

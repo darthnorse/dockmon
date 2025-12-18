@@ -451,9 +451,23 @@ class AlertEngine:
                     # include_all: true means match all containers (no name filtering)
                     pass
                 elif 'include' in container_selector:
-                    # include: ["name1", "name2"] means only match these specific containers
-                    allowed_names = container_selector['include']
-                    if context.container_name not in allowed_names:
+                    # include: ["name1", "name2"] or ["host_id:name1", "host_id:name2"]
+                    # Issue #99: Support composite keys to differentiate same-named containers on different hosts
+                    allowed_entries = container_selector['include']
+                    matched = False
+                    for entry in allowed_entries:
+                        if ':' in entry and len(entry.split(':')[0]) == 36:
+                            # Composite key format: "host_id:container_name" (UUID is 36 chars with dashes)
+                            entry_host_id, entry_name = entry.split(':', 1)
+                            if context.host_id == entry_host_id and context.container_name == entry_name:
+                                matched = True
+                                break
+                        else:
+                            # Legacy format: just container name (backward compatible)
+                            if context.container_name == entry:
+                                matched = True
+                                break
+                    if not matched:
                         return False
                 elif has_name_selector and not has_other_selectors:
                     # Has name selector but it's not set properly and no other selectors - don't match

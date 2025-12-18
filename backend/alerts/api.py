@@ -105,19 +105,24 @@ class AlertRuleRequest(BaseModel):
 
     # Conditions (for metric-driven rules)
     metric: Optional[str] = None
-    operator: Optional[str] = Field(None, pattern="^(>=|<=|==|>|<)$")
+    operator: Optional[str] = Field(None, pattern="^(>=|<=|==|>|<|!=)$")
     threshold: Optional[float] = None
-    duration_seconds: Optional[int] = Field(None, ge=1, le=86400)
     occurrences: Optional[int] = Field(None, ge=1, le=100)
 
-    # Clearing
+    # Clearing (for metric-driven rules)
     clear_threshold: Optional[float] = None
-    clear_duration_seconds: Optional[int] = Field(None, ge=1, le=86400)
+
+    # Alert timing
+    alert_active_delay_seconds: int = Field(default=0, ge=0, le=86400)
+    alert_clear_delay_seconds: int = Field(default=0, ge=0, le=86400)
+
+    # Notification timing
+    notification_active_delay_seconds: int = Field(default=0, ge=0, le=86400)
+    notification_cooldown_seconds: int = Field(default=300, ge=0, le=86400)
 
     # Behavior
     severity: str = Field(pattern="^(info|warning|error|critical)$")
     grace_seconds: int = Field(default=300, ge=0, le=3600)
-    cooldown_seconds: int = Field(default=300, ge=0, le=86400)
     depends_on: Optional[List[str]] = None
 
     # Notifications
@@ -136,12 +141,16 @@ class AlertRuleResponse(BaseModel):
     metric: Optional[str]
     threshold: Optional[float]
     operator: Optional[str]
-    duration_seconds: Optional[int]
     occurrences: Optional[int]
     clear_threshold: Optional[float]
-    clear_duration_seconds: Optional[int]
+
+    # Timing fields
+    alert_active_delay_seconds: int
+    alert_clear_delay_seconds: int
+    notification_active_delay_seconds: int
+    notification_cooldown_seconds: int
+
     grace_seconds: int
-    cooldown_seconds: int
     created_at: datetime
     updated_at: datetime
     version: int
@@ -446,13 +455,15 @@ async def create_rule(
             metric=request.metric,
             operator=request.operator,
             threshold=request.threshold,
-            duration_seconds=request.duration_seconds,
             occurrences=request.occurrences,
             clear_threshold=request.clear_threshold,
-            clear_duration_seconds=request.clear_duration_seconds,
+            # Timing fields
+            alert_active_delay_seconds=request.alert_active_delay_seconds,
+            alert_clear_delay_seconds=request.alert_clear_delay_seconds,
+            notification_active_delay_seconds=request.notification_active_delay_seconds,
+            notification_cooldown_seconds=request.notification_cooldown_seconds,
             severity=request.severity,
             grace_seconds=request.grace_seconds,
-            cooldown_seconds=request.cooldown_seconds,
             depends_on_json=json.dumps(request.depends_on) if request.depends_on else None,
             notify_channels_json=json.dumps(request.notify_channels) if request.notify_channels else None,
             created_at=datetime.now(timezone.utc),
@@ -515,13 +526,15 @@ async def update_rule(
         rule.metric = request.metric
         rule.operator = request.operator
         rule.threshold = request.threshold
-        rule.duration_seconds = request.duration_seconds
         rule.occurrences = request.occurrences
         rule.clear_threshold = request.clear_threshold
-        rule.clear_duration_seconds = request.clear_duration_seconds
+        # Timing fields
+        rule.alert_active_delay_seconds = request.alert_active_delay_seconds
+        rule.alert_clear_delay_seconds = request.alert_clear_delay_seconds
+        rule.notification_active_delay_seconds = request.notification_active_delay_seconds
+        rule.notification_cooldown_seconds = request.notification_cooldown_seconds
         rule.severity = request.severity
         rule.grace_seconds = request.grace_seconds
-        rule.cooldown_seconds = request.cooldown_seconds
         rule.depends_on_json = json.dumps(request.depends_on) if request.depends_on else None
         rule.notify_channels_json = json.dumps(request.notify_channels) if request.notify_channels else None
         rule.updated_at = datetime.now(timezone.utc)

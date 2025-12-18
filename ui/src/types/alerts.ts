@@ -72,6 +72,9 @@ export interface AlertStats {
   }
 }
 
+/**
+ * Alert Rule
+ */
 export interface AlertRule {
   id: string
   name: string
@@ -83,12 +86,15 @@ export interface AlertRule {
   metric?: string | null
   threshold?: number | null
   operator?: string | null
-  duration_seconds?: number | null
   occurrences?: number | null
   clear_threshold?: number | null
-  clear_duration_seconds?: number | null
-  grace_seconds: number
-  cooldown_seconds: number
+  // Alert timing
+  alert_active_delay_seconds: number
+  alert_clear_delay_seconds: number
+  // Notification timing
+  notification_active_delay_seconds: number
+  notification_cooldown_seconds: number
+  // Behavior
   auto_resolve: boolean
   auto_resolve_on_clear: boolean
   suppress_during_updates: boolean
@@ -102,6 +108,9 @@ export interface AlertRule {
   version: number
 }
 
+/**
+ * Alert Rule Request
+ */
 export interface AlertRuleRequest {
   name: string
   description?: string
@@ -112,12 +121,15 @@ export interface AlertRuleRequest {
   metric?: string
   threshold?: number
   operator?: string
-  duration_seconds?: number
   occurrences?: number
   clear_threshold?: number
-  clear_duration_seconds?: number
-  grace_seconds?: number
-  cooldown_seconds?: number
+  // Alert timing
+  alert_active_delay_seconds?: number
+  alert_clear_delay_seconds?: number
+  // Notification timing
+  notification_active_delay_seconds?: number
+  notification_cooldown_seconds?: number
+  // Behavior
   auto_resolve?: boolean
   auto_resolve_on_clear?: boolean
   suppress_during_updates?: boolean

@@ -107,13 +107,16 @@ class AlertRuleV2Create(BaseModel):
     metric: Optional[str] = None
     threshold: Optional[float] = None
     operator: Optional[str] = Field(None, pattern="^(>=|<=|>|<|==|!=)$")
-    duration_seconds: Optional[int] = Field(None, ge=0)
     occurrences: Optional[int] = Field(None, ge=1)
     clear_threshold: Optional[float] = None
-    clear_duration_seconds: Optional[int] = Field(None, ge=0)
 
-    # Timing configuration
-    cooldown_seconds: int = Field(300, ge=0)
+    # Alert timing
+    alert_active_delay_seconds: int = Field(0, ge=0, description="Condition must be TRUE for X seconds before raising alert")
+    alert_clear_delay_seconds: int = Field(0, ge=0, description="Condition must be FALSE for X seconds before clearing alert")
+
+    # Notification timing
+    notification_active_delay_seconds: int = Field(0, ge=0, description="Alert must be active for X seconds before sending notification")
+    notification_cooldown_seconds: int = Field(300, ge=0, description="Wait X seconds before sending another notification")
 
     # Behavior flags
     auto_resolve: Optional[bool] = False  # Resolve immediately after notification (notification-only mode)
@@ -137,15 +140,21 @@ class AlertRuleV2Update(BaseModel):
     enabled: Optional[bool] = None
     severity: Optional[str] = Field(None, pattern="^(info|warning|error|critical)$")
 
+    # Metric-based rule fields
     metric: Optional[str] = None
     threshold: Optional[float] = None
     operator: Optional[str] = Field(None, pattern="^(>=|<=|>|<|==|!=)$")
-    duration_seconds: Optional[int] = Field(None, ge=0)
     occurrences: Optional[int] = Field(None, ge=1)
     clear_threshold: Optional[float] = None
-    clear_duration_seconds: Optional[int] = Field(None, ge=0)
 
-    cooldown_seconds: Optional[int] = Field(None, ge=0)
+    # Alert timing
+    alert_active_delay_seconds: Optional[int] = Field(None, ge=0, description="Condition must be TRUE for X seconds before raising alert")
+    alert_clear_delay_seconds: Optional[int] = Field(None, ge=0, description="Condition must be FALSE for X seconds before clearing alert")
+
+    # Notification timing
+    notification_active_delay_seconds: Optional[int] = Field(None, ge=0, description="Alert must be active for X seconds before sending notification")
+    notification_cooldown_seconds: Optional[int] = Field(None, ge=0, description="Wait X seconds before sending another notification")
+
     depends_on_json: Optional[str] = None  # JSON array of condition dependencies
 
     # Behavior flags

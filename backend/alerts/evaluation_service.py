@@ -182,7 +182,7 @@ class AlertEvaluationService:
 
         Checks every 5 seconds for:
         1. Open alerts that haven't been notified yet (notified_at is NULL)
-        2. Alert age >= rule.clear_duration_seconds
+        2. Alert age >= rule.notification_active_delay_seconds
         3. Sends notification and marks notified_at
         """
         check_interval = 5  # Check every 5 seconds
@@ -198,7 +198,7 @@ class AlertEvaluationService:
                 await asyncio.sleep(check_interval)
 
     async def _check_pending_notifications(self):
-        """Check for alerts that have exceeded their clear_duration and need notifications"""
+        """Check for alerts that have exceeded their notification_active_delay and need notifications"""
         try:
             # Fetch alerts and close session BEFORE calling async methods
             # to avoid holding database connections across await boundaries
@@ -229,28 +229,28 @@ class AlertEvaluationService:
                     if not rule:
                         continue
 
-                    # Get clear_duration (default to 0 if not set)
-                    clear_duration = rule.clear_duration_seconds or 0
+                    # Get notification_active_delay (default to 0 if not set)
+                    notification_delay = rule.notification_active_delay_seconds or 0
 
                     # Calculate alert age from last_seen
                     last_seen = alert.last_seen if alert.last_seen.tzinfo else alert.last_seen.replace(tzinfo=timezone.utc)
                     alert_age = (now - last_seen).total_seconds()
 
-                    # Check if alert has exceeded clear_duration
-                    if alert_age >= clear_duration:
+                    # Check if alert has exceeded notification_active_delay
+                    if alert_age >= notification_delay:
                         # Store alert data for processing after session closes
                         pending_alerts_data.append({
                             'alert': alert,
                             'alert_age': alert_age,
-                            'clear_duration': clear_duration
+                            'notification_delay': notification_delay
                         })
 
             # Session is now closed - safe to call async methods
             for data in pending_alerts_data:
                 alert = data['alert']
                 logger.info(
-                    f"Alert {alert.id} ({alert.title}) exceeded clear_duration "
-                    f"({data['alert_age']:.1f}s >= {data['clear_duration']}s) - verifying condition still true"
+                    f"Alert {alert.id} ({alert.title}) exceeded notification_active_delay "
+                    f"({data['alert_age']:.1f}s >= {data['notification_delay']}s) - verifying condition still true"
                 )
 
                 # Verify alert condition is still true before notifying
@@ -444,7 +444,7 @@ class AlertEvaluationService:
                 return True
 
             # For unhealthy alerts, verify container is still unhealthy
-            elif alert.kind == "unhealthy" and alert.scope_type == "container":
+            elif alert.kind in ["unhealthy", "container_unhealthy"] and alert.scope_type == "container":
                 if not self.monitor:
                     return True
 
@@ -931,20 +931,21 @@ class AlertEvaluationService:
 
         This is called when an alert is created or updated.
 
-        For alerts with clear_duration:
+        For alerts with notification_active_delay:
         - Clear notified_at and defer notification to background task
-        - Background task will send notification after clear_duration expires (if still open)
+        - Background task will send notification after notification_active_delay expires (if still open)
         - This applies to both new and re-triggered alerts
 
-        For alerts without clear_duration:
+        For alerts without notification_active_delay:
         - Send notification immediately
         """
-        # Check if alert should be deferred based on clear_duration
+        # Check if alert should be deferred based on notification_active_delay
         if alert.state == "open":
-            # Get the rule to check clear_duration
+            # Get the rule to check notification_active_delay
             rule = self.engine.db.get_alert_rule_v2(alert.rule_id) if alert.rule_id else None
 
-            if rule and rule.clear_duration_seconds and rule.clear_duration_seconds > 0:
+            notification_delay = rule.notification_active_delay_seconds if rule else 0
+            if notification_delay and notification_delay > 0:
                 # Clear notified_at so the background task will pick it up
                 # This applies to both new alerts and re-triggered alerts
                 with self.engine.db.get_session() as session:
@@ -954,11 +955,11 @@ class AlertEvaluationService:
                         session.commit()
                         logger.info(
                             f"Deferring notification for alert {alert.id} - "
-                            f"will notify after {rule.clear_duration_seconds}s if still open"
+                            f"will notify after {notification_delay}s if still open"
                         )
                         return
 
-        # For alerts without clear_duration, send immediately
+        # For alerts without notification_active_delay, send immediately
         logger.info(
             f"Alert notification: {alert.title} "
             f"(severity={alert.severity}, state={alert.state})"
@@ -1179,7 +1180,7 @@ class AlertEvaluationService:
                     await self._auto_clear_alerts_by_kind(
                         scope_type="container",
                         scope_id=make_composite_key(host_id, container_id),
-                        kinds_to_clear=["unhealthy"],
+                        kinds_to_clear=["unhealthy", "container_unhealthy"],
                         reason="Container became healthy"
                     )
 

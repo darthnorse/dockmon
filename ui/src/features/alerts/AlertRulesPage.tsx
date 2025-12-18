@@ -143,13 +143,13 @@ export function AlertRulesPage() {
                             Metric: {rule.metric} {rule.operator} {rule.threshold}
                           </span>
                         )}
-                        {rule.duration_seconds && (
+                        {rule.alert_active_delay_seconds > 0 && (
                           <span>
-                            Duration: {rule.duration_seconds}s
+                            Alert Delay: {rule.alert_active_delay_seconds}s
                           </span>
                         )}
                         {rule.occurrences && <span>Occurrences: {rule.occurrences}</span>}
-                        {rule.cooldown_seconds > 0 && <span>Cooldown: {rule.cooldown_seconds}s</span>}
+                        {rule.notification_cooldown_seconds > 0 && <span>Cooldown: {rule.notification_cooldown_seconds}s</span>}
                       </div>
                     </div>
 

@@ -310,9 +310,10 @@ class AlertEngine:
                 alert, is_new = self._get_or_create_alert(dedup_key, rule, context, event_data=event_data)
                 logger.debug(f"Engine: Alert {alert.id} - is_new={is_new}")
 
-                # Check cooldown
-                if not is_new and self._check_cooldown(alert, rule.cooldown_seconds):
-                    logger.info(f"Engine: Alert {alert.id} in cooldown (cooldown_seconds={rule.cooldown_seconds}), skipping notification but updating context")
+                # Check notification cooldown
+                cooldown = rule.notification_cooldown_seconds or 300
+                if not is_new and self._check_cooldown(alert, cooldown):
+                    logger.info(f"Engine: Alert {alert.id} in cooldown (notification_cooldown_seconds={cooldown}), skipping notification but updating context")
                     # Still update event_context to preserve important data like exit_code
                     alert = self._update_alert(alert, event_data=event_data, increment_occurrences=False)
                     continue
@@ -341,7 +342,7 @@ class AlertEngine:
         # Map rule kinds to event types
         # This will be expanded as we add more rule types
 
-        if rule.kind == "unhealthy":
+        if rule.kind in ["unhealthy", "container_unhealthy"]:
             # Container health status changed to unhealthy (Docker native health checks)
             return event_type == "state_change" and event_data and event_data.get("new_state") == "unhealthy"
 
@@ -355,6 +356,10 @@ class AlertEngine:
         if rule.kind == "container_stopped":
             # Container stopped/exited (includes clean stops with exit 0 and crashes)
             return event_type == "state_change" and event_data and event_data.get("new_state") in ["stopped", "exited", "dead"]
+
+        if rule.kind in ["container_restart", "container_restarted"]:
+            # Container restarted (went through restart cycle)
+            return event_type == "state_change" and event_data and event_data.get("new_state") == "restarting"
 
         if rule.kind in ["host_disconnected", "host_down"]:
             # Host disconnected/offline
@@ -620,8 +625,9 @@ class AlertEngine:
                 })
 
                 # Trim old samples outside duration window
-                if rule.duration_seconds:
-                    cutoff = now - timedelta(seconds=rule.duration_seconds)
+                active_delay = rule.alert_active_delay_seconds or 0
+                if active_delay > 0:
+                    cutoff = now - timedelta(seconds=active_delay)
                     state["samples"] = [
                         s for s in state["samples"]
                         if datetime.fromisoformat(s["ts"]) > cutoff
@@ -654,8 +660,9 @@ class AlertEngine:
                     # Get or create alert
                     alert, is_new = self._get_or_create_alert(dedup_key, rule, context, metric_value)
 
-                    # Check cooldown
-                    if not is_new and self._check_cooldown(alert, rule.cooldown_seconds):
+                    # Check notification cooldown
+                    cooldown = rule.notification_cooldown_seconds or 300
+                    if not is_new and self._check_cooldown(alert, cooldown):
                         logger.debug(f"Alert {alert.id} in cooldown, skipping")
                     else:
                         # Update alert
@@ -675,11 +682,11 @@ class AlertEngine:
                     clear_breached = self._check_breach(metric_value, effective_clear_threshold, rule.operator)
 
                     if not clear_breached:
-                        # Determine clear duration (use explicit value, fallback to duration_seconds, then 60s default)
-                        clear_duration = rule.clear_duration_seconds if rule.clear_duration_seconds is not None else (rule.duration_seconds if rule.duration_seconds else 60)
+                        # Determine clear delay (alert_clear_delay_seconds, fallback to alert_active_delay, then 60s default)
+                        clear_delay = rule.alert_clear_delay_seconds if rule.alert_clear_delay_seconds is not None else (rule.alert_active_delay_seconds if rule.alert_active_delay_seconds else 60)
 
-                        # Handle immediate clearing (clear_duration_seconds = 0)
-                        if clear_duration == 0:
+                        # Handle immediate clearing (alert_clear_delay_seconds = 0)
+                        if clear_delay == 0:
                             # Clear immediately without waiting
                             dedup_key = self._make_dedup_key(rule.id, rule.kind, context.scope_type, context.scope_id)
                             existing = session.query(AlertV2).filter(
@@ -703,7 +710,7 @@ class AlertEngine:
                             clear_start = datetime.fromisoformat(state["clear_started_at"])
                             time_clearing = (now - clear_start).total_seconds()
 
-                            if time_clearing >= clear_duration:
+                            if time_clearing >= clear_delay:
                                 # Clear the alert
                                 dedup_key = self._make_dedup_key(rule.id, rule.kind, context.scope_type, context.scope_id)
                                 existing = session.query(AlertV2).filter(
@@ -858,7 +865,11 @@ class AlertEngine:
             "metric": rule.metric,
             "threshold": rule.threshold,
             "operator": rule.operator,
-            "duration_seconds": rule.duration_seconds,
+            # Timing fields
+            "alert_active_delay_seconds": rule.alert_active_delay_seconds,
+            "alert_clear_delay_seconds": rule.alert_clear_delay_seconds,
+            "notification_active_delay_seconds": rule.notification_active_delay_seconds,
+            "notification_cooldown_seconds": rule.notification_cooldown_seconds,
             "occurrences": rule.occurrences,
             "version": rule.version
         }

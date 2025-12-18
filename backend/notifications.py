@@ -1134,7 +1134,7 @@ class NotificationService:
             if rule.metric and settings.alert_template_metric:
                 return settings.alert_template_metric
             # Check if it's a state change alert
-            elif rule.kind in ['container_stopped', 'container_restarted'] and settings.alert_template_state_change:
+            elif rule.kind in ['container_stopped', 'container_restart', 'container_restarted'] and settings.alert_template_state_change:
                 return settings.alert_template_state_change
             # Check if it's a health alert
             elif rule.kind in ['container_unhealthy', 'host_unhealthy', 'health_check_failed'] and settings.alert_template_health:
@@ -1176,7 +1176,7 @@ class NotificationService:
 **Rule:** {RULE_NAME}"""
 
         # State change alerts (stopped, started, paused, restarted, died, killed)
-        if kind in ['container_stopped', 'container_started', 'container_paused', 'container_restarted',
+        if kind in ['container_stopped', 'container_started', 'container_paused', 'container_restart', 'container_restarted',
                     'container_died', 'container_killed']:
             return """🚨 **{SEVERITY} Alert: {KIND}**
 
@@ -1188,7 +1188,7 @@ class NotificationService:
 **Rule:** {RULE_NAME}"""
 
         # Metric alerts (cpu, memory, disk, network, etc.)
-        if kind in ['cpu_high', 'memory_high', 'disk_high', 'network_high', 'cpu_low', 'memory_low']:
+        if kind in ['cpu_high', 'memory_high', 'disk_high', 'disk_low', 'network_high', 'cpu_low', 'memory_low']:
             return """🚨 **{SEVERITY} Alert: {KIND}**
 
 **Container:** {CONTAINER_NAME}

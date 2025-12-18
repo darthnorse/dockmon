@@ -34,11 +34,15 @@ interface AlertRuleFormData {
   metric?: string | undefined
   threshold?: number | undefined
   operator?: string | undefined
-  duration_seconds: number
   occurrences: number
   clear_threshold?: number | null | undefined
-  clear_duration_seconds?: number | null | undefined
-  cooldown_seconds: number
+  // Alert timing
+  alert_active_delay_seconds: number
+  alert_clear_delay_seconds: number
+  // Notification timing
+  notification_active_delay_seconds: number
+  notification_cooldown_seconds: number
+  // Selectors
   host_selector_all: boolean
   host_selector_ids: string[]
   container_selector_all: boolean
@@ -258,13 +262,18 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       metric: rule?.metric || 'cpu_percent',
       threshold: rule?.threshold || 90,
       operator: rule?.operator || '>=',
-      // Event-driven rules: fire immediately (0s, 1 occurrence), auto-resolve after 30s, cooldown 15s
-      // Metric-driven rules: require sustained breach (300s, 3 occurrences), auto-resolve after 60s, cooldown 5 min
-      duration_seconds: rule?.duration_seconds ?? (isMetricDriven ? 300 : 0),
+      // Alert timing
+      // Metric-driven: require sustained breach (300s alert delay, 60s clear delay)
+      // Event-driven: fire immediately (0s alert delay), immediate clear (0s)
+      alert_active_delay_seconds: rule?.alert_active_delay_seconds ?? (isMetricDriven ? 300 : 0),
+      alert_clear_delay_seconds: rule?.alert_clear_delay_seconds ?? (isMetricDriven ? 60 : 0),
       occurrences: rule?.occurrences ?? (isMetricDriven ? 3 : 1),
       clear_threshold: rule?.clear_threshold,
-      clear_duration_seconds: rule?.clear_duration_seconds ?? (isMetricDriven ? 60 : 30),
-      cooldown_seconds: rule?.cooldown_seconds ?? (isMetricDriven ? 300 : 15),
+      // Notification timing
+      // Metric-driven: notify immediately (0s delay), 5 min cooldown
+      // Event-driven: 30s grace before notifying, 15s cooldown
+      notification_active_delay_seconds: rule?.notification_active_delay_seconds ?? (isMetricDriven ? 0 : 30),
+      notification_cooldown_seconds: rule?.notification_cooldown_seconds ?? (isMetricDriven ? 300 : 15),
       // Selectors
       host_selector_all: parseSelector(rule?.host_selector_json).all,
       host_selector_ids: parseSelector(rule?.host_selector_json).selected,
@@ -414,7 +423,9 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
         kind: formData.kind,
         enabled: formData.enabled,
         severity: formData.severity,
-        cooldown_seconds: formData.cooldown_seconds,
+        // Notification timing
+        notification_active_delay_seconds: formData.notification_active_delay_seconds,
+        notification_cooldown_seconds: formData.notification_cooldown_seconds,
       }
 
       // Add metric fields only if required
@@ -431,17 +442,14 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
         if (formData.clear_threshold !== undefined && formData.clear_threshold !== null) {
           requestData.clear_threshold = formData.clear_threshold
         }
-        if (formData.clear_duration_seconds !== undefined && formData.clear_duration_seconds !== null) {
-          requestData.clear_duration_seconds = formData.clear_duration_seconds
-        }
-        // Duration and occurrences only for metric-driven rules (sliding window)
-        requestData.duration_seconds = formData.duration_seconds
+        // Alert timing (for metric rules)
+        requestData.alert_active_delay_seconds = formData.alert_active_delay_seconds
+        requestData.alert_clear_delay_seconds = formData.alert_clear_delay_seconds
         requestData.occurrences = formData.occurrences
       } else {
-        // For non-metric (event-driven) rules, only add grace period (clear_duration_seconds)
-        if (formData.clear_duration_seconds !== undefined && formData.clear_duration_seconds !== null) {
-          requestData.clear_duration_seconds = formData.clear_duration_seconds
-        }
+        // For non-metric (event-driven) rules, add alert timing
+        requestData.alert_active_delay_seconds = formData.alert_active_delay_seconds
+        requestData.alert_clear_delay_seconds = formData.alert_clear_delay_seconds
       }
 
       // Add selectors - Tag-based OR individual selection (mutually exclusive)
@@ -542,16 +550,18 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
               updated.metric = firstValidKind.metric
               updated.operator = firstValidKind.defaultOperator
               updated.threshold = firstValidKind.defaultThreshold
-              updated.duration_seconds = 300
+              updated.alert_active_delay_seconds = 300
+              updated.alert_clear_delay_seconds = 60
               updated.occurrences = 3
-              updated.cooldown_seconds = 300
-              updated.clear_duration_seconds = undefined
+              updated.notification_active_delay_seconds = 0
+              updated.notification_cooldown_seconds = 300
             } else {
               // Event-driven rule defaults
-              updated.duration_seconds = 0
+              updated.alert_active_delay_seconds = 0
+              updated.alert_clear_delay_seconds = 0
               updated.occurrences = 1
-              updated.cooldown_seconds = 15
-              updated.clear_duration_seconds = 30
+              updated.notification_active_delay_seconds = 30
+              updated.notification_cooldown_seconds = 15
             }
           }
         }
@@ -565,16 +575,18 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
           updated.metric = kind.metric
           updated.operator = kind.defaultOperator
           updated.threshold = kind.defaultThreshold
-          updated.duration_seconds = 300
+          updated.alert_active_delay_seconds = 300
+          updated.alert_clear_delay_seconds = 60
           updated.occurrences = 3
-          updated.cooldown_seconds = 300
-          updated.clear_duration_seconds = undefined
+          updated.notification_active_delay_seconds = 0
+          updated.notification_cooldown_seconds = 300
         } else {
           // Event-driven rule defaults
-          updated.duration_seconds = 0
+          updated.alert_active_delay_seconds = 0
+          updated.alert_clear_delay_seconds = 0
           updated.occurrences = 1
-          updated.cooldown_seconds = 15
-          updated.clear_duration_seconds = 30
+          updated.notification_active_delay_seconds = 30
+          updated.notification_cooldown_seconds = 15
         }
       }
 
@@ -591,10 +603,13 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       const metricName = formData.metric?.replace('_', ' ')
       parts.push(`Trigger: ${metricName || 'metric'}`)
       parts.push(`Threshold: ${formData.operator} ${formData.threshold}%`)
-      parts.push(`Duration: ${formData.duration_seconds}s (${formData.occurrences} breaches)`)
+      parts.push(`Alert Active Delay: ${formData.alert_active_delay_seconds}s (${formData.occurrences} breaches)`)
     } else {
       const kindLabel = selectedKind?.label || formData.kind
       parts.push(`Trigger: ${kindLabel}`)
+      if (formData.alert_active_delay_seconds > 0) {
+        parts.push(`Alert Active Delay: ${formData.alert_active_delay_seconds}s`)
+      }
     }
 
     // Scope
@@ -633,22 +648,25 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
 
     // Timing Configuration
     if (!requiresMetric) {
-      // For event-driven rules, show grace period
-      if (formData.clear_duration_seconds !== undefined && formData.clear_duration_seconds !== null && formData.clear_duration_seconds > 0) {
-        parts.push(`Grace Period: ${formData.clear_duration_seconds}s`)
+      // For event-driven rules, show notification active delay
+      if (formData.notification_active_delay_seconds > 0) {
+        parts.push(`Notification Delay: ${formData.notification_active_delay_seconds}s`)
+      }
+      if (formData.alert_clear_delay_seconds > 0) {
+        parts.push(`Alert Clear Delay: ${formData.alert_clear_delay_seconds}s`)
       }
     } else {
-      // For metric-driven rules, show clear threshold/duration if set
+      // For metric-driven rules, show clear threshold/delay if set
       if (formData.clear_threshold !== undefined && formData.clear_threshold !== null) {
         parts.push(`Clear Threshold: ${formData.clear_threshold}%`)
       }
-      if (formData.clear_duration_seconds !== undefined && formData.clear_duration_seconds !== null && formData.clear_duration_seconds > 0) {
-        parts.push(`Clear Duration: ${formData.clear_duration_seconds}s`)
+      if (formData.alert_clear_delay_seconds > 0) {
+        parts.push(`Alert Clear Delay: ${formData.alert_clear_delay_seconds}s`)
       }
     }
 
     // Cooldown
-    parts.push(`Cooldown: ${formData.cooldown_seconds}s`)
+    parts.push(`Notification Cooldown: ${formData.notification_cooldown_seconds}s`)
 
     // Suppress during updates (container scope only)
     if (formData.scope === 'container') {
@@ -945,18 +963,18 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">Clear Duration (seconds)</label>
+                  <label className="block text-sm font-medium text-gray-300 mb-1">Alert Clear Delay (seconds)</label>
                   <input
                     type="number"
-                    value={formData.clear_duration_seconds || ''}
-                    onChange={(e) => handleChange('clear_duration_seconds', e.target.value ? parseInt(e.target.value) : undefined)}
+                    value={formData.alert_clear_delay_seconds}
+                    onChange={(e) => handleChange('alert_clear_delay_seconds', parseInt(e.target.value) || 0)}
                     min={0}
                     className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                    placeholder="Optional"
+                    placeholder="60"
                   />
                   <p className="mt-1 text-xs text-gray-400">
                     How long the metric must stay below the clear threshold before auto-resolving the alert.
-                    Set to 0 for immediate clearing. Defaults to 60s if not specified.
+                    Set to 0 for immediate clearing.
                   </p>
                 </div>
               </div>
@@ -1257,25 +1275,28 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
             </div>
           )}
 
-          {/* Timing Configuration - Hide for update rules */}
+          {/* Alert Timing Configuration - Hide for update rules */}
           {!['update_available', 'update_completed', 'update_failed'].includes(formData.kind) && (
           <div className="space-y-4 rounded-lg border border-gray-700 bg-gray-800/30 p-4">
-            <h3 className="text-sm font-semibold text-white">Timing Configuration</h3>
+            <div>
+              <h3 className="text-sm font-semibold text-white">Alert Timing</h3>
+              <p className="text-xs text-gray-400 mt-1">Controls when alerts become active and when they clear</p>
+            </div>
 
             {/* Duration and Occurrences - Only for metric-driven rules */}
             {requiresMetric && (
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">Duration (seconds) *</label>
+                  <label className="block text-sm font-medium text-gray-300 mb-1">Alert Active Delay (seconds) *</label>
                   <input
                     type="number"
-                    value={formData.duration_seconds}
-                    onChange={(e) => handleChange('duration_seconds', parseInt(e.target.value))}
+                    value={formData.alert_active_delay_seconds}
+                    onChange={(e) => handleChange('alert_active_delay_seconds', parseInt(e.target.value) || 0)}
                     required
-                    min={1}
+                    min={0}
                     className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                   />
-                  <p className="mt-1 text-xs text-gray-500">How long condition must be true</p>
+                  <p className="mt-1 text-xs text-gray-500">How long condition must be true before alert triggers</p>
                 </div>
 
                 <div>
@@ -1294,36 +1315,78 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
               </div>
             )}
 
-            <div className="grid grid-cols-2 gap-4">
-              {!requiresMetric && (
-                <div className="col-span-2">
-                  <label className="block text-sm font-medium text-gray-300 mb-1">Grace Period (seconds)</label>
+            {/* Event-driven alert timing */}
+            {!requiresMetric && (
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-1">Alert Active Delay (seconds)</label>
                   <input
                     type="number"
-                    value={formData.clear_duration_seconds || ''}
-                    onChange={(e) => handleChange('clear_duration_seconds', e.target.value ? parseInt(e.target.value) : undefined)}
+                    value={formData.alert_active_delay_seconds}
+                    onChange={(e) => handleChange('alert_active_delay_seconds', parseInt(e.target.value) || 0)}
                     min={0}
-                    placeholder="30"
+                    placeholder="0"
                     className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                   />
                   <p className="mt-1 text-xs text-gray-400">
-                    Grace period before sending notifications. If the condition resolves within this period (e.g., container restarts),
-                    the alert auto-clears without sending notifications. Set to 0 for immediate alerts. Default: 30 seconds.
+                    Condition must be true for this long before alert triggers. Set to 0 for immediate alerts.
                   </p>
                 </div>
-              )}
 
-              <div className={!requiresMetric ? 'col-span-2' : 'col-span-2'}>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Cooldown (seconds) *</label>
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-1">Alert Clear Delay (seconds)</label>
+                  <input
+                    type="number"
+                    value={formData.alert_clear_delay_seconds}
+                    onChange={(e) => handleChange('alert_clear_delay_seconds', parseInt(e.target.value) || 0)}
+                    min={0}
+                    placeholder="0"
+                    className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                  <p className="mt-1 text-xs text-gray-400">
+                    Condition must be false for this long before alert clears. Set to 0 for immediate clearing.
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+          )}
+
+          {/* Notification Timing Configuration */}
+          {!['update_available', 'update_completed', 'update_failed'].includes(formData.kind) && (
+          <div className="space-y-4 rounded-lg border border-gray-700 bg-gray-800/30 p-4">
+            <div>
+              <h3 className="text-sm font-semibold text-white">Notification Timing</h3>
+              <p className="text-xs text-gray-400 mt-1">Controls when notifications are sent and how often they repeat</p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Notification Active Delay (seconds)</label>
                 <input
                   type="number"
-                  value={formData.cooldown_seconds}
-                  onChange={(e) => handleChange('cooldown_seconds', parseInt(e.target.value))}
+                  value={formData.notification_active_delay_seconds}
+                  onChange={(e) => handleChange('notification_active_delay_seconds', parseInt(e.target.value) || 0)}
+                  min={0}
+                  placeholder={requiresMetric ? '0' : '30'}
+                  className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+                <p className="mt-1 text-xs text-gray-400">
+                  Alert must be active for this long before sending notification. Filters flapping alerts.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Notification Cooldown (seconds) *</label>
+                <input
+                  type="number"
+                  value={formData.notification_cooldown_seconds}
+                  onChange={(e) => handleChange('notification_cooldown_seconds', parseInt(e.target.value) || 0)}
                   required
                   min={0}
                   className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
-                <p className="mt-1 text-xs text-gray-500">Min time between alert notifications</p>
+                <p className="mt-1 text-xs text-gray-500">Minimum time between repeated notifications for the same alert</p>
               </div>
             </div>
           </div>

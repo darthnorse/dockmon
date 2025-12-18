@@ -578,16 +578,27 @@ class AlertRuleV2(Base):
     metric = Column(String, nullable=True)  # 'docker_cpu_workload_pct', etc.
     operator = Column(String, nullable=True)  # '>=', '<=', '=='
     threshold = Column(Float, nullable=True)
-    duration_seconds = Column(Integer, nullable=True)  # 300 for 'for 5m'
     occurrences = Column(Integer, nullable=True)  # 3 for '3/5m'
 
-    # Clearing
+    # Clearing (metric-driven rules)
     clear_threshold = Column(Float, nullable=True)
-    clear_duration_seconds = Column(Integer, nullable=True)
+
+    # Alert timing configuration
+    alert_active_delay_seconds = Column(Integer, nullable=True, default=0)  # Condition must be TRUE for X seconds before alerting
+    alert_clear_delay_seconds = Column(Integer, nullable=True, default=0)  # Condition must be FALSE for X seconds before clearing
+
+    # Notification timing configuration
+    notification_active_delay_seconds = Column(Integer, nullable=True, default=0)  # Alert must be active for X seconds before notifying
+    notification_cooldown_seconds = Column(Integer, nullable=True, default=300)  # Wait X seconds between notifications
+
+    # DEPRECATED: Old field names kept for migration compatibility
+    # These are still in the database but should not be used in new code
+    duration_seconds = Column(Integer, nullable=True)  # DEPRECATED: Use alert_active_delay_seconds
+    clear_duration_seconds = Column(Integer, nullable=True)  # DEPRECATED: Use alert_clear_delay_seconds or notification_active_delay_seconds
+    cooldown_seconds = Column(Integer, default=300)  # DEPRECATED: Use notification_cooldown_seconds
 
     # Behavior
     severity = Column(String, nullable=False)  # 'info' | 'warning' | 'critical'
-    cooldown_seconds = Column(Integer, default=300)
     depends_on_json = Column(Text, nullable=True)  # JSON: ["host_missing", ...]
     auto_resolve = Column(Boolean, default=False)  # Resolve immediately after notification (for notification-only mode)
     auto_resolve_on_clear = Column(Boolean, default=False)  # Clear when condition resolves (e.g., container restarts)
@@ -3078,7 +3089,7 @@ class DatabaseManager:
                 kind="system_error",
                 enabled=True,
                 severity="error",
-                cooldown_seconds=3600,  # 1 hour cooldown to prevent spam
+                notification_cooldown_seconds=3600,  # 1 hour cooldown to prevent spam
                 auto_resolve=False,
                 suppress_during_updates=False,
                 notify_channels_json=None,  # Will use default channels
@@ -3101,11 +3112,15 @@ class DatabaseManager:
         metric: Optional[str] = None,
         threshold: Optional[float] = None,
         operator: Optional[str] = None,
-        duration_seconds: Optional[int] = None,
         occurrences: Optional[int] = None,
         clear_threshold: Optional[float] = None,
-        clear_duration_seconds: Optional[int] = None,
-        cooldown_seconds: int = 300,
+        # Alert timing
+        alert_active_delay_seconds: int = 0,
+        alert_clear_delay_seconds: int = 0,
+        # Notification timing
+        notification_active_delay_seconds: int = 0,
+        notification_cooldown_seconds: int = 300,
+        # Behavior
         auto_resolve: bool = False,
         auto_resolve_on_clear: bool = False,
         suppress_during_updates: bool = False,
@@ -3131,11 +3146,14 @@ class DatabaseManager:
                 metric=metric,
                 threshold=threshold,
                 operator=operator,
-                duration_seconds=duration_seconds,
                 occurrences=occurrences,
                 clear_threshold=clear_threshold,
-                clear_duration_seconds=clear_duration_seconds,
-                cooldown_seconds=cooldown_seconds,
+                # Timing fields
+                alert_active_delay_seconds=alert_active_delay_seconds,
+                alert_clear_delay_seconds=alert_clear_delay_seconds,
+                notification_active_delay_seconds=notification_active_delay_seconds,
+                notification_cooldown_seconds=notification_cooldown_seconds,
+                # Behavior
                 auto_resolve=auto_resolve,
                 auto_resolve_on_clear=auto_resolve_on_clear,
                 suppress_during_updates=suppress_during_updates,

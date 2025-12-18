@@ -1531,7 +1531,9 @@ async def check_container_update(
     logger.info(f"User {current_user.get('username')} triggered update check for container {short_id} on host {host_id}")
 
     checker = get_update_checker(monitor.db, monitor)
-    result = await checker.check_single_container(host_id, short_id)
+    # Issue #101: bypass_cache=True ensures manual checks always query registry
+    # This fixes stale update info when images are rapidly rebuilt
+    result = await checker.check_single_container(host_id, short_id, bypass_cache=True)
 
     if not result:
         # Check failed (e.g., registry auth error, network issue)

@@ -161,18 +161,20 @@ class UpdateChecker:
         logger.info(f"Update check complete: {stats}")
         return stats
 
-    async def check_single_container(self, host_id: str, container_id: str) -> Optional[Dict]:
+    async def check_single_container(self, host_id: str, container_id: str, bypass_cache: bool = False) -> Optional[Dict]:
         """
         Check a single container for updates (manual trigger).
 
         Args:
             host_id: Host UUID
             container_id: Container short ID (12 chars)
+            bypass_cache: If True, skip cache lookup and query registry directly.
+                         Default True for manual checks (Issue #101).
 
         Returns:
             Dict with update info or None if check failed
         """
-        logger.info(f"Checking container {container_id} on host {host_id}")
+        logger.info(f"Checking container {container_id} on host {host_id} (bypass_cache={bypass_cache})")
 
         # Get container info
         container = await self._get_container_async(host_id, container_id)
@@ -181,7 +183,7 @@ class UpdateChecker:
             return None
 
         # Check for update
-        update_info = await self._check_container_update(container)
+        update_info = await self._check_container_update(container, bypass_cache=bypass_cache)
 
         if update_info:
             # Capture old digest BEFORE updating database
@@ -201,12 +203,14 @@ class UpdateChecker:
 
         return None
 
-    async def _check_container_update(self, container: Dict) -> Optional[Dict]:
+    async def _check_container_update(self, container: Dict, bypass_cache: bool = False) -> Optional[Dict]:
         """
         Check if update is available for a container.
 
         Args:
             container: Dict with keys: host_id, id, name, image, image_id, etc.
+            bypass_cache: If True, skip cache lookup and query registry directly.
+                         Use for manual single-container checks (Issue #101).
 
         Returns:
             Dict with update info or None if check failed
@@ -246,11 +250,15 @@ class UpdateChecker:
         cache_key = f"{floating_tag}:{platform}"
 
         # Check database cache first (Issue #62: rate limit mitigation)
+        # Skip cache if bypass_cache=True (Issue #101: manual checks should get fresh data)
         cached_result = None
-        try:
-            cached_result = self.db.get_cached_image_digest(cache_key)
-        except Exception as e:
-            logger.warning(f"Failed to check image cache: {e}")
+        if not bypass_cache:
+            try:
+                cached_result = self.db.get_cached_image_digest(cache_key)
+            except Exception as e:
+                logger.warning(f"Failed to check image cache: {e}")
+        else:
+            logger.info(f"[{container['name']}] Bypassing cache (manual check)")
 
         if cached_result:
             # Cache hit - use cached data

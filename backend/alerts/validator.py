@@ -31,9 +31,9 @@ class AlertRuleValidator:
     MAX_UNHEALTHY_COUNT = 1000
 
     VALID_SCOPES = {'host', 'container', 'group'}
-    VALID_SEVERITIES = {'info', 'warning', 'critical'}
+    VALID_SEVERITIES = {'info', 'warning', 'error', 'critical'}
     VALID_OPERATORS = {'>=', '<=', '==', '>', '<', '!='}
-    VALID_NOTIFICATION_CHANNELS = {'slack', 'discord', 'telegram', 'pushover', 'email', 'gotify', 'ntfy'}
+    VALID_NOTIFICATION_CHANNELS = {'slack', 'discord', 'telegram', 'pushover', 'gotify', 'ntfy', 'smtp', 'webhook'}
 
     # Percentage-based metrics
     PERCENTAGE_METRICS = {
@@ -199,44 +199,57 @@ class AlertRuleValidator:
                 )
 
     def _validate_durations(self, rule_data: Dict[str, Any]) -> None:
-        """Validate duration fields"""
-        duration = rule_data.get('duration_seconds')
-        clear_duration = rule_data.get('clear_duration_seconds')
-        cooldown = rule_data.get('cooldown_seconds')
+        """Validate timing fields"""
+        # Alert timing
+        alert_active_delay = rule_data.get('alert_active_delay_seconds')
+        alert_clear_delay = rule_data.get('alert_clear_delay_seconds')
+        # Notification timing
+        notification_active_delay = rule_data.get('notification_active_delay_seconds')
+        notification_cooldown = rule_data.get('notification_cooldown_seconds')
+        # Legacy field
         grace = rule_data.get('grace_seconds')
 
-        # Duration validation
-        if duration is not None:
-            if not isinstance(duration, int):
-                raise AlertRuleValidationError("Duration must be an integer")
+        # Alert active delay validation
+        if alert_active_delay is not None:
+            if not isinstance(alert_active_delay, int):
+                raise AlertRuleValidationError("Alert active delay must be an integer")
 
-            if not self.MIN_DURATION_SECONDS <= duration <= self.MAX_DURATION_SECONDS:
+            if alert_active_delay < 0 or alert_active_delay > self.MAX_DURATION_SECONDS:
                 raise AlertRuleValidationError(
-                    f"Duration must be between {self.MIN_DURATION_SECONDS}s and "
-                    f"{self.MAX_DURATION_SECONDS}s (24 hours)"
+                    f"Alert active delay must be between 0 and {self.MAX_DURATION_SECONDS}s (24 hours)"
                 )
 
-        # Clear duration validation
-        if clear_duration is not None:
-            if not isinstance(clear_duration, int):
-                raise AlertRuleValidationError("Clear duration must be an integer")
+        # Alert clear delay validation
+        if alert_clear_delay is not None:
+            if not isinstance(alert_clear_delay, int):
+                raise AlertRuleValidationError("Alert clear delay must be an integer")
 
-            if clear_duration < 0 or clear_duration > self.MAX_DURATION_SECONDS:
+            if alert_clear_delay < 0 or alert_clear_delay > self.MAX_DURATION_SECONDS:
                 raise AlertRuleValidationError(
-                    f"Clear duration must be between 0 and {self.MAX_DURATION_SECONDS}s (24 hours)"
+                    f"Alert clear delay must be between 0 and {self.MAX_DURATION_SECONDS}s (24 hours)"
                 )
 
-        # Cooldown validation
-        if cooldown is not None:
-            if not isinstance(cooldown, int):
-                raise AlertRuleValidationError("Cooldown must be an integer")
+        # Notification active delay validation
+        if notification_active_delay is not None:
+            if not isinstance(notification_active_delay, int):
+                raise AlertRuleValidationError("Notification active delay must be an integer")
 
-            if cooldown < 0 or cooldown > self.MAX_DURATION_SECONDS:
+            if notification_active_delay < 0 or notification_active_delay > self.MAX_DURATION_SECONDS:
                 raise AlertRuleValidationError(
-                    f"Cooldown must be between 0 and {self.MAX_DURATION_SECONDS}s (24 hours)"
+                    f"Notification active delay must be between 0 and {self.MAX_DURATION_SECONDS}s (24 hours)"
                 )
 
-        # Grace validation
+        # Notification cooldown validation
+        if notification_cooldown is not None:
+            if not isinstance(notification_cooldown, int):
+                raise AlertRuleValidationError("Notification cooldown must be an integer")
+
+            if notification_cooldown < 0 or notification_cooldown > self.MAX_DURATION_SECONDS:
+                raise AlertRuleValidationError(
+                    f"Notification cooldown must be between 0 and {self.MAX_DURATION_SECONDS}s (24 hours)"
+                )
+
+        # Grace validation (legacy)
         if grace is not None:
             if not isinstance(grace, int):
                 raise AlertRuleValidationError("Grace period must be an integer")

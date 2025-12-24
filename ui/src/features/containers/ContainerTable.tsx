@@ -791,9 +791,8 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   })
 
   // Container action hook (reusable across components)
-  const { executeAction, isPending: isActionPending } = useContainerActions({
-    invalidateQueries: ['containers'],
-  })
+  // Uses per-container pending tracking + optimistic updates
+  const { executeAction, isContainerPending } = useContainerActions()
 
   // Batch action mutation
   const batchMutation = useMutation({
@@ -1313,7 +1312,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
                     host_id: container.host_id,
                   })
                 }}
-                disabled={!canStart || isActionPending}
+                disabled={!canStart || isContainerPending(container.host_id || '', container.id)}
                 title="Start container"
               >
                 <PlayCircle className={`h-4 w-4 ${canStart ? 'text-success' : 'text-muted-foreground'}`} />
@@ -1337,7 +1336,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
                     host_id: container.host_id,
                   })
                 }}
-                disabled={!canStop || isActionPending}
+                disabled={!canStop || isContainerPending(container.host_id || '', container.id)}
                 title="Stop container"
               >
                 <Square className={`h-4 w-4 ${canStop ? 'text-danger' : 'text-muted-foreground'}`} />
@@ -1361,7 +1360,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
                     host_id: container.host_id,
                   })
                 }}
-                disabled={!canRestart || isActionPending}
+                disabled={!canRestart || isContainerPending(container.host_id || '', container.id)}
                 title="Restart container"
               >
                 <RotateCw className={`h-4 w-4 ${canRestart ? 'text-info' : 'text-muted-foreground'}`} />
@@ -1421,7 +1420,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         },
       },
     ],
-    [executeAction, isActionPending, selectedContainerIds, data, toggleContainerSelection, toggleSelectAll, alertCounts, allAutoUpdateConfigs, allHealthCheckConfigs]
+    [executeAction, isContainerPending, selectedContainerIds, data, toggleContainerSelection, toggleSelectAll, alertCounts, allAutoUpdateConfigs, allHealthCheckConfigs]
   )
 
   const table = useReactTable({
@@ -1604,23 +1603,23 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   return (
     <div className={`space-y-4 ${selectedContainerIds.size > 0 ? 'pb-[280px]' : ''}`}>
       {/* Search and Filters */}
-      <div className="flex items-center justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4">
         {/* Left: Search */}
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-2 sm:gap-4 flex-1">
           <Input
             placeholder="Search containers..."
             value={globalFilter ?? ''}
             onChange={(e) => setGlobalFilter(e.target.value)}
-            className="max-w-md"
+            className="flex-1 sm:max-w-md"
             data-testid="containers-search-input"
           />
-          <div className="text-sm text-muted-foreground whitespace-nowrap">
+          <div className="text-sm text-muted-foreground whitespace-nowrap hidden sm:block">
             {table.getFilteredRowModel().rows.length} container(s)
           </div>
         </div>
 
         {/* Right: Filter dropdowns */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           {/* Clear Filters Button */}
           {hasActiveFilters && (
             <Button

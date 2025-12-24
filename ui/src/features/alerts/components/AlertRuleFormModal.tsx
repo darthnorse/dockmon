@@ -34,11 +34,15 @@ interface AlertRuleFormData {
   metric?: string | undefined
   threshold?: number | undefined
   operator?: string | undefined
-  duration_seconds: number
   occurrences: number
   clear_threshold?: number | null | undefined
-  clear_duration_seconds?: number | null | undefined
-  cooldown_seconds: number
+  // Alert timing
+  alert_active_delay_seconds: number
+  alert_clear_delay_seconds: number
+  // Notification timing
+  notification_active_delay_seconds: number
+  notification_cooldown_seconds: number
+  // Selectors
   host_selector_all: boolean
   host_selector_ids: string[]
   container_selector_all: boolean
@@ -47,6 +51,7 @@ interface AlertRuleFormData {
   notify_channels: string[]
   custom_template: string | null
   auto_resolve_updates: boolean
+  auto_resolve_on_clear: boolean
   suppress_during_updates: boolean
 }
 
@@ -114,7 +119,7 @@ const RULE_KINDS = [
   {
     value: 'container_stopped',
     label: 'Container Stopped/Died',
-    description: 'Alert when container stops or crashes (any exit code). Use clear duration to avoid false positives during restarts.',
+    description: 'Alert when container stops or crashes (any exit code). Use grace period to avoid false positives during restarts.',
     category: 'Container State',
     requiresMetric: false,
     scopes: ['container']
@@ -257,13 +262,18 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       metric: rule?.metric || 'cpu_percent',
       threshold: rule?.threshold || 90,
       operator: rule?.operator || '>=',
-      // Event-driven rules: fire immediately (0s, 1 occurrence), auto-resolve after 30s, cooldown 15s
-      // Metric-driven rules: require sustained breach (300s, 3 occurrences), auto-resolve after 60s, cooldown 5 min
-      duration_seconds: rule?.duration_seconds ?? (isMetricDriven ? 300 : 0),
+      // Alert timing
+      // Metric-driven: require sustained breach (300s alert delay, 60s clear delay)
+      // Event-driven: fire immediately (0s alert delay), immediate clear (0s)
+      alert_active_delay_seconds: rule?.alert_active_delay_seconds ?? (isMetricDriven ? 300 : 0),
+      alert_clear_delay_seconds: rule?.alert_clear_delay_seconds ?? (isMetricDriven ? 60 : 0),
       occurrences: rule?.occurrences ?? (isMetricDriven ? 3 : 1),
       clear_threshold: rule?.clear_threshold,
-      clear_duration_seconds: rule?.clear_duration_seconds ?? (isMetricDriven ? 60 : 30),
-      cooldown_seconds: rule?.cooldown_seconds ?? (isMetricDriven ? 300 : 15),
+      // Notification timing
+      // Metric-driven: notify immediately (0s delay), 5 min cooldown
+      // Event-driven: 30s grace before notifying, 15s cooldown
+      notification_active_delay_seconds: rule?.notification_active_delay_seconds ?? (isMetricDriven ? 0 : 30),
+      notification_cooldown_seconds: rule?.notification_cooldown_seconds ?? (isMetricDriven ? 300 : 15),
       // Selectors
       host_selector_all: parseSelector(rule?.host_selector_json).all,
       host_selector_ids: parseSelector(rule?.host_selector_json).selected,
@@ -274,6 +284,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       custom_template: rule?.custom_template !== undefined ? rule.custom_template : null,
       // Auto-resolve defaults to false - user can enable for any alert type
       auto_resolve_updates: rule?.auto_resolve ?? false,
+      auto_resolve_on_clear: rule?.auto_resolve_on_clear ?? false,
       // Default suppress_during_updates to true for container-scoped rules
       suppress_during_updates: rule?.suppress_during_updates ?? (scope === 'container'),
     }
@@ -291,8 +302,11 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
   const containerDropdownRef = useRef<HTMLDivElement>(null)
 
   // Tag selector state (always available, not scope-dependent)
+  // Tags now include source metadata to distinguish user-created vs derived (from Docker labels)
+  // See: https://github.com/darthnorse/dockmon/issues/88
+  type TagWithSource = { name: string; source: 'user' | 'derived'; color?: string | null }
   const [tagSearchInput, setTagSearchInput] = useState('')
-  const [availableTags, setAvailableTags] = useState<string[]>([])
+  const [availableTags, setAvailableTags] = useState<TagWithSource[]>([])
   const [selectedTags, setSelectedTags] = useState<string[]>(() => {
     // Initialize with existing tags if editing - check selectors not labels_json
     if (rule) {
@@ -315,20 +329,26 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
   })
 
   // Fetch available tags based on scope (host or container)
+  // For containers, include derived tags from Docker labels (compose:*, swarm:*, dockmon.tag)
   useEffect(() => {
     const fetchTags = async () => {
       try {
         // Use different endpoints based on scope to get only relevant tags
+        // For containers, include derived tags from Docker labels
         const endpoint = formData.scope === 'host'
           ? `/api/hosts/tags/suggest?q=${tagSearchInput}&limit=50`
-          : `/api/tags/suggest?q=${tagSearchInput}&limit=50`
+          : `/api/tags/suggest?q=${tagSearchInput}&limit=50&include_derived=true`
         const res = await fetch(endpoint)
         const data = await res.json()
-        // Tags API returns objects like {id, name, color, kind}, extract just the names
-        const tagNames = Array.isArray(data.tags)
-          ? data.tags.map((t: string | { name: string }) => typeof t === 'string' ? t : t.name)
+        // Tags API returns objects with {name, source, color} when include_derived=true
+        const tags: TagWithSource[] = Array.isArray(data.tags)
+          ? data.tags.map((t: string | TagWithSource) =>
+              typeof t === 'string'
+                ? { name: t, source: 'user' as const, color: null }
+                : { name: t.name, source: t.source || 'user', color: t.color }
+            )
           : []
-        setAvailableTags(tagNames)
+        setAvailableTags(tags)
       } catch (err) {
         console.error('Failed to fetch tags:', err)
       }
@@ -403,7 +423,9 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
         kind: formData.kind,
         enabled: formData.enabled,
         severity: formData.severity,
-        cooldown_seconds: formData.cooldown_seconds,
+        // Notification timing
+        notification_active_delay_seconds: formData.notification_active_delay_seconds,
+        notification_cooldown_seconds: formData.notification_cooldown_seconds,
       }
 
       // Add metric fields only if required
@@ -420,19 +442,15 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
         if (formData.clear_threshold !== undefined && formData.clear_threshold !== null) {
           requestData.clear_threshold = formData.clear_threshold
         }
-        if (formData.clear_duration_seconds !== undefined && formData.clear_duration_seconds !== null) {
-          requestData.clear_duration_seconds = formData.clear_duration_seconds
-        }
+        // Alert timing (for metric rules)
+        requestData.alert_active_delay_seconds = formData.alert_active_delay_seconds
+        requestData.alert_clear_delay_seconds = formData.alert_clear_delay_seconds
+        requestData.occurrences = formData.occurrences
       } else {
-        // For non-metric (event-driven) rules, add clear_duration_seconds
-        if (formData.clear_duration_seconds !== undefined && formData.clear_duration_seconds !== null) {
-          requestData.clear_duration_seconds = formData.clear_duration_seconds
-        }
+        // For non-metric (event-driven) rules, add alert timing
+        requestData.alert_active_delay_seconds = formData.alert_active_delay_seconds
+        requestData.alert_clear_delay_seconds = formData.alert_clear_delay_seconds
       }
-
-      // Duration and occurrences apply to ALL rule types (for rate-limiting)
-      requestData.duration_seconds = formData.duration_seconds
-      requestData.occurrences = formData.occurrences
 
       // Add selectors - Tag-based OR individual selection (mutually exclusive)
       if (formData.scope === 'host') {
@@ -488,8 +506,9 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
         requestData.custom_template = formData.custom_template
       }
 
-      // Add auto_resolve flag for all alert types
+      // Add auto_resolve flags for all alert types
       requestData.auto_resolve = formData.auto_resolve_updates || false
+      requestData.auto_resolve_on_clear = formData.auto_resolve_on_clear || false
 
       // Add suppress_during_updates flag for container-scoped rules
       if (formData.scope === 'container') {
@@ -531,16 +550,18 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
               updated.metric = firstValidKind.metric
               updated.operator = firstValidKind.defaultOperator
               updated.threshold = firstValidKind.defaultThreshold
-              updated.duration_seconds = 300
+              updated.alert_active_delay_seconds = 300
+              updated.alert_clear_delay_seconds = 60
               updated.occurrences = 3
-              updated.cooldown_seconds = 300
-              updated.clear_duration_seconds = undefined
+              updated.notification_active_delay_seconds = 0
+              updated.notification_cooldown_seconds = 300
             } else {
               // Event-driven rule defaults
-              updated.duration_seconds = 0
+              updated.alert_active_delay_seconds = 0
+              updated.alert_clear_delay_seconds = 0
               updated.occurrences = 1
-              updated.cooldown_seconds = 15
-              updated.clear_duration_seconds = 30
+              updated.notification_active_delay_seconds = 30
+              updated.notification_cooldown_seconds = 15
             }
           }
         }
@@ -554,16 +575,18 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
           updated.metric = kind.metric
           updated.operator = kind.defaultOperator
           updated.threshold = kind.defaultThreshold
-          updated.duration_seconds = 300
+          updated.alert_active_delay_seconds = 300
+          updated.alert_clear_delay_seconds = 60
           updated.occurrences = 3
-          updated.cooldown_seconds = 300
-          updated.clear_duration_seconds = undefined
+          updated.notification_active_delay_seconds = 0
+          updated.notification_cooldown_seconds = 300
         } else {
           // Event-driven rule defaults
-          updated.duration_seconds = 0
+          updated.alert_active_delay_seconds = 0
+          updated.alert_clear_delay_seconds = 0
           updated.occurrences = 1
-          updated.cooldown_seconds = 15
-          updated.clear_duration_seconds = 30
+          updated.notification_active_delay_seconds = 30
+          updated.notification_cooldown_seconds = 15
         }
       }
 
@@ -580,10 +603,13 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       const metricName = formData.metric?.replace('_', ' ')
       parts.push(`Trigger: ${metricName || 'metric'}`)
       parts.push(`Threshold: ${formData.operator} ${formData.threshold}%`)
-      parts.push(`Duration: ${formData.duration_seconds}s (${formData.occurrences} breaches)`)
+      parts.push(`Alert Active Delay: ${formData.alert_active_delay_seconds}s (${formData.occurrences} breaches)`)
     } else {
       const kindLabel = selectedKind?.label || formData.kind
       parts.push(`Trigger: ${kindLabel}`)
+      if (formData.alert_active_delay_seconds > 0) {
+        parts.push(`Alert Active Delay: ${formData.alert_active_delay_seconds}s`)
+      }
     }
 
     // Scope
@@ -622,26 +648,25 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
 
     // Timing Configuration
     if (!requiresMetric) {
-      // For event-driven rules, show duration/occurrences if non-default
-      if (formData.duration_seconds > 0 || formData.occurrences > 1) {
-        parts.push(`Duration: ${formData.duration_seconds}s (${formData.occurrences} occurrence${formData.occurrences > 1 ? 's' : ''})`)
+      // For event-driven rules, show notification active delay
+      if (formData.notification_active_delay_seconds > 0) {
+        parts.push(`Notification Delay: ${formData.notification_active_delay_seconds}s`)
       }
-      // Show clear duration for event-driven rules
-      if (formData.clear_duration_seconds !== undefined && formData.clear_duration_seconds !== null && formData.clear_duration_seconds > 0) {
-        parts.push(`Clear Duration: ${formData.clear_duration_seconds}s`)
+      if (formData.alert_clear_delay_seconds > 0) {
+        parts.push(`Alert Clear Delay: ${formData.alert_clear_delay_seconds}s`)
       }
     } else {
-      // For metric-driven rules, show clear threshold/duration if set
+      // For metric-driven rules, show clear threshold/delay if set
       if (formData.clear_threshold !== undefined && formData.clear_threshold !== null) {
         parts.push(`Clear Threshold: ${formData.clear_threshold}%`)
       }
-      if (formData.clear_duration_seconds !== undefined && formData.clear_duration_seconds !== null && formData.clear_duration_seconds > 0) {
-        parts.push(`Clear Duration: ${formData.clear_duration_seconds}s`)
+      if (formData.alert_clear_delay_seconds > 0) {
+        parts.push(`Alert Clear Delay: ${formData.alert_clear_delay_seconds}s`)
       }
     }
 
     // Cooldown
-    parts.push(`Cooldown: ${formData.cooldown_seconds}s`)
+    parts.push(`Notification Cooldown: ${formData.notification_cooldown_seconds}s`)
 
     // Suppress during updates (container scope only)
     if (formData.scope === 'container') {
@@ -819,15 +844,16 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                     <div className="text-sm text-gray-400 text-center py-2">No tags found</div>
                   ) : (
                     availableTags.map((tag) => {
-                      const isSelected = selectedTags.includes(tag)
+                      const isSelected = selectedTags.includes(tag.name)
+                      const isDerived = tag.source === 'derived'
                       return (
                         <button
-                          key={tag}
+                          key={tag.name}
                           type="button"
                           onClick={() => {
                             const newTags = isSelected
-                              ? selectedTags.filter((t) => t !== tag)
-                              : [...selectedTags, tag]
+                              ? selectedTags.filter((t) => t !== tag.name)
+                              : [...selectedTags, tag.name]
                             setSelectedTags(newTags)
                           }}
                           className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 hover:bg-gray-800 rounded transition-colors"
@@ -841,7 +867,10 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                           >
                             {isSelected && <Check className="h-3 w-3 text-white" />}
                           </div>
-                          <span className="text-white">{tag}</span>
+                          <span className={isDerived ? 'text-gray-300 italic' : 'text-white'}>{tag.name}</span>
+                          {isDerived && (
+                            <span className="text-xs text-gray-500 ml-auto">(from label)</span>
+                          )}
                         </button>
                       )
                     })
@@ -931,22 +960,6 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                     placeholder="Optional"
                   />
                   <p className="mt-1 text-xs text-gray-400">Metric value that triggers auto-resolve (e.g., CPU drops below 80%). Defaults to alert threshold if not specified.</p>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">Clear Duration (seconds)</label>
-                  <input
-                    type="number"
-                    value={formData.clear_duration_seconds || ''}
-                    onChange={(e) => handleChange('clear_duration_seconds', e.target.value ? parseInt(e.target.value) : undefined)}
-                    min={0}
-                    className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                    placeholder="Optional"
-                  />
-                  <p className="mt-1 text-xs text-gray-400">
-                    How long the metric must stay below the clear threshold before auto-resolving the alert.
-                    Set to 0 for immediate clearing. Defaults to 60s if not specified.
-                  </p>
                 </div>
               </div>
             </div>
@@ -1183,7 +1196,12 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                       <div className="px-3 py-2 text-sm text-gray-400">No containers found</div>
                     ) : (
                       filteredContainers.map((container: Container) => {
-                        const isSelected = formData.container_selector_all || formData.container_selector_included.includes(container.name)
+                        // Issue #99: Use composite key (host_id:name) to differentiate same-named containers on different hosts
+                        const containerKey = `${container.host_id}:${container.name}`
+                        // Check both composite key (new format) and name-only (legacy format) for backward compatibility
+                        const isSelected = formData.container_selector_all ||
+                          formData.container_selector_included.includes(containerKey) ||
+                          formData.container_selector_included.includes(container.name)
                         return (
                           <button
                             key={container.id}
@@ -1191,15 +1209,18 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                             onClick={() => {
                               if (formData.container_selector_all) {
                                 // When "all" is selected, clicking switches to include mode with all except this one
-                                const allExcept = filteredContainers.filter(c => c.name !== container.name).map(c => c.name)
+                                const allExcept = filteredContainers
+                                  .filter(c => `${c.host_id}:${c.name}` !== containerKey)
+                                  .map(c => `${c.host_id}:${c.name}`)
                                 handleChange('container_selector_included', allExcept)
                                 handleChange('container_selector_all', false)
                               } else {
                                 // Manual include mode - toggle this container
-                                const newNames = isSelected
-                                  ? formData.container_selector_included.filter((n: string) => n !== container.name)
-                                  : [...formData.container_selector_included, container.name]
-                                handleChange('container_selector_included', newNames)
+                                const newKeys = isSelected
+                                  // Filter out both composite key (new) and name (legacy) to handle both formats
+                                  ? formData.container_selector_included.filter((k: string) => k !== containerKey && k !== container.name)
+                                  : [...formData.container_selector_included, containerKey]
+                                handleChange('container_selector_included', newKeys)
                               }
                             }}
                             className="w-full px-3 py-2 text-left text-sm flex items-center gap-2 hover:bg-gray-700 transition-colors"
@@ -1246,78 +1267,165 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
             </div>
           )}
 
-          {/* Timing Configuration - Hide for update rules */}
+          {/* Alert Timing Configuration - Hide for update rules */}
           {!['update_available', 'update_completed', 'update_failed'].includes(formData.kind) && (
           <div className="space-y-4 rounded-lg border border-gray-700 bg-gray-800/30 p-4">
-            <h3 className="text-sm font-semibold text-white">Timing Configuration</h3>
-
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Duration (seconds) *</label>
-                <input
-                  type="number"
-                  value={formData.duration_seconds}
-                  onChange={(e) => handleChange('duration_seconds', parseInt(e.target.value))}
-                  required
-                  min={1}
-                  className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
-                <p className="mt-1 text-xs text-gray-500">How long condition must be true</p>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Occurrences *</label>
-                <input
-                  type="number"
-                  value={formData.occurrences}
-                  onChange={(e) => handleChange('occurrences', parseInt(e.target.value))}
-                  required
-                  min={1}
-                  max={100}
-                  className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
-                <p className="mt-1 text-xs text-gray-500">Breaches needed to trigger alert</p>
-              </div>
+            <div>
+              <h3 className="text-sm font-semibold text-white">Alert Timing</h3>
+              <p className="text-xs text-gray-400 mt-1">Controls when alerts become active and when they clear</p>
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
-              {!requiresMetric && (
+            {/* Metric-driven alert timing */}
+            {requiresMetric && (
+              <>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-1">Alert Active Delay (seconds) *</label>
+                    <input
+                      type="number"
+                      value={formData.alert_active_delay_seconds}
+                      onChange={(e) => handleChange('alert_active_delay_seconds', parseInt(e.target.value) || 0)}
+                      required
+                      min={0}
+                      className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                    <p className="mt-1 text-xs text-gray-500">How long condition must be true before alert triggers</p>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-1">Alert Clear Delay (seconds)</label>
+                    <input
+                      type="number"
+                      value={formData.alert_clear_delay_seconds}
+                      onChange={(e) => handleChange('alert_clear_delay_seconds', parseInt(e.target.value) || 0)}
+                      min={0}
+                      placeholder="60"
+                      className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                    <p className="mt-1 text-xs text-gray-500">How long condition must be false before alert clears</p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-1">Occurrences *</label>
+                    <input
+                      type="number"
+                      value={formData.occurrences}
+                      onChange={(e) => handleChange('occurrences', parseInt(e.target.value))}
+                      required
+                      min={1}
+                      max={100}
+                      className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                    <p className="mt-1 text-xs text-gray-500">Breaches needed to trigger alert</p>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* Event-driven alert timing */}
+            {!requiresMetric && (
+              <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">Clear Duration (seconds)</label>
+                  <label className="block text-sm font-medium text-gray-300 mb-1">Alert Active Delay (seconds)</label>
                   <input
                     type="number"
-                    value={formData.clear_duration_seconds || ''}
-                    onChange={(e) => handleChange('clear_duration_seconds', e.target.value ? parseInt(e.target.value) : undefined)}
+                    value={formData.alert_active_delay_seconds}
+                    onChange={(e) => handleChange('alert_active_delay_seconds', parseInt(e.target.value) || 0)}
                     min={0}
-                    placeholder="30"
+                    placeholder="0"
                     className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                   />
                   <p className="mt-1 text-xs text-gray-400">
-                    Time window for transient issues. If the condition clears within this period, the alert will auto-resolve
-                    without sending notifications. Useful for brief outages like container restarts. Default: 30 seconds.
+                    Condition must be true for this long before alert triggers. Set to 0 for immediate alerts.
                   </p>
                 </div>
-              )}
 
-              <div className={!requiresMetric ? '' : 'col-span-2'}>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Cooldown (seconds) *</label>
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-1">Alert Clear Delay (seconds)</label>
+                  <input
+                    type="number"
+                    value={formData.alert_clear_delay_seconds}
+                    onChange={(e) => handleChange('alert_clear_delay_seconds', parseInt(e.target.value) || 0)}
+                    min={0}
+                    placeholder="0"
+                    className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                  <p className="mt-1 text-xs text-gray-400">
+                    Condition must be false for this long before alert clears. Set to 0 for immediate clearing.
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+          )}
+
+          {/* Notification Timing Configuration */}
+          {!['update_available', 'update_completed', 'update_failed'].includes(formData.kind) && (
+          <div className="space-y-4 rounded-lg border border-gray-700 bg-gray-800/30 p-4">
+            <div>
+              <h3 className="text-sm font-semibold text-white">Notification Timing</h3>
+              <p className="text-xs text-gray-400 mt-1">Controls when notifications are sent and how often they repeat</p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Notification Active Delay (seconds)</label>
                 <input
                   type="number"
-                  value={formData.cooldown_seconds}
-                  onChange={(e) => handleChange('cooldown_seconds', parseInt(e.target.value))}
+                  value={formData.notification_active_delay_seconds}
+                  onChange={(e) => handleChange('notification_active_delay_seconds', parseInt(e.target.value) || 0)}
+                  min={0}
+                  placeholder={requiresMetric ? '0' : '30'}
+                  className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+                <p className="mt-1 text-xs text-gray-400">
+                  Alert must be active for this long before sending notification. Filters flapping alerts.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Notification Cooldown (seconds) *</label>
+                <input
+                  type="number"
+                  value={formData.notification_cooldown_seconds}
+                  onChange={(e) => handleChange('notification_cooldown_seconds', parseInt(e.target.value) || 0)}
                   required
                   min={0}
                   className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
-                <p className="mt-1 text-xs text-gray-500">Min time between alert notifications</p>
+                <p className="mt-1 text-xs text-gray-500">Minimum time between repeated notifications for the same alert</p>
               </div>
             </div>
           </div>
           )}
 
-          {/* Auto-Resolve Option - Available for all alert types */}
+          {/* Auto-Resolve Options - Available for all alert types */}
           <div className="space-y-4 rounded-lg border border-gray-700 bg-gray-800/30 p-4">
             <h3 className="text-sm font-semibold text-white">Auto-Resolve Behavior</h3>
+
+            {/* Auto-resolve on clear (condition-based) */}
+            <div className="flex items-start gap-3">
+              <input
+                type="checkbox"
+                id="auto_resolve_on_clear"
+                checked={formData.auto_resolve_on_clear || false}
+                onChange={(e) => handleChange('auto_resolve_on_clear', e.target.checked)}
+                className="mt-1 h-4 w-4 rounded border-gray-600 bg-gray-800 text-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-gray-900"
+              />
+              <div className="flex-1">
+                <label htmlFor="auto_resolve_on_clear" className="block text-sm font-medium text-gray-300 cursor-pointer">
+                  Auto-resolve when condition clears
+                </label>
+                <p className="mt-1 text-xs text-gray-400">
+                  Automatically resolve alerts when the condition is no longer true (e.g., container restarts, becomes healthy).
+                  Recommended for most alert types.
+                </p>
+              </div>
+            </div>
+
+            {/* Auto-resolve after notification (notification-only mode) */}
             <div className="flex items-start gap-3">
               <input
                 type="checkbox"
@@ -1328,10 +1436,10 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
               />
               <div className="flex-1">
                 <label htmlFor="auto_resolve_updates" className="block text-sm font-medium text-gray-300 cursor-pointer">
-                  Automatically resolve alert after notification
+                  Resolve immediately after notification
                 </label>
                 <p className="mt-1 text-xs text-gray-400">
-                  Alert will be auto-resolved immediately after sending notification. Use this if you only want to be notified without keeping alerts in the DockMon alert list.
+                  Alert will be auto-resolved immediately after sending notification. Use this for notification-only mode if you don't want alerts to accumulate in the DockMon alert list.
                 </p>
               </div>
             </div>

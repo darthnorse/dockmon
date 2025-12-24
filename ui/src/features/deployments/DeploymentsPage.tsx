@@ -10,7 +10,7 @@
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { Plus, Trash2, Play, Edit, AlertCircle, CheckCircle, XCircle, Loader2, Layers, Bookmark, Search } from 'lucide-react'
+import { Plus, Trash2, Play, Edit, AlertCircle, CheckCircle, XCircle, Loader2, Layers, Bookmark, Search, Download, RefreshCw } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useQueryClient, useQuery } from '@tanstack/react-query'
 import { apiClient } from '@/lib/api/client'
@@ -42,9 +42,10 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
-import { useDeployments, useExecuteDeployment, useDeleteDeployment } from './hooks/useDeployments'
+import { useDeployments, useExecuteDeployment, useDeleteDeployment, useRedeployDeployment } from './hooks/useDeployments'
 import { DeploymentForm } from './components/DeploymentForm'
 import { SaveAsTemplateDialog } from './components/SaveAsTemplateDialog'
+import { ImportStackModal } from './components/ImportStackModal'
 import { LayerProgressDisplay } from '@/components/shared/LayerProgressDisplay'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
 import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
@@ -62,8 +63,10 @@ export function DeploymentsPage() {
   const [filters, setFilters] = useState<DeploymentFilters>({})
   const [searchQuery, setSearchQuery] = useState('')
   const [showNewDeploymentForm, setShowNewDeploymentForm] = useState(false)
+  const [showImportModal, setShowImportModal] = useState(false)
   const [deploymentToEdit, setDeploymentToEdit] = useState<Deployment | null>(null)
   const [deploymentToDelete, setDeploymentToDelete] = useState<Deployment | null>(null)
+  const [deploymentToRedeploy, setDeploymentToRedeploy] = useState<Deployment | null>(null)
   const [deploymentToSave, setDeploymentToSave] = useState<Deployment | null>(null)
   const [hostModalOpen, setHostModalOpen] = useState(false)
   const [selectedHostId, setSelectedHostId] = useState<string | null>(null)
@@ -75,6 +78,7 @@ export function DeploymentsPage() {
     queryFn: () => apiClient.get('/containers'),
   })
   const executeDeployment = useExecuteDeployment()
+  const redeployDeployment = useRedeployDeployment()
   const deleteDeployment = useDeleteDeployment()
 
   // Client-side search filtering
@@ -101,6 +105,7 @@ export function DeploymentsPage() {
     creating: 'Creating',
     starting: 'Starting',
     running: 'Deployed',
+    partial: 'Partial',
     failed: 'Failed',
     rolled_back: 'Rolled Back',
   }
@@ -143,7 +148,7 @@ export function DeploymentsPage() {
       // When deployment reaches a final state, refetch to get container_ids and other final data
       // Use prefix matching (['deployments']) to ensure all deployment queries are invalidated
       // regardless of filter state changes
-      if (status === 'running' || status === 'failed' || status === 'rolled_back') {
+      if (status === 'running' || status === 'partial' || status === 'failed' || status === 'rolled_back') {
         queryClient.invalidateQueries({ queryKey: ['deployments'] })
       }
     }
@@ -155,15 +160,15 @@ export function DeploymentsPage() {
   }, [addMessageHandler, handleDeploymentUpdate])
 
   const handleExecute = (deployment: Deployment) => {
-    if (deployment.status !== 'planning' && deployment.status !== 'failed' && deployment.status !== 'rolled_back') {
+    if (deployment.status !== 'planning' && deployment.status !== 'failed' && deployment.status !== 'rolled_back' && deployment.status !== 'partial') {
       return
     }
     executeDeployment.mutate(deployment.id)
   }
 
   const handleEdit = (deployment: Deployment) => {
-    // Allow editing in planning, failed, and rolled_back states
-    if (deployment.status !== 'planning' && deployment.status !== 'failed' && deployment.status !== 'rolled_back') {
+    // Allow editing in planning, failed, rolled_back, and partial states
+    if (deployment.status !== 'planning' && deployment.status !== 'failed' && deployment.status !== 'rolled_back' && deployment.status !== 'partial') {
       return
     }
     setDeploymentToEdit(deployment)
@@ -185,6 +190,21 @@ export function DeploymentsPage() {
     }
   }
 
+  const handleRedeploy = (deployment: Deployment) => {
+    // Only allow redeploy for running or partial deployments
+    if (deployment.status !== 'running' && deployment.status !== 'partial') {
+      return
+    }
+    setDeploymentToRedeploy(deployment)
+  }
+
+  const confirmRedeploy = () => {
+    if (deploymentToRedeploy) {
+      redeployDeployment.mutate(deploymentToRedeploy.id)
+      setDeploymentToRedeploy(null)
+    }
+  }
+
   const handleSaveAsTemplate = (deployment: Deployment) => {
     setDeploymentToSave(deployment)
   }
@@ -201,17 +221,17 @@ export function DeploymentsPage() {
   }
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-3 sm:p-4 md:p-6 pt-16 md:pt-6 space-y-4 sm:space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold">Deployments</h1>
+          <h1 className="text-xl sm:text-2xl font-bold">Deployments</h1>
           <p className="text-sm text-muted-foreground mt-1">
             Deploy and manage containers across your Docker hosts
           </p>
         </div>
 
-        <div className="flex gap-3">
+        <div className="flex gap-2 sm:gap-3 flex-wrap">
           <Button
             variant="outline"
             onClick={() => navigate('/templates')}
@@ -220,6 +240,16 @@ export function DeploymentsPage() {
           >
             <Layers className="h-4 w-4" />
             Templates
+          </Button>
+
+          <Button
+            variant="outline"
+            onClick={() => setShowImportModal(true)}
+            className="gap-2"
+            data-testid="import-stack-button"
+          >
+            <Download className="h-4 w-4" />
+            Import Stack
           </Button>
 
           <Button
@@ -272,6 +302,7 @@ export function DeploymentsPage() {
             <SelectItem value="creating">Creating</SelectItem>
             <SelectItem value="starting">Starting</SelectItem>
             <SelectItem value="running">Deployed</SelectItem>
+            <SelectItem value="partial">Partial</SelectItem>
             <SelectItem value="failed">Failed</SelectItem>
             <SelectItem value="rolled_back">Rolled Back</SelectItem>
           </SelectContent>
@@ -405,6 +436,16 @@ export function DeploymentsPage() {
                         100%
                       </span>
                     )}
+                    {deployment.status === 'partial' && deployment.error_message && (
+                      <div className="text-sm text-amber-600 font-medium max-w-sm" data-testid="deployment-partial">
+                        {deployment.error_message}
+                      </div>
+                    )}
+                    {deployment.status === 'partial' && !deployment.error_message && (
+                      <span className="text-xs text-amber-600" data-testid="deployment-partial">
+                        Some services failed
+                      </span>
+                    )}
                     {deployment.status === 'failed' && deployment.error_message && (
                       <div className="text-sm text-destructive font-medium max-w-sm" data-testid="deployment-error">
                         {deployment.error_message}
@@ -452,7 +493,7 @@ export function DeploymentsPage() {
                         </Button>
                       </>
                     )}
-                    {(deployment.status === 'failed' || deployment.status === 'rolled_back') && (
+                    {(deployment.status === 'failed' || deployment.status === 'rolled_back' || deployment.status === 'partial') && (
                       <>
                         <Button
                           variant="ghost"
@@ -471,25 +512,38 @@ export function DeploymentsPage() {
                           data-testid={`execute-deployment-${deployment.name}`}
                         >
                           <Play className="h-4 w-4 mr-1" />
-                          Execute
+                          Retry
                         </Button>
                       </>
                     )}
 
-                    {deployment.status === 'running' && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleSaveAsTemplate(deployment)}
-                        data-testid="save-as-template"
-                        title="Save as New Template"
-                      >
-                        <Bookmark className="h-4 w-4 mr-1" />
-                        Save as New Template
-                      </Button>
+                    {(deployment.status === 'running' || deployment.status === 'partial') && (
+                      <>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleRedeploy(deployment)}
+                          disabled={redeployDeployment.isPending}
+                          data-testid={`redeploy-deployment-${deployment.name}`}
+                          title="Redeploy - pull latest images and recreate containers"
+                        >
+                          <RefreshCw className="h-4 w-4 mr-1" />
+                          Redeploy
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleSaveAsTemplate(deployment)}
+                          data-testid="save-as-template"
+                          title="Save as New Template"
+                        >
+                          <Bookmark className="h-4 w-4 mr-1" />
+                          Save as New Template
+                        </Button>
+                      </>
                     )}
 
-                    {(deployment.status === 'running' || deployment.status === 'failed' || deployment.status === 'rolled_back' || deployment.status === 'planning') && (
+                    {(deployment.status === 'running' || deployment.status === 'partial' || deployment.status === 'failed' || deployment.status === 'rolled_back' || deployment.status === 'planning') && (
                       <Button
                         variant="ghost"
                         size="sm"
@@ -548,11 +602,42 @@ export function DeploymentsPage() {
         </AlertDialogContent>
       </AlertDialog>
 
+      {/* Redeploy Confirmation Dialog */}
+      <AlertDialog open={!!deploymentToRedeploy} onOpenChange={(open) => !open && setDeploymentToRedeploy(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Redeploy Stack</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to redeploy "<strong>{deploymentToRedeploy?.name}</strong>"?
+              <br /><br />
+              This will:
+              <ul className="list-disc list-inside mt-2 space-y-1">
+                <li>Pull the latest images for all services</li>
+                <li>Recreate all containers with the new images</li>
+                <li>Brief service interruption during container recreation</li>
+              </ul>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmRedeploy}>
+              Redeploy
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {/* Save as Template Dialog */}
       <SaveAsTemplateDialog
         deployment={deploymentToSave}
         isOpen={!!deploymentToSave}
         onClose={() => setDeploymentToSave(null)}
+      />
+
+      {/* Import Stack Modal */}
+      <ImportStackModal
+        isOpen={showImportModal}
+        onClose={() => setShowImportModal(false)}
       />
 
       {/* Host Details Modal */}
@@ -603,6 +688,11 @@ function StatusBadge({ status }: { status: DeploymentStatus }) {
       variant: 'default',
       icon: <CheckCircle className="h-3 w-3" />,
       label: 'Deployed',
+    },
+    partial: {
+      variant: 'outline',
+      icon: <AlertCircle className="h-3 w-3 text-amber-500" />,
+      label: 'Partial',
     },
     failed: {
       variant: 'destructive',

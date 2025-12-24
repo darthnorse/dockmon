@@ -10,7 +10,7 @@ Tests verify:
 
 import pytest
 from datetime import datetime, timedelta, timezone
-from unittest.mock import Mock, AsyncMock
+from unittest.mock import Mock
 
 from docker_monitor.periodic_jobs import PeriodicJobsManager
 
@@ -58,8 +58,8 @@ def create_mock_backup_container(name: str, created_hours_ago: int = 48):
         'Created': created_dt.isoformat().replace('+00:00', 'Z')
     }
 
-    # Mock remove method
-    container.remove = AsyncMock()
+    # Mock remove method (sync method wrapped by async_docker_call)
+    container.remove = Mock()
 
     return container
 
@@ -252,7 +252,7 @@ class TestBackupContainerCleanup:
         container_no_timestamp = Mock()
         container_no_timestamp.name = 'nginx-dockmon-backup-1732400000'
         container_no_timestamp.attrs = {}  # No Created field
-        container_no_timestamp.remove = AsyncMock()
+        container_no_timestamp.remove = Mock()  # Sync method wrapped by async_docker_call
 
         mock_client = Mock()
         mock_client.containers.list = Mock(return_value=[container_no_timestamp])

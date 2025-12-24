@@ -21,7 +21,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { Cpu, MemoryStick, Network } from 'lucide-react'
 import type { Container } from '../../types'
 import { useContainerSparklines } from '@/lib/stats/StatsProvider'
-import { MiniChart } from '@/lib/charts/MiniChart'
+import { ResponsiveMiniChart } from '@/lib/charts/ResponsiveMiniChart'
 import { toast } from 'sonner'
 import { apiClient } from '@/lib/api/client'
 import { TagInput } from '@/components/TagInput'
@@ -36,6 +36,9 @@ interface ContainerInfoTabProps {
 }
 
 export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
+  // CRITICAL: Always use 12-char short ID for API calls (backend expects short IDs)
+  const containerShortId = container.id.slice(0, 12)
+
   const sparklines = useContainerSparklines(makeCompositeKey(container))
   const [autoRestart, setAutoRestart] = useState(false)
   const [desiredState, setDesiredState] = useState<'should_run' | 'on_demand' | 'unspecified'>('unspecified')
@@ -55,7 +58,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
     handleSaveTags,
   } = useContainerTagEditor({
     hostId: container.host_id || '',
-    containerId: container.id,
+    containerId: containerShortId,
     currentTags
   })
 
@@ -80,7 +83,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
     setAutoRestart(checked)
 
     try {
-      await apiClient.post(`/hosts/${container.host_id}/containers/${container.id}/auto-restart`, {
+      await apiClient.post(`/hosts/${container.host_id}/containers/${containerShortId}/auto-restart`, {
         enabled: checked,
         container_name: container.name
       })
@@ -96,7 +99,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
     setDesiredState(newState as typeof desiredState)
 
     try {
-      await apiClient.post(`/hosts/${container.host_id}/containers/${container.id}/desired-state`, {
+      await apiClient.post(`/hosts/${container.host_id}/containers/${containerShortId}/desired-state`, {
         desired_state: newState,
         container_name: container.name,
         web_ui_url: webUiUrl || null
@@ -110,7 +113,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
 
   const handleSaveWebUiUrl = async () => {
     try {
-      await apiClient.post(`/hosts/${container.host_id}/containers/${container.id}/desired-state`, {
+      await apiClient.post(`/hosts/${container.host_id}/containers/${containerShortId}/desired-state`, {
         desired_state: desiredState,
         container_name: container.name,
         web_ui_url: webUiUrl || null
@@ -437,11 +440,11 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
                 </span>
               </div>
               {cpuData.length > 0 ? (
-                <div className="h-[100px] w-full overflow-hidden">
-                  <MiniChart data={cpuData} color="cpu" height={100} width={780} />
+                <div className="h-[120px] w-full">
+                  <ResponsiveMiniChart data={cpuData} color="cpu" height={120} showAxes={true} />
                 </div>
               ) : (
-                <div className="h-[100px] flex items-center justify-center text-muted-foreground text-xs">
+                <div className="h-[120px] flex items-center justify-center text-muted-foreground text-xs">
                   No data available
                 </div>
               )}
@@ -460,11 +463,11 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
                 </span>
               </div>
               {memData.length > 0 ? (
-                <div className="h-[100px] w-full overflow-hidden">
-                  <MiniChart data={memData} color="memory" height={100} width={780} />
+                <div className="h-[120px] w-full">
+                  <ResponsiveMiniChart data={memData} color="memory" height={120} showAxes={true} />
                 </div>
               ) : (
-                <div className="h-[100px] flex items-center justify-center text-muted-foreground text-xs">
+                <div className="h-[120px] flex items-center justify-center text-muted-foreground text-xs">
                   No data available
                 </div>
               )}
@@ -482,11 +485,11 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
                 </span>
               </div>
               {netData.length > 0 ? (
-                <div className="h-[100px] w-full overflow-hidden">
-                  <MiniChart data={netData} color="network" height={100} width={780} />
+                <div className="h-[120px] w-full">
+                  <ResponsiveMiniChart data={netData} color="network" height={120} showAxes={true} />
                 </div>
               ) : (
-                <div className="h-[100px] flex items-center justify-center text-muted-foreground text-xs">
+                <div className="h-[120px] flex items-center justify-center text-muted-foreground text-xs">
                   No data available
                 </div>
               )}

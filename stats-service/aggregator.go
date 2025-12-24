@@ -4,6 +4,8 @@ import (
 	"context"
 	"log"
 	"time"
+
+	dockerpkg "github.com/darthnorse/dockmon-shared/docker"
 )
 
 // Aggregator aggregates container stats into host-level metrics
@@ -124,9 +126,9 @@ func (a *Aggregator) aggregateHostStats(hostID string, containers []*ContainerSt
 		memPercent = (float64(totalMemUsage) / float64(totalMemLimit)) * 100.0
 	}
 
-	// Round to 1 decimal place
-	cpuPercent = roundToDecimal(cpuPercent, 1)
-	memPercent = roundToDecimal(memPercent, 1)
+	// Round to 1 decimal place - using shared package
+	cpuPercent = dockerpkg.RoundToDecimal(cpuPercent, 1)
+	memPercent = dockerpkg.RoundToDecimal(memPercent, 1)
 
 	return &HostStats{
 		HostID:           hostID,
@@ -138,13 +140,4 @@ func (a *Aggregator) aggregateHostStats(hostID string, containers []*ContainerSt
 		NetworkTxBytes:   totalNetTx,
 		ContainerCount:   validContainers,
 	}
-}
-
-// roundToDecimal rounds a float to n decimal places
-func roundToDecimal(value float64, places int) float64 {
-	shift := float64(1)
-	for i := 0; i < places; i++ {
-		shift *= 10
-	}
-	return float64(int(value*shift+0.5)) / shift
 }

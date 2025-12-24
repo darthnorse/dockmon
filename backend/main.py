@@ -15,6 +15,7 @@ URL Pattern: /api/hosts/{host_id}/containers/{container_id}/...
 import asyncio
 import json
 import logging
+import os
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any
@@ -47,13 +48,15 @@ from database import (
     AlertV2,
     AutoRestartConfig,
     BatchJobItem,
-    DeploymentContainer
+    DeploymentContainer,
+    Agent,
 )
 from realtime import RealtimeMonitor
 from notifications import NotificationService
 from event_logger import EventLogger, EventContext, EventCategory, EventSeverity, PerformanceTimer
 from event_logger import EventType as LogEventType
 from event_bus import Event, EventType, get_event_bus
+from utils.container_id import normalize_container_id
 
 # Import extracted modules
 from config.settings import AppConfig, get_cors_origins, setup_logging, HealthCheckFilter
@@ -61,7 +64,8 @@ from models.docker_models import DockerHostConfig, DockerHost
 from models.settings_models import GlobalSettings, AlertRule, AlertRuleV2Create, AlertRuleV2Update, GlobalSettingsUpdate
 from models.request_models import (
     AutoRestartRequest, DesiredStateRequest, AlertRuleCreate, AlertRuleUpdate,
-    NotificationChannelCreate, NotificationChannelUpdate, EventLogFilter, BatchJobCreate, ContainerTagUpdate, HostTagUpdate, HttpHealthCheckConfig
+    NotificationChannelCreate, NotificationChannelUpdate, EventLogFilter, BatchJobCreate,
+    ContainerTagUpdate, HostTagUpdate, HttpHealthCheckConfig, GenerateTokenRequest
 )
 from security.audit import security_audit
 from security.rate_limiting import rate_limiter, rate_limit_auth, rate_limit_hosts, rate_limit_containers, rate_limit_notifications, rate_limit_default
@@ -75,6 +79,9 @@ from utils.encryption import encrypt_password, decrypt_password
 from utils.async_docker import async_docker_call
 from utils.base_path import get_base_path
 from updates.container_validator import ContainerValidator, ValidationResult
+from agent.manager import AgentManager
+from agent import handle_agent_websocket
+from agent.connection_manager import agent_connection_manager
 from packaging.version import parse as parse_version, InvalidVersion
 from deployment import routes as deployment_routes, DeploymentExecutor, TemplateManager
 
@@ -134,7 +141,7 @@ async def lifespan(app: FastAPI):
     uvicorn_access.addFilter(HealthCheckFilter())
 
     # Ensure default user exists (run in thread pool to avoid blocking event loop)
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, monitor.db.get_or_create_default_user)
 
     # Clean up orphaned certificate directories from legacy bug (run in thread pool to avoid blocking)
@@ -161,13 +168,15 @@ async def lifespan(app: FastAPI):
     monitor.monitoring_task = asyncio.create_task(monitor.monitor_containers())
     monitor.maintenance_task = asyncio.create_task(monitor.run_daily_maintenance())
 
-    # Check for DockMon updates on startup, then periodically every 6 hours
+    # Check for DockMon updates on startup (subsequent checks tied to container update schedule)
     # Store task reference and add error callback (Issue #1 fix)
     monitor.update_check_task = asyncio.create_task(monitor.periodic_jobs.check_dockmon_update_once())
     monitor.update_check_task.add_done_callback(_handle_task_exception)
     logger.info("Started DockMon update checker task")
 
-    monitor.dockmon_update_task = asyncio.create_task(monitor.periodic_jobs.check_dockmon_updates_periodic())
+    # Start engine_id validation task (populates engine_id for existing hosts, detects VM clones)
+    monitor.engine_id_validation_task = asyncio.create_task(monitor.periodic_jobs.validate_engine_ids_periodic())
+    logger.info("Started engine_id validation periodic task")
 
     # Start blackout window monitoring with WebSocket support
     await monitor.notification_service.blackout_manager.start_monitoring(
@@ -218,6 +227,7 @@ async def lifespan(app: FastAPI):
     deployment_routes.set_deployment_executor(deployment_executor)
     deployment_routes.set_template_manager(template_manager)
     deployment_routes.set_database_manager(monitor.db)
+    deployment_routes.set_docker_monitor(monitor)
     logger.info("Deployment services initialized")
 
     yield
@@ -254,16 +264,6 @@ async def lifespan(app: FastAPI):
                 logger.info("Update check task cancelled successfully")
             except Exception as e:
                 logger.error(f"Error during update check task shutdown: {e}")
-
-    # Cancel DockMon update checker task
-    if hasattr(monitor, 'dockmon_update_task') and monitor.dockmon_update_task:
-        monitor.dockmon_update_task.cancel()
-        try:
-            await monitor.dockmon_update_task
-        except asyncio.CancelledError:
-            logger.info("DockMon update task cancelled successfully")
-        except Exception as e:
-            logger.error(f"Error during DockMon update task shutdown: {e}")
 
     # Stop blackout monitoring
     try:
@@ -330,7 +330,7 @@ async def lifespan(app: FastAPI):
 
     # Dispose SQLAlchemy engine (run in thread pool to avoid blocking event loop)
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, monitor.db.engine.dispose)
         logger.info("SQLAlchemy engine disposed")
     except Exception as e:
@@ -481,6 +481,10 @@ app.include_router(deployment_routes.template_router)  # v2.1 template endpoints
 from auth import api_key_routes
 app.include_router(api_key_routes.router)  # API key management
 
+# Action token routes (v2.2.0+) - notification action links
+from auth import action_token_routes
+app.include_router(action_token_routes.router)  # One-time action tokens
+
 @app.get("/", tags=["system"])
 async def root(current_user: dict = Depends(get_current_user)):
     """Backend API root - frontend is served separately"""
@@ -545,8 +549,135 @@ async def verify_session_auth(request: Request):
 
 @app.get("/api/hosts", tags=["hosts"])
 async def get_hosts(current_user: dict = Depends(get_current_user)):
-    """Get all configured Docker hosts"""
-    return list(monitor.hosts.values())
+    """Get all configured Docker hosts
+
+    For hosts connected via agents, includes:
+    - connection_type: "agent" or "remote"
+    - agent: {id, version, capabilities, status, connected, last_seen_at, registered_at}
+    """
+    hosts = list(monitor.hosts.values())
+
+    # Enrich hosts with agent information
+    with monitor.db.get_session() as db:
+        # Get all agents with their host associations
+        agents = db.query(Agent).all()
+        agent_by_host = {agent.host_id: agent for agent in agents}
+
+        # Get all hosts from database (single query, O(1) lookups)
+        all_hosts_db = db.query(DockerHostDB).all()
+        hosts_by_id = {h.id: h for h in all_hosts_db}
+        agent_hosts_db = [h for h in all_hosts_db if h.connection_type == 'agent']
+
+        # Track which host IDs we've seen from monitor.hosts
+        seen_host_ids = set()
+
+        # Enhance host data with agent info
+        enriched_hosts = []
+        for host in hosts:
+            host_dict = host.dict() if hasattr(host, 'dict') else host
+            host_id = host_dict.get('id')
+            seen_host_ids.add(host_id)
+
+            # Check if this host has an agent
+            agent = agent_by_host.get(host_id)
+            db_host = hosts_by_id.get(host_id)
+
+            if agent:
+                # Host is connected via agent - use real-time connection status
+                is_connected = agent_connection_manager.is_connected(agent.id)
+                logger.debug(f"Agent {agent.id[:8]}... - DB status: {agent.status}, connection_manager.is_connected: {is_connected}, total connections: {agent_connection_manager.get_connection_count()}")
+
+                # Get system info from database for this agent host
+                if db_host:
+                    # Override with database system info (agent-collected data)
+                    host_dict['os_type'] = db_host.os_type
+                    host_dict['os_version'] = db_host.os_version
+                    host_dict['kernel_version'] = db_host.kernel_version
+                    host_dict['docker_version'] = db_host.docker_version
+                    host_dict['daemon_started_at'] = db_host.daemon_started_at
+                    host_dict['total_memory'] = db_host.total_memory
+                    host_dict['num_cpus'] = db_host.num_cpus
+                    host_dict['host_ip'] = db_host.host_ip  # For systemd agents only
+
+                # Override status with real-time connection state
+                host_dict['status'] = 'online' if is_connected else 'offline'
+                host_dict['connection_type'] = 'agent'
+                host_dict['agent'] = {
+                    'agent_id': agent.id,
+                    'engine_id': agent.engine_id,
+                    'version': agent.version,
+                    'proto_version': agent.proto_version,
+                    'capabilities': json.loads(agent.capabilities) if agent.capabilities else {},
+                    'status': agent.status,
+                    'connected': is_connected,
+                    'last_seen_at': agent.last_seen_at.isoformat() + 'Z' if agent.last_seen_at else None,
+                    'registered_at': agent.registered_at.isoformat() + 'Z' if agent.registered_at else None
+                }
+            else:
+                # Host is connected via remote Docker (TCP/socket) or local socket
+                # Use database connection_type if available, otherwise infer from URL
+                if db_host and db_host.connection_type:
+                    host_dict['connection_type'] = db_host.connection_type
+                else:
+                    # Fallback: infer from URL
+                    url = host_dict.get('url', '')
+                    host_dict['connection_type'] = 'local' if url.startswith('unix://') else 'remote'
+                host_dict['agent'] = None
+
+            enriched_hosts.append(host_dict)
+
+        # Add agent-only hosts that aren't in monitor.hosts
+        for agent_host in agent_hosts_db:
+            if agent_host.id not in seen_host_ids:
+                agent = agent_by_host.get(agent_host.id)
+
+                host_dict = {
+                    'id': agent_host.id,
+                    'name': agent_host.name,
+                    'url': agent_host.url,
+                    'connection_type': 'agent',
+                    'description': agent_host.description or '',
+                    'created_at': agent_host.created_at.isoformat() + 'Z' if agent_host.created_at else None,
+                    'updated_at': agent_host.updated_at.isoformat() + 'Z' if agent_host.updated_at else None,
+                    # System information (collected from agent during registration)
+                    'os_type': agent_host.os_type,
+                    'os_version': agent_host.os_version,
+                    'kernel_version': agent_host.kernel_version,
+                    'docker_version': agent_host.docker_version,
+                    'daemon_started_at': agent_host.daemon_started_at,
+                    'total_memory': agent_host.total_memory,
+                    'num_cpus': agent_host.num_cpus,
+                    'host_ip': agent_host.host_ip,  # For systemd agents only
+                    'tags': agent_host.tags or [],
+                    'container_count': 0,  # Will be populated by stats
+                    'last_checked': agent_host.updated_at.isoformat() + 'Z' if agent_host.updated_at else None,
+                }
+
+                if agent:
+                    is_connected = agent_connection_manager.is_connected(agent.id)
+                    logger.debug(f"Agent-only host: Agent {agent.id[:8]}... - DB status: {agent.status}, connection_manager.is_connected: {is_connected}")
+
+                    # Set real-time connection status
+                    host_dict['status'] = 'online' if is_connected else 'offline'
+                    host_dict['agent'] = {
+                        'agent_id': agent.id,
+                        'engine_id': agent.engine_id,
+                        'version': agent.version,
+                        'proto_version': agent.proto_version,
+                        'capabilities': json.loads(agent.capabilities) if agent.capabilities else {},
+                        'status': agent.status,
+                        'connected': is_connected,
+                        'last_seen_at': agent.last_seen_at.isoformat() + 'Z' if agent.last_seen_at else None,
+                        'registered_at': agent.registered_at.isoformat() + 'Z' if agent.registered_at else None
+                    }
+                else:
+                    # No agent found for agent-only host - mark as offline
+                    host_dict['status'] = 'offline'
+                    host_dict['agent'] = None
+
+                enriched_hosts.append(host_dict)
+
+        return enriched_hosts
 
 @app.post("/api/hosts", tags=["hosts"], dependencies=[Depends(require_scope("admin"))])
 async def add_host(config: DockerHostConfig, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_hosts, request: Request = None):
@@ -853,6 +984,180 @@ async def get_host_metrics(host_id: str, current_user: dict = Depends(get_curren
         logger.error(f"Error fetching metrics for host {host_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.get("/api/hosts/{host_id}/agent", tags=["hosts"])
+async def get_host_agent_info(host_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    Get agent info for a host including update availability.
+
+    Returns agent metadata, capabilities, and whether an update is available.
+    Only returns data for agent-based hosts.
+    """
+    # Get host from monitor (same pattern as other host endpoints)
+    host = monitor.hosts.get(host_id)
+    if not host:
+        raise HTTPException(status_code=404, detail="Host not found")
+
+    if host.connection_type != 'agent':
+        raise HTTPException(status_code=400, detail="Host is not agent-based")
+
+    # Query agent and settings from database
+    with monitor.db.get_session() as session:
+        agent = session.query(Agent).filter_by(host_id=host_id).first()
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+
+        settings = session.query(GlobalSettingsDB).first()
+        latest_version = getattr(settings, 'latest_agent_version', None) if settings else None
+
+        # Determine if update available
+        update_available = False
+        if latest_version and agent.version:
+            try:
+                update_available = parse_version(latest_version) > parse_version(agent.version)
+            except Exception:
+                pass
+
+        # Check deployment mode from capabilities (JSON stored as text)
+        capabilities = {}
+        if agent.capabilities:
+            try:
+                capabilities = json.loads(agent.capabilities) if isinstance(agent.capabilities, str) else agent.capabilities
+            except Exception:
+                pass
+
+        # self_update capability = true means container mode (has container ID)
+        # self_update capability = false means native/systemd mode
+        is_container_mode = capabilities.get('self_update', False)
+
+        return {
+            "id": agent.id,
+            "version": agent.version,
+            "arch": agent.agent_arch,
+            "os": agent.agent_os,
+            "status": agent.status,
+            "capabilities": capabilities,
+            "update_available": update_available,
+            "latest_version": latest_version,
+            "is_container_mode": is_container_mode,
+            "last_seen_at": agent.last_seen_at.isoformat() + 'Z' if agent.last_seen_at else None,
+        }
+
+
+@app.post("/api/hosts/{host_id}/agent/update", tags=["hosts"], dependencies=[Depends(require_scope("write"))])
+async def trigger_agent_update(host_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    Trigger agent self-update.
+
+    For systemd agents: Downloads new binary and restarts
+    For container agents: Updates the agent container
+
+    This endpoint finds the agent container by image name (dockmon-agent)
+    and triggers the appropriate update mechanism.
+    """
+    from updates.update_executor import get_update_executor
+    from updates.types import UpdateContext
+
+    # Verify host is agent-based
+    host = monitor.hosts.get(host_id)
+    if not host:
+        raise HTTPException(status_code=404, detail="Host not found")
+
+    if host.connection_type != 'agent':
+        raise HTTPException(status_code=400, detail="Host is not agent-based")
+
+    # Get agent info
+    with monitor.db.get_session() as session:
+        agent = session.query(Agent).filter_by(host_id=host_id).first()
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+
+        settings = session.query(GlobalSettingsDB).first()
+        latest_version = getattr(settings, 'latest_agent_version', None) if settings else None
+
+        if not latest_version:
+            raise HTTPException(status_code=400, detail="No latest agent version available")
+
+        # Check if update is available
+        try:
+            if not (parse_version(latest_version) > parse_version(agent.version or "0.0.0")):
+                raise HTTPException(status_code=400, detail="Agent is already up to date")
+        except Exception:
+            pass  # Continue if version parsing fails
+
+        # Get agent platform info
+        agent_os = agent.agent_os or "linux"
+        agent_arch = agent.agent_arch or "amd64"
+        agent_id = agent.id
+
+        # Check deployment mode from capabilities
+        capabilities = {}
+        if agent.capabilities:
+            try:
+                capabilities = json.loads(agent.capabilities) if isinstance(agent.capabilities, str) else agent.capabilities
+            except Exception:
+                pass
+
+        is_container_mode = capabilities.get('self_update', False)
+
+    logger.info(f"Triggering agent update for host {host_id}: v{agent.version} -> v{latest_version} (container_mode={is_container_mode})")
+
+    # For container mode, find the agent container and use standard update flow
+    # For systemd mode, send self_update command directly
+    try:
+        from agent.command_executor import get_agent_command_executor
+
+        command_executor = get_agent_command_executor()
+
+        # Construct self-update command
+        binary_url = f"https://github.com/darthnorse/dockmon/releases/download/agent-v{latest_version}/dockmon-agent-{agent_os}-{agent_arch}"
+
+        # Fetch checksum for security
+        checksum = None
+        try:
+            from updates.dockmon_update_checker import get_dockmon_update_checker
+            checker = get_dockmon_update_checker(monitor.db)
+            checksum = await checker.fetch_agent_checksum(latest_version, agent_arch)
+        except Exception as e:
+            logger.warning(f"Failed to fetch checksum: {e}")
+
+        command = {
+            "type": "command",
+            "command": "self_update",
+            "payload": {
+                "image": f"ghcr.io/darthnorse/dockmon-agent:{latest_version}",
+                "version": latest_version,
+                "binary_url": binary_url,
+                "checksum": checksum,
+            }
+        }
+
+        result = await command_executor.execute_command(
+            agent_id,
+            command,
+            timeout=150.0
+        )
+
+        if result.status.value != "success":
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to send update command: {result.error}"
+            )
+
+        return {
+            "success": True,
+            "message": "Agent update initiated",
+            "current_version": agent.version,
+            "target_version": latest_version
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error triggering agent update: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/containers", tags=["containers"])
 async def get_containers(host_id: Optional[str] = None, current_user: dict = Depends(get_current_user)):
     """Get all containers"""
@@ -904,7 +1209,8 @@ async def delete_container(
     """
     # Get container name for logging (operations module will re-fetch it)
     containers = await monitor.get_containers()
-    container = next((c for c in containers if c.id == container_id and c.host_id == host_id), None)
+    # Match by short_id (12 chars) or full id (64 chars) - agent containers use both
+    container = next((c for c in containers if (c.short_id == container_id or c.id == container_id) and c.host_id == host_id), None)
     container_name = container.name if container else container_id
 
     # Delegate to monitor (which delegates to operations module)
@@ -921,141 +1227,40 @@ async def get_container_logs(
 ):
     """Get container logs - Portainer-style polling approach
 
+    Routes through agent for agent-based hosts, direct Docker for others.
+
     Security:
     - tail parameter is clamped to MAX_LOG_TAIL to prevent DoS attacks
     - since parameter validated to prevent fetching excessive historical logs
     """
-    if host_id not in monitor.clients:
-        raise HTTPException(status_code=404, detail="Host not found")
+    # Normalize container ID (defense-in-depth)
+    container_id = normalize_container_id(container_id)
 
-    try:
-        client = monitor.clients[host_id]
+    # Delegate to operations (handles agent routing)
+    return await monitor.operations.get_container_logs(host_id, container_id, tail, since)
 
-        # SECURITY: Clamp tail to prevent DoS attacks
-        # Even if client requests 1,000,000 lines, limit to MAX_LOG_TAIL
-        tail = max(1, min(tail, MAX_LOG_TAIL))
+@app.get("/api/hosts/{host_id}/containers/{container_id}/inspect", tags=["containers"])
+async def inspect_container(
+    host_id: str,
+    container_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get detailed container information (Docker inspect)
 
-        # Run blocking Docker calls in executor with timeout
-        loop = asyncio.get_event_loop()
+    Routes through agent for agent-based hosts, direct Docker for others.
 
-        # Get container with timeout
-        try:
-            container = await asyncio.wait_for(
-                loop.run_in_executor(None, client.containers.get, container_id),
-                timeout=5.0
-            )
-        except asyncio.TimeoutError:
-            raise HTTPException(status_code=504, detail="Timeout getting container")
+    Returns full container configuration including:
+    - Config: image, command, env vars, labels, ports
+    - State: running status, exit code, timestamps
+    - NetworkSettings: IP addresses, ports, DNS
+    - Mounts: volumes, bind mounts
+    - HostConfig: resource limits, restart policy
+    """
+    # Normalize container ID (defense-in-depth)
+    container_id = normalize_container_id(container_id)
 
-        # Prepare log options
-        log_kwargs = {
-            'timestamps': True,
-            'tail': tail  # Use clamped value
-        }
-
-        # Add since parameter if provided (for getting only new logs)
-        if since:
-            try:
-                # Parse ISO timestamp and convert to Unix timestamp for Docker
-                import dateutil.parser
-                dt = dateutil.parser.parse(since)
-
-                # SECURITY: Reject timestamps older than MAX_LOG_AGE_DAYS to prevent memory exhaustion
-                # This prevents attacks like since="1970-01-01" that would fetch entire container history
-                max_age = datetime.now(timezone.utc) - timedelta(days=MAX_LOG_AGE_DAYS)
-                if dt.replace(tzinfo=None) < max_age.replace(tzinfo=None):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"'since' parameter cannot be older than {MAX_LOG_AGE_DAYS} days"
-                    )
-
-                # BUG FIX: Use dt.timestamp() instead of time.mktime()
-                # mktime() incorrectly interprets timezone-aware datetime as local time
-                # timestamp() correctly handles timezone offsets
-                unix_ts = dt.timestamp()
-                log_kwargs['since'] = unix_ts
-
-                # SECURITY: Even with 'since', respect tail limit
-                # Never use tail='all' to prevent unbounded memory usage
-                log_kwargs['tail'] = tail  # Use clamped value, not 'all'
-
-            except ValueError as e:
-                # Provide clear error message for invalid timestamps
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Invalid 'since' timestamp format: {e}"
-                )
-
-        # Fetch logs with timeout
-        try:
-            logs = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None,
-                    lambda: container.logs(**log_kwargs).decode('utf-8', errors='ignore')
-                ),
-                timeout=5.0
-            )
-        except asyncio.TimeoutError:
-            raise HTTPException(status_code=504, detail="Timeout fetching logs")
-
-        # Parse logs and extract timestamps
-        # Docker log format with timestamps: "2025-09-30T19:30:45.123456789Z actual log message"
-        parsed_logs = []
-        for line in logs.split('\n'):
-            if not line.strip():
-                continue
-
-            # Try to extract timestamp (Docker format: ISO8601 with nanoseconds)
-            try:
-                # Find the space after timestamp
-                space_idx = line.find(' ')
-                if space_idx > 0:
-                    timestamp_str = line[:space_idx]
-                    log_text = line[space_idx + 1:]
-
-                    # Parse timestamp (remove nanoseconds for Python datetime)
-                    # Format: 2025-09-30T19:30:45.123456789Z -> 2025-09-30T19:30:45.123456Z
-                    if 'T' in timestamp_str and timestamp_str.endswith('Z'):
-                        # Truncate to microseconds (6 digits) if nanoseconds present
-                        parts = timestamp_str[:-1].split('.')
-                        if len(parts) == 2 and len(parts[1]) > 6:
-                            timestamp_str = f"{parts[0]}.{parts[1][:6]}Z"
-
-                        parsed_logs.append({
-                            "timestamp": timestamp_str,
-                            "log": log_text
-                        })
-                    else:
-                        # No valid timestamp, use current time
-                        parsed_logs.append({
-                            "timestamp": datetime.now(timezone.utc).isoformat() + 'Z',
-                            "log": line
-                        })
-                else:
-                    # No space found, treat whole line as log
-                    parsed_logs.append({
-                        "timestamp": datetime.now(timezone.utc).isoformat() + 'Z',
-                        "log": line
-                    })
-            except (ValueError, IndexError, AttributeError) as e:
-                # If timestamp parsing fails, use current time
-                logger.debug(f"Failed to parse log timestamp: {e}")
-                parsed_logs.append({
-                    "timestamp": datetime.now(timezone.utc).isoformat() + 'Z',
-                    "log": line
-                })
-
-        return {
-            "container_id": container_id,
-            "logs": parsed_logs,
-            "last_timestamp": datetime.now(timezone.utc).isoformat() + 'Z'  # For next 'since' parameter
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get logs for {container_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    # Delegate to operations (handles agent routing)
+    return await monitor.operations.inspect_container(host_id, container_id)
 
 # Container exec endpoint removed for security reasons
 # Users should use direct SSH, Docker CLI, or other appropriate tools for container access
@@ -1100,7 +1305,8 @@ async def update_container_tags(
     """
     # Get container name from monitor
     containers = await monitor.get_containers()
-    container = next((c for c in containers if c.id == container_id and c.host_id == host_id), None)
+    # Match by short_id (12 chars) or full id (64 chars) - agent containers use both
+    container = next((c for c in containers if (c.short_id == container_id or c.id == container_id) and c.host_id == host_id), None)
 
     if not container:
         raise HTTPException(status_code=404, detail="Container not found")
@@ -1111,7 +1317,8 @@ async def update_container_tags(
         container.name,
         tags_to_add=request.tags_to_add,
         tags_to_remove=request.tags_to_remove,
-        ordered_tags=request.ordered_tags
+        ordered_tags=request.ordered_tags,
+        container_labels=container.labels
     )
 
     logger.info(f"User {current_user.get('username')} updated tags for container {container.name}")
@@ -1157,7 +1364,8 @@ async def get_container_update_status(
         container = None
         try:
             containers = await monitor.get_containers(host_id=host_id)
-            container = next((c for c in containers if c.id == short_id), None)
+            # Match by short_id (12 chars) or full id (64 chars) - agent containers use both
+            container = next((c for c in containers if (c.short_id == short_id or c.id == short_id)), None)
         except Exception as e:
             logger.warning(f"Failed to get container {short_id} for validation: {e}")
 
@@ -1284,6 +1492,26 @@ async def get_image_digest_cache(current_user: dict = Depends(get_current_user))
         }
 
 
+@app.delete("/api/updates/image-cache/{cache_key:path}", tags=["container-updates"], dependencies=[Depends(require_scope("write"))])
+async def delete_image_cache_entry(cache_key: str, current_user: dict = Depends(get_current_user)):
+    """
+    Delete a specific image cache entry.
+
+    Useful for forcing a fresh registry lookup for a specific image.
+    """
+    from database import ImageDigestCache
+
+    with monitor.db.get_session() as session:
+        entry = session.query(ImageDigestCache).filter_by(cache_key=cache_key).first()
+        if not entry:
+            raise HTTPException(status_code=404, detail=f"Cache entry not found: {cache_key}")
+
+        session.delete(entry)
+        session.commit()
+
+        return {"message": f"Deleted cache entry: {cache_key}"}
+
+
 @app.post("/api/hosts/{host_id}/containers/{container_id}/check-update", tags=["container-updates"], dependencies=[Depends(require_scope("write"))])
 async def check_container_update(
     host_id: str,
@@ -1303,7 +1531,9 @@ async def check_container_update(
     logger.info(f"User {current_user.get('username')} triggered update check for container {short_id} on host {host_id}")
 
     checker = get_update_checker(monitor.db, monitor)
-    result = await checker.check_single_container(host_id, short_id)
+    # Issue #101: bypass_cache=True ensures manual checks always query registry
+    # This fixes stale update info when images are rapidly rebuilt
+    result = await checker.check_single_container(host_id, short_id, bypass_cache=True)
 
     if not result:
         # Check failed (e.g., registry auth error, network issue)
@@ -1372,20 +1602,46 @@ async def execute_container_update(
                 detail="No update available for this container"
             )
 
-        # Get container for validation (ALWAYS - needed even with force=True)
-        # Get Docker client
-        client = monitor.clients.get(host_id)
-        if not client:
-            raise HTTPException(status_code=404, detail="Docker host not found")
+        # Check if this is an agent-based host
+        db_host = session.query(DockerHostDB).filter_by(id=host_id).first()
+        is_agent_host = db_host and db_host.connection_type == "agent"
 
-        # Get container
-        try:
-            container = await async_docker_call(client.containers.get, short_id)
-            labels = container.labels or {}
-            container_name = container.name.lstrip('/')
-        except Exception as e:
-            logger.error(f"Error getting container for validation: {e}")
-            raise HTTPException(status_code=404, detail=f"Container not found: {short_id}")
+        # Get container info for validation
+        if is_agent_host:
+            # For agent-based hosts, get container name from related tables
+            # Try AutoRestartConfig first (most likely to have container info)
+            auto_restart = session.query(AutoRestartConfig).filter_by(
+                container_id=composite_key
+            ).first()
+            if auto_restart and auto_restart.container_name:
+                container_name = auto_restart.container_name
+            else:
+                # Try ContainerDesiredState
+                desired_state = session.query(ContainerDesiredState).filter_by(
+                    container_id=composite_key
+                ).first()
+                if desired_state and desired_state.container_name:
+                    container_name = desired_state.container_name
+                else:
+                    # Fallback: use container ID as name
+                    container_name = short_id
+            # For agent-based hosts, we don't have direct access to labels
+            # Use empty dict - validation will still work on name and image patterns
+            labels = {}
+            logger.debug(f"Agent-based host: using container info from database (name={container_name})")
+        else:
+            # For local/remote hosts, get container info via Docker client
+            client = monitor.clients.get(host_id)
+            if not client:
+                raise HTTPException(status_code=404, detail="Docker host not found")
+
+            try:
+                container = await async_docker_call(client.containers.get, short_id)
+                labels = container.labels or {}
+                container_name = container.name.lstrip('/')
+            except Exception as e:
+                logger.error(f"Error getting container for validation: {e}")
+                raise HTTPException(status_code=404, detail=f"Container not found: {short_id}")
 
         # Validate update (ALWAYS - force only affects WARN behavior)
         try:
@@ -1514,7 +1770,8 @@ async def update_auto_update_config(
             # Create new record - we need at least minimal info
             # Get container to populate image info
             containers = await monitor.get_containers()
-            container = next((c for c in containers if c.id == short_id and c.host_id == host_id), None)
+            # Match by short_id (12 chars) or full id (64 chars) - agent containers use both
+            container = next((c for c in containers if (c.short_id == short_id or c.id == short_id) and c.host_id == host_id), None)
 
             if not container:
                 raise HTTPException(status_code=404, detail="Container not found")
@@ -1750,6 +2007,7 @@ async def get_update_policies(current_user: dict = Depends(get_current_user)):
                 "id": policy.id,
                 "pattern": policy.pattern,
                 "enabled": policy.enabled,
+                "action": policy.action or 'warn',  # 'warn' or 'ignore'
                 "created_at": policy.created_at.isoformat() + 'Z' if policy.created_at else None,
                 "updated_at": policy.updated_at.isoformat() + 'Z' if policy.updated_at else None,
             })
@@ -1793,6 +2051,7 @@ async def toggle_update_policy_category(
 @app.post("/api/update-policies/custom", tags=["container-updates"], dependencies=[Depends(require_scope("admin"))])
 async def create_custom_update_policy(
     pattern: str = Query(..., description="Pattern to match against image/container name"),
+    action: str = Query("warn", description="Action: 'warn' (show confirmation) or 'ignore' (skip update checks)"),
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -1800,7 +2059,14 @@ async def create_custom_update_policy(
 
     Args:
         pattern: Pattern to match (case-insensitive substring match)
+        action: 'warn' to show confirmation, 'ignore' to skip from update checks
     """
+    # Validate action
+    if action not in ('warn', 'ignore'):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Action must be 'warn' or 'ignore'"
+        )
 
     with monitor.db.get_session() as session:
         # Check if pattern already exists
@@ -1819,17 +2085,62 @@ async def create_custom_update_policy(
         policy = UpdatePolicy(
             category="custom",
             pattern=pattern,
-            enabled=True
+            enabled=True,
+            action=action
         )
         session.add(policy)
         session.commit()
 
-        logger.info(f"Created custom update policy pattern: {pattern}")
+        logger.info(f"Created custom update policy pattern: {pattern} (action={action})")
 
         return {
             "success": True,
             "id": policy.id,
-            "pattern": pattern
+            "pattern": pattern,
+            "action": action
+        }
+
+
+@app.put("/api/update-policies/{policy_id}/action", tags=["container-updates"], dependencies=[Depends(require_scope("admin"))])
+async def update_policy_action(
+    policy_id: int,
+    action: str = Query(..., description="Action: 'warn' (show confirmation) or 'ignore' (skip update checks)"),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Update the action for an update policy pattern.
+
+    Args:
+        policy_id: Policy ID to update
+        action: 'warn' to show confirmation, 'ignore' to skip from update checks
+    """
+    # Validate action
+    if action not in ('warn', 'ignore'):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Action must be 'warn' or 'ignore'"
+        )
+
+    with monitor.db.get_session() as session:
+        policy = session.query(UpdatePolicy).filter_by(id=policy_id).first()
+
+        if not policy:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Policy {policy_id} not found"
+            )
+
+        old_action = policy.action
+        policy.action = action
+        session.commit()
+
+        logger.info(f"Updated policy {policy.pattern} action: {old_action} -> {action}")
+
+        return {
+            "success": True,
+            "id": policy.id,
+            "pattern": policy.pattern,
+            "action": action
         }
 
 
@@ -1928,6 +2239,7 @@ async def set_container_update_policy(
 async def suggest_tags(
     q: str = "",
     limit: int = 20,
+    include_derived: bool = False,
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -1935,11 +2247,71 @@ async def suggest_tags(
 
     Returns a list of existing container tags that match the query string.
     Used by the bulk tag management UI for containers.
+
+    Args:
+        q: Search query to filter tags
+        limit: Maximum number of tags to return
+        include_derived: If True, also include derived tags from Docker labels
+                        (compose:*, swarm:*, dockmon.tag). These are marked with
+                        source='derived' vs source='user' for database tags.
     """
-    tags = monitor.db.get_all_tags_v2(query=q, limit=limit, subject_type="container")
-    # Extract just the tag names for autocomplete
-    tag_names = [tag['name'] for tag in tags]
-    return {"tags": tag_names}
+    # Get user-created tags from database
+    db_tags = monitor.db.get_all_tags_v2(query=q, limit=limit, subject_type="container")
+
+    if not include_derived:
+        # Original behavior: just return tag names
+        tag_names = [tag['name'] for tag in db_tags]
+        return {"tags": tag_names}
+
+    # Build result with source metadata
+    result_tags = []
+    seen_names = set()
+
+    # Add database tags with source='user'
+    for tag in db_tags:
+        tag_name = tag['name']
+        if tag_name not in seen_names:
+            result_tags.append({
+                'name': tag_name,
+                'source': 'user',
+                'color': tag.get('color')
+            })
+            seen_names.add(tag_name)
+
+    # Collect derived tags from all cached containers
+    containers = monitor.get_last_containers()
+    for container in containers:
+        if not container.tags:
+            continue
+        for tag in container.tags:
+            # Skip if already seen (user tags take precedence)
+            if tag in seen_names:
+                continue
+            # Check if this is a derived tag (compose:*, swarm:*, or from dockmon.tag label)
+            # User-created tags would already be in the database
+            is_derived = (
+                tag.startswith('compose:') or
+                tag.startswith('swarm:') or
+                tag not in seen_names  # Tags from dockmon.tag label that aren't in DB
+            )
+            if is_derived:
+                # Apply search filter
+                if q and q.lower() not in tag.lower():
+                    continue
+                result_tags.append({
+                    'name': tag,
+                    'source': 'derived',
+                    'color': None
+                })
+                seen_names.add(tag)
+
+    # Sort: user tags first, then derived, alphabetically within each group
+    result_tags.sort(key=lambda t: (0 if t['source'] == 'user' else 1, t['name']))
+
+    # Apply limit
+    result_tags = result_tags[:limit]
+
+    return {"tags": result_tags}
 
 @app.get("/api/hosts/tags/suggest", tags=["tags"])
 async def suggest_host_tags(
@@ -2135,6 +2507,7 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
 
     # Fetch user's dismissed version for update notifications
     dismissed_dockmon_update_version = None
+    dismissed_agent_update_version = None
     session = monitor.db.get_session()
     try:
         user = session.query(User).filter(User.username == username).first()
@@ -2142,8 +2515,29 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
             prefs = session.query(UserPrefs).filter(UserPrefs.user_id == user.id).first()
             if prefs:
                 dismissed_dockmon_update_version = prefs.dismissed_dockmon_update_version
+                dismissed_agent_update_version = getattr(prefs, 'dismissed_agent_update_version', None)
     finally:
         session.close()
+
+    # Count agents that need updates
+    agents_needing_update = 0
+    latest_agent_version = getattr(settings, 'latest_agent_version', None)
+    if latest_agent_version:
+        try:
+            session = monitor.db.get_session()
+            try:
+                agents = session.query(Agent).filter(Agent.status == 'online').all()
+                for agent in agents:
+                    if agent.version:
+                        try:
+                            if parse_version(latest_agent_version) > parse_version(agent.version):
+                                agents_needing_update += 1
+                        except Exception:
+                            pass
+            finally:
+                session.close()
+        except Exception as e:
+            logger.warning(f"Error counting agents needing updates: {e}")
 
     # Calculate update_available using semver comparison
     update_available = False
@@ -2170,11 +2564,13 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
         "alert_template_update": getattr(settings, 'alert_template_update', None),
         "blackout_windows": getattr(settings, 'blackout_windows', None),
         "timezone_offset": getattr(settings, 'timezone_offset', 0),
+        "timezone": os.environ.get('TZ', 'UTC'),  # TZ environment variable for agent deployment
         "show_host_stats": getattr(settings, 'show_host_stats', True),
         "show_container_stats": getattr(settings, 'show_container_stats', True),
         "show_container_alerts_on_hosts": getattr(settings, 'show_container_alerts_on_hosts', False),
         "unused_tag_retention_days": getattr(settings, 'unused_tag_retention_days', 30),
         "event_retention_days": getattr(settings, 'event_retention_days', 60),
+        "event_suppression_patterns": getattr(settings, 'event_suppression_patterns', None),
         "alert_retention_days": getattr(settings, 'alert_retention_days', 90),
         "update_check_time": getattr(settings, 'update_check_time', "02:00"),
         "skip_compose_containers": getattr(settings, 'skip_compose_containers', True),
@@ -2191,11 +2587,24 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
             if getattr(settings, 'last_dockmon_update_check_at', None) else None
         ),
         "dismissed_dockmon_update_version": dismissed_dockmon_update_version,  # User-specific
-        "update_available": update_available  # Server-side semver comparison
+        "update_available": update_available,  # Server-side semver comparison
+        # Agent update notifications (v2.2.0+)
+        "latest_agent_version": latest_agent_version,
+        "latest_agent_release_url": getattr(settings, 'latest_agent_release_url', None),
+        "last_agent_update_check_at": (
+            settings.last_agent_update_check_at.isoformat() + 'Z'
+            if getattr(settings, 'last_agent_update_check_at', None) else None
+        ),
+        "dismissed_agent_update_version": dismissed_agent_update_version,  # User-specific
+        "agents_needing_update": agents_needing_update,  # Count of online agents with outdated versions
+        # External URL for notification action links (v2.2.0+)
+        # Priority: database value > env var > None
+        "external_url": getattr(settings, 'external_url', None) or AppConfig.EXTERNAL_URL,
+        "external_url_from_env": AppConfig.EXTERNAL_URL,  # Show env var value for UI placeholder
     }
 
-@app.post("/api/settings", tags=["system"])
-@app.put("/api/settings", tags=["system"])
+@app.post("/api/settings", tags=["system"], dependencies=[Depends(require_scope("admin"))])
+@app.put("/api/settings", tags=["system"], dependencies=[Depends(require_scope("admin"))])
 async def update_settings(
     settings: GlobalSettingsUpdate,
     current_user: dict = Depends(get_current_user),
@@ -2228,6 +2637,11 @@ async def update_settings(
     if 'show_container_stats' in validated_dict and old_show_container_stats != updated.show_container_stats:
         logger.info(f"Container stats collection {'enabled' if updated.show_container_stats else 'disabled'}")
 
+    # Reload event suppression patterns if updated
+    if 'event_suppression_patterns' in validated_dict:
+        monitor.event_logger.reload_suppression_patterns()
+        logger.info("Event suppression patterns reloaded")
+
     # Broadcast blackout status change to all clients
     is_blackout, window_name = monitor.notification_service.blackout_manager.is_in_blackout_window()
     await monitor.manager.broadcast({
@@ -2258,6 +2672,7 @@ async def update_settings(
         "show_container_alerts_on_hosts": getattr(updated, 'show_container_alerts_on_hosts', False),
         "unused_tag_retention_days": getattr(updated, 'unused_tag_retention_days', 30),
         "event_retention_days": getattr(updated, 'event_retention_days', 60),
+        "event_suppression_patterns": getattr(updated, 'event_suppression_patterns', None),
         "alert_retention_days": getattr(updated, 'alert_retention_days', 90),
         "update_check_time": getattr(updated, 'update_check_time', "02:00"),
         "skip_compose_containers": getattr(updated, 'skip_compose_containers', True),
@@ -2265,7 +2680,10 @@ async def update_settings(
         # Image pruning settings (v2.1+)
         "prune_images_enabled": getattr(updated, 'prune_images_enabled', True),
         "image_retention_count": getattr(updated, 'image_retention_count', 2),
-        "image_prune_grace_hours": getattr(updated, 'image_prune_grace_hours', 48)
+        "image_prune_grace_hours": getattr(updated, 'image_prune_grace_hours', 48),
+        # External URL for notification action links (v2.2.0+)
+        "external_url": getattr(updated, 'external_url', None) or AppConfig.EXTERNAL_URL,
+        "external_url_from_env": AppConfig.EXTERNAL_URL,
     }
 
 
@@ -2320,7 +2738,8 @@ async def get_http_health_check(
     current_user: dict = Depends(get_current_user)
 ):
     """Get HTTP health check configuration for a container"""
-
+    # Truncate container_id to 12 chars (UI may send 64-char full ID)
+    container_id = container_id[:12]
     composite_key = make_composite_key(host_id, container_id)
 
     with monitor.db.get_session() as session:
@@ -2338,6 +2757,7 @@ async def get_http_health_check(
                 "check_interval_seconds": 60,
                 "follow_redirects": True,
                 "verify_ssl": True,
+                "check_from": "backend",  # v2.2.0+
                 "auto_restart_on_failure": False,
                 "failure_threshold": 3,
                 "success_threshold": 1,
@@ -2370,6 +2790,7 @@ async def get_http_health_check(
             "check_interval_seconds": check.check_interval_seconds,
             "follow_redirects": check.follow_redirects,
             "verify_ssl": check.verify_ssl,
+            "check_from": getattr(check, 'check_from', 'backend'),  # v2.2.0+ (default for backwards compatibility)
             "auto_restart_on_failure": check.auto_restart_on_failure,
             "failure_threshold": check.failure_threshold,
             "success_threshold": getattr(check, 'success_threshold', 1),  # Default to 1 for backwards compatibility
@@ -2395,13 +2816,19 @@ async def update_http_health_check(
 ):
     """Update or create HTTP health check configuration"""
     from datetime import datetime, timezone
+    from agent.health_check_sync import push_health_check_config_to_agent, remove_health_check_config_from_agent
 
+    # Truncate container_id to 12 chars (UI may send 64-char full ID)
+    container_id = container_id[:12]
     composite_key = make_composite_key(host_id, container_id)
 
     with monitor.db.get_session() as session:
         check = session.query(ContainerHttpHealthCheck).filter_by(
             container_id=composite_key
         ).first()
+
+        # Track if check_from changed (for removing from agent if switched to backend)
+        old_check_from = check.check_from if check else None
 
         if check:
             # Update existing
@@ -2413,6 +2840,7 @@ async def update_http_health_check(
             check.check_interval_seconds = config.check_interval_seconds
             check.follow_redirects = config.follow_redirects
             check.verify_ssl = config.verify_ssl
+            check.check_from = config.check_from  # v2.2.0+
             check.auto_restart_on_failure = config.auto_restart_on_failure
             check.failure_threshold = config.failure_threshold
             check.success_threshold = config.success_threshold
@@ -2432,6 +2860,7 @@ async def update_http_health_check(
                 check_interval_seconds=config.check_interval_seconds,
                 follow_redirects=config.follow_redirects,
                 verify_ssl=config.verify_ssl,
+                check_from=config.check_from,  # v2.2.0+
                 auto_restart_on_failure=config.auto_restart_on_failure,
                 failure_threshold=config.failure_threshold,
                 success_threshold=config.success_threshold,
@@ -2442,7 +2871,15 @@ async def update_http_health_check(
 
         session.commit()
 
-        return {"success": True}
+    # Push config to agent if needed (after commit, outside session)
+    if config.check_from == 'agent':
+        # Push updated config to agent
+        await push_health_check_config_to_agent(host_id, container_id, db_manager=monitor.db)
+    elif old_check_from == 'agent' and config.check_from == 'backend':
+        # Switched from agent to backend - remove from agent
+        await remove_health_check_config_from_agent(host_id, container_id)
+
+    return {"success": True}
 
 
 @app.delete("/api/containers/{host_id}/{container_id}/http-health-check", tags=["container-health"])
@@ -2452,19 +2889,28 @@ async def delete_http_health_check(
     current_user: dict = Depends(get_current_user)
 ):
     """Delete HTTP health check configuration"""
+    from agent.health_check_sync import remove_health_check_config_from_agent
 
+    # Truncate container_id to 12 chars (UI may send 64-char full ID)
+    container_id = container_id[:12]
     composite_key = make_composite_key(host_id, container_id)
 
+    was_agent_based = False
     with monitor.db.get_session() as session:
         check = session.query(ContainerHttpHealthCheck).filter_by(
             container_id=composite_key
         ).first()
 
         if check:
+            was_agent_based = check.check_from == 'agent'
             session.delete(check)
             session.commit()
 
-        return {"success": True}
+    # Remove from agent if it was agent-based
+    if was_agent_based:
+        await remove_health_check_config_from_agent(host_id, container_id)
+
+    return {"success": True}
 
 
 @app.post("/api/containers/{host_id}/{container_id}/http-health-check/test", tags=["container-health"])
@@ -2553,6 +2999,8 @@ async def test_http_health_check(
                 error_message = f"Error: {str(e)[:100]}"
 
         # Update database with test result (if health check exists)
+        # Truncate container_id to 12 chars (UI may send 64-char full ID)
+        container_id = container_id[:12]
         composite_key = make_composite_key(host_id, container_id)
 
         with monitor.db.get_session() as session:
@@ -2628,12 +3076,15 @@ async def get_alert_rules_v2(current_user: dict = Depends(get_current_user)):
             "metric": rule.metric,
             "threshold": rule.threshold,
             "operator": rule.operator,
-            "duration_seconds": rule.duration_seconds,
             "occurrences": rule.occurrences,
             "clear_threshold": rule.clear_threshold,
-            "clear_duration_seconds": rule.clear_duration_seconds,
-            "cooldown_seconds": rule.cooldown_seconds,
+            # Timing fields
+            "alert_active_delay_seconds": rule.alert_active_delay_seconds,
+            "alert_clear_delay_seconds": rule.alert_clear_delay_seconds,
+            "notification_active_delay_seconds": rule.notification_active_delay_seconds,
+            "notification_cooldown_seconds": rule.notification_cooldown_seconds,
             "auto_resolve": rule.auto_resolve,
+            "auto_resolve_on_clear": rule.auto_resolve_on_clear,
             "suppress_during_updates": rule.suppress_during_updates,
             "host_selector_json": rule.host_selector_json,
             "container_selector_json": rule.container_selector_json,
@@ -2648,7 +3099,7 @@ async def get_alert_rules_v2(current_user: dict = Depends(get_current_user)):
     }
 
 
-@app.post("/api/alerts/rules", tags=["alerts"])
+@app.post("/api/alerts/rules", tags=["alerts"], dependencies=[Depends(require_scope("admin"))])
 async def create_alert_rule_v2(
     rule: AlertRuleV2Create,
     current_user: dict = Depends(get_current_user),
@@ -2674,12 +3125,15 @@ async def create_alert_rule_v2(
             metric=rule.metric,
             threshold=rule.threshold,
             operator=rule.operator,
-            duration_seconds=rule.duration_seconds,
             occurrences=rule.occurrences,
             clear_threshold=rule.clear_threshold,
-            clear_duration_seconds=rule.clear_duration_seconds,
-            cooldown_seconds=rule.cooldown_seconds,
+            # Timing fields
+            alert_active_delay_seconds=rule.alert_active_delay_seconds,
+            alert_clear_delay_seconds=rule.alert_clear_delay_seconds,
+            notification_active_delay_seconds=rule.notification_active_delay_seconds,
+            notification_cooldown_seconds=rule.notification_cooldown_seconds,
             auto_resolve=rule.auto_resolve or False,
+            auto_resolve_on_clear=rule.auto_resolve_on_clear or False,
             suppress_during_updates=suppress_during_updates,
             host_selector_json=rule.host_selector_json,
             container_selector_json=rule.container_selector_json,
@@ -2723,7 +3177,7 @@ async def create_alert_rule_v2(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.put("/api/alerts/rules/{rule_id}", tags=["alerts"])
+@app.put("/api/alerts/rules/{rule_id}", tags=["alerts"], dependencies=[Depends(require_scope("admin"))])
 async def update_alert_rule_v2(
     rule_id: str,
     updates: AlertRuleV2Update,
@@ -2761,7 +3215,7 @@ async def update_alert_rule_v2(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.delete("/api/alerts/rules/{rule_id}", tags=["alerts"])
+@app.delete("/api/alerts/rules/{rule_id}", tags=["alerts"], dependencies=[Depends(require_scope("admin"))])
 async def delete_alert_rule_v2(
     rule_id: str,
     current_user: dict = Depends(get_current_user),
@@ -2882,6 +3336,7 @@ async def get_template_variables(current_user: dict = Depends(get_current_user))
             {"name": "{NEW_IMAGE}", "description": "Image after update (for completed updates)"},
             {"name": "{CHANGELOG_URL}", "description": "Changelog/release notes URL (GitHub releases, etc.)"},
             {"name": "{ERROR_MESSAGE}", "description": "Error message (for failed updates or health checks)"},
+            {"name": "{ACTION_URL}", "description": "One-click action URL (e.g., update container from notification)"},
 
             # Health checks (HTTP/HTTPS monitoring)
             {"name": "{HEALTH_CHECK_URL}", "description": "Health check URL being monitored"},
@@ -2950,7 +3405,7 @@ async def get_notification_channels(current_user: dict = Depends(get_current_use
         "updated_at": ch.updated_at.isoformat() + 'Z'
     } for ch in channels]
 
-@app.post("/api/notifications/channels", tags=["notifications"])
+@app.post("/api/notifications/channels", tags=["notifications"], dependencies=[Depends(require_scope("admin"))])
 async def create_notification_channel(channel: NotificationChannelCreate, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
     """Create a new notification channel"""
     try:
@@ -2981,7 +3436,7 @@ async def create_notification_channel(channel: NotificationChannelCreate, curren
         logger.error(f"Failed to create notification channel: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
-@app.put("/api/notifications/channels/{channel_id}", tags=["notifications"])
+@app.put("/api/notifications/channels/{channel_id}", tags=["notifications"], dependencies=[Depends(require_scope("admin"))])
 async def update_notification_channel(channel_id: int, updates: NotificationChannelUpdate, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
     """Update a notification channel"""
     try:
@@ -3008,7 +3463,7 @@ async def update_notification_channel(channel_id: int, updates: NotificationChan
 
 # V1 alert system endpoint removed - V2 alerts don't get orphaned when channels are deleted
 
-@app.delete("/api/notifications/channels/{channel_id}", tags=["notifications"])
+@app.delete("/api/notifications/channels/{channel_id}", tags=["notifications"], dependencies=[Depends(require_scope("admin"))])
 async def delete_notification_channel(channel_id: int, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
     """Delete a notification channel"""
     try:
@@ -3518,6 +3973,60 @@ async def dismiss_dockmon_update(request: Request, current_user: dict = Depends(
         logger.error(f"Failed to dismiss DockMon update: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.post("/api/user/dismiss-agent-update", tags=["user-preferences"])
+async def dismiss_agent_update(request: Request, current_user: dict = Depends(get_current_user)):
+    """Dismiss Agent update notification for current user"""
+    username = current_user.get('username')
+
+    if not username:
+        logger.error(f"No username in current_user: {current_user}")
+        raise HTTPException(status_code=401, detail="Username not found in session")
+
+    try:
+        body = await request.json()
+        version = body.get('version')
+
+        if not version:
+            raise HTTPException(status_code=400, detail="Version is required")
+
+        # Validate version format (semver)
+        try:
+            parse_version(version)
+        except InvalidVersion:
+            raise HTTPException(status_code=400, detail="Invalid version format")
+
+        session = monitor.db.get_session()
+        try:
+            # Get user
+            user = session.query(User).filter(User.username == username).first()
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            # Get or create user prefs
+            prefs = session.query(UserPrefs).filter(UserPrefs.user_id == user.id).first()
+            if not prefs:
+                prefs = UserPrefs(user_id=user.id)
+                session.add(prefs)
+
+            # Update dismissed version
+            prefs.dismissed_agent_update_version = version
+            prefs.updated_at = datetime.now(timezone.utc)
+            session.commit()
+
+            logger.info(f"User '{username}' dismissed Agent update notification for version {version}")
+            return {"success": True, "dismissed_version": version}
+
+        finally:
+            session.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to dismiss Agent update: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ==================== Phase 4c: Dashboard Hosts with Stats ====================
 
 @app.get("/api/dashboard/hosts", tags=["dashboard"])
@@ -3568,12 +4077,27 @@ async def get_dashboard_hosts(
 
             # Get real sparkline data from stats history buffer (Phase 4c)
             # Uses EMA smoothing (α = 0.3) and maintains 60-90s of history
-            sparklines = monitor.stats_history.get_sparklines(host.id, num_points=30)
+            # Only use sparklines for online hosts to avoid showing stale data
+            if host.status == 'online':
+                sparklines = monitor.stats_history.get_sparklines(host.id, num_points=30)
+            else:
+                # Offline hosts get empty sparklines (no stale data)
+                sparklines = {"cpu": [], "mem": [], "net": []}
 
             # Get actual host total memory (convert from bytes to GB)
             # FIX: Use real host memory instead of hard-coded 16 GB
             host_total_memory_gb = (host.total_memory / (1024 ** 3)) if host.total_memory else 16.0
-            mem_percent = (total_mem_used / host_total_memory_gb * 100) if running_containers and host_total_memory_gb > 0 else 0
+
+            # For agent-based hosts without containers, use agent's host-level stats
+            # For hosts with containers, derive from container stats
+            # Only use sparklines for online hosts
+            if running_containers:
+                mem_percent = (total_mem_used / host_total_memory_gb * 100) if host_total_memory_gb > 0 else 0
+            elif host.connection_type == 'agent' and host.status == 'online' and sparklines.get("mem"):
+                # Use agent's direct host stats (only if online)
+                mem_percent = sparklines["mem"][-1]
+            else:
+                mem_percent = 0
 
             # Parse tags
             tags = []
@@ -3896,7 +4420,7 @@ async def get_host_events(host_id: str, limit: int = 50, current_user: dict = De
         logger.error(f"Failed to get events for host {host_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.delete("/api/events/cleanup", tags=["events"])
+@app.delete("/api/events/cleanup", tags=["events"], dependencies=[Depends(require_scope("admin"))])
 async def cleanup_old_events(days: int = 30, current_user: dict = Depends(get_current_user)):
     """Clean up old events - DANGEROUS: Can delete audit logs"""
     try:
@@ -4161,6 +4685,188 @@ async def delete_registry_credential(
         raise HTTPException(status_code=500, detail=f"Failed to delete credential: {str(e)}")
 
 
+# ==================== Agent Management Routes (v2.2.0) ====================
+
+@app.post("/api/agent/generate-token")
+async def generate_agent_registration_token(
+    request: Request,
+    body: GenerateTokenRequest = GenerateTokenRequest(),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Generate a registration token for agent registration.
+
+    Token expires after 15 minutes.
+    By default, token can only be used once. Set multi_use=true to allow
+    unlimited agents to register with the same token (within the 15 minute window).
+    """
+    try:
+        agent_manager = AgentManager()  # Creates short-lived sessions internally
+        token_record = agent_manager.generate_registration_token(
+            user_id=current_user["user_id"],
+            multi_use=body.multi_use
+        )
+
+        return {
+            "success": True,
+            "token": token_record.token,
+            "expires_at": token_record.expires_at.isoformat() + 'Z',
+            "multi_use": body.multi_use
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to generate agent registration token: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to generate token: {str(e)}")
+
+
+@app.get("/api/agent/list")
+async def list_agents(
+    request: Request,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    List all registered agents with their status and metadata.
+    """
+    try:
+        from agent.connection_manager import agent_connection_manager
+
+        with monitor.db.get_session() as db:
+            agents = db.query(Agent).join(DockerHostDB).all()
+
+            agents_data = []
+            for agent in agents:
+                agents_data.append({
+                    "agent_id": agent.id,
+                    "host_id": agent.host_id,
+                    "host_name": agent.host.name if agent.host else None,
+                    "engine_id": agent.engine_id,
+                    "version": agent.version,
+                    "proto_version": agent.proto_version,
+                    "capabilities": json.loads(agent.capabilities) if agent.capabilities else {},
+                    "status": agent.status,
+                    "connected": agent_connection_manager.is_connected(agent.id),
+                    "last_seen_at": agent.last_seen_at.isoformat() + 'Z' if agent.last_seen_at else None,
+                    "registered_at": agent.registered_at.isoformat() + 'Z' if agent.registered_at else None
+                })
+
+            return {
+                "success": True,
+                "agents": agents_data,
+                "total": len(agents_data),
+                "connected_count": agent_connection_manager.get_connection_count()
+            }
+
+    except Exception as e:
+        logger.error(f"Failed to list agents: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to list agents: {str(e)}")
+
+
+@app.get("/api/agent/{agent_id}/status")
+async def get_agent_status(
+    agent_id: str,
+    request: Request,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get detailed status of a specific agent.
+    """
+    try:
+        from agent.connection_manager import agent_connection_manager
+
+        with monitor.db.get_session() as db:
+            agent = db.query(Agent).filter_by(id=agent_id).first()
+
+            if not agent:
+                raise HTTPException(status_code=404, detail="Agent not found")
+
+            return {
+                "success": True,
+                "agent": {
+                    "agent_id": agent.id,
+                    "host_id": agent.host_id,
+                    "host_name": agent.host.name if agent.host else None,
+                    "engine_id": agent.engine_id,
+                    "version": agent.version,
+                    "proto_version": agent.proto_version,
+                    "capabilities": json.loads(agent.capabilities) if agent.capabilities else {},
+                    "status": agent.status,
+                    "connected": agent_connection_manager.is_connected(agent.id),
+                    "last_seen_at": agent.last_seen_at.isoformat() + 'Z' if agent.last_seen_at else None,
+                    "registered_at": agent.registered_at.isoformat() + 'Z' if agent.registered_at else None
+                }
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get agent status: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get agent status: {str(e)}")
+
+
+@app.post("/api/agent/{agent_id}/migrate-from/{source_host_id}", dependencies=[Depends(require_scope("admin"))])
+async def migrate_agent_from_host(
+    agent_id: str,
+    source_host_id: str,
+    request: Request,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Migrate settings from an existing mTLS host to an agent.
+
+    Used when multiple remote hosts share the same Docker engine_id (cloned VMs)
+    and the user needs to choose which host to migrate settings from.
+
+    Requires admin scope as it modifies host state.
+    """
+    try:
+        agent_manager = AgentManager(monitor=monitor)
+        result = agent_manager.migrate_from_host(agent_id, source_host_id)
+
+        if not result["success"]:
+            raise HTTPException(status_code=400, detail=result.get("error", "Migration failed"))
+
+        # Broadcast migration notification to frontend
+        try:
+            await monitor.manager.broadcast({
+                "type": "host_migrated",
+                "data": {
+                    "old_host_id": result["migrated_from"]["host_id"],
+                    "old_host_name": result["migrated_from"]["host_name"],
+                    "new_host_id": result["host_id"],
+                    "new_host_name": None  # Frontend can look up agent name
+                }
+            })
+        except Exception as e:
+            logger.warning(f"Failed to broadcast migration notification: {e}")
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Migration failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Migration failed: {str(e)}")
+
+
+@app.websocket("/api/agent/ws")
+async def agent_websocket_endpoint(websocket: WebSocket):
+    """
+    WebSocket endpoint for DockMon agent connections.
+
+    Protocol:
+    1. Agent connects
+    2. Agent sends authentication message (register or reconnect)
+    3. Backend validates and responds
+    4. Bidirectional message exchange
+    5. Agent disconnects
+
+    Note: This endpoint does NOT use a persistent database session.
+    Each database operation creates a short-lived session following the
+    pattern used throughout DockMon (auto-restart, desired state, etc.).
+    """
+    await handle_agent_websocket(websocket, monitor)
+
+
 @app.websocket("/ws")
 @app.websocket("/ws/")
 async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = Cookie(None)):
@@ -4211,11 +4917,17 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
                     containers,
                     monitor.settings
                 )
+                # Get agent host IDs to exclude from stats-service (they use WebSocket for stats)
+                agent_host_ids = {
+                    host_id for host_id, host in monitor.hosts.items()
+                    if host.connection_type == "agent"
+                }
                 await monitor.stats_manager.sync_container_streams(
                     containers,
                     containers_needing_stats,
                     stats_client,
-                    _handle_task_exception
+                    _handle_task_exception,
+                    agent_host_ids
                 )
                 logger.info(f"Started stats streams for {len(containers_needing_stats)} containers (first viewer connected)")
 
@@ -4322,8 +5034,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
                     # Verify container exists and user has access to it
                     try:
                         containers = await monitor.get_containers()  # Must await async function
+                        # Match by short_id (12 chars) or full id (64 chars) - agent containers use both
                         container_exists = any(
-                            c.id == container_id and c.host_id == host_id
+                            (c.short_id == container_id or c.id == container_id) and c.host_id == host_id
                             for c in containers
                         )
                         if container_exists:

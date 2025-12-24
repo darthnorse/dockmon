@@ -84,6 +84,7 @@ export function HostDetailsModal({
 
   if (!open || !hostId || !host) return null
 
+  // Build tabs array
   const tabs = [
     {
       id: 'overview',
@@ -127,7 +128,7 @@ export function HostDetailsModal({
           onClick={(e) => e.stopPropagation()}
         >
           {/* Header */}
-          <div className="flex items-center justify-between px-6 py-4 border-b border-border shrink-0">
+          <div className="flex items-center justify-between px-3 sm:px-4 md:px-6 py-4 border-b border-border shrink-0">
             {/* Breadcrumb */}
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <span>Hosts</span>
@@ -148,7 +149,7 @@ export function HostDetailsModal({
           </div>
 
           {/* KPI Cards */}
-          <div className="grid grid-cols-4 gap-4 px-6 py-4 border-b border-border shrink-0">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4 px-3 sm:px-4 md:px-6 py-4 border-b border-border shrink-0">
             {/* Total Containers */}
             <div className="bg-surface-2 rounded-lg p-4 border border-border">
               <div className="text-3xl font-bold">

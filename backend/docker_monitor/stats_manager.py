@@ -88,7 +88,8 @@ class StatsManager:
         containers: List[Container],
         containers_needing_stats: Set[str],
         stats_client,
-        error_callback
+        error_callback,
+        agent_host_ids: Set[str] = None
     ) -> None:
         """
         Synchronize container stats streams with what's needed
@@ -101,10 +102,18 @@ class StatsManager:
             containers_needing_stats: Set of composite keys (host_id:container_id) that need stats
             stats_client: Stats client instance
             error_callback: Callback for handling async task errors
+            agent_host_ids: Set of host IDs that use agent-based connections (stats come via WebSocket, not stats-service)
         """
+        if agent_host_ids is None:
+            agent_host_ids = set()
+
         async with self._streaming_lock:
             # Start streams for containers that need stats but aren't streaming yet
             for container in containers:
+                # Skip containers on agent-based hosts - stats come via WebSocket, not stats-service
+                if container.host_id in agent_host_ids:
+                    continue
+
                 # Use short_id for consistency
                 container_key = make_composite_key(container.host_id, container.short_id)
                 if container_key in containers_needing_stats and container_key not in self.streaming_containers:

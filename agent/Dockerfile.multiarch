@@ -1,0 +1,58 @@
+# Multi-architecture Dockerfile for DockMon Agent
+# This Dockerfile is designed to be built from the repository root with both agent/ and shared/ available
+
+# Build stage
+FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS builder
+
+ARG TARGETOS
+ARG TARGETARCH
+
+# Install build dependencies
+RUN apk add --no-cache git ca-certificates
+
+WORKDIR /build
+
+# Copy shared module first (from repo root context)
+COPY shared/ ./shared/
+
+# Copy agent files (from repo root context)
+COPY agent/ ./agent/
+
+# Set working directory to agent
+WORKDIR /build/agent
+
+# Fix the replace directive to point to ../shared
+RUN sed -i 's|replace github.com/darthnorse/dockmon-shared => ../shared|replace github.com/darthnorse/dockmon-shared => /build/shared|g' go.mod
+
+# Download dependencies
+RUN go mod download
+
+# Build binary for target architecture
+ARG VERSION=dev
+ARG COMMIT=unknown
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+    -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" \
+    -o dockmon-agent \
+    ./cmd/agent
+
+# Runtime stage
+FROM alpine:3.19
+
+# Install runtime dependencies
+RUN apk add --no-cache ca-certificates tzdata
+
+# Create data directory
+RUN mkdir -p /data
+
+WORKDIR /app
+
+# Copy binary from builder
+COPY --from=builder /build/agent/dockmon-agent /app/dockmon-agent
+
+# Data directory at /data - mount a named volume to persist agent identity:
+#   -v agent-data:/data
+
+# Expose no ports (agent connects outbound only)
+
+# Run as root (like main DockMon container) to access Docker socket
+ENTRYPOINT ["/app/dockmon-agent"]

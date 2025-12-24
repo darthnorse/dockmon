@@ -18,6 +18,8 @@ interface Host {
   os_version?: string | null
   docker_version?: string | null
   is_podman?: boolean
+  connection_type?: 'agent' | 'remote'
+  host_ip?: string | null
 }
 
 interface HostOverviewSectionProps {
@@ -80,11 +82,21 @@ export function HostOverviewSection({ host }: HostOverviewSectionProps) {
           </div>
         </div>
 
-        {/* URL and Uptime */}
+        {/* URL/IP and Uptime */}
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="text-xs font-medium text-muted-foreground">Endpoint</label>
-            <p className="text-sm mt-1 font-mono text-muted-foreground">{host.url}</p>
+            {/* Show IP for agent hosts with host_ip, URL for others */}
+            {host.connection_type === 'agent' && host.host_ip ? (
+              <>
+                <label className="text-xs font-medium text-muted-foreground">IP Address</label>
+                <p className="text-sm mt-1">{host.host_ip}</p>
+              </>
+            ) : (
+              <>
+                <label className="text-xs font-medium text-muted-foreground">Endpoint</label>
+                <p className="text-sm mt-1">{host.url}</p>
+              </>
+            )}
           </div>
           {formatUptime(host.daemon_started_at) && (
             <div>

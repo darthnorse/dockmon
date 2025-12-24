@@ -30,9 +30,18 @@ import {
   useUpdatePolicies,
   useTogglePolicyCategory,
   useCreateCustomPattern,
-  useDeleteCustomPattern
+  useDeleteCustomPattern,
+  useUpdatePolicyAction
 } from '@/features/containers/hooks/useUpdatePolicies'
-import type { UpdatePolicyCategory } from '@/features/containers/types/updatePolicy'
+import type { UpdatePolicyCategory, UpdatePolicyAction } from '@/features/containers/types/updatePolicy'
+import { ACTION_OPTIONS } from '@/features/containers/types/updatePolicy'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 
 /**
  * Category metadata for display
@@ -77,9 +86,11 @@ export function UpdatePoliciesSettings() {
   const toggleCategory = useTogglePolicyCategory()
   const createPattern = useCreateCustomPattern()
   const deletePattern = useDeleteCustomPattern()
+  const updateAction = useUpdatePolicyAction()
 
   const [expandedCategories, setExpandedCategories] = useState<Set<UpdatePolicyCategory>>(new Set())
   const [customPatternInput, setCustomPatternInput] = useState('')
+  const [newPatternAction, setNewPatternAction] = useState<UpdatePolicyAction>('warn')
 
   /**
    * Toggle category expansion
@@ -121,9 +132,10 @@ export function UpdatePoliciesSettings() {
     }
 
     try {
-      await createPattern.mutateAsync({ pattern })
-      toast.success(`Custom pattern '${pattern}' added`)
+      await createPattern.mutateAsync({ pattern, action: newPatternAction })
+      toast.success(`Custom pattern '${pattern}' added with action '${newPatternAction}'`)
       setCustomPatternInput('')
+      setNewPatternAction('warn') // Reset to default
     } catch (error) {
       if (error instanceof Error && error.message.includes('already exists')) {
         toast.error(`Pattern '${pattern}' already exists`)
@@ -132,6 +144,20 @@ export function UpdatePoliciesSettings() {
           description: error instanceof Error ? error.message : 'Unknown error'
         })
       }
+    }
+  }
+
+  /**
+   * Handle update policy action
+   */
+  const handleUpdateAction = async (policyId: number, pattern: string, action: UpdatePolicyAction) => {
+    try {
+      await updateAction.mutateAsync({ policyId, action })
+      toast.success(`Pattern '${pattern}' action updated to '${action}'`)
+    } catch (error) {
+      toast.error('Failed to update action', {
+        description: error instanceof Error ? error.message : 'Unknown error'
+      })
     }
   }
 
@@ -295,6 +321,24 @@ export function UpdatePoliciesSettings() {
               className="h-9"
             />
           </div>
+          <Select
+            value={newPatternAction}
+            onValueChange={(value) => setNewPatternAction(value as UpdatePolicyAction)}
+            disabled={createPattern.isPending}
+          >
+            <SelectTrigger className="w-[100px] h-9">
+              <SelectValue>
+                {ACTION_OPTIONS.find((o) => o.value === newPatternAction)?.label}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {ACTION_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <Button
             onClick={handleAddCustomPattern}
             disabled={createPattern.isPending || !customPatternInput.trim()}
@@ -304,7 +348,7 @@ export function UpdatePoliciesSettings() {
             {createPattern.isPending ? (
               <Loader2 className="w-4 h-4 animate-spin" />
             ) : (
-              'Add Pattern'
+              'Add'
             )}
           </Button>
         </div>
@@ -315,9 +359,27 @@ export function UpdatePoliciesSettings() {
             {policies.categories.custom.map((policy) => (
               <div
                 key={policy.id}
-                className="flex items-center justify-between bg-surface-3 rounded px-3 py-2 border border-border"
+                className="flex items-center justify-between bg-surface-3 rounded px-3 py-2 border border-border gap-2"
               >
-                <span className="text-sm font-mono text-text-primary">{policy.pattern}</span>
+                <span className="text-sm font-mono text-text-primary flex-1">{policy.pattern}</span>
+                <Select
+                  value={policy.action}
+                  onValueChange={(value) => handleUpdateAction(policy.id, policy.pattern, value as UpdatePolicyAction)}
+                  disabled={updateAction.isPending}
+                >
+                  <SelectTrigger className="w-[100px] h-8">
+                    <SelectValue>
+                      {ACTION_OPTIONS.find((o) => o.value === policy.action)?.label}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {ACTION_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
                 <button
                   onClick={() => handleDeleteCustomPattern(policy.id, policy.pattern)}
                   disabled={deletePattern.isPending}
@@ -337,10 +399,12 @@ export function UpdatePoliciesSettings() {
       {/* Help Text */}
       <div className="bg-info/10 border border-info/20 rounded-lg p-4">
         <p className="text-xs text-info/90">
-          <strong>How it works:</strong> When a container update is available, the system checks if
-          the container or image name matches any enabled patterns. Matching containers will require
-          user confirmation before auto-updating. To manually update a protected container, open the
-          container details, go to the Updates tab, click "Update Now", and confirm when prompted.
+          <strong>How it works:</strong> Patterns match against container and image names.
+          <br /><br />
+          <strong>Warn:</strong> Matched containers will require user confirmation before auto-updating.
+          <br />
+          <strong>Ignore:</strong> Matched containers are excluded from automatic update checks entirely.
+          You can still manually check for updates via the container's Updates tab.
         </p>
       </div>
     </div>

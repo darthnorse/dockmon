@@ -11,7 +11,7 @@ Tests verify:
 
 import pytest
 from datetime import datetime, timedelta, timezone
-from unittest.mock import Mock, MagicMock, AsyncMock, patch
+from unittest.mock import Mock, MagicMock, patch
 from docker_monitor.periodic_jobs import PeriodicJobsManager
 
 
@@ -55,8 +55,8 @@ def create_mock_image(image_id, tags, created_hours_ago=100):
         'Created': created_dt.isoformat().replace('+00:00', 'Z')
     }
 
-    # Mock remove method
-    image.remove = AsyncMock()
+    # Mock remove method (sync method wrapped by async_docker_call)
+    image.remove = Mock()
 
     return image
 

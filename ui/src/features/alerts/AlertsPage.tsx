@@ -147,68 +147,72 @@ export function AlertsPage() {
   return (
     <div className="flex h-full flex-col bg-[#0a0e14]">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-gray-800 bg-[#0d1117] px-6 py-4">
-        <div>
-          <h1 className="text-2xl font-bold text-white">Alerts</h1>
-          <p className="text-sm text-gray-400 mt-1">Monitor and manage system alerts</p>
-        </div>
-
-        {/* Stats KPIs - Centered */}
-        {stats && (
-          <div className="flex gap-6">
-            <div className="flex items-center gap-2">
-              <AlertCircle className="h-5 w-5 text-red-500" />
-              <div>
-                <div className="text-xs text-gray-400">Critical</div>
-                <div className="text-lg font-semibold text-white">{stats.by_severity.critical}</div>
-              </div>
+      <div className="border-b border-gray-800 bg-[#0d1117] px-3 sm:px-4 md:px-6 py-4 pt-20 md:pt-4">
+        <div className="flex flex-col gap-4">
+          {/* Title and Button */}
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h1 className="text-xl sm:text-2xl font-bold text-white">Alerts</h1>
+              <p className="text-sm text-gray-400 mt-1 hidden sm:block">Monitor and manage system alerts</p>
             </div>
-            <div className="flex items-center gap-2">
-              <AlertTriangle className="h-5 w-5 text-orange-500" />
-              <div>
-                <div className="text-xs text-gray-400">Error</div>
-                <div className="text-lg font-semibold text-white">{stats.by_severity.error}</div>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <Bell className="h-5 w-5 text-yellow-500" />
-              <div>
-                <div className="text-xs text-gray-400">Warning</div>
-                <div className="text-lg font-semibold text-white">{stats.by_severity.warning}</div>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <CheckCircle2 className="h-5 w-5 text-green-500" />
-              <div>
-                <div className="text-xs text-gray-400">Open</div>
-                <div className="text-lg font-semibold text-white">{stats.by_state.open}</div>
-              </div>
-            </div>
+            <Link
+              to="/alerts/rules"
+              className="flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground transition-colors hover:bg-primary/90 whitespace-nowrap"
+              data-testid="manage-rules-button"
+            >
+              <Settings className="h-4 w-4" />
+              <span className="hidden sm:inline">Manage Rules</span>
+              <span className="sm:hidden">Rules</span>
+            </Link>
           </div>
-        )}
 
-        {/* Manage Rules Button - Right */}
-        <Link
-          to="/alerts/rules"
-          className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground transition-colors hover:bg-primary/90"
-          data-testid="manage-rules-button"
-        >
-          <Settings className="h-4 w-4" />
-          Manage Rules
-        </Link>
+          {/* Stats KPIs - Grid on mobile */}
+          {stats && (
+            <div className="grid grid-cols-2 sm:flex gap-3 sm:gap-6">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 sm:h-5 sm:w-5 text-red-500" />
+                <div>
+                  <div className="text-xs text-gray-400">Critical</div>
+                  <div className="text-base sm:text-lg font-semibold text-white">{stats.by_severity.critical}</div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 sm:h-5 sm:w-5 text-orange-500" />
+                <div>
+                  <div className="text-xs text-gray-400">Error</div>
+                  <div className="text-base sm:text-lg font-semibold text-white">{stats.by_severity.error}</div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Bell className="h-4 w-4 sm:h-5 sm:w-5 text-yellow-500" />
+                <div>
+                  <div className="text-xs text-gray-400">Warning</div>
+                  <div className="text-base sm:text-lg font-semibold text-white">{stats.by_severity.warning}</div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className="h-4 w-4 sm:h-5 sm:w-5 text-green-500" />
+                <div>
+                  <div className="text-xs text-gray-400">Open</div>
+                  <div className="text-base sm:text-lg font-semibold text-white">{stats.by_state.open}</div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Filters */}
-      <div className="border-b border-gray-800 bg-[#0d1117] px-6 py-3">
-        <div className="flex flex-wrap gap-3">
+      <div className="border-b border-gray-800 bg-[#0d1117] px-3 sm:px-4 md:px-6 py-3">
+        <div className="flex flex-col sm:flex-row gap-3">
           {/* State Filter */}
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-400">State:</span>
+          <div className="flex items-center gap-2 overflow-x-auto pb-1">
+            <span className="text-sm text-gray-400 whitespace-nowrap">State:</span>
             {STATE_OPTIONS.map((option) => (
               <button
                 key={option.value}
                 onClick={() => handleFilterChange('state', option.value)}
-                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors ${
+                className={`flex items-center gap-1.5 rounded-md px-2.5 sm:px-3 py-1.5 text-sm transition-colors whitespace-nowrap ${
                   filters.state === option.value
                     ? 'bg-blue-600 text-white'
                     : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
@@ -221,13 +225,13 @@ export function AlertsPage() {
           </div>
 
           {/* Severity Filter */}
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-400">Severity:</span>
+          <div className="flex items-center gap-2 overflow-x-auto pb-1">
+            <span className="text-sm text-gray-400 whitespace-nowrap">Severity:</span>
             {SEVERITY_OPTIONS.map((option) => (
               <button
                 key={option.value}
                 onClick={() => handleFilterChange('severity', option.value)}
-                className={`rounded-md px-3 py-1.5 text-sm transition-colors ${
+                className={`rounded-md px-2.5 sm:px-3 py-1.5 text-sm transition-colors whitespace-nowrap ${
                   filters.severity === option.value
                     ? 'bg-blue-600 text-white'
                     : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
@@ -261,14 +265,14 @@ export function AlertsPage() {
       {/* Alerts List */}
       <div className={`flex-1 overflow-auto ${selectedAlertIds.size > 0 ? 'pb-32' : ''}`}>
         {isLoading ? (
-          <div className="flex h-full items-center justify-center text-gray-400">
+          <div className="flex items-center justify-center text-gray-400 min-h-[400px]">
             Loading alerts...
           </div>
         ) : alerts.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center text-gray-400">
-            <Info className="mb-2 h-12 w-12" />
-            <p className="text-lg">No alerts found</p>
-            <p className="text-sm">Try adjusting your filters</p>
+          <div className="flex flex-col items-center justify-center text-gray-400 min-h-[400px] py-20">
+            <Info className="mb-4 h-16 w-16 opacity-50" />
+            <p className="text-xl font-medium">No alerts found</p>
+            <p className="text-sm mt-2 text-gray-500">Try adjusting your filters</p>
           </div>
         ) : (
           <>

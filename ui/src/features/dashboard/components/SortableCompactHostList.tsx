@@ -151,7 +151,7 @@ function SortableCompactHostCard({ host, onHostClick }: SortableCompactHostCardP
         {...attributes}
         {...listeners}
         className="absolute right-0 top-0 h-full cursor-grab active:cursor-grabbing"
-        style={{ width: 'calc(100% - 200px)', zIndex: 10 }}
+        style={{ width: 'min(calc(100% - 200px), 60%)', zIndex: 10 }}
         title="Drag to reorder"
       />
       <CompactHostCard

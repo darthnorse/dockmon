@@ -10,14 +10,14 @@
  */
 
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
-import GridLayout, { WidthProvider, type Layout } from 'react-grid-layout'
+import { Responsive as ResponsiveGridLayout, WidthProvider, type Layout, type Layouts } from 'react-grid-layout'
 import { ExpandedHostCardContainer } from './components/ExpandedHostCardContainer'
 import { HostCardContainer } from './components/HostCardContainer'
 import { useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
 import type { Host } from '@/types/api'
 import 'react-grid-layout/css/styles.css'
 
-const ResponsiveGridLayout = WidthProvider(GridLayout)
+const ResponsiveGrid = WidthProvider(ResponsiveGridLayout)
 
 interface HostCardsGridProps {
   hosts: Host[]
@@ -27,36 +27,119 @@ interface HostCardsGridProps {
   mode?: 'standard' | 'expanded'
 }
 
-// Default layout for host cards
+// Default layouts for host cards with responsive breakpoints
 // Using 36px row height to align with container row height
-function generateDefaultLayout(hosts: Host[], mode: 'standard' | 'expanded'): Layout[] {
+function generateDefaultLayouts(hosts: Host[], mode: 'standard' | 'expanded'): Layouts {
+  const layouts: Layouts = {}
+
   if (mode === 'standard') {
-    // Standard mode: 4 columns (3 units each), smaller cards
-    return hosts.map((host, index) => ({
+    // Mobile (xs): 1 column (12 units wide)
+    layouts.xs = hosts.map((host, index) => ({
       i: host.id,
-      x: (index % 4) * 3, // 4 columns: 0, 3, 6, 9
-      y: Math.floor(index / 4) * 8, // Stack cards vertically
-      w: 3, // Width: 3 units (12/4 = 4 columns)
-      h: 8, // Height: 8 units (8 * 36px = 288px default)
-      minW: 3, // Minimum 3 units wide (fits header + stats)
-      minH: 6, // Minimum 6 units tall (fits header + footer)
-      maxW: 12, // Maximum full width
-      maxH: 20, // Maximum height (20 * 36px = 720px)
+      x: 0,
+      y: index * 8,
+      w: 12,
+      h: 8,
+      minW: 12,
+      minH: 6,
+      maxW: 12,
+      maxH: 20,
+    }))
+
+    // Tablet (sm): 2 columns (6 units each)
+    layouts.sm = hosts.map((host, index) => ({
+      i: host.id,
+      x: (index % 2) * 6,
+      y: Math.floor(index / 2) * 8,
+      w: 6,
+      h: 8,
+      minW: 6,
+      minH: 6,
+      maxW: 12,
+      maxH: 20,
+    }))
+
+    // Desktop (md): 3 columns (4 units each)
+    layouts.md = hosts.map((host, index) => ({
+      i: host.id,
+      x: (index % 3) * 4,
+      y: Math.floor(index / 3) * 8,
+      w: 4,
+      h: 8,
+      minW: 3,
+      minH: 6,
+      maxW: 12,
+      maxH: 20,
+    }))
+
+    // Large desktop (lg): 4 columns (3 units each)
+    layouts.lg = hosts.map((host, index) => ({
+      i: host.id,
+      x: (index % 4) * 3,
+      y: Math.floor(index / 4) * 8,
+      w: 3,
+      h: 8,
+      minW: 3,
+      minH: 6,
+      maxW: 12,
+      maxH: 20,
     }))
   } else {
-    // Expanded mode: 3 columns (4 units each), larger cards
-    return hosts.map((host, index) => ({
+    // Expanded mode
+    // Mobile (xs): 1 column (12 units wide)
+    layouts.xs = hosts.map((host, index) => ({
       i: host.id,
-      x: (index % 3) * 4, // 3 columns: 0, 4, 8
-      y: Math.floor(index / 3) * 10, // Stack cards vertically
-      w: 4, // Width: 4 units (12/3 = 3 columns)
-      h: 10, // Height: 10 units (10 * 36px = 360px default)
-      minW: 3, // Minimum 3 units wide
-      minH: 6, // Minimum 6 units tall
-      maxW: 12, // Maximum full width
-      maxH: 30, // Maximum height (30 * 36px = 1080px for large container lists)
+      x: 0,
+      y: index * 10,
+      w: 12,
+      h: 10,
+      minW: 12,
+      minH: 6,
+      maxW: 12,
+      maxH: 30,
+    }))
+
+    // Tablet (sm): 2 columns (6 units each)
+    layouts.sm = hosts.map((host, index) => ({
+      i: host.id,
+      x: (index % 2) * 6,
+      y: Math.floor(index / 2) * 10,
+      w: 6,
+      h: 10,
+      minW: 6,
+      minH: 6,
+      maxW: 12,
+      maxH: 30,
+    }))
+
+    // Desktop (md+): 3 columns (4 units each)
+    layouts.md = hosts.map((host, index) => ({
+      i: host.id,
+      x: (index % 3) * 4,
+      y: Math.floor(index / 3) * 10,
+      w: 4,
+      h: 10,
+      minW: 3,
+      minH: 6,
+      maxW: 12,
+      maxH: 30,
+    }))
+
+    // Large desktop (lg): 3 columns (4 units each) - same as md for expanded
+    layouts.lg = hosts.map((host, index) => ({
+      i: host.id,
+      x: (index % 3) * 4,
+      y: Math.floor(index / 3) * 10,
+      w: 4,
+      h: 10,
+      minW: 3,
+      minH: 6,
+      maxW: 12,
+      maxH: 30,
     }))
   }
+
+  return layouts
 }
 
 export function HostCardsGrid({ hosts, onHostClick, onViewDetails, onEditHost, mode = 'expanded' }: HostCardsGridProps) {
@@ -67,31 +150,33 @@ export function HostCardsGrid({ hosts, onHostClick, onViewDetails, onEditHost, m
   // Use different layout keys for Standard vs Expanded modes
   const layoutKey = mode === 'standard' ? 'hostCardLayoutStandard' : 'hostCardLayout'
 
-  // Get layout from user prefs or generate default
-  const layout = useMemo(() => {
-    const storedLayout = prefs?.dashboard?.[layoutKey] as Layout[] | undefined
+  // Get layouts from user prefs or generate default
+  const layouts = useMemo(() => {
+    const storedLayouts = prefs?.dashboard?.[layoutKey] as Layouts | undefined
 
-    if (storedLayout && storedLayout.length === hosts.length) {
-      // Validate that all IDs in stored layout exist in current hosts
+    if (storedLayouts) {
+      // Validate that stored layouts have all current host IDs
       const hostIds = new Set(hosts.map((h) => h.id))
-      const allIdsValid = storedLayout.every((item) => hostIds.has(item.i))
+      const hasValidLayouts = Object.values(storedLayouts).every(
+        (layout) => layout && layout.length === hosts.length && layout.every((item) => hostIds.has(item.i))
+      )
 
-      if (allIdsValid) {
-        // Use stored layout - all host IDs match
-        return storedLayout
+      if (hasValidLayouts) {
+        // Use stored layouts - all host IDs match
+        return storedLayouts
       }
     }
 
-    // Generate default layout
-    return generateDefaultLayout(hosts, mode)
+    // Generate default layouts
+    return generateDefaultLayouts(hosts, mode)
   }, [hosts, prefs, mode, layoutKey])
 
-  const [currentLayout, setCurrentLayout] = useState<Layout[]>(layout)
+  const [currentLayouts, setCurrentLayouts] = useState<Layouts>(layouts)
 
-  // Update currentLayout when layout memo changes (e.g., when prefs load)
+  // Update currentLayouts when layouts memo changes (e.g., when prefs load)
   useEffect(() => {
-    setCurrentLayout(layout)
-  }, [layout])
+    setCurrentLayouts(layouts)
+  }, [layouts])
 
   // Mark that preferences have loaded (so we can save changes)
   useEffect(() => {
@@ -102,8 +187,8 @@ export function HostCardsGrid({ hosts, onHostClick, onViewDetails, onEditHost, m
 
   // Handle layout change (drag/resize)
   const handleLayoutChange = useCallback(
-    (newLayout: Layout[]) => {
-      setCurrentLayout(newLayout)
+    (_currentLayout: Layout[], allLayouts: Layouts) => {
+      setCurrentLayouts(allLayouts)
 
       // Don't save until preferences have loaded (react-grid-layout fires this on mount)
       if (!hasLoadedPrefs.current) {
@@ -114,7 +199,7 @@ export function HostCardsGrid({ hosts, onHostClick, onViewDetails, onEditHost, m
       updatePreferences.mutate({
         dashboard: {
           ...prefs?.dashboard,
-          [layoutKey]: newLayout,
+          [layoutKey]: allLayouts,
         }
       })
     },
@@ -135,11 +220,12 @@ export function HostCardsGrid({ hosts, onHostClick, onViewDetails, onEditHost, m
     <div className="mt-4">
       <h2 className="text-lg font-semibold mb-4">Hosts</h2>
 
-      <ResponsiveGridLayout
+      <ResponsiveGrid
         className="layout"
-        layout={currentLayout}
+        layouts={currentLayouts}
         onLayoutChange={handleLayoutChange}
-        cols={12}
+        breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 0 }}
+        cols={{ lg: 12, md: 12, sm: 12, xs: 12 }}
         rowHeight={36}
         draggableHandle=".host-card-drag-handle"
         compactType="vertical"
@@ -182,7 +268,7 @@ export function HostCardsGrid({ hosts, onHostClick, onViewDetails, onEditHost, m
             />
           </div>
         ))}
-      </ResponsiveGridLayout>
+      </ResponsiveGrid>
 
       {hosts.length === 0 && (
         <div className="p-8 border border-dashed border-border rounded-lg text-center text-muted-foreground">

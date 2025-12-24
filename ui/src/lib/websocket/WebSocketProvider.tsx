@@ -125,6 +125,18 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
           queryClient.invalidateQueries({ queryKey: ['dashboard', 'hosts'] })
           break
 
+        // Host migration (mTLS to agent) - handled by MigrationBanner component
+        case 'host_migrated':
+          queryClient.invalidateQueries({ queryKey: ['hosts'] })
+          queryClient.invalidateQueries({ queryKey: ['containers'] })
+          queryClient.invalidateQueries({ queryKey: ['dashboard', 'hosts'] })
+          break
+
+        // Migration choice needed (cloned VMs) - handled by MigrationChoiceModal component
+        case 'migration_choice_needed':
+          queryClient.invalidateQueries({ queryKey: ['hosts'] })
+          break
+
         // Auto-restart events
         case 'auto_restart_success':
         case 'auto_restart_failed':

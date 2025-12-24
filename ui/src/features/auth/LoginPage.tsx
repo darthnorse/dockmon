@@ -14,6 +14,7 @@
 
 import { useState, type FormEvent } from 'react'
 import { LogIn } from 'lucide-react'
+import { useSearchParams, useNavigate } from 'react-router-dom'
 import { useAuth } from './AuthContext'
 import { ApiError, apiClient } from '@/lib/api/client'
 import { Button } from '@/components/ui/button'
@@ -22,9 +23,14 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 
 export function LoginPage() {
   const { login, isLoading } = useAuth()
+  const [searchParams] = useSearchParams()
+  const navigate = useNavigate()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
+
+  // Get redirect URL from query params (e.g., /login?redirect=/quick-action?token=xxx)
+  const redirectUrl = searchParams.get('redirect')
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -45,7 +51,8 @@ export function LoginPage() {
         console.warn('Failed to sync timezone offset:', err)
       })
 
-      // On success, AuthContext will handle navigation
+      // Navigate to redirect URL or home
+      navigate(redirectUrl || '/', { replace: true })
     } catch (err) {
       if (err instanceof ApiError) {
         if (err.status === 401) {

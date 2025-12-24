@@ -6,7 +6,10 @@ Used by both update checker (registry API) and update executor (Docker pulls).
 """
 
 import logging
-from typing import Optional, Dict
+from typing import Optional, Dict, List
+
+from database import RegistryCredential
+from utils.encryption import decrypt_password
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +33,6 @@ def get_registry_credentials(db, image_name: str) -> Optional[Dict[str, str]]:
         registry.example.com:5000/app:v1 → registry.example.com:5000 → lookup
     """
     try:
-        from database import RegistryCredential
-        from utils.encryption import decrypt_password
-
         # Extract registry URL using same logic as registry_adapter
         registry_url = "docker.io"  # Default for Docker Hub
 
@@ -74,3 +74,43 @@ def get_registry_credentials(db, image_name: str) -> Optional[Dict[str, str]]:
     except Exception as e:
         logger.error(f"Error looking up registry credentials: {e}")
         return None
+
+
+def get_all_registry_credentials(db) -> List[Dict[str, str]]:
+    """
+    Get all stored registry credentials.
+
+    Used for compose deployments where we don't know which registries
+    will be needed upfront. Returns all credentials so the agent can
+    authenticate with any private registry referenced in the compose file.
+
+    Args:
+        db: DatabaseManager instance
+
+    Returns:
+        List of dicts with {registry_url, username, password} for each stored credential
+    """
+    try:
+        credentials = []
+
+        with db.get_session() as session:
+            all_creds = session.query(RegistryCredential).all()
+
+            for cred in all_creds:
+                try:
+                    plaintext = decrypt_password(cred.password_encrypted)
+                    credentials.append({
+                        "registry_url": cred.registry_url,
+                        "username": cred.username,
+                        "password": plaintext
+                    })
+                except Exception as e:
+                    logger.error(f"Failed to decrypt credentials for {cred.registry_url}: {e}")
+                    continue
+
+        logger.debug(f"Retrieved {len(credentials)} registry credentials for compose deployment")
+        return credentials
+
+    except Exception as e:
+        logger.error(f"Error retrieving all registry credentials: {e}")
+        return []

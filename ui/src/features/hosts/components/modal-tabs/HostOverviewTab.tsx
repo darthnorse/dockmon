@@ -5,16 +5,20 @@
  * - Large performance charts (CPU, Memory, Network)
  * - Time range selector
  * - Right sidebar with Host Information and Events
+ * - Agent info and updates for agent-based hosts
  */
 
-import { Cpu, MemoryStick, Network, Calendar, AlertCircle } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { Cpu, MemoryStick, Network, Calendar, AlertCircle, ArrowUpCircle, RefreshCw } from 'lucide-react'
 import { useHostMetrics, useHostSparklines } from '@/lib/stats/StatsProvider'
-import { MiniChart } from '@/lib/charts/MiniChart'
+import { ResponsiveMiniChart } from '@/lib/charts/ResponsiveMiniChart'
 import { TagInput } from '@/components/TagInput'
 import { TagChip } from '@/components/TagChip'
 import { Button } from '@/components/ui/button'
 import { useHostTagEditor } from '@/hooks/useHostTagEditor'
 import { useHostEvents } from '@/hooks/useEvents'
+import { apiClient } from '@/lib/api/client'
 import type { Host } from '@/types/api'
 
 interface HostOverviewTabProps {
@@ -22,11 +26,52 @@ interface HostOverviewTabProps {
   host: Host
 }
 
+interface AgentInfo {
+  id: string
+  version: string
+  arch: string | null
+  os: string | null
+  status: string
+  update_available: boolean
+  latest_version: string | null
+  is_container_mode: boolean
+  last_seen_at: string | null
+}
+
 export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
+  const queryClient = useQueryClient()
+  const [updateTriggered, setUpdateTriggered] = useState(false)
+
   const metrics = useHostMetrics(hostId)
   const sparklines = useHostSparklines(hostId)
   const { data: eventsData, isLoading: isLoadingEvents, error: eventsError } = useHostEvents(hostId, 3)
   const events = eventsData?.events ?? []
+
+  // Fetch agent info for agent-based hosts
+  const { data: agent } = useQuery({
+    queryKey: ['host-agent', hostId],
+    queryFn: () => apiClient.get<AgentInfo>(`/hosts/${hostId}/agent`),
+    enabled: host.connection_type === 'agent',
+    refetchInterval: 10000,
+  })
+
+  // Reset updateTriggered when agent reconnects with new version (update_available becomes false)
+  useEffect(() => {
+    if (updateTriggered && agent && !agent.update_available) {
+      setUpdateTriggered(false)
+    }
+  }, [agent?.update_available, updateTriggered])
+
+  // Trigger agent update mutation
+  const triggerUpdate = useMutation({
+    mutationFn: async () => {
+      await apiClient.post(`/hosts/${hostId}/agent/update`)
+    },
+    onSuccess: () => {
+      setUpdateTriggered(true)
+      queryClient.invalidateQueries({ queryKey: ['host-agent', hostId] })
+    },
+  })
 
   const currentTags = host.tags || []
 
@@ -65,34 +110,113 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="p-6">
-        <div className="grid grid-cols-2 gap-6">
+      <div className="p-3 sm:p-4 md:p-6">
+        {/* Agent Update Banner - shown at top when update available */}
+        {agent?.update_available && !updateTriggered && (
+          <div className="rounded-lg border bg-amber-500/10 border-amber-500/30 p-3 mb-4 sm:mb-6">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <ArrowUpCircle className="h-4 w-4 text-amber-500" />
+                <div>
+                  <div className="text-sm font-medium">Agent update available</div>
+                  <div className="text-xs text-muted-foreground">
+                    v{agent.latest_version} (current: v{agent.version})
+                  </div>
+                </div>
+              </div>
+              {!agent.is_container_mode && (
+                <Button
+                  onClick={() => triggerUpdate.mutate()}
+                  disabled={triggerUpdate.isPending}
+                  size="sm"
+                >
+                  {triggerUpdate.isPending ? (
+                    <>
+                      <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                      Updating...
+                    </>
+                  ) : (
+                    'Update Agent'
+                  )}
+                </Button>
+              )}
+            </div>
+            {agent.is_container_mode && (
+              <div className="mt-2 text-xs text-muted-foreground">
+                This agent runs in a container. Update DockMon to update the agent.
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Agent Update In Progress */}
+        {updateTriggered && (
+          <div className="rounded-lg border bg-blue-500/10 border-blue-500/30 p-3 mb-4 sm:mb-6">
+            <div className="flex items-center gap-2">
+              <RefreshCw className="h-4 w-4 text-blue-500 animate-spin" />
+              <div>
+                <div className="text-sm font-medium">Agent update in progress</div>
+                <div className="text-xs text-muted-foreground">
+                  Agent will reconnect shortly...
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
           {/* LEFT COLUMN */}
-          <div className="space-y-6">
+          <div className="space-y-4 sm:space-y-6">
             {/* Host Information */}
             <div>
-              <h4 className="text-lg font-medium text-foreground mb-3">Host Information</h4>
+              <h4 className="text-base sm:text-lg font-medium text-foreground mb-3">Host Information</h4>
               <div className="space-y-2">
-                <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">Address</span>
-                  <span className="font-mono text-xs">{host.url || '—'}</span>
-                </div>
-                <div className="flex justify-between text-sm">
+                {/* Show IP for agent hosts (systemd mode), URL for others */}
+                {host.connection_type === 'agent' && host.host_ip ? (
+                  <div className="flex flex-col sm:flex-row sm:justify-between gap-1 sm:gap-2 text-sm">
+                    <span className="text-muted-foreground">IP Address</span>
+                    <span className="font-mono text-xs break-all">{host.host_ip}</span>
+                  </div>
+                ) : (
+                  <div className="flex flex-col sm:flex-row sm:justify-between gap-1 sm:gap-2 text-sm">
+                    <span className="text-muted-foreground">Address</span>
+                    <span className="font-mono text-xs break-all">{host.url || '—'}</span>
+                  </div>
+                )}
+                <div className="flex flex-col sm:flex-row sm:justify-between gap-1 sm:gap-2 text-sm">
                   <span className="text-muted-foreground">OS</span>
                   <span>{host.os_version || 'Unknown'}</span>
                 </div>
-                <div className="flex justify-between text-sm">
+                <div className="flex flex-col sm:flex-row sm:justify-between gap-1 sm:gap-2 text-sm">
                   <span className="text-muted-foreground">{host.is_podman ? 'Podman' : 'Docker'} Version</span>
                   <span>{host.docker_version || '—'}</span>
                 </div>
-                <div className="flex justify-between text-sm">
+                <div className="flex flex-col sm:flex-row sm:justify-between gap-1 sm:gap-2 text-sm">
                   <span className="text-muted-foreground">CPU</span>
                   <span>{host.num_cpus || '—'}</span>
                 </div>
-                <div className="flex justify-between text-sm">
+                <div className="flex flex-col sm:flex-row sm:justify-between gap-1 sm:gap-2 text-sm">
                   <span className="text-muted-foreground">Memory</span>
                   <span>{host.total_memory ? formatBytes(host.total_memory) : '—'}</span>
                 </div>
+                {/* Agent info - only for agent-based hosts */}
+                {host.connection_type === 'agent' && agent && (
+                  <>
+                    <div className="border-t border-border my-2" />
+                    <div className="flex justify-between text-sm">
+                      <span className="text-muted-foreground">Agent Version</span>
+                      <span>v{agent.version}</span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-muted-foreground">Agent Platform</span>
+                      <span>{agent.os || 'linux'}/{agent.arch || 'amd64'}</span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-muted-foreground">Agent Deployment</span>
+                      <span>{agent.is_container_mode ? 'Container' : 'Systemd'}</span>
+                    </div>
+                  </>
+                )}
               </div>
             </div>
 
@@ -174,15 +298,16 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
               ) : (
                 <div className="border border-border rounded-lg overflow-hidden">
                   {/* Mini table header */}
-                  <div className="bg-surface-2 px-3 py-1.5 grid grid-cols-[80px_60px_1fr] gap-2 text-xs font-medium text-muted-foreground border-b border-border">
+                  <div className="bg-surface-2 px-3 py-1.5 grid grid-cols-[60px_60px_1fr] sm:grid-cols-[80px_70px_1fr] gap-2 text-xs font-medium text-muted-foreground border-b border-border">
                     <div>TIME</div>
-                    <div>SEVERITY</div>
+                    <div className="hidden sm:block">SEVERITY</div>
+                    <div className="sm:hidden">SEV</div>
                     <div>DETAILS</div>
                   </div>
                   {/* Events */}
                   <div className="divide-y divide-border bg-surface-1">
                     {events.map((event) => (
-                      <div key={event.id} className="px-3 py-2 grid grid-cols-[80px_60px_1fr] gap-2 text-xs hover:bg-surface-2 transition-colors">
+                      <div key={event.id} className="px-3 py-2 grid grid-cols-[60px_60px_1fr] sm:grid-cols-[80px_70px_1fr] gap-2 text-xs hover:bg-surface-2 transition-colors">
                         <div className="font-mono text-muted-foreground truncate">
                           {new Date(event.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
                         </div>
@@ -206,10 +331,10 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
           </div>
 
           {/* RIGHT COLUMN */}
-          <div className="space-y-6">
+          <div className="space-y-4 sm:space-y-6">
             {/* Live Stats Header */}
-            <div className="-mb-3">
-              <h4 className="text-lg font-medium text-foreground">Live Stats</h4>
+            <div className="-mb-2 sm:-mb-3">
+              <h4 className="text-base sm:text-lg font-medium text-foreground">Live Stats</h4>
             </div>
 
             {/* CPU Usage */}
@@ -226,16 +351,16 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
                 </span>
               </div>
               {sparklines?.cpu && sparklines.cpu.length > 0 ? (
-                <div className="h-[100px] w-full overflow-hidden">
-                  <MiniChart
+                <div className="h-[120px] w-full">
+                  <ResponsiveMiniChart
                     data={sparklines.cpu}
                     color="cpu"
-                    height={100}
-                    width={780}
+                    height={120}
+                    showAxes={true}
                   />
                 </div>
               ) : (
-                <div className="h-[100px] flex items-center justify-center text-muted-foreground text-xs">
+                <div className="h-[120px] flex items-center justify-center text-muted-foreground text-xs">
                   No data available
                 </div>
               )}
@@ -255,16 +380,16 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
                 </span>
               </div>
               {sparklines?.mem && sparklines.mem.length > 0 ? (
-                <div className="h-[100px] w-full overflow-hidden">
-                  <MiniChart
+                <div className="h-[120px] w-full">
+                  <ResponsiveMiniChart
                     data={sparklines.mem}
                     color="memory"
-                    height={100}
-                    width={780}
+                    height={120}
+                    showAxes={true}
                   />
                 </div>
               ) : (
-                <div className="h-[100px] flex items-center justify-center text-muted-foreground text-xs">
+                <div className="h-[120px] flex items-center justify-center text-muted-foreground text-xs">
                   No data available
                 </div>
               )}
@@ -284,16 +409,16 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
                 </span>
               </div>
               {sparklines?.net && sparklines.net.length > 0 ? (
-                <div className="h-[100px] w-full overflow-hidden">
-                  <MiniChart
+                <div className="h-[120px] w-full">
+                  <ResponsiveMiniChart
                     data={sparklines.net}
                     color="network"
-                    height={100}
-                    width={780}
+                    height={120}
+                    showAxes={true}
                   />
                 </div>
               ) : (
-                <div className="h-[100px] flex items-center justify-center text-muted-foreground text-xs">
+                <div className="h-[120px] flex items-center justify-center text-muted-foreground text-xs">
                   No data available
                 </div>
               )}

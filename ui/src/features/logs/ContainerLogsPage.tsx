@@ -132,9 +132,9 @@ export function ContainerLogsPage() {
     <div className="h-full flex flex-col">
       {/* Header */}
       <div className="border-b border-border bg-card">
-        <div className="flex items-center justify-between p-6">
+        <div className="flex items-center justify-between p-3 sm:p-4 md:p-6 pt-20 md:pt-6">
           <div>
-            <h1 className="text-2xl font-bold text-foreground">
+            <h1 className="text-xl sm:text-2xl font-bold text-foreground">
               Container Logs
             </h1>
             <p className="text-sm text-muted-foreground mt-1">
@@ -229,9 +229,9 @@ export function ContainerLogsPage() {
       {/* Log Viewer */}
       <div className="flex-1 bg-card">
         {selectedContainers.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
-            <FileText className="w-16 h-16 mb-4 opacity-20" />
-            <p className="text-lg font-medium">No containers selected</p>
+          <div className="flex flex-col items-center justify-center text-muted-foreground min-h-[400px] py-20">
+            <FileText className="w-16 h-16 mb-4 opacity-50" />
+            <p className="text-xl font-medium">No containers selected</p>
             <p className="text-sm mt-2">Select one or more containers above to view their logs</p>
           </div>
         ) : (

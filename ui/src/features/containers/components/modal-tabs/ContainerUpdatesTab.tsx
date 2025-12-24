@@ -26,9 +26,12 @@ export interface ContainerUpdatesTabProps {
 }
 
 function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
+  // CRITICAL: Always use 12-char short ID for API calls (backend expects short IDs)
+  const containerShortId = container.id.slice(0, 12)
+
   const { data: updateStatus, isLoading, error } = useContainerUpdateStatus(
     container.host_id,
-    container.id
+    containerShortId
   )
   const checkUpdate = useCheckContainerUpdate()
   const updateAutoUpdateConfig = useUpdateAutoUpdateConfig()
@@ -96,7 +99,7 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
     try {
       await checkUpdate.mutateAsync({
         hostId: container.host_id,
-        containerId: container.id,
+        containerId: containerShortId,
       })
       toast.success('Update check complete')
       // Query will auto-invalidate via the mutation's onSuccess
@@ -123,7 +126,7 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
       // Don't update local state optimistically - wait for server response
       const result = await updateAutoUpdateConfig.mutateAsync({
         hostId: container.host_id,
-        containerId: container.id,
+        containerId: containerShortId,
         autoUpdateEnabled: enabled,
         floatingTagMode: trackingMode as 'exact' | 'patch' | 'minor' | 'latest',
       })
@@ -150,7 +153,7 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
       // Don't update local state optimistically - wait for server response
       const result = await updateAutoUpdateConfig.mutateAsync({
         hostId: container.host_id,
-        containerId: container.id,
+        containerId: containerShortId,
         autoUpdateEnabled,
         floatingTagMode: mode as 'exact' | 'patch' | 'minor' | 'latest',
       })
@@ -177,7 +180,7 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
       // Don't update local state optimistically - wait for server response
       const result = await setContainerPolicy.mutateAsync({
         hostId: container.host_id,
-        containerId: container.id,
+        containerId: containerShortId,
         policy,
       })
       // Update local state only after successful server save
@@ -216,7 +219,7 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
       // Don't update local state optimistically - wait for server response
       const result = await updateAutoUpdateConfig.mutateAsync({
         hostId: container.host_id,
-        containerId: container.id,
+        containerId: containerShortId,
         autoUpdateEnabled,
         floatingTagMode: trackingMode as 'exact' | 'patch' | 'minor' | 'latest',
         changelogUrl: changelogUrl.trim() || null,  // v2.0.2+
@@ -257,7 +260,7 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
       // Don't update local state optimistically - wait for server response
       const result = await updateAutoUpdateConfig.mutateAsync({
         hostId: container.host_id,
-        containerId: container.id,
+        containerId: containerShortId,
         autoUpdateEnabled,
         floatingTagMode: trackingMode as 'exact' | 'patch' | 'minor' | 'latest',
         registryPageUrl: registryPageUrl.trim() || null,  // v2.0.2+
@@ -293,7 +296,7 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
     try {
       const result = await executeUpdate.mutateAsync({
         hostId: container.host_id,
-        containerId: container.id,
+        containerId: containerShortId,
         force,
       })
 
@@ -489,7 +492,7 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
       {isUpdating && container.host_id && (
         <LayerProgressDisplay
           hostId={container.host_id}
-          entityId={container.id}
+          entityId={containerShortId}
           eventType="container_update_layer_progress"
           simpleProgressEventType="container_update_progress"
           initialProgress={0}

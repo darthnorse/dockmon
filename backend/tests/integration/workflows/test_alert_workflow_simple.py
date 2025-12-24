@@ -41,7 +41,7 @@ class TestAlertRuleCRUD:
             operator=">=",
             threshold=80.0,
             severity="warning",
-            cooldown_seconds=300,
+            notification_cooldown_seconds=300,
         )
         db_session.add(rule)
         db_session.commit()

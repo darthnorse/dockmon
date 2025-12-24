@@ -12,7 +12,7 @@
 import { useEffect, useState, useMemo } from 'react'
 import { Circle, Cpu, MemoryStick, Network } from 'lucide-react'
 import { useContainer, useContainerSparklines } from '@/lib/stats/StatsProvider'
-import { MiniChart } from '@/lib/charts/MiniChart'
+import { ResponsiveMiniChart } from '@/lib/charts/ResponsiveMiniChart'
 import { TagEditor } from './TagEditor'
 import { toast } from 'sonner'
 import { apiClient } from '@/lib/api/client'
@@ -180,14 +180,14 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
 
       {/* Identity Section */}
       <div className="space-y-3">
-        <div className="flex justify-between text-sm">
+        <div className="flex flex-col sm:flex-row sm:justify-between gap-1 sm:gap-2 text-sm">
           <span className="text-muted-foreground">Host</span>
-          <span className="text-foreground">{container.host_name || '-'}</span>
+          <span className="text-foreground break-all">{container.host_name || '-'}</span>
         </div>
 
-        <div className="flex justify-between text-sm">
+        <div className="flex flex-col sm:flex-row sm:justify-between gap-1 sm:gap-2 text-sm">
           <span className="text-muted-foreground">Image</span>
-          <span className="text-foreground font-mono">{container.image || '-'}</span>
+          <span className="text-foreground font-mono text-xs sm:text-sm break-all">{container.image || '-'}</span>
         </div>
 
         {/* Tags Row */}
@@ -268,7 +268,7 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
       <div className="border-t border-border pt-4 space-y-2">
         <h4 className="text-sm font-medium text-foreground mb-3">Information</h4>
 
-        <div className="flex justify-between text-sm">
+        <div className="flex flex-col sm:flex-row sm:justify-between gap-1 sm:gap-2 text-sm">
           <span className="text-muted-foreground">Created</span>
           <span className="text-foreground">
             {container.created
@@ -282,7 +282,7 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
           </span>
         </div>
 
-        <div className="flex justify-between text-sm">
+        <div className="flex flex-col sm:flex-row sm:justify-between gap-1 sm:gap-2 text-sm">
           <span className="text-muted-foreground">Uptime</span>
           <span className="text-foreground">{uptime || '-'}</span>
         </div>
@@ -315,14 +315,14 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
             </span>
           </div>
           {cpuData.length > 0 ? (
-            <MiniChart
+            <ResponsiveMiniChart
               data={cpuData}
               color="cpu"
-              height={50}
-              width={420}
+              height={100}
+              showAxes={true}
             />
           ) : (
-            <div className="h-[50px] flex items-center justify-center bg-muted/20 rounded text-xs text-muted-foreground">
+            <div className="h-[100px] flex items-center justify-center bg-muted/20 rounded text-xs text-muted-foreground">
               {container.state === 'running' ? 'Collecting data...' : 'No data available'}
             </div>
           )}
@@ -340,14 +340,14 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
             </span>
           </div>
           {memData.length > 0 ? (
-            <MiniChart
+            <ResponsiveMiniChart
               data={memData}
               color="memory"
-              height={50}
-              width={420}
+              height={100}
+              showAxes={true}
             />
           ) : (
-            <div className="h-[50px] flex items-center justify-center bg-muted/20 rounded text-xs text-muted-foreground">
+            <div className="h-[100px] flex items-center justify-center bg-muted/20 rounded text-xs text-muted-foreground">
               {container.state === 'running' ? 'Collecting data...' : 'No data available'}
             </div>
           )}
@@ -367,14 +367,14 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
             </span>
           </div>
           {netData.length > 0 ? (
-            <MiniChart
+            <ResponsiveMiniChart
               data={netData}
               color="network"
-              height={50}
-              width={420}
+              height={100}
+              showAxes={true}
             />
           ) : (
-            <div className="h-[50px] flex items-center justify-center bg-muted/20 rounded text-xs text-muted-foreground">
+            <div className="h-[100px] flex items-center justify-center bg-muted/20 rounded text-xs text-muted-foreground">
               {container.state === 'running' ? 'Collecting data...' : 'No data available'}
             </div>
           )}

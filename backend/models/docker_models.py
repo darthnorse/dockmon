@@ -9,7 +9,7 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, Field, validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 logger = logging.getLogger(__name__)
@@ -78,11 +78,12 @@ class DockerHostConfig(BaseModel):
     tls_key: Optional[str] = Field(None, max_length=10000)
     tls_ca: Optional[str] = Field(None, max_length=10000)
     # Phase 3d - Host organization
-    tags: Optional[list[str]] = Field(None, max_items=50)  # Max 50 tags per host
+    tags: Optional[list[str]] = Field(None, max_length=50)  # Max 50 tags per host
     description: Optional[str] = Field(None, max_length=1000)  # Optional description
 
-    @validator('name')
-    def validate_name(cls, v):
+    @field_validator('name')
+    @classmethod
+    def validate_name(cls, v: str) -> str:
         """Validate host name for security"""
         if not v or not v.strip():
             raise ValueError('Host name cannot be empty')
@@ -92,8 +93,9 @@ class DockerHostConfig(BaseModel):
             raise ValueError('Host name contains invalid characters')
         return sanitized
 
-    @validator('url')
-    def validate_url(cls, v):
+    @field_validator('url')
+    @classmethod
+    def validate_url(cls, v: str) -> str:
         """Validate Docker URL for security - prevent SSRF attacks"""
         if not v or not v.strip():
             raise ValueError('URL cannot be empty')
@@ -101,9 +103,10 @@ class DockerHostConfig(BaseModel):
         v = v.strip()
 
         # Only allow specific protocols
-        allowed_protocols = ['tcp://', 'unix://', 'http://', 'https://']
+        # agent:// is for agent-managed hosts (read-only, can't be changed)
+        allowed_protocols = ['tcp://', 'unix://', 'http://', 'https://', 'agent://']
         if not any(v.startswith(proto) for proto in allowed_protocols):
-            raise ValueError('URL must use tcp://, unix://, http:// or https:// protocol')
+            raise ValueError('URL must use tcp://, unix://, http://, https://, or agent:// protocol')
 
         # Block ONLY the most dangerous SSRF targets (cloud metadata & loopback)
         # Allow private networks (10.*, 172.16-31.*, 192.168.*) for legitimate Docker hosts
@@ -143,8 +146,9 @@ class DockerHostConfig(BaseModel):
 
         return v
 
-    @validator('tls_cert', 'tls_key', 'tls_ca')
-    def validate_certificate(cls, v):
+    @field_validator('tls_cert', 'tls_key', 'tls_ca')
+    @classmethod
+    def validate_certificate(cls, v: Optional[str]) -> Optional[str]:
         """Validate TLS certificate data"""
         if v is None:
             return v
@@ -202,6 +206,7 @@ class DockerHost(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     url: str
+    connection_type: str = "remote"  # "remote" (local/mTLS) or "agent" (v2.2.0+)
     status: str = "offline"
     security_status: Optional[str] = None  # "secure", "insecure", "unknown"
     last_checked: datetime = Field(default_factory=datetime.now)
@@ -260,3 +265,5 @@ class Container(BaseModel):
     # Docker network IP addresses (GitHub Issue #37)
     docker_ip: Optional[str] = None  # Primary Docker network IP
     docker_ips: Optional[dict[str, str]] = None  # All network IPs {network_name: ip}
+    # Image RepoDigests (v2.2.0+ - from agent for update checking)
+    repo_digests: Optional[list[str]] = None

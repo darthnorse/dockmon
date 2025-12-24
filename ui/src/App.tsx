@@ -10,7 +10,7 @@
  */
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useSearchParams } from 'react-router-dom'
 import { Toaster } from 'sonner'
 import { AuthProvider, useAuth } from '@/features/auth/AuthContext'
 import { WebSocketProvider } from '@/lib/websocket/WebSocketProvider'
@@ -29,6 +29,7 @@ import { SettingsPage } from '@/features/settings/SettingsPage'
 import { ChangePasswordModal } from '@/features/auth/ChangePasswordModal'
 import { DeploymentsPage } from '@/features/deployments/DeploymentsPage'
 import { TemplatesPage } from '@/features/deployments/TemplatesPage'
+import { QuickActionPage } from '@/features/quick-action/QuickActionPage'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { LoadingSkeleton } from '@/components/layout/LoadingSkeleton'
 import { useState, useEffect } from 'react'
@@ -59,9 +60,22 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>
 }
 
+// Login route wrapper - redirects authenticated users to redirect URL or home
+function LoginRoute() {
+  const { isAuthenticated } = useAuth()
+  const [searchParams] = useSearchParams()
+  const redirectUrl = searchParams.get('redirect')
+
+  if (isAuthenticated) {
+    return <Navigate to={redirectUrl || '/'} replace />
+  }
+
+  return <LoginPage />
+}
+
 // App routes
 function AppRoutes() {
-  const { isAuthenticated, isFirstLogin } = useAuth()
+  const { isFirstLogin } = useAuth()
   const [showPasswordDialog, setShowPasswordDialog] = useState(false)
 
   // Show password change dialog when first login is detected
@@ -83,10 +97,10 @@ function AppRoutes() {
 
       <Routes>
       {/* Public route - Login */}
-      <Route
-        path="/login"
-        element={isAuthenticated ? <Navigate to="/" replace /> : <LoginPage />}
-      />
+      <Route path="/login" element={<LoginRoute />} />
+
+      {/* Public route - Quick Action (notification links) */}
+      <Route path="/quick-action" element={<QuickActionPage />} />
 
       {/* Protected routes - All use AppLayout with sidebar + WebSocket + Stats */}
       <Route
@@ -130,7 +144,7 @@ export function App() {
           <AuthProvider>
             <AppRoutes />
             <Toaster
-              position="top-right"
+              position="bottom-right"
               expand={false}
               richColors
               closeButton

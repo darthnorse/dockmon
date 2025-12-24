@@ -155,10 +155,10 @@ export function ContainerModalAlertsTab({ container }: ContainerModalAlertsTabPr
   return (
     <div className="flex flex-col h-full">
       {/* Filters */}
-      <div className="p-4 border-b border-border bg-surface-0">
-        <div className="flex items-center gap-2 flex-wrap">
+      <div className="p-3 sm:p-4 border-b border-border bg-surface-0">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-2">
           {/* State Filter */}
-          <div className="flex gap-1">
+          <div className="flex gap-1 overflow-x-auto pb-1">
             {STATE_OPTIONS.map((option) => {
               const Icon = option.icon
               const isActive = filters.state === option.value
@@ -166,7 +166,7 @@ export function ContainerModalAlertsTab({ container }: ContainerModalAlertsTabPr
                 <button
                   key={option.value}
                   onClick={() => handleFilterChange('state', option.value)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm transition-colors ${
+                  className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-md text-sm transition-colors whitespace-nowrap ${
                     isActive
                       ? 'bg-accent text-white'
                       : 'bg-surface-1 text-muted-foreground hover:bg-surface-2'
@@ -180,14 +180,14 @@ export function ContainerModalAlertsTab({ container }: ContainerModalAlertsTabPr
           </div>
 
           {/* Severity Filter */}
-          <div className="flex gap-1 ml-auto">
+          <div className="flex gap-1 sm:ml-auto overflow-x-auto pb-1">
             {SEVERITY_OPTIONS.map((option) => {
               const isActive = filters.severity === option.value
               return (
                 <button
                   key={option.value}
                   onClick={() => handleFilterChange('severity', option.value)}
-                  className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                  className={`px-2.5 sm:px-3 py-1.5 rounded-md text-sm font-medium transition-colors whitespace-nowrap ${
                     isActive
                       ? `${option.color} bg-surface-2`
                       : 'text-muted-foreground bg-surface-1 hover:bg-surface-2'
@@ -272,7 +272,7 @@ export function ContainerModalAlertsTab({ container }: ContainerModalAlertsTabPr
       )}
 
       {/* Alerts List */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto overflow-x-auto">
         {alerts.length === 0 ? (
           <div className="p-8 text-center text-muted-foreground">
             <Bell className="h-12 w-12 mx-auto mb-3 opacity-50" />

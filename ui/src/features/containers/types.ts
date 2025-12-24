@@ -92,6 +92,7 @@ export interface ContainerHttpHealthCheck {
   check_interval_seconds: number
   follow_redirects: boolean
   verify_ssl: boolean
+  check_from: 'backend' | 'agent'  // v2.2.0+: Where to run checks from
   headers_json: string | null
   auth_config_json: string | null
 

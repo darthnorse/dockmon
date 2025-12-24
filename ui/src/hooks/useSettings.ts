@@ -24,11 +24,13 @@ export interface GlobalSettings {
     days: number[]
   }> | null
   timezone_offset: number
+  timezone: string
   show_host_stats: boolean
   show_container_stats: boolean
   show_container_alerts_on_hosts: boolean
   unused_tag_retention_days: number
   event_retention_days: number
+  event_suppression_patterns: string[] | null
   alert_retention_days: number
   update_check_time: string
   skip_compose_containers: boolean
@@ -36,6 +38,21 @@ export interface GlobalSettings {
   prune_images_enabled: boolean
   image_retention_count: number
   image_prune_grace_hours: number
+  // DockMon update notifications
+  app_version?: string
+  latest_available_version?: string | null
+  last_dockmon_update_check_at?: string | null
+  dismissed_dockmon_update_version?: string | null
+  update_available?: boolean
+  // Agent update notifications (v2.2.0+)
+  latest_agent_version?: string | null
+  latest_agent_release_url?: string | null
+  last_agent_update_check_at?: string | null
+  dismissed_agent_update_version?: string | null
+  agents_needing_update?: number
+  // External URL for notification action links (v2.2.0+)
+  external_url?: string | null
+  external_url_from_env?: string | null
 }
 
 export interface TemplateVariable {

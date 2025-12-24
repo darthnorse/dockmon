@@ -39,6 +39,7 @@ export function ResponsiveMiniChart({
   maxWidth,
   debounceMs = 100,
   label,
+  showAxes,
 }: ResponsiveMiniChartProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [containerWidth, setContainerWidth] = useState<number>(minWidth)
@@ -105,6 +106,7 @@ export function ResponsiveMiniChart({
         color={color}
         width={containerWidth}
         height={height}
+        {...(showAxes !== undefined && { showAxes })}
         {...(label && { label })}
       />
     </div>

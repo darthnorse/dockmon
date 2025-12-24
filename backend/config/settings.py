@@ -218,12 +218,30 @@ class RateLimitConfig:
         }
 
 
+def get_external_url() -> Optional[str]:
+    """
+    Get external URL from environment variable.
+
+    This is used for notification action links (one-click update buttons).
+    The database setting can override this value.
+
+    Returns:
+        External URL string or None if not set
+    """
+    url = os.getenv('DOCKMON_EXTERNAL_URL', '').strip()
+    # Remove trailing slash for consistency
+    return url.rstrip('/') if url else None
+
+
 class AppConfig:
     """Main application configuration"""
 
     # Server settings
     HOST = os.getenv('DOCKMON_HOST', '0.0.0.0')
     PORT = _safe_int('DOCKMON_PORT', 8080, min_val=1, max_val=65535)
+
+    # External URL for notification action links
+    EXTERNAL_URL = get_external_url()
 
     # Security settings
     CORS_ORIGINS = get_cors_origins()

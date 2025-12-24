@@ -4,6 +4,15 @@ on:
   push:
     tags:
       - 'agent-v*'  # Agent releases use agent-v* pattern (e.g., agent-v1.0.0)
+    branches:
+      - dev
+      - main
+      - 'feature/**'
+      - 'feat/**'
+  pull_request:
+    paths:
+      - 'agent/**'
+  workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
@@ -30,8 +39,17 @@ jobs:
       - name: Get version info
         id: version
         run: |
-          # Extract version from tag (e.g., agent-v1.0.0 -> 1.0.0)
-          VERSION=${GITHUB_REF#refs/tags/agent-v}
+          if [[ $GITHUB_REF == refs/tags/agent-v* ]]; then
+            # Extract version from agent-v* tag (e.g., agent-v1.0.0 -> 1.0.0)
+            VERSION=${GITHUB_REF#refs/tags/agent-v}
+          elif [[ $GITHUB_REF == refs/tags/* ]]; then
+            # Fallback for other tag formats
+            VERSION=${GITHUB_REF#refs/tags/v}
+          elif [[ $GITHUB_REF == refs/heads/feature/* ]] || [[ $GITHUB_REF == refs/heads/feat/* ]]; then
+            VERSION="dev-${GITHUB_SHA:0:7}"
+          else
+            VERSION="dev"
+          fi
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "commit=${GITHUB_SHA:0:7}" >> $GITHUB_OUTPUT
 
@@ -89,6 +107,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Log into registry ${{ env.REGISTRY }}
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -98,10 +117,28 @@ jobs:
       - name: Get version
         id: version
         run: |
-          # Extract version from tag (e.g., agent-v1.0.0 -> 1.0.0)
-          VERSION=${GITHUB_REF#refs/tags/agent-v}
+          BRANCH_TAG=""
+          if [[ $GITHUB_REF == refs/tags/agent-v* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/agent-v}
+          elif [[ $GITHUB_REF == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/v}
+          elif [[ $GITHUB_REF == refs/heads/main ]]; then
+            VERSION="latest"
+          elif [[ $GITHUB_REF == refs/heads/dev ]]; then
+            VERSION="dev"
+          elif [[ $GITHUB_REF == refs/heads/feature/* ]] || [[ $GITHUB_REF == refs/heads/feat/* ]]; then
+            VERSION="dev-${GITHUB_SHA:0:7}"
+            # Also create a branch-name tag for easy tracking (e.g., feature-v2.2.0-agent)
+            BRANCH_TAG="${GITHUB_REF#refs/heads/}"
+            BRANCH_TAG="${BRANCH_TAG//\//-}"  # Replace / with -
+          elif [[ $GITHUB_EVENT_NAME == "pull_request" ]]; then
+            VERSION="pr-${{ github.event.number }}"
+          else
+            VERSION="dev-${GITHUB_SHA:0:7}"
+          fi
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "commit=${GITHUB_SHA:0:7}" >> $GITHUB_OUTPUT
+          echo "branch_tag=${BRANCH_TAG}" >> $GITHUB_OUTPUT
 
       - name: Extract platform suffix
         id: platform
@@ -117,6 +154,7 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=${{ steps.version.outputs.version }},suffix=-${{ steps.platform.outputs.suffix }}
+            ${{ steps.version.outputs.branch_tag && format('type=raw,value={0},suffix=-{1}', steps.version.outputs.branch_tag, steps.platform.outputs.suffix) || '' }}
 
       - name: Build and push Docker image
         id: build
@@ -125,7 +163,7 @@ jobs:
           context: .
           file: ./agent/Dockerfile.multiarch
           platforms: ${{ matrix.platform }}
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
@@ -135,6 +173,7 @@ jobs:
   # Create multi-arch manifests
   manifest:
     needs: build-docker
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -151,35 +190,46 @@ jobs:
       - name: Get version info
         id: version
         run: |
-          # Extract version from tag (e.g., agent-v1.0.0 -> 1.0.0)
-          VERSION=${GITHUB_REF#refs/tags/agent-v}
-
-          # Check if this is a pre-release (contains -alpha, -beta, -rc, etc.)
-          if [[ "$VERSION" == *"-"* ]]; then
-            IS_PRERELEASE="true"
+          if [[ $GITHUB_REF == refs/tags/agent-v* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/agent-v}
+            IS_RELEASE="true"
+          elif [[ $GITHUB_REF == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/v}
+            IS_RELEASE="true"
+          elif [[ $GITHUB_REF == refs/heads/main ]]; then
+            VERSION="main"
+            IS_RELEASE="false"
+          elif [[ $GITHUB_REF == refs/heads/dev ]]; then
+            VERSION="dev"
+            IS_RELEASE="false"
+          elif [[ $GITHUB_REF == refs/heads/feature/* ]] || [[ $GITHUB_REF == refs/heads/feat/* ]]; then
+            # Extract branch name for feature branches
+            BRANCH=${GITHUB_REF#refs/heads/}
+            # Replace / with - for valid tag
+            VERSION="${BRANCH//\//-}"
+            IS_RELEASE="false"
           else
-            IS_PRERELEASE="false"
+            VERSION="dev"
+            IS_RELEASE="false"
           fi
-
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "is_prerelease=${IS_PRERELEASE}" >> $GITHUB_OUTPUT
+          echo "is_release=${IS_RELEASE}" >> $GITHUB_OUTPUT
 
       - name: Create and push multi-arch manifest
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          IS_PRERELEASE="${{ steps.version.outputs.is_prerelease }}"
+          IS_RELEASE="${{ steps.version.outputs.is_release }}"
           REPO="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
 
           echo "Creating manifest for ${REPO}:${VERSION}"
-          echo "Is pre-release: ${IS_PRERELEASE}"
 
-          # Create version manifest (always)
+          # Create main version manifest
           docker buildx imagetools create -t ${REPO}:${VERSION} \
             ${REPO}:${VERSION}-amd64 \
             ${REPO}:${VERSION}-arm64
 
-          # For stable releases (not pre-releases), also create semver and latest tags
-          if [ "$IS_PRERELEASE" == "false" ]; then
+          # For releases, also create semver tags
+          if [ "$IS_RELEASE" == "true" ]; then
             MAJOR=$(echo $VERSION | cut -d. -f1)
             MINOR=$(echo $VERSION | cut -d. -f1-2)
 

@@ -15,7 +15,7 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Depends, Request
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 
 from database import ApiKey, User
 from auth.api_key_auth import generate_api_key, get_current_user_or_api_key, require_scope
@@ -36,8 +36,9 @@ class ApiKeyCreateRequest(BaseModel):
     allowed_ips: Optional[str] = Field(None, description="Comma-separated IPs/CIDRs (optional)")
     expires_days: Optional[int] = Field(None, ge=1, le=365, description="Expiration in days (optional)")
 
-    @validator('scopes')
-    def validate_scopes(cls, v):
+    @field_validator('scopes')
+    @classmethod
+    def validate_scopes(cls, v: str) -> str:
         """Validate scopes are valid"""
         valid_scopes = {'read', 'write', 'admin'}
         scopes = set(s.strip() for s in v.split(','))
@@ -80,8 +81,9 @@ class ApiKeyUpdateRequest(BaseModel):
     scopes: Optional[str] = None
     allowed_ips: Optional[str] = None
 
-    @validator('scopes')
-    def validate_scopes(cls, v):
+    @field_validator('scopes')
+    @classmethod
+    def validate_scopes(cls, v: Optional[str]) -> Optional[str]:
         """Validate scopes if provided"""
         if v is None:
             return v

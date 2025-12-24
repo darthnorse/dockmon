@@ -218,16 +218,22 @@ class PeriodicJobsManager:
                         EventType.STARTUP
                     )
 
+                # Clean up expired action tokens (v2.2.0+)
+                from auth.action_token_auth import cleanup_expired_action_tokens
+                action_tokens_deleted = cleanup_expired_action_tokens(self.db)
+                if action_tokens_deleted > 0:
+                    logger.info(f"Cleaned up {action_tokens_deleted} expired action tokens")
+
+                # Clean up expired registration tokens (v2.2.0+)
+                from agent.manager import AgentManager
+                agent_manager = AgentManager()
+                registration_tokens_deleted = agent_manager.cleanup_expired_registration_tokens()
+                if registration_tokens_deleted > 0:
+                    logger.info(f"Cleaned up {registration_tokens_deleted} expired registration tokens")
+
                 # Clean up stale container state dictionaries (prevent memory leak)
                 if self.monitor:
                     await self.monitor.cleanup_stale_container_state()
-
-                # Clean up stale pull progress entries (defense-in-depth for crashed pulls)
-                # Local import to break circular dependency: periodic_jobs ↔ monitor ↔ update_executor
-                from updates.update_executor import get_update_executor
-                update_executor = get_update_executor()
-                if update_executor:
-                    await update_executor.cleanup_stale_pull_progress()
 
                 # Refresh host system info (OS version, Docker version, etc.)
                 if self.monitor:
@@ -478,14 +484,34 @@ class PeriodicJobsManager:
                     update_stats = await executor.execute_auto_updates()
 
                     # Log execution results
-                    if update_stats['attempted'] > 0:
+                    # Note: 'total' is the number of containers eligible for auto-update
+                    if update_stats['total'] > 0:
                         self.event_logger.log_system_event(
                             "Container Auto-Update",
-                            f"Attempted {update_stats['attempted']} auto-updates, {update_stats['successful']} successful, {update_stats['failed']} failed",
+                            f"Processed {update_stats['total']} auto-updates: {update_stats['successful']} successful, {update_stats['failed']} failed, {update_stats['skipped']} skipped",
                             EventSeverity.INFO if update_stats['failed'] == 0 else EventSeverity.WARNING,
                             EventType.STARTUP
                         )
                         logger.info(f"Auto-update execution complete: {update_stats}")
+
+                # Also check DockMon and Agent updates (tied to container update schedule)
+                try:
+                    dockmon_checker = get_dockmon_update_checker(self.db)
+
+                    # Check DockMon updates
+                    dockmon_result = await dockmon_checker.check_for_update()
+                    if dockmon_result.get('update_available'):
+                        logger.info(
+                            f"DockMon update available: "
+                            f"{dockmon_result['current_version']} → {dockmon_result['latest_version']}"
+                        )
+
+                    # Check Agent updates
+                    agent_result = await dockmon_checker.check_for_agent_update()
+                    if agent_result.get('latest_version'):
+                        logger.debug(f"Latest Agent version: {agent_result['latest_version']}")
+                except Exception as e:
+                    logger.warning(f"Error checking DockMon/Agent updates: {e}")
 
                 # Update last check time
                 self._last_update_check = now
@@ -553,6 +579,26 @@ class PeriodicJobsManager:
             # Update last check time
             self._last_update_check = datetime.now(timezone.utc)
             logger.info(f"Manual update check complete: {stats}")
+
+            # Also check DockMon and Agent updates (tied to container update schedule)
+            try:
+                checker = get_dockmon_update_checker(self.db)
+
+                # Check DockMon updates
+                dockmon_result = await checker.check_for_update()
+                if dockmon_result.get('update_available'):
+                    logger.info(
+                        f"DockMon update available: "
+                        f"{dockmon_result['current_version']} → {dockmon_result['latest_version']}"
+                    )
+
+                # Check Agent updates
+                agent_result = await checker.check_for_agent_update()
+                if agent_result.get('latest_version'):
+                    logger.debug(f"Latest Agent version: {agent_result['latest_version']}")
+            except Exception as e:
+                logger.warning(f"Error checking DockMon/Agent updates: {e}")
+
             return stats
 
         except Exception as e:
@@ -909,15 +955,16 @@ class PeriodicJobsManager:
 
     async def check_dockmon_update_once(self):
         """
-        Check for DockMon updates once (called on startup).
+        Check for DockMon and Agent updates once (called on startup).
         Does not loop - just runs a single check.
         """
         try:
-            logger.info("Checking for DockMon updates on startup...")
+            logger.info("Checking for DockMon and Agent updates on startup...")
 
             checker = get_dockmon_update_checker(self.db)
-            result = await checker.check_for_update()
 
+            # Check DockMon updates
+            result = await checker.check_for_update()
             if result.get('update_available'):
                 logger.info(
                     f"DockMon update available: "
@@ -928,45 +975,15 @@ class PeriodicJobsManager:
             else:
                 logger.info(f"DockMon is up to date: {result['current_version']}")
 
+            # Also check Agent updates
+            agent_result = await checker.check_for_agent_update()
+            if agent_result.get('latest_version'):
+                logger.info(f"Latest Agent version from GitHub: {agent_result['latest_version']}")
+            elif agent_result.get('error'):
+                logger.debug(f"Agent update check failed: {agent_result['error']}")
+
         except Exception as e:
-            logger.warning(f"Error checking for DockMon updates on startup: {e}")
-
-    async def check_dockmon_updates_periodic(self):
-        """
-        Periodic task: Check for DockMon application updates from GitHub.
-        Runs every 6 hours (hardcoded).
-
-        This is separate from container update checks (which run daily at configured time).
-        Checks GitHub releases for new DockMon versions and caches result in database.
-        Frontend polls settings to detect updates and show notification banner.
-        """
-        while True:
-            try:
-                logger.debug("Running periodic DockMon update check...")
-
-                checker = get_dockmon_update_checker(self.db)
-                result = await checker.check_for_update()
-
-                if result.get('update_available'):
-                    logger.info(
-                        f"DockMon update available: "
-                        f"{result['current_version']} → {result['latest_version']}"
-                    )
-                    # Frontend will detect via settings polling
-                elif result.get('error'):
-                    logger.warning(f"DockMon update check failed: {result['error']}")
-                else:
-                    logger.debug(
-                        f"DockMon is up to date: {result['current_version']}"
-                    )
-
-                # Sleep for 6 hours before next check
-                await asyncio.sleep(6 * 60 * 60)
-
-            except Exception as e:
-                logger.error(f"Error in DockMon update checker: {e}", exc_info=True)
-                # Wait 1 hour before retrying on error
-                await asyncio.sleep(60 * 60)
+            logger.warning(f"Error checking for updates on startup: {e}")
 
     async def cleanup_expired_image_cache(self) -> int:
         """
@@ -987,3 +1004,97 @@ class PeriodicJobsManager:
         except Exception as e:
             logger.error(f"Error cleaning expired image cache: {e}", exc_info=True)
             return 0
+
+    async def validate_engine_ids_periodic(self):
+        """
+        Periodic task: Validate and populate missing engine_ids for all hosts.
+        Runs every 6 hours.
+
+        This ensures:
+        - New hosts from v2.1.0 get engine_id populated
+        - Offline hosts get engine_id when they come online
+        - Engine ID changes are detected (VM cloning, Docker data migration)
+
+        Note: engine_id is also populated on host connect/reconnect (immediate),
+        this periodic check is a safety net for edge cases.
+        """
+        # Wait 5 minutes after startup before first check (let hosts connect first)
+        await asyncio.sleep(5 * 60)
+
+        while True:
+            try:
+                logger.debug("Running periodic engine_id validation...")
+
+                # Get all non-agent hosts that need engine_id check
+                hosts_to_check = []
+                with self.db.get_session() as session:
+                    from database import DockerHostDB
+                    # Get hosts where engine_id is NULL or host is active (to detect changes)
+                    hosts = session.query(DockerHostDB).filter(
+                        DockerHostDB.connection_type.in_(['local', 'remote']),  # Skip agent hosts
+                        DockerHostDB.is_active == True
+                    ).all()
+
+                    for host in hosts:
+                        hosts_to_check.append({
+                            'id': host.id,
+                            'name': host.name,
+                            'url': host.url,
+                            'connection_type': host.connection_type,
+                            'current_engine_id': host.engine_id
+                        })
+
+                # Check each host's engine_id
+                updated_count = 0
+                for host_data in hosts_to_check:
+                    try:
+                        # Get Docker client from monitor
+                        if not self.monitor:
+                            continue
+
+                        client = self.monitor.clients.get(host_data['id'])
+                        if not client:
+                            # Host offline, skip
+                            continue
+
+                        # Fetch current engine_id from Docker
+                        info = await async_docker_call(client.info)
+                        actual_engine_id = info.get('ID')
+
+                        if not actual_engine_id:
+                            continue
+
+                        # Update if NULL or changed (VM clone detection)
+                        if actual_engine_id != host_data['current_engine_id']:
+                            with self.db.get_session() as session:
+                                from database import DockerHostDB
+                                db_host = session.query(DockerHostDB).filter_by(id=host_data['id']).first()
+                                if db_host:
+                                    old_value = db_host.engine_id
+                                    db_host.engine_id = actual_engine_id
+                                    session.commit()
+                                    updated_count += 1
+
+                                    if old_value is None:
+                                        logger.info(f"Populated engine_id for {host_data['name']}: {actual_engine_id[:12]}...")
+                                    else:
+                                        logger.warning(
+                                            f"Engine ID changed for {host_data['name']}! "
+                                            f"Old: {old_value[:12]}..., New: {actual_engine_id[:12]}... "
+                                            f"(Possible VM clone or Docker data migration)"
+                                        )
+
+                    except Exception as e:
+                        logger.debug(f"Failed to check engine_id for {host_data['name']}: {e}")
+                        continue
+
+                if updated_count > 0:
+                    logger.info(f"Engine ID validation: {updated_count} hosts updated")
+
+                # Sleep for 6 hours before next check
+                await asyncio.sleep(6 * 60 * 60)
+
+            except Exception as e:
+                logger.error(f"Error in engine_id validation: {e}", exc_info=True)
+                # Wait 1 hour before retrying on error
+                await asyncio.sleep(60 * 60)

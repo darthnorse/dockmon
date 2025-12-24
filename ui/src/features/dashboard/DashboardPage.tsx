@@ -82,11 +82,11 @@ export function DashboardPage() {
   const showStatsWidgets = prefs?.dashboard?.showStatsWidgets ?? false
 
   return (
-    <div className="flex flex-col h-full gap-4 p-4">
+    <div className="flex flex-col h-full gap-4 p-3 sm:p-4 md:p-6 pt-16 md:pt-4">
       {/* View Mode Selector - Phase 4b */}
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Dashboard</h1>
-        <div className="flex items-center gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <h1 className="text-xl sm:text-2xl font-bold">Dashboard</h1>
+        <div className="flex items-center gap-2 sm:gap-4 flex-wrap">
           <GroupBySelector value={groupBy} onChange={setGroupBy} />
           <ViewModeSelector viewMode={viewMode} onChange={setViewMode} disabled={isViewModeLoading} />
         </div>

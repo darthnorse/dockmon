@@ -58,16 +58,16 @@ export function CompactHostCard({ host, onClick }: CompactHostCardProps) {
   return (
     <div
       onClick={onClick}
-      className="flex items-center gap-3 px-4 py-2 rounded-lg border border-border bg-card hover:bg-muted transition-colors cursor-pointer group"
+      className="flex items-center gap-2 sm:gap-3 px-3 sm:px-4 py-2 rounded-lg border border-border bg-card hover:bg-muted transition-colors cursor-pointer group"
     >
       {/* Status Dot */}
-      <Circle className={`h-2 w-2 ${getStatusColor(host.status)}`} />
+      <Circle className={`h-2 w-2 flex-shrink-0 ${getStatusColor(host.status)}`} />
 
       {/* Host Name with Tags */}
       <div className="flex-1 min-w-0 flex items-center gap-2">
         <span className="text-sm font-medium truncate">{host.name}</span>
         {host.tags && host.tags.length > 0 && (
-          <div className="flex items-center gap-1">
+          <div className="hidden sm:flex items-center gap-1">
             {host.tags.slice(0, 2).map((tag) => (
               <TagChip key={tag} tag={tag} size="sm" />
             ))}
@@ -78,19 +78,19 @@ export function CompactHostCard({ host, onClick }: CompactHostCardProps) {
         )}
       </div>
 
-      {/* Container Count */}
-      <div className="flex items-center gap-1 text-xs text-muted-foreground">
+      {/* Container Count - abbreviated on mobile */}
+      <div className="flex items-center gap-1 text-xs text-muted-foreground whitespace-nowrap">
         <span className="font-mono">{containerCount}</span>
-        <span>containers</span>
+        <span className="hidden sm:inline">containers</span>
       </div>
 
       {/* CPU Badge */}
-      <div className="flex items-center gap-1 px-2 py-1 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400">
+      <div className="flex items-center gap-1 px-1.5 sm:px-2 py-1 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400">
         <span className="text-xs font-mono font-semibold">{cpuPercent}%</span>
       </div>
 
       {/* Memory Badge */}
-      <div className="flex items-center gap-1 px-2 py-1 rounded bg-blue-500/10 text-blue-600 dark:text-blue-400">
+      <div className="flex items-center gap-1 px-1.5 sm:px-2 py-1 rounded bg-blue-500/10 text-blue-600 dark:text-blue-400">
         <span className="text-xs font-mono font-semibold">{memPercent}%</span>
       </div>
     </div>

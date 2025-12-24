@@ -731,13 +731,13 @@ async def get_known_stacks(
     stacks: Dict[str, KnownStack] = {}
 
     for container in all_containers:
-        labels = container.get('labels', {}) or {}
+        labels = getattr(container, 'labels', {}) or {}
         project = labels.get('com.docker.compose.project')
         if not project:
             continue
 
-        host_id = container.get('host_id')
-        host_name = container.get('host_name', host_id)
+        host_id = getattr(container, 'host_id', None)
+        host_name = getattr(container, 'host_name', None) or host_id
         service = labels.get('com.docker.compose.service')
 
         if project not in stacks:

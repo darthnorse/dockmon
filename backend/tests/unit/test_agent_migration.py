@@ -325,7 +325,7 @@ def test_migration_rejects_already_migrated_host(agent_manager, registration_tok
     """
     now = datetime.now(timezone.utc)
 
-    # Create an already-migrated host
+    # Create an already-migrated host with an active agent
     with db_manager.get_session() as session:
         # First create the replacement host (FK requirement)
         replacement_host = DockerHostDB(
@@ -339,7 +339,22 @@ def test_migration_rejects_already_migrated_host(agent_manager, registration_tok
             updated_at=now
         )
         session.add(replacement_host)
-        session.flush()  # Ensure replacement host exists before creating migrated host
+        session.flush()  # Ensure replacement host exists before creating agent
+
+        # Create the Agent record - this is what the manager checks for duplicates
+        existing_agent = Agent(
+            id="existing-agent-id",
+            host_id="replacement-host-id",
+            engine_id="engine-67890",  # Same engine_id
+            version="1.0.0",
+            proto_version="1.0",
+            capabilities={},
+            status="online",
+            last_seen_at=now,
+            registered_at=now
+        )
+        session.add(existing_agent)
+        session.flush()
 
         migrated_host = DockerHostDB(
             id="migrated-host-id",
@@ -367,11 +382,11 @@ def test_migration_rejects_already_migrated_host(agent_manager, registration_tok
 
     result = agent_manager.register_agent(registration_data)
 
-    # Should reject - an agent host with this engine_id already exists
+    # Should reject - an agent with this engine_id already exists
     assert result["success"] is False
-    # The implementation rejects with "already exists with connection type 'agent'" message
-    # because the replacement host is an active agent with the same engine_id
-    assert "already exists" in result["error"].lower() or "already migrated" in result["error"].lower()
+    # The implementation rejects with "already registered" message
+    # because an agent with the same engine_id is already registered
+    assert "already registered" in result["error"].lower()
 
 
 def test_migration_result_contains_proper_details(agent_manager, registration_token, existing_mtls_host):

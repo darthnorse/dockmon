@@ -567,18 +567,38 @@ class AgentWebSocketHandler:
                 return
 
             # Map Docker actions to EventBus event types
+            # Note: 'stop' is intentionally omitted - Docker emits both 'stop' and 'die' when
+            # a container stops. We only process 'die' (which includes exit code) to avoid
+            # duplicate events. This matches the logic in monitor.py (process_docker_events).
             event_type_map = {
                 "start": EventType.CONTAINER_STARTED,
-                "stop": EventType.CONTAINER_STOPPED,
                 "restart": EventType.CONTAINER_RESTARTED,
-                "die": EventType.CONTAINER_DIED,
                 "destroy": EventType.CONTAINER_DELETED
             }
 
-            event_type = event_type_map.get(action)
-            if not event_type:
-                logger.debug(f"No event mapping for action '{action}' from agent {self.agent_id}")
-                return
+            # Handle 'die' events specially - check exit code to determine event type
+            # Issue #23/#104: Clean exits (exit 0) → STOPPED, crashes (exit != 0) → DIED
+            if action == "die":
+                attributes = payload.get("attributes", {})
+                exit_code_str = attributes.get("exitCode")
+                exit_code = 0  # Default to 0 if not provided
+                if exit_code_str is not None:
+                    try:
+                        exit_code = int(exit_code_str)
+                    except (ValueError, TypeError):
+                        logger.warning(f"Invalid exit code format: {exit_code_str}")
+
+                if exit_code == 0:
+                    event_type = EventType.CONTAINER_STOPPED
+                else:
+                    event_type = EventType.CONTAINER_DIED
+                # Store exit_code in payload for event message generation
+                payload["exit_code"] = exit_code
+            else:
+                event_type = event_type_map.get(action)
+                if not event_type:
+                    logger.debug(f"No event mapping for action '{action}' from agent {self.agent_id}")
+                    return
 
             # Create composite key using utility function (validates 12-char format)
             composite_key = make_composite_key(self.host_id, container_id)
@@ -596,12 +616,24 @@ class AgentWebSocketHandler:
                 'restart': 'running',
             }
             new_state = state_map.get(action)
+
+            # For 'die' events, use exit code to determine new_state (Issue #96)
+            # exit_code=0 → "stopped" (clean exit), exit_code!=0 → "exited" (crash)
+            if action == "die":
+                exit_code = payload.get("exit_code", 0)
+                new_state = "stopped" if exit_code == 0 else "exited"
+
             if new_state and hasattr(self.monitor, '_state_lock'):
                 async with self.monitor._state_lock:
                     self.monitor._container_states[composite_key] = new_state
                     self.monitor._container_state_timestamps[composite_key] = datetime.now(timezone.utc)
                     self.monitor._container_state_sources[composite_key] = 'event'
                 logger.debug(f"Updated _container_states for {container_name}: {new_state} (agent event)")
+
+            # Add new_state to payload for alert rule matching (Issue #96)
+            # The alert engine expects event_data.new_state for container_stopped rules
+            if new_state:
+                payload["new_state"] = new_state
 
             # Emit via EventBus (automatic: database, alerts, UI broadcast)
             event = Event(

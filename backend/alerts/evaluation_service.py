@@ -113,6 +113,7 @@ class AlertEvaluationService:
         self._notification_task: Optional[asyncio.Task] = None
         self._snooze_task: Optional[asyncio.Task] = None
         self._blackout_task: Optional[asyncio.Task] = None
+        self._pending_event_alerts_task: Optional[asyncio.Task] = None
 
         # Track blackout state for transition detection
         self._last_blackout_state = False
@@ -128,6 +129,7 @@ class AlertEvaluationService:
         self._notification_task = asyncio.create_task(self._pending_notifications_loop())
         self._snooze_task = asyncio.create_task(self._snooze_expiry_loop())
         self._blackout_task = asyncio.create_task(self._blackout_transition_loop())
+        self._pending_event_alerts_task = asyncio.create_task(self._pending_event_alerts_loop())
         logger.info(f"Alert evaluation service started (interval: {self.evaluation_interval}s)")
 
     async def stop(self):
@@ -159,6 +161,13 @@ class AlertEvaluationService:
             self._blackout_task.cancel()
             try:
                 await self._blackout_task
+            except asyncio.CancelledError:
+                pass
+
+        if self._pending_event_alerts_task:
+            self._pending_event_alerts_task.cancel()
+            try:
+                await self._pending_event_alerts_task
             except asyncio.CancelledError:
                 pass
 
@@ -195,6 +204,40 @@ class AlertEvaluationService:
                 break
             except Exception as e:
                 logger.error(f"Error in pending notifications loop: {e}", exc_info=True)
+                await asyncio.sleep(check_interval)
+
+    async def _pending_event_alerts_loop(self):
+        """
+        Background task to check pending event-driven alerts and clears (Issue #96).
+
+        Checks every 5 seconds for:
+        1. Pending alerts whose delay has passed - fires alert and sends notification
+        2. Pending clears whose delay has passed - resolves the alert
+        """
+        check_interval = 5  # Check every 5 seconds
+
+        while self._running:
+            try:
+                # Check pending alerts in the engine
+                alerts = self.engine.check_pending_event_alerts()
+
+                if alerts:
+                    logger.info(f"Fired {len(alerts)} delayed event-driven alerts")
+
+                    for alert in alerts:
+                        await self._handle_alert_notification(alert)
+
+                # Check pending alert clears (Issue #96 - alert_clear_delay_seconds)
+                resolved_ids = self.engine.check_pending_alert_clears()
+
+                if resolved_ids:
+                    logger.info(f"Resolved {len(resolved_ids)} delayed alert clears")
+
+                await asyncio.sleep(check_interval)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in pending event alerts loop: {e}", exc_info=True)
                 await asyncio.sleep(check_interval)
 
     async def _check_pending_notifications(self):
@@ -1056,6 +1099,9 @@ class AlertEvaluationService:
 
         Only alerts whose rules have auto_resolve_on_clear=True will be cleared.
 
+        If rule has alert_clear_delay_seconds > 0, the clear is deferred to allow
+        transient conditions to not resolve alerts prematurely.
+
         Args:
             scope_type: "container" or "host"
             scope_id: Container ID or host ID
@@ -1077,16 +1123,23 @@ class AlertEvaluationService:
 
                 # Filter to only alerts whose rules have auto_resolve_on_clear=True
                 alerts_to_clear = []
+                alerts_to_defer = []
                 for alert in alerts_to_check:
                     rule = session.query(AlertRuleV2).filter(AlertRuleV2.id == alert.rule_id).first()
                     if rule and rule.auto_resolve_on_clear:
-                        alerts_to_clear.append(alert)
+                        # Check if rule has a clear delay (Issue #96)
+                        clear_delay = rule.alert_clear_delay_seconds or 0
+                        if clear_delay > 0:
+                            alerts_to_defer.append((alert, rule))
+                        else:
+                            alerts_to_clear.append(alert)
                     else:
                         logger.debug(
                             f"Skipping auto-clear for alert {alert.id} ({alert.title}) - "
                             f"rule auto_resolve_on_clear={rule.auto_resolve_on_clear if rule else None}"
                         )
 
+                # Process immediate clears
                 if alerts_to_clear:
                     logger.info(
                         f"Auto-clearing {len(alerts_to_clear)} alert(s) for {scope_type}:{scope_id} - {reason}"
@@ -1096,6 +1149,20 @@ class AlertEvaluationService:
                         # Use engine's resolve method to properly mark as resolved
                         self.engine._resolve_alert(alert, reason)
                         logger.info(f"Auto-cleared alert {alert.id}: {alert.title}")
+
+                # Process deferred clears (Issue #96 - alert_clear_delay_seconds)
+                if alerts_to_defer:
+                    logger.info(
+                        f"Deferring {len(alerts_to_defer)} alert clear(s) for {scope_type}:{scope_id}"
+                    )
+
+                    for alert, rule in alerts_to_defer:
+                        added = self.engine.add_pending_alert_clear(alert, rule, reason)
+                        if added:
+                            logger.info(
+                                f"Deferred clear for alert {alert.id}: {alert.title} "
+                                f"(delay={rule.alert_clear_delay_seconds}s)"
+                            )
 
         except Exception as e:
             logger.error(f"Error auto-clearing alerts: {e}", exc_info=True)
@@ -1165,15 +1232,24 @@ class AlertEvaluationService:
             if event_type == "state_change" and event_data:
                 new_state = event_data.get("new_state")
 
-                # Container started → clear container_stopped alerts
+                # Container started → clear container_stopped alerts and pending alerts
                 # Use composite key for cross-host safety
                 if new_state in ["running", "restarting"]:
+                    # Clear existing alerts
                     await self._auto_clear_alerts_by_kind(
                         scope_type="container",
                         scope_id=make_composite_key(host_id, container_id),
                         kinds_to_clear=["container_stopped"],
                         reason="Container started"
                     )
+                    # Clear pending alerts (Issue #96 - alert_active_delay)
+                    cleared = self.engine.clear_pending_for_scope(
+                        scope_type="container",
+                        scope_id=make_composite_key(host_id, container_id),
+                        kinds=["container_stopped"]
+                    )
+                    if cleared > 0:
+                        logger.info(f"Cleared {cleared} pending container_stopped alert(s) for {container_name}")
 
                 # Container became healthy → clear unhealthy alerts
                 elif new_state == "healthy":
@@ -1183,6 +1259,35 @@ class AlertEvaluationService:
                         kinds_to_clear=["unhealthy", "container_unhealthy"],
                         reason="Container became healthy"
                     )
+                    # Clear pending alerts (Issue #96 - alert_active_delay)
+                    cleared = self.engine.clear_pending_for_scope(
+                        scope_type="container",
+                        scope_id=make_composite_key(host_id, container_id),
+                        kinds=["unhealthy", "container_unhealthy"]
+                    )
+                    if cleared > 0:
+                        logger.info(f"Cleared {cleared} pending unhealthy alert(s) for {container_name}")
+
+                # Container stopped/exited → cancel any pending clears for container_stopped
+                # (Issue #96 - alert_clear_delay_seconds: if container stops again while clear is pending, cancel it)
+                elif new_state in ["stopped", "exited", "dead"]:
+                    cancelled = self.engine.cancel_pending_clears_for_scope(
+                        scope_type="container",
+                        scope_id=make_composite_key(host_id, container_id),
+                        kinds=["container_stopped"]
+                    )
+                    if cancelled > 0:
+                        logger.info(f"Cancelled {cancelled} pending clear(s) for {container_name} (container stopped again)")
+
+                # Container became unhealthy → cancel any pending clears for unhealthy
+                elif new_state == "unhealthy":
+                    cancelled = self.engine.cancel_pending_clears_for_scope(
+                        scope_type="container",
+                        scope_id=make_composite_key(host_id, container_id),
+                        kinds=["unhealthy", "container_unhealthy"]
+                    )
+                    if cancelled > 0:
+                        logger.info(f"Cancelled {cancelled} pending clear(s) for {container_name} (container unhealthy again)")
 
             # Evaluate event-driven rules
             alerts = self.engine.evaluate_event(event_type, context, event_data)
@@ -1230,6 +1335,25 @@ class AlertEvaluationService:
                     kinds_to_clear=["host_disconnected", "host_down"],
                     reason="Host reconnected"
                 )
+                # Clear pending alerts (Issue #96 - alert_active_delay)
+                cleared = self.engine.clear_pending_for_scope(
+                    scope_type="host",
+                    scope_id=host_id,
+                    kinds=["host_disconnected", "host_down"]
+                )
+                if cleared > 0:
+                    logger.info(f"Cleared {cleared} pending host_disconnected alert(s) for {host_name}")
+
+            # Host disconnected → cancel any pending clears for host_disconnected
+            # (Issue #96 - alert_clear_delay_seconds: if host disconnects again while clear is pending, cancel it)
+            elif event_type == "disconnection":
+                cancelled = self.engine.cancel_pending_clears_for_scope(
+                    scope_type="host",
+                    scope_id=host_id,
+                    kinds=["host_disconnected", "host_down"]
+                )
+                if cancelled > 0:
+                    logger.info(f"Cancelled {cancelled} pending clear(s) for {host_name} (host disconnected again)")
 
             # Create evaluation context
             context = EvaluationContext(

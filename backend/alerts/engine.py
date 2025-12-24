@@ -45,6 +45,31 @@ class MetricSample:
     breached: bool
 
 
+@dataclass
+class PendingEventAlert:
+    """Pending event-driven alert waiting for delay to pass"""
+    rule_id: str
+    rule_name: str
+    kind: str
+    delay_seconds: int
+    triggered_at: datetime
+    context: 'EvaluationContext'
+    event_type: str
+    event_data: Optional[Dict[str, Any]]
+    dedup_key: str
+
+
+@dataclass
+class PendingAlertClear:
+    """Pending alert clear waiting for clear delay to pass"""
+    alert_id: str
+    alert_title: str
+    rule_id: str
+    delay_seconds: int
+    clear_started_at: datetime
+    reason: str
+
+
 class AlertEngine:
     """
     Core alert evaluation engine
@@ -59,6 +84,12 @@ class AlertEngine:
 
     def __init__(self, db: DatabaseManager):
         self.db = db
+        # Track pending event-driven alerts waiting for delay to pass
+        # Key: dedup_key, Value: PendingEventAlert
+        self._pending_event_alerts: Dict[str, PendingEventAlert] = {}
+        # Track pending alert clears waiting for clear delay to pass
+        # Key: alert_id, Value: PendingAlertClear
+        self._pending_alert_clears: Dict[str, PendingAlertClear] = {}
 
     # ==================== Deduplication ====================
 
@@ -300,11 +331,38 @@ class AlertEngine:
                         logger.info(f"Engine: Rule '{rule.name}' suppressed - container is being updated")
                         continue
 
-                logger.info(f"Engine: Rule '{rule.name}' MATCHED! Creating/updating alert...")
+                logger.info(f"Engine: Rule '{rule.name}' MATCHED!")
 
                 # Generate dedup key (includes rule_id to allow multiple rules for same condition)
                 dedup_key = self._make_dedup_key(rule.id, rule.kind, context.scope_type, context.scope_id)
                 logger.debug(f"Engine: Dedup key: {dedup_key}")
+
+                # Check if rule has an alert active delay (Issue #96)
+                delay_seconds = rule.alert_active_delay_seconds or 0
+                if delay_seconds > 0:
+                    # Check if already pending
+                    if dedup_key in self._pending_event_alerts:
+                        logger.debug(f"Engine: Rule '{rule.name}' already pending, ignoring duplicate event")
+                        continue
+
+                    # Add to pending alerts - will be checked by background task
+                    pending = PendingEventAlert(
+                        rule_id=rule.id,
+                        rule_name=rule.name,
+                        kind=rule.kind,
+                        delay_seconds=delay_seconds,
+                        triggered_at=datetime.now(timezone.utc),
+                        context=context,
+                        event_type=event_type,
+                        event_data=event_data,
+                        dedup_key=dedup_key
+                    )
+                    self._pending_event_alerts[dedup_key] = pending
+                    logger.info(f"Engine: Rule '{rule.name}' added to pending (delay={delay_seconds}s)")
+                    continue
+
+                # No delay - fire immediately
+                logger.info(f"Engine: Rule '{rule.name}' firing immediately (no delay)")
 
                 # Get or create alert (pass event_data for template variables)
                 alert, is_new = self._get_or_create_alert(dedup_key, rule, context, event_data=event_data)
@@ -330,6 +388,241 @@ class AlertEngine:
         if alerts_changed:
             logger.debug(f"Engine: evaluate_event returning {len(alerts_changed)} alerts")
         return alerts_changed
+
+    def check_pending_event_alerts(self) -> List[AlertV2]:
+        """
+        Check pending event-driven alerts and fire those whose delay has passed.
+
+        Called by background task in evaluation service.
+
+        Returns: List of alerts that were fired
+        """
+        alerts_fired = []
+        now = datetime.now(timezone.utc)
+        keys_to_remove = []
+
+        for dedup_key, pending in self._pending_event_alerts.items():
+            elapsed = (now - pending.triggered_at).total_seconds()
+
+            if elapsed >= pending.delay_seconds:
+                logger.info(
+                    f"Engine: Pending alert '{pending.rule_name}' delay passed "
+                    f"({elapsed:.1f}s >= {pending.delay_seconds}s), firing now"
+                )
+
+                # Get the rule from database to fire the alert
+                with self.db.get_session() as session:
+                    rule = session.query(AlertRuleV2).filter(
+                        AlertRuleV2.id == pending.rule_id
+                    ).first()
+
+                    if not rule:
+                        logger.warning(f"Engine: Rule {pending.rule_id} not found, removing pending alert")
+                        keys_to_remove.append(dedup_key)
+                        continue
+
+                    if not rule.enabled:
+                        logger.info(f"Engine: Rule '{rule.name}' disabled, removing pending alert")
+                        keys_to_remove.append(dedup_key)
+                        continue
+
+                    # Fire the alert
+                    alert, is_new = self._get_or_create_alert(
+                        dedup_key, rule, pending.context, event_data=pending.event_data
+                    )
+
+                    if not is_new:
+                        alert = self._update_alert(alert, event_data=pending.event_data)
+
+                    alerts_fired.append(alert)
+                    keys_to_remove.append(dedup_key)
+                    logger.info(f"Engine: Fired delayed alert {alert.id} for rule '{rule.name}'")
+
+        # Remove fired/expired pending alerts
+        for key in keys_to_remove:
+            del self._pending_event_alerts[key]
+
+        return alerts_fired
+
+    def clear_pending_for_scope(self, scope_type: str, scope_id: str, kinds: Optional[List[str]] = None) -> int:
+        """
+        Clear pending event alerts for a scope when the condition clears.
+
+        For example, when a container starts, clear any pending container_stopped alerts.
+
+        Args:
+            scope_type: 'host' or 'container'
+            scope_id: The scope identifier (composite key for containers)
+            kinds: Optional list of rule kinds to clear. If None, clears all kinds.
+
+        Returns: Number of pending alerts cleared
+        """
+        keys_to_remove = []
+
+        for dedup_key, pending in self._pending_event_alerts.items():
+            if pending.context.scope_type != scope_type:
+                continue
+            if pending.context.scope_id != scope_id:
+                continue
+            if kinds and pending.kind not in kinds:
+                continue
+
+            logger.info(
+                f"Engine: Clearing pending alert '{pending.rule_name}' for {scope_type}:{scope_id} "
+                f"(condition cleared before delay passed)"
+            )
+            keys_to_remove.append(dedup_key)
+
+        for key in keys_to_remove:
+            del self._pending_event_alerts[key]
+
+        return len(keys_to_remove)
+
+    def get_pending_count(self) -> int:
+        """Return the number of pending event alerts"""
+        return len(self._pending_event_alerts)
+
+    # ==================== Pending Alert Clears (Issue #96) ====================
+
+    def add_pending_alert_clear(
+        self,
+        alert: AlertV2,
+        rule: AlertRuleV2,
+        reason: str
+    ) -> bool:
+        """
+        Add an alert to pending clears instead of resolving immediately.
+
+        Called when condition clears but rule has alert_clear_delay_seconds > 0.
+
+        Returns: True if added to pending, False if already pending
+        """
+        if alert.id in self._pending_alert_clears:
+            logger.debug(f"Engine: Alert {alert.id} already pending clear, ignoring")
+            return False
+
+        delay_seconds = rule.alert_clear_delay_seconds or 0
+        pending = PendingAlertClear(
+            alert_id=alert.id,
+            alert_title=alert.title,
+            rule_id=rule.id,
+            delay_seconds=delay_seconds,
+            clear_started_at=datetime.now(timezone.utc),
+            reason=reason
+        )
+        self._pending_alert_clears[alert.id] = pending
+        logger.info(f"Engine: Alert '{alert.title}' added to pending clear (delay={delay_seconds}s)")
+        return True
+
+    def check_pending_alert_clears(self) -> List[str]:
+        """
+        Check pending alert clears and resolve those whose delay has passed.
+
+        Called by background task in evaluation service.
+
+        Returns: List of alert IDs that were resolved
+        """
+        alerts_resolved = []
+        now = datetime.now(timezone.utc)
+        keys_to_remove = []
+
+        for alert_id, pending in self._pending_alert_clears.items():
+            elapsed = (now - pending.clear_started_at).total_seconds()
+
+            if elapsed >= pending.delay_seconds:
+                logger.info(
+                    f"Engine: Pending clear for '{pending.alert_title}' delay passed "
+                    f"({elapsed:.1f}s >= {pending.delay_seconds}s), resolving now"
+                )
+
+                # Resolve the alert
+                with self.db.get_session() as session:
+                    alert = session.query(AlertV2).filter(AlertV2.id == alert_id).first()
+
+                    if not alert:
+                        logger.warning(f"Engine: Alert {alert_id} not found, removing pending clear")
+                        keys_to_remove.append(alert_id)
+                        continue
+
+                    if alert.state != "open":
+                        logger.info(f"Engine: Alert {alert_id} no longer open (state={alert.state}), removing pending clear")
+                        keys_to_remove.append(alert_id)
+                        continue
+
+                    # Resolve the alert
+                    self._resolve_alert(alert, pending.reason)
+                    alerts_resolved.append(alert_id)
+                    keys_to_remove.append(alert_id)
+                    logger.info(f"Engine: Resolved delayed-clear alert {alert_id}: {pending.alert_title}")
+
+        # Remove processed pending clears
+        for key in keys_to_remove:
+            del self._pending_alert_clears[key]
+
+        return alerts_resolved
+
+    def cancel_pending_clear_for_alert(self, alert_id: str) -> bool:
+        """
+        Cancel a pending clear when the condition becomes active again.
+
+        For example, if container stops → starts (pending clear) → stops again,
+        we should cancel the pending clear since the alert condition is active again.
+
+        Returns: True if a pending clear was cancelled, False otherwise
+        """
+        if alert_id in self._pending_alert_clears:
+            pending = self._pending_alert_clears[alert_id]
+            logger.info(
+                f"Engine: Cancelling pending clear for '{pending.alert_title}' "
+                f"(condition became active again)"
+            )
+            del self._pending_alert_clears[alert_id]
+            return True
+        return False
+
+    def cancel_pending_clears_for_scope(self, scope_type: str, scope_id: str, kinds: Optional[List[str]] = None) -> int:
+        """
+        Cancel pending clears for a scope when condition becomes active again.
+
+        Args:
+            scope_type: 'host' or 'container'
+            scope_id: The scope identifier
+            kinds: Optional list of rule kinds to cancel. If None, cancels all kinds.
+
+        Returns: Number of pending clears cancelled
+        """
+        keys_to_remove = []
+
+        with self.db.get_session() as session:
+            for alert_id, pending in self._pending_alert_clears.items():
+                # Get alert to check scope
+                alert = session.query(AlertV2).filter(AlertV2.id == alert_id).first()
+                if not alert:
+                    keys_to_remove.append(alert_id)
+                    continue
+
+                if alert.scope_type != scope_type:
+                    continue
+                if alert.scope_id != scope_id:
+                    continue
+                if kinds and alert.kind not in kinds:
+                    continue
+
+                logger.info(
+                    f"Engine: Cancelling pending clear for '{pending.alert_title}' "
+                    f"(condition became active again for {scope_type}:{scope_id})"
+                )
+                keys_to_remove.append(alert_id)
+
+        for key in keys_to_remove:
+            if key in self._pending_alert_clears:
+                del self._pending_alert_clears[key]
+
+        return len(keys_to_remove)
+
+    def get_pending_clears_count(self) -> int:
+        """Return the number of pending alert clears"""
+        return len(self._pending_alert_clears)
 
     def _rule_matches_event(
         self,

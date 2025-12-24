@@ -196,7 +196,7 @@ class EventBus:
                 EventType.ROLLBACK_COMPLETED: (LogEventType.ACTION_TAKEN, EventCategory.CONTAINER, EventSeverity.WARNING),
                 EventType.CONTAINER_STARTED: (LogEventType.STATE_CHANGE, EventCategory.CONTAINER, EventSeverity.INFO),
                 EventType.CONTAINER_RESTARTED: (LogEventType.STATE_CHANGE, EventCategory.CONTAINER, EventSeverity.INFO),
-                EventType.CONTAINER_STOPPED: (LogEventType.STATE_CHANGE, EventCategory.CONTAINER, EventSeverity.WARNING),
+                EventType.CONTAINER_STOPPED: (LogEventType.STATE_CHANGE, EventCategory.CONTAINER, EventSeverity.INFO),  # Issue #104: Clean exits are expected
                 EventType.CONTAINER_DIED: (LogEventType.STATE_CHANGE, EventCategory.CONTAINER, EventSeverity.ERROR),
                 EventType.CONTAINER_DELETED: (LogEventType.ACTION_TAKEN, EventCategory.CONTAINER, EventSeverity.WARNING),
                 EventType.CONTAINER_HEALTH_CHANGED: (LogEventType.STATE_CHANGE, EventCategory.HEALTH_CHECK, EventSeverity.WARNING),

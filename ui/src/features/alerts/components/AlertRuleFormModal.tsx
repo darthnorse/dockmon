@@ -961,22 +961,6 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                   />
                   <p className="mt-1 text-xs text-gray-400">Metric value that triggers auto-resolve (e.g., CPU drops below 80%). Defaults to alert threshold if not specified.</p>
                 </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">Alert Clear Delay (seconds)</label>
-                  <input
-                    type="number"
-                    value={formData.alert_clear_delay_seconds}
-                    onChange={(e) => handleChange('alert_clear_delay_seconds', parseInt(e.target.value) || 0)}
-                    min={0}
-                    className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                    placeholder="60"
-                  />
-                  <p className="mt-1 text-xs text-gray-400">
-                    How long the metric must stay below the clear threshold before auto-resolving the alert.
-                    Set to 0 for immediate clearing.
-                  </p>
-                </div>
               </div>
             </div>
           )}
@@ -1291,36 +1275,53 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
               <p className="text-xs text-gray-400 mt-1">Controls when alerts become active and when they clear</p>
             </div>
 
-            {/* Duration and Occurrences - Only for metric-driven rules */}
+            {/* Metric-driven alert timing */}
             {requiresMetric && (
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">Alert Active Delay (seconds) *</label>
-                  <input
-                    type="number"
-                    value={formData.alert_active_delay_seconds}
-                    onChange={(e) => handleChange('alert_active_delay_seconds', parseInt(e.target.value) || 0)}
-                    required
-                    min={0}
-                    className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  />
-                  <p className="mt-1 text-xs text-gray-500">How long condition must be true before alert triggers</p>
+              <>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-1">Alert Active Delay (seconds) *</label>
+                    <input
+                      type="number"
+                      value={formData.alert_active_delay_seconds}
+                      onChange={(e) => handleChange('alert_active_delay_seconds', parseInt(e.target.value) || 0)}
+                      required
+                      min={0}
+                      className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                    <p className="mt-1 text-xs text-gray-500">How long condition must be true before alert triggers</p>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-1">Alert Clear Delay (seconds)</label>
+                    <input
+                      type="number"
+                      value={formData.alert_clear_delay_seconds}
+                      onChange={(e) => handleChange('alert_clear_delay_seconds', parseInt(e.target.value) || 0)}
+                      min={0}
+                      placeholder="60"
+                      className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                    <p className="mt-1 text-xs text-gray-500">How long condition must be false before alert clears</p>
+                  </div>
                 </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">Occurrences *</label>
-                  <input
-                    type="number"
-                    value={formData.occurrences}
-                    onChange={(e) => handleChange('occurrences', parseInt(e.target.value))}
-                    required
-                    min={1}
-                    max={100}
-                    className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  />
-                  <p className="mt-1 text-xs text-gray-500">Breaches needed to trigger alert</p>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-1">Occurrences *</label>
+                    <input
+                      type="number"
+                      value={formData.occurrences}
+                      onChange={(e) => handleChange('occurrences', parseInt(e.target.value))}
+                      required
+                      min={1}
+                      max={100}
+                      className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                    <p className="mt-1 text-xs text-gray-500">Breaches needed to trigger alert</p>
+                  </div>
                 </div>
-              </div>
+              </>
             )}
 
             {/* Event-driven alert timing */}

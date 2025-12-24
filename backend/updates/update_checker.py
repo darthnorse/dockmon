@@ -305,7 +305,7 @@ class UpdateChecker:
         # Compare digests
         update_available = current_digest != latest_digest
 
-        logger.debug(f"Digest comparison: current={current_digest[:16]}... latest={latest_digest[:16]}... update={update_available}")
+        logger.info(f"[{container['name']}] Digest comparison: current={current_digest[:16]}... latest={latest_digest[:16]}... update_available={update_available}")
 
         # Resolve changelog URL (v2.0.1+)
         # Get existing record to check if re-resolution needed

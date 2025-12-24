@@ -808,11 +808,11 @@ async def import_deployment(
     all_containers = monitor.get_last_containers()
 
     # Group containers by host for this project
-    hosts_with_stack: Dict[str, List[dict]] = {}
+    hosts_with_stack: Dict[str, List] = {}
     for container in all_containers:
-        labels = container.get('labels', {}) or {}
+        labels = getattr(container, 'labels', {}) or {}
         if labels.get('com.docker.compose.project') == project_name:
-            host_id = container.get('host_id')
+            host_id = getattr(container, 'host_id', None)
             if host_id:
                 if host_id not in hosts_with_stack:
                     hosts_with_stack[host_id] = []

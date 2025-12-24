@@ -212,11 +212,11 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
   -e DOCKMON_URL=${dockmonUrl} \\
   -e REGISTRATION_TOKEN=${token} \\
   -e TZ=${timezone} \\${isHttps ? '\n  -e INSECURE_SKIP_VERIFY=true \\' : ''}
-  ghcr.io/darthnorse/dockmon-agent:0.7.0`
+  ghcr.io/darthnorse/dockmon-agent:1.0.0`
     : ''
 
   const systemdInstallCommand = token
-    ? `curl -fsSL https://raw.githubusercontent.com/darthnorse/dockmon/feature/v2.2.0-agent/scripts/install-agent.sh | \\
+    ? `curl -fsSL https://raw.githubusercontent.com/darthnorse/dockmon/main/scripts/install-agent.sh | \\
   DOCKMON_URL=${dockmonUrl} \\
   REGISTRATION_TOKEN=${token} \\
   TZ=${timezone}${isHttps ? ' \\\n  INSECURE_SKIP_VERIFY=true' : ''} bash`

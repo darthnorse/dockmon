@@ -1291,10 +1291,11 @@ def _link_containers_for_host(
     linked_count = 0
 
     for container in containers:
-        labels = container.get('labels', {}) or {}
+        labels = getattr(container, 'labels', {}) or {}
 
         # CRITICAL: Use SHORT ID (12 chars) and composite key
-        short_id = container['id'][:12]
+        container_id = getattr(container, 'id', '') or ''
+        short_id = container_id[:12]
         composite_key = f"{host_id}:{short_id}"
 
         # Check if metadata already exists

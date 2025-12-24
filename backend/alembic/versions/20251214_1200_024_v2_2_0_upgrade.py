@@ -1,10 +1,10 @@
-"""v2.2.0-beta4 upgrade - Bug fixes for remote host updates + alert timing refactor
+"""v2.2.0 upgrade - Bug fixes for remote host updates + alert timing refactor
 
-Revision ID: 024_v2_2_0_beta4
+Revision ID: 024_v2_2_0
 Revises: 023_v2_2_0_beta3
 Create Date: 2025-12-14
 
-CHANGES IN v2.2.0-beta4:
+CHANGES IN v2.2.0:
 - fix: Correct DockerHostDB attribute from docker_url to url
   - Auto-updates and stack deployments now work on remote/mTLS hosts
   - Fixed AttributeError in update_executor._execute_go_update()
@@ -32,7 +32,7 @@ from sqlalchemy import inspect
 
 
 # revision identifiers, used by Alembic.
-revision = '024_v2_2_0_beta4'
+revision = '024_v2_2_0'
 down_revision = '023_v2_2_0_beta3'
 branch_labels = None
 depends_on = None
@@ -56,7 +56,7 @@ def column_exists(table_name: str, column_name: str) -> bool:
 
 
 def upgrade() -> None:
-    """Upgrade to v2.2.0-beta4"""
+    """Upgrade to v2.2.0"""
 
     if table_exists('alert_rules_v2'):
         # =====================================================================
@@ -165,7 +165,7 @@ def upgrade() -> None:
     if table_exists('global_settings'):
         op.execute(
             sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-            .bindparams(version='2.2.0-beta4', id=1)
+            .bindparams(version='2.2.0', id=1)
         )
 
 

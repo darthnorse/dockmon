@@ -877,10 +877,12 @@ async def import_deployment(
 
         session.commit()
 
-    # Convert to response
+        # Convert to response INSIDE session context to avoid DetachedInstanceError
+        response_deployments = [_deployment_to_response(d, session) for d in deployments_created]
+
     return ImportDeploymentResponse(
         success=True,
-        deployments_created=[_deployment_to_response(d) for d in deployments_created],
+        deployments_created=response_deployments,
         requires_name_selection=False
     )
 
@@ -1486,26 +1488,35 @@ async def render_template(
 
 # ==================== Helper Functions ====================
 
-def _deployment_to_response(deployment: Deployment) -> DeploymentResponse:
-    """Convert deployment model to response."""
+def _deployment_to_response(deployment: Deployment, existing_session=None) -> DeploymentResponse:
+    """Convert deployment model to response.
+
+    Args:
+        deployment: The deployment model to convert
+        existing_session: Optional existing session to use (avoids DetachedInstanceError)
+    """
     # Get current container IDs from deployment_metadata
     # These are kept up-to-date when containers are recreated during updates
     container_ids = []
 
     # Query deployment_metadata for containers linked to this deployment
-    db = get_database_manager()
-    with db.get_session() as session:
-        metadata_records = session.query(DeploymentMetadata).filter_by(deployment_id=deployment.id).all()
+    # Use existing session if provided to avoid DetachedInstanceError
+    if existing_session:
+        metadata_records = existing_session.query(DeploymentMetadata).filter_by(deployment_id=deployment.id).all()
+    else:
+        db = get_database_manager()
+        with db.get_session() as session:
+            metadata_records = session.query(DeploymentMetadata).filter_by(deployment_id=deployment.id).all()
 
-        for record in metadata_records:
-            # Extract SHORT container ID (12 chars) from composite key
-            try:
-                _, container_id = parse_composite_key(record.container_id)
-                container_ids.append(container_id)
-            except ValueError:
-                # Invalid composite key format, skip
-                logger.warning(f"Failed to parse composite key: {record.container_id}")
-                pass
+    for record in metadata_records:
+        # Extract SHORT container ID (12 chars) from composite key
+        try:
+            _, container_id = parse_composite_key(record.container_id)
+            container_ids.append(container_id)
+        except ValueError:
+            # Invalid composite key format, skip
+            logger.warning(f"Failed to parse composite key: {record.container_id}")
+            pass
 
     return DeploymentResponse(
         id=deployment.id,

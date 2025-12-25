@@ -9,7 +9,10 @@ import time as time_module
 import subprocess
 import os
 from datetime import datetime, time as dt_time, timezone, timedelta
+import re
 
+from cronsim import CronSim
+from cronsim.cronsim import CronSimError
 from database import DatabaseManager
 from event_logger import EventLogger, EventSeverity, EventType
 from auth.session_manager import session_manager
@@ -18,6 +21,74 @@ from utils.async_docker import async_docker_call
 from updates.dockmon_update_checker import get_dockmon_update_checker
 
 logger = logging.getLogger(__name__)
+
+# Pattern to detect HH:MM format (simple time)
+SIMPLE_TIME_PATTERN = re.compile(r'^([0-1]?[0-9]|2[0-3]):([0-5][0-9])$')
+
+
+def is_cron_expression(schedule: str) -> bool:
+    """
+    Detect if a schedule string is a cron expression or simple HH:MM time.
+
+    Args:
+        schedule: Schedule string (e.g., "02:00" or "0 4 * * 6")
+
+    Returns:
+        True if cron expression, False if simple HH:MM time
+    """
+    # Simple HH:MM format
+    if SIMPLE_TIME_PATTERN.match(schedule.strip()):
+        return False
+
+    # Try to parse as cron - if it works, it's a cron expression
+    try:
+        # CronSim validates on construction
+        CronSim(schedule.strip(), datetime.now().astimezone())
+        return True
+    except CronSimError:
+        return False
+
+
+def calculate_next_cron_run(cron_expression: str) -> datetime:
+    """
+    Calculate the next run time for a cron expression.
+
+    Args:
+        cron_expression: Cron expression (e.g., "0 4 * * 6" for 4am every Saturday)
+
+    Returns:
+        Next run time as datetime (timezone-aware, local time)
+    """
+    # Use local time for cron calculations (respects TZ env var)
+    local_now = datetime.now().astimezone()
+    cron = CronSim(cron_expression.strip(), local_now)
+    return next(cron)
+
+
+def get_previous_cron_occurrence(cron_expression: str, reference_time: datetime) -> datetime:
+    """
+    Get the most recent cron occurrence before reference_time.
+
+    Since CronSim iterates forward only, we start from a past point
+    and iterate until we find the last occurrence before reference_time.
+
+    Args:
+        cron_expression: Cron expression (e.g., "0 4 * * 6")
+        reference_time: The reference point (typically now)
+
+    Returns:
+        Most recent cron trigger before reference_time
+    """
+    # Look back 8 days to cover all cases including weekly schedules
+    search_start = reference_time - timedelta(days=8)
+    cron = CronSim(cron_expression.strip(), search_start)
+
+    prev = None
+    for trigger in cron:
+        if trigger >= reference_time:
+            break
+        prev = trigger
+    return prev
 
 
 class PeriodicJobsManager:
@@ -370,38 +441,50 @@ class PeriodicJobsManager:
 
                 # Calculate sleep duration until next scheduled check (Issue #49 fix)
                 # This ensures checks run at configured time, not 24h after container restart
+                # Supports both simple HH:MM format and cron expressions (Issue #103)
                 try:
                     settings = self.db.get_settings()
-                    check_time_str = settings.update_check_time if hasattr(settings, 'update_check_time') and settings.update_check_time else "02:00"
+                    schedule_str = settings.update_check_time if hasattr(settings, 'update_check_time') and settings.update_check_time else "02:00"
 
-                    # Parse configured time (user's local time based on TZ env var)
-                    hour, minute = map(int, check_time_str.split(":"))
+                    if is_cron_expression(schedule_str):
+                        # Cron expression - use croniter for scheduling
+                        next_run = calculate_next_cron_run(schedule_str)
+                        sleep_seconds = (next_run - datetime.now().astimezone()).total_seconds()
+                        sleep_seconds = max(60, sleep_seconds)  # Minimum 60 seconds
 
-                    # Get system timezone offset from TZ environment variable
-                    # This respects the TZ setting in docker-compose.yml
-                    local_now = datetime.now().astimezone()
-                    tz_offset_seconds = local_now.utcoffset().total_seconds()
-                    timezone_offset = int(tz_offset_seconds / 60)  # Convert to minutes
+                        logger.info(
+                            f"Next update check scheduled for {next_run.strftime('%Y-%m-%d %H:%M:%S %Z')} "
+                            f"(cron: {schedule_str}, sleeping {sleep_seconds/3600:.1f} hours)"
+                        )
+                    else:
+                        # Simple HH:MM format - use existing logic
+                        hour, minute = map(int, schedule_str.split(":"))
 
-                    # Convert local time to UTC for scheduling
-                    # timezone_offset is minutes from UTC (e.g., -300 for ET, +60 for CET)
-                    # User enters local time, we need UTC: UTC = local - offset
-                    total_minutes_local = hour * 60 + minute
-                    total_minutes_utc = total_minutes_local - timezone_offset
+                        # Get system timezone offset from TZ environment variable
+                        # This respects the TZ setting in docker-compose.yml
+                        local_now = datetime.now().astimezone()
+                        tz_offset_seconds = local_now.utcoffset().total_seconds()
+                        timezone_offset = int(tz_offset_seconds / 60)  # Convert to minutes
 
-                    # Handle day wraparound (e.g., 1 AM ET = 6 AM UTC, or 11 PM ET = 4 AM UTC next day)
-                    target_hour_utc = (total_minutes_utc // 60) % 24
-                    target_minute_utc = total_minutes_utc % 60
-                    target_time = dt_time(target_hour_utc, target_minute_utc)
+                        # Convert local time to UTC for scheduling
+                        # timezone_offset is minutes from UTC (e.g., -300 for ET, +60 for CET)
+                        # User enters local time, we need UTC: UTC = local - offset
+                        total_minutes_local = hour * 60 + minute
+                        total_minutes_utc = total_minutes_local - timezone_offset
 
-                    # Calculate dynamic sleep duration
-                    sleep_seconds = self._calculate_sleep_until_next_check(target_time)
-                    next_check_time = datetime.now(timezone.utc) + timedelta(seconds=sleep_seconds)
+                        # Handle day wraparound (e.g., 1 AM ET = 6 AM UTC, or 11 PM ET = 4 AM UTC next day)
+                        target_hour_utc = (total_minutes_utc // 60) % 24
+                        target_minute_utc = total_minutes_utc % 60
+                        target_time = dt_time(target_hour_utc, target_minute_utc)
 
-                    logger.info(
-                        f"Next update check scheduled for {next_check_time.strftime('%Y-%m-%d %H:%M:%S UTC')} "
-                        f"(sleeping {sleep_seconds/3600:.1f} hours)"
-                    )
+                        # Calculate dynamic sleep duration
+                        sleep_seconds = self._calculate_sleep_until_next_check(target_time)
+                        next_check_time = datetime.now(timezone.utc) + timedelta(seconds=sleep_seconds)
+
+                        logger.info(
+                            f"Next update check scheduled for {next_check_time.strftime('%Y-%m-%d %H:%M:%S UTC')} "
+                            f"(sleeping {sleep_seconds/3600:.1f} hours)"
+                        )
 
                     await asyncio.sleep(sleep_seconds)
 
@@ -419,48 +502,73 @@ class PeriodicJobsManager:
         """
         Check if it's time to run update checker based on configured schedule.
 
-        Runs once per day at the configured time (default: 02:00).
-        Uses _last_update_check to ensure we don't run multiple times.
+        Supports both simple HH:MM format (daily at configured time) and cron
+        expressions (flexible scheduling like "0 4 * * 6" for weekly Saturday 4am).
+
+        Uses _last_update_check to ensure we don't run multiple times per schedule.
         """
         from updates.update_checker import get_update_checker
 
         try:
             settings = self.db.get_settings()
-            check_time_str = settings.update_check_time if hasattr(settings, 'update_check_time') and settings.update_check_time else "02:00"
-
-            # Parse configured time (user's local time based on TZ env var)
-            hour, minute = map(int, check_time_str.split(":"))
-
-            # Get system timezone offset from TZ environment variable
-            # This respects the TZ setting in docker-compose.yml
-            local_now = datetime.now().astimezone()
-            tz_offset_seconds = local_now.utcoffset().total_seconds()
-            timezone_offset = int(tz_offset_seconds / 60)  # Convert to minutes
-
-            # Convert local time to UTC for comparison
-            # timezone_offset is minutes from UTC (e.g., -300 for ET, +60 for CET)
-            # User enters local time, we need UTC: UTC = local - offset
-            total_minutes_local = hour * 60 + minute
-            total_minutes_utc = total_minutes_local - timezone_offset
-
-            # Handle day wraparound
-            target_hour_utc = (total_minutes_utc // 60) % 24
-            target_minute_utc = total_minutes_utc % 60
-            target_time = dt_time(target_hour_utc, target_minute_utc)
+            schedule_str = settings.update_check_time if hasattr(settings, 'update_check_time') and settings.update_check_time else "02:00"
 
             now = datetime.now(timezone.utc)
-            current_time = now.time()
-
-            # Check if we're past the target time and haven't run today
             should_run = False
-            if self._last_update_check is None:
-                # First run - run immediately
-                should_run = True
-                logger.info("First update check - running immediately")
-            elif self._last_update_check.date() < now.date() and current_time >= target_time:
-                # Haven't run today and we're past the target time
-                should_run = True
-                logger.info(f"Running scheduled update check (target time: {check_time_str}, UTC: {target_hour_utc:02d}:{target_minute_utc:02d})")
+
+            if is_cron_expression(schedule_str):
+                # Cron expression scheduling (Issue #103)
+                # Determine if we should run based on cron schedule
+                if self._last_update_check is None:
+                    # First run - run immediately
+                    should_run = True
+                    logger.info("First update check - running immediately")
+                else:
+                    # Check if the last scheduled cron time is after our last check
+                    # Use local time for cron calculations (respects TZ env var)
+                    local_now = datetime.now().astimezone()
+                    # Get the previous occurrence (the one that just triggered)
+                    prev_run = get_previous_cron_occurrence(schedule_str, local_now)
+
+                    # Convert last_update_check to local time for comparison
+                    last_check_local = self._last_update_check.astimezone()
+
+                    if prev_run and prev_run > last_check_local:
+                        # There's been a scheduled cron trigger since our last check
+                        should_run = True
+                        logger.info(f"Running scheduled update check (cron: {schedule_str}, triggered: {prev_run.strftime('%Y-%m-%d %H:%M %Z')})")
+            else:
+                # Simple HH:MM format (daily at configured time)
+                hour, minute = map(int, schedule_str.split(":"))
+
+                # Get system timezone offset from TZ environment variable
+                # This respects the TZ setting in docker-compose.yml
+                local_now = datetime.now().astimezone()
+                tz_offset_seconds = local_now.utcoffset().total_seconds()
+                timezone_offset = int(tz_offset_seconds / 60)  # Convert to minutes
+
+                # Convert local time to UTC for comparison
+                # timezone_offset is minutes from UTC (e.g., -300 for ET, +60 for CET)
+                # User enters local time, we need UTC: UTC = local - offset
+                total_minutes_local = hour * 60 + minute
+                total_minutes_utc = total_minutes_local - timezone_offset
+
+                # Handle day wraparound
+                target_hour_utc = (total_minutes_utc // 60) % 24
+                target_minute_utc = total_minutes_utc % 60
+                target_time = dt_time(target_hour_utc, target_minute_utc)
+
+                current_time = now.time()
+
+                # Check if we're past the target time and haven't run today
+                if self._last_update_check is None:
+                    # First run - run immediately
+                    should_run = True
+                    logger.info("First update check - running immediately")
+                elif self._last_update_check.date() < now.date() and current_time >= target_time:
+                    # Haven't run today and we're past the target time
+                    should_run = True
+                    logger.info(f"Running scheduled update check (target time: {schedule_str}, UTC: {target_hour_utc:02d}:{target_minute_utc:02d})")
 
             if should_run:
                 # Step 1: Check for updates

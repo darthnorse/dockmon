@@ -68,21 +68,37 @@ export function ContainerUpdatesSettings() {
     }
   }, [settings])
 
+  // Validate schedule format (HH:MM or cron expression)
+  const isValidSchedule = (schedule: string): boolean => {
+    const trimmed = schedule.trim()
+    // HH:MM format (simple daily time)
+    const timeRegex = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/
+    if (timeRegex.test(trimmed)) return true
+
+    // Cron expression (5 fields: minute hour day-of-month month day-of-week)
+    // Basic validation: 5 space-separated fields with valid characters
+    const cronParts = trimmed.split(/\s+/)
+    if (cronParts.length !== 5) return false
+
+    // Each field should contain only valid cron characters
+    const cronCharRegex = /^[\d,\-*/]+$/
+    return cronParts.every(part => cronCharRegex.test(part))
+  }
+
   const handleUpdateCheckTimeBlur = async () => {
     if (updateCheckTime !== settings?.update_check_time) {
-      // Validate time format (HH:MM)
-      const timeRegex = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/
-      if (!timeRegex.test(updateCheckTime)) {
-        toast.error('Invalid time format. Use HH:MM (24-hour format)')
+      const trimmed = updateCheckTime.trim()
+      if (!isValidSchedule(trimmed)) {
+        toast.error('Invalid schedule format. Use HH:MM (e.g., 02:00) or cron expression (e.g., 0 4 * * 6)')
         setUpdateCheckTime(settings?.update_check_time ?? '02:00')
         return
       }
 
       try {
-        await updateSettings.mutateAsync({ update_check_time: updateCheckTime })
-        toast.success('Update check time updated')
+        await updateSettings.mutateAsync({ update_check_time: trimmed })
+        toast.success('Update schedule updated')
       } catch (error) {
-        toast.error('Failed to update check time')
+        toast.error('Failed to update schedule')
       }
     }
   }
@@ -254,16 +270,17 @@ export function ContainerUpdatesSettings() {
         <div className="space-y-4">
           <div>
             <label htmlFor="update-check-time" className="block text-sm font-medium text-gray-300 mb-2">
-              Daily Update Check Time
+              Update Check Schedule
             </label>
             <div className="flex gap-3">
               <input
                 id="update-check-time"
-                type="time"
+                type="text"
                 value={updateCheckTime}
                 onChange={(e) => setUpdateCheckTime(e.target.value)}
                 onBlur={handleUpdateCheckTimeBlur}
-                className="flex-1 rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                placeholder="02:00 or 0 4 * * 6"
+                className="flex-1 rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white font-mono focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
               />
               <Button
                 onClick={handleCheckAllNow}
@@ -276,7 +293,8 @@ export function ContainerUpdatesSettings() {
               </Button>
             </div>
             <p className="mt-1 text-xs text-gray-400">
-              Time of day to check for container updates (24-hour format). The system will check for updates once per day at this time.
+              Schedule for update checks. Use HH:MM for daily checks (e.g., 02:00) or cron expression for flexible scheduling
+              (e.g., <code className="bg-gray-700 px-1 rounded">0 4 * * 6</code> for 4am every Saturday).
             </p>
           </div>
 

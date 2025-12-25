@@ -218,7 +218,7 @@ class GlobalSettingsUpdate(BaseModel):
     # Update settings
     auto_update_enabled_default: Optional[bool] = None
     update_check_interval_hours: Optional[int] = Field(None, ge=1, le=168, description="Update check interval (1-168 hours)")
-    update_check_time: Optional[str] = Field(None, pattern=r'^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$', description="Time in HH:MM format (with or without leading zero)")
+    update_check_time: Optional[str] = Field(None, max_length=100, description="Schedule in HH:MM format or cron expression")
     skip_compose_containers: Optional[bool] = None
     health_check_timeout_seconds: Optional[int] = Field(None, ge=5, le=600, description="Health check timeout (5-600)")
 
@@ -231,6 +231,37 @@ class GlobalSettingsUpdate(BaseModel):
     external_url: Optional[str] = Field(None, max_length=500, description="External URL for notification action links (e.g., https://dockmon.example.com)")
 
     model_config = ConfigDict(extra="forbid")  # Reject unknown keys (typos, attacks)
+
+    @field_validator('update_check_time')
+    @classmethod
+    def validate_update_check_time(cls, v: Optional[str]) -> Optional[str]:
+        """Validate schedule format (HH:MM or cron expression)"""
+        import re
+        from cronsim import CronSim
+        from cronsim.cronsim import CronSimError
+        from datetime import datetime
+
+        if v is None:
+            return v
+
+        trimmed = v.strip()
+        if not trimmed:
+            raise ValueError("Schedule cannot be empty")
+
+        # Check HH:MM format
+        time_pattern = re.compile(r'^([0-1]?[0-9]|2[0-3]):([0-5][0-9])$')
+        if time_pattern.match(trimmed):
+            return trimmed
+
+        # Check cron expression
+        try:
+            CronSim(trimmed, datetime.now().astimezone())
+            return trimmed
+        except CronSimError:
+            raise ValueError(
+                "Invalid schedule format. Use HH:MM (e.g., 02:00) or "
+                "cron expression (e.g., 0 4 * * 6 for 4am every Saturday)"
+            )
 
     @field_validator('blackout_windows')
     @classmethod

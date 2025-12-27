@@ -152,9 +152,11 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            latest=false
           tags: |
             type=raw,value=${{ steps.version.outputs.version }},suffix=-${{ steps.platform.outputs.suffix }}
-            ${{ steps.version.outputs.branch_tag && format('type=raw,value={0},suffix=-{1}', steps.version.outputs.branch_tag, steps.platform.outputs.suffix) || '' }}
+            type=raw,value=${{ steps.version.outputs.branch_tag }},suffix=-${{ steps.platform.outputs.suffix }},enable=${{ steps.version.outputs.branch_tag != '' }}
 
       - name: Build and push Docker image
         id: build

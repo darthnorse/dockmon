@@ -199,7 +199,7 @@ jobs:
             VERSION=${GITHUB_REF#refs/tags/v}
             IS_RELEASE="true"
           elif [[ $GITHUB_REF == refs/heads/main ]]; then
-            VERSION="main"
+            VERSION="latest"
             IS_RELEASE="false"
           elif [[ $GITHUB_REF == refs/heads/dev ]]; then
             VERSION="dev"

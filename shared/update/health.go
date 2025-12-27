@@ -9,6 +9,26 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// isExitAcceptable determines if a container exit is acceptable based on
+// restart policy and exit code. This aligns with Docker's semantics:
+//   - "no" / "": Container isn't meant to auto-restart. Exit 0 = success.
+//   - "on-failure": Only restarts on failure. Exit 0 = success (Docker semantics).
+//   - "always" / "unless-stopped": Container should run continuously. Any exit = failure.
+//
+// Fixes Issue #110: One-shot containers (like init helpers) that exit with
+// code 0 should not trigger update rollback.
+func isExitAcceptable(restartPolicy string, exitCode int) bool {
+	switch restartPolicy {
+	case "", "no", "on-failure":
+		// Exit 0 = task completed successfully
+		// Exit != 0 = failure/crash
+		return exitCode == 0
+	default:
+		// "always", "unless-stopped" - container should keep running
+		return false
+	}
+}
+
 // WaitForHealthy waits for a container to become healthy or timeout.
 // This function matches the Python backend's health check logic:
 // 1. If container has Docker HEALTHCHECK: Poll for "healthy" status
@@ -54,7 +74,15 @@ func WaitForHealthy(
 
 		// Check if container is still running
 		if !inspect.State.Running {
-			return fmt.Errorf("container stopped unexpectedly (exit code: %d)", inspect.State.ExitCode)
+			// Check restart policy to determine if exit is acceptable (Issue #110)
+			// One-shot containers (restart: no/on-failure) with exit code 0 are considered successful
+			restartPolicy := string(inspect.HostConfig.RestartPolicy.Name)
+			exitCode := inspect.State.ExitCode
+			if isExitAcceptable(restartPolicy, exitCode) {
+				log.Infof("Container exited with code %d (restart: %s) - considered successful", exitCode, restartPolicy)
+				return nil
+			}
+			return fmt.Errorf("container stopped unexpectedly (exit code: %d)", exitCode)
 		}
 
 		// If no health check defined, wait 3 seconds and assume healthy
@@ -69,7 +97,14 @@ func WaitForHealthy(
 					return fmt.Errorf("failed to inspect container after stability wait: %w", err)
 				}
 				if !inspect2.State.Running {
-					return fmt.Errorf("container crashed within 3s of starting (exit code: %d)", inspect2.State.ExitCode)
+					// Check restart policy to determine if exit is acceptable (Issue #110)
+					restartPolicy := string(inspect2.HostConfig.RestartPolicy.Name)
+					exitCode := inspect2.State.ExitCode
+					if isExitAcceptable(restartPolicy, exitCode) {
+						log.Infof("Container completed within 3s (restart: %s, exit code: %d) - considered successful", restartPolicy, exitCode)
+						return nil
+					}
+					return fmt.Errorf("container crashed within 3s of starting (exit code: %d)", exitCode)
 				}
 				log.Info("Container stable after 3s, considering healthy")
 				return nil

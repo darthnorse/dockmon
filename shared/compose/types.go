@@ -64,6 +64,11 @@ type ServiceResult struct {
 	Image         string `json:"image"`
 	Status        string `json:"status"`
 	Error         string `json:"error,omitempty"`
+	// RestartPolicy for determining if exit is acceptable (Issue #110)
+	// Values: "", "no", "on-failure", "always", "unless-stopped"
+	RestartPolicy string `json:"restart_policy,omitempty"`
+	// ExitCode from the container (only set for exited containers)
+	ExitCode int `json:"exit_code,omitempty"`
 }
 
 // ProgressStage represents the current stage of deployment

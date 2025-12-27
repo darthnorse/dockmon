@@ -104,10 +104,11 @@ class AgentRegistrationRequest(BaseModel):
 
         These should be alphanumeric + hyphens (UUIDs, SHA256 hashes).
         """
-        # Allow alphanumeric, hyphens, underscores (common in IDs)
+        # Allow alphanumeric, hyphens, underscores, colons (common in IDs)
+        # Colons are needed for legacy Docker Engine ID format (EOGD:IMML:ZAXF:...)
         # This prevents injection of special characters
-        if not re.match(r'^[a-zA-Z0-9\-_]+$', v):
-            raise ValueError("ID must contain only alphanumeric characters, hyphens, and underscores")
+        if not re.match(r'^[a-zA-Z0-9\-_:]+$', v):
+            raise ValueError("ID must contain only alphanumeric characters, hyphens, underscores, and colons")
         return v
 
     model_config = ConfigDict(

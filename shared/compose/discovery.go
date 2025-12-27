@@ -57,19 +57,33 @@ func DiscoverContainers(
 			status = c.State
 		}
 
-		services[serviceName] = ServiceResult{
+		result := ServiceResult{
 			ContainerID:   shortID,
 			ContainerName: containerName,
 			Image:         c.Image,
 			Status:        status,
 		}
 
+		// For exited containers, inspect to get restart policy and exit code (Issue #110)
+		// This allows us to determine if exit 0 with restart:no/on-failure is acceptable
+		if c.State == "exited" {
+			inspect, err := dockerClient.ContainerInspect(ctx, c.ID)
+			if err == nil {
+				result.RestartPolicy = string(inspect.HostConfig.RestartPolicy.Name)
+				result.ExitCode = inspect.State.ExitCode
+			}
+		}
+
+		services[serviceName] = result
+
 		if log != nil {
 			log.WithFields(logrus.Fields{
-				"service":      serviceName,
-				"container_id": shortID,
-				"name":         containerName,
-				"status":       status,
+				"service":        serviceName,
+				"container_id":   shortID,
+				"name":           containerName,
+				"status":         status,
+				"restart_policy": result.RestartPolicy,
+				"exit_code":      result.ExitCode,
 			}).Debug("Discovered compose service")
 		}
 	}
@@ -104,7 +118,8 @@ func AnalyzeServiceStatus(
 	var failedErrors []string
 
 	for serviceName, service := range services {
-		if IsServiceHealthy(service.Status) {
+		// Use IsServiceResultHealthy to consider restart policy for one-shot containers (Issue #110)
+		if IsServiceResultHealthy(service) {
 			runningServices = append(runningServices, serviceName)
 		} else {
 			failedServices = append(failedServices, serviceName)

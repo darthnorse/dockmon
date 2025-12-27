@@ -138,3 +138,43 @@ func IsServiceHealthy(status string) bool {
 	}
 	return false
 }
+
+// IsServiceResultHealthy checks if a ServiceResult indicates healthy state.
+// This is an enhanced version of IsServiceHealthy that considers restart policy
+// for one-shot containers (Issue #110).
+//
+// For containers with restart:no or restart:on-failure that exit with code 0,
+// this is considered success (the container completed its task).
+func IsServiceResultHealthy(service ServiceResult) bool {
+	status := strings.ToLower(service.Status)
+
+	// First check for explicit unhealthy - this takes precedence
+	if strings.Contains(status, "unhealthy") {
+		return false
+	}
+
+	// Check for healthy/running states
+	if status == "running" || status == "up" || strings.HasPrefix(status, "up ") {
+		return true
+	}
+	if strings.Contains(status, "healthy") {
+		return true
+	}
+
+	// Check for one-shot containers that exited successfully (Issue #110)
+	// Containers with restart:no or restart:on-failure that exit with code 0
+	// are considered healthy - they completed their intended task
+	if strings.Contains(status, "exited") {
+		switch service.RestartPolicy {
+		case "", "no", "on-failure":
+			// Exit 0 = task completed successfully
+			if service.ExitCode == 0 {
+				return true
+			}
+		}
+		// For "always" or "unless-stopped", any exit is a failure
+		// For non-zero exit codes with no/on-failure, it's also a failure
+	}
+
+	return false
+}

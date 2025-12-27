@@ -296,3 +296,82 @@ class TestAgentRegistration:
 
             assert result["success"] is False
             assert "already registered" in result["error"].lower()
+
+
+class TestEngineIdValidation:
+    """Test engine_id format validation (Issue #112)"""
+
+    def test_uuid_format_engine_id(self):
+        """Should accept UUID format engine_id (newer Docker format)"""
+        from agent.models import AgentRegistrationRequest
+
+        # UUID format - standard for newer Docker installations
+        data = AgentRegistrationRequest(
+            type="register",
+            token="valid-token",
+            engine_id="4be40a44-3998-4f47-981e-1c3d09ae54a5",
+            version="2.2.0",
+            proto_version="1.0",
+            capabilities={}
+        )
+        assert data.engine_id == "4be40a44-3998-4f47-981e-1c3d09ae54a5"
+
+    def test_legacy_colon_format_engine_id(self):
+        """Should accept legacy colon format engine_id (older Docker format)"""
+        from agent.models import AgentRegistrationRequest
+
+        # Legacy colon format - used by older Docker installations
+        data = AgentRegistrationRequest(
+            type="register",
+            token="valid-token",
+            engine_id="EOGD:IMML:ZAXF:LJYT:FU42:6BHD:DV6D:K3KU:B5CX:OMGQ:IKQ3:BVS6",
+            version="2.2.0",
+            proto_version="1.0",
+            capabilities={}
+        )
+        assert data.engine_id == "EOGD:IMML:ZAXF:LJYT:FU42:6BHD:DV6D:K3KU:B5CX:OMGQ:IKQ3:BVS6"
+
+    def test_simple_alphanumeric_engine_id(self):
+        """Should accept simple alphanumeric engine_id"""
+        from agent.models import AgentRegistrationRequest
+
+        data = AgentRegistrationRequest(
+            type="register",
+            token="valid-token",
+            engine_id="docker-engine-123",
+            version="2.2.0",
+            proto_version="1.0",
+            capabilities={}
+        )
+        assert data.engine_id == "docker-engine-123"
+
+    def test_invalid_engine_id_with_spaces(self):
+        """Should reject engine_id with spaces"""
+        from agent.models import AgentRegistrationRequest
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError) as exc_info:
+            AgentRegistrationRequest(
+                type="register",
+                token="valid-token",
+                engine_id="invalid engine id",
+                version="2.2.0",
+                proto_version="1.0",
+                capabilities={}
+            )
+        assert "alphanumeric" in str(exc_info.value).lower()
+
+    def test_invalid_engine_id_with_special_chars(self):
+        """Should reject engine_id with injection characters"""
+        from agent.models import AgentRegistrationRequest
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            AgentRegistrationRequest(
+                type="register",
+                token="valid-token",
+                engine_id="engine;DROP TABLE agents;--",
+                version="2.2.0",
+                proto_version="1.0",
+                capabilities={}
+            )

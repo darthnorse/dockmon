@@ -2642,6 +2642,10 @@ async def update_settings(
         monitor.event_logger.reload_suppression_patterns()
         logger.info("Event suppression patterns reloaded")
 
+    # Wake periodic job if update schedule changed (no restart required)
+    if 'update_check_time' in validated_dict:
+        monitor.periodic_jobs.notify_schedule_changed()
+
     # Broadcast blackout status change to all clients
     is_blackout, window_name = monitor.notification_service.blackout_manager.is_in_blackout_window()
     await monitor.manager.broadcast({

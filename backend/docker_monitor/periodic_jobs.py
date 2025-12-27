@@ -77,10 +77,11 @@ def get_previous_cron_occurrence(cron_expression: str, reference_time: datetime)
         reference_time: The reference point (typically now)
 
     Returns:
-        Most recent cron trigger before reference_time
+        Most recent cron trigger before reference_time, or None if not found
     """
-    # Look back 8 days to cover all cases including weekly schedules
-    search_start = reference_time - timedelta(days=8)
+    # Look back 35 days to cover monthly schedules (31 days + margin)
+    # This handles daily, weekly, and monthly cron expressions
+    search_start = reference_time - timedelta(days=35)
     cron = CronSim(cron_expression.strip(), search_start)
 
     prev = None
@@ -99,6 +100,12 @@ class PeriodicJobsManager:
         self.event_logger = event_logger
         self.monitor = None  # Will be set by monitor.py after initialization
         self._last_update_check = None  # Track when we last ran update check
+        self._schedule_changed = asyncio.Event()  # Signal to wake sleep when schedule changes
+
+    def notify_schedule_changed(self):
+        """Signal that the update schedule has changed, waking the sleeping task."""
+        logger.info("Update schedule changed, waking periodic job to recalculate next run")
+        self._schedule_changed.set()
 
     async def auto_resolve_stale_alerts(self):
         """
@@ -486,7 +493,15 @@ class PeriodicJobsManager:
                             f"(sleeping {sleep_seconds/3600:.1f} hours)"
                         )
 
-                    await asyncio.sleep(sleep_seconds)
+                    # Interruptible sleep - can be woken early if schedule changes
+                    try:
+                        await asyncio.wait_for(self._schedule_changed.wait(), timeout=sleep_seconds)
+                        # Event was set - schedule changed, clear and recalculate
+                        self._schedule_changed.clear()
+                        logger.info("Schedule change detected, recalculating next run time")
+                        continue  # Skip to next iteration to recalculate
+                    except asyncio.TimeoutError:
+                        pass  # Normal timeout - continue to run update check
 
                 except Exception as e:
                     # Fallback to 24-hour sleep on error

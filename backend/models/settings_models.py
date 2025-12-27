@@ -3,14 +3,14 @@ Settings and Configuration Models for DockMon
 Pydantic models for global settings, alerts, and notifications
 """
 
+import re
 import uuid
 from datetime import datetime
 from typing import Optional, List
 
+from cronsim import CronSim
+from cronsim.cronsim import CronSimError
 from pydantic import BaseModel, Field, field_validator, ConfigDict
-
-
-from typing import Optional, List
 
 class GlobalSettings(BaseModel):
     """Global monitoring settings"""
@@ -236,11 +236,6 @@ class GlobalSettingsUpdate(BaseModel):
     @classmethod
     def validate_update_check_time(cls, v: Optional[str]) -> Optional[str]:
         """Validate schedule format (HH:MM or cron expression)"""
-        import re
-        from cronsim import CronSim
-        from cronsim.cronsim import CronSimError
-        from datetime import datetime
-
         if v is None:
             return v
 

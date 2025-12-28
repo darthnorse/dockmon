@@ -350,6 +350,7 @@ def test_container_update(test_db: Session, test_host):
     update = ContainerUpdate(
         container_id=composite_key,
         host_id=test_host.id,
+        container_name='test-nginx-container',  # v2.2.3+: Store name for reattachment
         current_image='nginx:latest',
         current_digest='sha256:abc123def456789',  # Required field
         latest_image='nginx:alpine',

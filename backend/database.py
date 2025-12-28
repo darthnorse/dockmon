@@ -411,6 +411,7 @@ class ContainerUpdate(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     container_id = Column(Text, nullable=False, unique=True)  # Composite: host_id:short_container_id
     host_id = Column(Text, ForeignKey("docker_hosts.id", ondelete="CASCADE"), nullable=False)
+    container_name = Column(Text, nullable=True)  # Container name for reattachment (v2.2.3+)
 
     # Current state
     current_image = Column(Text, nullable=False)
@@ -478,6 +479,7 @@ class ContainerHttpHealthCheck(Base):
 
     container_id = Column(Text, primary_key=True)  # Composite: host_id:container_id
     host_id = Column(Text, ForeignKey("docker_hosts.id", ondelete="CASCADE"), nullable=False)
+    container_name = Column(Text, nullable=True)  # Container name for reattachment (v2.2.3+)
 
     # Configuration
     enabled = Column(Boolean, default=False, nullable=False)
@@ -1839,13 +1841,14 @@ class DatabaseManager:
                 raise
 
     # Container Auto-Update Operations
-    def set_container_auto_update(self, container_key: str, enabled: bool, floating_tag_mode: str = 'exact'):
+    def set_container_auto_update(self, container_key: str, enabled: bool, floating_tag_mode: str = 'exact', container_name: str = None):
         """Enable/disable auto-update for a container with tracking mode
 
         Args:
             container_key: Composite key format "host_id:container_id"
             enabled: Whether to enable auto-updates
             floating_tag_mode: Update tracking mode (exact|patch|minor|latest)
+            container_name: Container name for reattachment after recreation
         """
         with self.get_session() as session:
             try:
@@ -1856,6 +1859,8 @@ class DatabaseManager:
                 if config:
                     config.auto_update_enabled = enabled
                     config.floating_tag_mode = floating_tag_mode
+                    if container_name:
+                        config.container_name = container_name
                     config.updated_at = datetime.now(timezone.utc)
                     logger.info(f"Updated auto-update for {container_key}: enabled={enabled}, mode={floating_tag_mode}")
                 else:
@@ -1866,6 +1871,7 @@ class DatabaseManager:
                     config = ContainerUpdate(
                         container_id=container_key,
                         host_id=host_id,
+                        container_name=container_name,
                         current_image='',  # Will be populated by update checker
                         current_digest='',
                         auto_update_enabled=enabled,
@@ -2514,11 +2520,10 @@ class DatabaseManager:
         compose_project: str = None,
         compose_service: str = None
     ) -> Optional[dict]:
-        """
-        Reattach HTTP health check configuration to a rebuilt container.
+        """Reattach HTTP health check configuration to a rebuilt container.
 
-        When containers are destroyed and recreated (e.g., TrueNAS stop/start),
-        this restores the HTTP health check configuration.
+        v2.2.3+: Uses container_name stored directly in ContainerHttpHealthCheck table.
+        No longer depends on AutoRestartConfig for name lookup.
 
         Args:
             host_id: Host UUID
@@ -2531,62 +2536,61 @@ class DatabaseManager:
             dict with preserved config if found, None otherwise
         """
         with self.get_session() as session:
-            # Find previous health check configs for this host
-            # Note: container_id is composite key, so we need to match by host_id pattern
-            prev_checks = session.query(ContainerHttpHealthCheck).filter(
-                ContainerHttpHealthCheck.host_id == host_id
-            ).all()
-
             prev_health_check = None
-
-            # Try to find match by compose identity
-            if compose_project and compose_service and prev_checks:
-                for check in prev_checks:
-                    # Extract container name from composite key (format: host_id:container_id)
-                    old_container_id = check.container_id.split(':', 1)[1] if ':' in check.container_id else check.container_id
-                    # Get container name from AutoRestartConfig or ContainerDesiredState
-                    old_container = session.query(AutoRestartConfig).filter(
-                        AutoRestartConfig.host_id == host_id,
-                        AutoRestartConfig.container_id == old_container_id
-                    ).first()
-                    if old_container and old_container.container_name.startswith(f"{compose_project}_{compose_service}"):
-                        prev_health_check = check
-                        break
-
-            # Fallback: try to match by querying AutoRestartConfig to map container_id to container_name
-            if not prev_health_check and prev_checks:
-                # Get mapping of old container IDs to container names
-                old_containers = session.query(AutoRestartConfig).filter(
-                    AutoRestartConfig.host_id == host_id,
-                    AutoRestartConfig.container_name == container_name
-                ).all()
-
-                old_container_ids = {c.container_id for c in old_containers}
-
-                for check in prev_checks:
-                    old_container_id = check.container_id.split(':', 1)[1] if ':' in check.container_id else check.container_id
-                    if old_container_id in old_container_ids:
-                        prev_health_check = check
-                        break
-
-            if not prev_health_check:
-                # No previous health check found
-                return None
-
-            # Check if health check already exists for this container ID (idempotent)
             new_composite_key = make_composite_key(host_id, container_id)
-            existing_check = session.query(ContainerHttpHealthCheck).filter(
+
+            # Check if already exists (idempotent)
+            existing = session.query(ContainerHttpHealthCheck).filter(
                 ContainerHttpHealthCheck.container_id == new_composite_key
             ).first()
 
-            if existing_check:
-                # Already reattached, nothing to do
+            if existing:
+                return None
+
+            # Strategy 1: Match by container_name directly (v2.2.3+)
+            # This is the primary method now that we store container_name
+            # Order by updated_at DESC to get most recent if multiple exist (after repeated reattachments)
+            prev_health_check = session.query(ContainerHttpHealthCheck).filter(
+                ContainerHttpHealthCheck.host_id == host_id,
+                ContainerHttpHealthCheck.container_name == container_name,
+                ContainerHttpHealthCheck.container_id != new_composite_key
+            ).order_by(ContainerHttpHealthCheck.updated_at.desc()).first()
+
+            # Strategy 2: Compose pattern match (for containers with compose-style names)
+            if not prev_health_check and compose_project and compose_service:
+                compose_pattern = f"{compose_project}_{compose_service}"
+                prev_health_check = session.query(ContainerHttpHealthCheck).filter(
+                    ContainerHttpHealthCheck.host_id == host_id,
+                    ContainerHttpHealthCheck.container_name.ilike(f"{compose_pattern}%"),
+                    ContainerHttpHealthCheck.container_id != new_composite_key
+                ).order_by(ContainerHttpHealthCheck.updated_at.desc()).first()
+
+            # Strategy 3: Legacy fallback - query via AutoRestartConfig for old records without container_name
+            if not prev_health_check:
+                candidates = session.query(ContainerHttpHealthCheck).filter(
+                    ContainerHttpHealthCheck.host_id == host_id,
+                    ContainerHttpHealthCheck.container_name.is_(None)  # Only old records without name
+                ).all()
+                if candidates:
+                    # Try to match via AutoRestartConfig
+                    old_ids = {c.container_id for c in session.query(AutoRestartConfig).filter(
+                        AutoRestartConfig.host_id == host_id,
+                        AutoRestartConfig.container_name == container_name
+                    ).all()}
+                    for cand in candidates:
+                        old_id = cand.container_id.split(':', 1)[1] if ':' in cand.container_id else cand.container_id
+                        if old_id in old_ids:
+                            prev_health_check = cand
+                            break
+
+            if not prev_health_check:
                 return None
 
             # Create new health check with preserved settings
             new_health_check = ContainerHttpHealthCheck(
-                container_id=new_composite_key,  # NEW composite key
+                container_id=new_composite_key,
                 host_id=host_id,
+                container_name=container_name,  # Store name for future reattachment
                 enabled=prev_health_check.enabled,
                 url=prev_health_check.url,
                 method=prev_health_check.method,
@@ -2595,8 +2599,14 @@ class DatabaseManager:
                 check_interval_seconds=prev_health_check.check_interval_seconds,
                 follow_redirects=prev_health_check.follow_redirects,
                 verify_ssl=prev_health_check.verify_ssl,
+                check_from=prev_health_check.check_from,
                 headers_json=prev_health_check.headers_json,
-                auth_config_json=prev_health_check.auth_config_json
+                auth_config_json=prev_health_check.auth_config_json,
+                auto_restart_on_failure=prev_health_check.auto_restart_on_failure,
+                failure_threshold=prev_health_check.failure_threshold,
+                success_threshold=prev_health_check.success_threshold,
+                max_restart_attempts=prev_health_check.max_restart_attempts,
+                restart_retry_delay_seconds=prev_health_check.restart_retry_delay_seconds
             )
             session.add(new_health_check)
             session.commit()
@@ -2618,60 +2628,71 @@ class DatabaseManager:
         compose_project: str = None,
         compose_service: str = None
     ) -> Optional[dict]:
-        """Reattach update tracking settings to rebuilt container."""
+        """Reattach update tracking settings to rebuilt container.
+
+        v2.2.3+: Uses container_name stored directly in ContainerUpdate table.
+        No longer depends on AutoRestartConfig for name lookup.
+        """
         with self.get_session() as session:
             prev_update = None
-            
-            # Try compose match
-            if compose_project and compose_service:
-                # Query by host and image, then filter by name pattern
-                candidates = session.query(ContainerUpdate).filter(
-                    ContainerUpdate.host_id == host_id,
-                    ContainerUpdate.current_image == current_image
-                ).all()
-                for cand in candidates:
-                    old_id = cand.container_id.split(':', 1)[1] if ':' in cand.container_id else cand.container_id
-                    old_config = session.query(AutoRestartConfig).filter(
-                        AutoRestartConfig.host_id == host_id,
-                        AutoRestartConfig.container_id == old_id
-                    ).first()
-                    if old_config and old_config.container_name.startswith(f"{compose_project}_{compose_service}"):
-                        prev_update = cand
-                        break
-            
-            # Fallback: match by name + host + image
-            if not prev_update:
-                candidates = session.query(ContainerUpdate).filter(
-                    ContainerUpdate.host_id == host_id,
-                    ContainerUpdate.current_image == current_image
-                ).all()
-                old_ids = {c.container_id for c in session.query(AutoRestartConfig).filter(
-                    AutoRestartConfig.host_id == host_id,
-                    AutoRestartConfig.container_name == container_name
-                ).all()}
-                for cand in candidates:
-                    old_id = cand.container_id.split(':', 1)[1] if ':' in cand.container_id else cand.container_id
-                    if old_id in old_ids:
-                        prev_update = cand
-                        break
-            
-            if not prev_update:
-                return None
-            
             new_composite_key = make_composite_key(host_id, container_id)
+
+            # Check if already exists (idempotent)
             existing = session.query(ContainerUpdate).filter(
                 ContainerUpdate.container_id == new_composite_key
             ).first()
-            
+
             if existing:
                 return None
-            
+
+            # Strategy 1: Match by container_name directly (v2.2.3+)
+            # This is the primary method now that we store container_name
+            # Order by updated_at DESC to get most recent if multiple exist (after repeated reattachments)
+            prev_update = session.query(ContainerUpdate).filter(
+                ContainerUpdate.host_id == host_id,
+                ContainerUpdate.container_name == container_name,
+                ContainerUpdate.container_id != new_composite_key  # Exclude current container
+            ).order_by(ContainerUpdate.updated_at.desc()).first()
+
+            # Strategy 2: Compose pattern match (for containers with compose-style names)
+            if not prev_update and compose_project and compose_service:
+                compose_pattern = f"{compose_project}_{compose_service}"
+                prev_update = session.query(ContainerUpdate).filter(
+                    ContainerUpdate.host_id == host_id,
+                    ContainerUpdate.container_name.ilike(f"{compose_pattern}%"),
+                    ContainerUpdate.container_id != new_composite_key
+                ).order_by(ContainerUpdate.updated_at.desc()).first()
+
+            # Strategy 3: Legacy fallback - query via AutoRestartConfig for old records without container_name
+            if not prev_update:
+                candidates = session.query(ContainerUpdate).filter(
+                    ContainerUpdate.host_id == host_id,
+                    ContainerUpdate.current_image == current_image,
+                    ContainerUpdate.container_name.is_(None)  # Only old records without name
+                ).all()
+                if candidates:
+                    # Try to match via AutoRestartConfig
+                    old_ids = {c.container_id for c in session.query(AutoRestartConfig).filter(
+                        AutoRestartConfig.host_id == host_id,
+                        AutoRestartConfig.container_name == container_name
+                    ).all()}
+                    for cand in candidates:
+                        old_id = cand.container_id.split(':', 1)[1] if ':' in cand.container_id else cand.container_id
+                        if old_id in old_ids:
+                            prev_update = cand
+                            break
+
+            if not prev_update:
+                return None
+
             # Create new record with preserved settings
             new_update = ContainerUpdate(
                 container_id=new_composite_key,
                 host_id=host_id,
+                container_name=container_name,  # Store name for future reattachment
                 current_image=current_image,
                 current_digest=prev_update.current_digest,
+                current_version=prev_update.current_version,  # Preserve OCI version label
                 floating_tag_mode=prev_update.floating_tag_mode,
                 auto_update_enabled=prev_update.auto_update_enabled,
                 update_policy=prev_update.update_policy,
@@ -2694,9 +2715,9 @@ class DatabaseManager:
             )
             session.add(new_update)
             session.commit()
-            
+
             logger.info(f"Reattached update settings to container {container_name} (auto_update={prev_update.auto_update_enabled})")
-            
+
             return {"auto_update_enabled": prev_update.auto_update_enabled, "floating_tag_mode": prev_update.floating_tag_mode}
 
     def reattach_deployment_metadata_for_container(

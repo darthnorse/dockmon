@@ -605,11 +605,15 @@ class UpdateChecker:
                 record.changelog_url = update_info.get("changelog_url")
                 record.changelog_source = update_info.get("changelog_source")
                 record.changelog_checked_at = update_info.get("changelog_checked_at")
+                # Update container_name if available (for reattachment)
+                if container.get("name"):
+                    record.container_name = container["name"]
             else:
                 # Create new record
                 record = ContainerUpdate(
                     container_id=composite_key,
                     host_id=container["host_id"],
+                    container_name=container.get("name"),
                     current_image=update_info["current_image"],
                     current_digest=update_info["current_digest"],
                     latest_image=update_info["latest_image"],
@@ -657,6 +661,9 @@ class UpdateChecker:
                     record.changelog_url = update_info.get("changelog_url")
                     record.changelog_source = update_info.get("changelog_source")
                     record.changelog_checked_at = update_info.get("changelog_checked_at")
+                    # Update container_name if available (for reattachment)
+                    if container.get("name"):
+                        record.container_name = container["name"]
                     session.commit()
                 else:
                     # Record vanished between operations - extremely unlikely

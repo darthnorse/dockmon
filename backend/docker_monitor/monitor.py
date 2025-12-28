@@ -1341,7 +1341,7 @@ class DockerMonitor:
     def update_container_auto_update(self, host_id: str, container_id: str, container_name: str, enabled: bool, floating_tag_mode: str = 'exact'):
         """Enable/disable auto-update for a container with specified tracking mode"""
         container_key = make_composite_key(host_id, container_id)
-        return self.db.set_container_auto_update(container_key, enabled, floating_tag_mode)
+        return self.db.set_container_auto_update(container_key, enabled, floating_tag_mode, container_name)
 
     def update_container_desired_state(self, host_id: str, container_id: str, container_name: str, desired_state: str, web_ui_url: str = None):
         """Alias for set_container_desired_state - used by batch operations"""

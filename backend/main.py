@@ -1740,6 +1740,13 @@ async def update_auto_update_config(
             record.floating_tag_mode = floating_tag_mode
             record.updated_at = datetime.now(timezone.utc)
 
+            # Populate container_name if missing (v2.2.3+ reattachment support)
+            if not record.container_name:
+                containers = await monitor.get_containers()
+                container = next((c for c in containers if (c.short_id == short_id or c.id == short_id) and c.host_id == host_id), None)
+                if container:
+                    record.container_name = container.name
+
             # Handle manual changelog URL (v2.0.2+)
             # Check if key exists in config (not if value is not None, since null is valid for clearing)
             if "changelog_url" in config:
@@ -1779,6 +1786,7 @@ async def update_auto_update_config(
             record = ContainerUpdate(
                 container_id=composite_key,
                 host_id=host_id,
+                container_name=container.name,
                 current_image=container.image,
                 current_digest="",  # Will be populated on first check
                 auto_update_enabled=auto_update_enabled,
@@ -2220,6 +2228,13 @@ async def set_container_update_policy(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"No update tracking record found for container. Please check for updates first."
             )
+
+        # Populate container_name if missing (v2.2.3+ reattachment support)
+        if not update_record.container_name:
+            containers = await monitor.get_containers()
+            container = next((c for c in containers if (c.short_id == short_id or c.id == short_id) and c.host_id == host_id), None)
+            if container:
+                update_record.container_name = container.name
 
         # Update policy
         update_record.update_policy = policy
@@ -2826,6 +2841,13 @@ async def update_http_health_check(
     container_id = container_id[:12]
     composite_key = make_composite_key(host_id, container_id)
 
+    # Get container name for reattachment support (v2.2.3+)
+    container_name = None
+    containers = await monitor.get_containers()
+    container = next((c for c in containers if c.short_id == container_id and c.host_id == host_id), None)
+    if container:
+        container_name = container.name
+
     with monitor.db.get_session() as session:
         check = session.query(ContainerHttpHealthCheck).filter_by(
             container_id=composite_key
@@ -2851,11 +2873,14 @@ async def update_http_health_check(
             check.max_restart_attempts = config.max_restart_attempts  # v2.0.2+
             check.restart_retry_delay_seconds = config.restart_retry_delay_seconds  # v2.0.2+
             check.updated_at = datetime.now(timezone.utc)
+            if container_name:
+                check.container_name = container_name
         else:
             # Create new
             check = ContainerHttpHealthCheck(
                 container_id=composite_key,
                 host_id=host_id,
+                container_name=container_name,
                 enabled=config.enabled,
                 url=config.url,
                 method=config.method,

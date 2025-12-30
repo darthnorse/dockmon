@@ -477,6 +477,43 @@ class ContainerDiscovery:
                             except Exception as e:
                                 logger.warning(f"Failed to reattach tags: {e}")
 
+                        # Reattach update settings (Issue #116 - settings were lost for agent hosts)
+                        try:
+                            self.db.reattach_update_settings_for_container(
+                                host_id=host_id,
+                                container_id=container_id,
+                                container_name=container_name,
+                                current_image=container_image,
+                                compose_project=compose_project,
+                                compose_service=compose_service
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to reattach update settings for {container_name}: {e}")
+
+                        # Reattach HTTP health check configuration
+                        try:
+                            self.db.reattach_http_health_check_for_container(
+                                host_id=host_id,
+                                container_id=container_id,
+                                container_name=container_name,
+                                compose_project=compose_project,
+                                compose_service=compose_service
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to reattach HTTP health check for {container_name}: {e}")
+
+                        # Reattach deployment metadata
+                        try:
+                            self.db.reattach_deployment_metadata_for_container(
+                                host_id=host_id,
+                                container_id=container_id,
+                                container_name=container_name,
+                                compose_project=compose_project,
+                                compose_service=compose_service
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to reattach deployment metadata for {container_name}: {e}")
+
                         # Derive tags from labels (compose:*, swarm:*, dockmon.tag)
                         derived_tags = derive_container_tags(labels)
 

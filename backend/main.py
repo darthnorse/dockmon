@@ -1884,7 +1884,9 @@ async def get_updates_summary(current_user: dict = Depends(get_current_user)):
         # Clean up stale entries (containers that no longer exist)
         stale_updates = [u for u in updates if u.container_id not in current_container_keys]
         if stale_updates:
+            # Log details to help diagnose Issue #116 (disappearing updates)
             for stale in stale_updates:
+                logger.warning(f"Removing stale update entry: {stale.container_id} (container no longer exists)")
                 session.delete(stale)
             session.commit()
             logger.info(f"Cleaned up {len(stale_updates)} stale update entries")

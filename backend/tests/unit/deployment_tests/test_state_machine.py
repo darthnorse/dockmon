@@ -339,8 +339,10 @@ class TestStateValidation:
         next_states = sm.get_valid_next_states('validating')
         assert set(next_states) == {'pulling_image', 'failed', 'partial'}
 
-        # Terminal states have no next states
-        assert sm.get_valid_next_states('running') == []
+        # running allows redeploy (transition back to validating)
+        assert sm.get_valid_next_states('running') == ['validating']
+
+        # True terminal states have no next states
         assert sm.get_valid_next_states('partial') == []
         assert sm.get_valid_next_states('rolled_back') == []
 

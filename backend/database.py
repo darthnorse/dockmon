@@ -2846,13 +2846,21 @@ class DatabaseManager:
 
             return total_deleted
 
-    def cleanup_orphaned_deployment_metadata(self, existing_container_keys: set, batch_size: int = 1000) -> int:
+    def cleanup_orphaned_deployment_metadata(
+        self,
+        existing_container_keys: set,
+        hosts_with_containers: set = None,
+        batch_size: int = 1000
+    ) -> int:
         """
         Clean up deployment metadata for containers that no longer exist.
 
         Args:
             existing_container_keys: Set of container composite keys that currently exist
                                     (format: {host_id}:{container_short_id})
+            hosts_with_containers: Set of host_ids that successfully reported containers.
+                                   If provided, only cleans up metadata for these hosts.
+                                   This prevents deleting data for offline hosts (Issue #116).
             batch_size: Maximum number of records to delete in one batch
 
         Returns:
@@ -2869,10 +2877,13 @@ class DatabaseManager:
                     break
 
                 # Check which ones are orphaned (container no longer exists)
+                # Only clean up for hosts that are online (Issue #116)
                 orphaned = []
                 for metadata in metadata_batch:
                     if metadata.container_id not in existing_container_keys:
-                        orphaned.append(metadata)
+                        # If hosts_with_containers is provided, only cleanup for online hosts
+                        if hosts_with_containers is None or metadata.host_id in hosts_with_containers:
+                            orphaned.append(metadata)
 
                 # Delete orphaned metadata
                 for metadata in orphaned:
@@ -3410,7 +3421,11 @@ class DatabaseManager:
             logger.info(f"Cleaned up {deleted_count} rule evaluations older than {hours} hours")
             return deleted_count
 
-    def cleanup_orphaned_rule_runtime(self, existing_container_keys: set) -> int:
+    def cleanup_orphaned_rule_runtime(
+        self,
+        existing_container_keys: set,
+        hosts_with_containers: set = None
+    ) -> int:
         """
         Delete RuleRuntime entries for containers that no longer exist
 
@@ -3419,6 +3434,9 @@ class DatabaseManager:
 
         Args:
             existing_container_keys: Set of composite keys (host_id:container_id) for existing containers
+            hosts_with_containers: Set of host_ids that successfully reported containers.
+                                   If provided, only cleans up runtime for these hosts.
+                                   This prevents deleting data for offline hosts (Issue #116).
 
         Returns:
             Number of runtime entries deleted
@@ -3440,6 +3458,14 @@ class DatabaseManager:
 
                             # Only clean up container-scoped runtime entries
                             if scope_type == 'container':
+                                # scope_id is composite key format: host_id:container_id
+                                # Extract host_id to check if host is online (Issue #116)
+                                if hosts_with_containers is not None and ':' in scope_id:
+                                    host_id = scope_id.rsplit(':', 1)[0]
+                                    if host_id not in hosts_with_containers:
+                                        # Skip cleanup for offline hosts
+                                        continue
+
                                 # scope_id might be SHORT ID or composite key depending on context
                                 # Check both formats for safety
                                 if scope_id not in existing_container_keys:

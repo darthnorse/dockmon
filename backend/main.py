@@ -1872,6 +1872,11 @@ async def get_updates_summary(current_user: dict = Depends(get_current_user)):
     containers = await monitor.get_containers()
     current_container_keys = {make_composite_key(c.host_id, c.short_id) for c in containers}
 
+    # Track which hosts successfully returned containers (Issue #116)
+    # Only delete stale entries for hosts that are online and reporting containers
+    # This prevents deleting updates when agent hosts haven't reconnected yet
+    hosts_with_containers = {c.host_id for c in containers}
+
     with monitor.db.get_session() as session:
         # Get all containers marked as having updates
         updates = session.query(ContainerUpdate).filter(
@@ -1881,12 +1886,20 @@ async def get_updates_summary(current_user: dict = Depends(get_current_user)):
         # Filter to only include containers that still exist
         valid_updates = [u for u in updates if u.container_id in current_container_keys]
 
-        # Clean up stale entries (containers that no longer exist)
-        stale_updates = [u for u in updates if u.container_id not in current_container_keys]
+        # Clean up stale entries - but ONLY for hosts that are online (Issue #116)
+        # If a host is offline/disconnected, we can't confirm the container is gone
+        stale_updates = []
+        for u in updates:
+            if u.container_id not in current_container_keys:
+                # Only consider stale if the host is online and reporting containers
+                if u.host_id in hosts_with_containers:
+                    stale_updates.append(u)
+                else:
+                    logger.debug(f"Skipping stale check for {u.container_id} - host {u.host_id} not reporting containers")
+
         if stale_updates:
-            # Log details to help diagnose Issue #116 (disappearing updates)
             for stale in stale_updates:
-                logger.warning(f"Removing stale update entry: {stale.container_id} (container no longer exists)")
+                logger.warning(f"Removing stale update entry: {stale.container_id} (container no longer exists on online host)")
                 session.delete(stale)
             session.commit()
             logger.info(f"Cleaned up {len(stale_updates)} stale update entries")

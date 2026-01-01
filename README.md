@@ -48,7 +48,7 @@ A comprehensive Docker container monitoring and management platform with real-ti
 
 ## Support & Community
 
-- **[Discord Server](https://discord.gg/nj5khyMb)** - Join the community, get help, share tips
+- **[Discord Server](https://discord.gg/wEZxeet2N3)** - Join the community, get help, share tips
 - **[Report Issues](https://github.com/darthnorse/dockmon/issues)** - Found a bug?
 - **[Discussions](https://github.com/darthnorse/dockmon/discussions)** - Ask questions, share ideas
 - **[Wiki](https://github.com/darthnorse/dockmon/wiki)** - Complete documentation

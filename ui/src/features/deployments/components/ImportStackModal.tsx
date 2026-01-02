@@ -43,6 +43,7 @@ import {
 } from '@/components/ui/select'
 import { useImportDeployment, useScanComposeDirs, useReadComposeFile } from '../hooks/useDeployments'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
+import { useAllContainers } from '@/lib/stats/StatsProvider'
 import type {
   Deployment,
   KnownStack,
@@ -105,6 +106,9 @@ export function ImportStackModal({
   const readComposeFile = useReadComposeFile()
   const { data: hosts } = useHosts()
 
+  // Get containers for selected host to match service names to project names
+  const hostContainers = useAllContainers(selectedHostId || undefined)
+
   // Filter to show hosts that support directory scanning (local + agent)
   // Remote/mTLS hosts don't have filesystem access
   const scannableHosts = hosts?.filter((h) =>
@@ -152,6 +156,23 @@ export function ImportStackModal({
     reader.readAsText(file)
   }
 
+  // Build a map of service name -> project name from container tags
+  // Tags look like "compose:projectname" for containers created by docker compose
+  const getProjectNameFromContainers = (services: string[]): string | null => {
+    for (const serviceName of services) {
+      // Find a container whose name matches the service name
+      const container = hostContainers.find((c) => c.name === serviceName)
+      if (container?.tags) {
+        // Look for a "compose:X" tag
+        const composeTag = container.tags.find((t) => t.startsWith('compose:'))
+        if (composeTag) {
+          return composeTag.replace('compose:', '')
+        }
+      }
+    }
+    return null
+  }
+
   const handleScanHost = async () => {
     if (!selectedHostId) {
       setError('Please select a host')
@@ -179,8 +200,20 @@ export function ImportStackModal({
       const result = await scanComposeDirs.mutateAsync(scanParams)
 
       if (result.success) {
-        setComposeFiles(result.compose_files)
-        if (result.compose_files.length === 0) {
+        // Enrich compose files with project names from running containers
+        // Container labels are the source of truth for project names
+        const enrichedFiles = result.compose_files.map((file) => {
+          if (file.services.length > 0) {
+            const projectFromContainer = getProjectNameFromContainers(file.services)
+            if (projectFromContainer) {
+              return { ...file, project_name: projectFromContainer }
+            }
+          }
+          return file
+        })
+
+        setComposeFiles(enrichedFiles)
+        if (enrichedFiles.length === 0) {
           setError('No compose files found in scanned directories')
         }
       } else {
@@ -775,8 +808,7 @@ export function ImportStackModal({
             <Alert className="border-green-500 bg-green-50 dark:bg-green-950">
               <CheckCircle2 className="h-4 w-4 text-green-600" />
               <AlertDescription className="text-green-800 dark:text-green-200">
-                Successfully imported stack to {createdDeployments.length}{' '}
-                host(s)
+                Successfully imported {createdDeployments.length} stack(s)
               </AlertDescription>
             </Alert>
 

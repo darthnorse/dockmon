@@ -191,7 +191,8 @@ export function useRedeployDeployment() {
 }
 
 /**
- * Update a deployment's definition (only in 'planning' state)
+ * Update a deployment's definition.
+ * Allowed in: 'planning', 'failed', 'rolled_back', 'partial', or 'running' states.
  */
 export function useUpdateDeployment() {
   const queryClient = useQueryClient()

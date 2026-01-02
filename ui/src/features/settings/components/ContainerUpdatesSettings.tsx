@@ -9,6 +9,7 @@ import { toast } from 'sonner'
 import { RefreshCw, Database, Clock, CheckCircle, XCircle, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { apiClient } from '@/lib/api/client'
+import { useCheckAllUpdates } from '@/features/containers/hooks/useContainerUpdates'
 import { ToggleSwitch } from './ToggleSwitch'
 import { UpdatePoliciesSettings } from './UpdatePoliciesSettings'
 import { RegistryCredentialsSettings } from './RegistryCredentialsSettings'
@@ -39,6 +40,7 @@ interface ImageCacheResponse {
 export function ContainerUpdatesSettings() {
   const { data: settings } = useGlobalSettings()
   const updateSettings = useUpdateGlobalSettings()
+  const checkAllUpdates = useCheckAllUpdates()
 
   const [updateCheckTime, setUpdateCheckTime] = useState(settings?.update_check_time ?? '02:00')
   const [skipComposeContainers, setSkipComposeContainers] = useState(settings?.skip_compose_containers ?? true)
@@ -134,7 +136,8 @@ export function ContainerUpdatesSettings() {
   const handleCheckAllNow = async () => {
     setIsCheckingUpdates(true)
     try {
-      const stats = await apiClient.post<{ total: number; checked: number; updates_found: number; errors: number }>('/updates/check-all', {})
+      // Use the hook mutation which properly invalidates caches (fixes #115)
+      const stats = await checkAllUpdates.mutateAsync()
 
       if (stats.errors > 0) {
         toast.warning(

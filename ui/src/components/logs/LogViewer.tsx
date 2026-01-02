@@ -82,7 +82,12 @@ export function LogViewer({
   const [filteredLogs, setFilteredLogs] = useState<LogLine[]>([])
   const [searchTerm, setSearchTerm] = useState('')
   const [showTimestamps, setShowTimestamps] = useState(true)
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc')
+  // Default to 'asc' (oldest first, newer at bottom) - standard log convention
+  // Persist user preference in localStorage
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>(() => {
+    const saved = localStorage.getItem('dockmon-log-sort-order')
+    return saved === 'desc' ? 'desc' : 'asc'
+  })
   const [autoRefresh, setAutoRefresh] = useState(autoRefreshDefault)
   const [tailCount, setTailCount] = useState<number | 'all'>(100)
   const [userHasScrolled, setUserHasScrolled] = useState(false)
@@ -314,7 +319,11 @@ export function LogViewer({
   }
 
   const handleToggleSort = () => {
-    setSortOrder((prev) => (prev === 'asc' ? 'desc' : 'asc'))
+    setSortOrder((prev) => {
+      const newOrder = prev === 'asc' ? 'desc' : 'asc'
+      localStorage.setItem('dockmon-log-sort-order', newOrder)
+      return newOrder
+    })
   }
 
   // Detect when user manually scrolls

@@ -231,8 +231,15 @@ class RegistryAdapter:
 
         # Split image reference
         if "@sha256:" in image_ref:
-            # Already a digest reference
+            # Already a digest reference (image@sha256:...)
             raise ValueError(f"Image ref is already a digest: {image_ref}")
+
+        # Check for bare digest references (sha256:... without image name)
+        # This can happen when containers are started with digest refs and
+        # Docker/agent returns the digest without the image name (Issue #116)
+        if image_ref.startswith("sha256:"):
+            logger.warning(f"Bare digest reference detected (no image name): {image_ref[:24]}...")
+            raise ValueError(f"Image ref is a bare digest without image name: {image_ref}")
 
         # Check for explicit registry
         if "/" in image_ref:

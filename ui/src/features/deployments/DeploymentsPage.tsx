@@ -167,8 +167,8 @@ export function DeploymentsPage() {
   }
 
   const handleEdit = (deployment: Deployment) => {
-    // Allow editing in planning, failed, rolled_back, and partial states
-    if (deployment.status !== 'planning' && deployment.status !== 'failed' && deployment.status !== 'rolled_back' && deployment.status !== 'partial') {
+    // Allow editing in planning, failed, rolled_back, partial, and running states
+    if (deployment.status !== 'planning' && deployment.status !== 'failed' && deployment.status !== 'rolled_back' && deployment.status !== 'partial' && deployment.status !== 'running') {
       return
     }
     setDeploymentToEdit(deployment)
@@ -493,7 +493,7 @@ export function DeploymentsPage() {
                         </Button>
                       </>
                     )}
-                    {(deployment.status === 'failed' || deployment.status === 'rolled_back' || deployment.status === 'partial') && (
+                    {(deployment.status === 'failed' || deployment.status === 'rolled_back') && (
                       <>
                         <Button
                           variant="ghost"
@@ -515,6 +515,18 @@ export function DeploymentsPage() {
                           Retry
                         </Button>
                       </>
+                    )}
+
+                    {(deployment.status === 'running' || deployment.status === 'partial') && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleEdit(deployment)}
+                        data-testid={`edit-deployment-${deployment.name}`}
+                        title="Edit stack"
+                      >
+                        <Edit className="h-4 w-4" />
+                      </Button>
                     )}
 
                     {(deployment.status === 'running' || deployment.status === 'partial') && (

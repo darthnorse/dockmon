@@ -7,14 +7,14 @@ rollback operations that don't destroy committed database state.
 
 State Flow (Spec-Compliant):
     planning -> validating -> pulling_image -> creating -> starting -> running
-                    |              |             |           |            |
-                    +---> failed <-+-------------+-----------+            |
-                    |                                                     |
-                    +---> partial <---------------------------------------+
-                             |
-                    failed --+
-                             v
-                        rolled_back
+                    |              |             |           |            |  ^
+                    +---> failed <-+-------------+-----------+            |  |
+                    |                                                     |  |
+                    +---> partial <---------------------------------------+  |
+                             |                                               |
+                    failed --+                                               |
+                             v                                               |
+                        rolled_back                     (redeploy) ----------+
 
 State Semantics:
     - planning: Deployment created, not started
@@ -74,7 +74,7 @@ class DeploymentStateMachine:
         'pulling_image': ['creating', 'failed', 'partial'],
         'creating': ['starting', 'failed', 'partial'],
         'starting': ['running', 'failed', 'partial'],
-        'running': [],  # Terminal state (success)
+        'running': ['validating'],  # Allow redeploy (running -> validating to restart flow)
         'partial': [],  # Terminal state (partial success - some services running)
         'failed': ['rolled_back'],
         'rolled_back': [],  # Terminal state (cleanup complete)
@@ -169,8 +169,14 @@ class DeploymentStateMachine:
         # Update timestamps based on state
         utcnow = datetime.now(timezone.utc)
 
+        # Handle redeploy: reset timestamps and committed flag when going from running -> validating
+        if from_state == 'running' and to_state == 'validating':
+            deployment.started_at = utcnow
+            deployment.completed_at = None
+            deployment.committed = False
+            logger.info(f"Deployment {deployment.id}: redeploy detected, reset timestamps and committed flag")
         # Set started_at when deployment begins execution (validating is first state)
-        if to_state == 'validating' and not deployment.started_at:
+        elif to_state == 'validating' and not deployment.started_at:
             deployment.started_at = utcnow
 
         # Set completed_at when reaching terminal states
@@ -325,8 +331,8 @@ class DeploymentStateMachine:
             >>> sm.get_valid_next_states('planning')
             ['validating']
             >>> sm.get_valid_next_states('validating')
-            ['pulling_image', 'failed']
+            ['pulling_image', 'failed', 'partial']
             >>> sm.get_valid_next_states('running')
-            []  # Terminal state
+            ['validating']  # Allows redeploy
         """
         return self.VALID_TRANSITIONS.get(current_state, [])

@@ -518,12 +518,14 @@ async def update_deployment(
     current_user=Depends(get_current_user),
 ):
     """
-    Update a deployment's definition (allowed in 'planning', 'failed', or 'rolled_back' states).
+    Update a deployment's definition.
+
+    Allowed in: 'planning', 'failed', 'rolled_back', 'partial', or 'running' states.
 
     This allows users to:
     - Review and modify deployment configuration before execution ('planning')
-    - Edit and retry failed deployments ('failed')
-    - Edit and retry rolled back deployments ('rolled_back')
+    - Edit and retry failed deployments ('failed', 'rolled_back', 'partial')
+    - Edit running deployments and redeploy to apply changes ('running')
     """
     try:
         db = get_database_manager()
@@ -537,8 +539,8 @@ async def update_deployment(
             if not deployment:
                 raise HTTPException(status_code=404, detail="Deployment not found")
 
-            # Allow editing in 'planning', 'failed', 'rolled_back', or 'partial' states
-            editable_statuses = ['planning', 'failed', 'rolled_back', 'partial']
+            # Allow editing in 'planning', 'failed', 'rolled_back', 'partial', or 'running' states
+            editable_statuses = ['planning', 'failed', 'rolled_back', 'partial', 'running']
             if deployment.status not in editable_statuses:
                 raise HTTPException(
                     status_code=400,

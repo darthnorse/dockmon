@@ -328,6 +328,11 @@ class PeriodicJobsManager:
                 containers = await self.monitor.get_containers()
                 current_container_keys = {make_composite_key(c.host_id, c.short_id) for c in containers}
 
+                # Track which hosts successfully returned containers (Issue #116)
+                # Only delete stale entries for hosts that are online and reporting containers
+                # This prevents deleting data when agent hosts haven't reconnected yet
+                hosts_with_containers = {c.host_id for c in containers}
+
                 # Also track SHORT IDs only for tables that use SHORT IDs instead of composite keys
                 current_container_short_ids_by_host = {}
                 for c in containers:
@@ -339,8 +344,13 @@ class PeriodicJobsManager:
 
                 with self.db.get_session() as session:
                     # 1. Clean up container_updates (uses composite key)
+                    # Only clean up for hosts that are online (Issue #116)
                     all_updates = session.query(ContainerUpdate).all()
-                    stale_updates = [u for u in all_updates if u.container_id not in current_container_keys]
+                    stale_updates = [
+                        u for u in all_updates
+                        if u.container_id not in current_container_keys
+                        and u.host_id in hosts_with_containers  # Only if host is online
+                    ]
                     if stale_updates:
                         for stale in stale_updates:
                             session.delete(stale)
@@ -348,8 +358,13 @@ class PeriodicJobsManager:
                         logger.debug(f"Cleaned up {len(stale_updates)} stale container_updates entries")
 
                     # 2. Clean up container_http_health_checks (uses composite key)
+                    # Only clean up for hosts that are online (Issue #116)
                     all_health_checks = session.query(ContainerHttpHealthCheck).all()
-                    stale_health_checks = [h for h in all_health_checks if h.container_id not in current_container_keys]
+                    stale_health_checks = [
+                        h for h in all_health_checks
+                        if h.container_id not in current_container_keys
+                        and h.host_id in hosts_with_containers  # Only if host is online
+                    ]
                     if stale_health_checks:
                         for stale in stale_health_checks:
                             session.delete(stale)
@@ -357,9 +372,13 @@ class PeriodicJobsManager:
                         logger.debug(f"Cleaned up {len(stale_health_checks)} stale container_http_health_checks entries")
 
                     # 3. Clean up auto_restart_configs (uses SHORT ID, not composite)
+                    # Only clean up for hosts that are online (Issue #116)
                     all_restart_configs = session.query(AutoRestartConfig).all()
                     stale_restart_configs = []
                     for config in all_restart_configs:
+                        # Skip if host is offline - can't confirm container is gone
+                        if config.host_id not in hosts_with_containers:
+                            continue
                         # Check if container still exists on this host
                         host_containers = current_container_short_ids_by_host.get(config.host_id, set())
                         if config.container_id not in host_containers:
@@ -371,9 +390,13 @@ class PeriodicJobsManager:
                         logger.debug(f"Cleaned up {len(stale_restart_configs)} stale auto_restart_configs entries")
 
                     # 4. Clean up container_desired_states (uses SHORT ID, not composite)
+                    # Only clean up for hosts that are online (Issue #116)
                     all_desired_states = session.query(ContainerDesiredState).all()
                     stale_desired_states = []
                     for state in all_desired_states:
+                        # Skip if host is offline - can't confirm container is gone
+                        if state.host_id not in hosts_with_containers:
+                            continue
                         # Check if container still exists on this host
                         host_containers = current_container_short_ids_by_host.get(state.host_id, set())
                         if state.container_id not in host_containers:
@@ -391,7 +414,11 @@ class PeriodicJobsManager:
 
                 # Clean up orphaned deployment metadata (for containers deleted outside DockMon)
                 # Part of deployment v2.1 remediation (Phase 1.6)
-                deployment_metadata_cleaned = self.db.cleanup_orphaned_deployment_metadata(current_container_keys)
+                # Pass hosts_with_containers to avoid cleaning up for offline hosts (Issue #116)
+                deployment_metadata_cleaned = self.db.cleanup_orphaned_deployment_metadata(
+                    current_container_keys,
+                    hosts_with_containers=hosts_with_containers
+                )
                 if deployment_metadata_cleaned > 0:
                     self.event_logger.log_system_event(
                         "Deployment Metadata Cleanup",
@@ -401,7 +428,11 @@ class PeriodicJobsManager:
                     )
 
                 # Clean up orphaned RuleRuntime entries (for deleted containers)
-                runtime_cleaned = self.db.cleanup_orphaned_rule_runtime(current_container_keys)
+                # Pass hosts_with_containers to avoid cleaning up for offline hosts (Issue #116)
+                runtime_cleaned = self.db.cleanup_orphaned_rule_runtime(
+                    current_container_keys,
+                    hosts_with_containers=hosts_with_containers
+                )
                 if runtime_cleaned > 0:
                     self.event_logger.log_system_event(
                         "Rule Runtime Cleanup",

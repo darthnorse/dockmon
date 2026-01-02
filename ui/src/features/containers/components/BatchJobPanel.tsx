@@ -132,6 +132,9 @@ export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkAc
                   refetchType: 'active'
                 })
               }
+
+              // Also invalidate updates-summary so filters update immediately (fixes #115)
+              queryClient.invalidateQueries({ queryKey: ['updates-summary'] })
             }
 
             debug.log('BatchJobPanel', `Job ${jobId} finished (${newStatus}), invalidated queries for action: ${action}`)

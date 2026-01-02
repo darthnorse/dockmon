@@ -17,9 +17,10 @@
  * 6. On success -> show which hosts got deployment records
  */
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
@@ -42,6 +43,7 @@ import {
 } from '@/components/ui/select'
 import { useImportDeployment, useScanComposeDirs, useReadComposeFile } from '../hooks/useDeployments'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
+import { useAllContainers } from '@/lib/stats/StatsProvider'
 import type {
   Deployment,
   KnownStack,
@@ -86,6 +88,11 @@ export function ImportStackModal({
   const [additionalPaths, setAdditionalPaths] = useState('')
   const [composeFiles, setComposeFiles] = useState<ComposeFileInfo[]>([])
   const [selectedFilePath, setSelectedFilePath] = useState('')
+  const [selectedFilePaths, setSelectedFilePaths] = useState<Set<string>>(new Set())
+
+  // Batch import state
+  const [isBatchImporting, setIsBatchImporting] = useState(false)
+  const [batchImportProgress, setBatchImportProgress] = useState({ current: 0, total: 0 })
 
   // Common state
   const [selectedProjectName, setSelectedProjectName] = useState('')
@@ -98,6 +105,9 @@ export function ImportStackModal({
   const scanComposeDirs = useScanComposeDirs()
   const readComposeFile = useReadComposeFile()
   const { data: hosts } = useHosts()
+
+  // Get containers for selected host to match service names to project names
+  const hostContainers = useAllContainers(selectedHostId || undefined)
 
   // Filter to show hosts that support directory scanning (local + agent)
   // Remote/mTLS hosts don't have filesystem access
@@ -146,6 +156,23 @@ export function ImportStackModal({
     reader.readAsText(file)
   }
 
+  // Build a map of service name -> project name from container tags
+  // Tags look like "compose:projectname" for containers created by docker compose
+  const getProjectNameFromContainers = (services: string[]): string | null => {
+    for (const serviceName of services) {
+      // Find a container whose name matches the service name
+      const container = hostContainers.find((c) => c.name === serviceName)
+      if (container?.tags) {
+        // Look for a "compose:X" tag
+        const composeTag = container.tags.find((t) => t.startsWith('compose:'))
+        if (composeTag) {
+          return composeTag.replace('compose:', '')
+        }
+      }
+    }
+    return null
+  }
+
   const handleScanHost = async () => {
     if (!selectedHostId) {
       setError('Please select a host')
@@ -155,6 +182,7 @@ export function ImportStackModal({
     setError(null)
     setComposeFiles([])
     setSelectedFilePath('')
+    setSelectedFilePaths(new Set())
 
     // Parse additional paths (comma or newline separated)
     const extraPaths = additionalPaths
@@ -172,8 +200,20 @@ export function ImportStackModal({
       const result = await scanComposeDirs.mutateAsync(scanParams)
 
       if (result.success) {
-        setComposeFiles(result.compose_files)
-        if (result.compose_files.length === 0) {
+        // Enrich compose files with project names from running containers
+        // Container labels are the source of truth for project names
+        const enrichedFiles = result.compose_files.map((file) => {
+          if (file.services.length > 0) {
+            const projectFromContainer = getProjectNameFromContainers(file.services)
+            if (projectFromContainer) {
+              return { ...file, project_name: projectFromContainer }
+            }
+          }
+          return file
+        })
+
+        setComposeFiles(enrichedFiles)
+        if (enrichedFiles.length === 0) {
           setError('No compose files found in scanned directories')
         }
       } else {
@@ -211,6 +251,102 @@ export function ImportStackModal({
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to read file'
       setError(message)
+    }
+  }
+
+  // Toggle file selection for batch import
+  const toggleFileSelection = useCallback((path: string, checked: boolean) => {
+    setSelectedFilePaths((prev) => {
+      const next = new Set(prev)
+      if (checked) {
+        next.add(path)
+      } else {
+        next.delete(path)
+      }
+      return next
+    })
+  }, [])
+
+  // Select/deselect all files
+  const toggleSelectAll = useCallback((checked: boolean) => {
+    if (checked) {
+      setSelectedFilePaths(new Set(composeFiles.map((f) => f.path)))
+    } else {
+      setSelectedFilePaths(new Set())
+    }
+  }, [composeFiles])
+
+  // Batch import selected files
+  const handleBatchImport = async () => {
+    if (selectedFilePaths.size === 0) {
+      setError('Please select at least one file to import')
+      return
+    }
+
+    setError(null)
+    setIsBatchImporting(true)
+    setBatchImportProgress({ current: 0, total: selectedFilePaths.size })
+
+    const allDeployments: Deployment[] = []
+    const errors: string[] = []
+    const paths = Array.from(selectedFilePaths)
+
+    for (const path of paths) {
+      setBatchImportProgress((prev) => ({ ...prev, current: prev.current + 1 }))
+
+      // Get file info from scan results (outside try block for access in catch)
+      const file = composeFiles.find((f) => f.path === path)
+      const displayName = file?.project_name || path
+
+      try {
+        // Read the compose file
+        const readResult = await readComposeFile.mutateAsync({
+          hostId: selectedHostId,
+          path: path,
+        })
+
+        if (!readResult.success || !readResult.content) {
+          errors.push(`${displayName}: ${readResult.error || 'Failed to read file'}`)
+          continue
+        }
+
+        // Import the stack - use project_name from scan results for stacks without name: field
+        const request: ImportDeploymentRequest = {
+          compose_content: readResult.content,
+        }
+        // Pass the project name from scan (directory-based or from compose file)
+        if (file?.project_name) {
+          request.project_name = file.project_name
+        }
+        if (readResult.env_content) {
+          request.env_content = readResult.env_content
+        }
+
+        const result = await importDeployment.mutateAsync(request)
+
+        if (result.success && result.deployments_created) {
+          allDeployments.push(...result.deployments_created)
+        } else if (result.requires_name_selection) {
+          // This shouldn't happen now since we pass project_name, but handle just in case
+          errors.push(`${displayName}: Could not determine stack name`)
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Import failed'
+        errors.push(`${displayName}: ${message}`)
+      }
+    }
+
+    setIsBatchImporting(false)
+
+    if (allDeployments.length > 0) {
+      setCreatedDeployments(allDeployments)
+      if (errors.length > 0) {
+        setError(`Imported ${allDeployments.length} stack(s). Errors: ${errors.join('; ')}`)
+      }
+      setStep('success')
+      onSuccess?.(allDeployments)
+    } else if (errors.length > 0) {
+      setError(errors.join('; '))
     }
   }
 
@@ -275,6 +411,9 @@ export function ImportStackModal({
     setAdditionalPaths('')
     setComposeFiles([])
     setSelectedFilePath('')
+    setSelectedFilePaths(new Set())
+    setIsBatchImporting(false)
+    setBatchImportProgress({ current: 0, total: 0 })
     setSelectedProjectName('')
     setKnownStacks([])
     setError(null)
@@ -474,39 +613,65 @@ export function ImportStackModal({
                 {/* Compose Files List */}
                 {composeFiles.length > 0 && (
                   <div>
-                    <Label>Discovered Compose Files</Label>
-                    <div className="border rounded-md divide-y max-h-64 overflow-y-auto mt-2">
+                    <div className="flex items-center justify-between mb-2">
+                      <Label>Discovered Compose Files</Label>
+                      <div className="flex items-center gap-2">
+                        <Checkbox
+                          id="select-all"
+                          checked={selectedFilePaths.size === composeFiles.length && composeFiles.length > 0}
+                          onCheckedChange={(checked) => toggleSelectAll(checked === true)}
+                          disabled={isBatchImporting}
+                        />
+                        <label
+                          htmlFor="select-all"
+                          className="text-sm text-muted-foreground cursor-pointer"
+                        >
+                          Select All ({composeFiles.length})
+                        </label>
+                      </div>
+                    </div>
+                    <div className="border rounded-md divide-y max-h-64 overflow-y-auto">
                       {composeFiles.map((file) => (
-                        <button
+                        <div
                           key={file.path}
-                          onClick={() => handleSelectComposeFile(file.path)}
-                          disabled={readComposeFile.isPending}
                           className={cn(
-                            'w-full p-3 text-left hover:bg-muted transition-colors disabled:opacity-50 disabled:cursor-not-allowed',
-                            selectedFilePath === file.path ? 'bg-muted' : ''
+                            'flex items-start gap-3 p-3 hover:bg-muted transition-colors',
+                            selectedFilePaths.has(file.path) ? 'bg-muted/50' : ''
                           )}
                         >
-                          <div className="flex items-start gap-3">
-                            {readComposeFile.isPending && selectedFilePath === file.path ? (
-                              <Loader2 className="h-5 w-5 text-muted-foreground mt-0.5 shrink-0 animate-spin" />
-                            ) : (
-                              <FileCode className="h-5 w-5 text-muted-foreground mt-0.5 shrink-0" />
-                            )}
-                            <div className="min-w-0 flex-1">
-                              <div className="font-medium text-sm truncate">
-                                {file.project_name}
-                              </div>
-                              <div className="text-xs text-muted-foreground truncate">
-                                {file.path}
-                              </div>
-                              <div className="text-xs text-muted-foreground mt-1">
-                                {file.services.length} service(s):{' '}
-                                {file.services.slice(0, 3).join(', ')}
-                                {file.services.length > 3 && '...'}
+                          <Checkbox
+                            checked={selectedFilePaths.has(file.path)}
+                            onCheckedChange={(checked) => toggleFileSelection(file.path, checked === true)}
+                            disabled={isBatchImporting}
+                            className="mt-1"
+                          />
+                          <button
+                            onClick={() => handleSelectComposeFile(file.path)}
+                            disabled={readComposeFile.isPending || isBatchImporting}
+                            className="flex-1 text-left disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            <div className="flex items-start gap-3">
+                              {readComposeFile.isPending && selectedFilePath === file.path ? (
+                                <Loader2 className="h-5 w-5 text-muted-foreground mt-0.5 shrink-0 animate-spin" />
+                              ) : (
+                                <FileCode className="h-5 w-5 text-muted-foreground mt-0.5 shrink-0" />
+                              )}
+                              <div className="min-w-0 flex-1">
+                                <div className="font-medium text-sm truncate">
+                                  {file.project_name}
+                                </div>
+                                <div className="text-xs text-muted-foreground truncate">
+                                  {file.path}
+                                </div>
+                                <div className="text-xs text-muted-foreground mt-1">
+                                  {file.services.length} service(s):{' '}
+                                  {file.services.slice(0, 3).join(', ')}
+                                  {file.services.length > 3 && '...'}
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        </button>
+                          </button>
+                        </div>
                       ))}
                     </div>
                   </div>
@@ -541,16 +706,30 @@ export function ImportStackModal({
                 type="button"
                 variant="outline"
                 onClick={handleClose}
-                disabled={importDeployment.isPending}
+                disabled={importDeployment.isPending || isBatchImporting}
               >
                 Cancel
               </Button>
-              <Button
-                onClick={() => handleImport()}
-                disabled={importDeployment.isPending || !composeContent.trim()}
-              >
-                {importDeployment.isPending ? 'Importing...' : 'Import Stack'}
-              </Button>
+              {/* Batch import button - shown when files are selected in browse mode */}
+              {method === 'browse' && selectedFilePaths.size > 0 && (
+                <Button
+                  onClick={handleBatchImport}
+                  disabled={isBatchImporting}
+                >
+                  {isBatchImporting
+                    ? `Importing ${batchImportProgress.current}/${batchImportProgress.total}...`
+                    : `Import Selected (${selectedFilePaths.size})`}
+                </Button>
+              )}
+              {/* Single import button - shown in paste mode or when no files selected in browse mode */}
+              {(method === 'paste' || (method === 'browse' && selectedFilePaths.size === 0)) && (
+                <Button
+                  onClick={() => handleImport()}
+                  disabled={importDeployment.isPending || !composeContent.trim()}
+                >
+                  {importDeployment.isPending ? 'Importing...' : 'Import Stack'}
+                </Button>
+              )}
             </DialogFooter>
           </div>
         )}
@@ -629,8 +808,7 @@ export function ImportStackModal({
             <Alert className="border-green-500 bg-green-50 dark:bg-green-950">
               <CheckCircle2 className="h-4 w-4 text-green-600" />
               <AlertDescription className="text-green-800 dark:text-green-200">
-                Successfully imported stack to {createdDeployments.length}{' '}
-                host(s)
+                Successfully imported {createdDeployments.length} stack(s)
               </AlertDescription>
             </Alert>
 

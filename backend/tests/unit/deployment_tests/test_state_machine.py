@@ -67,15 +67,15 @@ class TestStateTransitionValidation:
         assert sm.can_transition('validating', 'starting') is False
 
 
-    def test_terminal_states_cannot_transition(self):
-        """Test that terminal states (running, rolled_back) cannot transition"""
+    def test_restricted_transitions_from_terminal_states(self):
+        """Test that terminal/near-terminal states have restricted transitions"""
         sm = DeploymentStateMachine()
 
-        # running is terminal (success)
+        # running can only transition to validating (redeploy), not to failed/creating
         assert sm.can_transition('running', 'failed') is False
         assert sm.can_transition('running', 'creating') is False
 
-        # rolled_back is terminal (cleanup complete)
+        # rolled_back is fully terminal (cleanup complete)
         assert sm.can_transition('rolled_back', 'planning') is False
         assert sm.can_transition('rolled_back', 'failed') is False
 
@@ -339,8 +339,10 @@ class TestStateValidation:
         next_states = sm.get_valid_next_states('validating')
         assert set(next_states) == {'pulling_image', 'failed', 'partial'}
 
-        # Terminal states have no next states
-        assert sm.get_valid_next_states('running') == []
+        # running allows redeploy (transition back to validating)
+        assert sm.get_valid_next_states('running') == ['validating']
+
+        # True terminal states have no next states
         assert sm.get_valid_next_states('partial') == []
         assert sm.get_valid_next_states('rolled_back') == []
 

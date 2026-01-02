@@ -69,7 +69,8 @@ class UpdateEventEmitter:
         previous_image: str,
         new_image: str,
         previous_digest: str = None,
-        new_digest: str = None
+        new_digest: str = None,
+        changelog_url: str = None
     ):
         """Emit UPDATE_COMPLETED event."""
         try:
@@ -86,6 +87,7 @@ class UpdateEventEmitter:
                     'new_image': new_image,
                     'current_digest': previous_digest,
                     'latest_digest': new_digest,
+                    'changelog_url': changelog_url,
                 }
             ))
         except Exception as e:

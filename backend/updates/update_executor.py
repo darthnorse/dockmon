@@ -314,7 +314,8 @@ class UpdateExecutor:
                     update_record.current_image,
                     update_record.latest_image,
                     update_record.current_digest,
-                    update_record.latest_digest
+                    update_record.latest_digest,
+                    update_record.changelog_url
                 )
 
                 # Emit warning if dependent containers failed

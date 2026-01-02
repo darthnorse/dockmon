@@ -261,6 +261,10 @@ export function ImportStackModal({
     for (const path of paths) {
       setBatchImportProgress((prev) => ({ ...prev, current: prev.current + 1 }))
 
+      // Get file info from scan results (outside try block for access in catch)
+      const file = composeFiles.find((f) => f.path === path)
+      const displayName = file?.project_name || path
+
       try {
         // Read the compose file
         const readResult = await readComposeFile.mutateAsync({
@@ -269,13 +273,17 @@ export function ImportStackModal({
         })
 
         if (!readResult.success || !readResult.content) {
-          errors.push(`${path}: ${readResult.error || 'Failed to read file'}`)
+          errors.push(`${displayName}: ${readResult.error || 'Failed to read file'}`)
           continue
         }
 
-        // Import the stack
+        // Import the stack - use project_name from scan results for stacks without name: field
         const request: ImportDeploymentRequest = {
           compose_content: readResult.content,
+        }
+        // Pass the project name from scan (directory-based or from compose file)
+        if (file?.project_name) {
+          request.project_name = file.project_name
         }
         if (readResult.env_content) {
           request.env_content = readResult.env_content
@@ -286,14 +294,12 @@ export function ImportStackModal({
         if (result.success && result.deployments_created) {
           allDeployments.push(...result.deployments_created)
         } else if (result.requires_name_selection) {
-          // For stacks without name: field, we skip in batch mode
-          const file = composeFiles.find((f) => f.path === path)
-          errors.push(`${file?.project_name || path}: Requires manual name selection (no 'name:' field)`)
+          // This shouldn't happen now since we pass project_name, but handle just in case
+          errors.push(`${displayName}: Could not determine stack name`)
         }
       } catch (err) {
-        const file = composeFiles.find((f) => f.path === path)
         const message = err instanceof Error ? err.message : 'Import failed'
-        errors.push(`${file?.project_name || path}: ${message}`)
+        errors.push(`${displayName}: ${message}`)
       }
     }
 

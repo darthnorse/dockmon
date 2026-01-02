@@ -212,8 +212,18 @@ func (h *ScanHandler) parseComposeFile(path string) (*ComposeFileInfo, error) {
 		services = append(services, svc)
 	}
 
-	// Determine project name (from name: field or directory name)
+	// Determine project name in order of precedence:
+	// 1. name: field in compose file
+	// 2. COMPOSE_PROJECT_NAME from .env file
+	// 3. Directory name as fallback
 	projectName := compose.Name
+	if projectName == "" {
+		// Check .env file for COMPOSE_PROJECT_NAME
+		envPath := filepath.Join(filepath.Dir(path), ".env")
+		if envContent, err := os.ReadFile(envPath); err == nil {
+			projectName = parseEnvProjectName(string(envContent))
+		}
+	}
 	if projectName == "" {
 		projectName = filepath.Base(filepath.Dir(path))
 	}
@@ -225,6 +235,25 @@ func (h *ScanHandler) parseComposeFile(path string) (*ComposeFileInfo, error) {
 		Size:        fileInfo.Size(),
 		Modified:    fileInfo.ModTime(),
 	}, nil
+}
+
+// parseEnvProjectName extracts COMPOSE_PROJECT_NAME from .env file content
+func parseEnvProjectName(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		// Skip comments and empty lines
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// Look for COMPOSE_PROJECT_NAME=value
+		if strings.HasPrefix(line, "COMPOSE_PROJECT_NAME=") {
+			value := strings.TrimPrefix(line, "COMPOSE_PROJECT_NAME=")
+			// Remove quotes if present
+			value = strings.Trim(value, "\"'")
+			return value
+		}
+	}
+	return ""
 }
 
 // defaultScanPaths returns common paths where compose files are typically found

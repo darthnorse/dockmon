@@ -1,0 +1,79 @@
+name: Bug Report
+description: Report a bug or unexpected behavior
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please fill out the information below to help us investigate.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear description of the bug
+      placeholder: Describe what happened and what you expected to happen
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction Steps
+      description: Steps to reproduce the behavior
+      placeholder: |
+        1. Go to '...'
+        2. Click on '...'
+        3. See error
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: DockMon Version
+      description: Check Settings > About or the footer of the UI
+      placeholder: "e.g., v2.2.5"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating System and Architecture
+      description: The OS and architecture where DockMon is running
+      placeholder: "e.g., Ubuntu 24.04 x86_64, TrueNAS SCALE, Synology DSM 7"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: host-type
+    attributes:
+      label: Host Connection Type
+      description: How is the affected Docker host connected to DockMon?
+      options:
+        - Local (Unix socket)
+        - Remote (mTLS)
+        - Agent (containerized)
+        - Agent (system service)
+        - Not applicable
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs
+      description: Any relevant log output (from DockMon container logs, browser console, etc.)
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Any other context, screenshots, or information that might help
+    validations:
+      required: false

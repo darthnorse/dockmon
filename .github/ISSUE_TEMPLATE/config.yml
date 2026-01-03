@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://github.com/darthnorse/dockmon#readme
+    about: Check the README for setup and configuration help

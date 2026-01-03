@@ -358,6 +358,24 @@ networks:
       <Textarea
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          // Allow Tab key to insert spaces instead of moving focus (Issue #126)
+          if (e.key === 'Tab') {
+            e.preventDefault()
+            const target = e.target as HTMLTextAreaElement
+            const start = target.selectionStart
+            const end = target.selectionEnd
+
+            // Insert 2 spaces at cursor position
+            const newValue = value.substring(0, start) + '  ' + value.substring(end)
+            onChange(newValue)
+
+            // Move cursor after the inserted spaces
+            requestAnimationFrame(() => {
+              target.selectionStart = target.selectionEnd = start + 2
+            })
+          }
+        }}
         placeholder={placeholders[type]}
         rows={rows}
         className={`font-mono text-sm ${error || validationError ? 'border-destructive' : ''} ${className}`}

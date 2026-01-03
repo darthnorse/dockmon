@@ -467,6 +467,263 @@ class TestUpdateValidation:
 
 
 # =============================================================================
+# Multi-Digest Detection Tests (Issue #105)
+# =============================================================================
+
+class TestMultiDigestDetection:
+    """
+    Test update detection when container has multiple RepoDigests.
+
+    Issue #105: Images can have multiple manifest digests pointing to the same
+    image ID (e.g., after registry re-signing). Dockmon should recognize that
+    if ANY of the local RepoDigests matches the registry's latest digest,
+    no update is needed.
+    """
+
+    def test_has_digest_single_match(self):
+        """Should detect when latest digest is in RepoDigests (single entry)"""
+        from updates.update_checker import UpdateChecker
+
+        checker = UpdateChecker(db=None, monitor=None)
+
+        container = {
+            "repo_digests": ["ghcr.io/org/app@sha256:abc123def456"]
+        }
+        latest_digest = "sha256:abc123def456"
+
+        result = checker._has_digest(container, latest_digest)
+
+        assert result is True, "Should find digest in single-entry RepoDigests"
+
+    def test_has_digest_multi_match_first(self):
+        """Should detect when latest digest matches first RepoDigest"""
+        from updates.update_checker import UpdateChecker
+
+        checker = UpdateChecker(db=None, monitor=None)
+
+        container = {
+            "repo_digests": [
+                "ghcr.io/org/app@sha256:abc123",
+                "ghcr.io/org/app@sha256:def456"
+            ]
+        }
+        latest_digest = "sha256:abc123"
+
+        result = checker._has_digest(container, latest_digest)
+
+        assert result is True, "Should find digest matching first entry"
+
+    def test_has_digest_multi_match_second(self):
+        """Should detect when latest digest matches second RepoDigest (Issue #105 case)"""
+        from updates.update_checker import UpdateChecker
+
+        checker = UpdateChecker(db=None, monitor=None)
+
+        # This is the Immich case: same image ID, two digests
+        container = {
+            "repo_digests": [
+                "ghcr.io/immich-app/immich-server@sha256:2c496e3b9d476ea723e6f0df05d1f690fed2d79b61f4ed75597679892d86311a",
+                "ghcr.io/immich-app/immich-server@sha256:e6a6298e67ae077808fdb7d8d5565955f60b0708191576143fc02d30ab1389d1"
+            ]
+        }
+        # Registry returns the second digest
+        latest_digest = "sha256:e6a6298e67ae077808fdb7d8d5565955f60b0708191576143fc02d30ab1389d1"
+
+        result = checker._has_digest(container, latest_digest)
+
+        assert result is True, "Should find digest matching second entry (Issue #105)"
+
+    def test_has_digest_no_match(self):
+        """Should return False when latest digest is not in RepoDigests"""
+        from updates.update_checker import UpdateChecker
+
+        checker = UpdateChecker(db=None, monitor=None)
+
+        container = {
+            "repo_digests": ["ghcr.io/org/app@sha256:abc123"]
+        }
+        latest_digest = "sha256:xyz789"  # Different digest
+
+        result = checker._has_digest(container, latest_digest)
+
+        assert result is False, "Should not find non-matching digest"
+
+    def test_has_digest_empty_repo_digests(self):
+        """Should return False when RepoDigests is empty"""
+        from updates.update_checker import UpdateChecker
+
+        checker = UpdateChecker(db=None, monitor=None)
+
+        container = {"repo_digests": []}
+        latest_digest = "sha256:abc123"
+
+        result = checker._has_digest(container, latest_digest)
+
+        assert result is False, "Should return False for empty RepoDigests"
+
+    def test_has_digest_missing_repo_digests(self):
+        """Should return False when RepoDigests key is missing"""
+        from updates.update_checker import UpdateChecker
+
+        checker = UpdateChecker(db=None, monitor=None)
+
+        container = {}  # No repo_digests key
+        latest_digest = "sha256:abc123"
+
+        result = checker._has_digest(container, latest_digest)
+
+        assert result is False, "Should return False for missing RepoDigests"
+
+    def test_has_digest_none_repo_digests(self):
+        """Should return False when RepoDigests is None"""
+        from updates.update_checker import UpdateChecker
+
+        checker = UpdateChecker(db=None, monitor=None)
+
+        container = {"repo_digests": None}
+        latest_digest = "sha256:abc123"
+
+        result = checker._has_digest(container, latest_digest)
+
+        assert result is False, "Should return False for None RepoDigests"
+
+    @pytest.mark.parametrize("repo_digests,latest_digest,expected,reason", [
+        # Single digest scenarios
+        (["repo@sha256:abc"], "sha256:abc", True, "Exact match"),
+        (["repo@sha256:abc"], "sha256:xyz", False, "No match"),
+        # Multi-digest scenarios (Issue #105)
+        (["repo@sha256:old", "repo@sha256:new"], "sha256:new", True, "Match second"),
+        (["repo@sha256:old", "repo@sha256:new"], "sha256:old", True, "Match first"),
+        (["repo@sha256:old", "repo@sha256:new"], "sha256:other", False, "Match neither"),
+        # Edge cases
+        ([], "sha256:abc", False, "Empty list"),
+        (None, "sha256:abc", False, "None value"),
+        # Defensive type checks
+        ("not-a-list", "sha256:abc", False, "repo_digests not a list"),
+        (["repo@sha256:abc"], None, False, "digest is None"),
+        (["repo@sha256:abc"], "", False, "digest is empty string"),
+        (["repo@sha256:abc", None, 123], "sha256:abc", True, "list with non-string elements"),
+        ([None, 123, "repo@sha256:abc"], "sha256:abc", True, "non-strings before match"),
+    ])
+    def test_has_digest_parametrized(self, repo_digests, latest_digest, expected, reason):
+        """Parametrized tests for _has_digest edge cases"""
+        from updates.update_checker import UpdateChecker
+
+        checker = UpdateChecker(db=None, monitor=None)
+        container = {"repo_digests": repo_digests}
+
+        result = checker._has_digest(container, latest_digest)
+
+        assert result == expected, f"Failed: {reason}"
+
+
+class TestUpdateAvailabilityWithMultiDigest:
+    """
+    Test that update_available logic correctly uses _has_digest.
+
+    These tests verify the integration between digest checking and
+    update availability determination.
+    """
+
+    def test_no_update_when_latest_in_repo_digests(self):
+        """
+        Should NOT report update available when latest_digest is in RepoDigests.
+
+        This is the core fix for Issue #105.
+        """
+        from updates.update_checker import UpdateChecker
+
+        checker = UpdateChecker(db=None, monitor=None)
+
+        container = {
+            "repo_digests": [
+                "ghcr.io/immich-app/immich-server@sha256:2c496e3b9d",
+                "ghcr.io/immich-app/immich-server@sha256:e6a6298e67"
+            ]
+        }
+        latest_digest = "sha256:e6a6298e67"  # In second position
+
+        # Old logic would use first digest only:
+        # current_digest = "sha256:2c496e3b9d" (from _extract_digest_from_repo_digests)
+        # update_available = current_digest != latest_digest → TRUE (wrong!)
+
+        # New logic should check all digests:
+        update_available = not checker._has_digest(container, latest_digest)
+
+        assert update_available is False, "Should NOT report update when digest already present"
+
+    def test_repo_digests_populated_from_docker_api(self):
+        """
+        Test that repo_digests is stored in container dict after Docker API query.
+
+        This ensures the fix works for local/mTLS hosts, not just agent hosts.
+        The _get_container_image_digest method should store the full RepoDigests
+        list so that _has_digest can use it later.
+        """
+        from updates.update_checker import UpdateChecker
+
+        checker = UpdateChecker(db=None, monitor=None)
+
+        # Simulate container dict WITHOUT repo_digests (local/mTLS host scenario)
+        container = {
+            "name": "test-container",
+            "host_id": "test-host",
+            "id": "abc123def456"
+            # Note: no "repo_digests" key - simulates local/mTLS host
+        }
+
+        # Simulate what _get_container_image_digest does for local hosts:
+        # It queries Docker API and gets RepoDigests, then stores them
+        api_repo_digests = [
+            "ghcr.io/org/app@sha256:olddigest",
+            "ghcr.io/org/app@sha256:newdigest"
+        ]
+        container["repo_digests"] = api_repo_digests
+
+        # Now _has_digest should work
+        assert checker._has_digest(container, "sha256:newdigest") is True
+        assert checker._has_digest(container, "sha256:olddigest") is True
+        assert checker._has_digest(container, "sha256:otherdigest") is False
+
+    def test_update_available_when_digest_not_present(self):
+        """Should report update available when latest_digest is NOT in RepoDigests"""
+        from updates.update_checker import UpdateChecker
+
+        checker = UpdateChecker(db=None, monitor=None)
+
+        container = {
+            "repo_digests": ["ghcr.io/org/app@sha256:oldversion"]
+        }
+        latest_digest = "sha256:newversion"
+
+        update_available = not checker._has_digest(container, latest_digest)
+
+        assert update_available is True, "Should report update when digest not present"
+
+    def test_backwards_compatible_single_digest(self):
+        """
+        Single digest case should work the same as before.
+
+        This ensures the fix doesn't break normal update detection.
+        """
+        from updates.update_checker import UpdateChecker
+
+        checker = UpdateChecker(db=None, monitor=None)
+
+        # Normal case: single digest, same as registry
+        container_no_update = {
+            "repo_digests": ["nginx@sha256:abc123"]
+        }
+        assert checker._has_digest(container_no_update, "sha256:abc123") is True
+
+        # Normal case: single digest, different from registry
+        container_update = {
+            "repo_digests": ["nginx@sha256:abc123"]
+        }
+        assert checker._has_digest(container_update, "sha256:xyz789") is False
+
+
+# =============================================================================
 # Registry Credentials Tests
 # =============================================================================
 

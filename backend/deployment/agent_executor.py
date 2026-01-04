@@ -644,6 +644,24 @@ class AgentDeploymentExecutor:
                 DeploymentContainer.deployment_id == deployment_id
             ).delete()
 
+            # Collect container IDs and clear any existing metadata for them
+            # This handles race conditions with container discovery and
+            # reused containers from previous deployments
+            container_ids_to_link = []
+            for service_name, service_result in services.items():
+                container_id = service_result.get("container_id", "")
+                if container_id:
+                    short_id = container_id[:12] if len(container_id) > 12 else container_id
+                    composite_key = f"{host_id}:{short_id}"
+                    container_ids_to_link.append(composite_key)
+
+            if container_ids_to_link:
+                deleted = session.query(DeploymentMetadata).filter(
+                    DeploymentMetadata.container_id.in_(container_ids_to_link)
+                ).delete(synchronize_session='fetch')
+                if deleted:
+                    logger.debug(f"Cleared {deleted} existing metadata records for reused containers")
+
             # Create new records with current container IDs
             utcnow = datetime.now(timezone.utc)
             for service_name, service_result in services.items():

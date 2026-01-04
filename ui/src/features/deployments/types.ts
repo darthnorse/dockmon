@@ -62,8 +62,9 @@ export interface Deployment {
  * Container deployment definition (matches backend SecurityValidator input)
  */
 export interface DeploymentDefinition {
-  // Stack-specific field (type = 'stack')
+  // Stack-specific fields (type = 'stack')
   compose_yaml?: string         // Docker Compose YAML content (for stack deployments)
+  variables?: Record<string, string>  // Environment variables for ${VAR} substitution in compose YAML
 
   // Container-specific fields (type = 'container')
   image?: string                // Docker image (e.g., "nginx:latest") - required for containers, not for stacks

@@ -170,20 +170,23 @@ class DeploymentExecutor:
             if existing:
                 raise ValueError(f"Deployment with name '{name}' already exists on this host")
 
-            # Security validation
-            violations = self.security_validator.validate_container_config(definition, host_id)
-            if self.security_validator.has_blocking_violations(violations):
-                formatted = self.security_validator.format_violations(violations)
-                raise SecurityException(f"Security validation failed:\n{formatted}")
+            # Security validation (container deployments only)
+            # Stack deployments use native Docker Compose which handles its own execution.
+            # The SecurityValidator doesn't parse compose YAML, so it provides no value for stacks.
+            if deployment_type == 'container':
+                violations = self.security_validator.validate_container_config(definition, host_id)
+                if self.security_validator.has_blocking_violations(violations):
+                    formatted = self.security_validator.format_violations(violations)
+                    raise SecurityException(f"Security validation failed:\n{formatted}")
 
-            # Log warnings for non-blocking violations
-            warning_violations = self.security_validator.filter_by_level(
-                violations, SecurityLevel.HIGH, include_higher=True
-            )
-            if warning_violations:
-                logger.warning(
-                    f"Deployment {name} has security warnings: {len(warning_violations)} violations"
+                # Log warnings for non-blocking violations
+                warning_violations = self.security_validator.filter_by_level(
+                    violations, SecurityLevel.HIGH, include_higher=True
                 )
+                if warning_violations:
+                    logger.warning(
+                        f"Deployment {name} has security warnings: {len(warning_violations)} violations"
+                    )
 
             # Generate deployment ID
             deployment_id = self._generate_deployment_id(host_id)

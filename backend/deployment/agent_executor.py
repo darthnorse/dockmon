@@ -443,6 +443,8 @@ class AgentDeploymentExecutor:
         message = payload.get("message", "Deploying...")
         services = payload.get("services")  # Phase 3: per-service progress
 
+        logger.debug(f"handle_deploy_progress called: deployment_id={deployment_id}, stage={stage}, message={message}")
+
         if not deployment_id:
             logger.warning("Received deploy_progress without deployment_id")
             return
@@ -512,6 +514,8 @@ class AgentDeploymentExecutor:
         services = payload.get("services", {})
         failed_services = payload.get("failed_services", [])
         error = payload.get("error")
+
+        logger.debug(f"handle_deploy_complete called with payload keys: {list(payload.keys())}")
 
         if not deployment_id:
             logger.warning("Received deploy_complete without deployment_id")

@@ -1119,6 +1119,7 @@ class AgentWebSocketHandler:
 
         Forwards to AgentDeploymentExecutor for database updates and UI broadcast.
         """
+        logger.debug(f"Received deploy_progress event: deployment_id={payload.get('deployment_id')}, stage={payload.get('stage')}")
         try:
             from deployment.agent_executor import get_agent_deployment_executor
 
@@ -1139,6 +1140,7 @@ class AgentWebSocketHandler:
 
         Forwards to AgentDeploymentExecutor for database updates with container IDs.
         """
+        logger.debug(f"Received deploy_complete event: deployment_id={payload.get('deployment_id')}, success={payload.get('success')}")
         try:
             from deployment.agent_executor import get_agent_deployment_executor
 

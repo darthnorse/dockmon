@@ -43,13 +43,19 @@ func ExtractConfig(
 		applyPodmanFixes(log, &newHostConfig)
 	}
 
-	// Handle hostname/mac for container:X network mode
+	// Handle container:X network mode
+	// When sharing another container's network namespace, this container cannot have:
+	// - Hostname/Domainname/MacAddress (network identity belongs to parent)
+	// - PortBindings/ExposedPorts (ports are managed by parent container)
+	// Docker API 1.47+ rejects containers with both network_mode:container:X and port bindings
 	networkMode := string(newHostConfig.NetworkMode)
 	if strings.HasPrefix(networkMode, "container:") {
 		newConfig.Hostname = ""
 		newConfig.Domainname = ""
 		newConfig.MacAddress = ""
-		log.Debug("Cleared Hostname/Domainname/MacAddress for container: network mode")
+		newConfig.ExposedPorts = nil
+		newHostConfig.PortBindings = nil
+		log.Debug("Cleared Hostname/Domainname/MacAddress/Ports for container: network mode")
 	}
 
 	// Resolve NetworkMode container:ID -> container:name

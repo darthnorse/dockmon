@@ -1743,12 +1743,13 @@ class DockerMonitor:
                             running_containers = [c for c in host_containers if c.status == 'running']
                             host = self.hosts[host_id]
 
-                            # Agent hosts: Use agent-reported stats from /proc (accurate host-level metrics)
-                            # Agent sends CPU/memory from /proc/stat and /proc/meminfo directly
+                            # Agent hosts (systemd mode): Use agent-reported stats from /proc
+                            # Systemd agents send CPU/memory from /proc/stat and /proc/meminfo directly
+                            # Containerized agents don't send host stats, so fall through to container aggregation
                             if host.connection_type == 'agent' and host.status == 'online':
                                 sparklines = self.stats_history.get_sparklines(host_id, num_points=30)
                                 if sparklines.get("cpu") or sparklines.get("mem"):
-                                    # Agent has sent stats - use them (accurate host-level stats)
+                                    # Systemd agent has sent stats - use them (accurate host-level stats)
                                     host_sparklines[host_id] = sparklines
                                     # Calculate mem_bytes from containers for display purposes
                                     total_mem_bytes = sum(c.memory_usage or 0 for c in running_containers) if running_containers else 0
@@ -1758,8 +1759,10 @@ class DockerMonitor:
                                         "mem_bytes": total_mem_bytes,
                                         "net_bytes_per_sec": sparklines["net"][-1] if sparklines["net"] else 0
                                     }
+                                    continue  # Skip container aggregation for this host
 
-                            elif running_containers:
+                            # Local/mTLS hosts OR containerized agents (no host stats): Aggregate from container stats
+                            if running_containers:
                                 # Local/mTLS hosts: Aggregate from container stats
                                 # Aggregate CPU: Σ(container_cpu_percent) / num_cpus - per spec line 99
                                 total_cpu_sum = sum(c.cpu_percent or 0 for c in running_containers)

@@ -316,12 +316,14 @@ class ComposeClient:
             ) as client:
                 try:
                     async with asyncio.timeout(http_timeout):
+                        logger.debug(f"Opening SSE stream for deployment {deployment_id}")
                         async with client.stream(
                             "POST",
                             "http://localhost/deploy",
                             json=request,
                             headers={"Accept": "text/event-stream"},
                         ) as response:
+                            logger.debug(f"SSE stream opened, status={response.status_code}")
                             event_type = None
 
                             async for line in response.aiter_lines():
@@ -329,9 +331,14 @@ class ComposeClient:
 
                                 if line.startswith("event:"):
                                     event_type = line.split(":", 1)[1].strip()
+                                    logger.debug(f"SSE event type: {event_type}")
                                 elif line.startswith("data:"):
                                     data_str = line.split(":", 1)[1].strip()
-                                    data = json.loads(data_str)
+                                    try:
+                                        data = json.loads(data_str)
+                                    except json.JSONDecodeError as e:
+                                        logger.error(f"SSE JSON parse error: {e}, data: {data_str[:200]}")
+                                        continue
 
                                     if event_type == "progress":
                                         event = ProgressEvent(
@@ -344,10 +351,13 @@ class ComposeClient:
                                         )
                                         await progress_callback(event)
                                     elif event_type == "complete":
+                                        logger.debug(f"SSE complete event received for {deployment_id}")
                                         return self._parse_result(data)
                                 elif line.startswith(":"):
                                     # Keepalive comment, ignore
                                     pass
+
+                            logger.warning(f"SSE stream ended without complete event for {deployment_id}")
 
                 except asyncio.TimeoutError:
                     raise ComposeServiceError(

@@ -746,15 +746,15 @@ class TestStateMachinePartialStatus:
         assert sm.can_transition('creating', 'partial')
         assert sm.can_transition('starting', 'partial')
 
-    def test_partial_is_terminal(self):
-        """Should treat partial as terminal state (no transitions out)"""
+    def test_partial_allows_retry(self):
+        """Should allow retry from partial state (transition to validating)"""
         from deployment.state_machine import DeploymentStateMachine
 
         sm = DeploymentStateMachine()
 
-        # No valid transitions from partial
+        # partial allows retry via validating
         next_states = sm.get_valid_next_states('partial')
-        assert len(next_states) == 0
+        assert next_states == ['validating']
 
     def test_partial_sets_completed_at(self):
         """Should set completed_at when transitioning to partial"""

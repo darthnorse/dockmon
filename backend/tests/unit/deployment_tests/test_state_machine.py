@@ -75,16 +75,21 @@ class TestStateTransitionValidation:
         assert sm.can_transition('running', 'failed') is False
         assert sm.can_transition('running', 'creating') is False
 
-        # rolled_back is fully terminal (cleanup complete)
+        # rolled_back can only transition to validating (retry), not to planning/failed
         assert sm.can_transition('rolled_back', 'planning') is False
         assert sm.can_transition('rolled_back', 'failed') is False
+        assert sm.can_transition('rolled_back', 'validating') is True  # Retry allowed
 
 
-    def test_cannot_transition_from_failed_except_rollback(self):
-        """Test that failed state can only transition to rolled_back"""
+    def test_failed_allows_rollback_and_retry(self):
+        """Test that failed state can transition to rolled_back or validating (retry)"""
         sm = DeploymentStateMachine()
 
+        # Allowed transitions from failed
         assert sm.can_transition('failed', 'rolled_back') is True
+        assert sm.can_transition('failed', 'validating') is True  # Retry allowed
+
+        # Cannot skip to other states
         assert sm.can_transition('failed', 'planning') is False
         assert sm.can_transition('failed', 'creating') is False
         assert sm.can_transition('failed', 'running') is False
@@ -342,9 +347,9 @@ class TestStateValidation:
         # running allows redeploy (transition back to validating)
         assert sm.get_valid_next_states('running') == ['validating']
 
-        # True terminal states have no next states
-        assert sm.get_valid_next_states('partial') == []
-        assert sm.get_valid_next_states('rolled_back') == []
+        # partial and rolled_back allow retry (transition to validating)
+        assert sm.get_valid_next_states('partial') == ['validating']
+        assert sm.get_valid_next_states('rolled_back') == ['validating']
 
 
 # =============================================================================

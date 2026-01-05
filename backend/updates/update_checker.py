@@ -302,8 +302,16 @@ class UpdateChecker:
             except Exception as e:
                 logger.warning(f"Failed to cache image digest: {e}")
 
-        # Compare digests
-        update_available = current_digest != latest_digest
+        # Compare digests - Issue #105: check if latest_digest is in ANY local RepoDigest
+        # This handles the case where the same image ID has multiple manifest digests
+        # (e.g., after registry re-signing or manifest list updates)
+        if self._has_digest(container, latest_digest):
+            # Latest digest already present locally (handles multi-digest case)
+            update_available = False
+            logger.debug(f"[{container['name']}] Latest digest found in local RepoDigests - no update needed")
+        else:
+            # Fall back to simple comparison (handles case where repo_digests not available)
+            update_available = current_digest != latest_digest
 
         logger.info(f"[{container['name']}] Digest comparison: current={current_digest[:16]}... latest={latest_digest[:16]}... update_available={update_available}")
 
@@ -367,6 +375,37 @@ class UpdateChecker:
                 return repo_digest.split("@", 1)[1]
         return None
 
+    def _has_digest(self, container: Dict, digest: str) -> bool:
+        """
+        Check if container's image already has a specific digest in RepoDigests.
+
+        Issue #105: Images can have multiple manifest digests pointing to the same
+        image ID (e.g., after registry re-signing). This method checks if ANY of
+        the local RepoDigests contains the specified digest.
+
+        Args:
+            container: Container dict with optional 'repo_digests' key
+            digest: The digest to search for (e.g., "sha256:abc123...")
+
+        Returns:
+            True if digest is found in any RepoDigest entry, False otherwise
+        """
+        repo_digests = container.get("repo_digests")
+        if not repo_digests or not isinstance(repo_digests, list):
+            return False
+
+        # Defensive: ensure digest is a valid string
+        if not digest or not isinstance(digest, str):
+            return False
+
+        search_pattern = f"@{digest}"
+        for repo_digest in repo_digests:
+            # Defensive: skip non-string elements
+            if isinstance(repo_digest, str) and search_pattern in repo_digest:
+                return True
+
+        return False
+
     async def _get_container_image_digest(self, container: Dict) -> Optional[str]:
         """
         Get the actual image digest that the container is running.
@@ -422,6 +461,9 @@ class UpdateChecker:
             logger.debug(f"[{container_name}] RepoDigests: {api_repo_digests}")
 
             if api_repo_digests:
+                # Store full list for _has_digest to use (Issue #105)
+                # This enables multi-digest detection for local/mTLS hosts
+                container["repo_digests"] = api_repo_digests
                 digest = self._extract_digest_from_repo_digests(api_repo_digests)
                 if digest:
                     logger.debug(f"[{container_name}] Got container image digest from Docker API: {digest[:16]}...")

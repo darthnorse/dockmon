@@ -167,6 +167,25 @@ async def _execute_via_go_service(
 
             # Link containers to deployment with new IDs
             if result.services:
+                # Collect container IDs for this deployment
+                container_ids_to_link = []
+                for service_name, service_info in result.services.items():
+                    container_id = service_info.get('container_id', '')[:12]
+                    if container_id:
+                        composite_id = f"{deployment.host_id}:{container_id}"
+                        container_ids_to_link.append(composite_id)
+
+                # Clear any existing metadata for these container IDs
+                # This handles race conditions with container discovery and
+                # reused containers from previous deployments
+                if container_ids_to_link:
+                    deleted = session.query(DeploymentMetadata).filter(
+                        DeploymentMetadata.container_id.in_(container_ids_to_link)
+                    ).delete(synchronize_session='fetch')
+                    if deleted:
+                        logger.debug(f"Cleared {deleted} existing metadata records for reused containers")
+
+                # Now insert fresh metadata
                 for service_name, service_info in result.services.items():
                     container_id = service_info.get('container_id', '')[:12]
                     if container_id:

@@ -492,6 +492,20 @@ export function ImportStackModal({
                     id="compose-content"
                     value={composeContent}
                     onChange={(e) => setComposeContent(e.target.value)}
+                    onKeyDown={(e) => {
+                      // Allow Tab key to insert spaces instead of moving focus (Issue #126)
+                      if (e.key === 'Tab') {
+                        e.preventDefault()
+                        const target = e.target as HTMLTextAreaElement
+                        const start = target.selectionStart
+                        const end = target.selectionEnd
+                        const newValue = composeContent.substring(0, start) + '  ' + composeContent.substring(end)
+                        setComposeContent(newValue)
+                        requestAnimationFrame(() => {
+                          target.selectionStart = target.selectionEnd = start + 2
+                        })
+                      }
+                    }}
                     placeholder="Paste your docker-compose.yml content here..."
                     className="font-mono text-sm h-48"
                   />

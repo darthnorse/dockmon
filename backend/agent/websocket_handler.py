@@ -458,9 +458,15 @@ class AgentWebSocketHandler:
             mem = stats.get("mem_percent", 0.0)
             net = stats.get("net_bytes_per_sec", 0.0)
 
+            host_id = self.host_id or self.agent_id
+
+            # Mark this host as receiving agent-fed stats (systemd mode)
+            # This prevents the broadcast loop from overwriting with container aggregation
+            self.monitor.stats_history.mark_agent_fed(host_id)
+
             # Store in circular buffer (50 points = ~90 seconds)
             self.monitor.stats_history.add_stats(
-                host_id=self.host_id or self.agent_id,
+                host_id=host_id,
                 cpu=cpu,
                 mem=mem,
                 net=net
@@ -1119,6 +1125,7 @@ class AgentWebSocketHandler:
 
         Forwards to AgentDeploymentExecutor for database updates and UI broadcast.
         """
+        logger.debug(f"Received deploy_progress event: deployment_id={payload.get('deployment_id')}, stage={payload.get('stage')}")
         try:
             from deployment.agent_executor import get_agent_deployment_executor
 
@@ -1139,6 +1146,7 @@ class AgentWebSocketHandler:
 
         Forwards to AgentDeploymentExecutor for database updates with container IDs.
         """
+        logger.debug(f"Received deploy_complete event: deployment_id={payload.get('deployment_id')}, success={payload.get('success')}")
         try:
             from deployment.agent_executor import get_agent_deployment_executor
 

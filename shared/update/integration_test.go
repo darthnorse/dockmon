@@ -314,6 +314,92 @@ func TestIntegration_NetworkModeContainerResolution(t *testing.T) {
 }
 
 // =============================================================================
+// Integration Test: NetworkMode container:X clears port bindings
+// Docker API 1.47+ rejects containers with both network_mode:container:X and ports
+// =============================================================================
+
+func TestIntegration_NetworkModeContainerClearsPorts(t *testing.T) {
+	cli := getDockerClient(t)
+	ctx := context.Background()
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+
+	// Pull alpine image
+	pullImage(t, cli, "alpine:latest")
+
+	// Create provider container (like gluetun VPN)
+	providerName := fmt.Sprintf("dockmon-test-provider-%d", time.Now().Unix())
+	providerResp, err := cli.ContainerCreate(ctx,
+		&container.Config{
+			Image: "alpine:latest",
+			Cmd:   []string{"sleep", "300"},
+		},
+		nil, nil, nil, providerName,
+	)
+	if err != nil {
+		t.Fatalf("Failed to create provider container: %v", err)
+	}
+	defer removeContainer(cli, providerResp.ID)
+
+	if err := cli.ContainerStart(ctx, providerResp.ID, container.StartOptions{}); err != nil {
+		t.Fatalf("Failed to start provider container: %v", err)
+	}
+
+	// Create dependent container with network_mode:container:X (no ports - Docker rejects that now)
+	dependentName := fmt.Sprintf("dockmon-test-dependent-%d", time.Now().Unix())
+	dependentResp, err := cli.ContainerCreate(ctx,
+		&container.Config{
+			Image: "alpine:latest",
+			Cmd:   []string{"sleep", "300"},
+		},
+		&container.HostConfig{
+			NetworkMode: container.NetworkMode(fmt.Sprintf("container:%s", providerResp.ID)),
+		},
+		nil, nil, dependentName,
+	)
+	if err != nil {
+		t.Fatalf("Failed to create dependent container: %v", err)
+	}
+	defer removeContainer(cli, dependentResp.ID)
+
+	// Inspect dependent container
+	inspect, err := cli.ContainerInspect(ctx, dependentResp.ID)
+	if err != nil {
+		t.Fatalf("Failed to inspect dependent container: %v", err)
+	}
+
+	// Simulate a container created with older Docker that allowed port bindings
+	// with network_mode: container:X. Newer Docker (API 1.47+) rejects this at
+	// creation time, but we still need to handle containers from older versions.
+	inspect.Config.ExposedPorts = nat.PortSet{
+		"8080/tcp": struct{}{},
+	}
+	inspect.HostConfig.PortBindings = nat.PortMap{
+		"8080/tcp": []nat.PortBinding{
+			{HostIP: "0.0.0.0", HostPort: "8888"},
+		},
+	}
+
+	// Extract config - should clear port bindings for container:X network mode
+	extracted, err := ExtractConfig(ctx, cli, log, &inspect, "alpine:latest", nil, nil, false)
+	if err != nil {
+		t.Fatalf("Failed to extract config: %v", err)
+	}
+
+	// Verify PortBindings cleared
+	if len(extracted.HostConfig.PortBindings) > 0 {
+		t.Errorf("PortBindings should be cleared for container: network mode, got %v", extracted.HostConfig.PortBindings)
+	}
+
+	// Verify ExposedPorts cleared
+	if len(extracted.Config.ExposedPorts) > 0 {
+		t.Errorf("ExposedPorts should be cleared for container: network mode, got %v", extracted.Config.ExposedPorts)
+	}
+
+	t.Log("NetworkMode container clears ports: OK")
+}
+
+// =============================================================================
 // Integration Test: Full Update Workflow
 // =============================================================================
 

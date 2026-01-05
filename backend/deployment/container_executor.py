@@ -102,6 +102,41 @@ async def execute_container_deployment(
     # STATE: creating
     await transition_and_update(deployment_id, 'creating', 55, 'Creating container')
 
+    # Clean up any existing containers from previous deployment attempts
+    # This handles redeploy from running, retry from failed/rolled_back
+    with db.get_session() as session:
+        existing_links = session.query(DeploymentContainer).filter_by(
+            deployment_id=deployment_id
+        ).all()
+
+        if existing_links:
+            logger.info(f"Cleaning up {len(existing_links)} existing container(s) for deployment {deployment_id}")
+            for link in existing_links:
+                try:
+                    await connector.stop_container(link.container_id, timeout=10)
+                    await connector.remove_container(link.container_id, force=True)
+                    logger.info(f"Removed existing container {link.container_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to remove existing container {link.container_id}: {e}")
+
+            # Clear old records
+            session.query(DeploymentContainer).filter_by(deployment_id=deployment_id).delete()
+            session.query(DeploymentMetadata).filter_by(deployment_id=deployment_id).delete()
+            session.commit()
+
+    # Also try to remove any orphaned container with the same name
+    # This handles cases where deployment failed after Docker created the container
+    # but before DeploymentContainer link was created
+    container_name = definition.get('name')
+    if container_name:
+        try:
+            await connector.stop_container(container_name, timeout=10)
+            await connector.remove_container(container_name, force=True)
+            logger.info(f"Removed orphaned container by name: {container_name}")
+        except Exception:
+            # Container doesn't exist or already removed - that's fine
+            pass
+
     # Build container create args
     create_args = build_container_create_args(definition)
 

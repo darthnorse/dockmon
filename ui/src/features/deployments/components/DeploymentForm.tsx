@@ -63,6 +63,7 @@ export function DeploymentForm({ isOpen, onClose, hosts = [], deployment }: Depl
 
   // Stack state
   const [composeYaml, setComposeYaml] = useState('')
+  const [stackVariables, setStackVariables] = useState('')
 
   // Template state
   const [showTemplateSelector, setShowTemplateSelector] = useState(false)
@@ -102,6 +103,7 @@ export function DeploymentForm({ isOpen, onClose, hosts = [], deployment }: Depl
       setCpuLimit('')
       setRestartPolicy('unless-stopped')
       setComposeYaml('')
+      setStackVariables('')
       setErrors({})
       setSecurityWarnings([])
       setSelectedTemplate(null)
@@ -133,6 +135,10 @@ export function DeploymentForm({ isOpen, onClose, hosts = [], deployment }: Depl
       if (def.compose_yaml) {
         console.log('[DeploymentForm] Setting compose YAML:', def.compose_yaml.substring(0, 100))
         setComposeYaml(def.compose_yaml)
+      }
+      if (def.variables) {
+        const varsStr = Object.entries(def.variables).map(([k, v]) => `${k}=${v}`).join('\n')
+        setStackVariables(varsStr)
       }
 
       // Container fields
@@ -342,9 +348,25 @@ export function DeploymentForm({ isOpen, onClose, hosts = [], deployment }: Depl
       let definition: DeploymentDefinition
 
       if (type === 'stack') {
-        // For stacks, the definition is the YAML string
+        // For stacks, the definition is the YAML string plus optional variables
         definition = {
           compose_yaml: yamlToUse.trim(),
+        }
+        // Add variables if provided (for ${VAR} substitution in compose YAML)
+        if (stackVariables.trim()) {
+          const vars: Record<string, string> = {}
+          stackVariables.split('\n').forEach(line => {
+            const trimmed = line.trim()
+            if (trimmed && trimmed.includes('=')) {
+              const [key, ...valueParts] = trimmed.split('=')
+              if (key) {
+                vars[key.trim()] = valueParts.join('=').trim()
+              }
+            }
+          })
+          if (Object.keys(vars).length > 0) {
+            definition.variables = vars
+          }
         }
       } else {
         // For containers, build from form fields
@@ -603,6 +625,23 @@ export function DeploymentForm({ isOpen, onClose, hosts = [], deployment }: Depl
                   error={errors.compose_yaml}
                   rows={15}
                 />
+              </div>
+
+              {/* Environment Variables for Stack */}
+              <div className="space-y-2">
+                <Label htmlFor="stack_variables">Environment Variables</Label>
+                <Textarea
+                  id="stack_variables"
+                  name="stack_variables"
+                  value={stackVariables}
+                  onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setStackVariables(e.target.value)}
+                  placeholder="DB_PASSWORD=secret&#10;API_KEY=abc123"
+                  rows={4}
+                />
+                <p className="text-xs text-muted-foreground">
+                  One per line: <code className="bg-muted px-1 rounded">KEY=value</code>.
+                  Use <code className="bg-muted px-1 rounded">{'${KEY}'}</code> in your compose YAML to reference these variables.
+                </p>
               </div>
             </div>
           )}

@@ -48,6 +48,7 @@ class StatsHistoryBuffer:
     - Circular buffer (max 50 points = ~90s at 2s interval)
     - EMA smoothing (α = 0.3)
     - Per-host tracking
+    - Agent-fed host tracking (to distinguish systemd vs containerized agents)
     """
 
     def __init__(self):
@@ -56,6 +57,10 @@ class StatsHistoryBuffer:
 
         # Last raw values for EMA calculation
         self._last_raw: Dict[str, HostStatsPoint] = {}
+
+        # Hosts actively receiving stats from agent (systemd mode)
+        # host_id -> last update timestamp
+        self._agent_fed_hosts: Dict[str, datetime] = {}
 
     def add_stats(self, host_id: str, cpu: float, mem: float, net: float):
         """
@@ -190,6 +195,31 @@ class StatsHistoryBuffer:
                 for host_id, history in self._history.items()
             }
         }
+
+    def mark_agent_fed(self, host_id: str):
+        """
+        Mark that this host is receiving stats directly from an agent (systemd mode).
+        Called from _handle_system_stats when agent sends host stats.
+        """
+        self._agent_fed_hosts[host_id] = datetime.now(timezone.utc)
+
+    def is_agent_fed(self, host_id: str, max_age_seconds: int = 10) -> bool:
+        """
+        Check if this host is actively receiving stats from an agent.
+
+        Args:
+            host_id: Host identifier
+            max_age_seconds: Max age of last agent update to consider "active"
+
+        Returns:
+            True if agent has sent stats within max_age_seconds
+        """
+        if host_id not in self._agent_fed_hosts:
+            return False
+
+        last_update = self._agent_fed_hosts[host_id]
+        age = (datetime.now(timezone.utc) - last_update).total_seconds()
+        return age < max_age_seconds
 
 
 class ContainerStatsHistoryBuffer:

@@ -75,9 +75,9 @@ class DeploymentStateMachine:
         'creating': ['starting', 'failed', 'partial'],
         'starting': ['running', 'failed', 'partial'],
         'running': ['validating'],  # Allow redeploy (running -> validating to restart flow)
-        'partial': [],  # Terminal state (partial success - some services running)
-        'failed': ['rolled_back'],
-        'rolled_back': [],  # Terminal state (cleanup complete)
+        'partial': ['validating'],  # Allow retry after partial success
+        'failed': ['rolled_back', 'validating'],  # Allow rollback or retry
+        'rolled_back': ['validating'],  # Allow retry after rollback
     }
 
     # Valid deployment states (8 states)

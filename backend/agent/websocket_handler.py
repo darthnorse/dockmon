@@ -458,9 +458,15 @@ class AgentWebSocketHandler:
             mem = stats.get("mem_percent", 0.0)
             net = stats.get("net_bytes_per_sec", 0.0)
 
+            host_id = self.host_id or self.agent_id
+
+            # Mark this host as receiving agent-fed stats (systemd mode)
+            # This prevents the broadcast loop from overwriting with container aggregation
+            self.monitor.stats_history.mark_agent_fed(host_id)
+
             # Store in circular buffer (50 points = ~90 seconds)
             self.monitor.stats_history.add_stats(
-                host_id=self.host_id or self.agent_id,
+                host_id=host_id,
                 cpu=cpu,
                 mem=mem,
                 net=net

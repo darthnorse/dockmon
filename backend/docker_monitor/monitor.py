@@ -1743,7 +1743,24 @@ class DockerMonitor:
                             running_containers = [c for c in host_containers if c.status == 'running']
                             host = self.hosts[host_id]
 
-                            if running_containers:
+                            # Agent hosts: Use agent-reported stats from /proc (accurate host-level metrics)
+                            # Agent sends CPU/memory from /proc/stat and /proc/meminfo directly
+                            if host.connection_type == 'agent' and host.status == 'online':
+                                sparklines = self.stats_history.get_sparklines(host_id, num_points=30)
+                                if sparklines.get("cpu") or sparklines.get("mem"):
+                                    # Agent has sent stats - use them (accurate host-level stats)
+                                    host_sparklines[host_id] = sparklines
+                                    # Calculate mem_bytes from containers for display purposes
+                                    total_mem_bytes = sum(c.memory_usage or 0 for c in running_containers) if running_containers else 0
+                                    host_metrics[host_id] = {
+                                        "cpu_percent": sparklines["cpu"][-1] if sparklines["cpu"] else 0,
+                                        "mem_percent": sparklines["mem"][-1] if sparklines["mem"] else 0,
+                                        "mem_bytes": total_mem_bytes,
+                                        "net_bytes_per_sec": sparklines["net"][-1] if sparklines["net"] else 0
+                                    }
+
+                            elif running_containers:
+                                # Local/mTLS hosts: Aggregate from container stats
                                 # Aggregate CPU: Σ(container_cpu_percent) / num_cpus - per spec line 99
                                 total_cpu_sum = sum(c.cpu_percent or 0 for c in running_containers)
                                 # Use actual num_cpus from Docker info, fallback to 4 if not available
@@ -1804,22 +1821,6 @@ class DockerMonitor:
 
                                 # Get sparklines for this host (last 30 points)
                                 host_sparklines[host_id] = self.stats_history.get_sparklines(host_id, num_points=30)
-                            else:
-                                # No running containers - check if this is an agent-based host
-                                # Agent-based hosts send host-level stats directly, not derived from containers
-                                # Only show stats if the agent is actually online (not stale data)
-                                if host.connection_type == 'agent' and host.status == 'online':
-                                    sparklines = self.stats_history.get_sparklines(host_id, num_points=30)
-                                    if sparklines.get("cpu") or sparklines.get("mem"):
-                                        # Agent has sent stats - use them
-                                        host_sparklines[host_id] = sparklines
-                                        # Also populate metrics from latest sparkline values
-                                        host_metrics[host_id] = {
-                                            "cpu_percent": sparklines["cpu"][-1] if sparklines["cpu"] else 0,
-                                            "mem_percent": sparklines["mem"][-1] if sparklines["mem"] else 0,
-                                            "mem_bytes": 0,  # Can't calculate without containers
-                                            "net_bytes_per_sec": sparklines["net"][-1] if sparklines["net"] else 0
-                                        }
 
                         broadcast_data["host_metrics"] = host_metrics
                         broadcast_data["host_sparklines"] = host_sparklines

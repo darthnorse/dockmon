@@ -568,6 +568,11 @@ class ContainerDiscovery:
                         else:
                             created_str = str(created_value) if created_value else ""
 
+                        # Extract started_at from agent response (v2.2.6+ agents include this)
+                        started_at_str = dc_data.get("StartedAt")
+                        if started_at_str:
+                            started_at_str = str(started_at_str)
+
                         # Extract RepoDigests from agent response (v2.2.0+ agents)
                         # Use `or []` pattern to handle both missing keys AND null values
                         repo_digests = dc_data.get("RepoDigests") or []
@@ -586,6 +591,7 @@ class ContainerDiscovery:
                             status=status,
                             state=container_state,
                             created=created_str,
+                            started_at=started_at_str,
                             host_id=host_id,
                             host_name=host.name,
                             ports=ports,
@@ -833,6 +839,7 @@ class ContainerDiscovery:
                         host_name=host.name,
                         image=image_name,
                         created=dc.attrs['Created'],
+                        started_at=dc.attrs['State'].get('StartedAt'),
                         auto_restart=get_auto_restart_status_fn(host_id, container_id),
                         restart_attempts=0,  # Will be populated by caller
                         desired_state=desired_state,

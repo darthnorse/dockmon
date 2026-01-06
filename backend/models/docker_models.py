@@ -239,6 +239,7 @@ class Container(BaseModel):
     host_name: str
     image: str
     created: str
+    started_at: Optional[str] = None
     auto_restart: bool = False
     restart_attempts: int = 0
     desired_state: Optional[str] = 'unspecified'  # 'should_run', 'on_demand', or 'unspecified'

@@ -217,10 +217,11 @@ func (c *Client) GetMyContainerID(ctx context.Context) (string, error) {
 	return containerID, nil
 }
 
-// ContainerWithDigest extends types.Container with RepoDigests
+// ContainerWithDigest extends types.Container with additional inspect data
 type ContainerWithDigest struct {
 	types.Container
 	RepoDigests []string `json:"RepoDigests"`
+	StartedAt   string   `json:"StartedAt,omitempty"`
 }
 
 // ListContainers lists all containers with image digest information
@@ -230,22 +231,26 @@ func (c *Client) ListContainers(ctx context.Context) ([]ContainerWithDigest, err
 		return nil, fmt.Errorf("failed to list containers: %w", err)
 	}
 
-	// Enhance with RepoDigests from image inspection
+	// Enhance with RepoDigests and StartedAt from inspection
 	result := make([]ContainerWithDigest, 0, len(containers))
-	for _, container := range containers {
+	for _, ctr := range containers {
 		enhanced := ContainerWithDigest{
-			Container:   container,
+			Container:   ctr,
 			RepoDigests: []string{},
 		}
 
 		// Get image info to extract RepoDigests
-		// This is needed for update checking - backend can't query agent hosts directly
-		if container.ImageID != "" {
-			imageInfo, _, err := c.cli.ImageInspectWithRaw(ctx, container.ImageID)
+		if ctr.ImageID != "" {
+			imageInfo, _, err := c.cli.ImageInspectWithRaw(ctx, ctr.ImageID)
 			if err == nil && imageInfo.RepoDigests != nil {
 				enhanced.RepoDigests = imageInfo.RepoDigests
 			}
-			// Silently ignore errors - RepoDigests are optional (e.g., locally built images)
+		}
+
+		// Get container inspect to extract StartedAt for uptime calculation
+		inspect, err := c.cli.ContainerInspect(ctx, ctr.ID)
+		if err == nil && inspect.State != nil {
+			enhanced.StartedAt = inspect.State.StartedAt
 		}
 
 		result = append(result, enhanced)

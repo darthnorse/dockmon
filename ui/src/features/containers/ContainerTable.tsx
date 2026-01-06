@@ -1178,13 +1178,20 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         },
         cell: ({ row }) => {
           const container = row.original
+          const isRunning = container.state === 'running'
 
-          // Calculate uptime from created timestamp
-          const formatUptime = (createdStr: string) => {
+          // Stopped containers don't have uptime
+          if (!isRunning) {
+            return <span className="text-sm text-muted-foreground">—</span>
+          }
+
+          // Calculate uptime from started_at timestamp (when container was last started)
+          // Fall back to created if started_at not available
+          const formatUptime = (timestampStr: string) => {
             try {
-              const created = new Date(createdStr)
+              const timestamp = new Date(timestampStr)
               const now = new Date()
-              const diffMs = now.getTime() - created.getTime()
+              const diffMs = now.getTime() - timestamp.getTime()
 
               if (diffMs < 0) return '—'
 
@@ -1207,9 +1214,15 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
             }
           }
 
+          // Use started_at for uptime (when container was last started), fall back to created
+          const uptimeSource = container.started_at || container.created
+          const tooltipText = container.started_at
+            ? `Started: ${container.started_at}`
+            : `Created: ${container.created}`
+
           return (
-            <div className="text-sm text-muted-foreground" title={`Created: ${container.created}`}>
-              {container.created ? formatUptime(container.created) : '—'}
+            <div className="text-sm text-muted-foreground" title={tooltipText}>
+              {uptimeSource ? formatUptime(uptimeSource) : '—'}
             </div>
           )
         },

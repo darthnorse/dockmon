@@ -342,6 +342,7 @@ export interface ImportDeploymentRequest {
   compose_content: string
   env_content?: string
   project_name?: string
+  host_id?: string
 }
 
 /**

@@ -313,6 +313,7 @@ export function ImportStackModal({
         // Import the stack - use project_name from scan results for stacks without name: field
         const request: ImportDeploymentRequest = {
           compose_content: readResult.content,
+          host_id: selectedHostId,
         }
         // Pass the project name from scan (directory-based or from compose file)
         if (file?.project_name) {

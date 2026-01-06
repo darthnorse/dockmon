@@ -164,11 +164,13 @@ func (h *ScanHandler) scanDirectory(ctx context.Context, dir string, recursive b
 			if isComposeFile(entry.Name()) {
 				info, err := h.parseComposeFile(entryPath)
 				if err != nil {
-					h.log.WithError(err).WithField("path", entryPath).Debug("Failed to parse compose file")
+					h.log.WithError(err).WithField("path", entryPath).Warn("Failed to parse compose file")
 					continue
 				}
 				if info != nil {
 					results = append(results, *info)
+				} else {
+					h.log.WithField("path", entryPath).Warn("Compose file has no services defined")
 				}
 			}
 		}

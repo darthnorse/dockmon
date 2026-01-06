@@ -62,8 +62,16 @@ export function DeploymentsPage() {
 
   const [filters, setFilters] = useState<DeploymentFilters>({})
   const [searchQuery, setSearchQuery] = useState('')
-  const [sortColumn, setSortColumn] = useState<'name' | 'host_name' | 'deployment_type' | 'status' | 'created_at'>('created_at')
-  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc')
+  type SortColumn = 'name' | 'host_name' | 'deployment_type' | 'status' | 'created_at'
+  const [sortColumn, setSortColumn] = useState<SortColumn>(() => {
+    const saved = localStorage.getItem('deployments_sort_column')
+    const validColumns: SortColumn[] = ['name', 'host_name', 'deployment_type', 'status', 'created_at']
+    return validColumns.includes(saved as SortColumn) ? (saved as SortColumn) : 'created_at'
+  })
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>(() => {
+    const saved = localStorage.getItem('deployments_sort_direction')
+    return saved === 'asc' || saved === 'desc' ? saved : 'desc'
+  })
   const [showNewDeploymentForm, setShowNewDeploymentForm] = useState(false)
   const [showImportModal, setShowImportModal] = useState(false)
   const [deploymentToEdit, setDeploymentToEdit] = useState<Deployment | null>(null)
@@ -137,17 +145,21 @@ export function DeploymentsPage() {
   }, [deploymentsData, searchQuery, sortColumn, sortDirection])
 
   // Toggle sort for a column
-  const handleSort = (column: typeof sortColumn) => {
+  const handleSort = (column: SortColumn) => {
     if (sortColumn === column) {
-      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc')
+      const newDirection = sortDirection === 'asc' ? 'desc' : 'asc'
+      setSortDirection(newDirection)
+      localStorage.setItem('deployments_sort_direction', newDirection)
     } else {
       setSortColumn(column)
       setSortDirection('asc')
+      localStorage.setItem('deployments_sort_column', column)
+      localStorage.setItem('deployments_sort_direction', 'asc')
     }
   }
 
   // Sort icon helper
-  const SortIcon = ({ column }: { column: typeof sortColumn }) => {
+  const SortIcon = ({ column }: { column: SortColumn }) => {
     if (sortColumn !== column) {
       return <ArrowUpDown className="ml-2 h-4 w-4 text-muted-foreground" />
     }

@@ -242,12 +242,12 @@ func defaultScanPaths() []string {
 		paths = append(paths, homeDir)
 	}
 
-	// Check for common stacks directories
-	if _, err := os.Stat("/stacks"); err == nil {
-		paths = append(paths, "/stacks")
-	}
-	if _, err := os.Stat("/docker"); err == nil {
-		paths = append(paths, "/docker")
+	// Check for common stacks/docker directories
+	optionalPaths := []string{"/stacks", "/docker", "/mnt", "/data", "/compose"}
+	for _, p := range optionalPaths {
+		if _, err := os.Stat(p); err == nil {
+			paths = append(paths, p)
+		}
 	}
 
 	return paths

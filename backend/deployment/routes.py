@@ -963,14 +963,18 @@ async def _scan_local_dirs(request: Optional[ScanComposeDirsRequest]) -> ScanCom
         "/srv",
         "/var/lib/docker-compose",
         "/var/lib/docker/volumes",
-        "/stacks",
-        "/docker",
     ]
 
     # Add home directory if it exists
     home = os.path.expanduser("~")
     if home and os.path.isdir(home):
         default_paths.append(home)
+
+    # Add optional paths if they exist (NAS systems, common mount points)
+    optional_paths = ["/stacks", "/docker", "/mnt", "/data", "/compose"]
+    for p in optional_paths:
+        if os.path.isdir(p):
+            default_paths.append(p)
 
     # Merge user paths with defaults
     paths_to_scan = list(default_paths)

@@ -734,6 +734,61 @@ class NotificationService:
             logger.error(f"Failed to send SMTP notification: {e}")
             return False
 
+    async def _send_teams(self, config: Dict[str, Any], message: str, event=None, action_url: str = '') -> bool:
+        """Send notification via Microsoft Teams webhook
+
+        Teams accepts a simple JSON payload with a 'text' field.
+        Note: Microsoft is deprecating Office 365 Connectors, but this still works.
+
+        Args:
+            config: Teams channel configuration (webhook_url)
+            message: Formatted message to send
+            event: Optional event object (unused, for signature consistency)
+            action_url: Optional action URL to append to message
+        """
+        try:
+            webhook_url = config.get('webhook_url', '').strip()
+
+            if not webhook_url:
+                logger.error("Teams config missing webhook_url")
+                return False
+
+            # Validate URL format
+            if not webhook_url.startswith(('http://', 'https://')):
+                logger.error(f"Teams webhook_url must start with http:// or https://: {webhook_url}")
+                return False
+
+            # Teams accepts markdown in the text field
+            teams_message = message
+
+            # Append action URL as link if provided
+            if action_url:
+                teams_message += f"\n\n[Update Now]({action_url})"
+
+            # Teams expects a simple payload with 'text' field
+            payload = {"text": teams_message}
+
+            response = await self.http_client.post(webhook_url, json=payload)
+            response.raise_for_status()
+
+            logger.info("Teams notification sent successfully")
+            return True
+
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                retry_after = int(e.response.headers.get('Retry-After', 60))
+                retry_timestamp = datetime.now(timezone.utc) + timedelta(seconds=retry_after)
+                self._rate_limited_channels['teams'] = retry_timestamp
+                logger.warning(f"Teams rate limited, retry after {retry_after}s")
+            logger.error(f"Failed to send Teams notification: {e}")
+            return False
+        except httpx.RequestError as e:
+            logger.error(f"Teams connection error: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to send Teams notification: {e}")
+            return False
+
     async def _send_webhook(self, config: Dict[str, Any], message: str, event=None, title: str = "DockMon Alert", action_url: str = '') -> bool:
         """Send notification via webhook (HTTP POST/PUT)
 
@@ -897,6 +952,8 @@ class NotificationService:
                 success = await self._send_smtp(channel_config, test_message, test_event)
             elif channel_type == 'webhook':
                 success = await self._send_webhook(channel_config, test_message, test_event)
+            elif channel_type == 'teams':
+                success = await self._send_teams(channel_config, test_message, test_event)
             else:
                 return {"success": False, "error": f"Unsupported channel type: {channel_type}"}
 
@@ -1077,6 +1134,9 @@ class NotificationService:
                                 success_count += 1
                         elif channel.type == "webhook":
                             if await self._send_webhook(channel.config, message, title=alert.title, action_url=action_url):
+                                success_count += 1
+                        elif channel.type == "teams":
+                            if await self._send_teams(channel.config, message, action_url=action_url):
                                 success_count += 1
                         else:
                             logger.warning(f"Unknown channel type '{channel.type}' for channel {channel.name}")

@@ -6,7 +6,7 @@
 
 import { useState } from 'react'
 import { NotificationChannel, ChannelCreateRequest } from '../hooks/useNotificationChannels'
-import { Smartphone, Send, MessageSquare, Hash, Bell, BellRing, Mail, Webhook } from 'lucide-react'
+import { Smartphone, Send, MessageSquare, Hash, Bell, BellRing, Mail, Webhook, Users } from 'lucide-react'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
 interface Props {
@@ -22,6 +22,7 @@ const CHANNEL_TYPES = [
   { value: 'telegram', label: 'Telegram', icon: Send },
   { value: 'discord', label: 'Discord', icon: MessageSquare },
   { value: 'slack', label: 'Slack', icon: Hash },
+  { value: 'teams', label: 'Microsoft Teams (beta)', icon: Users },
   { value: 'pushover', label: 'Pushover', icon: Smartphone },
   { value: 'gotify', label: 'Gotify', icon: Bell },
   { value: 'ntfy', label: 'ntfy', icon: BellRing },
@@ -87,6 +88,7 @@ export function ChannelForm({ channel, onSubmit, onCancel, onTest, isSubmitting,
         break
       case 'discord':
       case 'slack':
+      case 'teams':
         if (!formData.config.webhook_url) {
           newErrors['config.webhook_url'] = 'Webhook URL is required'
         }
@@ -272,6 +274,23 @@ export function ChannelForm({ channel, onSubmit, onCancel, onTest, isSubmitting,
             {errors['config.webhook_url'] && <p className="mt-1 text-xs text-red-400">{errors['config.webhook_url']}</p>}
             <p className="mt-1 text-xs text-gray-400">
               {formData.type === 'discord' ? 'Server Settings → Integrations → Webhooks' : 'Create Incoming Webhook in Slack'}
+            </p>
+          </div>
+        )}
+
+        {formData.type === 'teams' && (
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-1">Webhook URL *</label>
+            <input
+              type="url"
+              value={formData.config.webhook_url || ''}
+              onChange={(e) => handleConfigChange('webhook_url', e.target.value)}
+              placeholder="https://xxx.webhook.office.com/webhookb2/..."
+              className={`w-full rounded-md border ${errors['config.webhook_url'] ? 'border-red-500' : 'border-gray-700'} bg-gray-800 px-3 py-2 text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500`}
+            />
+            {errors['config.webhook_url'] && <p className="mt-1 text-xs text-red-400">{errors['config.webhook_url']}</p>}
+            <p className="mt-1 text-xs text-gray-400">
+              Channel → Connectors → Incoming Webhook (or use Workflows)
             </p>
           </div>
         )}

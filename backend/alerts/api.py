@@ -551,12 +551,18 @@ async def delete_rule(
     rule_id: str,
     db: DatabaseManager = Depends(get_db)
 ):
-    """Delete an alert rule"""
+    """Delete an alert rule and its associated alerts"""
     with db.get_session() as session:
         rule = session.query(AlertRuleV2).filter(AlertRuleV2.id == rule_id).first()
 
         if not rule:
             raise HTTPException(status_code=404, detail="Rule not found")
+
+        # Delete associated alerts first to prevent orphaned records
+        # (alerts with rule_id=NULL cause confusion in the UI)
+        deleted_alerts = session.query(AlertV2).filter(AlertV2.rule_id == rule_id).delete()
+        if deleted_alerts > 0:
+            logger.info(f"Deleted {deleted_alerts} alerts associated with rule {rule_id}")
 
         session.delete(rule)
         session.commit()

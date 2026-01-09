@@ -262,15 +262,20 @@ class AlertEngine:
         """
         Check if alert is in cooldown period
 
-        Returns: True if in cooldown (should skip), False otherwise
+        Cooldown prevents notification spam by requiring a minimum time between
+        notifications. Uses notified_at (when notification was sent), not last_seen
+        (which updates every evaluation cycle).
+
+        Returns: True if in cooldown (should skip notification), False otherwise
         """
-        if not alert.last_seen:
+        if not alert.notified_at:
+            # Never notified, not in cooldown
             return False
 
         # Handle both naive and aware datetimes
-        last_seen = alert.last_seen if alert.last_seen.tzinfo else alert.last_seen.replace(tzinfo=timezone.utc)
-        time_since_last = (datetime.now(timezone.utc) - last_seen).total_seconds()
-        return time_since_last < cooldown_seconds
+        notified_at = alert.notified_at if alert.notified_at.tzinfo else alert.notified_at.replace(tzinfo=timezone.utc)
+        time_since_notification = (datetime.now(timezone.utc) - notified_at).total_seconds()
+        return time_since_notification < cooldown_seconds
 
 
     # ==================== Event-Driven Evaluation ====================

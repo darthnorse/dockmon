@@ -337,8 +337,9 @@ class ContainerDiscovery:
                     tls_ca = db_host.tls_ca if db_host else None
                     tls_cert = db_host.tls_cert if db_host else None
                     tls_key = db_host.tls_key if db_host else None
+                    num_cpus = db_host.num_cpus if db_host else None
 
-                    await stats_client.add_docker_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key)
+                    await stats_client.add_docker_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key, num_cpus)
                     await stats_client.add_event_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key)
                     logger.info(f"Re-registered {host.name} ({host_id[:8]}) with stats/events service after reconnection")
                 except Exception as e:

@@ -119,8 +119,16 @@ func (a *Aggregator) aggregateHostStats(hostID string, containers []*ContainerSt
 	// Calculate totals and percentages
 	var cpuPercent, memPercent float64
 
-	// CPU is sum of all container CPU percentages (represents total host CPU usage)
-	cpuPercent = totalCPU
+	// CPU: Docker reports container CPU as percentage of ALL cores combined.
+	// For example, a container using 100% of one core on a 4-core system reports ~100%.
+	// To get accurate host CPU, we sum all container CPU and divide by number of CPUs.
+	// This gives us the percentage of total host CPU capacity being used.
+	numCPUs := a.cache.GetHostNumCPUs(hostID)
+	if numCPUs > 0 {
+		cpuPercent = totalCPU / float64(numCPUs)
+	} else {
+		cpuPercent = totalCPU // Fallback if numCPUs not set
+	}
 
 	if totalMemLimit > 0 {
 		memPercent = (float64(totalMemUsage) / float64(totalMemLimit)) * 100.0

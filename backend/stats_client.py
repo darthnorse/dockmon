@@ -114,7 +114,7 @@ class StatsServiceClient:
                 return False
         return False
 
-    async def add_docker_host(self, host_id: str, host_name: str, host_address: str, tls_ca: str = None, tls_cert: str = None, tls_key: str = None) -> bool:
+    async def add_docker_host(self, host_id: str, host_name: str, host_address: str, tls_ca: str = None, tls_cert: str = None, tls_key: str = None, num_cpus: int = None) -> bool:
         """Register a Docker host with the stats service"""
         for attempt in range(2):
             try:
@@ -130,6 +130,10 @@ class StatsServiceClient:
                     payload["tls_ca_cert"] = tls_ca
                     payload["tls_cert"] = tls_cert
                     payload["tls_key"] = tls_key
+
+                # Add num_cpus for proper host CPU aggregation
+                if num_cpus and num_cpus > 0:
+                    payload["num_cpus"] = num_cpus
 
                 async with session.post(
                     f"{self.base_url}/api/hosts/add",

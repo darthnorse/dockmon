@@ -70,11 +70,18 @@ jobs:
             -o dist/dockmon-agent-linux-arm64 \
             ./cmd/agent
 
+          # Build for linux/arm/v7 (32-bit ARM, e.g., Raspberry Pi)
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build \
+            -ldflags="-s -w -X main.version=${{ steps.version.outputs.version }} -X main.commit=${{ steps.version.outputs.commit }}" \
+            -o dist/dockmon-agent-linux-armv7 \
+            ./cmd/agent
+
       - name: Generate checksums
         run: |
           cd agent/dist
           sha256sum dockmon-agent-linux-amd64 > checksums.txt
           sha256sum dockmon-agent-linux-arm64 >> checksums.txt
+          sha256sum dockmon-agent-linux-armv7 >> checksums.txt
           echo "Generated checksums:"
           cat checksums.txt
 
@@ -85,15 +92,20 @@ jobs:
           path: agent/dist/
           retention-days: 30
 
-  # Build Docker images using native runners (no QEMU)
+  # Build Docker images using native runners (QEMU only for arm/v7)
   build-docker:
     strategy:
       matrix:
         include:
           - platform: linux/amd64
             runner: ubuntu-latest
+            qemu: false
           - platform: linux/arm64
             runner: ubuntu-24.04-arm
+            qemu: false
+          - platform: linux/arm/v7
+            runner: ubuntu-latest
+            qemu: true
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -102,6 +114,12 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Set up QEMU (for arm/v7 emulation)
+        if: matrix.qemu
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -145,6 +163,8 @@ jobs:
         run: |
           PLATFORM="${{ matrix.platform }}"
           SUFFIX="${PLATFORM#linux/}"
+          # Handle arm/v7 -> armv7 (remove slash)
+          SUFFIX="${SUFFIX//\//}"
           echo "suffix=$SUFFIX" >> $GITHUB_OUTPUT
 
       - name: Extract Docker metadata
@@ -228,7 +248,8 @@ jobs:
           # Create main version manifest
           docker buildx imagetools create -t ${REPO}:${VERSION} \
             ${REPO}:${VERSION}-amd64 \
-            ${REPO}:${VERSION}-arm64
+            ${REPO}:${VERSION}-arm64 \
+            ${REPO}:${VERSION}-armv7
 
           # For releases, also create semver tags
           if [ "$IS_RELEASE" == "true" ]; then
@@ -238,17 +259,20 @@ jobs:
             # Create major.minor manifest
             docker buildx imagetools create -t ${REPO}:${MINOR} \
               ${REPO}:${VERSION}-amd64 \
-              ${REPO}:${VERSION}-arm64
+              ${REPO}:${VERSION}-arm64 \
+              ${REPO}:${VERSION}-armv7
 
             # Create major manifest (only if >= 1.0.0)
             if [ "$MAJOR" != "0" ]; then
               docker buildx imagetools create -t ${REPO}:${MAJOR} \
                 ${REPO}:${VERSION}-amd64 \
-                ${REPO}:${VERSION}-arm64
+                ${REPO}:${VERSION}-arm64 \
+                ${REPO}:${VERSION}-armv7
             fi
 
             # Create latest manifest
             docker buildx imagetools create -t ${REPO}:latest \
               ${REPO}:${VERSION}-amd64 \
-              ${REPO}:${VERSION}-arm64
+              ${REPO}:${VERSION}-arm64 \
+              ${REPO}:${VERSION}-armv7
           fi

@@ -3225,12 +3225,17 @@ class DatabaseManager:
             return rule
 
     def delete_alert_rule_v2(self, rule_id: str) -> bool:
-        """Delete an alert rule v2"""
+        """Delete an alert rule v2 and its associated alerts"""
         with self.get_session() as session:
             try:
                 rule = session.query(AlertRuleV2).filter(AlertRuleV2.id == rule_id).first()
                 if rule:
                     rule_name = rule.name
+                    # Delete associated alerts first to prevent orphaned records
+                    # (alerts with rule_id=NULL cause confusion in the UI)
+                    deleted_alerts = session.query(AlertV2).filter(AlertV2.rule_id == rule_id).delete()
+                    if deleted_alerts > 0:
+                        logger.info(f"Deleted {deleted_alerts} alerts associated with rule {rule_id}")
                     session.delete(rule)
                     session.commit()
                     logger.info(f"Deleted alert rule v2: {rule_name} (ID: {rule_id})")

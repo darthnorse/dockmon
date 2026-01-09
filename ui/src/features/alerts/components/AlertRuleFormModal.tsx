@@ -446,7 +446,9 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
         // Alert timing (for metric rules)
         requestData.alert_active_delay_seconds = formData.alert_active_delay_seconds
         requestData.alert_clear_delay_seconds = formData.alert_clear_delay_seconds
-        requestData.occurrences = formData.occurrences
+        if (formData.occurrences && formData.occurrences >= 1) {
+          requestData.occurrences = formData.occurrences
+        }
       } else {
         // For non-metric (event-driven) rules, add alert timing
         requestData.alert_active_delay_seconds = formData.alert_active_delay_seconds
@@ -1313,7 +1315,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                     <input
                       type="number"
                       value={formData.occurrences}
-                      onChange={(e) => handleChange('occurrences', parseInt(e.target.value))}
+                      onChange={(e) => handleChange('occurrences', parseInt(e.target.value) || 1)}
                       required
                       min={1}
                       max={100}

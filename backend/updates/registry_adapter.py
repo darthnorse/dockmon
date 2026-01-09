@@ -981,6 +981,11 @@ class RegistryAdapter:
             ("nginx:1.25.3", "minor") → "nginx:1"
             ("nginx:1.25.3", "latest") → "nginx:latest"
         """
+        # Ensure tag is present - images without tags cause Docker to store image ID
+        # instead of the image reference after container recreation
+        if ":" not in image_tag:
+            image_tag = f"{image_tag}:latest"
+
         if mode == "exact":
             return image_tag
 

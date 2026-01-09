@@ -244,8 +244,12 @@ func (u *Updater) pullImageWithProgress(ctx context.Context, req UpdateRequest) 
 		encodedJSON, err := json.Marshal(authConfig)
 		if err == nil {
 			pullOpts.RegistryAuth = base64.URLEncoding.EncodeToString(encodedJSON)
-			u.log.Debug("Using registry authentication for image pull")
+			u.log.WithField("username", req.RegistryAuth.Username).Info("Using registry authentication for image pull")
+		} else {
+			u.log.WithError(err).Error("Failed to encode registry auth")
 		}
+	} else {
+		u.log.Debug("No registry authentication provided for image pull")
 	}
 
 	reader, err := u.cli.ImagePull(ctx, req.NewImage, pullOpts)

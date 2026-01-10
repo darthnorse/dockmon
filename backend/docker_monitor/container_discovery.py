@@ -569,7 +569,7 @@ class ContainerDiscovery:
                         else:
                             created_str = str(created_value) if created_value else ""
 
-                        # Extract started_at from agent response (v2.2.6+ agents include this)
+                        # Extract started_at from agent response (agent v1.0.1+ includes this)
                         started_at_str = dc_data.get("StartedAt")
                         if started_at_str:
                             started_at_str = str(started_at_str)

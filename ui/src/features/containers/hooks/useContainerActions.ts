@@ -117,6 +117,8 @@ export function useContainerActions(options?: {
       }
       const pastTense = actionPastTense[variables.type] || `${variables.type}ed`
       toast.success(`Container ${pastTense} successfully`)
+      // Invalidate containers query to refetch with updated started_at timestamp
+      queryClient.invalidateQueries({ queryKey: ['containers'] })
       options?.onSuccess?.()
     },
 

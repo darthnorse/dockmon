@@ -1182,7 +1182,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
 
           // Stopped containers don't have uptime
           if (!isRunning) {
-            return <span className="text-sm text-muted-foreground">—</span>
+            return <span className="text-sm text-muted-foreground">-</span>
           }
 
           // Calculate uptime from started_at timestamp (when container was last started)
@@ -1193,7 +1193,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
               const now = new Date()
               const diffMs = now.getTime() - timestamp.getTime()
 
-              if (diffMs < 0) return '—'
+              if (diffMs < 0) return '-'
 
               const seconds = Math.floor(diffMs / 1000)
               const minutes = Math.floor(seconds / 60)
@@ -1210,7 +1210,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
                 return `${seconds}s`
               }
             } catch {
-              return '—'
+              return '-'
             }
           }
 
@@ -1222,7 +1222,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
 
           return (
             <div className="text-sm text-muted-foreground" title={tooltipText}>
-              {uptimeSource ? formatUptime(uptimeSource) : '—'}
+              {uptimeSource ? formatUptime(uptimeSource) : '-'}
             </div>
           )
         },
@@ -1247,7 +1247,9 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         accessorFn: (row) => row.cpu_percent ?? -1,
         cell: ({ row }) => {
           const container = row.original
-          if (container.cpu_percent !== undefined && container.cpu_percent !== null) {
+          // Only show CPU for running containers
+          const isRunning = container.state === 'running'
+          if (isRunning && container.cpu_percent !== undefined && container.cpu_percent !== null) {
             return (
               <span className="text-xs text-muted-foreground">
                 {container.cpu_percent.toFixed(1)}%
@@ -1277,8 +1279,10 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         accessorFn: (row) => row.memory_usage ?? -1,
         cell: ({ row }) => {
           const container = row.original
+          // Only show RAM for running containers
+          const isRunning = container.state === 'running'
 
-          if (container.memory_usage === undefined || container.memory_usage === null) {
+          if (!isRunning || container.memory_usage === undefined || container.memory_usage === null) {
             return <span className="text-xs text-muted-foreground">-</span>
           }
 

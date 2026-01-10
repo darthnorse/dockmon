@@ -11,7 +11,6 @@ from typing import Any, Callable, Dict
 from sqlalchemy.orm import Session
 
 from database import DatabaseManager, Deployment, DockerHostDB, DeploymentMetadata, DeploymentContainer
-from utils.encryption import decrypt_password
 from utils.registry_credentials import get_all_registry_credentials
 from .compose_parser import ComposeParser, ComposeParseError
 from .compose_validator import ComposeValidator, ComposeValidationError
@@ -272,13 +271,13 @@ def _get_host_connection_info(host_id: str) -> Dict[str, Any]:
         if host.connection_type == 'remote':
             result['docker_host'] = host.url
 
-            # Decrypt TLS certificates if present
-            if host.tls_ca_cert:
-                result['tls_ca_cert'] = decrypt_password(host.tls_ca_cert)
+            # TLS certificates are stored as plain PEM (not encrypted)
+            if host.tls_ca:
+                result['tls_ca_cert'] = host.tls_ca
             if host.tls_cert:
-                result['tls_cert'] = decrypt_password(host.tls_cert)
+                result['tls_cert'] = host.tls_cert
             if host.tls_key:
-                result['tls_key'] = decrypt_password(host.tls_key)
+                result['tls_key'] = host.tls_key
 
         # Get all registry credentials for compose deployment
         # We pass all credentials since we don't know which registries

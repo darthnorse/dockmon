@@ -159,7 +159,7 @@ class NotificationChannelCreate(BaseModel):
         if not v or not v.strip():
             raise ValueError('Channel type cannot be empty')
 
-        valid_types = {'telegram', 'discord', 'pushover', 'slack', 'gotify', 'ntfy', 'smtp', 'webhook'}
+        valid_types = {'telegram', 'discord', 'pushover', 'slack', 'gotify', 'ntfy', 'smtp', 'webhook', 'teams'}
         v = v.strip().lower()
 
         if v not in valid_types:
@@ -207,6 +207,16 @@ class NotificationChannelCreate(BaseModel):
             if not (webhook_url.startswith('https://hooks.slack.com/services/') or
                     webhook_url.startswith('https://hooks.slack.com/workflows/')):
                 raise ValueError('Invalid Slack webhook URL')
+
+        elif channel_type == 'teams':
+            required_keys = {'webhook_url'}
+            if not all(key in v for key in required_keys):
+                raise ValueError(f'Teams config must contain: {required_keys}')
+
+            # Validate Teams webhook URL (Office 365 connector format)
+            webhook_url = v.get('webhook_url', '')
+            if not (webhook_url.startswith('http://') or webhook_url.startswith('https://')):
+                raise ValueError('Teams webhook URL must start with http:// or https://')
 
         elif channel_type == 'pushover':
             required_keys = {'app_token', 'user_key'}

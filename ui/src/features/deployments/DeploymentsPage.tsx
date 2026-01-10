@@ -10,7 +10,7 @@
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { Plus, Trash2, Play, Edit, AlertCircle, CheckCircle, XCircle, Loader2, Layers, Bookmark, Search, Download, RefreshCw } from 'lucide-react'
+import { Plus, Trash2, Play, Edit, AlertCircle, CheckCircle, XCircle, Loader2, Layers, Bookmark, Search, Download, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useQueryClient, useQuery } from '@tanstack/react-query'
 import { apiClient } from '@/lib/api/client'
@@ -62,6 +62,16 @@ export function DeploymentsPage() {
 
   const [filters, setFilters] = useState<DeploymentFilters>({})
   const [searchQuery, setSearchQuery] = useState('')
+  type SortColumn = 'name' | 'host_name' | 'deployment_type' | 'status' | 'created_at'
+  const [sortColumn, setSortColumn] = useState<SortColumn>(() => {
+    const saved = localStorage.getItem('deployments_sort_column')
+    const validColumns: SortColumn[] = ['name', 'host_name', 'deployment_type', 'status', 'created_at']
+    return validColumns.includes(saved as SortColumn) ? (saved as SortColumn) : 'created_at'
+  })
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>(() => {
+    const saved = localStorage.getItem('deployments_sort_direction')
+    return saved === 'asc' || saved === 'desc' ? saved : 'desc'
+  })
   const [showNewDeploymentForm, setShowNewDeploymentForm] = useState(false)
   const [showImportModal, setShowImportModal] = useState(false)
   const [deploymentToEdit, setDeploymentToEdit] = useState<Deployment | null>(null)
@@ -81,21 +91,82 @@ export function DeploymentsPage() {
   const redeployDeployment = useRedeployDeployment()
   const deleteDeployment = useDeleteDeployment()
 
-  // Client-side search filtering
+  // Client-side search filtering and sorting
   const deployments = useMemo(() => {
     if (!deploymentsData) return []
-    if (!searchQuery.trim()) return deploymentsData
 
-    const query = searchQuery.toLowerCase()
-    return deploymentsData.filter((deployment) => {
-      // Search in deployment name, host name, and type
-      return (
-        deployment.name?.toLowerCase().includes(query) ||
-        deployment.host_name?.toLowerCase().includes(query) ||
-        deployment.deployment_type?.toLowerCase().includes(query)
-      )
+    // Filter by search query
+    let filtered = deploymentsData
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase()
+      filtered = deploymentsData.filter((deployment) => {
+        return (
+          deployment.name?.toLowerCase().includes(query) ||
+          deployment.host_name?.toLowerCase().includes(query) ||
+          deployment.deployment_type?.toLowerCase().includes(query)
+        )
+      })
+    }
+
+    // Sort
+    const sorted = [...filtered].sort((a, b) => {
+      let aVal: string | number = ''
+      let bVal: string | number = ''
+
+      switch (sortColumn) {
+        case 'name':
+          aVal = a.name?.toLowerCase() || ''
+          bVal = b.name?.toLowerCase() || ''
+          break
+        case 'host_name':
+          aVal = a.host_name?.toLowerCase() || ''
+          bVal = b.host_name?.toLowerCase() || ''
+          break
+        case 'deployment_type':
+          aVal = a.deployment_type?.toLowerCase() || ''
+          bVal = b.deployment_type?.toLowerCase() || ''
+          break
+        case 'status':
+          aVal = a.status?.toLowerCase() || ''
+          bVal = b.status?.toLowerCase() || ''
+          break
+        case 'created_at':
+          aVal = new Date(a.created_at).getTime()
+          bVal = new Date(b.created_at).getTime()
+          break
+      }
+
+      if (aVal < bVal) return sortDirection === 'asc' ? -1 : 1
+      if (aVal > bVal) return sortDirection === 'asc' ? 1 : -1
+      return 0
     })
-  }, [deploymentsData, searchQuery])
+
+    return sorted
+  }, [deploymentsData, searchQuery, sortColumn, sortDirection])
+
+  // Toggle sort for a column
+  const handleSort = (column: SortColumn) => {
+    if (sortColumn === column) {
+      const newDirection = sortDirection === 'asc' ? 'desc' : 'asc'
+      setSortDirection(newDirection)
+      localStorage.setItem('deployments_sort_direction', newDirection)
+    } else {
+      setSortColumn(column)
+      setSortDirection('asc')
+      localStorage.setItem('deployments_sort_column', column)
+      localStorage.setItem('deployments_sort_direction', 'asc')
+    }
+  }
+
+  // Sort icon helper
+  const SortIcon = ({ column }: { column: SortColumn }) => {
+    if (sortColumn !== column) {
+      return <ArrowUpDown className="ml-2 h-4 w-4 text-muted-foreground" />
+    }
+    return sortDirection === 'asc'
+      ? <ArrowUp className="ml-2 h-4 w-4 text-primary" />
+      : <ArrowDown className="ml-2 h-4 w-4 text-primary" />
+  }
 
   // Status label mapping (user-facing labels for display)
   const statusLabels: Record<DeploymentStatus, string> = {
@@ -330,13 +401,38 @@ export function DeploymentsPage() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Host</TableHead>
+                <TableHead>
+                  <Button variant="ghost" onClick={() => handleSort('name')} className="h-8 px-2 hover:bg-surface-2">
+                    Name
+                    <SortIcon column="name" />
+                  </Button>
+                </TableHead>
+                <TableHead>
+                  <Button variant="ghost" onClick={() => handleSort('host_name')} className="h-8 px-2 hover:bg-surface-2">
+                    Host
+                    <SortIcon column="host_name" />
+                  </Button>
+                </TableHead>
                 <TableHead>Container</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead>Status</TableHead>
+                <TableHead>
+                  <Button variant="ghost" onClick={() => handleSort('deployment_type')} className="h-8 px-2 hover:bg-surface-2">
+                    Type
+                    <SortIcon column="deployment_type" />
+                  </Button>
+                </TableHead>
+                <TableHead>
+                  <Button variant="ghost" onClick={() => handleSort('status')} className="h-8 px-2 hover:bg-surface-2">
+                    Status
+                    <SortIcon column="status" />
+                  </Button>
+                </TableHead>
                 <TableHead>Progress</TableHead>
-                <TableHead>Created</TableHead>
+                <TableHead>
+                  <Button variant="ghost" onClick={() => handleSort('created_at')} className="h-8 px-2 hover:bg-surface-2">
+                    Created
+                    <SortIcon column="created_at" />
+                  </Button>
+                </TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>

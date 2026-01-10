@@ -43,8 +43,8 @@ def get_registry_credentials(db, image_name: str) -> Optional[Dict[str, str]]:
             if "." in parts[0] or ":" in parts[0]:
                 registry_url = parts[0]
 
-        # Normalize (lowercase)
-        registry_url = registry_url.lower()
+        # Normalize (lowercase, strip trailing slash)
+        registry_url = registry_url.lower().rstrip('/')
 
         logger.info(f"Looking up credentials for registry_url='{registry_url}' (from image: {image_name})")
 

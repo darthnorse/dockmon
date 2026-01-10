@@ -337,8 +337,9 @@ class ContainerDiscovery:
                     tls_ca = db_host.tls_ca if db_host else None
                     tls_cert = db_host.tls_cert if db_host else None
                     tls_key = db_host.tls_key if db_host else None
+                    num_cpus = db_host.num_cpus if db_host else None
 
-                    await stats_client.add_docker_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key)
+                    await stats_client.add_docker_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key, num_cpus)
                     await stats_client.add_event_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key)
                     logger.info(f"Re-registered {host.name} ({host_id[:8]}) with stats/events service after reconnection")
                 except Exception as e:
@@ -568,6 +569,11 @@ class ContainerDiscovery:
                         else:
                             created_str = str(created_value) if created_value else ""
 
+                        # Extract started_at from agent response (agent v1.0.1+ includes this)
+                        started_at_str = dc_data.get("StartedAt")
+                        if started_at_str:
+                            started_at_str = str(started_at_str)
+
                         # Extract RepoDigests from agent response (v2.2.0+ agents)
                         # Use `or []` pattern to handle both missing keys AND null values
                         repo_digests = dc_data.get("RepoDigests") or []
@@ -586,6 +592,7 @@ class ContainerDiscovery:
                             status=status,
                             state=container_state,
                             created=created_str,
+                            started_at=started_at_str,
                             host_id=host_id,
                             host_name=host.name,
                             ports=ports,
@@ -833,6 +840,7 @@ class ContainerDiscovery:
                         host_name=host.name,
                         image=image_name,
                         created=dc.attrs['Created'],
+                        started_at=dc.attrs['State'].get('StartedAt'),
                         auto_restart=get_auto_restart_status_fn(host_id, container_id),
                         restart_attempts=0,  # Will be populated by caller
                         desired_state=desired_state,

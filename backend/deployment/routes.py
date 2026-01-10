@@ -158,6 +158,7 @@ class ImportDeploymentRequest(BaseModel):
     compose_content: str = Field(..., description="Docker Compose YAML content")
     env_content: Optional[str] = Field(None, description="Optional .env file content")
     project_name: Optional[str] = Field(None, description="Stack name (required if compose has no name: field)")
+    host_id: Optional[str] = Field(None, description="Host ID for import when no running containers found")
 
 
 class ImportDeploymentResponse(BaseModel):
@@ -809,6 +810,12 @@ async def import_deployment(
     monitor = get_docker_monitor()
     all_containers = monitor.get_last_containers()
 
+    # Extract container_name values from compose for fallback matching
+    container_names_in_compose = set()
+    for svc_name, svc_config in services.items():
+        if isinstance(svc_config, dict) and svc_config.get('container_name'):
+            container_names_in_compose.add(svc_config['container_name'])
+
     # Group containers by host for this project
     hosts_with_stack: Dict[str, List] = {}
     for container in all_containers:
@@ -820,11 +827,32 @@ async def import_deployment(
                     hosts_with_stack[host_id] = []
                 hosts_with_stack[host_id].append(container)
 
+    # Fallback: if no match by project label, try matching by container names
+    if not hosts_with_stack and container_names_in_compose:
+        logger.info(f"No containers found by project label '{project_name}', trying fallback by container names")
+        for container in all_containers:
+            container_name = getattr(container, 'name', '')
+            if container_name in container_names_in_compose:
+                host_id = getattr(container, 'host_id', None)
+                if host_id:
+                    if host_id not in hosts_with_stack:
+                        hosts_with_stack[host_id] = []
+                    hosts_with_stack[host_id].append(container)
+        if hosts_with_stack:
+            logger.info(f"Found containers by name fallback on {len(hosts_with_stack)} host(s)")
+
+    # If still no containers found but host_id provided, allow import with status "stopped"
+    import_as_stopped = False
     if not hosts_with_stack:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No running containers found for stack '{project_name}' on any host"
-        )
+        if request.host_id:
+            logger.info(f"No running containers found for '{project_name}', importing as stopped on host {request.host_id}")
+            hosts_with_stack[request.host_id] = []
+            import_as_stopped = True
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No running containers found for stack '{project_name}'. Provide host_id to import anyway."
+            )
 
     # 5. Create deployment for each host
     db = get_database_manager()
@@ -855,7 +883,7 @@ async def import_deployment(
                 user_id=user_id,
                 name=project_name,
                 deployment_type='stack',
-                status='running',  # Already deployed
+                status='stopped' if import_as_stopped else 'running',
                 definition=json.dumps(definition),
                 created_by=current_user['username'],
                 progress_percent=100,
@@ -866,15 +894,17 @@ async def import_deployment(
             )
             session.add(deployment)
 
-            # Link containers for this host
-            containers_linked = _link_containers_for_host(
-                session=session,
-                containers=containers,
-                host_id=host_id,
-                deployment_id=deployment_id
-            )
+            # Link containers for this host (skip if imported as stopped with no containers)
+            containers_linked = 0
+            if containers:
+                containers_linked = _link_containers_for_host(
+                    session=session,
+                    containers=containers,
+                    host_id=host_id,
+                    deployment_id=deployment_id
+                )
 
-            logger.info(f"Imported deployment '{project_name}' on host {host_id} with {containers_linked} containers")
+            logger.info(f"Imported deployment '{project_name}' on host {host_id} with {containers_linked} containers (stopped={import_as_stopped})")
             deployments_created.append(deployment)
 
         session.commit()
@@ -963,14 +993,18 @@ async def _scan_local_dirs(request: Optional[ScanComposeDirsRequest]) -> ScanCom
         "/srv",
         "/var/lib/docker-compose",
         "/var/lib/docker/volumes",
-        "/stacks",
-        "/docker",
     ]
 
     # Add home directory if it exists
     home = os.path.expanduser("~")
     if home and os.path.isdir(home):
         default_paths.append(home)
+
+    # Add optional paths if they exist (NAS systems, common mount points)
+    optional_paths = ["/stacks", "/docker", "/mnt", "/data", "/compose"]
+    for p in optional_paths:
+        if os.path.isdir(p):
+            default_paths.append(p)
 
     # Merge user paths with defaults
     paths_to_scan = list(default_paths)

@@ -436,7 +436,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
                 <span className="text-xs text-muted-foreground">
                   {container.cpu_percent !== null && container.cpu_percent !== undefined
                     ? `${container.cpu_percent.toFixed(0)}%`
-                    : '—'}
+                    : '-'}
                 </span>
               </div>
               {cpuData.length > 0 ? (
@@ -458,7 +458,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
                   <span className="font-medium text-sm">Memory Usage</span>
                 </div>
                 <span className="text-xs text-muted-foreground">
-                  {container.memory_usage ? formatBytes(container.memory_usage) : '—'}
+                  {container.memory_usage ? formatBytes(container.memory_usage) : '-'}
                   {container.memory_limit && ` / ${formatBytes(container.memory_limit)}`}
                 </span>
               </div>

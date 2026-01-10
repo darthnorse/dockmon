@@ -164,11 +164,13 @@ func (h *ScanHandler) scanDirectory(ctx context.Context, dir string, recursive b
 			if isComposeFile(entry.Name()) {
 				info, err := h.parseComposeFile(entryPath)
 				if err != nil {
-					h.log.WithError(err).WithField("path", entryPath).Debug("Failed to parse compose file")
+					h.log.WithError(err).WithField("path", entryPath).Error("Failed to parse compose file")
 					continue
 				}
 				if info != nil {
 					results = append(results, *info)
+				} else {
+					h.log.WithField("path", entryPath).Error("Compose file has no services defined")
 				}
 			}
 		}
@@ -242,12 +244,12 @@ func defaultScanPaths() []string {
 		paths = append(paths, homeDir)
 	}
 
-	// Check for common stacks directories
-	if _, err := os.Stat("/stacks"); err == nil {
-		paths = append(paths, "/stacks")
-	}
-	if _, err := os.Stat("/docker"); err == nil {
-		paths = append(paths, "/docker")
+	// Check for common stacks/docker directories
+	optionalPaths := []string{"/stacks", "/docker", "/mnt", "/data", "/compose"}
+	for _, p := range optionalPaths {
+		if _, err := os.Stat(p); err == nil {
+			paths = append(paths, p)
+		}
 	}
 
 	return paths

@@ -314,6 +314,10 @@ export function ImportStackModal({
         const request: ImportDeploymentRequest = {
           compose_content: readResult.content,
         }
+        // Always pass host_id for fallback import support
+        if (selectedHostId) {
+          request.host_id = selectedHostId
+        }
         // Pass the project name from scan (directory-based or from compose file)
         if (file?.project_name) {
           request.project_name = file.project_name
@@ -367,6 +371,17 @@ export function ImportStackModal({
       }
       if (projectName) {
         request.project_name = projectName
+      }
+      // Pass host_id when importing from browse mode (for fallback import)
+      if (method === 'browse' && selectedHostId) {
+        request.host_id = selectedHostId
+        // Also pass project_name from the selected file if available
+        if (selectedFilePath && !projectName) {
+          const file = composeFiles.find((f) => f.path === selectedFilePath)
+          if (file?.project_name) {
+            request.project_name = file.project_name
+          }
+        }
       }
       const result: ImportDeploymentResponse =
         await importDeployment.mutateAsync(request)

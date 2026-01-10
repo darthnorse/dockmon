@@ -4550,10 +4550,10 @@ async def create_registry_credential(
         if not password:
             raise HTTPException(status_code=400, detail="password is required")
 
-        # Normalize registry URL (remove protocol if present, lowercase)
+        # Normalize registry URL (remove protocol if present, lowercase, strip trailing slash)
         if registry_url.startswith("http://") or registry_url.startswith("https://"):
             registry_url = registry_url.split("://", 1)[1]
-        registry_url = registry_url.lower()
+        registry_url = registry_url.lower().rstrip('/')
 
         with monitor.db.get_session() as session:
             # Check for duplicate registry URL

@@ -5,7 +5,7 @@
  */
 
 import { useState, useRef, useEffect } from 'react'
-import { X, Search, Check, Bell, BellRing, Send, MessageSquare, Hash, Smartphone, Mail, Globe } from 'lucide-react'
+import { X, Search, Check, Bell, BellRing, Send, MessageSquare, Hash, Smartphone, Mail, Globe, Users } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { useCreateAlertRule, useUpdateAlertRule } from '../hooks/useAlertRules'
 import { useNotificationChannels } from '../hooks/useNotificationChannels'
@@ -178,6 +178,7 @@ const NOTIFICATION_CHANNELS = [
   { value: 'telegram', label: 'Telegram', icon: Send },
   { value: 'discord', label: 'Discord', icon: MessageSquare },
   { value: 'slack', label: 'Slack', icon: Hash },
+  { value: 'teams', label: 'Microsoft Teams (beta)', icon: Users },
   { value: 'gotify', label: 'Gotify', icon: Bell },
   { value: 'ntfy', label: 'ntfy', icon: BellRing },
   { value: 'smtp', label: 'Email (SMTP)', icon: Mail },
@@ -445,7 +446,9 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
         // Alert timing (for metric rules)
         requestData.alert_active_delay_seconds = formData.alert_active_delay_seconds
         requestData.alert_clear_delay_seconds = formData.alert_clear_delay_seconds
-        requestData.occurrences = formData.occurrences
+        if (formData.occurrences && formData.occurrences >= 1) {
+          requestData.occurrences = formData.occurrences
+        }
       } else {
         // For non-metric (event-driven) rules, add alert timing
         requestData.alert_active_delay_seconds = formData.alert_active_delay_seconds
@@ -1312,7 +1315,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                     <input
                       type="number"
                       value={formData.occurrences}
-                      onChange={(e) => handleChange('occurrences', parseInt(e.target.value))}
+                      onChange={(e) => handleChange('occurrences', parseInt(e.target.value) || 1)}
                       required
                       min={1}
                       max={100}

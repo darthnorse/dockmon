@@ -1221,9 +1221,9 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
             : `Created: ${container.created}`
 
           return (
-            <div className="text-sm text-muted-foreground" title={tooltipText}>
+            <span className="text-sm text-muted-foreground" title={tooltipText}>
               {uptimeSource ? formatUptime(uptimeSource) : '-'}
-            </div>
+            </span>
           )
         },
         enableSorting: true,
@@ -1251,12 +1251,12 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
           const isRunning = container.state === 'running'
           if (isRunning && container.cpu_percent !== undefined && container.cpu_percent !== null) {
             return (
-              <span className="text-xs text-muted-foreground">
+              <span className="text-sm text-muted-foreground">
                 {container.cpu_percent.toFixed(1)}%
               </span>
             )
           }
-          return <span className="text-xs text-muted-foreground">-</span>
+          return <span className="text-sm text-muted-foreground">-</span>
         },
         enableSorting: true,
       },
@@ -1283,14 +1283,14 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
           const isRunning = container.state === 'running'
 
           if (!isRunning || container.memory_usage === undefined || container.memory_usage === null) {
-            return <span className="text-xs text-muted-foreground">-</span>
+            return <span className="text-sm text-muted-foreground">-</span>
           }
 
           const usage = formatBytes(container.memory_usage)
           const limit = container.memory_limit ? formatBytes(container.memory_limit) : 'No limit'
 
           return (
-            <span className="text-xs text-muted-foreground" title={`Limit: ${limit}`}>
+            <span className="text-sm text-muted-foreground" title={`Limit: ${limit}`}>
               {usage}
             </span>
           )

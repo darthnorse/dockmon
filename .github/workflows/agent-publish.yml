@@ -9,6 +9,8 @@ on:
       - main
       - 'feature/**'
       - 'feat/**'
+  release:
+    types: [published]
   pull_request:
     paths:
       - 'agent/**'
@@ -278,36 +280,71 @@ jobs:
           fi
 
   # Upload binaries and checksums to GitHub Release
+  # Triggers on release publish for agent-v* releases
   upload-release-assets:
-    needs: build-binaries
-    if: startsWith(github.ref, 'refs/tags/agent-v')
+    if: github.event_name == 'release' && startsWith(github.event.release.tag_name, 'agent-v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
-      - name: Download binaries artifact
-        uses: actions/download-artifact@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          name: agent-binaries
-          path: dist/
+          go-version: '1.24'
+          cache-dependency-path: agent/go.sum
 
       - name: Get version
         id: version
         run: |
-          VERSION=${GITHUB_REF#refs/tags/agent-v}
+          VERSION="${{ github.event.release.tag_name }}"
+          VERSION="${VERSION#agent-v}"
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "commit=${GITHUB_SHA:0:7}" >> $GITHUB_OUTPUT
+
+      - name: Build binaries
+        run: |
+          cd agent
+          mkdir -p dist
+
+          # Build for linux/amd64
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -ldflags="-s -w -X main.version=${{ steps.version.outputs.version }} -X main.commit=${{ steps.version.outputs.commit }}" \
+            -o dist/dockmon-agent-linux-amd64 \
+            ./cmd/agent
+
+          # Build for linux/arm64
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
+            -ldflags="-s -w -X main.version=${{ steps.version.outputs.version }} -X main.commit=${{ steps.version.outputs.commit }}" \
+            -o dist/dockmon-agent-linux-arm64 \
+            ./cmd/agent
+
+          # Build for linux/arm/v7
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build \
+            -ldflags="-s -w -X main.version=${{ steps.version.outputs.version }} -X main.commit=${{ steps.version.outputs.commit }}" \
+            -o dist/dockmon-agent-linux-armv7 \
+            ./cmd/agent
+
+      - name: Generate checksums
+        run: |
+          cd agent/dist
+          sha256sum dockmon-agent-linux-amd64 > checksums.txt
+          sha256sum dockmon-agent-linux-arm64 >> checksums.txt
+          sha256sum dockmon-agent-linux-armv7 >> checksums.txt
 
       - name: Upload release assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="agent-v${{ steps.version.outputs.version }}"
+          TAG="${{ github.event.release.tag_name }}"
 
           # Upload binaries
-          gh release upload "$TAG" dist/dockmon-agent-linux-amd64 --repo ${{ github.repository }} --clobber
-          gh release upload "$TAG" dist/dockmon-agent-linux-arm64 --repo ${{ github.repository }} --clobber
-          gh release upload "$TAG" dist/dockmon-agent-linux-armv7 --repo ${{ github.repository }} --clobber
-          gh release upload "$TAG" dist/checksums.txt --repo ${{ github.repository }} --clobber
+          gh release upload "$TAG" agent/dist/dockmon-agent-linux-amd64 --repo ${{ github.repository }} --clobber
+          gh release upload "$TAG" agent/dist/dockmon-agent-linux-arm64 --repo ${{ github.repository }} --clobber
+          gh release upload "$TAG" agent/dist/dockmon-agent-linux-armv7 --repo ${{ github.repository }} --clobber
+          gh release upload "$TAG" agent/dist/checksums.txt --repo ${{ github.repository }} --clobber
 
           echo "Uploaded release assets to $TAG"

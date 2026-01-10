@@ -276,3 +276,38 @@ jobs:
               ${REPO}:${VERSION}-arm64 \
               ${REPO}:${VERSION}-armv7
           fi
+
+  # Upload binaries and checksums to GitHub Release
+  upload-release-assets:
+    needs: build-binaries
+    if: startsWith(github.ref, 'refs/tags/agent-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download binaries artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: agent-binaries
+          path: dist/
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/agent-v}
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="agent-v${{ steps.version.outputs.version }}"
+
+          # Upload binaries
+          gh release upload "$TAG" dist/dockmon-agent-linux-amd64 --repo ${{ github.repository }} --clobber
+          gh release upload "$TAG" dist/dockmon-agent-linux-arm64 --repo ${{ github.repository }} --clobber
+          gh release upload "$TAG" dist/dockmon-agent-linux-armv7 --repo ${{ github.repository }} --clobber
+          gh release upload "$TAG" dist/checksums.txt --repo ${{ github.repository }} --clobber
+
+          echo "Uploaded release assets to $TAG"

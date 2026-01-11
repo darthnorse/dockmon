@@ -10,7 +10,7 @@
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { Plus, Trash2, Play, Edit, AlertCircle, CheckCircle, XCircle, Loader2, Layers, Bookmark, Search, Download, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
+import { Plus, Trash2, Play, Edit, AlertCircle, CheckCircle, XCircle, Loader2, Layers, Search, Download, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useQueryClient, useQuery } from '@tanstack/react-query'
 import { apiClient } from '@/lib/api/client'
@@ -44,7 +44,6 @@ import {
 } from '@/components/ui/alert-dialog'
 import { useDeployments, useExecuteDeployment, useDeleteDeployment, useRedeployDeployment } from './hooks/useDeployments'
 import { DeploymentForm } from './components/DeploymentForm'
-import { SaveAsTemplateDialog } from './components/SaveAsTemplateDialog'
 import { ImportStackModal } from './components/ImportStackModal'
 import { LayerProgressDisplay } from '@/components/shared/LayerProgressDisplay'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
@@ -52,6 +51,8 @@ import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
 import { useContainerModal } from '@/providers/ContainerModalProvider'
 import { makeCompositeKeyFrom } from '@/lib/utils/containerKeys'
 import { HostDetailsModal } from '@/features/hosts/components/HostDetailsModal'
+import type { Container } from '@/features/containers/types'
+import type { WebSocketMessage } from '@/lib/websocket/useWebSocket'
 import type { Deployment, DeploymentStatus, DeploymentFilters } from './types'
 
 export function DeploymentsPage() {
@@ -62,10 +63,10 @@ export function DeploymentsPage() {
 
   const [filters, setFilters] = useState<DeploymentFilters>({})
   const [searchQuery, setSearchQuery] = useState('')
-  type SortColumn = 'name' | 'host_name' | 'deployment_type' | 'status' | 'created_at'
+  type SortColumn = 'name' | 'host_name' | 'status' | 'created_at'
   const [sortColumn, setSortColumn] = useState<SortColumn>(() => {
     const saved = localStorage.getItem('deployments_sort_column')
-    const validColumns: SortColumn[] = ['name', 'host_name', 'deployment_type', 'status', 'created_at']
+    const validColumns: SortColumn[] = ['name', 'host_name', 'status', 'created_at']
     return validColumns.includes(saved as SortColumn) ? (saved as SortColumn) : 'created_at'
   })
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>(() => {
@@ -77,13 +78,12 @@ export function DeploymentsPage() {
   const [deploymentToEdit, setDeploymentToEdit] = useState<Deployment | null>(null)
   const [deploymentToDelete, setDeploymentToDelete] = useState<Deployment | null>(null)
   const [deploymentToRedeploy, setDeploymentToRedeploy] = useState<Deployment | null>(null)
-  const [deploymentToSave, setDeploymentToSave] = useState<Deployment | null>(null)
   const [hostModalOpen, setHostModalOpen] = useState(false)
   const [selectedHostId, setSelectedHostId] = useState<string | null>(null)
 
   const { data: deploymentsData, isLoading, error} = useDeployments(filters)
   const { data: hosts } = useHosts()
-  const { data: containers } = useQuery<any[]>({
+  const { data: containers } = useQuery<Container[]>({
     queryKey: ['containers'],
     queryFn: () => apiClient.get('/containers'),
   })
@@ -101,9 +101,9 @@ export function DeploymentsPage() {
       const query = searchQuery.toLowerCase()
       filtered = deploymentsData.filter((deployment) => {
         return (
-          deployment.name?.toLowerCase().includes(query) ||
+          deployment.stack_name?.toLowerCase().includes(query) ||
           deployment.host_name?.toLowerCase().includes(query) ||
-          deployment.deployment_type?.toLowerCase().includes(query)
+          deployment.status?.toLowerCase().includes(query)
         )
       })
     }
@@ -115,16 +115,12 @@ export function DeploymentsPage() {
 
       switch (sortColumn) {
         case 'name':
-          aVal = a.name?.toLowerCase() || ''
-          bVal = b.name?.toLowerCase() || ''
+          aVal = a.stack_name?.toLowerCase() || ''
+          bVal = b.stack_name?.toLowerCase() || ''
           break
         case 'host_name':
           aVal = a.host_name?.toLowerCase() || ''
           bVal = b.host_name?.toLowerCase() || ''
-          break
-        case 'deployment_type':
-          aVal = a.deployment_type?.toLowerCase() || ''
-          bVal = b.deployment_type?.toLowerCase() || ''
           break
         case 'status':
           aVal = a.status?.toLowerCase() || ''
@@ -179,10 +175,11 @@ export function DeploymentsPage() {
     partial: 'Partial',
     failed: 'Failed',
     rolled_back: 'Rolled Back',
+    stopped: 'Stopped',
   }
 
   // WebSocket: Listen for real-time deployment updates
-  const handleDeploymentUpdate = useCallback((message: any) => {
+  const handleDeploymentUpdate = useCallback((message: WebSocketMessage) => {
     // Handle all deployment event types
     const deploymentEventTypes = [
       'deployment_created',
@@ -193,21 +190,23 @@ export function DeploymentsPage() {
     ]
 
     if (deploymentEventTypes.includes(message.type)) {
-      const { deployment_id, status, progress } = message
+      // Extract deployment data - structure varies by message type
+      const msg = message as { type: string; deployment_id?: string; status?: string; progress?: { overall_percent?: number; stage?: string } }
+      const { deployment_id, status, progress } = msg
 
       // Update ALL deployment queries (all filter combinations) to avoid race condition
       // if filters change while message is being processed
       // Use setQueriesData (plural) instead of setQueryData to update all matching queries
       queryClient.setQueriesData(
         { queryKey: ['deployments'] },
-        (old: any) => {
+        (old: Deployment[] | undefined) => {
           if (!Array.isArray(old)) return old
 
           return old.map((dep: Deployment) =>
             dep.id === deployment_id
               ? {
                   ...dep,
-                  status: status,
+                  status: status ?? dep.status,
                   progress_percent: progress?.overall_percent ?? dep.progress_percent,
                   current_stage: progress?.stage ?? dep.current_stage,
                 }
@@ -274,10 +273,6 @@ export function DeploymentsPage() {
       redeployDeployment.mutate(deploymentToRedeploy.id)
       setDeploymentToRedeploy(null)
     }
-  }
-
-  const handleSaveAsTemplate = (deployment: Deployment) => {
-    setDeploymentToSave(deployment)
   }
 
   const handleOpenHost = (hostId: string) => {
@@ -373,6 +368,7 @@ export function DeploymentsPage() {
             <SelectItem value="creating">Creating</SelectItem>
             <SelectItem value="starting">Starting</SelectItem>
             <SelectItem value="running">Deployed</SelectItem>
+            <SelectItem value="stopped">Stopped</SelectItem>
             <SelectItem value="partial">Partial</SelectItem>
             <SelectItem value="failed">Failed</SelectItem>
             <SelectItem value="rolled_back">Rolled Back</SelectItem>
@@ -415,12 +411,6 @@ export function DeploymentsPage() {
                 </TableHead>
                 <TableHead>Container</TableHead>
                 <TableHead>
-                  <Button variant="ghost" onClick={() => handleSort('deployment_type')} className="h-8 px-2 hover:bg-surface-2">
-                    Type
-                    <SortIcon column="deployment_type" />
-                  </Button>
-                </TableHead>
-                <TableHead>
                   <Button variant="ghost" onClick={() => handleSort('status')} className="h-8 px-2 hover:bg-surface-2">
                     Status
                     <SortIcon column="status" />
@@ -446,10 +436,10 @@ export function DeploymentsPage() {
               )}
 
               {deployments?.map((deployment) => (
-                <TableRow key={deployment.id} data-testid={`deployment-${deployment.name}`}>
+                <TableRow key={deployment.id} data-testid={`deployment-${deployment.stack_name}`}>
                     {/* Name */}
                   <TableCell className="font-medium">
-                    {deployment.name}
+                    {deployment.stack_name}
                   </TableCell>
 
                   {/* Host (clickable) */}
@@ -503,9 +493,6 @@ export function DeploymentsPage() {
                       </span>
                     )}
                   </TableCell>
-
-                  {/* Type */}
-                  <TableCell className="capitalize">{deployment.deployment_type}</TableCell>
 
                   {/* Status */}
                   <TableCell>
@@ -572,7 +559,7 @@ export function DeploymentsPage() {
                           variant="ghost"
                           size="sm"
                           onClick={() => handleEdit(deployment)}
-                          data-testid={`edit-deployment-${deployment.name}`}
+                          data-testid={`edit-deployment-${deployment.stack_name}`}
                           title="Edit"
                         >
                           <Edit className="h-4 w-4" />
@@ -582,7 +569,7 @@ export function DeploymentsPage() {
                           size="sm"
                           onClick={() => handleExecute(deployment)}
                           disabled={executeDeployment.isPending}
-                          data-testid={`execute-deployment-${deployment.name}`}
+                          data-testid={`execute-deployment-${deployment.stack_name}`}
                         >
                           <Play className="h-4 w-4 mr-1" />
                           Execute
@@ -595,7 +582,7 @@ export function DeploymentsPage() {
                           variant="ghost"
                           size="sm"
                           onClick={() => handleEdit(deployment)}
-                          data-testid={`edit-deployment-${deployment.name}`}
+                          data-testid={`edit-deployment-${deployment.stack_name}`}
                           title="Edit and retry"
                         >
                           <Edit className="h-4 w-4" />
@@ -605,7 +592,7 @@ export function DeploymentsPage() {
                           size="sm"
                           onClick={() => handleExecute(deployment)}
                           disabled={executeDeployment.isPending}
-                          data-testid={`execute-deployment-${deployment.name}`}
+                          data-testid={`execute-deployment-${deployment.stack_name}`}
                         >
                           <Play className="h-4 w-4 mr-1" />
                           Retry
@@ -618,7 +605,7 @@ export function DeploymentsPage() {
                         variant="ghost"
                         size="sm"
                         onClick={() => handleEdit(deployment)}
-                        data-testid={`edit-deployment-${deployment.name}`}
+                        data-testid={`edit-deployment-${deployment.stack_name}`}
                         title="Edit stack"
                       >
                         <Edit className="h-4 w-4" />
@@ -632,21 +619,11 @@ export function DeploymentsPage() {
                           size="sm"
                           onClick={() => handleRedeploy(deployment)}
                           disabled={redeployDeployment.isPending}
-                          data-testid={`redeploy-deployment-${deployment.name}`}
+                          data-testid={`redeploy-deployment-${deployment.stack_name}`}
                           title="Redeploy - pull latest images and recreate containers"
                         >
                           <RefreshCw className="h-4 w-4 mr-1" />
                           Redeploy
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleSaveAsTemplate(deployment)}
-                          data-testid="save-as-template"
-                          title="Save as New Template"
-                        >
-                          <Bookmark className="h-4 w-4 mr-1" />
-                          Save as New Template
                         </Button>
                       </>
                     )}
@@ -658,7 +635,7 @@ export function DeploymentsPage() {
                         onClick={() => handleDelete(deployment)}
                         disabled={deleteDeployment.isPending}
                         title="Delete"
-                        data-testid={`delete-deployment-${deployment.name}`}
+                        data-testid={`delete-deployment-${deployment.stack_name}`}
                       >
                         <Trash2 className="h-4 w-4 text-destructive" />
                       </Button>
@@ -694,7 +671,7 @@ export function DeploymentsPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Deployment</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete deployment "<strong>{deploymentToDelete?.name}</strong>"?
+              Are you sure you want to delete deployment "<strong>{deploymentToDelete?.stack_name}</strong>"?
               This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -716,7 +693,7 @@ export function DeploymentsPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Redeploy Stack</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to redeploy "<strong>{deploymentToRedeploy?.name}</strong>"?
+              Are you sure you want to redeploy "<strong>{deploymentToRedeploy?.stack_name}</strong>"?
               <br /><br />
               This will:
               <ul className="list-disc list-inside mt-2 space-y-1">
@@ -734,13 +711,6 @@ export function DeploymentsPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-
-      {/* Save as Template Dialog */}
-      <SaveAsTemplateDialog
-        deployment={deploymentToSave}
-        isOpen={!!deploymentToSave}
-        onClose={() => setDeploymentToSave(null)}
-      />
 
       {/* Import Stack Modal */}
       <ImportStackModal
@@ -812,9 +782,19 @@ function StatusBadge({ status }: { status: DeploymentStatus }) {
       icon: <XCircle className="h-3 w-3" />,
       label: 'Rolled Back',
     },
+    stopped: {
+      variant: 'secondary',
+      icon: <AlertCircle className="h-3 w-3" />,
+      label: 'Stopped',
+    },
   }
 
-  const { variant, icon, label } = variants[status]
+  // Fallback for unknown statuses (future-proofing)
+  const { variant, icon, label } = variants[status] ?? {
+    variant: 'outline' as const,
+    icon: <AlertCircle className="h-3 w-3" />,
+    label: status,
+  }
 
   return (
     <Badge variant={variant} className="gap-1">

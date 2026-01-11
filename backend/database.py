@@ -974,50 +974,6 @@ class DeploymentContainer(Base):
     )
 
 
-class DeploymentTemplate(Base):
-    """
-    Saved deployment templates for reusable container configurations.
-
-    Allows users to save and reuse container configurations as templates.
-    Templates are categorized for organization (e.g., 'web', 'database', 'monitoring').
-
-    Template Variables:
-        Templates can include variables like ${PORT} that are substituted at deployment time.
-        Variables are defined in the 'variables' JSON field with default values and types.
-
-    Template Structure (template_definition):
-        Single container (deployment_type='container'):
-            {"container": {"image": "nginx:latest", "ports": {"80/tcp": "${PORT}"}, ...}}
-
-        Stack (deployment_type='stack'):
-            {
-                "services": {
-                    "web": {"image": "nginx:latest", ...},
-                    "db": {"image": "postgres:15", ...}
-                }
-            }
-    """
-    __tablename__ = "deployment_templates"
-
-    id = Column(String, primary_key=True)  # e.g., 'tpl_nginx_001'
-    name = Column(String, nullable=False, unique=True)
-    category = Column(String, nullable=True)  # e.g., 'web', 'database', 'monitoring'
-    description = Column(Text, nullable=True)
-    deployment_type = Column(String, nullable=False)  # 'container' | 'stack'
-    template_definition = Column(Text, nullable=False)  # JSON: container/stack configuration with variables
-    variables = Column(Text, nullable=True)  # JSON: {"PORT": {"default": 8080, "type": "integer", "description": "..."}}
-    is_builtin = Column(Boolean, default=False, nullable=False)  # Built-in vs user-created template
-    created_at = Column(DateTime, default=utcnow, nullable=False)
-    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
-
-    # Indexes
-    __table_args__ = (
-        Index('idx_deployment_template_name', 'name'),
-        Index('idx_deployment_template_category', 'category'),
-        {"sqlite_autoincrement": False},
-    )
-
-
 class DeploymentMetadata(Base):
     """
     Deployment metadata for containers created via deployments.

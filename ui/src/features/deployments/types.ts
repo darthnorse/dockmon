@@ -19,6 +19,7 @@ export type DeploymentStatus =
   | 'partial'         // Some services running, others failed (terminal state)
   | 'failed'          // Failed during execution
   | 'rolled_back'     // Failed and rolled back (before commitment point)
+  | 'stopped'         // Imported stack with no running containers
 
 /**
  * Deployment type - container or docker-compose stack
@@ -224,50 +225,6 @@ export interface StackDefinition {
 }
 
 /**
- * Deployment template for reusable configurations
- * Matches backend API response from template_manager._template_to_dict()
- */
-export interface DeploymentTemplate {
-  id: string                     // Template ID (tpl_<12chars>)
-  name: string                   // Template name (unique)
-  category: string | null        // Category (e.g., 'web-servers', 'databases')
-  description: string | null     // User-friendly description
-  deployment_type: string        // 'container' or 'stack'
-
-  // Template definition with variable placeholders ${VAR_NAME}
-  template_definition: DeploymentDefinition | StackDefinition
-
-  // Variable definitions (backend format: dict of var_name -> var_config)
-  variables: Record<string, TemplateVariableConfig>
-
-  // System vs user templates
-  is_builtin: boolean            // Built-in templates cannot be edited/deleted
-
-  // Timestamps
-  created_at: string             // ISO timestamp with 'Z' suffix
-  updated_at: string | null      // ISO timestamp with 'Z' suffix
-}
-
-/**
- * Template variable configuration (backend format)
- * Used in DeploymentTemplate.variables
- */
-export interface TemplateVariableConfig {
-  description?: string           // Optional description for users
-  default?: string | number      // Optional default value
-  required?: boolean             // Whether variable must be provided
-  type?: 'string' | 'integer' | 'boolean'  // Variable type
-}
-
-/**
- * Rendered template (after variable substitution)
- */
-export interface RenderedTemplate {
-  definition: DeploymentDefinition | StackDefinition
-  missing_variables: string[]   // Variables that weren't provided
-}
-
-/**
  * Security validation result from backend
  */
 export interface SecurityValidation {
@@ -381,37 +338,6 @@ export type DeploymentWebSocketEvent =
   | DeploymentCompletedEvent
   | DeploymentFailedEvent
   | DeploymentRolledBackEvent
-
-/**
- * API request to create a template (matches backend TemplateCreate Pydantic model)
- * @deprecated v2.2.7+ - Use Stacks API instead
- */
-export interface CreateTemplateRequest {
-  name: string
-  deployment_type: string  // 'container' or 'stack'
-  template_definition: DeploymentDefinition | StackDefinition
-  category?: string | null
-  description?: string | null
-  variables?: Record<string, TemplateVariableConfig> | null
-}
-
-/**
- * API request to update a template (matches backend TemplateUpdate Pydantic model)
- */
-export interface UpdateTemplateRequest {
-  name?: string | null
-  category?: string | null
-  description?: string | null
-  template_definition?: DeploymentDefinition | StackDefinition | null
-  variables?: Record<string, TemplateVariableConfig> | null
-}
-
-/**
- * API request to render a template (matches backend TemplateRenderRequest Pydantic model)
- */
-export interface RenderTemplateRequest {
-  values: Record<string, any>  // Variable name → value (string, number, boolean)
-}
 
 /**
  * API query filters for deployments list

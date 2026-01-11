@@ -66,30 +66,32 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
         try {
           yaml.load(value)
           return { valid: true, error: null }
-        } catch (firstErr: any) {
+        } catch (firstErr: unknown) {
+          const firstErrMsg = firstErr instanceof Error ? firstErr.message : String(firstErr)
           // If parsing failed with indentation error, try auto-fix
-          if (firstErr.message?.includes('bad indentation') ||
-              firstErr.message?.includes('expected <block end>')) {
+          if (firstErrMsg.includes('bad indentation') ||
+              firstErrMsg.includes('expected <block end>')) {
             const fixedYaml = autoFixYamlIndentation(value)
 
             if (fixedYaml) {
               try {
                 yaml.load(fixedYaml)
                 return { valid: true, error: null }
-              } catch (secondErr: any) {
-                return { valid: false, error: firstErr.message }
+              } catch {
+                return { valid: false, error: firstErrMsg }
               }
             }
           }
-          return { valid: false, error: firstErr.message }
+          return { valid: false, error: firstErrMsg }
         }
       } else {
         // Validate JSON
         JSON.parse(value)
         return { valid: true, error: null }
       }
-    } catch (err: any) {
-      return { valid: false, error: err.message || 'Invalid format' }
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : 'Invalid format'
+      return { valid: false, error: errMsg }
     }
   }
 
@@ -101,7 +103,7 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
 
     try {
       if (type === 'stack') {
-        let contentToFormat = value
+        const contentToFormat = value
 
         // First attempt: Parse as-is
         try {
@@ -114,10 +116,11 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
           })
 
           return formatted
-        } catch (firstErr: any) {
+        } catch (firstErr: unknown) {
+          const firstErrMsg = firstErr instanceof Error ? firstErr.message : String(firstErr)
           // If parsing failed with indentation error, try auto-fix
-          if (firstErr.message?.includes('bad indentation') ||
-              firstErr.message?.includes('expected <block end>')) {
+          if (firstErrMsg.includes('bad indentation') ||
+              firstErrMsg.includes('expected <block end>')) {
             const fixedYaml = autoFixYamlIndentation(contentToFormat)
 
             if (fixedYaml) {
@@ -131,7 +134,7 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
                 })
 
                 return formatted
-              } catch (secondErr: any) {
+              } catch {
                 return null
               }
             }
@@ -144,7 +147,7 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
         const formatted = JSON.stringify(parsed, null, 2)
         return formatted
       }
-    } catch (err: any) {
+    } catch {
       return null
     }
   }
@@ -277,8 +280,9 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
         // Check for common YAML indentation errors
         try {
           yaml.load(value)
-        } catch (err: any) {
-          if (err.message?.includes('bad indentation')) {
+        } catch (err: unknown) {
+          const errMsg = err instanceof Error ? err.message : String(err)
+          if (errMsg.includes('bad indentation')) {
             helpfulMessage += '\n\nTip: Root-level keys (services, volumes, networks) must have NO indentation (column 0).'
           }
         }

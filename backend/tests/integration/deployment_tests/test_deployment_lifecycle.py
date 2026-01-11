@@ -14,7 +14,7 @@ import pytest
 from datetime import datetime, timezone
 import uuid
 
-from database import Deployment, DeploymentContainer, DeploymentTemplate, DeploymentMetadata
+from database import Deployment, DeploymentContainer, DeploymentMetadata
 from tests.conftest import create_composite_key
 
 
@@ -381,123 +381,6 @@ class TestDeploymentContainerRelationship:
         ).all()
 
         assert len(links) == 0
-
-
-# =============================================================================
-# Deployment Template Tests
-# =============================================================================
-
-@pytest.mark.integration
-class TestDeploymentTemplates:
-    """Test deployment template CRUD and usage"""
-
-    def test_create_deployment_template(
-        self,
-        db_session
-    ):
-        """Test creating a deployment template"""
-        # Act: Create template
-        template = DeploymentTemplate(
-            id=str(uuid.uuid4()),
-            name='nginx-template',
-            category='web',
-            description='Basic Nginx web server',
-            deployment_type='container',
-            template_definition='{"image": "nginx:latest", "ports": {"80/tcp": "${PORT}"}}',
-            variables='{"PORT": {"default": 8080, "type": "integer"}}',
-            is_builtin=False,
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc)
-        )
-        db_session.add(template)
-        db_session.commit()
-
-        # Assert: Template persisted
-        retrieved = db_session.query(DeploymentTemplate).filter_by(
-            name='nginx-template'
-        ).first()
-
-        assert retrieved is not None
-        assert retrieved.category == 'web'
-        assert retrieved.deployment_type == 'container'
-        assert '${PORT}' in retrieved.template_definition
-
-
-    def test_template_unique_name_constraint(
-        self,
-        db_session
-    ):
-        """Test that template names must be unique"""
-        # Arrange: Create first template
-        template1 = DeploymentTemplate(
-            id=str(uuid.uuid4()),
-            name='unique-template',
-            deployment_type='container',
-            template_definition='{"image": "nginx"}',
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc)
-        )
-        db_session.add(template1)
-        db_session.commit()
-
-        # Act: Try to create second template with same name
-        template2 = DeploymentTemplate(
-            id=str(uuid.uuid4()),
-            name='unique-template',  # Same name!
-            deployment_type='container',
-            template_definition='{"image": "redis"}',
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc)
-        )
-        db_session.add(template2)
-
-        # Assert: Should raise IntegrityError
-        with pytest.raises(Exception):  # UniqueConstraint violation
-            db_session.commit()
-
-
-    def test_builtin_vs_user_templates(
-        self,
-        db_session
-    ):
-        """Test distinguishing between builtin and user-created templates"""
-        # Arrange: Create builtin template
-        builtin = DeploymentTemplate(
-            id=str(uuid.uuid4()),
-            name='builtin-nginx',
-            deployment_type='container',
-            template_definition='{"image": "nginx"}',
-            is_builtin=True,
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc)
-        )
-        db_session.add(builtin)
-
-        # Create user template
-        user = DeploymentTemplate(
-            id=str(uuid.uuid4()),
-            name='user-custom',
-            deployment_type='container',
-            template_definition='{"image": "custom"}',
-            is_builtin=False,
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc)
-        )
-        db_session.add(user)
-        db_session.commit()
-
-        # Assert: Can filter by builtin flag
-        builtin_templates = db_session.query(DeploymentTemplate).filter_by(
-            is_builtin=True
-        ).all()
-        assert len(builtin_templates) == 1
-        assert builtin_templates[0].name == 'builtin-nginx'
-
-        user_templates = db_session.query(DeploymentTemplate).filter_by(
-            is_builtin=False
-        ).all()
-        assert len(user_templates) == 1
-        assert user_templates[0].name == 'user-custom'
 
 
 # =============================================================================

@@ -184,6 +184,20 @@ class TestPathSafety:
         with pytest.raises(ValueError, match="escapes"):
             validate_path_safety(path)
 
+    def test_reject_symlink(self, temp_stacks_dir):
+        """Should reject symlinks to prevent TOCTOU attacks"""
+        # Create a real directory
+        real_dir = temp_stacks_dir / "real"
+        real_dir.mkdir()
+
+        # Create a symlink to it
+        symlink_path = temp_stacks_dir / "symlink"
+        symlink_path.symlink_to(real_dir)
+
+        # Should reject the symlink
+        with pytest.raises(ValueError, match="[Ss]ymlink"):
+            validate_path_safety(symlink_path)
+
 
 class TestGetStackPath:
     """Test stack path resolution"""

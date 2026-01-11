@@ -7,7 +7,7 @@ Handles operations that require both filesystem and database changes.
 import logging
 from typing import List, Optional
 
-from sqlalchemy import func, text
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from database import Deployment

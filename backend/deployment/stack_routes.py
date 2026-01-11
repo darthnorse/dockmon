@@ -14,8 +14,9 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 
 from database import DatabaseManager
-from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_scope
+from auth.api_key_auth import get_current_user_or_api_key as get_current_user
 from deployment import stack_service
+from security.rate_limiting import rate_limit_stacks
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +128,7 @@ async def get_stack(name: str, user=Depends(get_current_user)):
     return StackResponse.from_stack_info(stack)
 
 
-@router.post("", response_model=StackResponse, status_code=201)
+@router.post("", response_model=StackResponse, status_code=201, dependencies=[rate_limit_stacks])
 async def create_stack(request: StackCreate, user=Depends(get_current_user)):
     """
     Create a new stack.
@@ -149,7 +150,7 @@ async def create_stack(request: StackCreate, user=Depends(get_current_user)):
     return StackResponse.from_stack_info(stack)
 
 
-@router.put("/{name}", response_model=StackResponse)
+@router.put("/{name}", response_model=StackResponse, dependencies=[rate_limit_stacks])
 async def update_stack(name: str, request: StackUpdate, user=Depends(get_current_user)):
     """
     Update a stack's content.
@@ -176,7 +177,7 @@ async def update_stack(name: str, request: StackUpdate, user=Depends(get_current
     return StackResponse.from_stack_info(stack)
 
 
-@router.put("/{name}/rename", response_model=StackResponse)
+@router.put("/{name}/rename", response_model=StackResponse, dependencies=[rate_limit_stacks])
 async def rename_stack(name: str, request: StackRename, user=Depends(get_current_user)):
     """
     Rename a stack.
@@ -197,7 +198,7 @@ async def rename_stack(name: str, request: StackRename, user=Depends(get_current
     return StackResponse.from_stack_info(stack)
 
 
-@router.delete("/{name}", status_code=204)
+@router.delete("/{name}", status_code=204, dependencies=[rate_limit_stacks])
 async def delete_stack(name: str, user=Depends(get_current_user)):
     """
     Delete a stack.
@@ -217,7 +218,7 @@ async def delete_stack(name: str, user=Depends(get_current_user)):
     logger.info(f"User {user.username} deleted stack '{name}'")
 
 
-@router.post("/{name}/copy", response_model=StackResponse, status_code=201)
+@router.post("/{name}/copy", response_model=StackResponse, status_code=201, dependencies=[rate_limit_stacks])
 async def copy_stack_endpoint(name: str, request: StackCopy, user=Depends(get_current_user)):
     """
     Copy a stack to a new name.

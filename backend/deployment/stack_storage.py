@@ -197,9 +197,10 @@ async def _atomic_write_file(target_path: Path, content: str) -> None:
     try:
         async with aiofiles.open(fd, 'w', closefd=True) as f:
             await f.write(content)
-        Path(temp_path).rename(target_path)
+        # Use asyncio.to_thread to avoid blocking on slow filesystems (NFS)
+        await asyncio.to_thread(Path(temp_path).rename, target_path)
     except Exception:
-        Path(temp_path).unlink(missing_ok=True)
+        await asyncio.to_thread(Path(temp_path).unlink, True)  # missing_ok=True
         raise
 
 
@@ -242,8 +243,12 @@ async def write_stack(
     env_path = stack_path / ".env"
     if env_content and env_content.strip():
         await _atomic_write_file(env_path, env_content)
-    elif env_path.exists():
-        env_path.unlink()  # Remove empty .env
+    else:
+        # Remove .env if it exists and new content is empty
+        def _remove_env_if_exists():
+            if env_path.exists():
+                env_path.unlink()
+        await asyncio.to_thread(_remove_env_if_exists)
 
     logger.debug(f"Wrote stack '{name}' to {stack_path}")
 

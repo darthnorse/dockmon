@@ -844,7 +844,7 @@ export function ImportStackModal({
             <ul className="list-disc list-inside space-y-1">
               {createdDeployments.map((d) => (
                 <li key={d.id}>
-                  <span className="font-medium">{d.name}</span> on{' '}
+                  <span className="font-medium">{d.stack_name}</span> on{' '}
                   {d.host_name || d.host_id}
                 </li>
               ))}

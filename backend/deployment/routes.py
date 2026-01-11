@@ -1,25 +1,25 @@
 """
-Deployment API routes for DockMon v2.1
+Deployment API routes for DockMon v2.2.7+
 
 Provides REST endpoints for:
-- Creating and executing container/stack deployments
-- Managing deployment templates
+- Creating and executing stack deployments
 - Tracking deployment progress
+
+Note: Template management has been replaced by the Stacks API (see stack_routes.py)
 """
 
-import json
 import logging
 import os
 import uuid
 import yaml
 from datetime import datetime, timezone
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy.orm import Session
 
-from database import Deployment, DeploymentTemplate, DatabaseManager, GlobalSettings, DeploymentMetadata, DockerHostDB
-from deployment import DeploymentExecutor, TemplateManager, SecurityException
+from database import Deployment, DatabaseManager, DeploymentMetadata, DockerHostDB
+from deployment import DeploymentExecutor
 from deployment import stack_storage
 from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_scope
 from utils.keys import parse_composite_key
@@ -30,7 +30,6 @@ logger = logging.getLogger(__name__)
 
 # Create router
 router = APIRouter(prefix="/api/deployments", tags=["deployments"])
-template_router = APIRouter(prefix="/api/templates", tags=["templates"])
 
 
 # ==================== Request/Response Models ====================
@@ -89,44 +88,6 @@ class DeploymentResponse(BaseModel):
     container_ids: Optional[List[str]] = None  # List of SHORT container IDs (12 chars) from deployment_metadata
 
 
-class TemplateCreate(BaseModel):
-    """Create template request."""
-    name: str = Field(..., description="Template name (must be unique)")
-    deployment_type: str = Field(..., description="Type: 'container' or 'stack'")
-    template_definition: Dict[str, Any] = Field(
-        ...,
-        description="Template definition with optional variables like ${VAR_NAME}"
-    )
-    category: Optional[str] = Field(None, description="Category for organization (e.g., 'media', 'networking')")
-    description: Optional[str] = Field(None, description="Human-readable description of what this template does")
-    variables: Optional[Dict[str, Any]] = Field(
-        None,
-        description="Variable definitions with defaults. Example: {'APP_PORT': '8080', 'APP_IMAGE': 'nginx:alpine'}"
-    )
-
-
-class TemplateUpdate(BaseModel):
-    """Update template request."""
-    name: Optional[str] = None
-    category: Optional[str] = None
-    description: Optional[str] = None
-    template_definition: Optional[Dict[str, Any]] = None
-    variables: Optional[Dict[str, Any]] = None
-
-
-class TemplateRenderRequest(BaseModel):
-    """Render template request."""
-    values: Dict[str, Any] = Field(
-        ...,
-        description="Variable values to substitute. Example: {'APP_PORT': '3000', 'APP_IMAGE': 'nginx:1.25'}"
-    )
-
-
-class SaveAsTemplateRequest(BaseModel):
-    """Request to save deployment as reusable template."""
-    name: str = Field(..., description="Template name (must be unique)")
-    category: Optional[str] = Field(None, description="Category for organization")
-    description: Optional[str] = Field(None, description="Template description")
 
 
 class ExecuteDeploymentRequest(BaseModel):
@@ -216,7 +177,6 @@ class ReadComposeFileResponse(BaseModel):
 
 # These will be set by main.py during startup
 _deployment_executor: Optional[DeploymentExecutor] = None
-_template_manager: Optional[TemplateManager] = None
 _database_manager: Optional[DatabaseManager] = None
 _docker_monitor = None  # DockerMonitor instance
 
@@ -225,12 +185,6 @@ def set_deployment_executor(executor: DeploymentExecutor):
     """Set deployment executor instance (called from main.py)."""
     global _deployment_executor
     _deployment_executor = executor
-
-
-def set_template_manager(manager: TemplateManager):
-    """Set template manager instance (called from main.py)."""
-    global _template_manager
-    _template_manager = manager
 
 
 def set_database_manager(db: DatabaseManager):
@@ -244,13 +198,6 @@ def get_deployment_executor() -> DeploymentExecutor:
     if _deployment_executor is None:
         raise RuntimeError("DeploymentExecutor not initialized")
     return _deployment_executor
-
-
-def get_template_manager() -> TemplateManager:
-    """Get template manager (dependency)."""
-    if _template_manager is None:
-        raise RuntimeError("TemplateManager not initialized")
-    return _template_manager
 
 
 def get_database_manager() -> DatabaseManager:
@@ -606,94 +553,6 @@ async def delete_deployment(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/{deployment_id}/save-as-template", status_code=200, dependencies=[Depends(require_scope("write"))])
-async def save_deployment_as_template(
-    deployment_id: str,
-    request: SaveAsTemplateRequest,
-    current_user=Depends(get_current_user),
-):
-    """
-    Convert a deployment into a reusable template.
-
-    DEPRECATED in v2.2.7: Use the Stacks API instead. Stacks are the new
-    way to manage reusable compose configurations.
-
-    Requirements:
-    - Deployment must exist
-    - Template name must be unique
-    """
-    try:
-        db = get_database_manager()
-
-        with db.get_session() as session:
-            # Fetch deployment
-            deployment = session.query(Deployment).filter_by(id=deployment_id).first()
-
-            if not deployment:
-                raise HTTPException(status_code=404, detail="Deployment not found")
-
-            # Check for duplicate template name
-            existing = session.query(DeploymentTemplate).filter_by(name=request.name).first()
-            if existing:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"Template with name '{request.name}' already exists"
-                )
-
-            # Read compose content from filesystem (v2.2.7+)
-            try:
-                compose_yaml, env_content = await stack_storage.read_stack(deployment.stack_name)
-            except FileNotFoundError:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Stack '{deployment.stack_name}' not found on filesystem"
-                )
-
-            # Build definition JSON for template
-            definition = json.dumps({
-                'compose_yaml': compose_yaml,
-                'env_content': env_content,
-            })
-
-            # Generate template ID
-            template_id = str(uuid.uuid4())
-
-            # Use provided description or generate default
-            description = request.description or f"Template created from stack '{deployment.stack_name}'"
-
-            # Create template from deployment config
-            template = DeploymentTemplate(
-                id=template_id,
-                name=request.name,
-                category=request.category,
-                description=description,
-                deployment_type='stack',  # v2.2.7+: everything is a stack
-                template_definition=definition,
-                variables=None,
-                is_builtin=False,
-                created_at=datetime.now(timezone.utc),
-                updated_at=datetime.now(timezone.utc),
-            )
-
-            session.add(template)
-            session.commit()
-
-            logger.info(f"Created template '{template.name}' from stack '{deployment.stack_name}'")
-
-            return {
-                "id": template.id,
-                "name": template.name,
-                "category": template.category,
-                "deployment_type": 'stack'
-            }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to save deployment as template: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 # ==================== Import Stack Endpoints ====================
 
 @router.get("/known-stacks", response_model=List[KnownStack])
@@ -950,11 +809,12 @@ def _is_path_safe(path: str) -> bool:
         return False
 
     # Block system directories (consistent with agent's scan.go)
+    # /etc is blocked entirely to prevent access to sensitive config files
     blocked_prefixes = [
         '/proc', '/sys', '/dev', '/run', '/boot',
         '/bin', '/sbin', '/lib', '/lib64',
         '/usr/bin', '/usr/sbin', '/usr/lib',
-        '/etc/passwd', '/etc/shadow', '/etc/sudoers',
+        '/etc',  # Block all of /etc, not just specific files
     ]
     for prefix in blocked_prefixes:
         if path == prefix or path.startswith(prefix + '/'):
@@ -1326,166 +1186,6 @@ def _link_containers_for_host(
         linked_count += 1
 
     return linked_count
-
-
-# ==================== Template Endpoints ====================
-
-@template_router.post("", status_code=201)
-async def create_template(
-    request: TemplateCreate,
-    current_user=Depends(get_current_user),
-    manager: TemplateManager = Depends(get_template_manager)
-):
-    """Create a new deployment template."""
-    try:
-        template_id = manager.create_template(
-            name=request.name,
-            deployment_type=request.deployment_type,
-            template_definition=request.template_definition,
-            category=request.category,
-            description=request.description,
-            variables=request.variables,
-        )
-
-        template = manager.get_template(template_id)
-        return template
-
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Failed to create template: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@template_router.get("")
-async def list_templates(
-    category: Optional[str] = None,
-    deployment_type: Optional[str] = None,
-    include_builtin: bool = True,
-    current_user=Depends(get_current_user),
-    manager: TemplateManager = Depends(get_template_manager)
-):
-    """List deployment templates with optional filters."""
-    try:
-        templates = manager.list_templates(
-            category=category,
-            deployment_type=deployment_type,
-            include_builtin=include_builtin
-        )
-        return templates
-
-    except Exception as e:
-        logger.error(f"Failed to list templates: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@template_router.get("/{template_id}")
-async def get_template(
-    template_id: str,
-    current_user=Depends(get_current_user),
-    manager: TemplateManager = Depends(get_template_manager)
-):
-    """Get template by ID."""
-    try:
-        template = manager.get_template(template_id)
-
-        if not template:
-            raise HTTPException(status_code=404, detail="Template not found")
-
-        return template
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get template: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@template_router.put("/{template_id}")
-async def update_template(
-    template_id: str,
-    request: TemplateUpdate,
-    current_user=Depends(get_current_user),
-    manager: TemplateManager = Depends(get_template_manager)
-):
-    """Update template fields."""
-    try:
-        success = manager.update_template(
-            template_id=template_id,
-            name=request.name,
-            category=request.category,
-            description=request.description,
-            template_definition=request.template_definition,
-            variables=request.variables,
-        )
-
-        if not success:
-            raise HTTPException(status_code=404, detail="Template not found")
-
-        template = manager.get_template(template_id)
-        return template
-
-    except RuntimeError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to update template: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@template_router.delete("/{template_id}")
-async def delete_template(
-    template_id: str,
-    current_user=Depends(get_current_user),
-    manager: TemplateManager = Depends(get_template_manager)
-):
-    """Delete a template."""
-    try:
-        success = manager.delete_template(template_id)
-
-        if not success:
-            raise HTTPException(status_code=404, detail="Template not found")
-
-        logger.info(f"Deleted template {template_id}")
-
-        return {"success": True, "message": "Template deleted"}
-
-    except RuntimeError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to delete template: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@template_router.post("/{template_id}/render")
-async def render_template(
-    template_id: str,
-    request: TemplateRenderRequest,
-    current_user=Depends(get_current_user),
-    manager: TemplateManager = Depends(get_template_manager)
-):
-    """
-    Render template with variable substitution.
-
-    Replaces ${VAR_NAME} placeholders with provided values.
-    Falls back to default values if not provided.
-
-    Returns rendered container/stack configuration ready for deployment.
-    """
-    try:
-        rendered = manager.render_template(template_id, request.values)
-        return rendered
-
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Failed to render template: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ==================== Helper Functions ====================

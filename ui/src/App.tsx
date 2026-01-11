@@ -28,7 +28,6 @@ import { ContainerLogsPage } from '@/features/logs/ContainerLogsPage'
 import { SettingsPage } from '@/features/settings/SettingsPage'
 import { ChangePasswordModal } from '@/features/auth/ChangePasswordModal'
 import { DeploymentsPage } from '@/features/deployments/DeploymentsPage'
-import { TemplatesPage } from '@/features/deployments/TemplatesPage'
 import { StacksPage } from '@/features/deployments/StacksPage'
 import { QuickActionPage } from '@/features/quick-action/QuickActionPage'
 import { AppLayout } from '@/components/layout/AppLayout'
@@ -121,7 +120,6 @@ function AppRoutes() {
         <Route path="/containers" element={<ContainersPage />} />
         <Route path="/deployments" element={<DeploymentsPage />} />
         <Route path="/stacks" element={<StacksPage />} />
-        <Route path="/templates" element={<TemplatesPage />} />
         <Route path="/hosts" element={<HostsPage />} />
         <Route path="/logs" element={<ContainerLogsPage />} />
         <Route path="/events" element={<EventsPage />} />

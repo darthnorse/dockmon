@@ -11,7 +11,6 @@ import type {
   Deployment,
   DeploymentFilters,
   CreateDeploymentRequest,
-  DeploymentType,
   KnownStack,
   ImportDeploymentRequest,
   ImportDeploymentResponse,
@@ -83,13 +82,11 @@ export function useCreateDeployment() {
 
   return useMutation({
     mutationFn: async (request: CreateDeploymentRequest) => {
-      // Transform frontend request to match backend API schema
+      // v2.2.7+: Deployments reference stacks by name
       const backendRequest = {
-        name: request.name,
+        stack_name: request.stack_name,
         host_id: request.host_id,
-        deployment_type: request.type,  // Backend expects 'deployment_type' not 'type'
-        definition: request.definition,
-        rollback_on_failure: true,  // Default to true
+        rollback_on_failure: request.rollback_on_failure ?? true,
       }
 
       const response = await fetch(`${API_BASE}/deployments`, {
@@ -191,8 +188,11 @@ export function useRedeployDeployment() {
 }
 
 /**
- * Update a deployment's definition.
+ * Update a deployment's target stack or host (v2.2.7+).
  * Allowed in: 'planning', 'failed', 'rolled_back', 'partial', or 'running' states.
+ *
+ * Note: To update compose content, use PUT /api/stacks/{name} instead.
+ * This endpoint only changes which stack or host a deployment references.
  */
 export function useUpdateDeployment() {
   const queryClient = useQueryClient()
@@ -200,20 +200,15 @@ export function useUpdateDeployment() {
   return useMutation({
     mutationFn: async ({
       deploymentId,
-      name,
-      type,
+      stack_name,
       host_id,
-      definition
     }: {
-      deploymentId: string;
-      name?: string;
-      type?: DeploymentType;
-      host_id?: string;
-      definition: any
+      deploymentId: string
+      stack_name?: string
+      host_id?: string
     }) => {
-      const body: any = { definition }
-      if (name) body.name = name
-      if (type) body.deployment_type = type
+      const body: { stack_name?: string; host_id?: string } = {}
+      if (stack_name) body.stack_name = stack_name
       if (host_id) body.host_id = host_id
 
       const response = await fetch(`${API_BASE}/deployments/${deploymentId}`, {
@@ -271,51 +266,6 @@ export function useDeleteDeployment() {
     },
     onError: (error: Error) => {
       toast.error(`Failed to delete deployment: ${error.message}`)
-    },
-  })
-}
-
-// Save as Template mutation
-interface SaveAsTemplateRequest {
-  deploymentId: string
-  name: string
-  category: string | null
-  description: string | null
-}
-
-export function useSaveAsTemplate() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: async (request: SaveAsTemplateRequest) => {
-      const response = await fetch(
-        `${API_BASE}/deployments/${request.deploymentId}/save-as-template`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify({
-            name: request.name,
-            category: request.category,
-            description: request.description,
-          }),
-        }
-      )
-
-      if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.detail || 'Failed to save template')
-      }
-
-      return response.json()
-    },
-    onSuccess: () => {
-      // Invalidate templates cache to show new template
-      queryClient.invalidateQueries({ queryKey: ['templates'] })
-      toast.success('Template created successfully')
-    },
-    onError: (error: Error) => {
-      toast.error(`Failed to save template: ${error.message}`)
     },
   })
 }

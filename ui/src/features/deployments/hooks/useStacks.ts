@@ -166,6 +166,9 @@ export function useDeleteStack() {
 
 /**
  * Rename a stack
+ *
+ * Renames the stack directory on the filesystem and updates all
+ * deployment references in the database atomically.
  */
 export function useRenameStack() {
   const queryClient = useQueryClient()

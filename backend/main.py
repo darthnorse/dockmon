@@ -4375,3 +4375,183 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
         # Clean up rate limiter tracking
         ws_rate_limiter.cleanup_connection(connection_id)
         logger.debug(f"WebSocket cleanup completed for {connection_id}")
+
+
+@app.websocket("/ws/shell/{host_id}/{container_id}")
+async def websocket_shell_endpoint(
+    websocket: WebSocket,
+    host_id: str,
+    container_id: str,
+    session_id: Optional[str] = Cookie(None)
+):
+    """
+    WebSocket endpoint for interactive container shell access.
+
+    Provides bidirectional communication for terminal I/O using Docker exec API.
+    Only available for agent-based hosts.
+
+    Path Parameters:
+        host_id: Docker host ID
+        container_id: Container ID to exec into
+
+    WebSocket Messages:
+        - Binary data: Terminal input/output
+        - JSON text: Control messages (e.g., {"type": "resize", "cols": 80, "rows": 24})
+    """
+    # Authenticate before accepting connection
+    if not session_id:
+        logger.warning("Shell WebSocket connection attempted without session cookie")
+        await websocket.close(code=1008, reason="Authentication required")
+        return
+
+    # Validate session using v2 auth
+    from auth.cookie_sessions import cookie_session_manager
+    client_ip = websocket.client.host if websocket.client else "unknown"
+    session_data = cookie_session_manager.validate_session(session_id, client_ip)
+
+    if not session_data:
+        logger.warning(f"Shell WebSocket connection with invalid session from {client_ip}")
+        await websocket.close(code=1008, reason="Invalid or expired session")
+        return
+
+    # Validate host exists
+    host = monitor.hosts.get(host_id)
+    if not host:
+        await websocket.close(code=1008, reason="Host not found")
+        return
+
+    # Get Docker client for the host
+    client = monitor.clients.get(host_id)
+    if not client:
+        await websocket.close(code=1008, reason="Host not connected")
+        return
+
+    # Validate container exists and is running
+    try:
+        container = await async_docker_call(client.containers.get, container_id)
+        if container.status != 'running':
+            await websocket.close(code=1008, reason="Container is not running")
+            return
+    except docker.errors.NotFound:
+        await websocket.close(code=1008, reason="Container not found")
+        return
+    except Exception as e:
+        logger.error(f"Error accessing container {container_id}: {e}")
+        await websocket.close(code=1011, reason="Failed to access container")
+        return
+
+    # Accept WebSocket connection
+    await websocket.accept()
+    logger.info(f"Shell session started for container {container_id[:12]} by user {session_data.get('username')}")
+
+    exec_id = None
+    docker_socket = None
+
+    try:
+        # Create exec instance
+        exec_instance = await async_docker_call(
+            client.api.exec_create,
+            container.id,
+            cmd=['/bin/sh', '-c', 'if command -v bash >/dev/null 2>&1; then exec bash; else exec sh; fi'],
+            stdin=True,
+            stdout=True,
+            stderr=True,
+            tty=True,
+            environment={"TERM": "xterm-256color"}
+        )
+        exec_id = exec_instance['Id']
+
+        # Start exec with socket
+        docker_socket = await async_docker_call(
+            client.api.exec_start,
+            exec_id,
+            socket=True,
+            tty=True
+        )
+
+        # Get the underlying socket
+        sock = docker_socket._sock
+
+        # Set socket timeout to prevent blocking forever if Docker hangs
+        sock.settimeout(30.0)
+
+        async def read_from_docker():
+            """Read from Docker socket and send to WebSocket"""
+            loop = asyncio.get_running_loop()
+            try:
+                while True:
+                    # Read from Docker socket in thread pool
+                    data = await loop.run_in_executor(None, sock.recv, 4096)
+                    if not data:
+                        break
+                    await websocket.send_bytes(data)
+            except Exception as e:
+                logger.debug(f"Docker read ended: {e}")
+
+        async def write_to_docker():
+            """Read from WebSocket and write to Docker socket"""
+            loop = asyncio.get_running_loop()
+            try:
+                while True:
+                    message = await websocket.receive()
+
+                    if message['type'] == 'websocket.disconnect':
+                        break
+
+                    if 'bytes' in message:
+                        # Terminal input - send to Docker
+                        await loop.run_in_executor(None, sock.sendall, message['bytes'])
+                    elif 'text' in message:
+                        # Control message (resize)
+                        try:
+                            data = json.loads(message['text'])
+                            if data.get('type') == 'resize':
+                                cols = data.get('cols', 80)
+                                rows = data.get('rows', 24)
+                                await async_docker_call(
+                                    client.api.exec_resize,
+                                    exec_id,
+                                    height=rows,
+                                    width=cols
+                                )
+                        except json.JSONDecodeError:
+                            pass
+            except WebSocketDisconnect:
+                logger.debug("WebSocket disconnected")
+            except Exception as e:
+                logger.debug(f"WebSocket write ended: {e}")
+
+        # Run both tasks concurrently
+        read_task = asyncio.create_task(read_from_docker())
+        write_task = asyncio.create_task(write_to_docker())
+
+        # Wait for either task to complete (connection closed)
+        done, pending = await asyncio.wait(
+            [read_task, write_task],
+            return_when=asyncio.FIRST_COMPLETED
+        )
+
+        # Cancel remaining tasks
+        for task in pending:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    except WebSocketDisconnect:
+        logger.info(f"Shell session disconnected for container {container_id[:12]}")
+    except Exception as e:
+        logger.error(f"Shell session error for container {container_id[:12]}: {e}", exc_info=True)
+        try:
+            await websocket.close(code=1011, reason="Shell session error")
+        except Exception:
+            pass
+    finally:
+        # Cleanup
+        if docker_socket:
+            try:
+                docker_socket.close()
+            except Exception:
+                pass
+        logger.info(f"Shell session ended for container {container_id[:12]}")

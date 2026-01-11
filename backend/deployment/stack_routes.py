@@ -145,7 +145,7 @@ async def create_stack(request: StackCreate, user=Depends(get_current_user)):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    logger.info(f"User {user.username} created stack '{request.name}'")
+    logger.info(f"User {user["username"]} created stack '{request.name}'")
 
     return StackResponse.from_stack_info(stack)
 
@@ -172,7 +172,7 @@ async def update_stack(name: str, request: StackUpdate, user=Depends(get_current
     with db.get_session() as session:
         stack.deployment_count = stack_service.get_deployment_count(session, name)
 
-    logger.info(f"User {user.username} updated stack '{name}'")
+    logger.info(f"User {user["username"]} updated stack '{name}'")
 
     return StackResponse.from_stack_info(stack)
 
@@ -193,7 +193,7 @@ async def rename_stack(name: str, request: StackRename, user=Depends(get_current
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
-    logger.info(f"User {user.username} renamed stack '{name}' to '{request.new_name}'")
+    logger.info(f"User {user["username"]} renamed stack '{name}' to '{request.new_name}'")
 
     return StackResponse.from_stack_info(stack)
 
@@ -215,7 +215,7 @@ async def delete_stack(name: str, user=Depends(get_current_user)):
             # Stack has active deployments
             raise HTTPException(status_code=409, detail=str(e))
 
-    logger.info(f"User {user.username} deleted stack '{name}'")
+    logger.info(f"User {user["username"]} deleted stack '{name}'")
 
 
 @router.post("/{name}/copy", response_model=StackResponse, status_code=201, dependencies=[rate_limit_stacks])
@@ -234,6 +234,6 @@ async def copy_stack_endpoint(name: str, request: StackCopy, user=Depends(get_cu
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    logger.info(f"User {user.username} copied stack '{name}' to '{request.dest_name}'")
+    logger.info(f"User {user["username"]} copied stack '{name}' to '{request.dest_name}'")
 
     return StackResponse.from_stack_info(stack)

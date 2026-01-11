@@ -19,9 +19,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { useStack, useCreateStack, useUpdateStack } from '../hooks/useStacks'
+import { FolderOpen } from 'lucide-react'
+import { useStack, useCreateStack, useUpdateStack, useRenameStack } from '../hooks/useStacks'
 import { ConfigurationEditor, ConfigurationEditorHandle } from './ConfigurationEditor'
 import { validateStackName, MAX_STACK_NAME_LENGTH } from '../types'
+
+// Base path for stack storage (matches backend STACKS_DIR)
+const STACKS_BASE_PATH = '/app/data/stacks'
 
 interface StackFormProps {
   isOpen: boolean
@@ -32,6 +36,7 @@ interface StackFormProps {
 export function StackForm({ isOpen, onClose, stackName }: StackFormProps) {
   const createStack = useCreateStack()
   const updateStack = useUpdateStack()
+  const renameStack = useRenameStack()
 
   // Fetch existing stack data in edit mode
   const { data: existingStack, isLoading: isLoadingStack } = useStack(stackName || null)
@@ -40,6 +45,7 @@ export function StackForm({ isOpen, onClose, stackName }: StackFormProps) {
 
   // Form state
   const [name, setName] = useState('')
+  const [originalName, setOriginalName] = useState('') // Track original name for rename detection
   const [composeYaml, setComposeYaml] = useState('')
   const [envContent, setEnvContent] = useState('')
 
@@ -49,10 +55,14 @@ export function StackForm({ isOpen, onClose, stackName }: StackFormProps) {
   // Ref to ConfigurationEditor for validation
   const configEditorRef = useRef<ConfigurationEditorHandle>(null)
 
+  // Detect if name has been changed (for rename operation)
+  const nameChanged = isEditMode && name !== originalName && name.trim() !== ''
+
   // Load stack data in edit mode
   useEffect(() => {
     if (existingStack && isOpen) {
       setName(existingStack.name)
+      setOriginalName(existingStack.name)
       setComposeYaml(existingStack.compose_yaml || '')
       setEnvContent(existingStack.env_content || '')
     }
@@ -62,6 +72,7 @@ export function StackForm({ isOpen, onClose, stackName }: StackFormProps) {
   useEffect(() => {
     if (!isOpen) {
       setName('')
+      setOriginalName('')
       setComposeYaml('')
       setEnvContent('')
       setErrors({})
@@ -106,9 +117,19 @@ export function StackForm({ isOpen, onClose, stackName }: StackFormProps) {
 
     try {
       if (isEditMode && stackName) {
-        // Update existing stack
+        // If name changed, rename first
+        const targetName = nameChanged ? name.trim() : stackName
+
+        if (nameChanged) {
+          await renameStack.mutateAsync({
+            name: stackName,
+            new_name: name.trim(),
+          })
+        }
+
+        // Update stack content (use new name if renamed)
         await updateStack.mutateAsync({
-          name: stackName,
+          name: targetName,
           compose_yaml: composeYaml,
           env_content: envContent.trim() || null,
         })
@@ -153,6 +174,20 @@ export function StackForm({ isOpen, onClose, stackName }: StackFormProps) {
           </DialogDescription>
         </DialogHeader>
 
+        {/* File path info - only shown in edit mode */}
+        {isEditMode && stackName && (
+          <div className="flex items-start gap-2 p-3 bg-muted/50 rounded-md text-xs text-muted-foreground">
+            <FolderOpen className="h-4 w-4 mt-0.5 shrink-0" />
+            <div className="font-mono">
+              <div>
+                Files stored in: <span className="text-foreground">{STACKS_BASE_PATH}/{nameChanged ? name : stackName}/</span>
+                {nameChanged && <span className="text-amber-500 ml-1">(will be renamed)</span>}
+              </div>
+              <div className="mt-0.5 opacity-75">compose.yaml{envContent ? ', .env' : ''}</div>
+            </div>
+          </div>
+        )}
+
         {isLoading ? (
           <div className="py-8 text-center text-muted-foreground">
             Loading stack...
@@ -169,7 +204,6 @@ export function StackForm({ isOpen, onClose, stackName }: StackFormProps) {
                 onChange={(e) => setName(e.target.value.toLowerCase())}
                 placeholder="e.g., my-web-app"
                 className={`font-mono ${errors.name ? 'border-destructive' : ''}`}
-                disabled={isEditMode} // Can't rename via this form
                 maxLength={MAX_STACK_NAME_LENGTH}
               />
               {errors.name && (
@@ -221,9 +255,9 @@ export function StackForm({ isOpen, onClose, stackName }: StackFormProps) {
               </Button>
               <Button
                 type="submit"
-                disabled={createStack.isPending || updateStack.isPending}
+                disabled={createStack.isPending || updateStack.isPending || renameStack.isPending}
               >
-                {createStack.isPending || updateStack.isPending
+                {createStack.isPending || updateStack.isPending || renameStack.isPending
                   ? 'Saving...'
                   : isEditMode ? 'Save Changes' : 'Create Stack'}
               </Button>

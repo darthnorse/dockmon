@@ -119,6 +119,8 @@ class ImportDeploymentRequest(BaseModel):
     env_content: Optional[str] = Field(None, description="Optional .env file content")
     project_name: Optional[str] = Field(None, description="Stack name (required if compose has no name: field)")
     host_id: Optional[str] = Field(None, description="Host ID for import when no running containers found")
+    overwrite_stack: bool = Field(False, description="If true, overwrite existing stack content")
+    use_existing_stack: bool = Field(False, description="If true, skip stack creation (use existing stack on disk)")
 
 
 class ImportDeploymentResponse(BaseModel):
@@ -127,6 +129,8 @@ class ImportDeploymentResponse(BaseModel):
     deployments_created: List[DeploymentResponse]
     requires_name_selection: bool = False
     known_stacks: Optional[List[KnownStack]] = None
+    stack_exists: bool = False
+    existing_stack_name: Optional[str] = None
 
 
 # ==================== Scan Compose Dirs Models ====================
@@ -692,15 +696,48 @@ async def import_deployment(
                 detail=f"No running containers found for stack '{project_name}'. Provide host_id to import anyway."
             )
 
-    # 5. Create stack on filesystem if it doesn't exist (v2.2.7+)
+    # 5. Create or update stack on filesystem (v2.2.7+)
     stack_name = stack_storage.sanitize_stack_name(project_name)
-    if not await stack_storage.stack_exists(stack_name):
+    stack_already_exists = await stack_storage.stack_exists(stack_name)
+
+    if stack_already_exists and not request.overwrite_stack and not request.use_existing_stack:
+        # Stack exists and user hasn't made a choice - ask them
+        return ImportDeploymentResponse(
+            success=False,
+            deployments_created=[],
+            requires_name_selection=False,
+            stack_exists=True,
+            existing_stack_name=stack_name,
+        )
+
+    if request.use_existing_stack:
+        # User chose to use existing stack - don't touch files
+        if not stack_already_exists:
+            # Edge case: stack was deleted between check and import
+            await stack_storage.write_stack(
+                name=stack_name,
+                compose_yaml=request.compose_content,
+                env_content=request.env_content,
+            )
+            logger.info(f"User '{current_user['username']}' created stack '{stack_name}' (use_existing_stack but stack was missing)")
+        else:
+            logger.info(f"User '{current_user['username']}' using existing stack '{stack_name}' on filesystem")
+    elif not stack_already_exists:
+        # Create new stack
         await stack_storage.write_stack(
             name=stack_name,
             compose_yaml=request.compose_content,
             env_content=request.env_content,
         )
-        logger.info(f"Created stack '{stack_name}' on filesystem during import")
+        logger.info(f"User '{current_user['username']}' created stack '{stack_name}' on filesystem during import")
+    elif request.overwrite_stack:
+        # Overwrite existing stack content
+        await stack_storage.write_stack(
+            name=stack_name,
+            compose_yaml=request.compose_content,
+            env_content=request.env_content,
+        )
+        logger.info(f"User '{current_user['username']}' overwrote existing stack '{stack_name}' on filesystem during import")
 
     # 6. Create deployment for each host
     db = get_database_manager()

@@ -4,13 +4,13 @@
  * Browse, create, edit, and delete stacks (filesystem-based compose configurations).
  * - List stacks with deployment counts
  * - Create new stacks with compose YAML and optional .env
- * - Edit existing stacks
- * - Rename and copy stacks
+ * - Edit existing stacks (including rename)
+ * - Copy stacks
  * - Delete stacks (only if no deployments reference them)
  */
 
 import { useState } from 'react'
-import { Plus, Edit, Trash2, Copy, AlertCircle, ArrowLeft, FileText, PenLine } from 'lucide-react'
+import { Plus, Edit, Trash2, Copy, AlertCircle, ArrowLeft, FileText } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import {
@@ -43,7 +43,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { toast } from 'sonner'
-import { useStacks, useDeleteStack, useCopyStack, useRenameStack } from './hooks/useStacks'
+import { useStacks, useDeleteStack, useCopyStack } from './hooks/useStacks'
 import { StackForm } from './components/StackForm'
 import { validateStackName, MAX_STACK_NAME_LENGTH } from './types'
 import type { StackListItem } from './types'
@@ -55,13 +55,10 @@ export function StacksPage() {
   const [stackToDelete, setStackToDelete] = useState<StackListItem | null>(null)
   const [stackToCopy, setStackToCopy] = useState<StackListItem | null>(null)
   const [copyDestName, setCopyDestName] = useState('')
-  const [stackToRename, setStackToRename] = useState<StackListItem | null>(null)
-  const [renameNewName, setRenameNewName] = useState('')
 
   const { data: stacks, isLoading, error } = useStacks()
   const deleteStack = useDeleteStack()
   const copyStack = useCopyStack()
-  const renameStack = useRenameStack()
 
   const handleEdit = (stack: StackListItem) => {
     setEditingStackName(stack.name)
@@ -106,42 +103,6 @@ export function StacksPage() {
         onSuccess: () => {
           setStackToCopy(null)
           setCopyDestName('')
-        },
-      }
-    )
-  }
-
-  const handleRename = (stack: StackListItem) => {
-    setStackToRename(stack)
-    setRenameNewName(stack.name)
-  }
-
-  const confirmRename = () => {
-    const trimmedName = renameNewName.trim()
-    if (!stackToRename || !trimmedName) {
-      return
-    }
-
-    // Don't rename to the same name
-    if (trimmedName === stackToRename.name) {
-      setStackToRename(null)
-      setRenameNewName('')
-      return
-    }
-
-    // Validate name format using shared utility
-    const validationError = validateStackName(trimmedName)
-    if (validationError) {
-      toast.error(validationError)
-      return
-    }
-
-    renameStack.mutate(
-      { name: stackToRename.name, new_name: trimmedName },
-      {
-        onSuccess: () => {
-          setStackToRename(null)
-          setRenameNewName('')
         },
       }
     )
@@ -244,20 +205,10 @@ export function StacksPage() {
                       variant="ghost"
                       size="sm"
                       onClick={() => handleEdit(stack)}
-                      title="Edit content"
+                      title="Edit stack"
                       data-testid={`edit-stack-${stack.name}`}
                     >
                       <Edit className="h-4 w-4" />
-                    </Button>
-
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handleRename(stack)}
-                      title="Rename"
-                      data-testid={`rename-stack-${stack.name}`}
-                    >
-                      <PenLine className="h-4 w-4" />
                     </Button>
 
                     <Button
@@ -359,52 +310,6 @@ export function StacksPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Rename Dialog */}
-      <Dialog open={!!stackToRename} onOpenChange={(open) => !open && setStackToRename(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Rename Stack</DialogTitle>
-            <DialogDescription>
-              Rename "<strong>{stackToRename?.name}</strong>" to a new name.
-              {stackToRename && stackToRename.deployment_count > 0 && (
-                <span className="block mt-2 text-amber-600">
-                  This stack has {stackToRename.deployment_count} deployment{stackToRename.deployment_count !== 1 ? 's' : ''}.
-                  All deployment references will be updated automatically.
-                </span>
-              )}
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label htmlFor="rename-new-name">New Stack Name</Label>
-              <Input
-                id="rename-new-name"
-                value={renameNewName}
-                onChange={(e) => setRenameNewName(e.target.value)}
-                placeholder="my-stack"
-                className="font-mono"
-                maxLength={MAX_STACK_NAME_LENGTH}
-              />
-              <p className="text-xs text-muted-foreground">
-                Lowercase letters, numbers, hyphens, and underscores only
-              </p>
-            </div>
-          </div>
-
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setStackToRename(null)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={confirmRename}
-              disabled={!renameNewName.trim() || renameNewName.trim() === stackToRename?.name || renameStack.isPending}
-            >
-              {renameStack.isPending ? 'Renaming...' : 'Rename Stack'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }

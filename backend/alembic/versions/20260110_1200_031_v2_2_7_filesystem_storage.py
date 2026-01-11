@@ -236,11 +236,8 @@ def upgrade():
     # Update unique constraint: (host_id, name) -> (stack_name, host_id)
     # This allows same stack to be deployed to multiple hosts
     with op.batch_alter_table('deployments', schema=None) as batch_op:
-        # Try to drop old constraint (may have different names depending on SQLite version)
-        try:
-            batch_op.drop_constraint('uq_deployments_host_name', type_='unique')
-        except Exception:
-            pass  # Constraint may not exist or have different name
+        # Drop old constraint (named uq_deployment_host_name in schema)
+        batch_op.drop_constraint('uq_deployment_host_name', type_='unique')
 
         # Create new constraint
         batch_op.create_unique_constraint(
@@ -250,6 +247,12 @@ def upgrade():
 
     # Drop templates table entirely
     op.drop_table('deployment_templates')
+
+    # Update app_version to 2.2.7
+    connection.execute(
+        sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id"),
+        {"version": "2.2.7", "id": 1}
+    )
 
     logger.info("Phase 2 complete: Schema updated")
     logger.info("Migration to filesystem storage complete!")

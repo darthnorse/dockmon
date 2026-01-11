@@ -60,7 +60,7 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-type ImportStep = 'input' | 'select-name' | 'success'
+type ImportStep = 'input' | 'select-name' | 'stack-exists' | 'success'
 type ImportMethod = 'paste' | 'browse'
 
 interface ImportStackModalProps {
@@ -97,6 +97,7 @@ export function ImportStackModal({
   // Common state
   const [selectedProjectName, setSelectedProjectName] = useState('')
   const [knownStacks, setKnownStacks] = useState<KnownStack[]>([])
+  const [existingStackName, setExistingStackName] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [createdDeployments, setCreatedDeployments] = useState<Deployment[]>([])
 
@@ -129,20 +130,20 @@ export function ImportStackModal({
   })
 
   // Generate dynamic help text based on selected host
-  const getScanHelpText = () => {
+  const getScanHelpText = (): string => {
     if (!selectedHostId) {
       return 'Select a host to scan for compose files.'
     }
     if (isLocalHost) {
       return 'Scanning localhost. Mount paths like /opt or /srv into the DockMon container for scanning to work.'
     }
-    if (isAgentHost) {
-      if (agentInfo?.is_container_mode) {
-        return 'Agent runs in a container. Mount paths into the agent container for scanning to work.'
-      }
-      return 'Agent runs as a system service. Filesystem scanning is available.'
+    if (!isAgentHost) {
+      return 'Select a host to scan for compose files.'
     }
-    return 'Select a host to scan for compose files.'
+    if (agentInfo?.is_container_mode) {
+      return 'Agent runs in a container. Mount paths into the agent container for scanning to work.'
+    }
+    return 'Agent runs as a system service. Filesystem scanning is available.'
   }
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -354,7 +355,7 @@ export function ImportStackModal({
     }
   }
 
-  const handleImport = async (projectName?: string) => {
+  const handleImport = async (options?: { projectName?: string; overwriteStack?: boolean; useExistingStack?: boolean }) => {
     if (!composeContent.trim()) {
       setError('Please provide compose file content')
       return
@@ -363,20 +364,20 @@ export function ImportStackModal({
     setError(null)
 
     try {
+      // Build request - only include optional fields when they have values
       const request: ImportDeploymentRequest = {
         compose_content: composeContent,
       }
-      if (envContent) {
-        request.env_content = envContent
-      }
-      if (projectName) {
-        request.project_name = projectName
-      }
+      if (envContent) request.env_content = envContent
+      if (options?.projectName) request.project_name = options.projectName
+      if (options?.overwriteStack) request.overwrite_stack = true
+      if (options?.useExistingStack) request.use_existing_stack = true
+
       // Pass host_id when importing from browse mode (for fallback import)
       if (method === 'browse' && selectedHostId) {
         request.host_id = selectedHostId
         // Also pass project_name from the selected file if available
-        if (selectedFilePath && !projectName) {
+        if (selectedFilePath && !options?.projectName) {
           const file = composeFiles.find((f) => f.path === selectedFilePath)
           if (file?.project_name) {
             request.project_name = file.project_name
@@ -386,7 +387,11 @@ export function ImportStackModal({
       const result: ImportDeploymentResponse =
         await importDeployment.mutateAsync(request)
 
-      if (result.requires_name_selection) {
+      if (result.stack_exists && result.existing_stack_name) {
+        // Stack already exists - ask user what to do
+        setExistingStackName(result.existing_stack_name)
+        setStep('stack-exists')
+      } else if (result.requires_name_selection) {
         // Compose file has no name: field - show selection UI
         setKnownStacks(result.known_stacks || [])
         setStep('select-name')
@@ -407,7 +412,7 @@ export function ImportStackModal({
       setError('Please select a stack name')
       return
     }
-    await handleImport(selectedProjectName)
+    await handleImport({ projectName: selectedProjectName })
   }
 
   const handleClose = () => {
@@ -431,6 +436,7 @@ export function ImportStackModal({
     setBatchImportProgress({ current: 0, total: 0 })
     setSelectedProjectName('')
     setKnownStacks([])
+    setExistingStackName(null)
     setError(null)
     setCreatedDeployments([])
   }
@@ -827,6 +833,70 @@ export function ImportStackModal({
                 disabled={importDeployment.isPending || !selectedProjectName}
               >
                 {importDeployment.isPending ? 'Importing...' : 'Import Stack'}
+              </Button>
+            </DialogFooter>
+          </div>
+        )}
+
+        {step === 'stack-exists' && existingStackName && (
+          <div className="space-y-4">
+            <Alert>
+              <AlertDescription>
+                A stack named <strong>"{existingStackName}"</strong> already exists on the filesystem.
+                What would you like to do?
+              </AlertDescription>
+            </Alert>
+
+            <div className="space-y-3">
+              <Button
+                variant="outline"
+                className="w-full justify-start h-auto py-3 gap-3"
+                onClick={() => handleImport({ useExistingStack: true })}
+                disabled={importDeployment.isPending}
+              >
+                {importDeployment.isPending && (
+                  <Loader2 className="h-4 w-4 animate-spin shrink-0" />
+                )}
+                <div className="text-left">
+                  <div className="font-medium">Use existing stack content</div>
+                  <div className="text-sm text-muted-foreground">
+                    Create deployment using the existing compose.yaml on disk
+                  </div>
+                </div>
+              </Button>
+
+              <Button
+                variant="outline"
+                className="w-full justify-start h-auto py-3 gap-3"
+                onClick={() => handleImport({ overwriteStack: true })}
+                disabled={importDeployment.isPending}
+              >
+                {importDeployment.isPending && (
+                  <Loader2 className="h-4 w-4 animate-spin shrink-0" />
+                )}
+                <div className="text-left">
+                  <div className="font-medium">Overwrite with new content</div>
+                  <div className="text-sm text-muted-foreground">
+                    Replace the existing stack files with your imported content
+                  </div>
+                </div>
+              </Button>
+            </div>
+
+            {error && (
+              <Alert variant="destructive">
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            )}
+
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setStep('input')}
+                disabled={importDeployment.isPending}
+              >
+                Back
               </Button>
             </DialogFooter>
           </div>

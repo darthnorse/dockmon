@@ -370,6 +370,8 @@ export interface ImportDeploymentRequest {
   env_content?: string
   project_name?: string
   host_id?: string
+  overwrite_stack?: boolean
+  use_existing_stack?: boolean
 }
 
 /**
@@ -380,6 +382,8 @@ export interface ImportDeploymentResponse {
   deployments_created: Deployment[]
   requires_name_selection: boolean
   known_stacks?: KnownStack[]
+  stack_exists?: boolean
+  existing_stack_name?: string
 }
 
 // ==================== Scan Compose Dirs Types ====================

@@ -84,6 +84,7 @@ from agent import handle_agent_websocket
 from agent.connection_manager import agent_connection_manager
 from packaging.version import parse as parse_version, InvalidVersion
 from deployment import routes as deployment_routes, DeploymentExecutor, TemplateManager
+from deployment import stack_routes
 
 # Configure logging
 setup_logging()
@@ -475,6 +476,7 @@ app.include_router(auth_v2_router)  # v2 cookie-based auth
 app.include_router(user_v2_router)  # v2 user preferences
 app.include_router(deployment_routes.router)  # v2.1 deployment endpoints
 app.include_router(deployment_routes.template_router)  # v2.1 template endpoints
+app.include_router(stack_routes.router)  # v2.2.7 stacks endpoints
 # app.include_router(alerts_router)  # MOVED: Registered after v2 rules routes
 
 # API key routes (v2.1.8+)

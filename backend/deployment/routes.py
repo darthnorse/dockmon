@@ -9,6 +9,7 @@ Provides REST endpoints for:
 
 import json
 import logging
+import os
 import uuid
 import yaml
 from datetime import datetime, timezone
@@ -17,10 +18,13 @@ from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy.orm import Session
 
-from database import Deployment, DeploymentTemplate, DatabaseManager, GlobalSettings, DeploymentMetadata
-from deployment import DeploymentExecutor, TemplateManager, SecurityException, SecurityValidator
+from database import Deployment, DeploymentTemplate, DatabaseManager, GlobalSettings, DeploymentMetadata, DockerHostDB
+from deployment import DeploymentExecutor, TemplateManager, SecurityException
+from deployment import stack_storage
 from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_scope
 from utils.keys import parse_composite_key
+from agent.command_executor import get_agent_command_executor, RetryPolicy
+from agent.manager import AgentManager
 
 logger = logging.getLogger(__name__)
 
@@ -32,14 +36,13 @@ template_router = APIRouter(prefix="/api/templates", tags=["templates"])
 # ==================== Request/Response Models ====================
 
 class DeploymentCreate(BaseModel):
-    """Create deployment request."""
+    """Create deployment request (v2.2.7+).
+
+    Creates a deployment for an existing stack. The stack must be created
+    first via POST /api/stacks before creating a deployment.
+    """
     host_id: str = Field(..., description="UUID of the Docker host to deploy to")
-    name: str = Field(..., description="Human-readable name for the deployment")
-    deployment_type: str = Field(..., description="Type of deployment: 'container' or 'stack'")
-    definition: Dict[str, Any] = Field(
-        ...,
-        description="Deployment configuration. For stacks: must include 'compose_yaml' field with Docker Compose YAML as string. For containers: include image, ports, volumes, etc."
-    )
+    stack_name: str = Field(..., description="Name of the stack to deploy (must exist in /api/stacks)")
     rollback_on_failure: bool = Field(
         True,
         description="Automatically rollback if deployment fails (default: true)"
@@ -49,11 +52,7 @@ class DeploymentCreate(BaseModel):
         json_schema_extra={
             "example": {
                 "host_id": "86a10392-2289-409f-899d-5f5c799086da",
-                "name": "my-nginx-stack",
-                "deployment_type": "stack",
-                "definition": {
-                    "compose_yaml": "services:\n  web:\n    image: nginx:alpine\n    ports:\n      - 80:80"
-                },
+                "stack_name": "my-nginx-stack",
                 "rollback_on_failure": True
             }
         }
@@ -61,19 +60,20 @@ class DeploymentCreate(BaseModel):
 
 
 class DeploymentUpdate(BaseModel):
-    """Update deployment request."""
-    definition: Dict[str, Any]
-    name: Optional[str] = None
-    deployment_type: Optional[str] = None
-    host_id: Optional[str] = None
+    """Update deployment request (v2.2.7+).
+
+    Note: To update compose content, use PUT /api/stacks/{name} instead.
+    This endpoint only allows changing the target stack or host.
+    """
+    stack_name: Optional[str] = Field(None, description="Change target stack (must exist)")
+    host_id: Optional[str] = Field(None, description="Change target host")
 
 
 class DeploymentResponse(BaseModel):
-    """Deployment response."""
+    """Deployment response (v2.2.7+)."""
     id: str
     host_id: str
-    name: str
-    deployment_type: str
+    stack_name: str  # References stack in /app/data/stacks/{stack_name}/
     status: str
     progress_percent: int
     current_stage: Optional[str]
@@ -84,7 +84,6 @@ class DeploymentResponse(BaseModel):
     created_by: Optional[str] = None  # Username who created deployment
     committed: bool
     rollback_on_failure: bool
-    definition: Optional[Dict[str, Any]] = None
     updated_at: Optional[str] = None
     host_name: Optional[str] = None
     container_ids: Optional[List[str]] = None  # List of SHORT container IDs (12 chars) from deployment_metadata
@@ -284,51 +283,30 @@ async def create_deployment(
     executor: DeploymentExecutor = Depends(get_deployment_executor)
 ):
     """
-    Create a new deployment.
+    Create a new deployment (v2.2.7+).
 
     Creates a deployment in 'planning' state. Call /deployments/{id}/execute to start it.
 
-    **For Stack Deployments (Docker Compose):**
-    - Set `deployment_type: "stack"`
-    - Include `compose_yaml` in definition with Docker Compose YAML as a string
-    - Use `\\n` for newlines in the YAML string
+    **Workflow:**
+    1. Create a stack first via POST /api/stacks (compose.yaml + optional .env)
+    2. Create a deployment referencing the stack via this endpoint
+    3. Execute the deployment via POST /deployments/{id}/execute
 
-    **Example - Simple Stack:**
+    **Example:**
     ```json
     {
-      "host_id": "your-host-id",
-      "name": "nginx-redis",
-      "deployment_type": "stack",
-      "definition": {
-        "compose_yaml": "services:\\n  web:\\n    image: nginx:alpine\\n  cache:\\n    image: redis:alpine"
-      }
+      "host_id": "86a10392-2289-409f-899d-5f5c799086da",
+      "stack_name": "my-nginx-stack",
+      "rollback_on_failure": true
     }
     ```
 
-    **Example - Stack with Variables:**
-    ```json
-    {
-      "definition": {
-        "compose_yaml": "services:\\n  app:\\n    image: ${APP_IMAGE}",
-        "variables": {
-          "APP_IMAGE": "nginx:1.25"
-        }
-      }
-    }
-    ```
-
-    **For Container Deployments:**
-    - Set `deployment_type: "container"`
-    - Include container config directly in definition (image, ports, volumes, etc.)
-
-    Security validation is performed before creation.
+    The stack must exist before creating a deployment.
     """
     try:
         deployment_id = await executor.create_deployment(
             host_id=request.host_id,
-            name=request.name,
-            deployment_type=request.deployment_type,
-            definition=request.definition,
+            stack_name=request.stack_name,
             user_id=current_user['user_id'],
             rollback_on_failure=request.rollback_on_failure,
             created_by=current_user['username'],
@@ -340,8 +318,6 @@ async def create_deployment(
             deployment = session.query(Deployment).filter_by(id=deployment_id).first()
             return _deployment_to_response(deployment)
 
-    except SecurityException as e:
-        raise HTTPException(status_code=400, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -519,14 +495,12 @@ async def update_deployment(
     current_user=Depends(get_current_user),
 ):
     """
-    Update a deployment's definition.
+    Update a deployment (v2.2.7+).
 
     Allowed in: 'planning', 'failed', 'rolled_back', 'partial', or 'running' states.
 
-    This allows users to:
-    - Review and modify deployment configuration before execution ('planning')
-    - Edit and retry failed deployments ('failed', 'rolled_back', 'partial')
-    - Edit running deployments and redeploy to apply changes ('running')
+    Note: To update compose content, use PUT /api/stacks/{name} instead.
+    This endpoint allows changing the target stack or host.
     """
     try:
         db = get_database_manager()
@@ -548,9 +522,6 @@ async def update_deployment(
                     detail=f"Cannot edit deployment in status '{deployment.status}'. Only {editable_statuses} deployments can be edited."
                 )
 
-            # NOTE: Security validation removed - will be performed during execution
-            # No need to validate on update since user is just editing configuration
-
             # If retrying a failed/rolled_back/partial deployment, reset error state and progress
             if deployment.status in ['failed', 'rolled_back', 'partial']:
                 deployment.status = 'planning'  # Reset to planning for retry
@@ -559,22 +530,25 @@ async def update_deployment(
                 logger.info(f"Deployment {deployment_id} being retried (was {deployment.status})")
 
             # Update fields if provided
-            if request.name is not None:
-                deployment.name = request.name
-            if request.deployment_type is not None:
-                deployment.deployment_type = request.deployment_type
+            if request.stack_name is not None:
+                # Validate new stack exists
+                if not await stack_storage.stack_exists(request.stack_name):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Stack '{request.stack_name}' not found"
+                    )
+                deployment.stack_name = request.stack_name
+
             if request.host_id is not None:
                 deployment.host_id = request.host_id
 
-            # Update definition and timestamp
-            deployment.definition = json.dumps(request.definition)
             deployment.updated_at = datetime.now(timezone.utc)
 
             # Commit changes
             session.commit()
             session.refresh(deployment)
 
-            logger.info(f"Deployment {deployment_id} updated (name={deployment.name}, type={deployment.deployment_type})")
+            logger.info(f"Deployment {deployment_id} updated (stack={deployment.stack_name})")
             return _deployment_to_response(deployment)
 
     except HTTPException:
@@ -639,24 +613,14 @@ async def save_deployment_as_template(
     current_user=Depends(get_current_user),
 ):
     """
-    Convert a successful deployment into a reusable template.
+    Convert a deployment into a reusable template.
 
-    This allows users to save working configurations as templates for future deployments.
+    DEPRECATED in v2.2.7: Use the Stacks API instead. Stacks are the new
+    way to manage reusable compose configurations.
 
     Requirements:
     - Deployment must exist
     - Template name must be unique
-
-    The endpoint:
-    1. Fetches the deployment
-    2. Extracts its configuration (definition JSON)
-    3. Creates a new template with the same deployment type and definition
-    4. Returns the created template ID
-
-    This enables the workflow:
-    1. User creates and tests a deployment
-    2. User saves it as template: POST /api/deployments/{id}/save-as-template
-    3. User can now deploy from template to other hosts
     """
     try:
         db = get_database_manager()
@@ -676,11 +640,26 @@ async def save_deployment_as_template(
                     detail=f"Template with name '{request.name}' already exists"
                 )
 
+            # Read compose content from filesystem (v2.2.7+)
+            try:
+                compose_yaml, env_content = await stack_storage.read_stack(deployment.stack_name)
+            except FileNotFoundError:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Stack '{deployment.stack_name}' not found on filesystem"
+                )
+
+            # Build definition JSON for template
+            definition = json.dumps({
+                'compose_yaml': compose_yaml,
+                'env_content': env_content,
+            })
+
             # Generate template ID
             template_id = str(uuid.uuid4())
 
             # Use provided description or generate default
-            description = request.description or f"Template created from deployment '{deployment.name}'"
+            description = request.description or f"Template created from stack '{deployment.stack_name}'"
 
             # Create template from deployment config
             template = DeploymentTemplate(
@@ -688,9 +667,9 @@ async def save_deployment_as_template(
                 name=request.name,
                 category=request.category,
                 description=description,
-                deployment_type=deployment.deployment_type,
-                template_definition=deployment.definition,
-                variables=None,  # TODO: Add variable extraction from definition
+                deployment_type='stack',  # v2.2.7+: everything is a stack
+                template_definition=definition,
+                variables=None,
                 is_builtin=False,
                 created_at=datetime.now(timezone.utc),
                 updated_at=datetime.now(timezone.utc),
@@ -699,13 +678,13 @@ async def save_deployment_as_template(
             session.add(template)
             session.commit()
 
-            logger.info(f"Created template '{template.name}' from deployment '{deployment.name}'")
+            logger.info(f"Created template '{template.name}' from stack '{deployment.stack_name}'")
 
             return {
                 "id": template.id,
                 "name": template.name,
                 "category": template.category,
-                "deployment_type": template.deployment_type
+                "deployment_type": 'stack'
             }
 
     except HTTPException:
@@ -854,37 +833,41 @@ async def import_deployment(
                 detail=f"No running containers found for stack '{project_name}'. Provide host_id to import anyway."
             )
 
-    # 5. Create deployment for each host
+    # 5. Create stack on filesystem if it doesn't exist (v2.2.7+)
+    stack_name = stack_storage.sanitize_stack_name(project_name)
+    if not await stack_storage.stack_exists(stack_name):
+        await stack_storage.write_stack(
+            name=stack_name,
+            compose_yaml=request.compose_content,
+            env_content=request.env_content,
+        )
+        logger.info(f"Created stack '{stack_name}' on filesystem during import")
+
+    # 6. Create deployment for each host
     db = get_database_manager()
     deployments_created = []
 
     with db.get_session() as session:
         for host_id, containers in hosts_with_stack.items():
-            # Check for duplicate deployment name on this host
+            # Check for duplicate deployment on this host (v2.2.7+: use stack_name)
             existing = session.query(Deployment).filter_by(
                 host_id=host_id,
-                name=project_name,
+                stack_name=stack_name,
                 user_id=user_id
             ).first()
             if existing:
-                logger.info(f"Deployment '{project_name}' already exists on host {host_id}, skipping")
+                logger.info(f"Deployment for stack '{stack_name}' already exists on host {host_id}, skipping")
                 continue
 
-            # Create Deployment record
+            # Create Deployment record (v2.2.7+: no definition, no deployment_type)
             deployment_id = str(uuid.uuid4())
-            definition = {
-                'compose_yaml': request.compose_content,
-                'env_content': request.env_content
-            }
 
             deployment = Deployment(
                 id=deployment_id,
                 host_id=host_id,
                 user_id=user_id,
-                name=project_name,
-                deployment_type='stack',
+                stack_name=stack_name,
                 status='stopped' if import_as_stopped else 'running',
-                definition=json.dumps(definition),
                 created_by=current_user['username'],
                 progress_percent=100,
                 committed=True,
@@ -904,7 +887,7 @@ async def import_deployment(
                     deployment_id=deployment_id
                 )
 
-            logger.info(f"Imported deployment '{project_name}' on host {host_id} with {containers_linked} containers (stopped={import_as_stopped})")
+            logger.info(f"Imported deployment for stack '{stack_name}' on host {host_id} with {containers_linked} containers (stopped={import_as_stopped})")
             deployments_created.append(deployment)
 
         session.commit()
@@ -937,8 +920,6 @@ async def scan_compose_dirs(
 
     Default paths scanned: /opt, /srv, /var/lib/docker/volumes, /home, /stacks, /docker
     """
-    from database import DockerHostDB
-
     # Validate host exists
     db = get_database_manager()
     with db.get_session() as session:
@@ -962,7 +943,6 @@ async def scan_compose_dirs(
 
 def _is_path_safe(path: str) -> bool:
     """Check if a path is safe to access (not a system directory)."""
-    import os
     # Normalize path to resolve .. and symlinks
     try:
         path = os.path.realpath(path)
@@ -984,9 +964,6 @@ def _is_path_safe(path: str) -> bool:
 
 async def _scan_local_dirs(request: Optional[ScanComposeDirsRequest]) -> ScanComposeDirsResponse:
     """Scan directories within the DockMon container for compose files."""
-    import os
-    from datetime import datetime, timezone
-
     # Default paths to scan
     default_paths = [
         "/opt",
@@ -1045,7 +1022,6 @@ async def _scan_local_dirs(request: Optional[ScanComposeDirsRequest]) -> ScanCom
                             project_name = os.path.basename(root)
                             services = []
                             try:
-                                import yaml
                                 with open(filepath, 'r') as f:
                                     content = yaml.safe_load(f)
                                     if content:
@@ -1062,7 +1038,7 @@ async def _scan_local_dirs(request: Optional[ScanComposeDirsRequest]) -> ScanCom
                                 project_name=project_name,
                                 services=services,
                                 size=stat.st_size,
-                                modified=modified.isoformat()
+                                modified=modified.isoformat() + 'Z'
                             ))
                         except (OSError, IOError):
                             continue
@@ -1075,9 +1051,6 @@ async def _scan_local_dirs(request: Optional[ScanComposeDirsRequest]) -> ScanCom
 
 async def _scan_agent_dirs(host_id: str, request: Optional[ScanComposeDirsRequest]) -> ScanComposeDirsResponse:
     """Scan directories on an agent host via WebSocket command."""
-    from agent.command_executor import get_agent_command_executor, RetryPolicy
-    from agent.manager import AgentManager
-
     # Get agent ID for this host
     agent_manager = AgentManager()
     agent_id = agent_manager.get_agent_for_host(host_id)
@@ -1158,8 +1131,6 @@ async def read_compose_file(
     Returns the compose file content and optional .env content if present
     in the same directory. Works with local and agent-based hosts.
     """
-    from database import DockerHostDB
-
     # Validate host exists
     db = get_database_manager()
     with db.get_session() as session:
@@ -1183,8 +1154,6 @@ async def read_compose_file(
 
 async def _read_local_file(request: ReadComposeFileRequest) -> ReadComposeFileResponse:
     """Read a compose file from the local filesystem (within DockMon container)."""
-    import os
-
     path = request.path
 
     # Security: Validate path is absolute
@@ -1255,9 +1224,6 @@ async def _read_local_file(request: ReadComposeFileRequest) -> ReadComposeFileRe
 
 async def _read_agent_file(host_id: str, request: ReadComposeFileRequest) -> ReadComposeFileResponse:
     """Read a compose file from an agent host via WebSocket command."""
-    from agent.command_executor import get_agent_command_executor, RetryPolicy
-    from agent.manager import AgentManager
-
     # Get agent ID for this host
     agent_manager = AgentManager()
     agent_id = agent_manager.get_agent_for_host(host_id)
@@ -1525,7 +1491,7 @@ async def render_template(
 # ==================== Helper Functions ====================
 
 def _deployment_to_response(deployment: Deployment, existing_session=None) -> DeploymentResponse:
-    """Convert deployment model to response.
+    """Convert deployment model to response (v2.2.7+).
 
     Args:
         deployment: The deployment model to convert
@@ -1557,8 +1523,7 @@ def _deployment_to_response(deployment: Deployment, existing_session=None) -> De
     return DeploymentResponse(
         id=deployment.id,
         host_id=deployment.host_id,
-        name=deployment.name,
-        deployment_type=deployment.deployment_type,
+        stack_name=deployment.stack_name,
         status=deployment.status,
         progress_percent=deployment.progress_percent,
         current_stage=deployment.current_stage,
@@ -1569,7 +1534,6 @@ def _deployment_to_response(deployment: Deployment, existing_session=None) -> De
         created_by=deployment.created_by,
         committed=deployment.committed,
         rollback_on_failure=deployment.rollback_on_failure,
-        definition=json.loads(deployment.definition) if deployment.definition else None,
         updated_at=deployment.updated_at.isoformat() + 'Z' if deployment.updated_at else None,
         host_name=deployment.host.name if deployment.host and deployment.host.name else None,
         container_ids=container_ids if container_ids else None,

@@ -305,12 +305,12 @@ export function DeploymentsPage() {
         <div className="flex gap-2 sm:gap-3 flex-wrap">
           <Button
             variant="outline"
-            onClick={() => navigate('/templates')}
+            onClick={() => navigate('/stacks')}
             className="gap-2"
-            data-testid="manage-templates-button"
+            data-testid="manage-stacks-button"
           >
             <Layers className="h-4 w-4" />
-            Templates
+            Stacks
           </Button>
 
           <Button

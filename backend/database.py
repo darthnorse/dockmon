@@ -861,14 +861,16 @@ class RegistryCredential(Base):
 
 class Deployment(Base):
     """
-    Deployment records for container lifecycle operations.
+    Deployment records for stack lifecycle operations (v2.2.7+).
 
-    Tracks container deployments and stacks with state machine support
-    and commitment point tracking for rollback safety.
+    Tracks stack deployments with state machine support and commitment point
+    tracking for rollback safety.
 
-    Deployment Types:
-        - container: Single container deployment
-        - stack: Multi-container stack deployment
+    v2.2.7 Changes:
+        - Compose content now stored on filesystem (/app/data/stacks/{stack_name}/)
+        - Renamed 'name' to 'stack_name' for clarity
+        - Removed 'definition' column (now on filesystem)
+        - Removed 'deployment_type' column (everything is a stack now)
 
     Status Flow (7-state machine):
         planning -> validating -> pulling_image -> creating -> starting -> running -> completed
@@ -893,16 +895,15 @@ class Deployment(Base):
         - id: Composite key format {host_id}:{deployment_short_id}
         - deployment_short_id: SHORT ID (12 chars), never full 64-char ID
         - Composite key prevents collisions across multiple hosts
+        - stack_name: References stack in /app/data/stacks/{stack_name}/
     """
     __tablename__ = "deployments"
 
     id = Column(String, primary_key=True)  # Composite: {host_id}:{deployment_short_id}
     host_id = Column(String, ForeignKey("docker_hosts.id", ondelete="CASCADE"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)  # User who created deployment (for authorization)
-    deployment_type = Column(String, nullable=False)  # 'container' | 'stack'
-    name = Column(String, nullable=False)
+    stack_name = Column(String, nullable=False)  # References stack in /app/data/stacks/{stack_name}/
     status = Column(String, nullable=False, default='planning')  # planning, validating, pulling_image, creating, starting, running, failed, rolled_back
-    definition = Column(Text, nullable=False)  # JSON: container/stack configuration
     error_message = Column(Text, nullable=True)
     progress_percent = Column(Integer, default=0, nullable=False)  # Deployment progress 0-100%
     current_stage = Column(Text, nullable=True)  # Current deployment stage (e.g., 'Pulling image', 'Creating container')
@@ -921,7 +922,7 @@ class Deployment(Base):
 
     # Indexes and constraints
     __table_args__ = (
-        UniqueConstraint('host_id', 'name', name='uq_deployment_host_name'),  # Unique name per host
+        UniqueConstraint('stack_name', 'host_id', name='uq_deployment_stack_host'),  # Same stack can be deployed to multiple hosts
         # Status must be one of the valid deployment states
         CheckConstraint(
             "status IN ('planning', 'validating', 'pulling_image', 'creating', 'starting', 'running', 'partial', 'failed', 'rolled_back')",

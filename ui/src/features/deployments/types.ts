@@ -1,8 +1,9 @@
 /**
- * Deployment Types - v2.1
+ * Deployment Types - v2.2.7
  *
- * Type definitions for container deployments and templates
- * Matches backend API response structure from deployment v2.1
+ * Type definitions for stacks and deployments
+ * Stacks are filesystem-based compose configurations (v2.2.7+)
+ * Deployments reference stacks by name
  */
 
 /**
@@ -21,22 +22,113 @@ export type DeploymentStatus =
 
 /**
  * Deployment type - container or docker-compose stack
+ * @deprecated v2.2.7+ - All deployments are stacks
  */
 export type DeploymentType = 'container' | 'stack'
 
+// ==================== Stack Types (v2.2.7+) ====================
+
 /**
- * Main deployment object returned by API
+ * Stack from the Stacks API (filesystem-based)
+ * GET /api/stacks/{name} returns full content
+ * GET /api/stacks returns list without content
+ */
+export interface Stack {
+  name: string                  // Stack name (lowercase alphanumeric, hyphens, underscores)
+  deployment_count: number      // Number of deployments using this stack
+  compose_yaml?: string         // Docker Compose YAML content (optional in list, present in detail)
+  env_content?: string | null   // Optional .env file content
+}
+
+/**
+ * Stack list item (without content) - for list view performance
+ */
+export interface StackListItem {
+  name: string
+  deployment_count: number
+}
+
+/**
+ * Request to create a new stack
+ */
+export interface CreateStackRequest {
+  name: string
+  compose_yaml: string
+  env_content?: string | null
+}
+
+/**
+ * Request to update a stack's content
+ */
+export interface UpdateStackRequest {
+  compose_yaml: string
+  env_content?: string | null
+}
+
+/**
+ * Request to rename a stack
+ */
+export interface RenameStackRequest {
+  new_name: string
+}
+
+/**
+ * Request to copy a stack
+ */
+export interface CopyStackRequest {
+  dest_name: string
+}
+
+// ==================== Stack Validation Utilities ====================
+
+/**
+ * Stack name validation pattern (must match backend)
+ * - Lowercase alphanumeric
+ * - Can contain hyphens and underscores
+ * - Must start with letter or number
+ */
+export const VALID_STACK_NAME_PATTERN = /^[a-z0-9][a-z0-9_-]*$/
+
+/**
+ * Maximum length for stack names
+ */
+export const MAX_STACK_NAME_LENGTH = 100
+
+/**
+ * Validate a stack name and return error message if invalid
+ * @param name - Stack name to validate
+ * @returns Error message if invalid, null if valid
+ */
+export function validateStackName(name: string): string | null {
+  const trimmed = name.trim()
+
+  if (!trimmed) {
+    return 'Stack name is required'
+  }
+
+  if (!VALID_STACK_NAME_PATTERN.test(trimmed)) {
+    return 'Stack name must be lowercase alphanumeric, starting with a letter or number'
+  }
+
+  if (trimmed.length > MAX_STACK_NAME_LENGTH) {
+    return `Stack name must be ${MAX_STACK_NAME_LENGTH} characters or less`
+  }
+
+  return null
+}
+
+// ==================== Deployment Types (v2.2.7+) ====================
+
+/**
+ * Main deployment object returned by API (v2.2.7+)
+ * Deployments reference stacks by name, content is on filesystem
  */
 export interface Deployment {
-  id: string                    // Composite key: {host_id}:{deployment_short_id}
-  name: string                  // User-friendly name (unique per host)
-  deployment_type: DeploymentType  // 'container' or 'stack' (backend field name)
-  status: DeploymentStatus      // Current state in state machine
+  id: string                    // Deployment UUID
   host_id: string               // UUID of target Docker host
   host_name?: string            // Optional: host display name
-
-  // Deployment definition (JSON structure)
-  definition: DeploymentDefinition | StackDefinition
+  stack_name: string            // References stack in /api/stacks/{stack_name}
+  status: DeploymentStatus      // Current state in state machine
 
   // Progress tracking
   progress_percent: number      // 0-100
@@ -46,16 +138,34 @@ export interface Deployment {
   // State machine metadata
   committed: boolean            // Whether commitment point was reached
   rollback_on_failure: boolean  // Auto-rollback on deployment failure
-  created_by?: string | null    // Username who created deployment (from design spec)
+  created_by?: string | null    // Username who created deployment
 
   // Container tracking
-  container_ids?: string[]      // SHORT container IDs (12 chars) for running deployments (from deployment_metadata)
+  container_ids?: string[]      // SHORT container IDs (12 chars) for running deployments
 
   // Timestamps
   created_at: string            // ISO timestamp with 'Z' suffix
-  updated_at: string | null     // ISO timestamp with 'Z' suffix, updated on each state change
-  started_at?: string | null    // ISO timestamp with 'Z' suffix when deployment execution started
-  completed_at: string | null   // ISO timestamp with 'Z' suffix when completed/failed
+  updated_at: string | null     // ISO timestamp with 'Z' suffix
+  started_at?: string | null    // ISO timestamp with 'Z' suffix
+  completed_at: string | null   // ISO timestamp with 'Z' suffix
+}
+
+/**
+ * API request to create a deployment (v2.2.7+)
+ * Stack must exist first via POST /api/stacks
+ */
+export interface CreateDeploymentRequest {
+  host_id: string
+  stack_name: string            // Must exist in /api/stacks
+  rollback_on_failure?: boolean // Default: true
+}
+
+/**
+ * API request to update a deployment (v2.2.7+)
+ */
+export interface UpdateDeploymentRequest {
+  stack_name?: string           // Change target stack
+  host_id?: string              // Change target host
 }
 
 /**
@@ -273,17 +383,8 @@ export type DeploymentWebSocketEvent =
   | DeploymentRolledBackEvent
 
 /**
- * API request to create a deployment
- */
-export interface CreateDeploymentRequest {
-  name: string
-  type: DeploymentType
-  host_id: string
-  definition: DeploymentDefinition | StackDefinition
-}
-
-/**
  * API request to create a template (matches backend TemplateCreate Pydantic model)
+ * @deprecated v2.2.7+ - Use Stacks API instead
  */
 export interface CreateTemplateRequest {
   name: string

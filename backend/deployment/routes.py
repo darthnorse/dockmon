@@ -21,6 +21,8 @@ from sqlalchemy.orm import Session
 from database import Deployment, DatabaseManager, DeploymentMetadata, DockerHostDB
 from deployment import DeploymentExecutor
 from deployment import stack_storage
+from deployment import stack_service
+from deployment.compose_generator import generate_compose_from_deployment, generate_compose_from_containers
 from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_scope
 from utils.keys import parse_composite_key
 from agent.command_executor import get_agent_command_executor, RetryPolicy
@@ -175,6 +177,52 @@ class ReadComposeFileResponse(BaseModel):
     content: Optional[str] = None
     env_content: Optional[str] = None
     error: Optional[str] = None
+
+
+# ==================== Orphan Detection Models ====================
+
+class OrphanedDeployment(BaseModel):
+    """An orphaned deployment (references missing stack)."""
+    id: str
+    host_id: str
+    host_name: Optional[str]
+    stack_name: str
+    status: str
+    container_ids: Optional[List[str]]
+
+
+class OrphanedDeploymentsResponse(BaseModel):
+    """Response with orphaned deployments."""
+    count: int
+    deployments: List[OrphanedDeployment]
+
+
+class RepairDeploymentRequest(BaseModel):
+    """Request to repair an orphaned deployment."""
+    action: str = Field(..., description="Repair action: 'reassign', 'delete', or 'recreate'")
+    new_stack_name: Optional[str] = Field(None, description="For reassign: existing stack to assign to")
+
+
+class ComposePreviewResponse(BaseModel):
+    """Preview of generated compose.yaml from containers."""
+    compose_yaml: str
+    services: List[str]
+    warnings: List[str]
+
+
+class GenerateFromContainersRequest(BaseModel):
+    """Request to generate compose.yaml from running containers."""
+    project_name: str = Field(..., description="Docker Compose project name (from container labels)")
+    host_id: str = Field(..., description="Host ID where containers are running")
+
+
+class RunningProject(BaseModel):
+    """A running Docker Compose project discovered from container labels."""
+    project_name: str
+    host_id: str
+    host_name: Optional[str]
+    container_count: int
+    services: List[str]
 
 
 # ==================== Dependency Injection ====================
@@ -605,6 +653,261 @@ async def get_known_stacks(
             stack.services.append(service)
 
     return list(stacks.values())
+
+
+# ==================== Orphan Detection Endpoints ====================
+
+@router.get("/orphaned", response_model=OrphanedDeploymentsResponse)
+async def get_orphaned_deployments(
+    current_user=Depends(get_current_user),
+):
+    """
+    Get deployments that reference stacks no longer on filesystem.
+
+    Used to show warning banner on Deployments page.
+    """
+    db = get_database_manager()
+    with db.get_session() as session:
+        orphaned = await stack_service.find_orphaned_deployments(
+            session, current_user['user_id']
+        )
+
+    return OrphanedDeploymentsResponse(
+        count=len(orphaned),
+        deployments=[OrphanedDeployment(**o.to_dict()) for o in orphaned],
+    )
+
+
+@router.get("/{deployment_id}/compose-preview", response_model=ComposePreviewResponse)
+async def preview_compose_from_containers(
+    deployment_id: str,
+    current_user=Depends(get_current_user),
+):
+    """
+    Preview compose.yaml that would be generated from deployment's containers.
+
+    Used before "Recreate from containers" to show what will be created.
+    """
+    db = get_database_manager()
+    monitor = get_docker_monitor()
+
+    with db.get_session() as session:
+        deployment = session.query(Deployment).filter_by(
+            id=deployment_id,
+            user_id=current_user['user_id']
+        ).first()
+
+        if not deployment:
+            raise HTTPException(status_code=404, detail="Deployment not found")
+
+        compose_yaml, warnings = await generate_compose_from_deployment(
+            deployment_id=deployment_id,
+            host_id=deployment.host_id,
+            session=session,
+            monitor=monitor,
+        )
+
+        # Parse services from generated YAML
+        compose_dict = yaml.safe_load(compose_yaml)
+        services = list(compose_dict.get("services", {}).keys())
+
+        return ComposePreviewResponse(
+            compose_yaml=compose_yaml,
+            services=services,
+            warnings=warnings,
+        )
+
+
+@router.post("/{deployment_id}/repair", response_model=DeploymentResponse, dependencies=[Depends(require_scope("write"))])
+async def repair_orphaned_deployment(
+    deployment_id: str,
+    request: RepairDeploymentRequest,
+    current_user=Depends(get_current_user),
+):
+    """
+    Repair an orphaned deployment.
+
+    Actions:
+    - reassign: Change stack_name to an existing stack
+    - delete: Remove deployment record from database
+    - recreate: Generate compose.yaml from running containers and create stack
+    """
+    db = get_database_manager()
+    monitor = get_docker_monitor()
+
+    with db.get_session() as session:
+        deployment = session.query(Deployment).filter_by(
+            id=deployment_id,
+            user_id=current_user['user_id']
+        ).first()
+
+        if not deployment:
+            raise HTTPException(status_code=404, detail="Deployment not found")
+
+        # Verify it's actually orphaned (stack doesn't exist)
+        if await stack_storage.stack_exists(deployment.stack_name):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Deployment is not orphaned - stack '{deployment.stack_name}' exists"
+            )
+
+        if request.action == "reassign":
+            if not request.new_stack_name:
+                raise HTTPException(status_code=400, detail="new_stack_name required for reassign")
+            if not await stack_storage.stack_exists(request.new_stack_name):
+                raise HTTPException(status_code=400, detail=f"Stack '{request.new_stack_name}' not found")
+
+            deployment.stack_name = request.new_stack_name
+            session.commit()
+            session.refresh(deployment)
+
+            logger.info(f"User '{current_user['username']}' reassigned orphaned deployment {deployment_id} to stack '{request.new_stack_name}'")
+            return _deployment_to_response(deployment, session)
+
+        elif request.action == "delete":
+            # Delete deployment metadata first (if any)
+            session.query(DeploymentMetadata).filter_by(deployment_id=deployment_id).delete()
+            session.delete(deployment)
+            session.commit()
+
+            logger.info(f"User '{current_user['username']}' deleted orphaned deployment {deployment_id}")
+            # Return a minimal response since deployment is gone
+            raise HTTPException(status_code=200, detail="Deployment deleted successfully")
+
+        elif request.action == "recreate":
+            # Generate compose from containers and create stack
+            compose_yaml, warnings = await generate_compose_from_deployment(
+                deployment_id=deployment_id,
+                host_id=deployment.host_id,
+                session=session,
+                monitor=monitor,
+            )
+
+            if not compose_yaml or compose_yaml.strip() == "services: {}":
+                raise HTTPException(
+                    status_code=400,
+                    detail="Could not generate compose.yaml - no containers found or inspection failed"
+                )
+
+            # Create stack with original name
+            await stack_storage.write_stack(
+                name=deployment.stack_name,
+                compose_yaml=compose_yaml,
+                env_content=None,
+            )
+
+            logger.info(f"User '{current_user['username']}' recreated stack '{deployment.stack_name}' from containers for deployment {deployment_id}")
+
+            session.refresh(deployment)
+            return _deployment_to_response(deployment, session)
+
+        else:
+            raise HTTPException(status_code=400, detail=f"Invalid action: {request.action}. Must be 'reassign', 'delete', or 'recreate'")
+
+
+def _get_container_project(container) -> str | None:
+    """Extract the compose project name from container labels."""
+    labels = getattr(container, 'labels', {}) or {}
+    return labels.get('com.docker.compose.project')
+
+
+@router.get("/running-projects", response_model=List[RunningProject])
+async def list_running_projects(
+    current_user=Depends(get_current_user),
+):
+    """
+    List all running Docker Compose projects discovered from container labels.
+
+    Returns projects that can be adopted into DockMon management.
+    Groups containers by com.docker.compose.project label.
+    """
+    monitor = get_docker_monitor()
+    db = get_database_manager()
+
+    # Group containers by (project_name, host_id)
+    projects: Dict[tuple, dict] = {}
+    for container in monitor.get_last_containers():
+        project_name = _get_container_project(container)
+        host_id = getattr(container, 'host_id', None)
+
+        if not project_name or not host_id:
+            continue
+
+        key = (project_name, host_id)
+        if key not in projects:
+            projects[key] = {'services': set(), 'count': 0}
+
+        projects[key]['count'] += 1
+        labels = getattr(container, 'labels', {}) or {}
+        service_name = labels.get('com.docker.compose.service')
+        if service_name:
+            projects[key]['services'].add(service_name)
+
+    # Get host names
+    with db.get_session() as session:
+        host_names = {host.id: host.name for host in session.query(DockerHostDB).all()}
+
+    # Build and sort response
+    result = [
+        RunningProject(
+            project_name=project_name,
+            host_id=host_id,
+            host_name=host_names.get(host_id),
+            container_count=data['count'],
+            services=sorted(data['services']),
+        )
+        for (project_name, host_id), data in projects.items()
+    ]
+    result.sort(key=lambda p: (p.project_name, p.host_name or p.host_id))
+    return result
+
+
+@router.post("/generate-from-containers", response_model=ComposePreviewResponse)
+async def generate_compose_from_running_containers(
+    request: GenerateFromContainersRequest,
+    current_user=Depends(get_current_user),
+):
+    """
+    Generate compose.yaml from running containers with a specific project name.
+
+    Used to "adopt" existing docker-compose stacks into DockMon management.
+    Finds all containers on the specified host with the matching
+    com.docker.compose.project label and generates a compose file from their config.
+    """
+    monitor = get_docker_monitor()
+
+    # Find all containers on this host with matching project name
+    matching_containers = [
+        c for c in monitor.get_last_containers()
+        if getattr(c, 'host_id', None) == request.host_id
+        and _get_container_project(c) == request.project_name
+    ]
+
+    if not matching_containers:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No containers found with project '{request.project_name}' on host {request.host_id}"
+        )
+
+    # Generate compose from containers
+    compose_yaml, warnings = await generate_compose_from_containers(
+        project_name=request.project_name,
+        host_id=request.host_id,
+        containers=matching_containers,
+        monitor=monitor,
+    )
+
+    # Parse services from generated YAML
+    compose_dict = yaml.safe_load(compose_yaml)
+    services = list(compose_dict.get("services", {}).keys())
+
+    logger.info(f"User '{current_user['username']}' generated compose for project '{request.project_name}' ({len(services)} services)")
+
+    return ComposePreviewResponse(
+        compose_yaml=compose_yaml,
+        services=services,
+        warnings=warnings,
+    )
 
 
 @router.post("/import", response_model=ImportDeploymentResponse, status_code=201, dependencies=[Depends(require_scope("write"))])

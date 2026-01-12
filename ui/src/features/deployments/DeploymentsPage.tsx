@@ -45,6 +45,7 @@ import {
 import { useDeployments, useExecuteDeployment, useDeleteDeployment, useRedeployDeployment } from './hooks/useDeployments'
 import { DeploymentForm } from './components/DeploymentForm'
 import { ImportStackModal } from './components/ImportStackModal'
+import { OrphanedDeploymentsBanner } from './components/OrphanedDeploymentsBanner'
 import { LayerProgressDisplay } from '@/components/shared/LayerProgressDisplay'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
 import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
@@ -375,6 +376,9 @@ export function DeploymentsPage() {
           </SelectContent>
         </Select>
       </div>
+
+      {/* Orphaned Deployments Warning */}
+      <OrphanedDeploymentsBanner />
 
       {/* Loading State */}
       {isLoading && (

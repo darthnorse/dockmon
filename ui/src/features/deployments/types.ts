@@ -436,3 +436,68 @@ export interface ReadComposeFileResponse {
   env_content?: string
   error?: string
 }
+
+// ==================== Orphan Detection Types ====================
+
+/**
+ * Orphaned deployment info (references missing stack)
+ */
+export interface OrphanedDeployment {
+  id: string
+  host_id: string
+  host_name: string | null
+  stack_name: string
+  status: DeploymentStatus
+  container_ids: string[] | null
+}
+
+/**
+ * Response from orphaned deployments endpoint
+ */
+export interface OrphanedDeploymentsResponse {
+  count: number
+  deployments: OrphanedDeployment[]
+}
+
+/**
+ * Repair action types
+ */
+export type RepairAction = 'reassign' | 'delete' | 'recreate'
+
+/**
+ * Request to repair an orphaned deployment
+ */
+export interface RepairDeploymentRequest {
+  action: RepairAction
+  new_stack_name?: string
+}
+
+/**
+ * Compose preview response (for recreate action)
+ */
+export interface ComposePreviewResponse {
+  compose_yaml: string
+  services: string[]
+  warnings: string[]
+}
+
+// ==================== Generate From Containers Types ====================
+
+/**
+ * Request to generate compose from running containers
+ */
+export interface GenerateFromContainersRequest {
+  project_name: string
+  host_id: string
+}
+
+/**
+ * Running project info (for generate from containers UI)
+ */
+export interface RunningProject {
+  project_name: string
+  host_id: string
+  host_name: string | null
+  container_count: number
+  services: string[]
+}

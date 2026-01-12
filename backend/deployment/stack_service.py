@@ -329,3 +329,90 @@ def get_deployment_count(session: Session, stack_name: str) -> int:
         .scalar()
     )
     return count or 0
+
+
+class OrphanedDeploymentInfo:
+    """Info about an orphaned deployment (references non-existent stack)."""
+
+    def __init__(
+        self,
+        id: str,
+        host_id: str,
+        host_name: Optional[str],
+        stack_name: str,
+        status: str,
+        container_ids: Optional[List[str]] = None,
+    ):
+        self.id = id
+        self.host_id = host_id
+        self.host_name = host_name
+        self.stack_name = stack_name
+        self.status = status
+        self.container_ids = container_ids or []
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for API response."""
+        return {
+            "id": self.id,
+            "host_id": self.host_id,
+            "host_name": self.host_name,
+            "stack_name": self.stack_name,
+            "status": self.status,
+            "container_ids": self.container_ids,
+        }
+
+
+async def find_orphaned_deployments(
+    session: Session,
+    user_id: int,
+) -> List[OrphanedDeploymentInfo]:
+    """
+    Find deployments that reference stacks that no longer exist on filesystem.
+
+    Args:
+        session: Database session
+        user_id: Filter by user
+
+    Returns:
+        List of OrphanedDeploymentInfo for deployments with missing stacks
+    """
+    from database import DeploymentMetadata
+    from utils.keys import parse_composite_key
+
+    # Get all valid stacks from filesystem
+    valid_stacks = set(await stack_storage.list_stacks())
+
+    # Get all deployments for user
+    deployments = (
+        session.query(Deployment)
+        .filter(Deployment.user_id == user_id)
+        .all()
+    )
+
+    orphaned = []
+    for dep in deployments:
+        if dep.stack_name and dep.stack_name not in valid_stacks:
+            # Get container IDs from deployment metadata
+            metadata_records = (
+                session.query(DeploymentMetadata)
+                .filter(DeploymentMetadata.deployment_id == dep.id)
+                .all()
+            )
+            container_ids = []
+            for record in metadata_records:
+                try:
+                    _, container_id = parse_composite_key(record.container_id)
+                    container_ids.append(container_id)
+                except (ValueError, AttributeError):
+                    pass
+
+            orphaned.append(OrphanedDeploymentInfo(
+                id=dep.id,
+                host_id=dep.host_id,
+                host_name=dep.host.name if dep.host else None,
+                stack_name=dep.stack_name,
+                status=dep.status,
+                container_ids=container_ids,
+            ))
+
+    return orphaned

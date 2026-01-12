@@ -17,6 +17,11 @@ import type {
   ScanComposeDirsRequest,
   ScanComposeDirsResponse,
   ReadComposeFileResponse,
+  OrphanedDeploymentsResponse,
+  RepairAction,
+  ComposePreviewResponse,
+  GenerateFromContainersRequest,
+  RunningProject,
 } from '../types'
 
 const API_BASE = '/api'
@@ -402,6 +407,158 @@ export function useReadComposeFile() {
     },
     onError: (error: Error) => {
       toast.error(`Failed to read compose file: ${error.message}`)
+    },
+  })
+}
+
+// ==================== Orphan Detection Hooks ====================
+
+/**
+ * Fetch orphaned deployments (references missing stacks)
+ */
+export function useOrphanedDeployments() {
+  return useQuery({
+    queryKey: ['deployments', 'orphaned'],
+    queryFn: async () => {
+      const response = await fetch(`${API_BASE}/deployments/orphaned`, {
+        credentials: 'include',
+      })
+
+      if (!response.ok) {
+        throw new Error(`Failed to fetch orphaned deployments: ${response.statusText}`)
+      }
+
+      return response.json() as Promise<OrphanedDeploymentsResponse>
+    },
+    // Poll every 30 seconds to catch new orphans
+    refetchInterval: 30000,
+  })
+}
+
+/**
+ * Repair an orphaned deployment
+ */
+export function useRepairDeployment() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({
+      deploymentId,
+      action,
+      newStackName,
+    }: {
+      deploymentId: string
+      action: RepairAction
+      newStackName?: string
+    }) => {
+      const response = await fetch(`${API_BASE}/deployments/${deploymentId}/repair`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          action,
+          new_stack_name: newStackName,
+        }),
+      })
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: response.statusText }))
+        throw new Error(error.detail || 'Failed to repair deployment')
+      }
+
+      return response.json()
+    },
+    onSuccess: (_, { action }) => {
+      queryClient.invalidateQueries({ queryKey: ['deployments'] })
+      queryClient.invalidateQueries({ queryKey: ['stacks'] })
+
+      const actionMessages: Record<RepairAction, string> = {
+        reassign: 'Deployment reassigned to new stack',
+        delete: 'Deployment deleted',
+        recreate: 'Stack recreated from running containers',
+      }
+      toast.success(actionMessages[action])
+    },
+    onError: (error: Error) => {
+      toast.error(`Failed to repair deployment: ${error.message}`)
+    },
+  })
+}
+
+/**
+ * Preview compose.yaml from containers (for recreate action)
+ */
+export function useComposePreview(deploymentId: string | null) {
+  return useQuery({
+    queryKey: ['deployments', deploymentId, 'compose-preview'],
+    queryFn: async () => {
+      if (!deploymentId) throw new Error('Deployment ID required')
+
+      const response = await fetch(`${API_BASE}/deployments/${deploymentId}/compose-preview`, {
+        credentials: 'include',
+      })
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: response.statusText }))
+        throw new Error(error.detail || 'Failed to preview compose')
+      }
+
+      return response.json() as Promise<ComposePreviewResponse>
+    },
+    enabled: !!deploymentId,
+  })
+}
+
+// ==================== Generate From Containers Hooks ====================
+
+/**
+ * Fetch running Docker Compose projects from container labels.
+ * Returns list of projects that can be adopted into DockMon.
+ */
+export function useRunningProjects() {
+  return useQuery({
+    queryKey: ['running-projects'],
+    queryFn: async () => {
+      const response = await fetch(`${API_BASE}/deployments/running-projects`, {
+        credentials: 'include',
+      })
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: response.statusText }))
+        throw new Error(error.detail || 'Failed to fetch running projects')
+      }
+
+      return response.json() as Promise<RunningProject[]>
+    },
+  })
+}
+
+/**
+ * Generate compose.yaml from running containers with a specific project name
+ */
+export function useGenerateFromContainers() {
+  return useMutation({
+    mutationFn: async (request: GenerateFromContainersRequest) => {
+      const response = await fetch(`${API_BASE}/deployments/generate-from-containers`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        credentials: 'include',
+        body: JSON.stringify(request),
+      })
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: response.statusText }))
+        throw new Error(error.detail || 'Failed to generate compose from containers')
+      }
+
+      return response.json() as Promise<ComposePreviewResponse>
+    },
+    onError: (error: Error) => {
+      toast.error(`Failed to generate compose: ${error.message}`)
     },
   })
 }

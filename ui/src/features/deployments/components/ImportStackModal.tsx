@@ -380,8 +380,11 @@ export function ImportStackModal({
     hostId?: string
     overwriteStack?: boolean
     useExistingStack?: boolean
+    composeContentOverride?: string
   }) => {
-    if (!composeContent.trim()) {
+    // Use override if provided (for running mode where state update is async)
+    const contentToImport = options?.composeContentOverride || composeContent
+    if (!contentToImport.trim()) {
       setError('Please provide compose file content')
       return
     }
@@ -391,7 +394,7 @@ export function ImportStackModal({
     try {
       // Build request - only include optional fields when they have values
       const request: ImportDeploymentRequest = {
-        compose_content: composeContent,
+        compose_content: contentToImport,
       }
       if (envContent) request.env_content = envContent
       if (options?.projectName) request.project_name = options.projectName
@@ -470,12 +473,14 @@ export function ImportStackModal({
       return
     }
 
-    // Store compose content for stack-exists flow before calling handleImport
+    // Store compose content for stack-exists flow (may need it later)
     setComposeContent(generatedCompose)
 
+    // Pass content directly to avoid async state timing issues
     await handleImport({
       projectName: selectedRunningProject.project_name,
       hostId: selectedRunningProject.host_id,
+      composeContentOverride: generatedCompose,
     })
   }
 
@@ -1022,7 +1027,14 @@ export function ImportStackModal({
               <Button
                 variant="outline"
                 className="w-full justify-start h-auto py-3 gap-3"
-                onClick={() => handleImport({ useExistingStack: true })}
+                onClick={() => handleImport({
+                  useExistingStack: true,
+                  // Preserve context from running mode if applicable
+                  ...(selectedRunningProject && {
+                    hostId: selectedRunningProject.host_id,
+                    projectName: selectedRunningProject.project_name,
+                  }),
+                })}
                 disabled={importDeployment.isPending}
               >
                 {importDeployment.isPending && (
@@ -1039,7 +1051,16 @@ export function ImportStackModal({
               <Button
                 variant="outline"
                 className="w-full justify-start h-auto py-3 gap-3"
-                onClick={() => handleImport({ overwriteStack: true })}
+                onClick={() => handleImport({
+                  overwriteStack: true,
+                  // Preserve context from running mode if applicable
+                  ...(selectedRunningProject && {
+                    hostId: selectedRunningProject.host_id,
+                    projectName: selectedRunningProject.project_name,
+                  }),
+                  // Pass compose content directly for running mode (async state timing)
+                  ...(generatedCompose && { composeContentOverride: generatedCompose }),
+                })}
                 disabled={importDeployment.isPending}
               >
                 {importDeployment.isPending && (

@@ -14,6 +14,12 @@ import { Plus, Edit, Trash2, Copy, AlertCircle, ArrowLeft, FileText } from 'luci
 import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
+import {
   Table,
   TableBody,
   TableCell,
@@ -221,16 +227,28 @@ export function StacksPage() {
                       <Copy className="h-4 w-4" />
                     </Button>
 
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handleDelete(stack)}
-                      disabled={deleteStack.isPending || stack.deployment_count > 0}
-                      title={stack.deployment_count > 0 ? 'Cannot delete: has active deployments' : 'Delete'}
-                      data-testid={`delete-stack-${stack.name}`}
-                    >
-                      <Trash2 className="h-4 w-4 text-destructive" />
-                    </Button>
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span tabIndex={stack.deployment_count > 0 ? 0 : undefined}>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleDelete(stack)}
+                              disabled={deleteStack.isPending || stack.deployment_count > 0}
+                              data-testid={`delete-stack-${stack.name}`}
+                            >
+                              <Trash2 className="h-4 w-4 text-destructive" />
+                            </Button>
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          {stack.deployment_count > 0
+                            ? 'Delete the deployment first before deleting this stack'
+                            : 'Delete stack'}
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
                   </TableCell>
                 </TableRow>
               ))}

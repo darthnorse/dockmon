@@ -388,11 +388,12 @@ def _is_docker_injected_env(env_var: str) -> bool:
 
 
 def _is_internal_label(key: str) -> bool:
-    """Check if label is Docker/Compose internal."""
+    """Check if label is Docker/Compose internal or DockMon internal."""
     internal_prefixes = [
         "com.docker.",
         "org.opencontainers.",
         "desktop.docker.",
+        "dockmon.",  # DockMon internal labels (deployment_id, etc.)
     ]
     return any(key.startswith(prefix) for prefix in internal_prefixes) or key == "maintainer"
 

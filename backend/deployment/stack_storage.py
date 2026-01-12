@@ -154,6 +154,33 @@ async def stack_exists(name: str) -> bool:
     return await asyncio.to_thread(_check)
 
 
+async def find_stack_by_name(name: str) -> Optional[str]:
+    """
+    Find actual stack name on filesystem (case-insensitive match).
+
+    Used when importing with "use existing stack" to get the exact
+    filesystem name rather than a sanitized version.
+
+    Args:
+        name: Stack name to search for (case-insensitive)
+
+    Returns:
+        Actual stack name from filesystem, or None if not found
+    """
+    def _find():
+        if not STACKS_DIR.exists():
+            return None
+
+        name_lower = name.lower()
+        for d in STACKS_DIR.iterdir():
+            if d.is_dir() and d.name.lower() == name_lower:
+                if (d / "compose.yaml").exists():
+                    return d.name
+        return None
+
+    return await asyncio.to_thread(_find)
+
+
 async def read_stack(name: str) -> Tuple[str, Optional[str]]:
     """
     Read compose.yaml and .env for a stack.

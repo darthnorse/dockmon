@@ -1021,7 +1021,12 @@ async def import_deployment(
 
     if request.use_existing_stack:
         # User chose to use existing stack - don't touch files
-        if not stack_already_exists:
+        # Find actual filesystem name (may differ in case from sanitized name)
+        actual_stack_name = await stack_storage.find_stack_by_name(stack_name)
+        if actual_stack_name:
+            stack_name = actual_stack_name
+            logger.info(f"User '{current_user['username']}' using existing stack '{stack_name}' on filesystem")
+        else:
             # Edge case: stack was deleted between check and import
             await stack_storage.write_stack(
                 name=stack_name,
@@ -1029,8 +1034,6 @@ async def import_deployment(
                 env_content=request.env_content,
             )
             logger.info(f"User '{current_user['username']}' created stack '{stack_name}' (use_existing_stack but stack was missing)")
-        else:
-            logger.info(f"User '{current_user['username']}' using existing stack '{stack_name}' on filesystem")
     elif not stack_already_exists:
         # Create new stack
         await stack_storage.write_stack(

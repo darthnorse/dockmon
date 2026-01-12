@@ -15,6 +15,7 @@ import yaml
 from datetime import datetime, timezone
 from typing import List, Optional, Dict
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy.orm import Session
 
@@ -882,8 +883,11 @@ async def repair_orphaned_deployment(
             session.commit()
 
             logger.info(f"User '{current_user['username']}' deleted orphaned deployment {deployment_id}")
-            # Return a minimal response since deployment is gone
-            raise HTTPException(status_code=200, detail="Deployment deleted successfully")
+            # Return success response (bypasses response_model since deployment is gone)
+            return JSONResponse(
+                status_code=200,
+                content={"success": True, "message": "Deployment deleted successfully"}
+            )
 
         elif request.action == "recreate":
             # Generate compose from containers and create stack

@@ -19,7 +19,7 @@ import { NavLink } from 'react-router-dom'
 import {
   LayoutDashboard,
   Container,
-  Package,
+  Layers,
   Server,
   Activity,
   Bell,
@@ -51,7 +51,7 @@ const navigationItems: NavItem[] = [
   { label: 'Dashboard', icon: LayoutDashboard, path: '/' },
   { label: 'Hosts', icon: Server, path: '/hosts' },
   { label: 'Containers', icon: Container, path: '/containers' },
-  { label: 'Deployments', icon: Package, path: '/deployments' },
+  { label: 'Stacks', icon: Layers, path: '/stacks' },
   { label: 'Container Logs', icon: FileText, path: '/logs' },
   { label: 'Events', icon: Activity, path: '/events' },
   { label: 'Alerts', icon: Bell, path: '/alerts' },

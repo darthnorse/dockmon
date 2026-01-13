@@ -1,24 +1,16 @@
 /**
- * Stacks Management Page (v2.2.7+)
+ * Stacks Page (v2.2.8+)
  *
- * Browse, create, edit, and delete stacks (filesystem-based compose configurations).
- * - List stacks with deployment counts
- * - Create new stacks with compose YAML and optional .env
- * - Edit existing stacks (including rename)
- * - Copy stacks
- * - Delete stacks (only if no deployments reference them)
+ * Main page for managing Docker Compose stacks.
+ * - List stacks with deployed hosts
+ * - Sortable columns with localStorage persistence
+ * - Click stack or "New Stack" to open consolidated StackModal
+ * - All operations (edit, rename, clone, delete, deploy) happen in modal
  */
 
-import { useState } from 'react'
-import { Plus, Edit, Trash2, Copy, AlertCircle, ArrowLeft, FileText } from 'lucide-react'
-import { useNavigate } from 'react-router-dom'
+import { useState, useMemo, useEffect } from 'react'
+import { Plus, AlertCircle, Layers, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from '@/components/ui/tooltip'
 import {
   Table,
   TableBody,
@@ -28,122 +20,152 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { toast } from 'sonner'
-import { useStacks, useDeleteStack, useCopyStack } from './hooks/useStacks'
-import { StackForm } from './components/StackForm'
-import { validateStackName, MAX_STACK_NAME_LENGTH } from './types'
+import { useStacks } from './hooks/useStacks'
+import { useDeployments } from './hooks/useDeployments'
+import { useHosts } from '@/features/hosts/hooks/useHosts'
+import { StackModal } from './components/StackModal'
 import type { StackListItem } from './types'
 
+// Sort configuration
+type SortColumn = 'name' | 'deployedTo'
+type SortDirection = 'asc' | 'desc'
+
+interface SortConfig {
+  column: SortColumn
+  direction: SortDirection
+}
+
+const STORAGE_KEY = 'dockmon-stacks-sort'
+const DEFAULT_SORT: SortConfig = { column: 'name', direction: 'asc' }
+
+// Load sort config from localStorage
+function loadSortConfig(): SortConfig {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY)
+    if (saved) {
+      const parsed = JSON.parse(saved)
+      if (parsed.column && parsed.direction) {
+        return parsed as SortConfig
+      }
+    }
+  } catch {
+    // Ignore parse errors
+  }
+  return DEFAULT_SORT
+}
+
+// Save sort config to localStorage
+function saveSortConfig(config: SortConfig): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(config))
+  } catch {
+    // Ignore storage errors
+  }
+}
+
 export function StacksPage() {
-  const navigate = useNavigate()
-  const [showStackForm, setShowStackForm] = useState(false)
-  const [editingStackName, setEditingStackName] = useState<string | null>(null)
-  const [stackToDelete, setStackToDelete] = useState<StackListItem | null>(null)
-  const [stackToCopy, setStackToCopy] = useState<StackListItem | null>(null)
-  const [copyDestName, setCopyDestName] = useState('')
+  const [showStackModal, setShowStackModal] = useState(false)
+  const [selectedStackName, setSelectedStackName] = useState<string | null>(null)
+  const [sortConfig, setSortConfig] = useState<SortConfig>(loadSortConfig)
 
   const { data: stacks, isLoading, error } = useStacks()
-  const deleteStack = useDeleteStack()
-  const copyStack = useCopyStack()
+  const { data: deployments } = useDeployments()
+  const { data: hosts } = useHosts()
 
-  const handleEdit = (stack: StackListItem) => {
-    setEditingStackName(stack.name)
-    setShowStackForm(true)
-  }
+  // Save sort config when it changes
+  useEffect(() => {
+    saveSortConfig(sortConfig)
+  }, [sortConfig])
 
-  const handleDelete = (stack: StackListItem) => {
-    if (stack.deployment_count > 0) {
-      return // Can't delete stacks with active deployments
-    }
-    setStackToDelete(stack)
-  }
+  // Create a map of stack_name -> array of host names
+  const stackHostsMap = useMemo(() => {
+    const map = new Map<string, string[]>()
+    if (!deployments) return map
 
-  const confirmDelete = () => {
-    if (stackToDelete) {
-      deleteStack.mutate(stackToDelete.name)
-      setStackToDelete(null)
-    }
-  }
-
-  const handleCopy = (stack: StackListItem) => {
-    setStackToCopy(stack)
-    setCopyDestName(`${stack.name}-copy`)
-  }
-
-  const confirmCopy = () => {
-    const trimmedName = copyDestName.trim()
-    if (!stackToCopy || !trimmedName) {
-      return
-    }
-
-    // Validate name format using shared utility
-    const validationError = validateStackName(trimmedName)
-    if (validationError) {
-      toast.error(validationError)
-      return
-    }
-
-    copyStack.mutate(
-      { name: stackToCopy.name, dest_name: trimmedName },
-      {
-        onSuccess: () => {
-          setStackToCopy(null)
-          setCopyDestName('')
-        },
+    deployments.forEach((deployment) => {
+      const hostName = deployment.host_name || deployment.host_id.slice(0, 8)
+      const existing = map.get(deployment.stack_name) || []
+      if (!existing.includes(hostName)) {
+        existing.push(hostName)
+        map.set(deployment.stack_name, existing)
       }
+    })
+
+    return map
+  }, [deployments])
+
+  // Sort stacks
+  const sortedStacks = useMemo(() => {
+    if (!stacks) return []
+
+    return [...stacks].sort((a, b) => {
+      let comparison = 0
+
+      if (sortConfig.column === 'name') {
+        comparison = a.name.localeCompare(b.name)
+      } else if (sortConfig.column === 'deployedTo') {
+        const aHosts = stackHostsMap.get(a.name)?.length || 0
+        const bHosts = stackHostsMap.get(b.name)?.length || 0
+        comparison = aHosts - bHosts
+      }
+
+      return sortConfig.direction === 'desc' ? -comparison : comparison
+    })
+  }, [stacks, stackHostsMap, sortConfig])
+
+  // Handle column header click
+  const handleSort = (column: SortColumn) => {
+    setSortConfig((prev) => {
+      if (prev.column === column) {
+        // Toggle direction
+        return { column, direction: prev.direction === 'asc' ? 'desc' : 'asc' }
+      }
+      // New column, default to ascending
+      return { column, direction: 'asc' }
+    })
+  }
+
+  // Get sort icon for a column
+  const getSortIcon = (column: SortColumn) => {
+    if (sortConfig.column !== column) {
+      return <ArrowUpDown className="h-4 w-4 opacity-30" />
+    }
+    return sortConfig.direction === 'asc' ? (
+      <ArrowUp className="h-4 w-4" />
+    ) : (
+      <ArrowDown className="h-4 w-4" />
     )
   }
 
-  const handleCloseForm = () => {
-    setShowStackForm(false)
-    setEditingStackName(null)
+  const handleOpenStack = (stack: StackListItem) => {
+    setSelectedStackName(stack.name)
+    setShowStackModal(true)
+  }
+
+  const handleNewStack = () => {
+    setSelectedStackName(null)
+    setShowStackModal(true)
+  }
+
+  const handleCloseModal = () => {
+    setShowStackModal(false)
+    setSelectedStackName(null)
   }
 
   return (
-    <div className="p-6 space-y-6">
-      {/* Back to Deployments */}
-      <Button
-        variant="ghost"
-        onClick={() => navigate('/deployments')}
-        className="gap-2 -ml-2"
-        data-testid="back-to-deployments"
-      >
-        <ArrowLeft className="h-4 w-4" />
-        Back to Deployments
-      </Button>
-
+    <div className="p-3 sm:p-4 md:p-6 pt-16 md:pt-6 space-y-4 sm:space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold">Stacks</h1>
+          <h1 className="text-xl sm:text-2xl font-bold">Stacks</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Docker Compose configurations stored on filesystem
+            Manage and deploy Docker Compose configurations
           </p>
         </div>
 
         <Button
           data-testid="new-stack-button"
-          onClick={() => setShowStackForm(true)}
+          onClick={handleNewStack}
           className="gap-2"
         >
           <Plus className="h-4 w-4" />
@@ -172,162 +194,93 @@ export function StacksPage() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Deployments</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
+                <TableHead
+                  className="cursor-pointer select-none hover:bg-muted/50"
+                  onClick={() => handleSort('name')}
+                >
+                  <div className="flex items-center gap-2">
+                    Name
+                    {getSortIcon('name')}
+                  </div>
+                </TableHead>
+                <TableHead
+                  className="cursor-pointer select-none hover:bg-muted/50"
+                  onClick={() => handleSort('deployedTo')}
+                >
+                  <div className="flex items-center gap-2">
+                    Deployed To
+                    {getSortIcon('deployedTo')}
+                  </div>
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {(!stacks || stacks.length === 0) && (
+              {sortedStacks.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={3} className="text-center py-12 text-muted-foreground">
-                    <div className="flex flex-col items-center gap-2">
-                      <FileText className="h-8 w-8 opacity-50" />
-                      <p>No stacks found. Create your first stack to get started.</p>
+                  <TableCell colSpan={2} className="text-center py-12 text-muted-foreground">
+                    <div className="flex flex-col items-center gap-3">
+                      <Layers className="h-10 w-10 opacity-30" />
+                      <div>
+                        <p className="font-medium">No stacks yet</p>
+                        <p className="text-sm">Create your first stack to get started</p>
+                      </div>
+                      <Button
+                        variant="outline"
+                        onClick={handleNewStack}
+                        className="gap-2 mt-2"
+                      >
+                        <Plus className="h-4 w-4" />
+                        Create Stack
+                      </Button>
                     </div>
                   </TableCell>
                 </TableRow>
               )}
 
-              {stacks?.map((stack) => (
-                <TableRow key={stack.name} data-testid={`stack-${stack.name}`}>
-                  {/* Name */}
-                  <TableCell className="font-medium font-mono">{stack.name}</TableCell>
+              {sortedStacks.map((stack) => {
+                const deployedHosts = stackHostsMap.get(stack.name) || []
 
-                  {/* Deployment Count */}
-                  <TableCell>
-                    {stack.deployment_count > 0 ? (
-                      <Badge variant="secondary">
-                        {stack.deployment_count} deployment{stack.deployment_count !== 1 ? 's' : ''}
-                      </Badge>
-                    ) : (
-                      <span className="text-muted-foreground text-sm">No deployments</span>
-                    )}
-                  </TableCell>
+                return (
+                  <TableRow
+                    key={stack.name}
+                    data-testid={`stack-${stack.name}`}
+                    className="cursor-pointer hover:bg-muted/50"
+                    onClick={() => handleOpenStack(stack)}
+                  >
+                    {/* Name */}
+                    <TableCell className="font-medium font-mono">
+                      {stack.name}
+                    </TableCell>
 
-                  {/* Actions */}
-                  <TableCell className="text-right space-x-1">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handleEdit(stack)}
-                      title="Edit stack"
-                      data-testid={`edit-stack-${stack.name}`}
-                    >
-                      <Edit className="h-4 w-4" />
-                    </Button>
-
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handleCopy(stack)}
-                      title="Copy"
-                      data-testid={`copy-stack-${stack.name}`}
-                    >
-                      <Copy className="h-4 w-4" />
-                    </Button>
-
-                    <TooltipProvider>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <span tabIndex={stack.deployment_count > 0 ? 0 : undefined}>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => handleDelete(stack)}
-                              disabled={deleteStack.isPending || stack.deployment_count > 0}
-                              data-testid={`delete-stack-${stack.name}`}
-                            >
-                              <Trash2 className="h-4 w-4 text-destructive" />
-                            </Button>
-                          </span>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          {stack.deployment_count > 0
-                            ? 'Delete the deployment first before deleting this stack'
-                            : 'Delete stack'}
-                        </TooltipContent>
-                      </Tooltip>
-                    </TooltipProvider>
-                  </TableCell>
-                </TableRow>
-              ))}
+                    {/* Deployed Hosts */}
+                    <TableCell>
+                      {deployedHosts.length > 0 ? (
+                        <div className="flex flex-wrap gap-1">
+                          {deployedHosts.map((hostName) => (
+                            <Badge key={hostName} variant="secondary">
+                              {hostName}
+                            </Badge>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="text-muted-foreground text-sm">Not deployed</span>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                )
+              })}
             </TableBody>
           </Table>
         </div>
       )}
 
-      {/* Stack Form Modal */}
-      <StackForm
-        isOpen={showStackForm}
-        onClose={handleCloseForm}
-        stackName={editingStackName}
+      {/* Stack Modal */}
+      <StackModal
+        isOpen={showStackModal}
+        onClose={handleCloseModal}
+        hosts={(hosts || []).map(h => ({ id: h.id, name: h.name || h.id }))}
+        initialStackName={selectedStackName}
       />
-
-      {/* Delete Confirmation Dialog */}
-      <AlertDialog open={!!stackToDelete} onOpenChange={(open) => !open && setStackToDelete(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Stack</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete stack "<strong>{stackToDelete?.name}</strong>"?
-              This will remove the compose.yaml and .env files from the filesystem.
-              This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={confirmDelete}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      {/* Copy Dialog */}
-      <Dialog open={!!stackToCopy} onOpenChange={(open) => !open && setStackToCopy(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Copy Stack</DialogTitle>
-            <DialogDescription>
-              Create a copy of "<strong>{stackToCopy?.name}</strong>" with a new name.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label htmlFor="copy-dest-name">New Stack Name</Label>
-              <Input
-                id="copy-dest-name"
-                value={copyDestName}
-                onChange={(e) => setCopyDestName(e.target.value)}
-                placeholder="my-stack-copy"
-                className="font-mono"
-                maxLength={MAX_STACK_NAME_LENGTH}
-              />
-              <p className="text-xs text-muted-foreground">
-                Lowercase letters, numbers, hyphens, and underscores only
-              </p>
-            </div>
-          </div>
-
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setStackToCopy(null)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={confirmCopy}
-              disabled={!copyDestName.trim() || copyStack.isPending}
-            >
-              {copyStack.isPending ? 'Copying...' : 'Copy Stack'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
     </div>
   )
 }

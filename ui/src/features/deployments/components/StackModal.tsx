@@ -70,6 +70,7 @@ import {
 } from '../hooks/useStacks'
 import { useCreateDeployment, useDeployments } from '../hooks/useDeployments'
 import { ConfigurationEditor, ConfigurationEditorHandle } from './ConfigurationEditor'
+import { DeploymentProgress } from './DeploymentProgress'
 import { validateStackName, MAX_STACK_NAME_LENGTH } from '../types'
 
 // Base path for stack storage (matches backend STACKS_DIR)
@@ -165,6 +166,11 @@ export function StackModal({
 
   // Deploy state
   const [hostId, setHostId] = useState('')
+
+  // Deployment progress state (for live logs view)
+  const [isDeploying, setIsDeploying] = useState(false)
+  const [activeDeploymentId, setActiveDeploymentId] = useState<string | null>(null)
+  const [deployingHostName, setDeployingHostName] = useState('')
 
   // Dialog state
   const [activeDialog, setActiveDialog] = useState<DialogType>(null)
@@ -454,6 +460,27 @@ export function StackModal({
     }
   }
 
+  // Execute deployment and switch to progress view
+  const executeDeployment = async (deployStackName: string) => {
+    // Get host name for display
+    const host = sortedHosts.find((h) => h.id === hostId)
+    const hostName = host?.name || hostId.slice(0, 8)
+
+    try {
+      const deployment = await createDeployment.mutateAsync({
+        stack_name: deployStackName,
+        host_id: hostId,
+      })
+      // Switch to deployment progress view
+      setActiveDeploymentId(deployment.id)
+      setDeployingHostName(hostName)
+      setIsDeploying(true)
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      toast.error(`Failed to deploy: ${errorMessage}`)
+    }
+  }
+
   // Deploy stack
   const handleDeploy = async () => {
     if (!selectedStackName || selectedStackName === '__new__' || !hostId) return
@@ -463,17 +490,7 @@ export function StackModal({
       return
     }
 
-    try {
-      await createDeployment.mutateAsync({
-        stack_name: selectedStackName,
-        host_id: hostId,
-      })
-      toast.success(`Deploying "${selectedStackName}"...`)
-      onClose()
-    } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : String(error)
-      toast.error(`Failed to deploy: ${errorMessage}`)
-    }
+    await executeDeployment(selectedStackName)
   }
 
   // Deploy after saving changes
@@ -481,17 +498,8 @@ export function StackModal({
     setActiveDialog(null)
     await handleSave()
     if (selectedStackName && hostId) {
-      try {
-        await createDeployment.mutateAsync({
-          stack_name: hasNameChange ? stackName.trim() : selectedStackName,
-          host_id: hostId,
-        })
-        toast.success(`Deploying "${stackName}"...`)
-        onClose()
-      } catch (error: unknown) {
-        const errorMessage = error instanceof Error ? error.message : String(error)
-        toast.error(`Failed to deploy: ${errorMessage}`)
-      }
+      const deployStackName = hasNameChange ? stackName.trim() : selectedStackName
+      await executeDeployment(deployStackName)
     }
   }
 
@@ -515,6 +523,21 @@ export function StackModal({
       return
     }
     setIsEditingName(false)
+  }
+
+  // Go back from deployment progress to editor
+  const handleBackFromDeployment = () => {
+    setIsDeploying(false)
+    setActiveDeploymentId(null)
+    setDeployingHostName('')
+  }
+
+  // Deployment completed - close modal
+  const handleDeploymentComplete = () => {
+    setIsDeploying(false)
+    setActiveDeploymentId(null)
+    setDeployingHostName('')
+    onClose()
   }
 
   // Render stack list
@@ -621,9 +644,17 @@ export function StackModal({
               </div>
             </div>
 
-            {/* RIGHT COLUMN: Stack editor */}
+            {/* RIGHT COLUMN: Stack editor or deployment progress */}
             <div className="flex flex-col overflow-hidden">
-              {selectedStackName ? (
+              {isDeploying ? (
+                <DeploymentProgress
+                  deploymentId={activeDeploymentId}
+                  stackName={stackName || selectedStackName || ''}
+                  hostName={deployingHostName}
+                  onBack={handleBackFromDeployment}
+                  onComplete={handleDeploymentComplete}
+                />
+              ) : selectedStackName ? (
                 stackLoading && !isCreateMode ? (
                   <div className="flex items-center justify-center h-full text-muted-foreground">
                     Loading stack...

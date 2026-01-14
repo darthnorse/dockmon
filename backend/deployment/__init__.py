@@ -1,5 +1,5 @@
 """
-Deployment module for DockMon v2.2.7+
+Deployment module for DockMon v2.2.8+
 
 Handles container deployment operations with security validation,
 state machine management, and rollback support.
@@ -9,7 +9,7 @@ Components:
     - security_validator: Security validation for container configurations
     - executor: Deployment execution with progress tracking
     - stack_storage: Filesystem storage for stacks
-    - stack_service: Stack service layer coordinating filesystem and database
+    - container_utils: Utilities for scanning containers by compose project labels
     - routes: API endpoints for deployments
 """
 
@@ -22,7 +22,7 @@ from .security_validator import (
 from .executor import DeploymentExecutor, SecurityException
 from . import routes
 from . import stack_storage
-from . import stack_service
+from . import container_utils
 
 __all__ = [
     "DeploymentStateMachine",
@@ -33,5 +33,5 @@ __all__ = [
     "SecurityException",
     "routes",
     "stack_storage",
-    "stack_service",
+    "container_utils",
 ]

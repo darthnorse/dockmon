@@ -68,6 +68,8 @@ function getStatusDisplay(status: string): { label: string; type: 'info' | 'succ
       return { label: 'Deployment failed', type: 'error' }
     case 'stopped':
       return { label: 'Stopped', type: 'info' }
+    case 'rolled_back':
+      return { label: 'Rolled back', type: 'error' }
     default:
       return { label: status, type: 'info' }
   }
@@ -93,6 +95,7 @@ export function DeploymentProgress({
   // Refs to avoid stale closures in WebSocket handler
   const statusRef = useRef(status)
   const hasLoggedStartRef = useRef(false)
+  const lastLoggedMessageRef = useRef<string>('')
 
   // Keep statusRef in sync
   useEffect(() => {
@@ -120,45 +123,78 @@ export function DeploymentProgress({
     }
 
     const cleanup = addMessageHandler((message: WebSocketMessage) => {
-      // Handle deployment progress
-      if (message.type === 'deployment_progress') {
+      // Handle deployment progress events (all variants)
+      // Backend sends different event types for different states:
+      // - deployment_progress: intermediate states (pending, pulling_image, creating, starting)
+      // - deployment_completed: running or partial status
+      // - deployment_failed: failed status
+      // - deployment_rolled_back: rolled_back status
+      const deploymentEventTypes = [
+        'deployment_progress',
+        'deployment_completed',
+        'deployment_failed',
+        'deployment_rolled_back',
+      ]
+
+      if (deploymentEventTypes.includes(message.type)) {
+        // Type guard for deployment messages
+        const msg = message as {
+          type: string
+          deployment_id: string
+          status: string
+          progress?: { overall_percent: number; stage: string }
+          error?: string
+        }
+
         // Check if this message is for our deployment
-        if (!isDeploymentMatch(message.deployment_id, deploymentId)) {
+        if (!isDeploymentMatch(msg.deployment_id, deploymentId)) {
           return
         }
 
-        const { status: newStatus, progress: progressData, error: errorMsg } = message
+        const { status: newStatus, progress: progressData, error: errorMsg } = msg
 
-        // Update progress
+        // Update progress percentage
         if (progressData) {
           setProgress(progressData.overall_percent || 0)
-        }
 
-        // Update status
-        if (newStatus) {
-          const prevStatus = statusRef.current
-          setStatus(newStatus)
-
-          // Log status changes
-          if (newStatus !== prevStatus) {
-            const display = getStatusDisplay(newStatus)
-            addLog(display.label, display.type)
+          // Log detailed progress message from backend (e.g., "Pulling image(s): linuxserver/radarr:latest")
+          // Only log if we have a meaningful stage message that's different from generic status
+          if (progressData.stage && progressData.stage.length > 0) {
+            const stageMsg = progressData.stage
+            // Avoid logging generic messages that just repeat status
+            const isDetailedMessage = !['Pending...', 'Pulling images...', 'Creating containers...', 'Starting containers...'].includes(stageMsg)
+            // Avoid duplicate log entries if backend sends same message multiple times
+            const isDuplicate = stageMsg === lastLoggedMessageRef.current
+            if (isDetailedMessage && !isDuplicate) {
+              lastLoggedMessageRef.current = stageMsg
+              addLog(stageMsg, 'info')
+            }
           }
         }
 
-        // Handle error
+        // Update status (only process changes)
+        if (newStatus) {
+          const prevStatus = statusRef.current
+
+          // Only process if status actually changed
+          if (newStatus !== prevStatus) {
+            setStatus(newStatus)
+
+            // For terminal states, log the status change
+            const isTerminal = newStatus === 'running' || newStatus === 'partial' || newStatus === 'failed' || newStatus === 'rolled_back'
+            if (isTerminal) {
+              const display = getStatusDisplay(newStatus)
+              addLog(display.label, display.type)
+              setIsComplete(true)
+              setProgress(100)
+            }
+          }
+        }
+
+        // Handle error - show full error message
         if (errorMsg) {
           setError(errorMsg)
           addLog(`Error: ${errorMsg}`, 'error')
-        }
-
-        // Check if complete
-        if (newStatus === 'running' || newStatus === 'partial' || newStatus === 'failed') {
-          setIsComplete(true)
-          setProgress(100)
-          if (newStatus === 'running') {
-            addLog('All containers started successfully', 'success')
-          }
         }
       }
 

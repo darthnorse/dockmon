@@ -22,7 +22,6 @@ from sqlalchemy.orm import Session
 from database import Deployment, DatabaseManager, DeploymentMetadata, DockerHostDB
 from deployment import DeploymentExecutor
 from deployment import stack_storage
-from deployment import stack_service
 from deployment.compose_generator import generate_compose_from_deployment, generate_compose_from_containers
 from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_scope
 from utils.keys import parse_composite_key
@@ -105,6 +104,31 @@ class ExecuteDeploymentRequest(BaseModel):
     )
 
 
+class DeployStackRequest(BaseModel):
+    """Deploy a stack to a host (fire and forget - no persistent tracking).
+
+    This is a simplified deployment flow that doesn't create persistent
+    deployment records. Progress is tracked via WebSocket using a transient ID.
+    """
+    stack_name: str = Field(..., description="Name of the stack to deploy (must exist in /api/stacks)")
+    host_id: str = Field(..., description="UUID of the Docker host to deploy to")
+    force_recreate: bool = Field(
+        True,
+        description="Force recreate containers even if unchanged (default: true)"
+    )
+    pull_images: bool = Field(
+        True,
+        description="Pull latest images before starting (default: true)"
+    )
+
+
+class DeployStackResponse(BaseModel):
+    """Response from deploy endpoint with transient deployment ID."""
+    deployment_id: str = Field(..., description="Transient ID for progress tracking via WebSocket")
+    stack_name: str
+    host_id: str
+
+
 # ==================== Import Stack Models ====================
 
 class KnownStack(BaseModel):
@@ -180,30 +204,6 @@ class ReadComposeFileResponse(BaseModel):
     error: Optional[str] = None
 
 
-# ==================== Orphan Detection Models ====================
-
-class OrphanedDeployment(BaseModel):
-    """An orphaned deployment (references missing stack)."""
-    id: str
-    host_id: str
-    host_name: Optional[str]
-    stack_name: str
-    status: str
-    container_ids: Optional[List[str]]
-
-
-class OrphanedDeploymentsResponse(BaseModel):
-    """Response with orphaned deployments."""
-    count: int
-    deployments: List[OrphanedDeployment]
-
-
-class RepairDeploymentRequest(BaseModel):
-    """Request to repair an orphaned deployment."""
-    action: str = Field(..., description="Repair action: 'reassign', 'delete', or 'recreate'")
-    new_stack_name: Optional[str] = Field(None, description="For reassign: existing stack to assign to")
-
-
 class ComposePreviewResponse(BaseModel):
     """Preview of generated compose.yaml from containers."""
     compose_yaml: str
@@ -274,6 +274,199 @@ def get_docker_monitor():
 
 
 # ==================== Deployment Endpoints ====================
+
+@router.post("/deploy", response_model=DeployStackResponse, dependencies=[Depends(require_scope("write"))])
+async def deploy_stack(
+    request: DeployStackRequest,
+    background_tasks: BackgroundTasks,
+    current_user=Depends(get_current_user),
+):
+    """
+    Deploy a stack to a host (fire and forget - no persistent tracking).
+
+    This is a simplified deployment flow:
+    1. Reads stack content from filesystem
+    2. Generates a transient deployment_id for WebSocket progress tracking
+    3. Executes docker-compose up via Go compose service
+    4. Does NOT persist any deployment records
+
+    Progress can be tracked via WebSocket events using the returned deployment_id:
+    - deployment_progress (real-time progress)
+    - deployment_completed (success)
+    - deployment_failed (error)
+
+    Use this for simple "deploy and forget" workflows. The deployed_to info
+    in the stacks list is derived from running container labels, not from
+    deployment records.
+    """
+    from deployment.compose_client import ComposeClient, ComposeServiceError, ComposeServiceUnavailable
+    from deployment.stack_executor import _get_host_connection_info
+
+    # Validate stack exists
+    if not await stack_storage.stack_exists(request.stack_name):
+        raise HTTPException(status_code=404, detail=f"Stack '{request.stack_name}' not found")
+
+    # Validate host exists
+    db = get_database_manager()
+    with db.get_session() as session:
+        host = session.query(DockerHostDB).filter_by(id=request.host_id).first()
+        if not host:
+            raise HTTPException(status_code=404, detail=f"Host '{request.host_id}' not found")
+        host_name = host.name
+
+    # Read stack content
+    compose_yaml, env_content = await stack_storage.read_stack(request.stack_name)
+
+    # Generate transient deployment ID for progress tracking
+    deployment_id = f"{request.host_id}:{request.stack_name}:{uuid.uuid4().hex[:8]}"
+
+    # Get docker monitor for broadcasting
+    docker_monitor = get_docker_monitor()
+
+    async def broadcast_event(payload: dict):
+        """Broadcast event via WebSocket."""
+        try:
+            if docker_monitor and hasattr(docker_monitor, 'manager'):
+                await docker_monitor.manager.broadcast(payload)
+        except Exception as e:
+            logger.error(f"Error broadcasting deployment event: {e}")
+
+    # Execute deployment in background
+    async def execute_deploy():
+        client = ComposeClient()
+
+        try:
+            # Get host connection info
+            host_info = _get_host_connection_info(request.host_id)
+
+            # Progress callback that broadcasts to WebSocket
+            async def on_progress(event):
+                await broadcast_event({
+                    'type': 'deployment_progress',
+                    'deployment_id': deployment_id,
+                    'host_id': request.host_id,
+                    'name': request.stack_name,
+                    'status': 'in_progress',
+                    'progress': {
+                        'overall_percent': event.progress,
+                        'stage': event.message,
+                    },
+                })
+
+            # Send initial progress
+            await broadcast_event({
+                'type': 'deployment_progress',
+                'deployment_id': deployment_id,
+                'host_id': request.host_id,
+                'name': request.stack_name,
+                'status': 'pending',
+                'progress': {
+                    'overall_percent': 0,
+                    'stage': 'Starting deployment...',
+                },
+            })
+
+            # Parse environment variables from .env content
+            env_vars = {}
+            if env_content:
+                for line in env_content.split('\n'):
+                    line = line.strip()
+                    if line and not line.startswith('#') and '=' in line:
+                        key, value = line.split('=', 1)
+                        env_vars[key.strip()] = value.strip()
+
+            # Execute deployment
+            result = await client.deploy_with_progress(
+                deployment_id=deployment_id,
+                project_name=request.stack_name,
+                compose_yaml=compose_yaml,
+                progress_callback=on_progress,
+                action="up",
+                environment=env_vars,
+                force_recreate=request.force_recreate,
+                pull_images=request.pull_images,
+                wait_for_healthy=True,
+                health_timeout=120,
+                docker_host=host_info.get('docker_host'),
+                tls_ca_cert=host_info.get('tls_ca_cert'),
+                tls_cert=host_info.get('tls_cert'),
+                tls_key=host_info.get('tls_key'),
+                registry_credentials=host_info.get('registry_credentials'),
+            )
+
+            if result.success or result.partial_success:
+                status = "running" if result.success else "partial"
+                await broadcast_event({
+                    'type': 'deployment_completed',
+                    'deployment_id': deployment_id,
+                    'host_id': request.host_id,
+                    'name': request.stack_name,
+                    'status': status,
+                    'progress': {
+                        'overall_percent': 100,
+                        'stage': 'Deployment complete',
+                    },
+                })
+                logger.info(f"Stack '{request.stack_name}' deployed to '{host_name}'")
+            else:
+                await broadcast_event({
+                    'type': 'deployment_failed',
+                    'deployment_id': deployment_id,
+                    'host_id': request.host_id,
+                    'name': request.stack_name,
+                    'status': 'failed',
+                    'error': result.error or 'Deployment failed',
+                    'progress': {
+                        'overall_percent': 0,
+                        'stage': 'Failed',
+                    },
+                })
+                logger.error(f"Stack deployment failed: {result.error}")
+
+        except ComposeServiceUnavailable as e:
+            await broadcast_event({
+                'type': 'deployment_failed',
+                'deployment_id': deployment_id,
+                'host_id': request.host_id,
+                'name': request.stack_name,
+                'status': 'failed',
+                'error': 'Compose service unavailable. Ensure compose-service is running.',
+            })
+            logger.error(f"Compose service unavailable: {e}")
+
+        except ComposeServiceError as e:
+            await broadcast_event({
+                'type': 'deployment_failed',
+                'deployment_id': deployment_id,
+                'host_id': request.host_id,
+                'name': request.stack_name,
+                'status': 'failed',
+                'error': str(e.message),
+            })
+            logger.error(f"Compose service error: {e.message}")
+
+        except Exception as e:
+            await broadcast_event({
+                'type': 'deployment_failed',
+                'deployment_id': deployment_id,
+                'host_id': request.host_id,
+                'name': request.stack_name,
+                'status': 'failed',
+                'error': str(e),
+            })
+            logger.error(f"Deployment failed: {e}", exc_info=True)
+
+    # Start deployment in background
+    background_tasks.add_task(execute_deploy)
+
+    logger.info(f"User {current_user['username']} started deployment of '{request.stack_name}' to '{host_name}'")
+
+    return DeployStackResponse(
+        deployment_id=deployment_id,
+        stack_name=request.stack_name,
+        host_id=request.host_id,
+    )
+
 
 @router.post("", response_model=DeploymentResponse, status_code=201, dependencies=[Depends(require_scope("write"))])
 async def create_deployment(
@@ -476,65 +669,23 @@ async def get_known_stacks(
     Used for the fallback UI when a compose file has no 'name:' field.
     Scans all containers for 'com.docker.compose.project' label.
     """
+    from deployment.container_utils import scan_deployed_stacks
+
     monitor = get_docker_monitor()
     all_containers = monitor.get_last_containers()
+    deployed_stacks = scan_deployed_stacks(all_containers)
 
-    # Group containers by project name
-    stacks: Dict[str, KnownStack] = {}
-
-    for container in all_containers:
-        labels = getattr(container, 'labels', {}) or {}
-        project = labels.get('com.docker.compose.project')
-        if not project:
-            continue
-
-        host_id = getattr(container, 'host_id', None)
-        host_name = getattr(container, 'host_name', None) or host_id
-        service = labels.get('com.docker.compose.service')
-
-        if project not in stacks:
-            stacks[project] = KnownStack(
-                name=project,
-                hosts=[],
-                host_names=[],
-                container_count=0,
-                services=[]
-            )
-
-        stack = stacks[project]
-        stack.container_count += 1
-
-        if host_id and host_id not in stack.hosts:
-            stack.hosts.append(host_id)
-            stack.host_names.append(host_name)
-
-        if service and service not in stack.services:
-            stack.services.append(service)
-
-    return list(stacks.values())
-
-
-# ==================== Orphan Detection Endpoints ====================
-
-@router.get("/orphaned", response_model=OrphanedDeploymentsResponse)
-async def get_orphaned_deployments(
-    current_user=Depends(get_current_user),
-):
-    """
-    Get deployments that reference stacks no longer on filesystem.
-
-    Used to show warning banner on Deployments page.
-    """
-    db = get_database_manager()
-    with db.get_session() as session:
-        orphaned = await stack_service.find_orphaned_deployments(
-            session, current_user['user_id']
+    # Convert to KnownStack format
+    return [
+        KnownStack(
+            name=info.name,
+            hosts=[h.host_id for h in info.hosts],
+            host_names=[h.host_name for h in info.hosts],
+            container_count=info.container_count,
+            services=info.services,
         )
-
-    return OrphanedDeploymentsResponse(
-        count=len(orphaned),
-        deployments=[OrphanedDeployment(**o.to_dict()) for o in orphaned],
-    )
+        for info in deployed_stacks.values()
+    ]
 
 
 def _get_container_project(container) -> str | None:
@@ -828,96 +979,6 @@ async def preview_compose_from_containers(
             services=services,
             warnings=warnings,
         )
-
-
-@router.post("/{deployment_id}/repair", response_model=DeploymentResponse, dependencies=[Depends(require_scope("write"))])
-async def repair_orphaned_deployment(
-    deployment_id: str,
-    request: RepairDeploymentRequest,
-    current_user=Depends(get_current_user),
-):
-    """
-    Repair an orphaned deployment.
-
-    Actions:
-    - reassign: Change stack_name to an existing stack
-    - delete: Remove deployment record from database
-    - recreate: Generate compose.yaml from running containers and create stack
-    """
-    db = get_database_manager()
-    monitor = get_docker_monitor()
-
-    with db.get_session() as session:
-        deployment = session.query(Deployment).filter_by(
-            id=deployment_id,
-            user_id=current_user['user_id']
-        ).first()
-
-        if not deployment:
-            raise HTTPException(status_code=404, detail="Deployment not found")
-
-        # Verify it's actually orphaned (stack doesn't exist)
-        if await stack_storage.stack_exists(deployment.stack_name):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Deployment is not orphaned - stack '{deployment.stack_name}' exists"
-            )
-
-        if request.action == "reassign":
-            if not request.new_stack_name:
-                raise HTTPException(status_code=400, detail="new_stack_name required for reassign")
-            if not await stack_storage.stack_exists(request.new_stack_name):
-                raise HTTPException(status_code=400, detail=f"Stack '{request.new_stack_name}' not found")
-
-            deployment.stack_name = request.new_stack_name
-            session.commit()
-            session.refresh(deployment)
-
-            logger.info(f"User '{current_user['username']}' reassigned orphaned deployment {deployment_id} to stack '{request.new_stack_name}'")
-            return _deployment_to_response(deployment, session)
-
-        elif request.action == "delete":
-            # Delete deployment metadata first (if any)
-            session.query(DeploymentMetadata).filter_by(deployment_id=deployment_id).delete()
-            session.delete(deployment)
-            session.commit()
-
-            logger.info(f"User '{current_user['username']}' deleted orphaned deployment {deployment_id}")
-            # Return success response (bypasses response_model since deployment is gone)
-            return JSONResponse(
-                status_code=200,
-                content={"success": True, "message": "Deployment deleted successfully"}
-            )
-
-        elif request.action == "recreate":
-            # Generate compose from containers and create stack
-            compose_yaml, warnings = await generate_compose_from_deployment(
-                deployment_id=deployment_id,
-                host_id=deployment.host_id,
-                session=session,
-                monitor=monitor,
-            )
-
-            if not compose_yaml or compose_yaml.strip() == "services: {}":
-                raise HTTPException(
-                    status_code=400,
-                    detail="Could not generate compose.yaml - no containers found or inspection failed"
-                )
-
-            # Create stack with original name
-            await stack_storage.write_stack(
-                name=deployment.stack_name,
-                compose_yaml=compose_yaml,
-                env_content=None,
-            )
-
-            logger.info(f"User '{current_user['username']}' recreated stack '{deployment.stack_name}' from containers for deployment {deployment_id}")
-
-            session.refresh(deployment)
-            return _deployment_to_response(deployment, session)
-
-        else:
-            raise HTTPException(status_code=400, detail=f"Invalid action: {request.action}. Must be 'reassign', 'delete', or 'recreate'")
 
 
 @router.post("/import", response_model=ImportDeploymentResponse, status_code=201, dependencies=[Depends(require_scope("write"))])

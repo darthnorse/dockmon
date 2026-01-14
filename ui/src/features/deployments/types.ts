@@ -1,13 +1,13 @@
 /**
- * Deployment Types - v2.2.7
+ * Deployment Types - v2.2.8
  *
  * Type definitions for stacks and deployments
- * Stacks are filesystem-based compose configurations (v2.2.7+)
- * Deployments reference stacks by name
+ * Stacks are filesystem-based compose configurations
+ * Deployed hosts are derived from container labels (com.docker.compose.project)
  */
 
 /**
- * Deployment status values from backend state machine (7-state flow)
+ * Deployment status values from backend state machine
  */
 export type DeploymentStatus =
   | 'planning'        // Initial state after creation
@@ -21,22 +21,27 @@ export type DeploymentStatus =
   | 'rolled_back'     // Failed and rolled back (before commitment point)
   | 'stopped'         // Imported stack with no running containers
 
-/**
- * Deployment type - container or docker-compose stack
- * @deprecated v2.2.7+ - All deployments are stacks
- */
-export type DeploymentType = 'container' | 'stack'
+// ==================== Stack Types ====================
 
-// ==================== Stack Types (v2.2.7+) ====================
+/**
+ * Host where a stack is deployed (from container labels)
+ */
+export interface DeployedHost {
+  host_id: string
+  host_name: string
+}
 
 /**
  * Stack from the Stacks API (filesystem-based)
  * GET /api/stacks/{name} returns full content
  * GET /api/stacks returns list without content
+ *
+ * deployed_to is derived from running containers with matching
+ * com.docker.compose.project labels - not from database records.
  */
 export interface Stack {
   name: string                  // Stack name (lowercase alphanumeric, hyphens, underscores)
-  deployment_count: number      // Number of deployments using this stack
+  deployed_to: DeployedHost[]   // Hosts where this stack is running (from container labels)
   compose_yaml?: string         // Docker Compose YAML content (optional in list, present in detail)
   env_content?: string | null   // Optional .env file content
 }
@@ -46,7 +51,7 @@ export interface Stack {
  */
 export interface StackListItem {
   name: string
-  deployment_count: number
+  deployed_to: DeployedHost[]
 }
 
 /**
@@ -118,11 +123,11 @@ export function validateStackName(name: string): string | null {
   return null
 }
 
-// ==================== Deployment Types (v2.2.7+) ====================
+// ==================== Deployment Types ====================
 
 /**
- * Main deployment object returned by API (v2.2.7+)
- * Deployments reference stacks by name, content is on filesystem
+ * Deployment object returned by import API
+ * Used to track imported stacks and their metadata
  */
 export interface Deployment {
   id: string                    // Deployment UUID
@@ -149,204 +154,6 @@ export interface Deployment {
   updated_at: string | null     // ISO timestamp with 'Z' suffix
   started_at?: string | null    // ISO timestamp with 'Z' suffix
   completed_at: string | null   // ISO timestamp with 'Z' suffix
-}
-
-/**
- * API request to create a deployment (v2.2.7+)
- * Stack must exist first via POST /api/stacks
- */
-export interface CreateDeploymentRequest {
-  host_id: string
-  stack_name: string            // Must exist in /api/stacks
-  rollback_on_failure?: boolean // Default: true
-}
-
-/**
- * API request to update a deployment (v2.2.7+)
- */
-export interface UpdateDeploymentRequest {
-  stack_name?: string           // Change target stack
-  host_id?: string              // Change target host
-}
-
-/**
- * Container deployment definition (matches backend SecurityValidator input)
- */
-export interface DeploymentDefinition {
-  // Stack-specific fields (type = 'stack')
-  compose_yaml?: string         // Docker Compose YAML content (for stack deployments)
-  variables?: Record<string, string>  // Environment variables for ${VAR} substitution in compose YAML
-
-  // Container-specific fields (type = 'container')
-  image?: string                // Docker image (e.g., "nginx:latest") - required for containers, not for stacks
-
-  // Optional container configuration
-  name?: string                 // Container name override
-  command?: string[]            // Override CMD
-  entrypoint?: string[]         // Override ENTRYPOINT
-  environment?: Record<string, string>  // Environment variables
-  ports?: string[]              // Port mappings (e.g., ["8080:80", "443:443"])
-  volumes?: string[]            // Volume mounts (e.g., ["/host:/container"])
-  labels?: Record<string, string>       // Docker labels
-
-  // Network configuration
-  network_mode?: string         // "bridge", "host", "none", or custom network
-  hostname?: string             // Container hostname
-
-  // Resource limits
-  memory_limit?: string         // e.g., "512m", "1g"
-  cpu_limit?: string            // e.g., "0.5", "1.0"
-
-  // Security settings (validated by backend)
-  privileged?: boolean          // CRITICAL: Privileged mode (usually blocked)
-  cap_add?: string[]            // Add Linux capabilities
-  cap_drop?: string[]           // Drop Linux capabilities
-
-  // Restart policy
-  restart_policy?: string       // "no", "always", "unless-stopped", "on-failure"
-
-  // Health check
-  healthcheck?: {
-    test: string[]              // Health check command
-    interval?: string           // Check interval (e.g., "30s")
-    timeout?: string            // Timeout (e.g., "5s")
-    retries?: number            // Number of retries
-    start_period?: string       // Start period (e.g., "0s")
-  }
-}
-
-/**
- * Stack deployment definition (docker-compose structure)
- */
-export interface StackDefinition {
-  services: Record<string, DeploymentDefinition>  // Service name → config
-  networks?: Record<string, unknown>              // Network definitions
-  volumes?: Record<string, unknown>               // Volume definitions
-}
-
-/**
- * Security validation result from backend
- */
-export interface SecurityValidation {
-  result: 'allow' | 'warn' | 'block'
-  violations: SecurityViolation[]
-}
-
-/**
- * Individual security violation
- */
-export interface SecurityViolation {
-  level: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
-  message: string               // Human-readable error message
-  field?: string                // Which field caused the violation
-  suggestion?: string           // How to fix it
-}
-
-/**
- * Deployment progress event from WebSocket (simple)
- */
-export interface DeploymentProgressEvent {
-  type: 'deployment_progress'
-  data: {
-    host_id: string
-    entity_id: string           // deployment_id
-    progress: number            // 0-100
-    stage: string               // "pulling", "creating", "starting", "completed"
-    message: string             // Human-readable message
-  }
-}
-
-/**
- * Layer-by-layer progress from WebSocket (detailed, like updates!)
- */
-export interface DeploymentLayerProgressEvent {
-  type: 'deployment_layer_progress'
-  data: {
-    host_id: string
-    entity_id: string           // deployment_id
-    overall_progress: number    // 0-100
-    layers: LayerProgress[]
-    total_layers: number
-    remaining_layers: number    // Layers not shown (for performance)
-    summary: string             // e.g., "Downloading 3 of 8 layers (45%) @ 12.5 MB/s"
-    speed_mbps?: number         // Download speed in MB/s
-  }
-}
-
-/**
- * Individual layer progress
- */
-export interface LayerProgress {
-  id: string                    // Layer SHA256
-  status: 'waiting' | 'downloading' | 'verifying' | 'extracting' | 'complete' | 'cached'
-  current: number               // Bytes downloaded
-  total: number                 // Total bytes
-  percent: number               // 0-100
-}
-
-/**
- * Deployment completion event from WebSocket
- */
-export interface DeploymentCompletedEvent {
-  type: 'deployment_completed'
-  data: {
-    id: string                  // Composite key
-    status: 'completed'
-    container_id?: string       // Created container ID (if type=container)
-  }
-}
-
-/**
- * Deployment failure event from WebSocket
- */
-export interface DeploymentFailedEvent {
-  type: 'deployment_failed'
-  data: {
-    id: string
-    status: 'failed'
-    error_message: string
-    committed: boolean          // Whether commitment point was reached
-  }
-}
-
-/**
- * Deployment rollback event from WebSocket
- */
-export interface DeploymentRolledBackEvent {
-  type: 'deployment_rolled_back'
-  data: {
-    id: string
-    status: 'rolled_back'
-  }
-}
-
-/**
- * Deployment creation event from WebSocket
- */
-export interface DeploymentCreatedEvent {
-  type: 'deployment_created'
-  data: Deployment
-}
-
-/**
- * Union type for all deployment WebSocket events
- */
-export type DeploymentWebSocketEvent =
-  | DeploymentCreatedEvent
-  | DeploymentProgressEvent
-  | DeploymentLayerProgressEvent
-  | DeploymentCompletedEvent
-  | DeploymentFailedEvent
-  | DeploymentRolledBackEvent
-
-/**
- * API query filters for deployments list
- */
-export interface DeploymentFilters {
-  host_id?: string
-  status?: DeploymentStatus
-  limit?: number
-  offset?: number
 }
 
 // ==================== Import Stack Types ====================
@@ -420,13 +227,6 @@ export interface ScanComposeDirsResponse {
 // ==================== Read Compose File Types ====================
 
 /**
- * Request to read a compose file's content
- */
-export interface ReadComposeFileRequest {
-  path: string
-}
-
-/**
  * Response containing compose file content
  */
 export interface ReadComposeFileResponse {
@@ -437,50 +237,6 @@ export interface ReadComposeFileResponse {
   error?: string
 }
 
-// ==================== Orphan Detection Types ====================
-
-/**
- * Orphaned deployment info (references missing stack)
- */
-export interface OrphanedDeployment {
-  id: string
-  host_id: string
-  host_name: string | null
-  stack_name: string
-  status: DeploymentStatus
-  container_ids: string[] | null
-}
-
-/**
- * Response from orphaned deployments endpoint
- */
-export interface OrphanedDeploymentsResponse {
-  count: number
-  deployments: OrphanedDeployment[]
-}
-
-/**
- * Repair action types
- */
-export type RepairAction = 'reassign' | 'delete' | 'recreate'
-
-/**
- * Request to repair an orphaned deployment
- */
-export interface RepairDeploymentRequest {
-  action: RepairAction
-  new_stack_name?: string
-}
-
-/**
- * Compose preview response (for recreate action)
- */
-export interface ComposePreviewResponse {
-  compose_yaml: string
-  services: string[]
-  warnings: string[]
-}
-
 // ==================== Generate From Containers Types ====================
 
 /**
@@ -489,6 +245,15 @@ export interface ComposePreviewResponse {
 export interface GenerateFromContainersRequest {
   project_name: string
   host_id: string
+}
+
+/**
+ * Compose preview response (generated from containers)
+ */
+export interface ComposePreviewResponse {
+  compose_yaml: string
+  services: string[]
+  warnings: string[]
 }
 
 /**

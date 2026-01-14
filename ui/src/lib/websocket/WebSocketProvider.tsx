@@ -157,6 +157,9 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
 
         // Deployment events - handled by DeploymentsPage and other components via addMessageHandler
         case 'deployment_progress':
+        case 'deployment_completed':
+        case 'deployment_failed':
+        case 'deployment_rolled_back':
         case 'deployment_layer_progress':
           break
 

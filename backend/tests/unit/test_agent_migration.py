@@ -501,10 +501,8 @@ def test_agent_migration_preserves_deployments(agent_manager, registration_token
             id=old_deployment_id,
             host_id="existing-host-id",
             user_id=user_id,
-            deployment_type="container",
-            name="test-nginx",
+            stack_name="test-nginx",
             status="running",
-            definition='{"image": "nginx:latest"}',
             progress_percent=100,
             committed=True
         )
@@ -559,7 +557,7 @@ def test_agent_migration_preserves_deployments(agent_manager, registration_token
         new_dep = session.query(Deployment).filter_by(id=new_deployment_id).first()
         assert new_dep is not None
         assert new_dep.host_id == new_host_id
-        assert new_dep.name == "test-nginx"
+        assert new_dep.stack_name == "test-nginx"
         assert new_dep.status == "running"
 
         # Deployment container should reference new deployment_id

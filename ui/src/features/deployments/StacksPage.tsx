@@ -2,7 +2,7 @@
  * Stacks Page (v2.2.8+)
  *
  * Main page for managing Docker Compose stacks.
- * - List stacks with deployed hosts
+ * - List stacks with deployed hosts (from container labels)
  * - Sortable columns with localStorage persistence
  * - Click stack or "New Stack" to open consolidated StackModal
  * - All operations (edit, rename, clone, delete, deploy) happen in modal
@@ -21,7 +21,6 @@ import {
 } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
 import { useStacks } from './hooks/useStacks'
-import { useDeployments } from './hooks/useDeployments'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
 import { StackModal } from './components/StackModal'
 import type { StackListItem } from './types'
@@ -69,30 +68,12 @@ export function StacksPage() {
   const [sortConfig, setSortConfig] = useState<SortConfig>(loadSortConfig)
 
   const { data: stacks, isLoading, error } = useStacks()
-  const { data: deployments } = useDeployments()
   const { data: hosts } = useHosts()
 
   // Save sort config when it changes
   useEffect(() => {
     saveSortConfig(sortConfig)
   }, [sortConfig])
-
-  // Create a map of stack_name -> array of host names
-  const stackHostsMap = useMemo(() => {
-    const map = new Map<string, string[]>()
-    if (!deployments) return map
-
-    deployments.forEach((deployment) => {
-      const hostName = deployment.host_name || deployment.host_id.slice(0, 8)
-      const existing = map.get(deployment.stack_name) || []
-      if (!existing.includes(hostName)) {
-        existing.push(hostName)
-        map.set(deployment.stack_name, existing)
-      }
-    })
-
-    return map
-  }, [deployments])
 
   // Sort stacks
   const sortedStacks = useMemo(() => {
@@ -104,14 +85,13 @@ export function StacksPage() {
       if (sortConfig.column === 'name') {
         comparison = a.name.localeCompare(b.name)
       } else if (sortConfig.column === 'deployedTo') {
-        const aHosts = stackHostsMap.get(a.name)?.length || 0
-        const bHosts = stackHostsMap.get(b.name)?.length || 0
-        comparison = aHosts - bHosts
+        // Sort by number of hosts deployed to
+        comparison = a.deployed_to.length - b.deployed_to.length
       }
 
       return sortConfig.direction === 'desc' ? -comparison : comparison
     })
-  }, [stacks, stackHostsMap, sortConfig])
+  }, [stacks, sortConfig])
 
   // Handle column header click
   const handleSort = (column: SortColumn) => {
@@ -237,38 +217,34 @@ export function StacksPage() {
                 </TableRow>
               )}
 
-              {sortedStacks.map((stack) => {
-                const deployedHosts = stackHostsMap.get(stack.name) || []
+              {sortedStacks.map((stack) => (
+                <TableRow
+                  key={stack.name}
+                  data-testid={`stack-${stack.name}`}
+                  className="cursor-pointer hover:bg-muted/50"
+                  onClick={() => handleOpenStack(stack)}
+                >
+                  {/* Name */}
+                  <TableCell className="font-medium font-mono">
+                    {stack.name}
+                  </TableCell>
 
-                return (
-                  <TableRow
-                    key={stack.name}
-                    data-testid={`stack-${stack.name}`}
-                    className="cursor-pointer hover:bg-muted/50"
-                    onClick={() => handleOpenStack(stack)}
-                  >
-                    {/* Name */}
-                    <TableCell className="font-medium font-mono">
-                      {stack.name}
-                    </TableCell>
-
-                    {/* Deployed Hosts */}
-                    <TableCell>
-                      {deployedHosts.length > 0 ? (
-                        <div className="flex flex-wrap gap-1">
-                          {deployedHosts.map((hostName) => (
-                            <Badge key={hostName} variant="secondary">
-                              {hostName}
-                            </Badge>
-                          ))}
-                        </div>
-                      ) : (
-                        <span className="text-muted-foreground text-sm">Not deployed</span>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                )
-              })}
+                  {/* Deployed Hosts - from container labels */}
+                  <TableCell>
+                    {stack.deployed_to.length > 0 ? (
+                      <div className="flex flex-wrap gap-1">
+                        {stack.deployed_to.map((host) => (
+                          <Badge key={host.host_id} variant="secondary">
+                            {host.host_name}
+                          </Badge>
+                        ))}
+                      </div>
+                    ) : (
+                      <span className="text-muted-foreground text-sm">Not deployed</span>
+                    )}
+                  </TableCell>
+                </TableRow>
+              ))}
             </TableBody>
           </Table>
         </div>

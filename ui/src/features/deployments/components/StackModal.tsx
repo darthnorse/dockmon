@@ -17,8 +17,6 @@
 
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import {
-  Search,
-  Plus,
   Copy,
   Trash2,
   Pencil,
@@ -68,10 +66,12 @@ import {
   useDeleteStack,
   useCopyStack,
 } from '../hooks/useStacks'
-import { useCreateDeployment, useDeployments } from '../hooks/useDeployments'
+import { useDeployStack } from '../hooks/useDeployments'
 import { ConfigurationEditor, ConfigurationEditorHandle } from './ConfigurationEditor'
 import { DeploymentProgress } from './DeploymentProgress'
+import { StackListPanel } from './StackListPanel'
 import { validateStackName, MAX_STACK_NAME_LENGTH } from '../types'
+import { handleApiError, getErrorMessage } from '../utils'
 
 // Base path for stack storage (matches backend STACKS_DIR)
 const STACKS_BASE_PATH = '/app/data/stacks'
@@ -138,17 +138,15 @@ export function StackModal({
 
   // Data hooks
   const { data: stacks, isLoading: stacksLoading } = useStacks()
-  const { data: deployments, isLoading: deploymentsLoading } = useDeployments()
   const createStack = useCreateStack()
   const updateStack = useUpdateStack()
   const renameStack = useRenameStack()
   const deleteStack = useDeleteStack()
   const copyStack = useCopyStack()
-  const createDeployment = useCreateDeployment()
+  const deployStack = useDeployStack()
 
   // Selection state
   const [selectedStackName, setSelectedStackName] = useState<string | null>(null)
-  const [searchQuery, setSearchQuery] = useState('')
 
   // Fetch selected stack content
   const { data: selectedStack, isLoading: stackLoading } = useStack(selectedStackName)
@@ -188,17 +186,6 @@ export function StackModal({
   // Create mode (no stack selected)
   const isCreateMode = selectedStackName === '__new__'
 
-  // Check if selected stack is already deployed to selected host
-  const isRedeployment = useMemo(() => {
-    // Don't show "Redeploy" while still loading deployments data
-    if (deploymentsLoading || !deployments || !selectedStackName || selectedStackName === '__new__' || !hostId) {
-      return false
-    }
-    return deployments.some(
-      (d) => d.stack_name === selectedStackName && d.host_id === hostId
-    )
-  }, [deploymentsLoading, deployments, selectedStackName, hostId])
-
   // Derived state
   const hasContentChanges = composeYaml !== originalCompose || envContent !== originalEnv
   const hasNameChange = stackName !== originalName && !isCreateMode
@@ -209,16 +196,14 @@ export function StackModal({
     renameStack.isPending ||
     deleteStack.isPending ||
     copyStack.isPending ||
-    createDeployment.isPending
+    deployStack.isPending
 
-  // Filter stacks by search query
-  const filteredStacks = useMemo(() => {
-    if (!stacks) return []
-    if (!searchQuery.trim()) return stacks
-    return stacks.filter((s) =>
-      s.name.toLowerCase().includes(searchQuery.toLowerCase())
-    )
-  }, [stacks, searchQuery])
+  // Determine save button text
+  const getSaveButtonText = (): string => {
+    if (isSubmitting) return 'Saving...'
+    if (isCreateMode) return 'Create Stack'
+    return 'Save'
+  }
 
   // Sort hosts alphabetically
   const sortedHosts = useMemo(
@@ -294,7 +279,6 @@ export function StackModal({
   useEffect(() => {
     if (!isOpen) {
       setSelectedStackName(null)
-      setSearchQuery('')
       resetForm()
     }
   }, [isOpen, resetForm])
@@ -332,14 +316,8 @@ export function StackModal({
   // Handle stack selection
   const handleStackSelect = (name: string) => {
     if (name === selectedStackName) return
-
-    if (name === '__new__') {
-      resetForm()
-      setSelectedStackName('__new__')
-    } else {
-      resetForm()
-      setSelectedStackName(name)
-    }
+    resetForm()
+    setSelectedStackName(name)
   }
 
   // Validate form
@@ -408,11 +386,11 @@ export function StackModal({
       setOriginalEnv(envContent)
       setIsEditingName(false)
     } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : String(error)
+      const errorMessage = getErrorMessage(error)
       if (errorMessage.includes('already exists')) {
         setErrors({ name: 'A stack with this name already exists' })
       } else {
-        toast.error(`Failed to save: ${errorMessage}`)
+        handleApiError(error, 'save')
       }
     }
   }
@@ -427,8 +405,7 @@ export function StackModal({
       setSelectedStackName(null)
       resetForm()
     } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : String(error)
-      toast.error(`Failed to delete: ${errorMessage}`)
+      handleApiError(error, 'delete')
     } finally {
       setActiveDialog(null)
     }
@@ -452,8 +429,7 @@ export function StackModal({
       toast.success(`Stack copied to "${copyDestName}"`)
       setSelectedStackName(copyDestName.trim())
     } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : String(error)
-      toast.error(`Failed to copy: ${errorMessage}`)
+      handleApiError(error, 'copy')
     } finally {
       setActiveDialog(null)
       setCopyDestName('')
@@ -467,17 +443,18 @@ export function StackModal({
     const hostName = host?.name || hostId.slice(0, 8)
 
     try {
-      const deployment = await createDeployment.mutateAsync({
+      // Deploy stack (fire and forget - no persistent tracking)
+      const result = await deployStack.mutateAsync({
         stack_name: deployStackName,
         host_id: hostId,
       })
+
       // Switch to deployment progress view
-      setActiveDeploymentId(deployment.id)
+      setActiveDeploymentId(result.deployment_id)
       setDeployingHostName(hostName)
       setIsDeploying(true)
     } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : String(error)
-      toast.error(`Failed to deploy: ${errorMessage}`)
+      handleApiError(error, 'deploy')
     }
   }
 
@@ -525,6 +502,12 @@ export function StackModal({
     setIsEditingName(false)
   }
 
+  // Open clone dialog
+  const handleOpenCloneDialog = () => {
+    setCopyDestName(`${selectedStackName}-copy`)
+    setActiveDialog('copy')
+  }
+
   // Go back from deployment progress to editor
   const handleBackFromDeployment = () => {
     setIsDeploying(false)
@@ -538,53 +521,6 @@ export function StackModal({
     setActiveDeploymentId(null)
     setDeployingHostName('')
     onClose()
-  }
-
-  // Render stack list
-  const renderStackList = () => {
-    if (stacksLoading) {
-      return <p className="text-sm text-muted-foreground p-2">Loading stacks...</p>
-    }
-
-    return (
-      <>
-        {filteredStacks.map((stack) => (
-          <button
-            key={stack.name}
-            type="button"
-            onClick={() => handleStackSelect(stack.name)}
-            className={cn(
-              'w-full text-left px-3 py-2 rounded-md transition-colors flex items-center justify-between',
-              selectedStackName === stack.name
-                ? 'bg-primary text-primary-foreground'
-                : 'hover:bg-muted'
-            )}
-          >
-            <span className="truncate font-mono text-sm">{stack.name}</span>
-            {stack.deployment_count > 0 && (
-              <Badge
-                variant={selectedStackName === stack.name ? 'secondary' : 'outline'}
-                className="ml-2 shrink-0"
-              >
-                {stack.deployment_count}
-              </Badge>
-            )}
-          </button>
-        ))}
-
-        {filteredStacks.length === 0 && stacks && stacks.length > 0 && (
-          <p className="text-sm text-muted-foreground p-2">
-            No stacks match "{searchQuery}"
-          </p>
-        )}
-
-        {(!stacks || stacks.length === 0) && (
-          <p className="text-sm text-muted-foreground p-2">
-            No stacks yet. Create your first stack.
-          </p>
-        )}
-      </>
-    )
   }
 
   // Calculate editor height based on modal size
@@ -612,37 +548,13 @@ export function StackModal({
 
           <div className="flex-1 grid grid-cols-[300px_1fr] gap-6 px-6 pb-6 overflow-hidden">
             {/* LEFT COLUMN: Stack list */}
-            <div className="flex flex-col border-r pr-4 pt-1 pl-1 overflow-hidden">
-              {/* New Stack button */}
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => handleStackSelect('__new__')}
-                className={cn(
-                  'mb-3 gap-2 shrink-0',
-                  isCreateMode && 'bg-primary text-primary-foreground hover:bg-primary/90'
-                )}
-              >
-                <Plus className="h-4 w-4" />
-                New Stack
-              </Button>
-
-              {/* Search input */}
-              <div className="relative mb-3 shrink-0">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <Input
-                  placeholder="Search stacks..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pl-9"
-                />
-              </div>
-
-              {/* Stack list */}
-              <div className="flex-1 overflow-y-auto space-y-1">
-                {renderStackList()}
-              </div>
-            </div>
+            <StackListPanel
+              stacks={stacks}
+              isLoading={stacksLoading}
+              selectedStackName={selectedStackName}
+              isCreateMode={isCreateMode}
+              onStackSelect={handleStackSelect}
+            />
 
             {/* RIGHT COLUMN: Stack editor or deployment progress */}
             <div className="flex flex-col overflow-hidden">
@@ -817,7 +729,7 @@ export function StackModal({
                             className="gap-2"
                           >
                             <Rocket className="h-4 w-4" />
-                            {isRedeployment ? 'Redeploy' : 'Deploy'}
+                            Deploy
                           </Button>
                         </div>
                       </div>
@@ -831,10 +743,7 @@ export function StackModal({
                             <Button
                               variant="outline"
                               size="sm"
-                              onClick={() => {
-                                setCopyDestName(`${selectedStackName}-copy`)
-                                setActiveDialog('copy')
-                              }}
+                              onClick={handleOpenCloneDialog}
                               disabled={isSubmitting}
                               title="Copy stack"
                             >
@@ -845,12 +754,8 @@ export function StackModal({
                               variant="outline"
                               size="sm"
                               onClick={() => setActiveDialog('delete')}
-                              disabled={isSubmitting || (selectedStack?.deployment_count ?? 0) > 0}
-                              title={
-                                (selectedStack?.deployment_count ?? 0) > 0
-                                  ? 'Delete deployments first'
-                                  : 'Delete stack'
-                              }
+                              disabled={isSubmitting}
+                              title="Delete stack"
                             >
                               <Trash2 className="h-4 w-4 mr-1 text-destructive" />
                               Delete
@@ -867,11 +772,7 @@ export function StackModal({
                           onClick={handleSave}
                           disabled={isSubmitting || (!isCreateMode && !hasChanges)}
                         >
-                          {isSubmitting
-                            ? 'Saving...'
-                            : isCreateMode
-                              ? 'Create Stack'
-                              : 'Save'}
+                          {getSaveButtonText()}
                         </Button>
                       </div>
                     </div>
@@ -907,7 +808,8 @@ export function StackModal({
             <AlertDialogTitle>Delete Stack</AlertDialogTitle>
             <AlertDialogDescription>
               Are you sure you want to delete stack "<strong>{selectedStackName}</strong>"?
-              This will remove the compose.yaml and .env files from the filesystem.
+              This will remove the compose.yaml and .env files from the filesystem,
+              along with any deployment records. Running containers will not be affected.
               This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>

@@ -604,17 +604,24 @@ class PeriodicJobsManager:
                 target_minute_utc = total_minutes_utc % 60
                 target_time = dt_time(target_hour_utc, target_minute_utc)
 
-                current_time = now.time()
-
-                # Check if we're past the target time and haven't run today
+                # Check if we should run based on HH:MM schedule
+                # Use same logic as cron: check if target time occurred SINCE last check
                 if self._last_update_check is None:
                     # First run - run immediately
                     should_run = True
                     logger.info("First update check - running immediately")
-                elif self._last_update_check.date() < now.date() and current_time >= target_time:
-                    # Haven't run today and we're past the target time
-                    should_run = True
-                    logger.info(f"Running scheduled update check (target time: {schedule_str}, UTC: {target_hour_utc:02d}:{target_minute_utc:02d})")
+                else:
+                    # Build the most recent occurrence of the target time in UTC
+                    target_datetime_utc = datetime.combine(now.date(), target_time, tzinfo=timezone.utc)
+
+                    # If target time today is still in the future, use yesterday's occurrence
+                    if target_datetime_utc > now:
+                        target_datetime_utc -= timedelta(days=1)
+
+                    # Check if the scheduled time is after our last check
+                    if target_datetime_utc > self._last_update_check:
+                        should_run = True
+                        logger.info(f"Running scheduled update check (target time: {schedule_str}, triggered: {target_datetime_utc.strftime('%Y-%m-%d %H:%M UTC')})")
 
             if should_run:
                 # Step 1: Check for updates

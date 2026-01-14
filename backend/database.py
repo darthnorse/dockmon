@@ -1475,6 +1475,74 @@ class DatabaseManager:
                 session.add(settings)
                 session.commit()
 
+            # Initialize default update validation policies if none exist
+            self._seed_update_policies(session)
+
+    def _seed_update_policies(self, session):
+        """
+        Seed default update validation policies if they don't exist.
+
+        This matches the v2.1.10 Alembic migration behavior - it defensively
+        inserts missing policies without affecting existing ones. This handles
+        fresh installs where migrations don't run (Base.metadata.create_all()
+        + stamp HEAD skips migrations).
+        """
+        # Get existing policies as (category, pattern) pairs
+        existing = set(
+            (row.category, row.pattern)
+            for row in session.query(UpdatePolicy.category, UpdatePolicy.pattern).all()
+        )
+
+        # Default patterns (matching v2.1.10 migration + extras)
+        # Action 'warn' = show confirmation before update
+        default_policies = [
+            # Databases - critical data containers
+            ("databases", "postgres"),
+            ("databases", "mysql"),
+            ("databases", "mariadb"),
+            ("databases", "mongodb"),
+            ("databases", "mongo"),
+            ("databases", "redis"),
+            ("databases", "sqlite"),
+            ("databases", "mssql"),
+            ("databases", "cassandra"),
+            ("databases", "influxdb"),
+            ("databases", "elasticsearch"),
+            # Proxies - ingress/routing containers
+            ("proxies", "traefik"),
+            ("proxies", "nginx"),
+            ("proxies", "caddy"),
+            ("proxies", "haproxy"),
+            ("proxies", "envoy"),
+            # Monitoring - observability stack
+            ("monitoring", "grafana"),
+            ("monitoring", "prometheus"),
+            ("monitoring", "alertmanager"),
+            ("monitoring", "uptime-kuma"),
+            # Critical - infrastructure management
+            ("critical", "portainer"),
+            ("critical", "watchtower"),
+            ("critical", "dockmon"),
+            ("critical", "komodo"),
+        ]
+
+        # Insert missing policies only
+        inserted = 0
+        for category, pattern in default_policies:
+            if (category, pattern) not in existing:
+                policy = UpdatePolicy(
+                    category=category,
+                    pattern=pattern,
+                    enabled=True,
+                    action='warn',
+                )
+                session.add(policy)
+                inserted += 1
+
+        if inserted > 0:
+            session.commit()
+            logger.info(f"Seeded {inserted} missing default update validation policies")
+
     def get_session(self) -> Session:
         """Get a database session"""
         return self.SessionLocal()

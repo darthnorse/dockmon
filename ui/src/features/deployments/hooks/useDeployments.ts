@@ -1,24 +1,17 @@
 /**
  * Deployment API Hooks
  *
- * TanStack Query hooks for deployment CRUD operations
- * Follows same patterns as container hooks
+ * TanStack Query hooks for deployment operations
  */
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import type {
-  Deployment,
-  DeploymentFilters,
-  CreateDeploymentRequest,
-  KnownStack,
   ImportDeploymentRequest,
   ImportDeploymentResponse,
   ScanComposeDirsRequest,
   ScanComposeDirsResponse,
   ReadComposeFileResponse,
-  OrphanedDeploymentsResponse,
-  RepairAction,
   ComposePreviewResponse,
   GenerateFromContainersRequest,
   RunningProject,
@@ -27,147 +20,33 @@ import type {
 const API_BASE = '/api'
 
 /**
- * Fetch all deployments with optional filters
+ * Deploy a stack to a host (fire and forget - no persistent tracking)
+ *
+ * This is a simplified deployment flow:
+ * 1. Call POST /api/deployments/deploy with stack_name and host_id
+ * 2. Returns a transient deployment_id for progress tracking
+ * 3. No deployment record persisted after completion
  */
-export function useDeployments(filters?: DeploymentFilters) {
-  return useQuery({
-    queryKey: ['deployments', filters],
-    queryFn: async () => {
-      const params = new URLSearchParams()
-      if (filters?.host_id) params.set('host_id', filters.host_id)
-      if (filters?.status) params.set('status', filters.status)
-      if (filters?.limit) params.set('limit', filters.limit.toString())
-      if (filters?.offset) params.set('offset', filters.offset.toString())
-
-      const url = `${API_BASE}/deployments${params.toString() ? `?${params}` : ''}`
-      const response = await fetch(url, {
-        credentials: 'include',
-      })
-
-      if (!response.ok) {
-        throw new Error(`Failed to fetch deployments: ${response.statusText}`)
-      }
-
-      return response.json() as Promise<Deployment[]>
-    },
-  })
-}
-
-/**
- * Fetch a single deployment by ID
- */
-export function useDeployment(deploymentId: string | null) {
-  return useQuery({
-    queryKey: ['deployments', deploymentId],
-    queryFn: async () => {
-      if (!deploymentId) throw new Error('Deployment ID is required')
-
-      const response = await fetch(`${API_BASE}/deployments/${deploymentId}`, {
-        credentials: 'include',
-      })
-
-      if (!response.ok) {
-        if (response.status === 404) {
-          throw new Error('Deployment not found')
-        }
-        throw new Error(`Failed to fetch deployment: ${response.statusText}`)
-      }
-
-      return response.json() as Promise<Deployment>
-    },
-    enabled: !!deploymentId,
-  })
-}
-
-/**
- * Create a new deployment
- */
-export function useCreateDeployment() {
+export function useDeployStack() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async (request: CreateDeploymentRequest) => {
-      // v2.2.7+: Deployments reference stacks by name
-      const backendRequest = {
-        stack_name: request.stack_name,
-        host_id: request.host_id,
-        rollback_on_failure: request.rollback_on_failure ?? true,
-      }
-
-      const response = await fetch(`${API_BASE}/deployments`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        credentials: 'include',
-        body: JSON.stringify(backendRequest),
-      })
-
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({ detail: response.statusText }))
-        throw new Error(error.detail || 'Failed to create deployment')
-      }
-
-      return response.json() as Promise<Deployment>
-    },
-    onSuccess: () => {
-      // Invalidate deployments list to refetch
-      queryClient.invalidateQueries({ queryKey: ['deployments'] })
-      toast.success('Deployment created successfully')
-    },
-    onError: (error: Error) => {
-      toast.error(`Failed to create deployment: ${error.message}`)
-    },
-  })
-}
-
-/**
- * Execute a deployment
- */
-export function useExecuteDeployment() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: async (deploymentId: string) => {
-      const response = await fetch(`${API_BASE}/deployments/${deploymentId}/execute`, {
-        method: 'POST',
-        credentials: 'include',
-      })
-
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({ detail: response.statusText }))
-        throw new Error(error.detail || 'Failed to execute deployment')
-      }
-
-      return response.json()
-    },
-    onSuccess: (_, deploymentId) => {
-      // Invalidate specific deployment to refetch
-      queryClient.invalidateQueries({ queryKey: ['deployments', deploymentId] })
-      queryClient.invalidateQueries({ queryKey: ['deployments'] })
-      toast.success('Deployment execution started')
-    },
-    onError: (error: Error) => {
-      toast.error(`Failed to execute deployment: ${error.message}`)
-    },
-  })
-}
-
-/**
- * Redeploy a running stack (force recreate containers with latest images)
- */
-export function useRedeployDeployment() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: async (deploymentId: string) => {
-      const response = await fetch(`${API_BASE}/deployments/${deploymentId}/execute`, {
+    mutationFn: async ({
+      stack_name,
+      host_id,
+    }: {
+      stack_name: string
+      host_id: string
+    }): Promise<{ deployment_id: string }> => {
+      const response = await fetch(`${API_BASE}/deployments/deploy`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         credentials: 'include',
         body: JSON.stringify({
+          stack_name,
+          host_id,
           force_recreate: true,
           pull_images: true,
         }),
@@ -175,127 +54,22 @@ export function useRedeployDeployment() {
 
       if (!response.ok) {
         const error = await response.json().catch(() => ({ detail: response.statusText }))
-        throw new Error(error.detail || 'Failed to redeploy')
-      }
-
-      return response.json()
-    },
-    onSuccess: (_, deploymentId) => {
-      // Invalidate specific deployment to refetch
-      queryClient.invalidateQueries({ queryKey: ['deployments', deploymentId] })
-      queryClient.invalidateQueries({ queryKey: ['deployments'] })
-      toast.success('Redeployment started - pulling latest images and recreating containers')
-    },
-    onError: (error: Error) => {
-      toast.error(`Failed to redeploy: ${error.message}`)
-    },
-  })
-}
-
-/**
- * Update a deployment's target stack or host (v2.2.7+).
- * Allowed in: 'planning', 'failed', 'rolled_back', 'partial', or 'running' states.
- *
- * Note: To update compose content, use PUT /api/stacks/{name} instead.
- * This endpoint only changes which stack or host a deployment references.
- */
-export function useUpdateDeployment() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: async ({
-      deploymentId,
-      stack_name,
-      host_id,
-    }: {
-      deploymentId: string
-      stack_name?: string
-      host_id?: string
-    }) => {
-      const body: { stack_name?: string; host_id?: string } = {}
-      if (stack_name) body.stack_name = stack_name
-      if (host_id) body.host_id = host_id
-
-      const response = await fetch(`${API_BASE}/deployments/${deploymentId}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        credentials: 'include',
-        body: JSON.stringify(body),
-      })
-
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({ detail: response.statusText }))
-        throw new Error(error.detail || 'Failed to update deployment')
-      }
-
-      return response.json() as Promise<Deployment>
-    },
-    onSuccess: (_, { deploymentId }) => {
-      // Invalidate specific deployment and list
-      queryClient.invalidateQueries({ queryKey: ['deployments', deploymentId] })
-      queryClient.invalidateQueries({ queryKey: ['deployments'] })
-      toast.success('Deployment updated successfully')
-    },
-    onError: (error: Error) => {
-      toast.error(`Failed to update deployment: ${error.message}`)
-    },
-  })
-}
-
-/**
- * Delete a deployment
- */
-export function useDeleteDeployment() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: async (deploymentId: string) => {
-      const response = await fetch(`${API_BASE}/deployments/${deploymentId}`, {
-        method: 'DELETE',
-        credentials: 'include',
-      })
-
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({ detail: response.statusText }))
-        throw new Error(error.detail || 'Failed to delete deployment')
+        throw new Error(error.detail || 'Failed to deploy stack')
       }
 
       return response.json()
     },
     onSuccess: () => {
-      // Invalidate deployments list
-      queryClient.invalidateQueries({ queryKey: ['deployments'] })
-      toast.success('Deployment deleted')
+      // Invalidate stacks to refresh deployed_to info
+      queryClient.invalidateQueries({ queryKey: ['stacks'] })
     },
     onError: (error: Error) => {
-      toast.error(`Failed to delete deployment: ${error.message}`)
+      toast.error(`Failed to deploy: ${error.message}`)
     },
   })
 }
 
 // ==================== Import Stack Hooks ====================
-
-/**
- * Fetch known stacks from container labels
- */
-export function useKnownStacks() {
-  return useQuery({
-    queryKey: ['known-stacks'],
-    queryFn: async () => {
-      const response = await fetch(`${API_BASE}/deployments/known-stacks`, {
-        credentials: 'include',
-      })
-
-      if (!response.ok) {
-        throw new Error(`Failed to fetch known stacks: ${response.statusText}`)
-      }
-
-      return response.json() as Promise<KnownStack[]>
-    },
-  })
-}
 
 /**
  * Import an existing stack
@@ -322,8 +96,8 @@ export function useImportDeployment() {
       return response.json() as Promise<ImportDeploymentResponse>
     },
     onSuccess: (result) => {
-      // Invalidate deployments list to refetch
-      queryClient.invalidateQueries({ queryKey: ['deployments'] })
+      // Invalidate stacks list to refetch
+      queryClient.invalidateQueries({ queryKey: ['stacks'] })
 
       if (result.success && result.deployments_created.length > 0) {
         const count = result.deployments_created.length
@@ -408,106 +182,6 @@ export function useReadComposeFile() {
     onError: (error: Error) => {
       toast.error(`Failed to read compose file: ${error.message}`)
     },
-  })
-}
-
-// ==================== Orphan Detection Hooks ====================
-
-/**
- * Fetch orphaned deployments (references missing stacks)
- */
-export function useOrphanedDeployments() {
-  return useQuery({
-    queryKey: ['deployments', 'orphaned'],
-    queryFn: async () => {
-      const response = await fetch(`${API_BASE}/deployments/orphaned`, {
-        credentials: 'include',
-      })
-
-      if (!response.ok) {
-        throw new Error(`Failed to fetch orphaned deployments: ${response.statusText}`)
-      }
-
-      return response.json() as Promise<OrphanedDeploymentsResponse>
-    },
-    // Poll every 30 seconds to catch new orphans
-    refetchInterval: 30000,
-  })
-}
-
-/**
- * Repair an orphaned deployment
- */
-export function useRepairDeployment() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: async ({
-      deploymentId,
-      action,
-      newStackName,
-    }: {
-      deploymentId: string
-      action: RepairAction
-      newStackName?: string
-    }) => {
-      const response = await fetch(`${API_BASE}/deployments/${deploymentId}/repair`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        credentials: 'include',
-        body: JSON.stringify({
-          action,
-          new_stack_name: newStackName,
-        }),
-      })
-
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({ detail: response.statusText }))
-        throw new Error(error.detail || 'Failed to repair deployment')
-      }
-
-      return response.json()
-    },
-    onSuccess: (_, { action }) => {
-      queryClient.invalidateQueries({ queryKey: ['deployments'] })
-      queryClient.invalidateQueries({ queryKey: ['stacks'] })
-
-      const actionMessages: Record<RepairAction, string> = {
-        reassign: 'Deployment reassigned to new stack',
-        delete: 'Deployment deleted',
-        recreate: 'Stack recreated from running containers',
-      }
-      toast.success(actionMessages[action])
-    },
-    onError: (error: Error) => {
-      toast.error(`Failed to repair deployment: ${error.message}`)
-    },
-  })
-}
-
-/**
- * Preview compose.yaml from containers (for recreate action)
- */
-export function useComposePreview(deploymentId: string | null) {
-  return useQuery({
-    queryKey: ['deployments', deploymentId, 'compose-preview'],
-    queryFn: async () => {
-      if (!deploymentId) throw new Error('Deployment ID required')
-
-      const response = await fetch(`${API_BASE}/deployments/${deploymentId}/compose-preview`, {
-        credentials: 'include',
-      })
-
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({ detail: response.statusText }))
-        throw new Error(error.detail || 'Failed to preview compose')
-      }
-
-      return response.json() as Promise<ComposePreviewResponse>
-    },
-    enabled: !!deploymentId,
   })
 }
 

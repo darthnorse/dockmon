@@ -118,7 +118,6 @@ class PeriodicJobsManager:
 
         Prevents alerts table from filling with orphaned alerts.
         """
-        from datetime import datetime, timezone, timedelta
         from database import AlertV2
         from utils.async_docker import async_docker_call
 

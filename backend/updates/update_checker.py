@@ -239,6 +239,23 @@ class UpdateChecker:
         # Get current digest from Docker API (the actual digest the container is running)
         current_digest = await self._get_container_image_digest(container)
         if not current_digest:
+            # Fallback for digest-pinned images (Issue #143)
+            # Images pulled by digest (e.g., image@sha256:...) don't have RepoDigests.
+            # Query registry for the current image tag's digest instead.
+            current_image = container.get("image")
+            if current_image and '@' not in current_image:
+                # Not a digest reference (image@sha256:...) - query registry
+                # Images without explicit tag default to :latest
+                logger.info(f"[{container['name']}] No local digest available, querying registry for {current_image}")
+                try:
+                    current_result = await self.registry.resolve_tag(current_image, auth=auth)
+                    if current_result:
+                        current_digest = current_result["digest"]
+                        logger.info(f"[{container['name']}] Got current digest from registry: {current_digest[:16]}...")
+                except Exception as e:
+                    logger.warning(f"[{container['name']}] Registry fallback failed: {e}")
+
+        if not current_digest:
             logger.warning(f"Could not get current digest for {container['name']}")
             return None
 

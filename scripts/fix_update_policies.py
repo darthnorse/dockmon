@@ -69,7 +69,7 @@ else:
         for cat, pat in missing:
             try:
                 cursor.execute(
-                    "INSERT INTO update_policies (category, pattern, enabled, created_at, updated_at) VALUES (?, ?, 1, ?, ?)",
+                    "INSERT INTO update_policies (category, pattern, enabled, action, created_at, updated_at) VALUES (?, ?, 1, 'warn', ?, ?)",
                     (cat, pat, now, now)
                 )
                 inserted += 1
@@ -150,7 +150,7 @@ def run_local(db_path: str, dry_run: bool) -> int:
     for cat, pat in missing:
         try:
             cursor.execute(
-                "INSERT INTO update_policies (category, pattern, enabled, created_at, updated_at) VALUES (?, ?, 1, ?, ?)",
+                "INSERT INTO update_policies (category, pattern, enabled, action, created_at, updated_at) VALUES (?, ?, 1, 'warn', ?, ?)",
                 (cat, pat, now, now)
             )
             inserted += 1

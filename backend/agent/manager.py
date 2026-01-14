@@ -834,8 +834,8 @@ class AgentManager:
                 existing_host.updated_at = now
                 logger.info(f"Marked old host {old_host_name} as migrated")
 
-                # Step 5: Increment token use count
-                token_record = session.query(RegistrationToken).filter_by(token=token).first()
+                # Step 5: Increment token use count (with_for_update for consistency with register_agent)
+                token_record = session.query(RegistrationToken).filter_by(token=token).with_for_update().first()
                 if token_record:
                     token_record.use_count += 1
                     token_record.last_used_at = now
@@ -1169,8 +1169,8 @@ class AgentManager:
                     if old_host_id in self.monitor.clients:
                         try:
                             self.monitor.clients[old_host_id].close()
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Error closing old client for {old_host_id}: {e}")
                         del self.monitor.clients[old_host_id]
 
                 return {

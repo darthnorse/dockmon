@@ -300,8 +300,8 @@ class TestNtfyNotifications:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_ntfy_strips_markdown_formatting(self, notification_service):
-        """Test that markdown formatting is stripped for plain text"""
+    async def test_ntfy_preserves_markdown_formatting(self, notification_service):
+        """Test that markdown formatting is preserved with Markdown header enabled"""
         config = {
             'server_url': 'https://ntfy.sh',
             'topic': 'alerts'
@@ -316,17 +316,17 @@ class TestNtfyNotifications:
 
         assert result is True
         call_args = notification_service.http_client.post.call_args
-        # Message sent as plain text body via content= parameter
         content = call_args[1]['content']
-        # Markdown should be stripped
-        assert '**' not in content
-        assert '`' not in content
-        assert 'Alert' in content
-        assert 'nginx' in content
+        headers = call_args[1]['headers']
+        # Markdown should be preserved
+        assert '**Alert**' in content
+        assert '`nginx`' in content
+        # Markdown header should be set
+        assert headers.get('Markdown') == 'yes'
 
     @pytest.mark.asyncio
-    async def test_ntfy_strips_emojis(self, notification_service):
-        """Test that emojis are stripped from message"""
+    async def test_ntfy_preserves_emojis(self, notification_service):
+        """Test that emojis are preserved in message"""
         config = {
             'server_url': 'https://ntfy.sh',
             'topic': 'alerts'
@@ -341,9 +341,9 @@ class TestNtfyNotifications:
 
         assert result is True
         content = notification_service.http_client.post.call_args[1]['content']
-        # Common alert emojis should be stripped
-        assert '\U0001f6a8' not in content  # siren emoji
-        assert '\U0001f534' not in content  # red circle
+        # Emojis should be preserved
+        assert '\U0001f6a8' in content  # siren emoji
+        assert '\U0001f534' in content  # red circle
         assert 'Container stopped' in content
 
     @pytest.mark.asyncio

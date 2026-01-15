@@ -36,6 +36,9 @@ interface ContainerInfoTabProps {
 }
 
 export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
+  // CRITICAL: Always use 12-char short ID for API calls (backend expects short IDs)
+  const containerShortId = container.id.slice(0, 12)
+
   const sparklines = useContainerSparklines(makeCompositeKey(container))
   const [autoRestart, setAutoRestart] = useState(false)
   const [desiredState, setDesiredState] = useState<'should_run' | 'on_demand' | 'unspecified'>('unspecified')
@@ -55,7 +58,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
     handleSaveTags,
   } = useContainerTagEditor({
     hostId: container.host_id || '',
-    containerId: container.id,
+    containerId: containerShortId,
     currentTags
   })
 
@@ -80,7 +83,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
     setAutoRestart(checked)
 
     try {
-      await apiClient.post(`/hosts/${container.host_id}/containers/${container.id}/auto-restart`, {
+      await apiClient.post(`/hosts/${container.host_id}/containers/${containerShortId}/auto-restart`, {
         enabled: checked,
         container_name: container.name
       })
@@ -96,7 +99,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
     setDesiredState(newState as typeof desiredState)
 
     try {
-      await apiClient.post(`/hosts/${container.host_id}/containers/${container.id}/desired-state`, {
+      await apiClient.post(`/hosts/${container.host_id}/containers/${containerShortId}/desired-state`, {
         desired_state: newState,
         container_name: container.name,
         web_ui_url: webUiUrl || null
@@ -110,7 +113,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
 
   const handleSaveWebUiUrl = async () => {
     try {
-      await apiClient.post(`/hosts/${container.host_id}/containers/${container.id}/desired-state`, {
+      await apiClient.post(`/hosts/${container.host_id}/containers/${containerShortId}/desired-state`, {
         desired_state: desiredState,
         container_name: container.name,
         web_ui_url: webUiUrl || null
@@ -433,7 +436,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
                 <span className="text-xs text-muted-foreground">
                   {container.cpu_percent !== null && container.cpu_percent !== undefined
                     ? `${container.cpu_percent.toFixed(0)}%`
-                    : '—'}
+                    : '-'}
                 </span>
               </div>
               {cpuData.length > 0 ? (
@@ -455,7 +458,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
                   <span className="font-medium text-sm">Memory Usage</span>
                 </div>
                 <span className="text-xs text-muted-foreground">
-                  {container.memory_usage ? formatBytes(container.memory_usage) : '—'}
+                  {container.memory_usage ? formatBytes(container.memory_usage) : '-'}
                   {container.memory_limit && ` / ${formatBytes(container.memory_limit)}`}
                 </span>
               </div>

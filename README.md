@@ -2,7 +2,7 @@
 
 A comprehensive Docker container monitoring and management platform with real-time monitoring, intelligent auto-restart, multi-channel alerting, and complete event logging.
 
-![DockMon](https://img.shields.io/badge/DockMon-v2.1.10-blue.svg)
+![DockMon](https://img.shields.io/badge/DockMon-v2.2.6-blue.svg)
 ![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)
 ![React](https://img.shields.io/badge/React-18.3-61DAFB?logo=react&logoColor=white)
@@ -17,6 +17,7 @@ A comprehensive Docker container monitoring and management platform with real-ti
 ## Key Features
 
 - **Multi-Host Monitoring** - Monitor containers across unlimited Docker hosts (local and remote)
+- **Agent-Based Remote Monitoring** - Lightweight Go agent for secure remote Docker monitoring without exposing Docker ports. Runs as a container or systemd service
 - **Real-Time Dashboard** - Drag-and-drop customizable widgets with WebSocket updates
 - **Real-Time Statistics** - Live CPU, memory, network metrics
 - **Real-Time Container Logs** - View logs from multiple containers simultaneously with live updates
@@ -47,7 +48,7 @@ A comprehensive Docker container monitoring and management platform with real-ti
 
 ## Support & Community
 
-- **[Discord Server](https://discord.gg/nj5khyMb)** - Join the community, get help, share tips
+- **[Discord Server](https://discord.gg/wEZxeet2N3)** - Join the community, get help, share tips
 - **[Report Issues](https://github.com/darthnorse/dockmon/issues)** - Found a bug?
 - **[Discussions](https://github.com/darthnorse/dockmon/discussions)** - Ask questions, share ideas
 - **[Wiki](https://github.com/darthnorse/dockmon/wiki)** - Complete documentation

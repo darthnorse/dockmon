@@ -9,7 +9,10 @@ import time as time_module
 import subprocess
 import os
 from datetime import datetime, time as dt_time, timezone, timedelta
+import re
 
+from cronsim import CronSim
+from cronsim.cronsim import CronSimError
 from database import DatabaseManager
 from event_logger import EventLogger, EventSeverity, EventType
 from auth.session_manager import session_manager
@@ -18,6 +21,75 @@ from utils.async_docker import async_docker_call
 from updates.dockmon_update_checker import get_dockmon_update_checker
 
 logger = logging.getLogger(__name__)
+
+# Pattern to detect HH:MM format (simple time)
+SIMPLE_TIME_PATTERN = re.compile(r'^([0-1]?[0-9]|2[0-3]):([0-5][0-9])$')
+
+
+def is_cron_expression(schedule: str) -> bool:
+    """
+    Detect if a schedule string is a cron expression or simple HH:MM time.
+
+    Args:
+        schedule: Schedule string (e.g., "02:00" or "0 4 * * 6")
+
+    Returns:
+        True if cron expression, False if simple HH:MM time
+    """
+    # Simple HH:MM format
+    if SIMPLE_TIME_PATTERN.match(schedule.strip()):
+        return False
+
+    # Try to parse as cron - if it works, it's a cron expression
+    try:
+        # CronSim validates on construction
+        CronSim(schedule.strip(), datetime.now().astimezone())
+        return True
+    except CronSimError:
+        return False
+
+
+def calculate_next_cron_run(cron_expression: str) -> datetime:
+    """
+    Calculate the next run time for a cron expression.
+
+    Args:
+        cron_expression: Cron expression (e.g., "0 4 * * 6" for 4am every Saturday)
+
+    Returns:
+        Next run time as datetime (timezone-aware, local time)
+    """
+    # Use local time for cron calculations (respects TZ env var)
+    local_now = datetime.now().astimezone()
+    cron = CronSim(cron_expression.strip(), local_now)
+    return next(cron)
+
+
+def get_previous_cron_occurrence(cron_expression: str, reference_time: datetime) -> datetime:
+    """
+    Get the most recent cron occurrence before reference_time.
+
+    Since CronSim iterates forward only, we start from a past point
+    and iterate until we find the last occurrence before reference_time.
+
+    Args:
+        cron_expression: Cron expression (e.g., "0 4 * * 6")
+        reference_time: The reference point (typically now)
+
+    Returns:
+        Most recent cron trigger before reference_time, or None if not found
+    """
+    # Look back 35 days to cover monthly schedules (31 days + margin)
+    # This handles daily, weekly, and monthly cron expressions
+    search_start = reference_time - timedelta(days=35)
+    cron = CronSim(cron_expression.strip(), search_start)
+
+    prev = None
+    for trigger in cron:
+        if trigger >= reference_time:
+            break
+        prev = trigger
+    return prev
 
 
 class PeriodicJobsManager:
@@ -28,6 +100,12 @@ class PeriodicJobsManager:
         self.event_logger = event_logger
         self.monitor = None  # Will be set by monitor.py after initialization
         self._last_update_check = None  # Track when we last ran update check
+        self._schedule_changed = asyncio.Event()  # Signal to wake sleep when schedule changes
+
+    def notify_schedule_changed(self):
+        """Signal that the update schedule has changed, waking the sleeping task."""
+        logger.info("Update schedule changed, waking periodic job to recalculate next run")
+        self._schedule_changed.set()
 
     async def auto_resolve_stale_alerts(self):
         """
@@ -218,16 +296,22 @@ class PeriodicJobsManager:
                         EventType.STARTUP
                     )
 
+                # Clean up expired action tokens (v2.2.0+)
+                from auth.action_token_auth import cleanup_expired_action_tokens
+                action_tokens_deleted = cleanup_expired_action_tokens(self.db)
+                if action_tokens_deleted > 0:
+                    logger.info(f"Cleaned up {action_tokens_deleted} expired action tokens")
+
+                # Clean up expired registration tokens (v2.2.0+)
+                from agent.manager import AgentManager
+                agent_manager = AgentManager()
+                registration_tokens_deleted = agent_manager.cleanup_expired_registration_tokens()
+                if registration_tokens_deleted > 0:
+                    logger.info(f"Cleaned up {registration_tokens_deleted} expired registration tokens")
+
                 # Clean up stale container state dictionaries (prevent memory leak)
                 if self.monitor:
                     await self.monitor.cleanup_stale_container_state()
-
-                # Clean up stale pull progress entries (defense-in-depth for crashed pulls)
-                # Local import to break circular dependency: periodic_jobs ↔ monitor ↔ update_executor
-                from updates.update_executor import get_update_executor
-                update_executor = get_update_executor()
-                if update_executor:
-                    await update_executor.cleanup_stale_pull_progress()
 
                 # Refresh host system info (OS version, Docker version, etc.)
                 if self.monitor:
@@ -244,6 +328,11 @@ class PeriodicJobsManager:
                 containers = await self.monitor.get_containers()
                 current_container_keys = {make_composite_key(c.host_id, c.short_id) for c in containers}
 
+                # Track which hosts successfully returned containers (Issue #116)
+                # Only delete stale entries for hosts that are online and reporting containers
+                # This prevents deleting data when agent hosts haven't reconnected yet
+                hosts_with_containers = {c.host_id for c in containers}
+
                 # Also track SHORT IDs only for tables that use SHORT IDs instead of composite keys
                 current_container_short_ids_by_host = {}
                 for c in containers:
@@ -255,8 +344,13 @@ class PeriodicJobsManager:
 
                 with self.db.get_session() as session:
                     # 1. Clean up container_updates (uses composite key)
+                    # Only clean up for hosts that are online (Issue #116)
                     all_updates = session.query(ContainerUpdate).all()
-                    stale_updates = [u for u in all_updates if u.container_id not in current_container_keys]
+                    stale_updates = [
+                        u for u in all_updates
+                        if u.container_id not in current_container_keys
+                        and u.host_id in hosts_with_containers  # Only if host is online
+                    ]
                     if stale_updates:
                         for stale in stale_updates:
                             session.delete(stale)
@@ -264,8 +358,13 @@ class PeriodicJobsManager:
                         logger.debug(f"Cleaned up {len(stale_updates)} stale container_updates entries")
 
                     # 2. Clean up container_http_health_checks (uses composite key)
+                    # Only clean up for hosts that are online (Issue #116)
                     all_health_checks = session.query(ContainerHttpHealthCheck).all()
-                    stale_health_checks = [h for h in all_health_checks if h.container_id not in current_container_keys]
+                    stale_health_checks = [
+                        h for h in all_health_checks
+                        if h.container_id not in current_container_keys
+                        and h.host_id in hosts_with_containers  # Only if host is online
+                    ]
                     if stale_health_checks:
                         for stale in stale_health_checks:
                             session.delete(stale)
@@ -273,9 +372,13 @@ class PeriodicJobsManager:
                         logger.debug(f"Cleaned up {len(stale_health_checks)} stale container_http_health_checks entries")
 
                     # 3. Clean up auto_restart_configs (uses SHORT ID, not composite)
+                    # Only clean up for hosts that are online (Issue #116)
                     all_restart_configs = session.query(AutoRestartConfig).all()
                     stale_restart_configs = []
                     for config in all_restart_configs:
+                        # Skip if host is offline - can't confirm container is gone
+                        if config.host_id not in hosts_with_containers:
+                            continue
                         # Check if container still exists on this host
                         host_containers = current_container_short_ids_by_host.get(config.host_id, set())
                         if config.container_id not in host_containers:
@@ -287,9 +390,13 @@ class PeriodicJobsManager:
                         logger.debug(f"Cleaned up {len(stale_restart_configs)} stale auto_restart_configs entries")
 
                     # 4. Clean up container_desired_states (uses SHORT ID, not composite)
+                    # Only clean up for hosts that are online (Issue #116)
                     all_desired_states = session.query(ContainerDesiredState).all()
                     stale_desired_states = []
                     for state in all_desired_states:
+                        # Skip if host is offline - can't confirm container is gone
+                        if state.host_id not in hosts_with_containers:
+                            continue
                         # Check if container still exists on this host
                         host_containers = current_container_short_ids_by_host.get(state.host_id, set())
                         if state.container_id not in host_containers:
@@ -307,7 +414,11 @@ class PeriodicJobsManager:
 
                 # Clean up orphaned deployment metadata (for containers deleted outside DockMon)
                 # Part of deployment v2.1 remediation (Phase 1.6)
-                deployment_metadata_cleaned = self.db.cleanup_orphaned_deployment_metadata(current_container_keys)
+                # Pass hosts_with_containers to avoid cleaning up for offline hosts (Issue #116)
+                deployment_metadata_cleaned = self.db.cleanup_orphaned_deployment_metadata(
+                    current_container_keys,
+                    hosts_with_containers=hosts_with_containers
+                )
                 if deployment_metadata_cleaned > 0:
                     self.event_logger.log_system_event(
                         "Deployment Metadata Cleanup",
@@ -317,7 +428,11 @@ class PeriodicJobsManager:
                     )
 
                 # Clean up orphaned RuleRuntime entries (for deleted containers)
-                runtime_cleaned = self.db.cleanup_orphaned_rule_runtime(current_container_keys)
+                # Pass hosts_with_containers to avoid cleaning up for offline hosts (Issue #116)
+                runtime_cleaned = self.db.cleanup_orphaned_rule_runtime(
+                    current_container_keys,
+                    hosts_with_containers=hosts_with_containers
+                )
                 if runtime_cleaned > 0:
                     self.event_logger.log_system_event(
                         "Rule Runtime Cleanup",
@@ -364,40 +479,60 @@ class PeriodicJobsManager:
 
                 # Calculate sleep duration until next scheduled check (Issue #49 fix)
                 # This ensures checks run at configured time, not 24h after container restart
+                # Supports both simple HH:MM format and cron expressions (Issue #103)
                 try:
                     settings = self.db.get_settings()
-                    check_time_str = settings.update_check_time if hasattr(settings, 'update_check_time') and settings.update_check_time else "02:00"
+                    schedule_str = settings.update_check_time if hasattr(settings, 'update_check_time') and settings.update_check_time else "02:00"
 
-                    # Parse configured time (user's local time based on TZ env var)
-                    hour, minute = map(int, check_time_str.split(":"))
+                    if is_cron_expression(schedule_str):
+                        # Cron expression - use croniter for scheduling
+                        next_run = calculate_next_cron_run(schedule_str)
+                        sleep_seconds = (next_run - datetime.now().astimezone()).total_seconds()
+                        sleep_seconds = max(60, sleep_seconds)  # Minimum 60 seconds
 
-                    # Get system timezone offset from TZ environment variable
-                    # This respects the TZ setting in docker-compose.yml
-                    local_now = datetime.now().astimezone()
-                    tz_offset_seconds = local_now.utcoffset().total_seconds()
-                    timezone_offset = int(tz_offset_seconds / 60)  # Convert to minutes
+                        logger.info(
+                            f"Next update check scheduled for {next_run.strftime('%Y-%m-%d %H:%M:%S %Z')} "
+                            f"(cron: {schedule_str}, sleeping {sleep_seconds/3600:.1f} hours)"
+                        )
+                    else:
+                        # Simple HH:MM format - use existing logic
+                        hour, minute = map(int, schedule_str.split(":"))
 
-                    # Convert local time to UTC for scheduling
-                    # timezone_offset is minutes from UTC (e.g., -300 for ET, +60 for CET)
-                    # User enters local time, we need UTC: UTC = local - offset
-                    total_minutes_local = hour * 60 + minute
-                    total_minutes_utc = total_minutes_local - timezone_offset
+                        # Get system timezone offset from TZ environment variable
+                        # This respects the TZ setting in docker-compose.yml
+                        local_now = datetime.now().astimezone()
+                        tz_offset_seconds = local_now.utcoffset().total_seconds()
+                        timezone_offset = int(tz_offset_seconds / 60)  # Convert to minutes
 
-                    # Handle day wraparound (e.g., 1 AM ET = 6 AM UTC, or 11 PM ET = 4 AM UTC next day)
-                    target_hour_utc = (total_minutes_utc // 60) % 24
-                    target_minute_utc = total_minutes_utc % 60
-                    target_time = dt_time(target_hour_utc, target_minute_utc)
+                        # Convert local time to UTC for scheduling
+                        # timezone_offset is minutes from UTC (e.g., -300 for ET, +60 for CET)
+                        # User enters local time, we need UTC: UTC = local - offset
+                        total_minutes_local = hour * 60 + minute
+                        total_minutes_utc = total_minutes_local - timezone_offset
 
-                    # Calculate dynamic sleep duration
-                    sleep_seconds = self._calculate_sleep_until_next_check(target_time)
-                    next_check_time = datetime.now(timezone.utc) + timedelta(seconds=sleep_seconds)
+                        # Handle day wraparound (e.g., 1 AM ET = 6 AM UTC, or 11 PM ET = 4 AM UTC next day)
+                        target_hour_utc = (total_minutes_utc // 60) % 24
+                        target_minute_utc = total_minutes_utc % 60
+                        target_time = dt_time(target_hour_utc, target_minute_utc)
 
-                    logger.info(
-                        f"Next update check scheduled for {next_check_time.strftime('%Y-%m-%d %H:%M:%S UTC')} "
-                        f"(sleeping {sleep_seconds/3600:.1f} hours)"
-                    )
+                        # Calculate dynamic sleep duration
+                        sleep_seconds = self._calculate_sleep_until_next_check(target_time)
+                        next_check_time = datetime.now(timezone.utc) + timedelta(seconds=sleep_seconds)
 
-                    await asyncio.sleep(sleep_seconds)
+                        logger.info(
+                            f"Next update check scheduled for {next_check_time.strftime('%Y-%m-%d %H:%M:%S UTC')} "
+                            f"(sleeping {sleep_seconds/3600:.1f} hours)"
+                        )
+
+                    # Interruptible sleep - can be woken early if schedule changes
+                    try:
+                        await asyncio.wait_for(self._schedule_changed.wait(), timeout=sleep_seconds)
+                        # Event was set - schedule changed, clear and recalculate
+                        self._schedule_changed.clear()
+                        logger.info("Schedule change detected, recalculating next run time")
+                        continue  # Skip to next iteration to recalculate
+                    except asyncio.TimeoutError:
+                        pass  # Normal timeout - continue to run update check
 
                 except Exception as e:
                     # Fallback to 24-hour sleep on error
@@ -413,48 +548,73 @@ class PeriodicJobsManager:
         """
         Check if it's time to run update checker based on configured schedule.
 
-        Runs once per day at the configured time (default: 02:00).
-        Uses _last_update_check to ensure we don't run multiple times.
+        Supports both simple HH:MM format (daily at configured time) and cron
+        expressions (flexible scheduling like "0 4 * * 6" for weekly Saturday 4am).
+
+        Uses _last_update_check to ensure we don't run multiple times per schedule.
         """
         from updates.update_checker import get_update_checker
 
         try:
             settings = self.db.get_settings()
-            check_time_str = settings.update_check_time if hasattr(settings, 'update_check_time') and settings.update_check_time else "02:00"
-
-            # Parse configured time (user's local time based on TZ env var)
-            hour, minute = map(int, check_time_str.split(":"))
-
-            # Get system timezone offset from TZ environment variable
-            # This respects the TZ setting in docker-compose.yml
-            local_now = datetime.now().astimezone()
-            tz_offset_seconds = local_now.utcoffset().total_seconds()
-            timezone_offset = int(tz_offset_seconds / 60)  # Convert to minutes
-
-            # Convert local time to UTC for comparison
-            # timezone_offset is minutes from UTC (e.g., -300 for ET, +60 for CET)
-            # User enters local time, we need UTC: UTC = local - offset
-            total_minutes_local = hour * 60 + minute
-            total_minutes_utc = total_minutes_local - timezone_offset
-
-            # Handle day wraparound
-            target_hour_utc = (total_minutes_utc // 60) % 24
-            target_minute_utc = total_minutes_utc % 60
-            target_time = dt_time(target_hour_utc, target_minute_utc)
+            schedule_str = settings.update_check_time if hasattr(settings, 'update_check_time') and settings.update_check_time else "02:00"
 
             now = datetime.now(timezone.utc)
-            current_time = now.time()
-
-            # Check if we're past the target time and haven't run today
             should_run = False
-            if self._last_update_check is None:
-                # First run - run immediately
-                should_run = True
-                logger.info("First update check - running immediately")
-            elif self._last_update_check.date() < now.date() and current_time >= target_time:
-                # Haven't run today and we're past the target time
-                should_run = True
-                logger.info(f"Running scheduled update check (target time: {check_time_str}, UTC: {target_hour_utc:02d}:{target_minute_utc:02d})")
+
+            if is_cron_expression(schedule_str):
+                # Cron expression scheduling (Issue #103)
+                # Determine if we should run based on cron schedule
+                if self._last_update_check is None:
+                    # First run - run immediately
+                    should_run = True
+                    logger.info("First update check - running immediately")
+                else:
+                    # Check if the last scheduled cron time is after our last check
+                    # Use local time for cron calculations (respects TZ env var)
+                    local_now = datetime.now().astimezone()
+                    # Get the previous occurrence (the one that just triggered)
+                    prev_run = get_previous_cron_occurrence(schedule_str, local_now)
+
+                    # Convert last_update_check to local time for comparison
+                    last_check_local = self._last_update_check.astimezone()
+
+                    if prev_run and prev_run > last_check_local:
+                        # There's been a scheduled cron trigger since our last check
+                        should_run = True
+                        logger.info(f"Running scheduled update check (cron: {schedule_str}, triggered: {prev_run.strftime('%Y-%m-%d %H:%M %Z')})")
+            else:
+                # Simple HH:MM format (daily at configured time)
+                hour, minute = map(int, schedule_str.split(":"))
+
+                # Get system timezone offset from TZ environment variable
+                # This respects the TZ setting in docker-compose.yml
+                local_now = datetime.now().astimezone()
+                tz_offset_seconds = local_now.utcoffset().total_seconds()
+                timezone_offset = int(tz_offset_seconds / 60)  # Convert to minutes
+
+                # Convert local time to UTC for comparison
+                # timezone_offset is minutes from UTC (e.g., -300 for ET, +60 for CET)
+                # User enters local time, we need UTC: UTC = local - offset
+                total_minutes_local = hour * 60 + minute
+                total_minutes_utc = total_minutes_local - timezone_offset
+
+                # Handle day wraparound
+                target_hour_utc = (total_minutes_utc // 60) % 24
+                target_minute_utc = total_minutes_utc % 60
+                target_time = dt_time(target_hour_utc, target_minute_utc)
+
+                current_time = now.time()
+
+                # Check if we're past the target time and haven't run today
+                if self._last_update_check is None:
+                    # First run - run immediately
+                    should_run = True
+                    logger.info("First update check - running immediately")
+                elif self._last_update_check.date() < now.date() and current_time >= target_time:
+                    # Haven't run today and we're past the target time
+                    should_run = True
+                    logger.info(f"Running scheduled update check (target time: {schedule_str}, UTC: {target_hour_utc:02d}:{target_minute_utc:02d})")
 
             if should_run:
                 # Step 1: Check for updates
@@ -478,14 +638,34 @@ class PeriodicJobsManager:
                     update_stats = await executor.execute_auto_updates()
 
                     # Log execution results
-                    if update_stats['attempted'] > 0:
+                    # Note: 'total' is the number of containers eligible for auto-update
+                    if update_stats['total'] > 0:
                         self.event_logger.log_system_event(
                             "Container Auto-Update",
-                            f"Attempted {update_stats['attempted']} auto-updates, {update_stats['successful']} successful, {update_stats['failed']} failed",
+                            f"Processed {update_stats['total']} auto-updates: {update_stats['successful']} successful, {update_stats['failed']} failed, {update_stats['skipped']} skipped",
                             EventSeverity.INFO if update_stats['failed'] == 0 else EventSeverity.WARNING,
                             EventType.STARTUP
                         )
                         logger.info(f"Auto-update execution complete: {update_stats}")
+
+                # Also check DockMon and Agent updates (tied to container update schedule)
+                try:
+                    dockmon_checker = get_dockmon_update_checker(self.db)
+
+                    # Check DockMon updates
+                    dockmon_result = await dockmon_checker.check_for_update()
+                    if dockmon_result.get('update_available'):
+                        logger.info(
+                            f"DockMon update available: "
+                            f"{dockmon_result['current_version']} → {dockmon_result['latest_version']}"
+                        )
+
+                    # Check Agent updates
+                    agent_result = await dockmon_checker.check_for_agent_update()
+                    if agent_result.get('latest_version'):
+                        logger.debug(f"Latest Agent version: {agent_result['latest_version']}")
+                except Exception as e:
+                    logger.warning(f"Error checking DockMon/Agent updates: {e}")
 
                 # Update last check time
                 self._last_update_check = now
@@ -553,6 +733,26 @@ class PeriodicJobsManager:
             # Update last check time
             self._last_update_check = datetime.now(timezone.utc)
             logger.info(f"Manual update check complete: {stats}")
+
+            # Also check DockMon and Agent updates (tied to container update schedule)
+            try:
+                checker = get_dockmon_update_checker(self.db)
+
+                # Check DockMon updates
+                dockmon_result = await checker.check_for_update()
+                if dockmon_result.get('update_available'):
+                    logger.info(
+                        f"DockMon update available: "
+                        f"{dockmon_result['current_version']} → {dockmon_result['latest_version']}"
+                    )
+
+                # Check Agent updates
+                agent_result = await checker.check_for_agent_update()
+                if agent_result.get('latest_version'):
+                    logger.debug(f"Latest Agent version: {agent_result['latest_version']}")
+            except Exception as e:
+                logger.warning(f"Error checking DockMon/Agent updates: {e}")
+
             return stats
 
         except Exception as e:
@@ -909,15 +1109,16 @@ class PeriodicJobsManager:
 
     async def check_dockmon_update_once(self):
         """
-        Check for DockMon updates once (called on startup).
+        Check for DockMon and Agent updates once (called on startup).
         Does not loop - just runs a single check.
         """
         try:
-            logger.info("Checking for DockMon updates on startup...")
+            logger.info("Checking for DockMon and Agent updates on startup...")
 
             checker = get_dockmon_update_checker(self.db)
-            result = await checker.check_for_update()
 
+            # Check DockMon updates
+            result = await checker.check_for_update()
             if result.get('update_available'):
                 logger.info(
                     f"DockMon update available: "
@@ -928,45 +1129,15 @@ class PeriodicJobsManager:
             else:
                 logger.info(f"DockMon is up to date: {result['current_version']}")
 
+            # Also check Agent updates
+            agent_result = await checker.check_for_agent_update()
+            if agent_result.get('latest_version'):
+                logger.info(f"Latest Agent version from GitHub: {agent_result['latest_version']}")
+            elif agent_result.get('error'):
+                logger.debug(f"Agent update check failed: {agent_result['error']}")
+
         except Exception as e:
-            logger.warning(f"Error checking for DockMon updates on startup: {e}")
-
-    async def check_dockmon_updates_periodic(self):
-        """
-        Periodic task: Check for DockMon application updates from GitHub.
-        Runs every 6 hours (hardcoded).
-
-        This is separate from container update checks (which run daily at configured time).
-        Checks GitHub releases for new DockMon versions and caches result in database.
-        Frontend polls settings to detect updates and show notification banner.
-        """
-        while True:
-            try:
-                logger.debug("Running periodic DockMon update check...")
-
-                checker = get_dockmon_update_checker(self.db)
-                result = await checker.check_for_update()
-
-                if result.get('update_available'):
-                    logger.info(
-                        f"DockMon update available: "
-                        f"{result['current_version']} → {result['latest_version']}"
-                    )
-                    # Frontend will detect via settings polling
-                elif result.get('error'):
-                    logger.warning(f"DockMon update check failed: {result['error']}")
-                else:
-                    logger.debug(
-                        f"DockMon is up to date: {result['current_version']}"
-                    )
-
-                # Sleep for 6 hours before next check
-                await asyncio.sleep(6 * 60 * 60)
-
-            except Exception as e:
-                logger.error(f"Error in DockMon update checker: {e}", exc_info=True)
-                # Wait 1 hour before retrying on error
-                await asyncio.sleep(60 * 60)
+            logger.warning(f"Error checking for updates on startup: {e}")
 
     async def cleanup_expired_image_cache(self) -> int:
         """
@@ -987,3 +1158,97 @@ class PeriodicJobsManager:
         except Exception as e:
             logger.error(f"Error cleaning expired image cache: {e}", exc_info=True)
             return 0
+
+    async def validate_engine_ids_periodic(self):
+        """
+        Periodic task: Validate and populate missing engine_ids for all hosts.
+        Runs every 6 hours.
+
+        This ensures:
+        - New hosts from v2.1.0 get engine_id populated
+        - Offline hosts get engine_id when they come online
+        - Engine ID changes are detected (VM cloning, Docker data migration)
+
+        Note: engine_id is also populated on host connect/reconnect (immediate),
+        this periodic check is a safety net for edge cases.
+        """
+        # Wait 5 minutes after startup before first check (let hosts connect first)
+        await asyncio.sleep(5 * 60)
+
+        while True:
+            try:
+                logger.debug("Running periodic engine_id validation...")
+
+                # Get all non-agent hosts that need engine_id check
+                hosts_to_check = []
+                with self.db.get_session() as session:
+                    from database import DockerHostDB
+                    # Get hosts where engine_id is NULL or host is active (to detect changes)
+                    hosts = session.query(DockerHostDB).filter(
+                        DockerHostDB.connection_type.in_(['local', 'remote']),  # Skip agent hosts
+                        DockerHostDB.is_active == True
+                    ).all()
+
+                    for host in hosts:
+                        hosts_to_check.append({
+                            'id': host.id,
+                            'name': host.name,
+                            'url': host.url,
+                            'connection_type': host.connection_type,
+                            'current_engine_id': host.engine_id
+                        })
+
+                # Check each host's engine_id
+                updated_count = 0
+                for host_data in hosts_to_check:
+                    try:
+                        # Get Docker client from monitor
+                        if not self.monitor:
+                            continue
+
+                        client = self.monitor.clients.get(host_data['id'])
+                        if not client:
+                            # Host offline, skip
+                            continue
+
+                        # Fetch current engine_id from Docker
+                        info = await async_docker_call(client.info)
+                        actual_engine_id = info.get('ID')
+
+                        if not actual_engine_id:
+                            continue
+
+                        # Update if NULL or changed (VM clone detection)
+                        if actual_engine_id != host_data['current_engine_id']:
+                            with self.db.get_session() as session:
+                                from database import DockerHostDB
+                                db_host = session.query(DockerHostDB).filter_by(id=host_data['id']).first()
+                                if db_host:
+                                    old_value = db_host.engine_id
+                                    db_host.engine_id = actual_engine_id
+                                    session.commit()
+                                    updated_count += 1
+
+                                    if old_value is None:
+                                        logger.info(f"Populated engine_id for {host_data['name']}: {actual_engine_id[:12]}...")
+                                    else:
+                                        logger.warning(
+                                            f"Engine ID changed for {host_data['name']}! "
+                                            f"Old: {old_value[:12]}..., New: {actual_engine_id[:12]}... "
+                                            f"(Possible VM clone or Docker data migration)"
+                                        )
+
+                    except Exception as e:
+                        logger.debug(f"Failed to check engine_id for {host_data['name']}: {e}")
+                        continue
+
+                if updated_count > 0:
+                    logger.info(f"Engine ID validation: {updated_count} hosts updated")
+
+                # Sleep for 6 hours before next check
+                await asyncio.sleep(6 * 60 * 60)
+
+            except Exception as e:
+                logger.error(f"Error in engine_id validation: {e}", exc_info=True)
+                # Wait 1 hour before retrying on error
+                await asyncio.sleep(60 * 60)

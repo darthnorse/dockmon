@@ -14,6 +14,8 @@ import { Outlet } from 'react-router-dom'
 import { Menu } from 'lucide-react'
 import { Sidebar } from './Sidebar'
 import { BlackoutBanner } from './BlackoutBanner'
+import { MigrationBanner } from './MigrationBanner'
+import { MigrationChoiceModal } from './MigrationChoiceModal'
 import { UpgradeWelcomeModal } from '@/components/UpgradeWelcomeModal'
 import { AppVersionProvider } from '@/lib/contexts/AppVersionContext'
 import { Button } from '@/components/ui/button'
@@ -85,6 +87,12 @@ export function AppLayout() {
       <div className="min-h-screen bg-background">
         {/* Blackout window notification banner */}
         <BlackoutBanner />
+
+        {/* Host migration notification banner */}
+        <MigrationBanner />
+
+        {/* Migration choice modal for cloned VMs */}
+        <MigrationChoiceModal />
 
         {/* Mobile Menu Button */}
         <Button

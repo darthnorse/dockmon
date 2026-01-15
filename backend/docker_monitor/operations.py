@@ -14,6 +14,9 @@ from fastapi import HTTPException
 from event_logger import EventLogger
 from models.docker_models import DockerHost
 from utils.keys import make_composite_key
+from agent.manager import AgentManager
+from agent.command_executor import get_agent_command_executor
+from agent.container_operations import AgentContainerOperations
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +40,23 @@ class ContainerOperations:
         self.db = db
         self.monitor = monitor
 
+        # Initialize agent operations (v2.2.0)
+        # IMPORTANT: Use the singleton to ensure commands and responses use same instance
+        self.agent_manager = AgentManager(monitor=monitor)
+        self.agent_command_executor = get_agent_command_executor()
+        self.agent_operations = AgentContainerOperations(
+            command_executor=self.agent_command_executor,
+            db=db,
+            agent_manager=self.agent_manager,
+            event_logger=monitor.event_logger if monitor else None,
+            monitor=monitor
+        )
+
     async def restart_container(self, host_id: str, container_id: str) -> bool:
         """
         Restart a specific container.
+
+        Routes through agent if available, otherwise uses direct Docker client.
 
         Args:
             host_id: Docker host ID
@@ -51,6 +68,13 @@ class ContainerOperations:
         Raises:
             HTTPException: If host not found or restart fails
         """
+        # Check if host has an agent - route through agent if available (v2.2.0)
+        agent_id = self.agent_manager.get_agent_for_host(host_id)
+        if agent_id:
+            logger.info(f"Routing restart_container for host {host_id} through agent {agent_id}")
+            return await self.agent_operations.restart_container(host_id, container_id)
+
+        # Legacy path: Direct Docker socket access
         from utils.async_docker import async_docker_call, async_container_restart
 
         if host_id not in self.clients:
@@ -118,6 +142,8 @@ class ContainerOperations:
         """
         Stop a specific container.
 
+        Routes through agent if available, otherwise uses direct Docker client.
+
         Args:
             host_id: Docker host ID
             container_id: Container ID
@@ -128,6 +154,13 @@ class ContainerOperations:
         Raises:
             HTTPException: If host not found or stop fails
         """
+        # Check if host has an agent - route through agent if available (v2.2.0)
+        agent_id = self.agent_manager.get_agent_for_host(host_id)
+        if agent_id:
+            logger.info(f"Routing stop_container for host {host_id} through agent {agent_id}")
+            return await self.agent_operations.stop_container(host_id, container_id)
+
+        # Legacy path: Direct Docker socket access
         from utils.async_docker import async_docker_call, async_container_stop
 
         if host_id not in self.clients:
@@ -200,6 +233,8 @@ class ContainerOperations:
         """
         Start a specific container.
 
+        Routes through agent if available, otherwise uses direct Docker client.
+
         Args:
             host_id: Docker host ID
             container_id: Container ID
@@ -210,6 +245,13 @@ class ContainerOperations:
         Raises:
             HTTPException: If host not found or start fails
         """
+        # Check if host has an agent - route through agent if available (v2.2.0)
+        agent_id = self.agent_manager.get_agent_for_host(host_id)
+        if agent_id:
+            logger.info(f"Routing start_container for host {host_id} through agent {agent_id}")
+            return await self.agent_operations.start_container(host_id, container_id)
+
+        # Legacy path: Direct Docker socket access
         from utils.async_docker import async_docker_call, async_container_start
 
         if host_id not in self.clients:
@@ -308,6 +350,13 @@ class ContainerOperations:
             BatchJobItem, DeploymentContainer
         )
 
+        # Check if host has an agent - route through agent if available (v2.2.0)
+        agent_id = self.agent_manager.get_agent_for_host(host_id)
+        if agent_id:
+            logger.info(f"Routing delete_container for host {host_id} through agent {agent_id}")
+            return await self._delete_container_via_agent(host_id, container_id, container_name, remove_volumes)
+
+        # Legacy path: Direct Docker socket access
         if host_id not in self.clients:
             raise HTTPException(status_code=404, detail="Host not found")
 
@@ -435,3 +484,306 @@ class ContainerOperations:
                 duration_ms=duration_ms
             )
             raise HTTPException(status_code=500, detail=f"Failed to delete container: {str(e)}")
+
+    async def _delete_container_via_agent(self, host_id: str, container_id: str, container_name: str, remove_volumes: bool = False) -> dict:
+        """
+        Delete a container via agent for agent-based hosts.
+
+        Args:
+            host_id: Docker host ID
+            container_id: Container SHORT ID (12 chars)
+            container_name: Container name (for logging)
+            remove_volumes: If True, also remove anonymous volumes
+
+        Returns:
+            {"success": True, "message": "Container deleted successfully"}
+
+        Raises:
+            HTTPException: If agent not found, command fails, or timeout
+        """
+        from event_bus import Event, EventType, get_event_bus
+        from database import (
+            ContainerUpdate, ContainerDesiredState, ContainerHttpHealthCheck,
+            DeploymentMetadata, TagAssignment, AutoRestartConfig, DeploymentContainer
+        )
+
+        host = self.hosts.get(host_id)
+        host_name = host.name if host else 'Unknown Host'
+        start_time = time.time()
+
+        try:
+            # Use agent operations to remove the container
+            # Note: AgentContainerOperations.remove_container already handles DockMon safety check
+            await self.agent_operations.remove_container(host_id, container_id, force=True)
+
+            # Clean up all related database records (same as direct Docker path)
+            with self.db.get_session() as session:
+                composite_key = make_composite_key(host_id, container_id)
+
+                deleted_updates = session.query(ContainerUpdate).filter_by(container_id=composite_key).delete()
+                deleted_states = session.query(ContainerDesiredState).filter_by(container_id=composite_key).delete()
+                deleted_restart = session.query(AutoRestartConfig).filter(
+                    AutoRestartConfig.host_id == host_id,
+                    AutoRestartConfig.container_id == container_id
+                ).delete()
+                deleted_health = session.query(ContainerHttpHealthCheck).filter_by(container_id=composite_key).delete()
+                deleted_tags = session.query(TagAssignment).filter(
+                    TagAssignment.subject_type == 'container',
+                    TagAssignment.subject_id == composite_key
+                ).delete()
+                deleted_metadata = session.query(DeploymentMetadata).filter_by(container_id=composite_key).delete()
+                deleted_deploy_containers = session.query(DeploymentContainer).filter_by(container_id=container_id).delete()
+
+                session.commit()
+
+                logger.info(
+                    f"Cleaned up database records for container {container_name} ({composite_key}): "
+                    f"updates={deleted_updates}, states={deleted_states}, restart={deleted_restart}, "
+                    f"health={deleted_health}, tags={deleted_tags}, metadata={deleted_metadata}, "
+                    f"deployment_containers={deleted_deploy_containers}"
+                )
+
+            # Emit CONTAINER_DELETED event
+            composite_key = make_composite_key(host_id, container_id)
+            event = Event(
+                event_type=EventType.CONTAINER_DELETED,
+                scope_type='container',
+                scope_id=composite_key,
+                scope_name=container_name,
+                host_id=host_id,
+                host_name=host_name,
+                data={'removed_volumes': remove_volumes}
+            )
+            await get_event_bus(self.monitor).emit(event)
+
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            self.event_logger.log_container_action(
+                action="delete",
+                container_name=container_name,
+                container_id=container_id,
+                host_name=host_name,
+                host_id=host_id,
+                success=True,
+                triggered_by="user",
+                duration_ms=duration_ms
+            )
+
+            logger.info(f"Successfully deleted container {container_name} ({container_id}) via agent on host {host_name}")
+            return {"success": True, "message": f"Container {container_name} deleted successfully"}
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            duration_ms = int((time.time() - start_time) * 1000)
+            logger.error(f"Failed to delete container {container_name} via agent on host {host_name}: {e}")
+
+            self.event_logger.log_container_action(
+                action="delete",
+                container_name=container_name,
+                container_id=container_id,
+                host_name=host_name,
+                host_id=host_id,
+                success=False,
+                triggered_by="user",
+                error_message=str(e),
+                duration_ms=duration_ms
+            )
+            raise HTTPException(status_code=500, detail=f"Failed to delete container via agent: {str(e)}")
+
+    async def get_container_logs(self, host_id: str, container_id: str, tail: int = 100, since: str = None) -> dict:
+        """
+        Get container logs.
+
+        Routes through agent if available, otherwise uses direct Docker client.
+
+        Args:
+            host_id: Docker host ID
+            container_id: Container ID
+            tail: Number of lines to retrieve (default: 100)
+            since: ISO timestamp for getting logs since a specific time
+
+        Returns:
+            Dict with container_id, logs (list of {timestamp, log}), and last_timestamp
+
+        Raises:
+            HTTPException: If host not found or operation fails
+        """
+        from utils.async_docker import async_docker_call
+        from datetime import datetime, timezone, timedelta
+
+        # Security constants (match main.py)
+        MAX_LOG_TAIL = 10000
+        MAX_LOG_AGE_DAYS = 7
+
+        # Clamp tail to prevent DoS
+        tail = max(1, min(tail, MAX_LOG_TAIL))
+
+        # Check if host has an agent - route through agent if available (v2.2.0)
+        agent_id = self.agent_manager.get_agent_for_host(host_id)
+        if agent_id:
+            logger.info(f"Routing get_container_logs for host {host_id} through agent {agent_id}")
+            # Agent returns raw logs string, we need to parse it
+            raw_logs = await self.agent_operations.get_container_logs(host_id, container_id, tail)
+            return self._parse_logs_response(container_id, raw_logs)
+
+        # Legacy path: Direct Docker socket access
+        if host_id not in self.clients:
+            raise HTTPException(status_code=404, detail="Host not found")
+
+        try:
+            client = self.clients[host_id]
+            loop = asyncio.get_running_loop()
+
+            # Get container with timeout
+            try:
+                container = await asyncio.wait_for(
+                    loop.run_in_executor(None, client.containers.get, container_id),
+                    timeout=5.0
+                )
+            except asyncio.TimeoutError:
+                raise HTTPException(status_code=504, detail="Timeout getting container")
+
+            # Prepare log options
+            log_kwargs = {
+                'timestamps': True,
+                'tail': tail
+            }
+
+            # Add since parameter if provided
+            if since:
+                try:
+                    import dateutil.parser
+                    dt = dateutil.parser.parse(since)
+
+                    # Security: Reject timestamps older than MAX_LOG_AGE_DAYS
+                    max_age = datetime.now(timezone.utc) - timedelta(days=MAX_LOG_AGE_DAYS)
+                    if dt.replace(tzinfo=None) < max_age.replace(tzinfo=None):
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"'since' parameter cannot be older than {MAX_LOG_AGE_DAYS} days"
+                        )
+
+                    unix_ts = dt.timestamp()
+                    log_kwargs['since'] = unix_ts
+                except ValueError as e:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Invalid 'since' timestamp format: {e}"
+                    )
+
+            # Fetch logs with timeout
+            try:
+                logs = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None,
+                        lambda: container.logs(**log_kwargs).decode('utf-8', errors='ignore')
+                    ),
+                    timeout=5.0
+                )
+            except asyncio.TimeoutError:
+                raise HTTPException(status_code=504, detail="Timeout fetching logs")
+
+            return self._parse_logs_response(container_id, logs)
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to get logs for {container_id}: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    def _parse_logs_response(self, container_id: str, raw_logs: str) -> dict:
+        """
+        Parse raw Docker logs into structured response.
+
+        Args:
+            container_id: Container ID
+            raw_logs: Raw logs string from Docker
+
+        Returns:
+            Dict with container_id, logs list, and last_timestamp
+        """
+        from datetime import datetime, timezone
+
+        parsed_logs = []
+        for line in raw_logs.split('\n'):
+            if not line.strip():
+                continue
+
+            try:
+                space_idx = line.find(' ')
+                if space_idx > 0:
+                    timestamp_str = line[:space_idx]
+                    log_text = line[space_idx + 1:]
+
+                    # Parse timestamp (Docker format: ISO8601 with nanoseconds)
+                    if 'T' in timestamp_str and timestamp_str.endswith('Z'):
+                        # Truncate to microseconds if nanoseconds present
+                        parts = timestamp_str[:-1].split('.')
+                        if len(parts) == 2 and len(parts[1]) > 6:
+                            timestamp_str = f"{parts[0]}.{parts[1][:6]}Z"
+
+                        parsed_logs.append({
+                            "timestamp": timestamp_str,
+                            "log": log_text
+                        })
+                    else:
+                        parsed_logs.append({
+                            "timestamp": datetime.now(timezone.utc).isoformat() + 'Z',
+                            "log": line
+                        })
+                else:
+                    parsed_logs.append({
+                        "timestamp": datetime.now(timezone.utc).isoformat() + 'Z',
+                        "log": line
+                    })
+            except (ValueError, IndexError, AttributeError):
+                parsed_logs.append({
+                    "timestamp": datetime.now(timezone.utc).isoformat() + 'Z',
+                    "log": line
+                })
+
+        return {
+            "container_id": container_id,
+            "logs": parsed_logs,
+            "last_timestamp": datetime.now(timezone.utc).isoformat() + 'Z'
+        }
+
+    async def inspect_container(self, host_id: str, container_id: str) -> dict:
+        """
+        Get detailed container information (Docker inspect).
+
+        Routes through agent if available, otherwise uses direct Docker client.
+
+        Args:
+            host_id: Docker host ID
+            container_id: Container ID
+
+        Returns:
+            Container details dict (Docker inspect output)
+
+        Raises:
+            HTTPException: If host not found or operation fails
+        """
+        from utils.async_docker import async_docker_call
+
+        # Check if host has an agent - route through agent if available (v2.2.0)
+        agent_id = self.agent_manager.get_agent_for_host(host_id)
+        if agent_id:
+            logger.info(f"Routing inspect_container for host {host_id} through agent {agent_id}")
+            return await self.agent_operations.inspect_container(host_id, container_id)
+
+        # Legacy path: Direct Docker socket access
+        if host_id not in self.clients:
+            raise HTTPException(status_code=404, detail="Host not found")
+
+        try:
+            client = self.clients[host_id]
+            container = await async_docker_call(client.containers.get, container_id)
+            return container.attrs
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to inspect container {container_id}: {e}")
+            raise HTTPException(status_code=500, detail=str(e))

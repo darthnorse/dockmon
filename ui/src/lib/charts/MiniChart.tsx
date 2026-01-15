@@ -434,6 +434,12 @@ export function MiniChart({
   useEffect(() => {
     if (!chartRef.current) return
 
+    // Destroy existing chart if any
+    if (plotRef.current) {
+      plotRef.current.destroy()
+      plotRef.current = null
+    }
+
     try {
       // Create uPlot instance
       const plot = new uPlot(
@@ -451,7 +457,7 @@ export function MiniChart({
         plotRef.current = null
       }
     } catch (error) {
-      debug.error('MiniChart', 'Failed to initialize chart:', error)
+      debug.error('MiniChart', `Failed to initialize ${color} chart:`, error)
       return undefined
     }
   }, [opts, xData, chartData, color]) // Reinitialize when config or data structure changes

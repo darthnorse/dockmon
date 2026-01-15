@@ -6,6 +6,7 @@ Handles container scanning, reconnection logic, and stats population
 import logging
 import os
 import time
+import traceback
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
@@ -176,6 +177,9 @@ class ContainerDiscovery:
         """
         Attempt to reconnect to an offline host with exponential backoff.
 
+        For agent-based hosts, checks if agent is connected.
+        For legacy hosts (tcp/unix), creates new Docker client.
+
         Returns:
             True if reconnection successful, False otherwise
         """
@@ -183,6 +187,41 @@ class ContainerDiscovery:
         if not host:
             return False
 
+        # Agent-based hosts use WebSocket connection, not Docker client
+        if host.connection_type == "agent":
+            from agent.connection_manager import agent_connection_manager
+            from database import Agent
+
+            # Check if agent is connected
+            with self.db.get_session() as session:
+                agent = session.query(Agent).filter_by(host_id=host_id).first()
+                if not agent:
+                    logger.warning(f"Agent host {host.name} has no associated agent record")
+                    host.status = "offline"
+                    host.error = "No agent record found"
+                    return False
+
+                agent_id = agent.id
+
+            # Check if agent is connected via WebSocket
+            if agent_connection_manager.is_connected(agent_id):
+                # Agent is connected - mark host as online
+                host.status = "online"
+                host.error = None
+                logger.debug(f"Agent host {host.name} is connected via agent {agent_id[:8]}...")
+
+                # Reset reconnection attempts
+                self.reconnect_attempts[host_id] = 0
+
+                return True
+            else:
+                # Agent is not connected - host is offline
+                logger.debug(f"Agent host {host.name} is offline - agent {agent_id[:8]}... not connected")
+                host.status = "offline"
+                host.error = "Agent not connected"
+                return False
+
+        # Legacy host (tcp/unix) - use Docker client reconnection
         # Exponential backoff: 5s, 10s, 20s, 40s, 80s, max 5 minutes
         # attempts represents number of failures so far
         # First retry (after 1 failure, attempts=1) should wait 5s
@@ -291,17 +330,22 @@ class ContainerDiscovery:
                 })
 
             # Re-register with stats and events service
-            try:
-                stats_client = get_stats_client()
-                tls_ca = db_host.tls_ca if db_host else None
-                tls_cert = db_host.tls_cert if db_host else None
-                tls_key = db_host.tls_key if db_host else None
+            # Skip agent hosts - they use WebSocket for stats/events
+            if host.connection_type != "agent":
+                try:
+                    stats_client = get_stats_client()
+                    tls_ca = db_host.tls_ca if db_host else None
+                    tls_cert = db_host.tls_cert if db_host else None
+                    tls_key = db_host.tls_key if db_host else None
+                    num_cpus = db_host.num_cpus if db_host else None
 
-                await stats_client.add_docker_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key)
-                await stats_client.add_event_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key)
-                logger.info(f"Re-registered {host.name} ({host_id[:8]}) with stats/events service after reconnection")
-            except Exception as e:
-                logger.warning(f"Failed to re-register {host.name} with Go services after reconnection: {e}")
+                    await stats_client.add_docker_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key, num_cpus)
+                    await stats_client.add_event_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key)
+                    logger.info(f"Re-registered {host.name} ({host_id[:8]}) with stats/events service after reconnection")
+                except Exception as e:
+                    logger.warning(f"Failed to re-register {host.name} with Go services after reconnection: {e}")
+            else:
+                logger.debug(f"Skipped stats/event service re-registration for agent host {host.name} (uses WebSocket)")
 
             return True
 
@@ -325,6 +369,9 @@ class ContainerDiscovery:
         """
         Discover all containers for a single host.
 
+        For agent-based hosts, requests container data via WebSocket.
+        For legacy hosts, queries Docker API directly.
+
         Args:
             host_id: The host ID to discover containers for
             get_auto_restart_status_fn: Function to get auto-restart status
@@ -339,6 +386,247 @@ class ContainerDiscovery:
         if not host:
             return containers
 
+        # Agent-based hosts - get container data from agent via WebSocket
+        if host.connection_type == "agent":
+            from agent.command_executor import get_agent_command_executor
+            from database import Agent
+
+            # Get agent ID
+            with self.db.get_session() as session:
+                agent = session.query(Agent).filter_by(host_id=host_id).first()
+                if not agent:
+                    logger.warning(f"No agent record for host {host.name}")
+                    return containers
+
+                agent_id = agent.id
+
+            # Request container list from agent using command executor
+            try:
+                executor = get_agent_command_executor()
+
+                # Use legacy command protocol (agent supports both legacy and new protocol)
+                command = {
+                    "type": "command",
+                    "command": "list_containers"
+                }
+
+                result = await executor.execute_command(
+                    agent_id,
+                    command,
+                    timeout=30.0
+                )
+
+                if not result.success:
+                    logger.error(f"Failed to get containers from agent {agent_id[:8]}...: {result.error}")
+                    host.status = "offline"
+                    host.error = f"Agent error: {result.error}"
+                    return containers
+
+                # Parse container data from agent response
+                # Agent returns Docker API format: list of container objects
+                docker_containers = result.response if isinstance(result.response, list) else []
+
+                host.status = "online"
+                host.container_count = len(docker_containers)
+                host.error = None
+
+                # Convert Docker API container data to Container objects
+                # Agent returns same format as Docker Python SDK
+                for dc_data in docker_containers:
+                    try:
+                        # Extract container info from Docker API response
+                        container_id = dc_data.get("Id", "")[:12]  # Use short ID (12 chars)
+
+                        # Container name (remove leading slash)
+                        # Use `or []` pattern to handle both missing keys AND null values
+                        names = dc_data.get("Names") or []
+                        container_name = names[0].lstrip("/") if names else "unknown"
+
+                        # Image name
+                        container_image = dc_data.get("Image", "unknown")
+
+                        # Status and state
+                        container_state = dc_data.get("State", "unknown")
+
+                        # Map Docker state to DockMon status
+                        if container_state in ["running", "paused", "restarting"]:
+                            status = container_state
+                        elif container_state in ["exited", "dead", "created"]:
+                            status = "exited"
+                        else:
+                            status = "unknown"
+
+                        # Extract labels and compose metadata
+                        labels = dc_data.get("Labels") or {}
+                        compose_project = labels.get("com.docker.compose.project")
+                        compose_service = labels.get("com.docker.compose.service")
+
+                        # Reattach tags (sticky tags feature)
+                        container_key = make_composite_key(host_id, container_id)
+                        existing_tags = self.db.get_tags_for_subject('container', container_key)
+                        if not existing_tags:
+                            try:
+                                reattached_tags = self.db.reattach_tags_for_container(
+                                    host_id=host_id,
+                                    container_id=container_id,
+                                    container_name=container_name,
+                                    compose_project=compose_project,
+                                    compose_service=compose_service
+                                )
+                                if reattached_tags:
+                                    logger.debug(f"Reattached {len(reattached_tags)} tags to container {container_name}")
+                            except Exception as e:
+                                logger.warning(f"Failed to reattach tags: {e}")
+
+                        # Reattach update settings (Issue #116 - settings were lost for agent hosts)
+                        try:
+                            self.db.reattach_update_settings_for_container(
+                                host_id=host_id,
+                                container_id=container_id,
+                                container_name=container_name,
+                                current_image=container_image,
+                                compose_project=compose_project,
+                                compose_service=compose_service
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to reattach update settings for {container_name}: {e}")
+
+                        # Reattach HTTP health check configuration
+                        try:
+                            self.db.reattach_http_health_check_for_container(
+                                host_id=host_id,
+                                container_id=container_id,
+                                container_name=container_name,
+                                compose_project=compose_project,
+                                compose_service=compose_service
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to reattach HTTP health check for {container_name}: {e}")
+
+                        # Reattach deployment metadata
+                        try:
+                            self.db.reattach_deployment_metadata_for_container(
+                                host_id=host_id,
+                                container_id=container_id,
+                                container_name=container_name,
+                                compose_project=compose_project,
+                                compose_service=compose_service
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to reattach deployment metadata for {container_name}: {e}")
+
+                        # Derive tags from labels (compose:*, swarm:*, dockmon.tag)
+                        derived_tags = derive_container_tags(labels)
+
+                        # Get custom tags from database
+                        custom_tags = self.db.get_tags_for_subject('container', container_key)
+
+                        # Combine tags: custom tags first, then derived (remove duplicates)
+                        tags = []
+                        seen = set()
+                        for tag in custom_tags + derived_tags:
+                            if tag not in seen:
+                                tags.append(tag)
+                                seen.add(tag)
+
+                        # Get auto-restart status
+                        auto_restart = get_auto_restart_status_fn(host_id, container_id)
+
+                        # Extract ports - convert Docker API format to string list
+                        # Docker API returns: [{"PrivatePort": 80, "PublicPort": 8080, "Type": "tcp", "IP": "0.0.0.0"}]
+                        # We need: ["8080:80/tcp"]
+                        # Use `or []` pattern to handle both missing keys AND null values
+                        ports_data = dc_data.get("Ports") or []
+                        ports = []
+                        for port in ports_data:
+                            private_port = port.get("PrivatePort")
+                            public_port = port.get("PublicPort")
+                            port_type = port.get("Type", "tcp")
+
+                            if public_port:
+                                # Published port: "host:container/type"
+                                ports.append(f"{public_port}:{private_port}/{port_type}")
+                            elif private_port:
+                                # Exposed but not published: "container/type"
+                                ports.append(f"{private_port}/{port_type}")
+
+                        # Extract mounts/volumes - use existing helper function
+                        # Use `or []` pattern to handle both missing keys AND null values
+                        mounts = dc_data.get("Mounts") or []
+                        volumes = parse_container_volumes(mounts)
+
+                        # Restart policy (from HostConfig)
+                        # Use `or {}` pattern to handle both missing keys AND null values
+                        host_config = dc_data.get("HostConfig") or {}
+                        restart_policy_data = host_config.get("RestartPolicy") or {}
+                        restart_policy = restart_policy_data.get("Name", "no")
+
+                        # Convert created timestamp if it's an int (Unix timestamp)
+                        created_value = dc_data.get("Created", "")
+                        if isinstance(created_value, int):
+                            # Convert Unix timestamp to ISO 8601 string
+                            created_str = datetime.fromtimestamp(created_value, tz=timezone.utc).isoformat()
+                        else:
+                            created_str = str(created_value) if created_value else ""
+
+                        # Extract started_at from agent response (agent v1.0.1+ includes this)
+                        started_at_str = dc_data.get("StartedAt")
+                        if started_at_str:
+                            started_at_str = str(started_at_str)
+
+                        # Extract RepoDigests from agent response (v2.2.0+ agents)
+                        # Use `or []` pattern to handle both missing keys AND null values
+                        repo_digests = dc_data.get("RepoDigests") or []
+
+                        # Extract Docker network IPs (GitHub Issue #37)
+                        # Use `or {}` pattern to handle both missing keys AND null values
+                        network_settings = dc_data.get("NetworkSettings") or {}
+                        docker_ip, docker_ips = extract_container_ips(network_settings)
+
+                        # Create Container object
+                        container = Container(
+                            id=container_id,  # Short 12-char ID (per CLAUDE.md spec)
+                            short_id=container_id,  # Short 12-char ID
+                            name=container_name,
+                            image=container_image,
+                            status=status,
+                            state=container_state,
+                            created=created_str,
+                            started_at=started_at_str,
+                            host_id=host_id,
+                            host_name=host.name,
+                            ports=ports,
+                            volumes=volumes,
+                            restart_policy=restart_policy,
+                            auto_restart=auto_restart,
+                            labels=labels,
+                            compose_project=compose_project,
+                            compose_service=compose_service,
+                            tags=tags,
+                            environment={},  # Not available in list response
+                            repo_digests=repo_digests,  # Image digests for update checking
+                            docker_ip=docker_ip,
+                            docker_ips=docker_ips
+                        )
+
+                        containers.append(container)
+
+                    except Exception as e:
+                        # Log container info to help debug which container is failing
+                        container_info = f"id={dc_data.get('Id', 'unknown')[:12]}, names={dc_data.get('Names', 'unknown')}"
+                        logger.error(f"Error parsing agent container data ({container_info}): {e}\n{traceback.format_exc()}")
+                        continue
+
+                logger.debug(f"Discovered {len(containers)} containers from agent {agent_id[:8]}... for host {host.name}")
+                return containers
+
+            except Exception as e:
+                logger.error(f"Error getting containers from agent {agent_id[:8]}...: {e}", exc_info=True)
+                host.status = "offline"
+                host.error = f"Agent error: {str(e)}"
+                return containers
+
+        # Legacy host (tcp/unix) - use Docker client
         client = self.clients.get(host_id)
         if not client:
             return containers
@@ -543,8 +831,8 @@ class ContainerDiscovery:
                     env = parse_container_env(env_list)
 
                     container = Container(
-                        id=dc.id[:12],  # Use SHORT ID consistently (12 chars)
-                        short_id=container_id,
+                        id=container_id,  # Short 12-char ID (per CLAUDE.md spec)
+                        short_id=container_id,  # Short 12-char ID
                         name=dc.name,
                         state=dc.status,
                         status=dc.attrs['State']['Status'],
@@ -552,6 +840,7 @@ class ContainerDiscovery:
                         host_name=host.name,
                         image=image_name,
                         created=dc.attrs['Created'],
+                        started_at=dc.attrs['State'].get('StartedAt'),
                         auto_restart=get_auto_restart_status_fn(host_id, container_id),
                         restart_attempts=0,  # Will be populated by caller
                         desired_state=desired_state,
@@ -659,6 +948,31 @@ class ContainerDiscovery:
             for container in containers:
                 # Use short_id for consistency with all other container operations
                 composite_key = make_composite_key(container.host_id, container.short_id)
+
+                # For agent hosts, get stats from WebSocket cache instead of stats service
+                # Agent containers send stats via WebSocket, not Docker API polling
+                if hasattr(self, 'monitor') and self.monitor:
+                    host = self.monitor.hosts.get(container.host_id)
+                    if host and host.connection_type == "agent":
+                        # Get latest full stats from agent cache (includes all fields: cpu, memory_usage, memory_limit, etc.)
+                        if hasattr(self.monitor, 'agent_container_stats_cache'):
+                            cached_stats = self.monitor.agent_container_stats_cache.get(composite_key, {})
+                            if cached_stats:
+                                # Populate all stats fields from agent cache
+                                container.cpu_percent = cached_stats.get('cpu_percent')
+                                container.memory_usage = cached_stats.get('memory_usage')
+                                container.memory_limit = cached_stats.get('memory_limit')
+                                container.memory_percent = cached_stats.get('memory_percent')
+                                container.network_rx = cached_stats.get('network_rx')
+                                container.network_tx = cached_stats.get('network_tx')
+                                # Use pre-calculated net_bytes_per_sec from WebSocket handler
+                                container.net_bytes_per_sec = cached_stats.get('net_bytes_per_sec', 0)
+                                container.disk_read = cached_stats.get('disk_read')
+                                container.disk_write = cached_stats.get('disk_write')
+                                logger.debug(f"Populated stats for agent container {container.name} from WebSocket cache: CPU {container.cpu_percent}%, RAM {container.memory_percent}%")
+                        continue  # Skip stats service lookup for agent containers
+
+                # For non-agent hosts, use stats service (existing logic)
                 stats = container_stats.get(composite_key, {})
                 if stats:
                     container.cpu_percent = stats.get('cpu_percent')

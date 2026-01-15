@@ -35,6 +35,7 @@ export function useContainerHealthCheck(hostId: string | undefined, containerId:
           check_interval_seconds: 60,
           follow_redirects: true,
           verify_ssl: true,
+          check_from: 'backend' as const,  // v2.2.0+
           headers_json: null,
           auth_config_json: null,
           current_status: 'unknown' as const,

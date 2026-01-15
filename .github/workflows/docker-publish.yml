@@ -6,6 +6,8 @@ on:
 
 jobs:
   build:
+    # Skip agent releases - they're handled by agent-publish.yml
+    if: ${{ !startsWith(github.event.release.tag_name, 'agent-') }}
     strategy:
       matrix:
         include:

@@ -363,7 +363,7 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
             <span className="text-sm font-mono text-xs">
               {container.net_bytes_per_sec !== undefined && container.net_bytes_per_sec !== null
                 ? formatNetworkRate(container.net_bytes_per_sec)
-                : '—'}
+                : '-'}
             </span>
           </div>
           {netData.length > 0 ? (

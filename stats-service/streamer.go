@@ -2,19 +2,16 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
-	"net"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/docker/docker/api/types"
+	dockerpkg "github.com/darthnorse/dockmon-shared/docker"
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 )
 
@@ -23,46 +20,6 @@ type ContainerInfo struct {
 	ID     string
 	Name   string
 	HostID string
-}
-
-// createTLSOption creates a Docker client TLS option from PEM-encoded certificates
-func createTLSOption(caCertPEM, certPEM, keyPEM string) (client.Opt, error) {
-	// Parse CA certificate
-	caCertPool := x509.NewCertPool()
-	if !caCertPool.AppendCertsFromPEM([]byte(caCertPEM)) {
-		return nil, fmt.Errorf("failed to parse CA certificate")
-	}
-
-	// Parse client certificate and key
-	clientCert, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse client certificate/key: %v", err)
-	}
-
-	// Create TLS config
-	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{clientCert},
-		RootCAs:      caCertPool,
-		MinVersion:   tls.VersionTLS12,
-	}
-
-	// Create HTTP client with TLS transport and timeouts
-	// Note: No overall Timeout set because Docker API streaming operations (stats, events)
-	// are long-running connections that should not be killed by a timeout
-	httpClient := &http.Client{
-		Transport: &http.Transport{
-			DialContext: (&net.Dialer{
-				Timeout:   30 * time.Second, // Connection establishment timeout
-				KeepAlive: 30 * time.Second, // TCP keepalive interval
-			}).DialContext,
-			TLSClientConfig:       tlsConfig,
-			TLSHandshakeTimeout:   10 * time.Second,
-			IdleConnTimeout:       90 * time.Second,
-			ResponseHeaderTimeout: 10 * time.Second,
-		},
-	}
-
-	return client.WithHTTPClient(httpClient), nil
 }
 
 // StreamManager manages persistent stats streams for all containers
@@ -108,22 +65,8 @@ func (sm *StreamManager) AddDockerHost(hostID, hostName, hostAddress, tlsCACert,
 			client.WithAPIVersionNegotiation(),
 		)
 	} else {
-		// Remote Docker host - check if TLS is needed
-		clientOpts := []client.Opt{
-			client.WithHost(hostAddress),
-			client.WithAPIVersionNegotiation(),
-		}
-
-		// If TLS certificates provided, configure TLS
-		if tlsCACert != "" && tlsCert != "" && tlsKey != "" {
-			tlsOpt, err := createTLSOption(tlsCACert, tlsCert, tlsKey)
-			if err != nil {
-				return fmt.Errorf("failed to create TLS config: %v", err)
-			}
-			clientOpts = append(clientOpts, tlsOpt)
-		}
-
-		cli, err = client.NewClientWithOpts(clientOpts...)
+		// Remote Docker host - use shared package with TLS support
+		cli, err = dockerpkg.CreateRemoteClient(hostAddress, tlsCACert, tlsCert, tlsKey)
 	}
 
 	if err != nil {
@@ -338,7 +281,7 @@ func (sm *StreamManager) streamStats(ctx context.Context, containerID, container
 			default:
 			}
 
-			var stat types.StatsJSON
+			var stat container.StatsResponse
 			if err := decoder.Decode(&stat); err != nil {
 				stats.Body.Close()
 				if err == io.EOF || err == context.Canceled {
@@ -359,90 +302,27 @@ func (sm *StreamManager) streamStats(ctx context.Context, containerID, container
 }
 
 // processStats calculates metrics from raw Docker stats
-func (sm *StreamManager) processStats(stat *types.StatsJSON, containerID, containerName, hostID string) {
-	// Calculate CPU percentage
-	cpuPercent := calculateCPUPercent(stat)
+// Now uses shared package for consistent calculation across all hosts
+func (sm *StreamManager) processStats(stat *container.StatsResponse, containerID, containerName, hostID string) {
+	// Use shared package for all stats calculations
+	result := dockerpkg.CalculateStats(stat)
 
-	// Memory stats - Calculate working set (excludes reclaimable cache)
-	// This matches what Kubernetes, cAdvisor, and Proxmox report
-	memUsage := stat.MemoryStats.Usage
-	memLimit := stat.MemoryStats.Limit
-
-	// Calculate working set memory (actual usage excluding reclaimable cache)
-	// Preferred method (cgroups v2): anon + active_file (most accurate)
-	// Fallback method (cgroups v1): usage - inactive_file
-	workingSet := memUsage
-	if stat.MemoryStats.Stats != nil {
-		// Try cgroups v2 approach first: anon (process memory) + active_file (actively-used cache)
-		if anon, hasAnon := stat.MemoryStats.Stats["anon"]; hasAnon {
-			if activeFile, hasActiveFile := stat.MemoryStats.Stats["active_file"]; hasActiveFile {
-				// Use anon + active_file for most accurate working set
-				workingSet = anon + activeFile
-			} else {
-				// Only anon available, use that (safest)
-				workingSet = anon
-			}
-		} else if inactiveFile, ok := stat.MemoryStats.Stats["inactive_file"]; ok {
-			// Fallback to cgroups v1 approach: subtract inactive_file
-			if memUsage > inactiveFile {
-				workingSet = memUsage - inactiveFile
-			}
-		}
-	}
-
-	memPercent := 0.0
-	if memLimit > 0 {
-		memPercent = (float64(workingSet) / float64(memLimit)) * 100.0
-	}
-
-	// Network stats
-	var netRx, netTx uint64
-	for _, net := range stat.Networks {
-		netRx += net.RxBytes
-		netTx += net.TxBytes
-	}
-
-	// Disk I/O stats
-	var diskRead, diskWrite uint64
-	for _, bio := range stat.BlkioStats.IoServiceBytesRecursive {
-		if bio.Op == "Read" {
-			diskRead += bio.Value
-		} else if bio.Op == "Write" {
-			diskWrite += bio.Value
-		}
-	}
-
-	// Update cache
+	// Update cache with calculated stats
 	sm.cache.UpdateContainerStats(&ContainerStats{
 		ContainerID:   containerID,
 		ContainerName: containerName,
 		HostID:        hostID,
-		CPUPercent:    roundToDecimal(cpuPercent, 1),
-		MemoryUsage:   workingSet, // Use working set instead of raw usage
-		MemoryLimit:   memLimit,
-		MemoryPercent: roundToDecimal(memPercent, 1),
-		NetworkRx:     netRx,
-		NetworkTx:     netTx,
-		DiskRead:      diskRead,
-		DiskWrite:     diskWrite,
+		CPUPercent:    dockerpkg.RoundToDecimal(result.CPUPercent, 1),
+		MemoryUsage:   result.MemoryUsage,
+		MemoryLimit:   result.MemoryLimit,
+		MemoryPercent: dockerpkg.RoundToDecimal(result.MemoryPercent, 1),
+		NetworkRx:     result.NetworkRx,
+		NetworkTx:     result.NetworkTx,
+		DiskRead:      result.DiskRead,
+		DiskWrite:     result.DiskWrite,
 	})
 }
 
-// calculateCPUPercent calculates CPU percentage from Docker stats
-func calculateCPUPercent(stat *types.StatsJSON) float64 {
-	// CPU calculation similar to `docker stats` command
-	cpuDelta := float64(stat.CPUStats.CPUUsage.TotalUsage) - float64(stat.PreCPUStats.CPUUsage.TotalUsage)
-	systemDelta := float64(stat.CPUStats.SystemUsage) - float64(stat.PreCPUStats.SystemUsage)
-
-	if systemDelta > 0.0 && cpuDelta > 0.0 {
-		numCPUs := float64(len(stat.CPUStats.CPUUsage.PercpuUsage))
-		if numCPUs == 0 {
-			numCPUs = 1.0
-		}
-		return (cpuDelta / systemDelta) * numCPUs * 100.0
-	}
-	return 0.0
-}
 
 // GetStreamCount returns the number of active streams
 func (sm *StreamManager) GetStreamCount() int {

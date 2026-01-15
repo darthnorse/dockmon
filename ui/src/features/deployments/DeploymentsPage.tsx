@@ -10,7 +10,7 @@
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { Plus, Trash2, Play, Edit, AlertCircle, CheckCircle, XCircle, Loader2, Layers, Bookmark, Search } from 'lucide-react'
+import { Plus, Trash2, Play, Edit, AlertCircle, CheckCircle, XCircle, Loader2, Layers, Bookmark, Search, Download, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useQueryClient, useQuery } from '@tanstack/react-query'
 import { apiClient } from '@/lib/api/client'
@@ -42,9 +42,10 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
-import { useDeployments, useExecuteDeployment, useDeleteDeployment } from './hooks/useDeployments'
+import { useDeployments, useExecuteDeployment, useDeleteDeployment, useRedeployDeployment } from './hooks/useDeployments'
 import { DeploymentForm } from './components/DeploymentForm'
 import { SaveAsTemplateDialog } from './components/SaveAsTemplateDialog'
+import { ImportStackModal } from './components/ImportStackModal'
 import { LayerProgressDisplay } from '@/components/shared/LayerProgressDisplay'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
 import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
@@ -61,9 +62,21 @@ export function DeploymentsPage() {
 
   const [filters, setFilters] = useState<DeploymentFilters>({})
   const [searchQuery, setSearchQuery] = useState('')
+  type SortColumn = 'name' | 'host_name' | 'deployment_type' | 'status' | 'created_at'
+  const [sortColumn, setSortColumn] = useState<SortColumn>(() => {
+    const saved = localStorage.getItem('deployments_sort_column')
+    const validColumns: SortColumn[] = ['name', 'host_name', 'deployment_type', 'status', 'created_at']
+    return validColumns.includes(saved as SortColumn) ? (saved as SortColumn) : 'created_at'
+  })
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>(() => {
+    const saved = localStorage.getItem('deployments_sort_direction')
+    return saved === 'asc' || saved === 'desc' ? saved : 'desc'
+  })
   const [showNewDeploymentForm, setShowNewDeploymentForm] = useState(false)
+  const [showImportModal, setShowImportModal] = useState(false)
   const [deploymentToEdit, setDeploymentToEdit] = useState<Deployment | null>(null)
   const [deploymentToDelete, setDeploymentToDelete] = useState<Deployment | null>(null)
+  const [deploymentToRedeploy, setDeploymentToRedeploy] = useState<Deployment | null>(null)
   const [deploymentToSave, setDeploymentToSave] = useState<Deployment | null>(null)
   const [hostModalOpen, setHostModalOpen] = useState(false)
   const [selectedHostId, setSelectedHostId] = useState<string | null>(null)
@@ -75,23 +88,85 @@ export function DeploymentsPage() {
     queryFn: () => apiClient.get('/containers'),
   })
   const executeDeployment = useExecuteDeployment()
+  const redeployDeployment = useRedeployDeployment()
   const deleteDeployment = useDeleteDeployment()
 
-  // Client-side search filtering
+  // Client-side search filtering and sorting
   const deployments = useMemo(() => {
     if (!deploymentsData) return []
-    if (!searchQuery.trim()) return deploymentsData
 
-    const query = searchQuery.toLowerCase()
-    return deploymentsData.filter((deployment) => {
-      // Search in deployment name, host name, and type
-      return (
-        deployment.name?.toLowerCase().includes(query) ||
-        deployment.host_name?.toLowerCase().includes(query) ||
-        deployment.deployment_type?.toLowerCase().includes(query)
-      )
+    // Filter by search query
+    let filtered = deploymentsData
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase()
+      filtered = deploymentsData.filter((deployment) => {
+        return (
+          deployment.name?.toLowerCase().includes(query) ||
+          deployment.host_name?.toLowerCase().includes(query) ||
+          deployment.deployment_type?.toLowerCase().includes(query)
+        )
+      })
+    }
+
+    // Sort
+    const sorted = [...filtered].sort((a, b) => {
+      let aVal: string | number = ''
+      let bVal: string | number = ''
+
+      switch (sortColumn) {
+        case 'name':
+          aVal = a.name?.toLowerCase() || ''
+          bVal = b.name?.toLowerCase() || ''
+          break
+        case 'host_name':
+          aVal = a.host_name?.toLowerCase() || ''
+          bVal = b.host_name?.toLowerCase() || ''
+          break
+        case 'deployment_type':
+          aVal = a.deployment_type?.toLowerCase() || ''
+          bVal = b.deployment_type?.toLowerCase() || ''
+          break
+        case 'status':
+          aVal = a.status?.toLowerCase() || ''
+          bVal = b.status?.toLowerCase() || ''
+          break
+        case 'created_at':
+          aVal = new Date(a.created_at).getTime()
+          bVal = new Date(b.created_at).getTime()
+          break
+      }
+
+      if (aVal < bVal) return sortDirection === 'asc' ? -1 : 1
+      if (aVal > bVal) return sortDirection === 'asc' ? 1 : -1
+      return 0
     })
-  }, [deploymentsData, searchQuery])
+
+    return sorted
+  }, [deploymentsData, searchQuery, sortColumn, sortDirection])
+
+  // Toggle sort for a column
+  const handleSort = (column: SortColumn) => {
+    if (sortColumn === column) {
+      const newDirection = sortDirection === 'asc' ? 'desc' : 'asc'
+      setSortDirection(newDirection)
+      localStorage.setItem('deployments_sort_direction', newDirection)
+    } else {
+      setSortColumn(column)
+      setSortDirection('asc')
+      localStorage.setItem('deployments_sort_column', column)
+      localStorage.setItem('deployments_sort_direction', 'asc')
+    }
+  }
+
+  // Sort icon helper
+  const SortIcon = ({ column }: { column: SortColumn }) => {
+    if (sortColumn !== column) {
+      return <ArrowUpDown className="ml-2 h-4 w-4 text-muted-foreground" />
+    }
+    return sortDirection === 'asc'
+      ? <ArrowUp className="ml-2 h-4 w-4 text-primary" />
+      : <ArrowDown className="ml-2 h-4 w-4 text-primary" />
+  }
 
   // Status label mapping (user-facing labels for display)
   const statusLabels: Record<DeploymentStatus, string> = {
@@ -101,6 +176,7 @@ export function DeploymentsPage() {
     creating: 'Creating',
     starting: 'Starting',
     running: 'Deployed',
+    partial: 'Partial',
     failed: 'Failed',
     rolled_back: 'Rolled Back',
   }
@@ -143,7 +219,7 @@ export function DeploymentsPage() {
       // When deployment reaches a final state, refetch to get container_ids and other final data
       // Use prefix matching (['deployments']) to ensure all deployment queries are invalidated
       // regardless of filter state changes
-      if (status === 'running' || status === 'failed' || status === 'rolled_back') {
+      if (status === 'running' || status === 'partial' || status === 'failed' || status === 'rolled_back') {
         queryClient.invalidateQueries({ queryKey: ['deployments'] })
       }
     }
@@ -155,15 +231,15 @@ export function DeploymentsPage() {
   }, [addMessageHandler, handleDeploymentUpdate])
 
   const handleExecute = (deployment: Deployment) => {
-    if (deployment.status !== 'planning' && deployment.status !== 'failed' && deployment.status !== 'rolled_back') {
+    if (deployment.status !== 'planning' && deployment.status !== 'failed' && deployment.status !== 'rolled_back' && deployment.status !== 'partial') {
       return
     }
     executeDeployment.mutate(deployment.id)
   }
 
   const handleEdit = (deployment: Deployment) => {
-    // Allow editing in planning, failed, and rolled_back states
-    if (deployment.status !== 'planning' && deployment.status !== 'failed' && deployment.status !== 'rolled_back') {
+    // Allow editing in planning, failed, rolled_back, partial, and running states
+    if (deployment.status !== 'planning' && deployment.status !== 'failed' && deployment.status !== 'rolled_back' && deployment.status !== 'partial' && deployment.status !== 'running') {
       return
     }
     setDeploymentToEdit(deployment)
@@ -182,6 +258,21 @@ export function DeploymentsPage() {
     if (deploymentToDelete) {
       deleteDeployment.mutate(deploymentToDelete.id)
       setDeploymentToDelete(null)
+    }
+  }
+
+  const handleRedeploy = (deployment: Deployment) => {
+    // Only allow redeploy for running or partial deployments
+    if (deployment.status !== 'running' && deployment.status !== 'partial') {
+      return
+    }
+    setDeploymentToRedeploy(deployment)
+  }
+
+  const confirmRedeploy = () => {
+    if (deploymentToRedeploy) {
+      redeployDeployment.mutate(deploymentToRedeploy.id)
+      setDeploymentToRedeploy(null)
     }
   }
 
@@ -220,6 +311,16 @@ export function DeploymentsPage() {
           >
             <Layers className="h-4 w-4" />
             Templates
+          </Button>
+
+          <Button
+            variant="outline"
+            onClick={() => setShowImportModal(true)}
+            className="gap-2"
+            data-testid="import-stack-button"
+          >
+            <Download className="h-4 w-4" />
+            Import Stack
           </Button>
 
           <Button
@@ -272,6 +373,7 @@ export function DeploymentsPage() {
             <SelectItem value="creating">Creating</SelectItem>
             <SelectItem value="starting">Starting</SelectItem>
             <SelectItem value="running">Deployed</SelectItem>
+            <SelectItem value="partial">Partial</SelectItem>
             <SelectItem value="failed">Failed</SelectItem>
             <SelectItem value="rolled_back">Rolled Back</SelectItem>
           </SelectContent>
@@ -299,13 +401,38 @@ export function DeploymentsPage() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Host</TableHead>
+                <TableHead>
+                  <Button variant="ghost" onClick={() => handleSort('name')} className="h-8 px-2 hover:bg-surface-2">
+                    Name
+                    <SortIcon column="name" />
+                  </Button>
+                </TableHead>
+                <TableHead>
+                  <Button variant="ghost" onClick={() => handleSort('host_name')} className="h-8 px-2 hover:bg-surface-2">
+                    Host
+                    <SortIcon column="host_name" />
+                  </Button>
+                </TableHead>
                 <TableHead>Container</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead>Status</TableHead>
+                <TableHead>
+                  <Button variant="ghost" onClick={() => handleSort('deployment_type')} className="h-8 px-2 hover:bg-surface-2">
+                    Type
+                    <SortIcon column="deployment_type" />
+                  </Button>
+                </TableHead>
+                <TableHead>
+                  <Button variant="ghost" onClick={() => handleSort('status')} className="h-8 px-2 hover:bg-surface-2">
+                    Status
+                    <SortIcon column="status" />
+                  </Button>
+                </TableHead>
                 <TableHead>Progress</TableHead>
-                <TableHead>Created</TableHead>
+                <TableHead>
+                  <Button variant="ghost" onClick={() => handleSort('created_at')} className="h-8 px-2 hover:bg-surface-2">
+                    Created
+                    <SortIcon column="created_at" />
+                  </Button>
+                </TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
@@ -405,6 +532,16 @@ export function DeploymentsPage() {
                         100%
                       </span>
                     )}
+                    {deployment.status === 'partial' && deployment.error_message && (
+                      <div className="text-sm text-amber-600 font-medium max-w-sm" data-testid="deployment-partial">
+                        {deployment.error_message}
+                      </div>
+                    )}
+                    {deployment.status === 'partial' && !deployment.error_message && (
+                      <span className="text-xs text-amber-600" data-testid="deployment-partial">
+                        Some services failed
+                      </span>
+                    )}
                     {deployment.status === 'failed' && deployment.error_message && (
                       <div className="text-sm text-destructive font-medium max-w-sm" data-testid="deployment-error">
                         {deployment.error_message}
@@ -471,25 +608,50 @@ export function DeploymentsPage() {
                           data-testid={`execute-deployment-${deployment.name}`}
                         >
                           <Play className="h-4 w-4 mr-1" />
-                          Execute
+                          Retry
                         </Button>
                       </>
                     )}
 
-                    {deployment.status === 'running' && (
+                    {(deployment.status === 'running' || deployment.status === 'partial') && (
                       <Button
-                        variant="outline"
+                        variant="ghost"
                         size="sm"
-                        onClick={() => handleSaveAsTemplate(deployment)}
-                        data-testid="save-as-template"
-                        title="Save as New Template"
+                        onClick={() => handleEdit(deployment)}
+                        data-testid={`edit-deployment-${deployment.name}`}
+                        title="Edit stack"
                       >
-                        <Bookmark className="h-4 w-4 mr-1" />
-                        Save as New Template
+                        <Edit className="h-4 w-4" />
                       </Button>
                     )}
 
-                    {(deployment.status === 'running' || deployment.status === 'failed' || deployment.status === 'rolled_back' || deployment.status === 'planning') && (
+                    {(deployment.status === 'running' || deployment.status === 'partial') && (
+                      <>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleRedeploy(deployment)}
+                          disabled={redeployDeployment.isPending}
+                          data-testid={`redeploy-deployment-${deployment.name}`}
+                          title="Redeploy - pull latest images and recreate containers"
+                        >
+                          <RefreshCw className="h-4 w-4 mr-1" />
+                          Redeploy
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleSaveAsTemplate(deployment)}
+                          data-testid="save-as-template"
+                          title="Save as New Template"
+                        >
+                          <Bookmark className="h-4 w-4 mr-1" />
+                          Save as New Template
+                        </Button>
+                      </>
+                    )}
+
+                    {(deployment.status === 'running' || deployment.status === 'partial' || deployment.status === 'failed' || deployment.status === 'rolled_back' || deployment.status === 'planning') && (
                       <Button
                         variant="ghost"
                         size="sm"
@@ -548,11 +710,42 @@ export function DeploymentsPage() {
         </AlertDialogContent>
       </AlertDialog>
 
+      {/* Redeploy Confirmation Dialog */}
+      <AlertDialog open={!!deploymentToRedeploy} onOpenChange={(open) => !open && setDeploymentToRedeploy(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Redeploy Stack</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to redeploy "<strong>{deploymentToRedeploy?.name}</strong>"?
+              <br /><br />
+              This will:
+              <ul className="list-disc list-inside mt-2 space-y-1">
+                <li>Pull the latest images for all services</li>
+                <li>Recreate all containers with the new images</li>
+                <li>Brief service interruption during container recreation</li>
+              </ul>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmRedeploy}>
+              Redeploy
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {/* Save as Template Dialog */}
       <SaveAsTemplateDialog
         deployment={deploymentToSave}
         isOpen={!!deploymentToSave}
         onClose={() => setDeploymentToSave(null)}
+      />
+
+      {/* Import Stack Modal */}
+      <ImportStackModal
+        isOpen={showImportModal}
+        onClose={() => setShowImportModal(false)}
       />
 
       {/* Host Details Modal */}
@@ -603,6 +796,11 @@ function StatusBadge({ status }: { status: DeploymentStatus }) {
       variant: 'default',
       icon: <CheckCircle className="h-3 w-3" />,
       label: 'Deployed',
+    },
+    partial: {
+      variant: 'outline',
+      icon: <AlertCircle className="h-3 w-3 text-amber-500" />,
+      label: 'Partial',
     },
     failed: {
       variant: 'destructive',

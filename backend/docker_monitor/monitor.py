@@ -18,7 +18,7 @@ from docker import DockerClient
 from fastapi import HTTPException
 
 from config.paths import DATABASE_PATH, CERTS_DIR
-from database import DatabaseManager, AutoRestartConfig, GlobalSettings, DockerHostDB
+from database import DatabaseManager, AutoRestartConfig, GlobalSettings, DockerHostDB, Agent
 from models.docker_models import DockerHost, DockerHostConfig, Container
 from models.settings_models import AlertRule, NotificationSettings
 from websocket.connection import ConnectionManager
@@ -104,6 +104,7 @@ def _fetch_system_info_from_docker(client: DockerClient, host_name: str) -> dict
         kernel_version = system_info.get('KernelVersion', None)
         total_memory = system_info.get('MemTotal', None)
         num_cpus = system_info.get('NCPU', None)
+        engine_id = system_info.get('ID', None)  # Docker engine ID for migration detection
 
         docker_version = version_info.get('Version', None)
 
@@ -138,7 +139,8 @@ def _fetch_system_info_from_docker(client: DockerClient, host_name: str) -> dict
             'daemon_started_at': daemon_started_at,
             'total_memory': total_memory,
             'num_cpus': num_cpus,
-            'is_podman': is_podman
+            'is_podman': is_podman,
+            'engine_id': engine_id
         }
     except Exception as e:
         logger.warning(f"Failed to fetch system info for {host_name}: {e}")
@@ -150,7 +152,8 @@ def _fetch_system_info_from_docker(client: DockerClient, host_name: str) -> dict
             'daemon_started_at': None,
             'total_memory': None,
             'num_cpus': None,
-            'is_podman': False  # Default to Docker behavior on failure
+            'is_podman': False,  # Default to Docker behavior on failure
+            'engine_id': None
         }
 
 
@@ -426,6 +429,7 @@ class DockerMonitor:
             total_memory = sys_info['total_memory']
             num_cpus = sys_info['num_cpus']
             is_podman = sys_info.get('is_podman', False)
+            engine_id = sys_info['engine_id']
 
             # Validate TLS configuration for TCP connections
             security_status = self._validate_host_security(config)
@@ -454,7 +458,7 @@ class DockerMonitor:
             self.hosts[host.id] = host
 
             # Update OS info in database if reconnecting (when info wasn't saved before)
-            if skip_db_save and (os_type or os_version or kernel_version or docker_version or daemon_started_at or total_memory or num_cpus):
+            if skip_db_save and (os_type or os_version or kernel_version or docker_version or daemon_started_at or total_memory or num_cpus or engine_id):
                 # Update existing host with OS info
                 try:
                     with self.db.get_session() as session:
@@ -476,6 +480,8 @@ class DockerMonitor:
                                 db_host.num_cpus = num_cpus
                             # Always update is_podman (Issue #20)
                             db_host.is_podman = is_podman
+                            if engine_id:
+                                db_host.engine_id = engine_id
                             session.commit()
                 except Exception as e:
                     logger.warning(f"Failed to update OS info for {host.name}: {e}")
@@ -487,6 +493,11 @@ class DockerMonitor:
             if not skip_db_save:
                 # Serialize tags as JSON for database storage
                 tags_json = json.dumps(config.tags) if config.tags else None
+
+                # Determine connection type based on URL
+                # - unix:// -> local (localhost via Docker socket)
+                # - tcp:// -> remote (network connection to remote host)
+                connection_type = 'local' if config.url.startswith('unix://') else 'remote'
 
                 db_host = self.db.add_host({
                     'id': host.id,
@@ -505,7 +516,9 @@ class DockerMonitor:
                     'daemon_started_at': host.daemon_started_at,
                     'total_memory': host.total_memory,
                     'num_cpus': host.num_cpus,
-                    'is_podman': host.is_podman
+                    'is_podman': host.is_podman,
+                    'engine_id': engine_id,
+                    'connection_type': connection_type
                 })
 
             # Register host with stats and event services
@@ -518,11 +531,16 @@ class DockerMonitor:
 
                     async def register_host():
                         try:
-                            await stats_client.add_docker_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key)
-                            logger.info(f"Registered {host.name} ({host.id[:8]}) with stats service")
+                            # Skip agent hosts - they send stats via WebSocket, not Docker API
+                            # Agent hosts have url="agent://" which is not a valid Docker URL
+                            if host.connection_type != "agent":
+                                await stats_client.add_docker_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key, host.num_cpus)
+                                logger.info(f"Registered {host.name} ({host.id[:8]}) with stats service")
 
-                            await stats_client.add_event_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key)
-                            logger.info(f"Registered {host.name} ({host.id[:8]}) with event service")
+                                await stats_client.add_event_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key)
+                                logger.info(f"Registered {host.name} ({host.id[:8]}) with event service")
+                            else:
+                                logger.info(f"Skipped stats/event service registration for agent host {host.name} (uses WebSocket)")
                         except Exception as e:
                             logger.error(f"Failed to register {host.name} with Go services: {e}")
 
@@ -792,6 +810,20 @@ class DockerMonitor:
             host = self.hosts[host_id]
             host_name = host.name
 
+            # Disconnect agent if this is an agent-based host (v2.2.0+)
+            if host.connection_type == "agent":
+                from agent.connection_manager import agent_connection_manager
+                from database import Agent
+
+                with self.db.get_session() as session:
+                    # Find the agent by host_id
+                    agent = session.query(Agent).filter_by(host_id=host_id).first()
+                    if agent:
+                        agent_id = agent.id
+                        # Close the agent's WebSocket connection (creates its own session)
+                        await agent_connection_manager.unregister_connection(agent_id)
+                        logger.info(f"Disconnected agent {agent_id[:8]}... for host {host_name}")
+
             del self.hosts[host_id]
             if host_id in self.clients:
                 self.clients[host_id].close()
@@ -879,6 +911,35 @@ class DockerMonitor:
             )
 
             logger.info(f"Removed host {host_name} ({host_id[:8]})")
+        else:
+            # Host not in memory - check database (agent hosts may only exist in DB after restart)
+            db_host = self.db.get_host(host_id)
+            if db_host:
+                host_name = db_host.name
+
+                # Disconnect agent if this is an agent-based host
+                if db_host.connection_type == "agent":
+                    from agent.connection_manager import agent_connection_manager
+                    from database import Agent
+
+                    with self.db.get_session() as session:
+                        agent = session.query(Agent).filter_by(host_id=host_id).first()
+                        if agent:
+                            await agent_connection_manager.unregister_connection(agent.id)
+                            logger.info(f"Disconnected agent {agent.id[:8]}... for host {host_name}")
+
+                # Delete from database
+                self.db.delete_host(host_id)
+
+                self.event_logger.log_host_removed(
+                    host_name=host_name,
+                    host_id=host_id,
+                    triggered_by="user"
+                )
+
+                logger.info(f"Removed host {host_name} ({host_id[:8]}) from database")
+            else:
+                raise ValueError(f"Host {host_id} not found")
 
     def update_host(self, host_id: str, config: DockerHostConfig):
         """Update an existing Docker host"""
@@ -955,6 +1016,30 @@ class DockerMonitor:
 
             if not updated_db_host:
                 raise Exception(f"Host {host_id} not found in database")
+
+            # Agent hosts don't need Docker client - just update in-memory host object
+            if config.url.startswith("agent://"):
+                # Update or create in-memory host object for agent
+                host = DockerHost(
+                    id=host_id,
+                    name=config.name,
+                    url=config.url,
+                    connection_type="agent",
+                    security_status="secure",  # Agents use WebSocket with TLS
+                    tags=config.tags or [],
+                    description=config.description,
+                    # Preserve system info from database
+                    os_type=updated_db_host.os_type,
+                    os_version=updated_db_host.os_version,
+                    kernel_version=updated_db_host.kernel_version,
+                    docker_version=updated_db_host.docker_version,
+                    daemon_started_at=updated_db_host.daemon_started_at,
+                    total_memory=updated_db_host.total_memory,
+                    num_cpus=updated_db_host.num_cpus,
+                )
+                self.hosts[host_id] = host
+                logger.info(f"Updated agent host: {config.name} ({host_id[:8]}...)")
+                return host
 
             # Create new Docker client with updated config
             if config.url.startswith("unix://"):
@@ -1065,14 +1150,19 @@ class DockerMonitor:
 
                 async def reregister_host():
                     try:
-                        # Re-register with stats service (automatically closes old client)
-                        await stats_client.add_docker_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key)
-                        logger.info(f"Re-registered {host.name} ({host.id[:8]}) with stats service")
+                        # Skip agent hosts - they use WebSocket for stats/events
+                        # Agent hosts have url="agent://" which is not a valid Docker URL
+                        if host.connection_type != "agent":
+                            # Re-register with stats service (automatically closes old client)
+                            await stats_client.add_docker_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key, host.num_cpus)
+                            logger.info(f"Re-registered {host.name} ({host.id[:8]}) with stats service")
 
-                        # Remove and re-add event monitoring
-                        await stats_client.remove_event_host(host.id)
-                        await stats_client.add_event_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key)
-                        logger.info(f"Re-registered {host.name} ({host.id[:8]}) with event service")
+                            # Remove and re-add event monitoring
+                            await stats_client.remove_event_host(host.id)
+                            await stats_client.add_event_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key)
+                            logger.info(f"Re-registered {host.name} ({host.id[:8]}) with event service")
+                        else:
+                            logger.info(f"Skipped stats/event service re-registration for agent host {host.name} (uses WebSocket)")
                     except Exception as e:
                         logger.error(f"Failed to re-register {host.name} with Go services: {e}")
 
@@ -1105,6 +1195,79 @@ class DockerMonitor:
             logger.error(f"Failed to update host {host_id}: {e}")
             error_msg = self._get_user_friendly_error(str(e))
             raise HTTPException(status_code=400, detail=error_msg)
+
+    def add_agent_host(self, host_id: str, name: str, description: str = None, security_status: str = "unknown"):
+        """
+        Add an agent-based host to the in-memory hosts dictionary.
+
+        Called by AgentManager when an agent successfully registers. This enables
+        immediate container discovery without waiting for periodic refresh.
+
+        Args:
+            host_id: The host's UUID
+            name: Display name for the host
+            description: Optional description
+            security_status: Security status (default: "unknown")
+        """
+        if host_id in self.hosts:
+            # Host already exists - mark it online (reconnection case)
+            self.hosts[host_id].status = "online"
+            logger.info(f"Agent host {name} ({host_id[:8]}...) reconnected, marked online")
+            self._schedule_host_status_broadcast(host_id, "online")
+            return
+
+        # Load tags for this host
+        tags = self.db.get_tags_for_subject('host', host_id)
+
+        # Create DockerHost object for the agent
+        host = DockerHost(
+            id=host_id,
+            name=name,
+            url="agent://",
+            connection_type="agent",
+            status="online",  # Agent hosts are online when they register
+            client=None,  # Agent hosts don't use Docker client directly
+            tags=tags,
+            description=description
+        )
+        host.security_status = security_status
+        self.hosts[host_id] = host
+        logger.info(f"Added agent host {name} ({host_id[:8]}...) to monitor")
+
+        # Broadcast status change for real-time UI update
+        self._schedule_host_status_broadcast(host_id, "online")
+
+    def _schedule_host_status_broadcast(self, host_id: str, status: str):
+        """
+        Schedule a host status broadcast to WebSocket clients.
+
+        Uses asyncio to schedule the broadcast since this may be called from sync context.
+        """
+        import asyncio
+        try:
+            # Try to get running loop (works in async context)
+            loop = asyncio.get_running_loop()
+            asyncio.create_task(self._broadcast_host_status(host_id, status))
+        except RuntimeError:
+            # No running loop - skip broadcast (sync context without event loop)
+            logger.debug(f"No event loop for host status broadcast: {host_id} -> {status}")
+
+    async def _broadcast_host_status(self, host_id: str, status: str):
+        """Broadcast host status change to WebSocket clients."""
+        if self.manager:
+            try:
+                await self.manager.broadcast({
+                    "type": "host_status_changed",
+                    "data": {
+                        "host_id": host_id,
+                        "status": status
+                    }
+                })
+                logger.info(f"Broadcast host status: {host_id[:8]}... -> {status}")
+            except Exception as e:
+                logger.error(f"Failed to broadcast host status: {e}")
+        else:
+            logger.warning(f"Cannot broadcast host status: no manager (host_id={host_id[:8]}..., status={status})")
 
     async def get_containers(self, host_id: Optional[str] = None) -> List[Container]:
         """Get containers from one or all hosts"""
@@ -1178,7 +1341,7 @@ class DockerMonitor:
     def update_container_auto_update(self, host_id: str, container_id: str, container_name: str, enabled: bool, floating_tag_mode: str = 'exact'):
         """Enable/disable auto-update for a container with specified tracking mode"""
         container_key = make_composite_key(host_id, container_id)
-        return self.db.set_container_auto_update(container_key, enabled, floating_tag_mode)
+        return self.db.set_container_auto_update(container_key, enabled, floating_tag_mode, container_name)
 
     def update_container_desired_state(self, host_id: str, container_id: str, container_name: str, desired_state: str, web_ui_url: str = None):
         """Alias for set_container_desired_state - used by batch operations"""
@@ -1191,7 +1354,8 @@ class DockerMonitor:
         container_name: str,
         tags_to_add: list[str] = None,
         tags_to_remove: list[str] = None,
-        ordered_tags: list[str] = None
+        ordered_tags: list[str] = None,
+        container_labels: dict = None
     ) -> dict:
         """
         Update container custom tags in database
@@ -1204,7 +1368,8 @@ class DockerMonitor:
             host_id, container_id, container_name,
             tags_to_add=tags_to_add,
             tags_to_remove=tags_to_remove,
-            ordered_tags=ordered_tags
+            ordered_tags=ordered_tags,
+            container_labels=container_labels
         )
 
 
@@ -1401,16 +1566,23 @@ class DockerMonitor:
 
         # Register all hosts with the stats and event services on startup
         for host_id, host in self.hosts.items():
+            # Skip agent hosts - they send stats via WebSocket, not Docker API
+            # Agent hosts have url="agent://" which is not a valid Docker URL
+            if host.connection_type == "agent":
+                logger.info(f"Skipped stats/event service registration for agent host {host.name} (uses WebSocket)")
+                continue
+
             try:
-                # Get TLS certificates from database
+                # Get TLS certificates and num_cpus from database
                 with self.db.get_session() as session:
                     db_host = session.query(DockerHostDB).filter_by(id=host_id).first()
                     tls_ca = db_host.tls_ca if db_host else None
                     tls_cert = db_host.tls_cert if db_host else None
                     tls_key = db_host.tls_key if db_host else None
+                    num_cpus = db_host.num_cpus if db_host else None
 
                 # Register with stats service
-                await stats_client.add_docker_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key)
+                await stats_client.add_docker_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key, num_cpus)
                 logger.info(f"Registered host {host.name} ({host_id[:8]}) with stats service")
 
                 # Register with event service
@@ -1446,11 +1618,17 @@ class DockerMonitor:
                             containers,
                             self.settings
                         )
+                        # Get agent host IDs to exclude from stats-service (they use WebSocket for stats)
+                        agent_host_ids = {
+                            host_id for host_id, host in self.hosts.items()
+                            if host.connection_type == "agent"
+                        }
                         await self.stats_manager.sync_container_streams(
                             containers,
                             containers_needing_stats,
                             stats_client,
-                            _handle_task_exception
+                            _handle_task_exception,
+                            agent_host_ids
                         )
                         logger.debug(f"Periodic stream sync: {len(self.stats_manager.streaming_containers)} active streams")
                     except Exception as e:
@@ -1566,7 +1744,28 @@ class DockerMonitor:
                             running_containers = [c for c in host_containers if c.status == 'running']
                             host = self.hosts[host_id]
 
+                            # Systemd agents: Use agent-reported stats from /proc (accurate host-level metrics)
+                            # Systemd agents send CPU/memory from /proc/stat and /proc/meminfo directly
+                            # Containerized agents don't send host stats, so fall through to container aggregation
+                            # We use is_agent_fed() to distinguish - it tracks if agent is actively sending stats
+                            if (host.connection_type == 'agent' and host.status == 'online' and
+                                    self.stats_history.is_agent_fed(host_id)):
+                                sparklines = self.stats_history.get_sparklines(host_id, num_points=30)
+                                # Systemd agent is actively sending stats - use them (accurate host-level stats)
+                                host_sparklines[host_id] = sparklines
+                                # Calculate mem_bytes from containers for display purposes
+                                total_mem_bytes = sum(c.memory_usage or 0 for c in running_containers) if running_containers else 0
+                                host_metrics[host_id] = {
+                                    "cpu_percent": sparklines["cpu"][-1] if sparklines["cpu"] else 0,
+                                    "mem_percent": sparklines["mem"][-1] if sparklines["mem"] else 0,
+                                    "mem_bytes": total_mem_bytes,
+                                    "net_bytes_per_sec": sparklines["net"][-1] if sparklines["net"] else 0
+                                }
+                                continue  # Skip container aggregation for this host
+
+                            # Local/mTLS hosts OR containerized agents (no host stats): Aggregate from container stats
                             if running_containers:
+                                # Local/mTLS hosts: Aggregate from container stats
                                 # Aggregate CPU: Σ(container_cpu_percent) / num_cpus - per spec line 99
                                 total_cpu_sum = sum(c.cpu_percent or 0 for c in running_containers)
                                 # Use actual num_cpus from Docker info, fallback to 4 if not available
@@ -1658,6 +1857,11 @@ class DockerMonitor:
                         container_sparklines[container_key] = sparklines
 
                     broadcast_data["container_sparklines"] = container_sparklines
+
+                    # Debug: Log sparkline data being sent
+                    logger.debug(f"Broadcasting sparklines for {len(container_sparklines)} containers")
+                    for key, sparklines in list(container_sparklines.items())[:2]:  # Log first 2 containers
+                        logger.debug(f"  {key}: cpu={len(sparklines['cpu'])}, mem={len(sparklines['mem'])}, net={len(sparklines['net'])}")
 
                     # Broadcast update to all connected clients
                     await self.manager.broadcast({
@@ -1758,8 +1962,12 @@ class DockerMonitor:
             db_hosts = self.db.get_hosts(active_only=True)
 
             # Detect and warn about duplicate hosts (same URL)
+            # Skip agent:// URLs since all agent hosts use this placeholder
             seen_urls = {}
             for host in db_hosts:
+                # Agent hosts all use agent:// placeholder - not a real duplicate
+                if host.url == 'agent://':
+                    continue
                 if host.url in seen_urls:
                     logger.warning(
                         f"Duplicate host detected: '{host.name}' ({host.id}) and "
@@ -1863,6 +2071,24 @@ class DockerMonitor:
                     # Load tags from normalized schema
                     tags = self.db.get_tags_for_subject('host', db_host.id)
 
+                    # Agent hosts connect via WebSocket, not Docker socket/TCP
+                    # Add them in offline mode - they'll connect when agent calls back
+                    if db_host.connection_type == 'agent' or db_host.url == 'agent://':
+                        host = DockerHost(
+                            id=db_host.id,
+                            name=db_host.name,
+                            url=db_host.url,
+                            connection_type='agent',
+                            status="offline",
+                            client=None,
+                            tags=tags,
+                            description=db_host.description
+                        )
+                        host.security_status = db_host.security_status or "unknown"
+                        self.hosts[db_host.id] = host
+                        logger.debug(f"Added agent host {db_host.name} in offline mode - waiting for WebSocket connection")
+                        continue
+
                     config = DockerHostConfig(
                         name=db_host.name,
                         url=db_host.url,
@@ -1891,6 +2117,7 @@ class DockerMonitor:
                         id=db_host.id,
                         name=db_host.name,
                         url=db_host.url,
+                        connection_type=db_host.connection_type or "remote",  # v2.2.0+ agent support
                         status="offline",
                         client=None,
                         tags=tags,
@@ -1984,14 +2211,21 @@ class DockerMonitor:
 
         Called by periodic maintenance job (daily) to keep host info current.
         Updates both in-memory DockerHost objects and database records.
+        Supports both legacy hosts (via Docker API) and agent hosts (via WebSocket command).
         """
-        if not self.hosts or not self.clients:
+        if not self.hosts:
             logger.debug("No hosts to refresh system info for")
             return
 
         updated_count = 0
         failed_count = 0
 
+        # Also refresh agent hosts (separate from legacy hosts)
+        from agent.connection_manager import agent_connection_manager
+        agent_hosts_refreshed = await self._refresh_agent_hosts_system_info()
+        updated_count += agent_hosts_refreshed
+
+        # Refresh legacy hosts (existing logic)
         for host_id, host in list(self.hosts.items()):  # Use list() to avoid dict iteration issues
             try:
                 # Get client for this host
@@ -2060,3 +2294,85 @@ class DockerMonitor:
             logger.info(f"Host system info refresh complete: {updated_count} updated, {failed_count} failed")
         else:
             logger.debug("Host system info refresh complete: no changes detected")
+
+    async def _refresh_agent_hosts_system_info(self) -> int:
+        """
+        Refresh system information for all connected agent hosts.
+
+        Sends "get_system_info" command to each connected agent and updates database.
+        Aligns with legacy host refresh behavior (daily updates).
+
+        Returns:
+            Number of agent hosts successfully refreshed
+        """
+        from agent.connection_manager import agent_connection_manager
+
+        updated_count = 0
+
+        # Get all agents from database
+        with self.db.get_session() as session:
+            agents = session.query(Agent).all()
+            agent_data = [(a.id, a.host_id) for a in agents]
+
+        for agent_id, host_id in agent_data:
+            try:
+                # Check if agent is connected
+                if not agent_connection_manager.is_connected(agent_id):
+                    logger.debug(f"Agent {agent_id[:8]}... not connected, skipping system info refresh")
+                    continue
+
+                # Send get_system_info command
+                response = await agent_connection_manager.send_command(
+                    agent_id,
+                    "get_system_info",
+                    {},
+                    timeout=10
+                )
+
+                if response.get("error"):
+                    logger.warning(f"Agent {agent_id[:8]}... returned error for system info: {response['error']}")
+                    continue
+
+                # Extract system info from response
+                sys_info = response.get("result", {})
+                if not sys_info:
+                    logger.warning(f"Agent {agent_id[:8]}... returned empty system info")
+                    continue
+
+                # Update database host record
+                with self.db.get_session() as session:
+                    db_host = session.query(DockerHostDB).filter(DockerHostDB.id == host_id).first()
+                    if db_host:
+                        # Check if anything changed (avoid unnecessary writes)
+                        changed = (
+                            sys_info.get('os_type') != db_host.os_type or
+                            sys_info.get('os_version') != db_host.os_version or
+                            sys_info.get('kernel_version') != db_host.kernel_version or
+                            sys_info.get('docker_version') != db_host.docker_version or
+                            sys_info.get('daemon_started_at') != db_host.daemon_started_at or
+                            sys_info.get('total_memory') != db_host.total_memory or
+                            sys_info.get('num_cpus') != db_host.num_cpus
+                        )
+
+                        if changed:
+                            db_host.os_type = sys_info.get('os_type')
+                            db_host.os_version = sys_info.get('os_version')
+                            db_host.kernel_version = sys_info.get('kernel_version')
+                            db_host.docker_version = sys_info.get('docker_version')
+                            db_host.daemon_started_at = sys_info.get('daemon_started_at')
+                            db_host.total_memory = sys_info.get('total_memory')
+                            db_host.num_cpus = sys_info.get('num_cpus')
+                            session.commit()
+
+                            logger.info(f"Refreshed system info for agent host {db_host.name} ({host_id[:8]}): {sys_info.get('os_version')} / Docker {sys_info.get('docker_version')}")
+                            updated_count += 1
+                        else:
+                            logger.debug(f"System info unchanged for agent host {db_host.name} ({host_id[:8]})")
+
+            except Exception as e:
+                logger.error(f"Failed to refresh system info for agent {agent_id[:8]}...: {e}")
+
+        if updated_count > 0:
+            logger.info(f"Agent host system info refresh: {updated_count} updated")
+
+        return updated_count

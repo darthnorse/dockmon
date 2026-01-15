@@ -2,12 +2,17 @@
  * Host Modal Component - Phase 3d Sub-Phase 6
  *
  * FEATURES:
- * - Add/Edit host modal with TLS support
+ * - Add/Edit host modal with two connection methods
+ * - Tabbed interface for Agent vs Remote Docker Connection
  * - React Hook Form + Zod validation
  * - TLS certificate fields (expandable)
  * - Description textarea
  *
- * FIELDS:
+ * TABS:
+ * - Agent: Token generation and docker run command
+ * - Remote Docker Connection: Traditional mTLS form
+ *
+ * FIELDS (Remote Docker Connection):
  * - Host Name (required)
  * - Address/Endpoint (required)
  * - TLS Toggle (expands certificate fields)
@@ -32,18 +37,26 @@ interface ApiError extends Error {
     }
   }
 }
-import { X, Trash2, AlertTriangle } from 'lucide-react'
+import { X, Trash2, AlertTriangle, Copy, Check, Terminal, Container, Server } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Tabs } from '@/components/ui/tabs'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { useAddHost, useUpdateHost, useDeleteHost, type HostConfig } from '../hooks/useHosts'
+import { useGenerateToken } from '@/features/agents/hooks/useAgents'
 import type { Host } from '@/types/api'
 import { toast } from 'sonner'
 import { apiClient } from '@/lib/api/client'
 import { debug } from '@/lib/debug'
 import { useAllContainers } from '@/lib/stats/StatsProvider'
 import { useQuery } from '@tanstack/react-query'
+import { useGlobalSettings } from '@/hooks/useSettings'
+import { cn } from '@/lib/utils'
+
+type InstallMethod = 'docker' | 'systemd'
 
 // Zod schema for host form
+// URL validation is relaxed to allow empty for agent hosts (validated in onSubmit)
 const hostSchema = z.object({
   name: z
     .string()
@@ -52,9 +65,8 @@ const hostSchema = z.object({
     .regex(/^[a-zA-Z0-9][a-zA-Z0-9 ._-]*$/, 'Host name contains invalid characters'),
   url: z
     .string()
-    .min(1, 'Address/Endpoint is required')
-    .regex(
-      /^(tcp|unix|http|https):\/\/.+/,
+    .refine(
+      (val) => val === '' || val === 'agent://' || /^(tcp|unix|http|https):\/\/.+/.test(val),
       'URL must start with tcp://, unix://, http://, or https://'
     ),
   enableTls: z.boolean(),
@@ -73,20 +85,28 @@ interface HostModalProps {
 }
 
 export function HostModal({ isOpen, onClose, host }: HostModalProps) {
+  const [activeTab, setActiveTab] = useState<'agent' | 'remote'>('agent')
   const [showTlsFields, setShowTlsFields] = useState(false)
   const [replaceCa, setReplaceCa] = useState(false)
   const [replaceCert, setReplaceCert] = useState(false)
   const [replaceKey, setReplaceKey] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [copied, setCopied] = useState<string | null>(null)
+  const [installMethod, setInstallMethod] = useState<InstallMethod>('docker')
+  const [multiUse, setMultiUse] = useState(false)
+
   const addMutation = useAddHost()
   const updateMutation = useUpdateHost()
   const deleteMutation = useDeleteHost()
+  const generateToken = useGenerateToken()
+
+  // Get settings for timezone
+  const { data: settings } = useGlobalSettings()
 
   // Get containers for this host (for delete confirmation)
   const containers = useAllContainers(host?.id || undefined)
 
   // Get open alerts for this host (for delete confirmation)
-  // Includes both host-scoped alerts and container-scoped alerts for containers on this host
   const { data: alertsData } = useQuery({
     queryKey: ['alerts', 'host', host?.id],
     queryFn: async () => {
@@ -95,13 +115,16 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
       )
       return response.alerts.filter((alert: any) => alert.host_id === host?.id)
     },
-    enabled: showDeleteConfirm && !!host?.id, // Only fetch when delete dialog is open and host exists
+    enabled: showDeleteConfirm && !!host?.id,
   })
 
   const openAlerts = alertsData || []
 
-  // Check if host has existing certificates (indicates mTLS is enabled)
+  // Check if host has existing certificates
   const hostHasCerts = host?.security_status === 'secure'
+
+  // Check if this is an agent-based host (can't edit URL or TLS settings)
+  const isAgentHost = host?.connection_type === 'agent'
 
   const {
     register,
@@ -128,7 +151,8 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
   // Update form when host prop changes or modal opens
   useEffect(() => {
     if (host) {
-      // Edit mode - populate with host data
+      // Edit mode - only show remote tab
+      setActiveTab('remote')
       const hasCerts = host.security_status === 'secure'
       setShowTlsFields(hasCerts)
       setReplaceCa(false)
@@ -145,7 +169,8 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
         description: host.description || '',
       })
     } else {
-      // Add mode - reset to empty form
+      // Add mode - reset to agent tab
+      setActiveTab('agent')
       setShowTlsFields(false)
       setReplaceCa(false)
       setReplaceCert(false)
@@ -163,16 +188,56 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
     }
   }, [host, isOpen, reset])
 
+  const token = generateToken.data?.token
+  const expiresAt = generateToken.data?.expires_at
+  const isMultiUse = generateToken.data?.multi_use
+
+  const handleCopy = async (text: string, id: string) => {
+    await navigator.clipboard.writeText(text)
+    setCopied(id)
+    setTimeout(() => setCopied(null), 2000)
+  }
+
+  // Auto-detect DockMon URL from current browser location
+  const dockmonUrl = `${window.location.protocol}//${window.location.host}`
+  const isHttps = window.location.protocol === 'https:'
+
+  const timezone = settings?.timezone || 'UTC'
+  const dockerCommand = token
+    ? `docker run -d \\
+  --name dockmon-agent \\
+  --restart unless-stopped \\
+  -v /var/run/docker.sock:/var/run/docker.sock:ro \\
+  -v dockmon-agent-data:/data \\
+  -e DOCKMON_URL=${dockmonUrl} \\
+  -e REGISTRATION_TOKEN=${token} \\
+  -e TZ=${timezone} \\${isHttps ? '\n  -e INSECURE_SKIP_VERIFY=true \\' : ''}
+  ghcr.io/darthnorse/dockmon-agent:1.0.1`
+    : ''
+
+  const systemdInstallCommand = token
+    ? `curl -fsSL https://raw.githubusercontent.com/darthnorse/dockmon/main/scripts/install-agent.sh | \\
+  DOCKMON_URL=${dockmonUrl} \\
+  REGISTRATION_TOKEN=${token} \\
+  TZ=${timezone}${isHttps ? ' \\\n  INSECURE_SKIP_VERIFY=true' : ''} bash`
+    : ''
+
+  const formatExpiry = (isoString: string) => {
+    const date = new Date(isoString)
+    const now = new Date()
+    const diff = date.getTime() - now.getTime()
+    const minutes = Math.ceil(diff / 60000)  // Round up so "14:59" shows as "15 minutes"
+    return `${minutes} minute${minutes !== 1 ? 's' : ''}`
+  }
+
   const testConnection = async () => {
     const formData = watch()
 
-    // Validate required fields
     if (!formData.url) {
       toast.error('Please enter an address/endpoint first')
       return
     }
 
-    // Build test config
     const testConfig: HostConfig = {
       name: formData.name || 'test',
       url: formData.url,
@@ -180,17 +245,13 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
       description: null,
     }
 
-    // Add certs if mTLS is enabled
     if (showTlsFields) {
-      // For existing hosts with certs, we can't test without replacement
       if (hostHasCerts && !replaceCa && !replaceCert && !replaceKey) {
         toast.info('Using existing certificates for test connection')
-        // Send empty certs - backend will use existing ones
         testConfig.tls_ca = null
         testConfig.tls_cert = null
         testConfig.tls_key = null
       } else {
-        // New certs or replacement - validate they're provided
         if (!formData.tls_ca || !formData.tls_cert || !formData.tls_key) {
           toast.error('All three certificates are required for mTLS connection')
           return
@@ -228,20 +289,19 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
   const onSubmit = async (data: HostFormData) => {
     const config: HostConfig = {
       name: data.name,
-      url: data.url,
-      tags: [], // Tags are managed in the host drawer/modal only
+      // For agent hosts, keep the existing URL (agent://)
+      url: isAgentHost ? host!.url : data.url,
+      tags: [],
       description: data.description || null,
     }
 
-    // Add TLS fields if enabled
-    if (data.enableTls) {
-      // For existing hosts, only send certs if user clicked Replace
+    // Only include TLS config for non-agent hosts
+    if (!isAgentHost && data.enableTls) {
       if (host && hostHasCerts) {
         config.tls_ca = replaceCa ? (data.tls_ca || null) : null
         config.tls_cert = replaceCert ? (data.tls_cert || null) : null
         config.tls_key = replaceKey ? (data.tls_key || null) : null
       } else {
-        // New host or new mTLS setup - send all certs
         config.tls_ca = data.tls_ca || null
         config.tls_cert = data.tls_cert || null
         config.tls_key = data.tls_key || null
@@ -250,16 +310,13 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
 
     try {
       if (host) {
-        // Update existing host
         await updateMutation.mutateAsync({ id: host.id, config })
       } else {
-        // Add new host
         await addMutation.mutateAsync(config)
       }
       onClose()
       reset()
     } catch (error) {
-      // Error handled by mutation hooks (toast)
       debug.error('HostModal', 'Error saving host:', error)
     }
   }
@@ -276,7 +333,6 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
       setShowDeleteConfirm(false)
       onClose()
     } catch (error) {
-      // Error is handled by the mutation's onError
       setShowDeleteConfirm(false)
     }
   }
@@ -287,22 +343,458 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
 
   if (!isOpen) return null
 
+  // Agent Tab Content
+  const agentTabContent = (
+    <div className="p-6 space-y-4">
+      {!token ? (
+        <>
+          <p className="text-sm text-muted-foreground">
+            Deploy a lightweight agent on your remote Docker host. The agent connects to DockMon via WebSocket - no need to expose Docker ports or configure mTLS certificates.
+          </p>
+          <p className="text-sm font-medium text-green-600 dark:text-green-500">
+            Recommended: This is the preferred and most secure method
+          </p>
+
+          <div className="flex items-center gap-2 py-2">
+            <input
+              type="checkbox"
+              id="multiUse"
+              checked={multiUse}
+              onChange={(e) => setMultiUse(e.target.checked)}
+              className="h-4 w-4"
+            />
+            <label htmlFor="multiUse" className="text-sm">
+              Allow multiple agents to use this token
+            </label>
+          </div>
+          {multiUse && (
+            <p className="text-xs text-muted-foreground -mt-1">
+              Useful for batch deployments. All agents must register within 15 minutes.
+            </p>
+          )}
+
+          <Button
+            onClick={() => generateToken.mutate({ multiUse })}
+            disabled={generateToken.isPending}
+          >
+            {generateToken.isPending ? 'Generating Token...' : 'Generate Registration Token'}
+          </Button>
+        </>
+      ) : (
+        <div className="space-y-4">
+          <Alert>
+            <Terminal className="h-4 w-4" />
+            <AlertDescription>
+              {isMultiUse ? 'Multi-use token' : 'Token'} generated! Expires in{' '}
+              <strong>{expiresAt && formatExpiry(expiresAt)}</strong>
+              {isMultiUse && ' — can be used by multiple agents'}
+            </AlertDescription>
+          </Alert>
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Registration Token</label>
+            <div className="flex gap-2">
+              <code className="flex-1 rounded bg-muted px-3 py-2 text-sm font-mono break-all">
+                {token}
+              </code>
+              <Button
+                size="icon"
+                variant="outline"
+                onClick={() => handleCopy(token, 'token')}
+              >
+                {copied === 'token' ? (
+                  <Check className="h-4 w-4" />
+                ) : (
+                  <Copy className="h-4 w-4" />
+                )}
+              </Button>
+            </div>
+          </div>
+
+          {/* Installation Method Toggle */}
+          <div className="space-y-4">
+            <div className="flex rounded-lg bg-muted p-1">
+              <button
+                onClick={() => setInstallMethod('docker')}
+                className={cn(
+                  'flex-1 flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                  installMethod === 'docker'
+                    ? 'bg-background text-foreground shadow-sm'
+                    : 'text-muted-foreground hover:text-foreground'
+                )}
+              >
+                <Container className="h-4 w-4" />
+                Docker Container
+              </button>
+              <button
+                onClick={() => setInstallMethod('systemd')}
+                className={cn(
+                  'flex-1 flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                  installMethod === 'systemd'
+                    ? 'bg-background text-foreground shadow-sm'
+                    : 'text-muted-foreground hover:text-foreground'
+                )}
+              >
+                <Server className="h-4 w-4" />
+                System Service
+              </button>
+            </div>
+
+            {installMethod === 'docker' && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Docker Run Command</label>
+                <div className="relative">
+                  <pre className="rounded bg-muted p-4 text-sm font-mono overflow-x-auto whitespace-pre-wrap">
+                    {dockerCommand}
+                  </pre>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="absolute top-2 right-2"
+                    onClick={() => handleCopy(dockerCommand, 'docker')}
+                  >
+                    {copied === 'docker' ? (
+                      <Check className="h-4 w-4 mr-1" />
+                    ) : (
+                      <Copy className="h-4 w-4 mr-1" />
+                    )}
+                    Copy
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {installMethod === 'systemd' && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Install Command</label>
+                <p className="text-xs text-muted-foreground">
+                  Run this command as root on your remote host to install the agent as a systemd service:
+                </p>
+                <div className="relative">
+                  <pre className="rounded bg-muted p-4 text-sm font-mono overflow-x-auto whitespace-pre-wrap">
+                    {systemdInstallCommand}
+                  </pre>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="absolute top-2 right-2"
+                    onClick={() => handleCopy(systemdInstallCommand, 'systemd')}
+                  >
+                    {copied === 'systemd' ? (
+                      <Check className="h-4 w-4 mr-1" />
+                    ) : (
+                      <Copy className="h-4 w-4 mr-1" />
+                    )}
+                    Copy
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <Alert>
+            <AlertDescription className="text-sm">
+              <strong>Note:</strong> If the <code>DOCKMON_URL</code> is not correct, please change it to the correct URL before running the command on the remote host.
+              The agent will connect via WebSocket and appear in your hosts list automatically.
+            </AlertDescription>
+          </Alert>
+
+          <Button
+            variant="outline"
+            onClick={() => {
+              generateToken.reset()
+              onClose()
+            }}
+          >
+            Done
+          </Button>
+        </div>
+      )}
+
+      {generateToken.isError && (
+        <Alert variant="destructive">
+          <AlertDescription>
+            {generateToken.error?.message || 'Failed to generate token'}
+          </AlertDescription>
+        </Alert>
+      )}
+    </div>
+  )
+
+  // Remote Docker Connection Tab Content
+  const remoteTabContent = (
+    <div className="p-6">
+      <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+        {/* Host Name */}
+        <div>
+          <label htmlFor="name" className="block text-sm font-medium mb-1">
+            Host Name <span className="text-destructive">*</span>
+          </label>
+          <Input
+            id="name"
+            {...register('name')}
+            placeholder="docker-prod-01"
+            className={errors.name ? 'border-destructive' : ''}
+            data-testid="host-name-input"
+          />
+          {errors.name && (
+            <p className="text-xs text-destructive mt-1">{errors.name.message}</p>
+          )}
+        </div>
+
+        {/* Address/Endpoint */}
+        <div>
+          <label htmlFor="url" className="block text-sm font-medium mb-1">
+            Address / Endpoint {!isAgentHost && <span className="text-destructive">*</span>}
+          </label>
+          {isAgentHost ? (
+            <div className="w-full rounded-md border border-input bg-muted px-3 py-2 text-sm text-muted-foreground">
+              agent:// (managed by agent)
+            </div>
+          ) : (
+            <>
+              <Input
+                id="url"
+                {...register('url')}
+                placeholder="tcp://192.168.1.20:2376 or unix:///var/run/docker.sock"
+                className={errors.url ? 'border-destructive' : ''}
+                data-testid="host-url-input"
+              />
+              {errors.url && (
+                <p className="text-xs text-destructive mt-1">{errors.url.message}</p>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* TLS Toggle or UNIX Socket Note - hidden for agent hosts */}
+        {isAgentHost ? null : watchUrl?.startsWith('unix://') ? (
+          <div className="rounded-lg border border-border p-3 bg-muted/10">
+            <p className="text-sm text-muted-foreground">
+              Local UNIX socket — TLS not applicable
+            </p>
+          </div>
+        ) : (
+          <>
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="enableTls"
+                  checked={showTlsFields}
+                  onChange={(e) => {
+                    const checked = e.target.checked
+                    setShowTlsFields(checked)
+                    setValue('enableTls', checked)
+                  }}
+                  className="h-4 w-4"
+                  data-testid="host-enable-tls"
+                />
+                <label htmlFor="enableTls" className="text-sm font-medium">
+                  Enable mTLS (mutual TLS)
+                </label>
+              </div>
+              {!showTlsFields && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={testConnection}
+                  className="h-7 text-xs"
+                >
+                  Test Connection
+                </Button>
+              )}
+            </div>
+
+            {/* mTLS Certificate Fields */}
+            {showTlsFields && (
+              <div className="space-y-4 rounded-lg border border-border p-4 bg-muted/20">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs text-muted-foreground">
+                    All three certificates are required for secure mTLS connection.
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={testConnection}
+                    className="h-7 text-xs"
+                  >
+                    Test Connection
+                  </Button>
+                </div>
+
+                {/* CA Certificate */}
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label htmlFor="tls_ca" className="block text-sm font-medium">
+                      CA Certificate <span className="text-destructive">*</span>
+                    </label>
+                    {hostHasCerts && !replaceCa && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setReplaceCa(true)}
+                        className="h-7 text-xs"
+                      >
+                        Replace
+                      </Button>
+                    )}
+                  </div>
+                  {hostHasCerts && !replaceCa ? (
+                    <div className="w-full rounded-md border border-input bg-muted px-3 py-2 text-sm text-muted-foreground">
+                      Uploaded — •••
+                    </div>
+                  ) : (
+                    <textarea
+                      id="tls_ca"
+                      {...register('tls_ca')}
+                      rows={4}
+                      placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+                      data-testid="host-tls-ca"
+                    />
+                  )}
+                </div>
+
+                {/* Client Certificate */}
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label htmlFor="tls_cert" className="block text-sm font-medium">
+                      Client Certificate <span className="text-destructive">*</span>
+                    </label>
+                    {hostHasCerts && !replaceCert && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setReplaceCert(true)}
+                        className="h-7 text-xs"
+                      >
+                        Replace
+                      </Button>
+                    )}
+                  </div>
+                  {hostHasCerts && !replaceCert ? (
+                    <div className="w-full rounded-md border border-input bg-muted px-3 py-2 text-sm text-muted-foreground">
+                      Uploaded — •••
+                    </div>
+                  ) : (
+                    <textarea
+                      id="tls_cert"
+                      {...register('tls_cert')}
+                      rows={4}
+                      placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+                      data-testid="host-tls-cert"
+                    />
+                  )}
+                </div>
+
+                {/* Client Key */}
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label htmlFor="tls_key" className="block text-sm font-medium">
+                      Client Private Key <span className="text-destructive">*</span>
+                    </label>
+                    {hostHasCerts && !replaceKey && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setReplaceKey(true)}
+                        className="h-7 text-xs"
+                      >
+                        Replace
+                      </Button>
+                    )}
+                  </div>
+                  {hostHasCerts && !replaceKey ? (
+                    <div className="w-full rounded-md border border-input bg-muted px-3 py-2 text-sm text-muted-foreground">
+                      Uploaded — •••
+                    </div>
+                  ) : (
+                    <textarea
+                      id="tls_key"
+                      {...register('tls_key')}
+                      rows={4}
+                      placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----"
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+                      data-testid="host-tls-key"
+                    />
+                  )}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* Description */}
+        <div>
+          <label htmlFor="description" className="block text-sm font-medium mb-1">
+            Description
+          </label>
+          <textarea
+            id="description"
+            {...register('description')}
+            rows={3}
+            placeholder="Optional notes about this host..."
+            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+            data-testid="host-description"
+          />
+        </div>
+
+        {/* Footer Actions */}
+        <div className="flex justify-between gap-2 pt-4 border-t">
+          {host ? (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleDeleteClick}
+              disabled={deleteMutation.isPending}
+              className="text-red-500 hover:text-red-600 hover:bg-red-50"
+              data-testid="host-modal-delete"
+            >
+              <Trash2 className="h-4 w-4 mr-2" />
+              {deleteMutation.isPending ? 'Deleting...' : 'Delete'}
+            </Button>
+          ) : (
+            <div></div>
+          )}
+
+          <div className="flex gap-2">
+            <Button type="button" variant="outline" onClick={onClose} data-testid="host-modal-cancel">
+              Cancel
+            </Button>
+            <Button type="submit" disabled={isSubmitting} data-testid="host-modal-save">
+              {isSubmitting ? 'Saving...' : host ? 'Update Host' : 'Add Host'}
+            </Button>
+          </div>
+        </div>
+      </form>
+    </div>
+  )
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" data-testid="host-modal">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" data-testid="host-modal">
       <div
-        className="relative w-full max-w-lg max-h-[90vh] flex flex-col rounded-2xl border border-border bg-background shadow-lg"
+        className="relative w-full max-w-2xl max-h-[90vh] rounded-2xl border border-border bg-background shadow-lg flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Scrollable content wrapper */}
-        <div className="overflow-y-auto px-6 py-6">
         {/* Header */}
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center justify-between p-6 pb-4 border-b">
           <div>
             <h2 className="text-xl font-semibold">
               {host ? 'Edit Host' : 'Add Host'}
             </h2>
             <p className="text-sm text-muted-foreground mt-1">
-              Provide connection details for a Docker host
+              {host
+                ? isAgentHost
+                  ? 'Update name and description for this agent-managed host'
+                  : 'Update connection details for this Docker host'
+                : 'Choose how to connect your Docker host'}
             </p>
           </div>
           <button
@@ -315,266 +807,31 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
           </button>
         </div>
 
-        {/* Form */}
-        <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-          {/* Host Name */}
-          <div>
-            <label htmlFor="name" className="block text-sm font-medium mb-1">
-              Host Name <span className="text-destructive">*</span>
-            </label>
-            <Input
-              id="name"
-              {...register('name')}
-              placeholder="docker-prod-01"
-              className={errors.name ? 'border-destructive' : ''}
-              data-testid="host-name-input"
-            />
-            {errors.name && (
-              <p className="text-xs text-destructive mt-1">{errors.name.message}</p>
-            )}
+        {/* Tabs - Only show for new hosts */}
+        {!host ? (
+          <Tabs
+            tabs={[
+              {
+                id: 'agent',
+                label: 'Agent (recommended)',
+                content: agentTabContent,
+              },
+              {
+                id: 'remote',
+                label: 'Legacy',
+                content: remoteTabContent,
+              },
+            ]}
+            activeTab={activeTab}
+            onTabChange={(tab) => setActiveTab(tab as 'agent' | 'remote')}
+            className="flex-1 overflow-hidden"
+          />
+        ) : (
+          // For edit mode, just show the remote form (no tabs)
+          <div className="flex-1 overflow-y-auto">
+            {remoteTabContent}
           </div>
-
-          {/* Address/Endpoint */}
-          <div>
-            <label htmlFor="url" className="block text-sm font-medium mb-1">
-              Address / Endpoint <span className="text-destructive">*</span>
-            </label>
-            <Input
-              id="url"
-              {...register('url')}
-              placeholder="tcp://192.168.1.20:2376, unix:///var/run/docker.sock, or unix:///var/run/podman/podman.sock"
-              className={errors.url ? 'border-destructive' : ''}
-              data-testid="host-url-input"
-            />
-            {errors.url && (
-              <p className="text-xs text-destructive mt-1">{errors.url.message}</p>
-            )}
-          </div>
-
-          {/* TLS Toggle or UNIX Socket Note */}
-          {watchUrl?.startsWith('unix://') ? (
-            <div className="rounded-lg border border-border p-3 bg-muted/10">
-              <p className="text-sm text-muted-foreground">
-                Local UNIX socket — TLS not applicable
-              </p>
-            </div>
-          ) : (
-            <>
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    id="enableTls"
-                    checked={showTlsFields}
-                    onChange={(e) => {
-                      const checked = e.target.checked
-                      setShowTlsFields(checked)
-                      setValue('enableTls', checked)
-                    }}
-                    className="h-4 w-4"
-                    data-testid="host-enable-tls"
-                  />
-                  <label htmlFor="enableTls" className="text-sm font-medium">
-                    Enable mTLS (mutual TLS)
-                  </label>
-                </div>
-                {!showTlsFields && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={testConnection}
-                    className="h-7 text-xs"
-                  >
-                    Test Connection
-                  </Button>
-                )}
-              </div>
-
-              {/* mTLS Certificate Fields (conditional) */}
-              {showTlsFields && (
-                <div className="space-y-4 rounded-lg border border-border p-4 bg-muted/20">
-                  <div className="flex items-center justify-between">
-                    <p className="text-xs text-muted-foreground">
-                      All three certificates are required for secure mTLS connection.
-                    </p>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={testConnection}
-                      className="h-7 text-xs"
-                    >
-                      Test Connection
-                    </Button>
-                  </div>
-
-                  {/* CA Certificate */}
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <label htmlFor="tls_ca" className="block text-sm font-medium">
-                        CA Certificate <span className="text-destructive">*</span>
-                      </label>
-                      {hostHasCerts && !replaceCa && (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setReplaceCa(true)}
-                          className="h-7 text-xs"
-                        >
-                          Replace
-                        </Button>
-                      )}
-                    </div>
-                    {hostHasCerts && !replaceCa ? (
-                      <div className="w-full rounded-md border border-input bg-muted px-3 py-2 text-sm text-muted-foreground">
-                        Uploaded — •••
-                      </div>
-                    ) : (
-                      <textarea
-                        id="tls_ca"
-                        {...register('tls_ca')}
-                        rows={4}
-                        placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
-                        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
-                        data-testid="host-tls-ca"
-                      />
-                    )}
-                    {errors.tls_ca && (
-                      <p className="text-xs text-destructive mt-1">{errors.tls_ca.message}</p>
-                    )}
-                  </div>
-
-                  {/* Client Certificate */}
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <label htmlFor="tls_cert" className="block text-sm font-medium">
-                        Client Certificate <span className="text-destructive">*</span>
-                      </label>
-                      {hostHasCerts && !replaceCert && (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setReplaceCert(true)}
-                          className="h-7 text-xs"
-                        >
-                          Replace
-                        </Button>
-                      )}
-                    </div>
-                    {hostHasCerts && !replaceCert ? (
-                      <div className="w-full rounded-md border border-input bg-muted px-3 py-2 text-sm text-muted-foreground">
-                        Uploaded — •••
-                      </div>
-                    ) : (
-                      <textarea
-                        id="tls_cert"
-                        {...register('tls_cert')}
-                        rows={4}
-                        placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
-                        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
-                        data-testid="host-tls-cert"
-                      />
-                    )}
-                    {errors.tls_cert && (
-                      <p className="text-xs text-destructive mt-1">{errors.tls_cert.message}</p>
-                    )}
-                  </div>
-
-                  {/* Client Key */}
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <label htmlFor="tls_key" className="block text-sm font-medium">
-                        Client Private Key <span className="text-destructive">*</span>
-                      </label>
-                      {hostHasCerts && !replaceKey && (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setReplaceKey(true)}
-                          className="h-7 text-xs"
-                        >
-                          Replace
-                        </Button>
-                      )}
-                    </div>
-                    {hostHasCerts && !replaceKey ? (
-                      <div className="w-full rounded-md border border-input bg-muted px-3 py-2 text-sm text-muted-foreground">
-                        Uploaded — •••
-                      </div>
-                    ) : (
-                      <textarea
-                        id="tls_key"
-                        {...register('tls_key')}
-                        rows={4}
-                        placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----"
-                        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
-                        data-testid="host-tls-key"
-                      />
-                    )}
-                    {errors.tls_key && (
-                      <p className="text-xs text-destructive mt-1">{errors.tls_key.message}</p>
-                    )}
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-
-          {/* Description */}
-          <div>
-            <label htmlFor="description" className="block text-sm font-medium mb-1">
-              Description
-            </label>
-            <textarea
-              id="description"
-              {...register('description')}
-              rows={3}
-              placeholder="Optional notes about this host..."
-              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-              data-testid="host-description"
-            />
-            {errors.description && (
-              <p className="text-xs text-destructive mt-1">{errors.description.message}</p>
-            )}
-          </div>
-
-          {/* Footer Actions */}
-          <div className="flex justify-between gap-2 pt-4 border-t">
-            {/* Delete Button - Only show when editing */}
-            {host ? (
-              <Button
-                type="button"
-                variant="outline"
-                onClick={handleDeleteClick}
-                disabled={deleteMutation.isPending}
-                className="text-red-500 hover:text-red-600 hover:bg-red-50"
-                data-testid="host-modal-delete"
-              >
-                <Trash2 className="h-4 w-4 mr-2" />
-                {deleteMutation.isPending ? 'Deleting...' : 'Delete'}
-              </Button>
-            ) : (
-              <div></div>
-            )}
-
-            <div className="flex gap-2">
-              <Button type="button" variant="outline" onClick={onClose} data-testid="host-modal-cancel">
-                Cancel
-              </Button>
-              <Button type="submit" disabled={isSubmitting} data-testid="host-modal-save">
-                {isSubmitting
-                  ? 'Saving...'
-                  : host
-                  ? 'Update Host'
-                  : 'Add Host'}
-              </Button>
-            </div>
-          </div>
-        </form>
+        )}
       </div>
 
       {/* Delete Confirmation Dialog */}
@@ -591,7 +848,6 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
                   Are you sure you want to delete <span className="font-semibold text-foreground">{host.name}</span>? This action cannot be undone.
                 </p>
 
-                {/* Show what will be affected */}
                 <div className="rounded-lg border border-border bg-muted/20 p-3 space-y-2 text-sm">
                   <p className="font-medium text-foreground mb-2">This will affect:</p>
                   <div className="space-y-1.5 text-muted-foreground">
@@ -634,8 +890,6 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
           </div>
         </div>
       )}
-      </div>
-      {/* End scrollable content wrapper */}
     </div>
   )
 }

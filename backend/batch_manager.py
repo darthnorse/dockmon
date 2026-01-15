@@ -431,6 +431,8 @@ class BatchJobManager:
                 message = f"Desired state set to {state_text}"
             elif action == 'check-updates':
                 # Check for newer image version
+                # Note: bypass_cache=False (default) - bulk checks should respect cache
+                # to avoid rate limiting (Issue #101)
                 checker = get_update_checker(self.db, self.monitor)
                 await checker.check_single_container(host_id, short_id)
                 message = 'Update check completed'

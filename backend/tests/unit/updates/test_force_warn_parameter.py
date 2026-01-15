@@ -46,7 +46,7 @@ class TestForceWarnParameter:
 
         with patch('updates.update_executor.async_docker_call') as mock_async_call, \
              patch.object(executor, '_get_docker_client') as mock_get_client, \
-             patch.object(executor, '_emit_update_warning_event') as mock_emit_warning, \
+             patch.object(executor.event_emitter, 'emit_warning') as mock_emit_warning, \
              patch('updates.update_executor.ContainerValidator') as mock_validator_class:
 
             # Setup minimal mocks
@@ -96,7 +96,7 @@ class TestForceWarnParameter:
 
         with patch('updates.update_executor.async_docker_call') as mock_async_call, \
              patch.object(executor, '_get_docker_client') as mock_get_client, \
-             patch.object(executor, '_emit_update_failed_event') as mock_emit_failed, \
+             patch.object(executor.event_emitter, 'emit_failed') as mock_emit_failed, \
              patch('updates.update_executor.ContainerValidator') as mock_validator_class, \
              patch.object(executor, 'updating_containers', set()):
 

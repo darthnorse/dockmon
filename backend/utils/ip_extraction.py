@@ -45,7 +45,8 @@ def extract_container_ips(network_settings: dict) -> tuple[Optional[str], dict[s
     primary_ip = None
 
     # Get all network IPs
-    networks = network_settings.get('Networks', {})
+    # Use `or {}` pattern to handle both missing keys AND null values
+    networks = network_settings.get('Networks') or {}
     for network_name, network_data in networks.items():
         ip = network_data.get('IPAddress')
         if ip:

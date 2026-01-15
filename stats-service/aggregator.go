@@ -4,6 +4,8 @@ import (
 	"context"
 	"log"
 	"time"
+
+	dockerpkg "github.com/darthnorse/dockmon-shared/docker"
 )
 
 // Aggregator aggregates container stats into host-level metrics
@@ -117,16 +119,24 @@ func (a *Aggregator) aggregateHostStats(hostID string, containers []*ContainerSt
 	// Calculate totals and percentages
 	var cpuPercent, memPercent float64
 
-	// CPU is sum of all container CPU percentages (represents total host CPU usage)
-	cpuPercent = totalCPU
+	// CPU: Docker reports container CPU as percentage of ALL cores combined.
+	// For example, a container using 100% of one core on a 4-core system reports ~100%.
+	// To get accurate host CPU, we sum all container CPU and divide by number of CPUs.
+	// This gives us the percentage of total host CPU capacity being used.
+	numCPUs := a.cache.GetHostNumCPUs(hostID)
+	if numCPUs > 0 {
+		cpuPercent = totalCPU / float64(numCPUs)
+	} else {
+		cpuPercent = totalCPU // Fallback if numCPUs not set
+	}
 
 	if totalMemLimit > 0 {
 		memPercent = (float64(totalMemUsage) / float64(totalMemLimit)) * 100.0
 	}
 
-	// Round to 1 decimal place
-	cpuPercent = roundToDecimal(cpuPercent, 1)
-	memPercent = roundToDecimal(memPercent, 1)
+	// Round to 1 decimal place - using shared package
+	cpuPercent = dockerpkg.RoundToDecimal(cpuPercent, 1)
+	memPercent = dockerpkg.RoundToDecimal(memPercent, 1)
 
 	return &HostStats{
 		HostID:           hostID,
@@ -138,13 +148,4 @@ func (a *Aggregator) aggregateHostStats(hostID string, containers []*ContainerSt
 		NetworkTxBytes:   totalNetTx,
 		ContainerCount:   validContainers,
 	}
-}
-
-// roundToDecimal rounds a float to n decimal places
-func roundToDecimal(value float64, places int) float64 {
-	shift := float64(1)
-	for i := 0; i < places; i++ {
-		shift *= 10
-	}
-	return float64(int(value*shift+0.5)) / shift
 }

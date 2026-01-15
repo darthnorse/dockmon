@@ -13,15 +13,17 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional, Callable
 import logging
 
+from database import DatabaseManager
 from utils.async_docker import async_docker_call
 from utils.container_health import wait_for_container_health
 from utils.image_pull_progress import ImagePullProgress
 from utils.network_helpers import manually_connect_networks
+from utils.registry_credentials import get_registry_credentials
 
 logger = logging.getLogger(__name__)
 
-# Import constants from stack_orchestrator (same keys used for network config)
-# Import moved here to avoid circular dependency
+# Constants for manual network handling in container configs
+# Used when containers need to be connected to networks after creation
 _MANUAL_NETWORKS_KEY = '_dockmon_manual_networks'
 _MANUAL_NETWORKING_CONFIG_KEY = '_dockmon_manual_networking_config'
 
@@ -445,6 +447,16 @@ class DirectDockerConnector(HostConnector):
 
         client = self._get_client()
 
+        # Look up registry credentials for the image
+        auth_config = None
+        try:
+            db = DatabaseManager()
+            auth_config = get_registry_credentials(db, image)
+            if auth_config:
+                logger.debug(f"Using registry credentials for deployment image pull: {image}")
+        except Exception as e:
+            logger.warning(f"Failed to get registry credentials for deployment: {e}")
+
         # If deployment_id provided, use layer-by-layer progress tracking
         if deployment_id:
             # Get connection_manager from docker_monitor for WebSocket broadcasting
@@ -456,7 +468,7 @@ class DirectDockerConnector(HostConnector):
 
             # Create image pull tracker (shares code with update system)
             tracker = ImagePullProgress(
-                loop=asyncio.get_event_loop(),
+                loop=asyncio.get_running_loop(),
                 connection_manager=connection_manager,
                 progress_callback=progress_callback
             )
@@ -467,12 +479,17 @@ class DirectDockerConnector(HostConnector):
                 image=image,
                 host_id=self.host_id,
                 entity_id=deployment_id,
+                auth_config=auth_config,
                 event_type="deployment_layer_progress",
                 timeout=1800  # 30 minutes
             )
         else:
             # Fallback: Simple pull without progress (for backward compatibility)
-            await async_docker_call(client.images.pull, image)
+            # Also use auth_config if available
+            if auth_config:
+                await async_docker_call(client.images.pull, image, auth_config=auth_config)
+            else:
+                await async_docker_call(client.images.pull, image)
 
     async def list_networks(self) -> List[Dict[str, Any]]:
         """List Docker networks"""
@@ -564,12 +581,332 @@ class DirectDockerConnector(HostConnector):
             return False
 
 
+class AgentConnector(HostConnector):
+    """
+    Agent-based connection to remote Docker daemon via WebSocket.
+
+    Routes all Docker operations through AgentCommandExecutor to
+    communicate with DockMon Agent running on remote host.
+    """
+
+    def __init__(self, host_id: str, agent_command_executor=None, agent_manager=None):
+        """
+        Initialize AgentConnector.
+
+        Args:
+            host_id: Docker host ID
+            agent_command_executor: AgentCommandExecutor instance
+            agent_manager: AgentManager instance (to resolve host_id -> agent_id)
+        """
+        super().__init__(host_id)
+        self._agent_command_executor = agent_command_executor
+        self._agent_manager = agent_manager
+        self._agent_id = None  # Cached agent ID
+
+    def _get_agent_id(self) -> str:
+        """
+        Get agent_id for this host.
+
+        Returns:
+            Agent ID
+
+        Raises:
+            ValueError: If no agent registered for host
+        """
+        if self._agent_id is not None:
+            return self._agent_id
+
+        # Lazy load dependencies if not provided
+        if self._agent_manager is None:
+            from agent.manager import AgentManager
+            self._agent_manager = AgentManager()
+
+        if self._agent_command_executor is None:
+            from agent.command_executor import get_agent_command_executor
+            self._agent_command_executor = get_agent_command_executor()
+
+        # Resolve host_id -> agent_id
+        agent_id = self._agent_manager.get_agent_for_host(self.host_id)
+        if not agent_id:
+            raise ValueError(f"No agent registered for host {self.host_id}")
+
+        self._agent_id = agent_id
+        return agent_id
+
+    async def _execute_command(self, command: dict, timeout: float = 30.0) -> dict:
+        """
+        Execute command on agent and return response data.
+
+        Args:
+            command: Command dict
+            timeout: Timeout in seconds
+
+        Returns:
+            Response data dict
+
+        Raises:
+            RuntimeError: If command fails
+        """
+        agent_id = self._get_agent_id()
+
+        result = await self._agent_command_executor.execute_command(
+            agent_id,
+            command,
+            timeout=timeout
+        )
+
+        if not result.success:
+            raise RuntimeError(f"Agent command failed: {result.error}")
+
+        return result.response
+
+    async def ping(self) -> bool:
+        """Test connectivity to agent"""
+        try:
+            agent_id = self._get_agent_id()
+            # Check if agent is connected
+            return self._agent_command_executor.connection_manager.is_connected(agent_id)
+        except Exception as e:
+            logger.error(f"Failed to ping agent for host {self.host_id}: {e}")
+            return False
+
+    async def create_container(
+        self,
+        config: Dict[str, Any],
+        labels: Dict[str, str]
+    ) -> str:
+        """
+        Create container via agent.
+
+        Returns container SHORT ID (12 characters)
+        """
+        # Merge labels into config
+        final_config = config.copy()
+        final_config['labels'] = {
+            **config.get('labels', {}),
+            **labels
+        }
+
+        command = {
+            "type": "container_operation",
+            "payload": {
+                "action": "create",
+                "config": final_config
+            }
+        }
+
+        response = await self._execute_command(command, timeout=60.0)
+        container_id = response.get("container_id")
+
+        if not container_id:
+            raise RuntimeError("Agent did not return container_id")
+
+        # Ensure SHORT ID (12 chars)
+        return container_id[:12] if len(container_id) > 12 else container_id
+
+    async def start_container(self, container_id: str) -> None:
+        """Start container by SHORT ID"""
+        command = {
+            "type": "container_operation",
+            "payload": {
+                "action": "start",
+                "container_id": container_id
+            }
+        }
+
+        await self._execute_command(command, timeout=30.0)
+
+    async def stop_container(self, container_id: str, timeout: int = 10) -> None:
+        """Stop container by SHORT ID"""
+        command = {
+            "type": "container_operation",
+            "payload": {
+                "action": "stop",
+                "container_id": container_id,
+                "timeout": timeout
+            }
+        }
+
+        await self._execute_command(command, timeout=float(timeout + 20))
+
+    async def remove_container(self, container_id: str, force: bool = False) -> None:
+        """Remove container by SHORT ID"""
+        command = {
+            "type": "container_operation",
+            "payload": {
+                "action": "remove",
+                "container_id": container_id,
+                "force": force
+            }
+        }
+
+        await self._execute_command(command, timeout=30.0)
+
+    async def get_container_status(self, container_id: str) -> str:
+        """
+        Get container status string.
+
+        Returns: 'running', 'exited', 'created', etc.
+        """
+        command = {
+            "type": "container_operation",
+            "payload": {
+                "action": "get_status",
+                "container_id": container_id
+            }
+        }
+
+        response = await self._execute_command(command, timeout=15.0)
+        return response.get("status", "unknown")
+
+    async def get_container_logs(
+        self,
+        container_id: str,
+        tail: int = 100,
+        since: Optional[str] = None
+    ) -> str:
+        """Get container logs"""
+        payload = {
+            "action": "get_logs",
+            "container_id": container_id,
+            "tail": tail
+        }
+        if since:
+            payload["since"] = since
+
+        command = {
+            "type": "container_operation",
+            "payload": payload
+        }
+
+        response = await self._execute_command(command, timeout=30.0)
+        return response.get("logs", "")
+
+    async def pull_image(
+        self,
+        image: str,
+        deployment_id: Optional[str] = None,
+        progress_callback: Optional[Callable] = None
+    ) -> None:
+        """
+        Pull container image from registry.
+
+        Note: Agent handles progress tracking internally and broadcasts
+        via WebSocket. The deployment_id is passed for correlation.
+        """
+        payload = {
+            "action": "pull_image",
+            "image": image
+        }
+        if deployment_id:
+            payload["deployment_id"] = deployment_id
+
+        command = {
+            "type": "container_operation",
+            "payload": payload
+        }
+
+        # Image pulls can take a long time (30 minutes timeout)
+        await self._execute_command(command, timeout=1800.0)
+
+    async def list_networks(self) -> List[Dict[str, Any]]:
+        """List Docker networks on host"""
+        command = {
+            "type": "container_operation",
+            "payload": {
+                "action": "list_networks"
+            }
+        }
+
+        response = await self._execute_command(command, timeout=15.0)
+        return response.get("networks", [])
+
+    async def create_network(self, name: str, driver: str = "bridge") -> str:
+        """Create Docker network"""
+        command = {
+            "type": "container_operation",
+            "payload": {
+                "action": "create_network",
+                "name": name,
+                "driver": driver
+            }
+        }
+
+        response = await self._execute_command(command, timeout=30.0)
+        return response.get("network_id", "")
+
+    async def list_volumes(self) -> List[Dict[str, Any]]:
+        """List Docker volumes on host"""
+        command = {
+            "type": "container_operation",
+            "payload": {
+                "action": "list_volumes"
+            }
+        }
+
+        response = await self._execute_command(command, timeout=15.0)
+        return response.get("volumes", [])
+
+    async def create_volume(self, name: str) -> str:
+        """Create Docker volume"""
+        command = {
+            "type": "container_operation",
+            "payload": {
+                "action": "create_volume",
+                "name": name
+            }
+        }
+
+        response = await self._execute_command(command, timeout=30.0)
+        return response.get("volume_name", name)
+
+    async def validate_port_availability(self, ports: Dict[str, int]) -> None:
+        """
+        Validate that ports are available.
+
+        Agent will check and raise error if ports in use.
+        """
+        command = {
+            "type": "container_operation",
+            "payload": {
+                "action": "validate_ports",
+                "ports": ports
+            }
+        }
+
+        # This will raise RuntimeError if validation fails
+        await self._execute_command(command, timeout=15.0)
+
+    async def verify_container_running(self, container_id: str, max_wait_seconds: int = 60) -> bool:
+        """
+        Verify container is healthy and running.
+
+        Waits for container health check or stability.
+        """
+        command = {
+            "type": "container_operation",
+            "payload": {
+                "action": "verify_running",
+                "container_id": container_id,
+                "max_wait_seconds": max_wait_seconds
+            }
+        }
+
+        try:
+            response = await self._execute_command(command, timeout=float(max_wait_seconds + 10))
+            return response.get("is_healthy", False)
+        except Exception as e:
+            logger.error(f"Error verifying container health: {e}")
+            return False
+
+
 def get_host_connector(host_id: str, docker_monitor=None) -> HostConnector:
     """
     Factory function to get appropriate HostConnector for a host.
 
-    In v2.1: Always returns DirectDockerConnector (local or TCP+TLS)
-    In v2.2: Will check host type and return AgentRPCConnector for agent hosts
+    Checks host.connection_type in database and returns:
+    - DirectDockerConnector for 'local' and 'remote' hosts (Docker SDK)
+    - AgentConnector for 'agent' hosts (WebSocket commands)
 
     Args:
         host_id: Docker host ID
@@ -578,7 +915,43 @@ def get_host_connector(host_id: str, docker_monitor=None) -> HostConnector:
 
     Returns:
         HostConnector implementation for the host
+
+    Raises:
+        ValueError: If host not found or connection_type invalid
     """
-    # v2.1: All hosts use DirectDockerConnector
-    # v2.2: Will add logic to check host.type and return AgentRPCConnector
-    return DirectDockerConnector(host_id, docker_monitor)
+    from database import DatabaseManager, DockerHostDB
+
+    # Get database manager
+    db = DatabaseManager()
+
+    # Query host to determine connection type
+    with db.get_session() as session:
+        host = session.query(DockerHostDB).filter_by(id=host_id).first()
+
+        if not host:
+            raise ValueError(f"Host {host_id} not found in database")
+
+        connection_type = host.connection_type
+
+    # Route based on connection type
+    if connection_type in ('local', 'remote'):
+        # Use direct Docker SDK connection
+        return DirectDockerConnector(host_id, docker_monitor)
+
+    elif connection_type == 'agent':
+        # Use agent-based WebSocket connection
+        # Lazy-load agent dependencies
+        from agent.command_executor import get_agent_command_executor
+        from agent.manager import AgentManager
+
+        return AgentConnector(
+            host_id,
+            agent_command_executor=get_agent_command_executor(),
+            agent_manager=AgentManager()
+        )
+
+    else:
+        raise ValueError(
+            f"Unknown connection_type '{connection_type}' for host {host_id}. "
+            f"Expected: 'local', 'remote', or 'agent'"
+        )

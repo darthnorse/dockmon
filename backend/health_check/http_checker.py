@@ -88,12 +88,15 @@ class HttpHealthChecker:
         logger.info("HTTP health checker stopped and cleaned up")
 
     async def _reload_and_schedule_checks(self):
-        """Reload enabled health checks and schedule check tasks"""
+        """Reload enabled backend-based health checks and schedule check tasks"""
         enabled_check_ids: Set[str] = set()
 
         with self.db.get_session() as session:
-            enabled_checks = session.query(ContainerHttpHealthCheck).filter_by(
-                enabled=True
+            # Only get backend-based checks (v2.2.0+)
+            # Agent-based checks are handled by the agent
+            enabled_checks = session.query(ContainerHttpHealthCheck).filter(
+                ContainerHttpHealthCheck.enabled == True,
+                ContainerHttpHealthCheck.check_from == 'backend'
             ).all()
 
             enabled_check_ids = {check.container_id for check in enabled_checks}

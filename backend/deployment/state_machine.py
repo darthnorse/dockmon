@@ -1,5 +1,5 @@
 """
-Deployment state machine for DockMon v2.1 (7-state flow)
+Deployment state machine for DockMon v2.1 (8-state flow)
 
 Manages deployment state transitions with granular states for precise debugging
 and progress tracking. Implements commitment point tracking to ensure safe
@@ -7,11 +7,14 @@ rollback operations that don't destroy committed database state.
 
 State Flow (Spec-Compliant):
     planning -> validating -> pulling_image -> creating -> starting -> running
-                    |              |             |           |
-                    +---> failed <-+-------------+-----------+
-                             |
-                             v
-                        rolled_back
+                    |              |             |           |            |  ^
+                    +---> failed <-+-------------+-----------+            |  |
+                    |                                                     |  |
+                    +---> partial <---------------------------------------+  |
+                             |                                               |
+                    failed --+                                               |
+                             v                                               |
+                        rolled_back                     (redeploy) ----------+
 
 State Semantics:
     - planning: Deployment created, not started
@@ -20,6 +23,7 @@ State Semantics:
     - creating: Creating container in Docker (40-60% progress)
     - starting: Starting container (60-80% progress)
     - running: Container healthy and running (100% progress)
+    - partial: Some services running, others failed (100% progress, needs attention)
     - failed: Error occurred, see error_message
     - rolled_back: Failed deployment cleaned up
 
@@ -63,19 +67,20 @@ class DeploymentStateMachine:
     """
 
     # Valid state transitions (from_state -> to_state)
-    # Spec-compliant 7-state flow with granular progression
+    # Spec-compliant 8-state flow with granular progression
     VALID_TRANSITIONS = {
         'planning': ['validating'],
-        'validating': ['pulling_image', 'failed'],
-        'pulling_image': ['creating', 'failed'],
-        'creating': ['starting', 'failed'],
-        'starting': ['running', 'failed'],
-        'running': [],  # Terminal state (success)
-        'failed': ['rolled_back'],
-        'rolled_back': [],  # Terminal state (cleanup complete)
+        'validating': ['pulling_image', 'failed', 'partial'],
+        'pulling_image': ['creating', 'failed', 'partial'],
+        'creating': ['starting', 'failed', 'partial'],
+        'starting': ['running', 'failed', 'partial'],
+        'running': ['validating'],  # Allow redeploy (running -> validating to restart flow)
+        'partial': ['validating'],  # Allow retry after partial success
+        'failed': ['rolled_back', 'validating'],  # Allow rollback or retry
+        'rolled_back': ['validating'],  # Allow retry after rollback
     }
 
-    # Valid deployment states (7 states from spec)
+    # Valid deployment states (8 states)
     VALID_STATES = {
         'planning',      # Deployment created, not started
         'validating',    # Security validation in progress
@@ -83,6 +88,7 @@ class DeploymentStateMachine:
         'creating',      # Creating container in Docker
         'starting',      # Starting container
         'running',       # Container healthy and running
+        'partial',       # Some services running, others failed
         'failed',        # Error occurred
         'rolled_back'    # Failed deployment cleaned up
     }
@@ -163,12 +169,18 @@ class DeploymentStateMachine:
         # Update timestamps based on state
         utcnow = datetime.now(timezone.utc)
 
+        # Handle redeploy: reset timestamps and committed flag when going from running -> validating
+        if from_state == 'running' and to_state == 'validating':
+            deployment.started_at = utcnow
+            deployment.completed_at = None
+            deployment.committed = False
+            logger.info(f"Deployment {deployment.id}: redeploy detected, reset timestamps and committed flag")
         # Set started_at when deployment begins execution (validating is first state)
-        if to_state == 'validating' and not deployment.started_at:
+        elif to_state == 'validating' and not deployment.started_at:
             deployment.started_at = utcnow
 
         # Set completed_at when reaching terminal states
-        if to_state in {'running', 'failed', 'rolled_back'} and not deployment.completed_at:
+        if to_state in {'running', 'partial', 'failed', 'rolled_back'} and not deployment.completed_at:
             deployment.completed_at = utcnow
 
         # Always update updated_at on state transitions (ensures API returns current timestamp)
@@ -319,8 +331,8 @@ class DeploymentStateMachine:
             >>> sm.get_valid_next_states('planning')
             ['validating']
             >>> sm.get_valid_next_states('validating')
-            ['pulling_image', 'failed']
+            ['pulling_image', 'failed', 'partial']
             >>> sm.get_valid_next_states('running')
-            []  # Terminal state
+            ['validating']  # Allows redeploy
         """
         return self.VALID_TRANSITIONS.get(current_state, [])

@@ -7,19 +7,18 @@ Provides REST endpoints for:
 - Resolving alerts
 - Snoozing alerts
 - Adding annotations
-- Managing alert rules (CRUD)
+
+Note: Alert rule CRUD is handled in main.py at /api/alerts/rules
 """
 
 import json
 import logging
-import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any
 from fastapi import APIRouter, HTTPException, Depends, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
-from database import DatabaseManager, AlertV2, AlertRuleV2, AlertAnnotation
-from alerts.validator import AlertRuleValidator, AlertRuleValidationError
+from database import DatabaseManager, AlertV2, AlertAnnotation
 from alerts.engine import AlertEngine
 from security.rate_limiting import get_rate_limit_dependency
 from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_scope  # v2 hybrid auth (cookies + API keys)
@@ -63,11 +62,7 @@ class AlertResponse(BaseModel):
     host_id: Optional[str] = None
     container_name: Optional[str] = None
 
-    class Config:
-        from_attributes = True
-        json_encoders = {
-            datetime: lambda v: v.isoformat() + 'Z' if v else None
-        }
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AlertListResponse(BaseModel):
@@ -94,66 +89,6 @@ class AddAnnotationRequest(BaseModel):
     user: Optional[str] = None
 
 
-class AlertRuleRequest(BaseModel):
-    """Request to create/update alert rule"""
-    name: str = Field(min_length=1, max_length=200)
-    description: Optional[str] = None
-    scope: str = Field(pattern="^(host|container)$")
-    kind: str = Field(min_length=1, max_length=100)
-    enabled: bool = True
-
-    # Selectors
-    host_selector: Optional[Dict[str, Any]] = None
-    container_selector: Optional[Dict[str, Any]] = None
-    labels: Optional[Dict[str, str]] = None
-
-    # Conditions (for metric-driven rules)
-    metric: Optional[str] = None
-    operator: Optional[str] = Field(None, pattern="^(>=|<=|==|>|<)$")
-    threshold: Optional[float] = None
-    duration_seconds: Optional[int] = Field(None, ge=1, le=86400)
-    occurrences: Optional[int] = Field(None, ge=1, le=100)
-
-    # Clearing
-    clear_threshold: Optional[float] = None
-    clear_duration_seconds: Optional[int] = Field(None, ge=1, le=86400)
-
-    # Behavior
-    severity: str = Field(pattern="^(info|warning|error|critical)$")
-    grace_seconds: int = Field(default=300, ge=0, le=3600)
-    cooldown_seconds: int = Field(default=300, ge=0, le=86400)
-    depends_on: Optional[List[str]] = None
-
-    # Notifications
-    notify_channels: Optional[List[str]] = None
-
-
-class AlertRuleResponse(BaseModel):
-    """Alert rule response model"""
-    id: str
-    name: str
-    description: Optional[str]
-    scope: str
-    kind: str
-    enabled: bool
-    severity: str
-    metric: Optional[str]
-    threshold: Optional[float]
-    operator: Optional[str]
-    duration_seconds: Optional[int]
-    occurrences: Optional[int]
-    clear_threshold: Optional[float]
-    clear_duration_seconds: Optional[int]
-    grace_seconds: int
-    cooldown_seconds: int
-    created_at: datetime
-    updated_at: datetime
-    version: int
-
-    class Config:
-        from_attributes = True
-
-
 # ==================== Dependencies ====================
 
 def get_db() -> DatabaseManager:
@@ -166,11 +101,6 @@ def get_db() -> DatabaseManager:
 def get_alert_engine(db: DatabaseManager = Depends(get_db)) -> AlertEngine:
     """Get alert engine instance"""
     return AlertEngine(db)
-
-
-def get_rule_validator() -> AlertRuleValidator:
-    """Get rule validator instance"""
-    return AlertRuleValidator()
 
 
 # ==================== Alert Endpoints ====================
@@ -393,167 +323,6 @@ async def get_annotations(
                 for ann in annotations
             ]
         }
-
-
-# ==================== Rule Endpoints ====================
-
-@router.get("/rules/", dependencies=[Depends(get_rate_limit_dependency("rules"))])
-async def list_rules(
-    enabled: Optional[bool] = None,
-    scope: Optional[str] = Query(None, pattern="^(host|container)$"),
-    db: DatabaseManager = Depends(get_db)
-):
-    """List all alert rules"""
-    with db.get_session() as session:
-        query = session.query(AlertRuleV2)
-
-        if enabled is not None:
-            query = query.filter(AlertRuleV2.enabled == enabled)
-        if scope:
-            query = query.filter(AlertRuleV2.scope == scope)
-
-        rules = query.order_by(AlertRuleV2.name).all()
-
-        return {
-            "rules": [
-                AlertRuleResponse(**{k: v for k, v in rule.__dict__.items() if not k.startswith('_')})
-                for rule in rules
-            ]
-        }
-
-
-@router.post("/rules/", response_model=AlertRuleResponse, dependencies=[Depends(get_rate_limit_dependency("rules_write")), Depends(require_scope("admin"))])
-async def create_rule(
-    request: AlertRuleRequest,
-    db: DatabaseManager = Depends(get_db),
-    validator: AlertRuleValidator = Depends(get_rule_validator)
-):
-    """Create a new alert rule"""
-    # Validate rule
-    rule_data = request.dict()
-    try:
-        validator.validate_rule(rule_data)
-    except AlertRuleValidationError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    # Create rule
-    with db.get_session() as session:
-        rule = AlertRuleV2(
-            id=str(uuid.uuid4()),
-            name=request.name,
-            description=request.description,
-            scope=request.scope,
-            kind=request.kind,
-            enabled=request.enabled,
-            host_selector_json=json.dumps(request.host_selector) if request.host_selector else None,
-            container_selector_json=json.dumps(request.container_selector) if request.container_selector else None,
-            labels_json=json.dumps(request.labels) if request.labels else None,
-            metric=request.metric,
-            operator=request.operator,
-            threshold=request.threshold,
-            duration_seconds=request.duration_seconds,
-            occurrences=request.occurrences,
-            clear_threshold=request.clear_threshold,
-            clear_duration_seconds=request.clear_duration_seconds,
-            severity=request.severity,
-            grace_seconds=request.grace_seconds,
-            cooldown_seconds=request.cooldown_seconds,
-            depends_on_json=json.dumps(request.depends_on) if request.depends_on else None,
-            notify_channels_json=json.dumps(request.notify_channels) if request.notify_channels else None,
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
-            version=1
-        )
-
-        session.add(rule)
-        session.commit()
-        session.refresh(rule)
-
-        return AlertRuleResponse(**{k: v for k, v in rule.__dict__.items() if not k.startswith('_')})
-
-
-@router.get("/rules/{rule_id}", response_model=AlertRuleResponse, dependencies=[Depends(get_rate_limit_dependency("rules"))])
-async def get_rule(
-    rule_id: str,
-    db: DatabaseManager = Depends(get_db)
-):
-    """Get alert rule by ID"""
-    with db.get_session() as session:
-        rule = session.query(AlertRuleV2).filter(AlertRuleV2.id == rule_id).first()
-
-        if not rule:
-            raise HTTPException(status_code=404, detail="Rule not found")
-
-        return AlertRuleResponse(**{k: v for k, v in rule.__dict__.items() if not k.startswith('_')})
-
-
-@router.put("/rules/{rule_id}", response_model=AlertRuleResponse, dependencies=[Depends(get_rate_limit_dependency("rules_write")), Depends(require_scope("admin"))])
-async def update_rule(
-    rule_id: str,
-    request: AlertRuleRequest,
-    db: DatabaseManager = Depends(get_db),
-    validator: AlertRuleValidator = Depends(get_rule_validator)
-):
-    """Update an existing alert rule"""
-    # Validate rule
-    rule_data = request.dict()
-    try:
-        validator.validate_rule(rule_data)
-    except AlertRuleValidationError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    with db.get_session() as session:
-        rule = session.query(AlertRuleV2).filter(AlertRuleV2.id == rule_id).first()
-
-        if not rule:
-            raise HTTPException(status_code=404, detail="Rule not found")
-
-        # Update fields
-        rule.name = request.name
-        rule.description = request.description
-        rule.scope = request.scope
-        rule.kind = request.kind
-        rule.enabled = request.enabled
-        rule.host_selector_json = json.dumps(request.host_selector) if request.host_selector else None
-        rule.container_selector_json = json.dumps(request.container_selector) if request.container_selector else None
-        rule.labels_json = json.dumps(request.labels) if request.labels else None
-        rule.metric = request.metric
-        rule.operator = request.operator
-        rule.threshold = request.threshold
-        rule.duration_seconds = request.duration_seconds
-        rule.occurrences = request.occurrences
-        rule.clear_threshold = request.clear_threshold
-        rule.clear_duration_seconds = request.clear_duration_seconds
-        rule.severity = request.severity
-        rule.grace_seconds = request.grace_seconds
-        rule.cooldown_seconds = request.cooldown_seconds
-        rule.depends_on_json = json.dumps(request.depends_on) if request.depends_on else None
-        rule.notify_channels_json = json.dumps(request.notify_channels) if request.notify_channels else None
-        rule.updated_at = datetime.now(timezone.utc)
-        rule.version += 1
-
-        session.commit()
-        session.refresh(rule)
-
-        return AlertRuleResponse(**{k: v for k, v in rule.__dict__.items() if not k.startswith('_')})
-
-
-@router.delete("/rules/{rule_id}", dependencies=[Depends(get_rate_limit_dependency("rules_write")), Depends(require_scope("admin"))])
-async def delete_rule(
-    rule_id: str,
-    db: DatabaseManager = Depends(get_db)
-):
-    """Delete an alert rule"""
-    with db.get_session() as session:
-        rule = session.query(AlertRuleV2).filter(AlertRuleV2.id == rule_id).first()
-
-        if not rule:
-            raise HTTPException(status_code=404, detail="Rule not found")
-
-        session.delete(rule)
-        session.commit()
-
-        return {"status": "success", "message": "Rule deleted"}
 
 
 # ==================== Statistics ====================

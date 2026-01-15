@@ -10,9 +10,11 @@ import { apiClient } from '@/lib/api/client'
 import type {
   UpdatePoliciesResponse,
   UpdatePolicyValue,
+  UpdatePolicyAction,
   ToggleCategoryResponse,
   CreateCustomPatternResponse,
   DeleteCustomPatternResponse,
+  UpdatePolicyActionResponse,
   SetContainerPolicyResponse,
   UpdatePolicyCategory
 } from '../types/updatePolicy'
@@ -83,11 +85,11 @@ export function useCreateCustomPattern() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async ({ pattern }: { pattern: string }) => {
+    mutationFn: async ({ pattern, action = 'warn' }: { pattern: string; action?: UpdatePolicyAction }) => {
       const data = await apiClient.post<CreateCustomPatternResponse>(
         '/update-policies/custom',
         null,
-        { params: { pattern } }
+        { params: { pattern, action } }
       )
       return data
     },
@@ -111,6 +113,30 @@ export function useDeleteCustomPattern() {
     mutationFn: async ({ policyId }: { policyId: number }) => {
       const data = await apiClient.delete<DeleteCustomPatternResponse>(
         `/update-policies/custom/${policyId}`
+      )
+      return data
+    },
+    onSuccess: () => {
+      // Invalidate policies list to refetch
+      queryClient.invalidateQueries({ queryKey: updatePolicyKeys.lists() })
+    }
+  })
+}
+
+/**
+ * Update the action for a policy pattern
+ *
+ * Changes the action (warn/ignore) for any policy pattern.
+ */
+export function useUpdatePolicyAction() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({ policyId, action }: { policyId: number; action: UpdatePolicyAction }) => {
+      const data = await apiClient.put<UpdatePolicyActionResponse>(
+        `/update-policies/${policyId}/action`,
+        null,
+        { params: { action } }
       )
       return data
     },

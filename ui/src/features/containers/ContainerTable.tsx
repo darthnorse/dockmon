@@ -791,9 +791,8 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   })
 
   // Container action hook (reusable across components)
-  const { executeAction, isPending: isActionPending } = useContainerActions({
-    invalidateQueries: ['containers'],
-  })
+  // Uses per-container pending tracking + optimistic updates
+  const { executeAction, isContainerPending } = useContainerActions()
 
   // Batch action mutation
   const batchMutation = useMutation({
@@ -1179,15 +1178,22 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         },
         cell: ({ row }) => {
           const container = row.original
+          const isRunning = container.state === 'running'
 
-          // Calculate uptime from created timestamp
-          const formatUptime = (createdStr: string) => {
+          // Stopped containers don't have uptime
+          if (!isRunning) {
+            return <span className="text-sm text-muted-foreground">-</span>
+          }
+
+          // Calculate uptime from started_at timestamp (when container was last started)
+          // Fall back to created if started_at not available
+          const formatUptime = (timestampStr: string) => {
             try {
-              const created = new Date(createdStr)
+              const timestamp = new Date(timestampStr)
               const now = new Date()
-              const diffMs = now.getTime() - created.getTime()
+              const diffMs = now.getTime() - timestamp.getTime()
 
-              if (diffMs < 0) return '—'
+              if (diffMs < 0) return '-'
 
               const seconds = Math.floor(diffMs / 1000)
               const minutes = Math.floor(seconds / 60)
@@ -1204,14 +1210,20 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
                 return `${seconds}s`
               }
             } catch {
-              return '—'
+              return '-'
             }
           }
 
+          // Use started_at for uptime (when container was last started), fall back to created
+          const uptimeSource = container.started_at || container.created
+          const tooltipText = container.started_at
+            ? `Started: ${container.started_at}`
+            : `Created: ${container.created}`
+
           return (
-            <div className="text-sm text-muted-foreground" title={`Created: ${container.created}`}>
-              {container.created ? formatUptime(container.created) : '—'}
-            </div>
+            <span className="text-sm text-muted-foreground" title={tooltipText}>
+              {uptimeSource ? formatUptime(uptimeSource) : '-'}
+            </span>
           )
         },
         enableSorting: true,
@@ -1235,14 +1247,16 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         accessorFn: (row) => row.cpu_percent ?? -1,
         cell: ({ row }) => {
           const container = row.original
-          if (container.cpu_percent !== undefined && container.cpu_percent !== null) {
+          // Only show CPU for running containers
+          const isRunning = container.state === 'running'
+          if (isRunning && container.cpu_percent !== undefined && container.cpu_percent !== null) {
             return (
-              <span className="text-xs text-muted-foreground">
+              <span className="text-sm text-muted-foreground">
                 {container.cpu_percent.toFixed(1)}%
               </span>
             )
           }
-          return <span className="text-xs text-muted-foreground">-</span>
+          return <span className="text-sm text-muted-foreground">-</span>
         },
         enableSorting: true,
       },
@@ -1265,16 +1279,18 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         accessorFn: (row) => row.memory_usage ?? -1,
         cell: ({ row }) => {
           const container = row.original
+          // Only show RAM for running containers
+          const isRunning = container.state === 'running'
 
-          if (container.memory_usage === undefined || container.memory_usage === null) {
-            return <span className="text-xs text-muted-foreground">-</span>
+          if (!isRunning || container.memory_usage === undefined || container.memory_usage === null) {
+            return <span className="text-sm text-muted-foreground">-</span>
           }
 
           const usage = formatBytes(container.memory_usage)
           const limit = container.memory_limit ? formatBytes(container.memory_limit) : 'No limit'
 
           return (
-            <span className="text-xs text-muted-foreground" title={`Limit: ${limit}`}>
+            <span className="text-sm text-muted-foreground" title={`Limit: ${limit}`}>
               {usage}
             </span>
           )
@@ -1313,7 +1329,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
                     host_id: container.host_id,
                   })
                 }}
-                disabled={!canStart || isActionPending}
+                disabled={!canStart || isContainerPending(container.host_id || '', container.id)}
                 title="Start container"
               >
                 <PlayCircle className={`h-4 w-4 ${canStart ? 'text-success' : 'text-muted-foreground'}`} />
@@ -1337,7 +1353,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
                     host_id: container.host_id,
                   })
                 }}
-                disabled={!canStop || isActionPending}
+                disabled={!canStop || isContainerPending(container.host_id || '', container.id)}
                 title="Stop container"
               >
                 <Square className={`h-4 w-4 ${canStop ? 'text-danger' : 'text-muted-foreground'}`} />
@@ -1361,7 +1377,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
                     host_id: container.host_id,
                   })
                 }}
-                disabled={!canRestart || isActionPending}
+                disabled={!canRestart || isContainerPending(container.host_id || '', container.id)}
                 title="Restart container"
               >
                 <RotateCw className={`h-4 w-4 ${canRestart ? 'text-info' : 'text-muted-foreground'}`} />
@@ -1421,7 +1437,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         },
       },
     ],
-    [executeAction, isActionPending, selectedContainerIds, data, toggleContainerSelection, toggleSelectAll, alertCounts, allAutoUpdateConfigs, allHealthCheckConfigs]
+    [executeAction, isContainerPending, selectedContainerIds, data, toggleContainerSelection, toggleSelectAll, alertCounts, allAutoUpdateConfigs, allHealthCheckConfigs]
   )
 
   const table = useReactTable({

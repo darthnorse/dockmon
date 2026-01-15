@@ -92,20 +92,26 @@ export function LayerProgressDisplay({
   // Listen for WebSocket progress messages
   const handleProgressMessage = useCallback(
     (message: any) => {
-      if (
-        message.data?.host_id === hostId &&
-        message.data?.entity_id === entityId
-      ) {
-        // Handle OLD simple progress (backward compatible)
+      // Support both message structures:
+      // 1. Container updates: message.data.host_id, message.data.entity_id
+      // 2. Deployments: message.host_id, message.deployment_id
+      const msgHostId = message.data?.host_id || message.host_id
+      const msgEntityId = message.data?.entity_id || message.deployment_id
+
+      if (msgHostId === hostId && msgEntityId === entityId) {
+        // Handle simple progress (container updates use message.data, deployments use message.progress)
         if (simpleProgressEventType && message.type === simpleProgressEventType) {
+          // Deployment progress structure
+          const progress = message.progress || message.data
           setUpdateProgress({
-            stage: message.data.stage,
-            progress: message.data.progress,
-            message: message.data.message,
+            stage: progress?.stage || message.data?.stage,
+            progress: progress?.overall_percent ?? message.data?.progress,
+            message: progress?.stage || message.data?.message || 'Processing...',
           })
 
           // Clear progress when update completes
-          if (message.data.stage === 'completed') {
+          const stage = progress?.stage || message.data?.stage
+          if (stage === 'completed' || message.status === 'running') {
             // Clear any existing timeout first
             if (completionTimeoutId) {
               clearTimeout(completionTimeoutId)
@@ -123,12 +129,20 @@ export function LayerProgressDisplay({
 
         // Handle NEW layer progress (enhanced view)
         if (message.type === eventType) {
+          // Build summary with speed appended if not already included
+          // Docker SDK includes speed in summary, agent sends it separately
+          let summary = message.data.summary || ''
+          const speedMbps = message.data.speed_mbps
+          if (speedMbps && speedMbps > 0 && !summary.includes('MB/s')) {
+            summary = `${summary} @ ${speedMbps.toFixed(1)} MB/s`
+          }
+
           setLayerProgress({
             overall_progress: message.data.overall_progress,
             layers: message.data.layers,
             total_layers: message.data.total_layers,
             remaining_layers: message.data.remaining_layers,
-            summary: message.data.summary,
+            summary: summary,
             speed_mbps: message.data.speed_mbps,
           })
         }
@@ -179,24 +193,43 @@ export function LayerProgressDisplay({
     return null
   }
 
+  // Determine if we have detailed layer progress or just simple progress
+  // Docker SDK deployments/updates have layerProgress, agent deployments don't
+  const hasDetailedProgress = layerProgress !== null
+
   return (
     <div className="space-y-3 rounded-lg border border-blue-500/50 bg-blue-500/10 p-4" data-testid="layer-progress-display">
       {/* Overall progress bar */}
       <div className="flex items-center justify-between text-sm">
         <span className="font-medium text-blue-400">
-          {layerProgress ? layerProgress.summary : updateProgress?.message}
+          {hasDetailedProgress
+            ? layerProgress.summary
+            : updateProgress?.message || 'Deploying, please wait...'}
         </span>
         <span className="text-blue-400">
-          {layerProgress ? layerProgress.overall_progress : updateProgress?.progress}%
+          {hasDetailedProgress
+            ? `${layerProgress.overall_progress}%`
+            : updateProgress?.progress !== undefined
+              ? `${updateProgress.progress}%`
+              : ''}
         </span>
       </div>
       <div className="relative h-2 w-full overflow-hidden rounded-full bg-blue-950">
-        <div
-          className="h-full bg-blue-500 transition-all duration-500 ease-out"
-          style={{
-            width: `${layerProgress ? layerProgress.overall_progress : updateProgress?.progress}%`
-          }}
-        />
+        {hasDetailedProgress ? (
+          <div
+            className="h-full bg-blue-500 transition-all duration-500 ease-out"
+            style={{ width: `${layerProgress.overall_progress}%` }}
+          />
+        ) : updateProgress?.progress !== undefined ? (
+          /* Simple progress bar when we have progress percentage but no layer details */
+          <div
+            className="h-full bg-blue-500 transition-all duration-500 ease-out"
+            style={{ width: `${updateProgress.progress}%` }}
+          />
+        ) : (
+          /* Indeterminate animated bar when no progress data at all */
+          <div className="h-full w-full bg-gradient-to-r from-blue-500/30 via-blue-500 to-blue-500/30 animate-pulse" />
+        )}
       </div>
 
       {/* Collapse/Expand toggle (optional polish) */}

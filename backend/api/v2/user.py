@@ -207,16 +207,20 @@ async def get_user_preferences(
         if container_sort_key == "status":
             container_sort_key = "state"
 
+        # Helper to validate layout fields - must be list or None
+        def validate_layout(value):
+            return value if isinstance(value, list) else None
+
         dashboard = DashboardPreferences(
             enableCustomLayout=dashboard_prefs.get("enableCustomLayout", True),
             hostOrder=dashboard_prefs.get("hostOrder", []),
             compactHostOrder=dashboard_prefs.get("compactHostOrder"),
             containerSortKey=container_sort_key,
             hostContainerSorts=dashboard_prefs.get("hostContainerSorts", {}),
-            hostCardLayout=dashboard_prefs.get("hostCardLayout"),
-            hostCardLayoutStandard=dashboard_prefs.get("hostCardLayoutStandard"),
-            hostCardLayoutGroupedStandard=dashboard_prefs.get("hostCardLayoutGroupedStandard"),
-            hostCardLayoutGroupedExpanded=dashboard_prefs.get("hostCardLayoutGroupedExpanded"),
+            hostCardLayout=validate_layout(dashboard_prefs.get("hostCardLayout")),
+            hostCardLayoutStandard=validate_layout(dashboard_prefs.get("hostCardLayoutStandard")),
+            hostCardLayoutGroupedStandard=validate_layout(dashboard_prefs.get("hostCardLayoutGroupedStandard")),
+            hostCardLayoutGroupedExpanded=validate_layout(dashboard_prefs.get("hostCardLayoutGroupedExpanded")),
             tagGroupOrder=dashboard_prefs.get("tagGroupOrder"),
             groupLayouts=dashboard_prefs.get("groupLayouts", {}),
             showKpiBar=dashboard_prefs.get("showKpiBar", True),

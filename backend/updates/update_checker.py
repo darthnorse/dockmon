@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
 
 from sqlalchemy.exc import IntegrityError
-from database import DatabaseManager, ContainerUpdate, GlobalSettings, RegistryCredential
+from database import DatabaseManager, ContainerUpdate, GlobalSettings, RegistryCredential, UpdatePolicy
 
 # Image cache TTL configuration (in seconds)
 # Can be overridden via environment variables
@@ -27,6 +27,7 @@ from updates.changelog_resolver import resolve_changelog_url
 from event_bus import Event, EventType, get_event_bus
 from utils.keys import make_composite_key
 from utils.encryption import decrypt_password
+from utils.container_id import normalize_container_id
 
 logger = logging.getLogger(__name__)
 
@@ -119,12 +120,20 @@ class UpdateChecker:
 
         logger.info(f"Found {len(containers)} containers to check")
 
+        # Load ignore patterns once before the loop
+        ignore_patterns = self._get_ignore_patterns()
+
         # Check each container
         for container in containers:
             try:
                 # Skip compose containers if configured
                 if skip_compose and self._is_compose_container(container):
                     logger.debug(f"Skipping compose container: {container['name']}")
+                    continue
+
+                # Skip containers matching ignore patterns (Issue #85)
+                if self._matches_ignore_pattern(container, ignore_patterns):
+                    logger.debug(f"Skipping ignored container: {container['name']}")
                     continue
 
                 # Check for update
@@ -152,18 +161,20 @@ class UpdateChecker:
         logger.info(f"Update check complete: {stats}")
         return stats
 
-    async def check_single_container(self, host_id: str, container_id: str) -> Optional[Dict]:
+    async def check_single_container(self, host_id: str, container_id: str, bypass_cache: bool = False) -> Optional[Dict]:
         """
         Check a single container for updates (manual trigger).
 
         Args:
             host_id: Host UUID
             container_id: Container short ID (12 chars)
+            bypass_cache: If True, skip cache lookup and query registry directly.
+                         Default True for manual checks (Issue #101).
 
         Returns:
             Dict with update info or None if check failed
         """
-        logger.info(f"Checking container {container_id} on host {host_id}")
+        logger.info(f"Checking container {container_id} on host {host_id} (bypass_cache={bypass_cache})")
 
         # Get container info
         container = await self._get_container_async(host_id, container_id)
@@ -172,7 +183,7 @@ class UpdateChecker:
             return None
 
         # Check for update
-        update_info = await self._check_container_update(container)
+        update_info = await self._check_container_update(container, bypass_cache=bypass_cache)
 
         if update_info:
             # Capture old digest BEFORE updating database
@@ -192,12 +203,14 @@ class UpdateChecker:
 
         return None
 
-    async def _check_container_update(self, container: Dict) -> Optional[Dict]:
+    async def _check_container_update(self, container: Dict, bypass_cache: bool = False) -> Optional[Dict]:
         """
         Check if update is available for a container.
 
         Args:
             container: Dict with keys: host_id, id, name, image, image_id, etc.
+            bypass_cache: If True, skip cache lookup and query registry directly.
+                         Use for manual single-container checks (Issue #101).
 
         Returns:
             Dict with update info or None if check failed
@@ -208,7 +221,9 @@ class UpdateChecker:
             return None
 
         # Get or create container_update record to get tracking mode
-        composite_key = make_composite_key(container['host_id'], container['id'])
+        # DEFENSIVE: Normalize container ID (agents may send 64-char IDs)
+        container_id = normalize_container_id(container['id'])
+        composite_key = make_composite_key(container['host_id'], container_id)
         tracking_mode = self._get_tracking_mode(composite_key)
 
         # Compute floating tag based on tracking mode
@@ -235,11 +250,15 @@ class UpdateChecker:
         cache_key = f"{floating_tag}:{platform}"
 
         # Check database cache first (Issue #62: rate limit mitigation)
+        # Skip cache if bypass_cache=True (Issue #101: manual checks should get fresh data)
         cached_result = None
-        try:
-            cached_result = self.db.get_cached_image_digest(cache_key)
-        except Exception as e:
-            logger.warning(f"Failed to check image cache: {e}")
+        if not bypass_cache:
+            try:
+                cached_result = self.db.get_cached_image_digest(cache_key)
+            except Exception as e:
+                logger.warning(f"Failed to check image cache: {e}")
+        else:
+            logger.info(f"[{container['name']}] Bypassing cache (manual check)")
 
         if cached_result:
             # Cache hit - use cached data
@@ -283,10 +302,18 @@ class UpdateChecker:
             except Exception as e:
                 logger.warning(f"Failed to cache image digest: {e}")
 
-        # Compare digests
-        update_available = current_digest != latest_digest
+        # Compare digests - Issue #105: check if latest_digest is in ANY local RepoDigest
+        # This handles the case where the same image ID has multiple manifest digests
+        # (e.g., after registry re-signing or manifest list updates)
+        if self._has_digest(container, latest_digest):
+            # Latest digest already present locally (handles multi-digest case)
+            update_available = False
+            logger.debug(f"[{container['name']}] Latest digest found in local RepoDigests - no update needed")
+        else:
+            # Fall back to simple comparison (handles case where repo_digests not available)
+            update_available = current_digest != latest_digest
 
-        logger.debug(f"Digest comparison: current={current_digest[:16]}... latest={latest_digest[:16]}... update={update_available}")
+        logger.info(f"[{container['name']}] Digest comparison: current={current_digest[:16]}... latest={latest_digest[:16]}... update_available={update_available}")
 
         # Resolve changelog URL (v2.0.1+)
         # Get existing record to check if re-resolution needed
@@ -334,12 +361,58 @@ class UpdateChecker:
             "changelog_checked_at": changelog_checked_at,
         }
 
+    def _extract_digest_from_repo_digests(self, repo_digests: List[str]) -> Optional[str]:
+        """Extract sha256 digest from RepoDigests list.
+
+        Args:
+            repo_digests: List like ["ghcr.io/org/app@sha256:abc123..."]
+
+        Returns:
+            Digest string like "sha256:abc123..." or None
+        """
+        for repo_digest in repo_digests:
+            if "@sha256:" in repo_digest:
+                return repo_digest.split("@", 1)[1]
+        return None
+
+    def _has_digest(self, container: Dict, digest: str) -> bool:
+        """
+        Check if container's image already has a specific digest in RepoDigests.
+
+        Issue #105: Images can have multiple manifest digests pointing to the same
+        image ID (e.g., after registry re-signing). This method checks if ANY of
+        the local RepoDigests contains the specified digest.
+
+        Args:
+            container: Container dict with optional 'repo_digests' key
+            digest: The digest to search for (e.g., "sha256:abc123...")
+
+        Returns:
+            True if digest is found in any RepoDigest entry, False otherwise
+        """
+        repo_digests = container.get("repo_digests")
+        if not repo_digests or not isinstance(repo_digests, list):
+            return False
+
+        # Defensive: ensure digest is a valid string
+        if not digest or not isinstance(digest, str):
+            return False
+
+        search_pattern = f"@{digest}"
+        for repo_digest in repo_digests:
+            # Defensive: skip non-string elements
+            if isinstance(repo_digest, str) and search_pattern in repo_digest:
+                return True
+
+        return False
+
     async def _get_container_image_digest(self, container: Dict) -> Optional[str]:
         """
         Get the actual image digest that the container is running.
 
-        This queries the Docker API to get the RepoDigest of the image,
-        which is the sha256 digest the image was pulled with.
+        Priority order:
+        1. Use stored repo_digests from container discovery (agent hosts, v2.2.0+)
+        2. Query Docker API directly (legacy hosts with direct Docker access)
 
         Args:
             container: Container dict with host_id and id
@@ -349,12 +422,22 @@ class UpdateChecker:
         """
         container_name = container.get("name", "unknown")
 
-        if not self.monitor:
-            logger.warning(f"[{container_name}] No monitor object available")
-            return None
-
         try:
-            # Get Docker client for this host from the monitor's client pool
+            # PRIORITY 1: Check if we have repo_digests stored from agent discovery (v2.2.0+)
+            # This is the only way to get digest info from agent-monitored hosts
+            repo_digests = container.get("repo_digests")
+            if repo_digests and isinstance(repo_digests, list) and len(repo_digests) > 0:
+                digest = self._extract_digest_from_repo_digests(repo_digests)
+                if digest:
+                    logger.debug(f"[{container_name}] Got container image digest from stored data: {digest[:16]}...")
+                    return digest
+
+            # PRIORITY 2: Fall back to Docker API query for legacy hosts
+            # (Agent hosts won't have Docker client, so this will fail gracefully)
+            if not self.monitor:
+                logger.debug(f"[{container_name}] No monitor object available")
+                return None
+
             host_id = container.get("host_id")
             if not host_id:
                 logger.warning(f"[{container_name}] No host_id in container dict")
@@ -363,8 +446,9 @@ class UpdateChecker:
             # Use the monitor's existing Docker client - it manages TLS certs properly
             client = self.monitor.clients.get(host_id)
             if not client:
-                logger.warning(f"[{container_name}] No Docker client found for host {host_id}")
-                logger.warning(f"[{container_name}] Available clients: {list(self.monitor.clients.keys())}")
+                # No Docker client for this host - likely an agent-monitored host
+                # This is expected and normal, not a warning
+                logger.debug(f"[{container_name}] No Docker client found for host {host_id} (likely agent host)")
                 return None
 
             # Get container and extract digest (use async wrapper to prevent event loop blocking)
@@ -373,17 +457,17 @@ class UpdateChecker:
             dc = await async_docker_call(client.containers.get, container["id"])
             logger.debug(f"[{container_name}] Got container object, fetching image...")
             image = dc.image
-            repo_digests = image.attrs.get("RepoDigests", [])
-            logger.debug(f"[{container_name}] RepoDigests: {repo_digests}")
+            api_repo_digests = image.attrs.get("RepoDigests", [])
+            logger.debug(f"[{container_name}] RepoDigests: {api_repo_digests}")
 
-            if repo_digests:
-                # RepoDigests is a list like ["ghcr.io/org/app@sha256:abc123..."]
-                # Extract the digest part
-                for repo_digest in repo_digests:
-                    if "@sha256:" in repo_digest:
-                        digest = repo_digest.split("@", 1)[1]
-                        logger.debug(f"[{container_name}] Got container image digest from Docker API: {digest[:16]}...")
-                        return digest
+            if api_repo_digests:
+                # Store full list for _has_digest to use (Issue #105)
+                # This enables multi-digest detection for local/mTLS hosts
+                container["repo_digests"] = api_repo_digests
+                digest = self._extract_digest_from_repo_digests(api_repo_digests)
+                if digest:
+                    logger.debug(f"[{container_name}] Got container image digest from Docker API: {digest[:16]}...")
+                    return digest
 
             logger.warning(f"[{container_name}] No RepoDigests found (image may be built locally)")
             return None
@@ -474,7 +558,19 @@ class UpdateChecker:
         try:
             # Get all containers and find the one we want
             containers = await self.monitor.get_containers()
-            container = next((c for c in containers if c.id == container_id and c.host_id == host_id), None)
+
+            # Match by short_id or full id - check with truncation for robustness
+            def matches(c):
+                if c.host_id != host_id:
+                    return False
+                # Truncate both IDs to 12 chars for comparison (handles both 12-char and 64-char IDs)
+                c_short = c.id[:12] if len(c.id) > 12 else c.id
+                c_short_from_field = c.short_id[:12] if len(c.short_id) > 12 else c.short_id
+                search_short = container_id[:12] if len(container_id) > 12 else container_id
+
+                return c_short == search_short or c_short_from_field == search_short or c.id == container_id
+
+            container = next((c for c in containers if matches(c)), None)
             return container.dict() if container else None
         except Exception as e:
             logger.error(f"Error fetching container: {e}")
@@ -511,7 +607,8 @@ class UpdateChecker:
         Returns:
             Previous latest_digest from database, or None if no record exists (first check)
         """
-        composite_key = make_composite_key(container['host_id'], container['id'])
+        container_id = normalize_container_id(container['id'])
+        composite_key = make_composite_key(container['host_id'], container_id)
         with self.db.get_session() as session:
             record = session.query(ContainerUpdate).filter_by(
                 container_id=composite_key
@@ -526,7 +623,8 @@ class UpdateChecker:
             container: Container dict
             update_info: Update info dict from _check_container_update
         """
-        composite_key = make_composite_key(container['host_id'], container['id'])
+        container_id = normalize_container_id(container['id'])
+        composite_key = make_composite_key(container['host_id'], container_id)
 
         with self.db.get_session() as session:
             record = session.query(ContainerUpdate).filter_by(
@@ -549,11 +647,15 @@ class UpdateChecker:
                 record.changelog_url = update_info.get("changelog_url")
                 record.changelog_source = update_info.get("changelog_source")
                 record.changelog_checked_at = update_info.get("changelog_checked_at")
+                # Update container_name if available (for reattachment)
+                if container.get("name"):
+                    record.container_name = container["name"]
             else:
                 # Create new record
                 record = ContainerUpdate(
                     container_id=composite_key,
                     host_id=container["host_id"],
+                    container_name=container.get("name"),
                     current_image=update_info["current_image"],
                     current_digest=update_info["current_digest"],
                     latest_image=update_info["latest_image"],
@@ -601,6 +703,9 @@ class UpdateChecker:
                     record.changelog_url = update_info.get("changelog_url")
                     record.changelog_source = update_info.get("changelog_source")
                     record.changelog_checked_at = update_info.get("changelog_checked_at")
+                    # Update container_name if available (for reattachment)
+                    if container.get("name"):
+                        record.container_name = container["name"]
                     session.commit()
                 else:
                     # Record vanished between operations - extremely unlikely
@@ -643,10 +748,12 @@ class UpdateChecker:
 
                 # Emit event via EventBus - it handles database logging and alert triggering
                 event_bus = get_event_bus(self.monitor)
+                # DEFENSIVE: Normalize container ID (agents may send 64-char IDs)
+                container_id = normalize_container_id(container["id"])
                 await event_bus.emit(Event(
                     event_type=EventType.UPDATE_AVAILABLE,
                     scope_type='container',
-                    scope_id=make_composite_key(container["host_id"], container["id"]),
+                    scope_id=make_composite_key(container["host_id"], container_id),
                     scope_name=container["name"],
                     host_id=container["host_id"],
                     host_name=host_name,
@@ -682,6 +789,43 @@ class UpdateChecker:
             label.startswith("com.docker.compose")
             for label in labels.keys()
         )
+
+    def _get_ignore_patterns(self) -> List[str]:
+        """
+        Get list of patterns with action='ignore' for skipping update checks.
+
+        Returns:
+            List of pattern strings to match against container/image names
+        """
+        with self.db.get_session() as session:
+            patterns = session.query(UpdatePolicy).filter_by(
+                enabled=True,
+                action='ignore'
+            ).all()
+            return [p.pattern.lower() for p in patterns]
+
+    def _matches_ignore_pattern(self, container: Dict, ignore_patterns: List[str]) -> bool:
+        """
+        Check if container matches any ignore pattern.
+
+        Args:
+            container: Container dict with 'name' and 'image' keys
+            ignore_patterns: List of pattern strings (lowercase)
+
+        Returns:
+            True if container name or image matches any ignore pattern
+        """
+        if not ignore_patterns:
+            return False
+
+        container_name = container.get('name', '').lower()
+        image_name = container.get('image', '').lower()
+
+        for pattern in ignore_patterns:
+            if pattern in container_name or pattern in image_name:
+                return True
+
+        return False
 
 
 # Global singleton instance

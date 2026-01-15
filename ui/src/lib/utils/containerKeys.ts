@@ -17,28 +17,33 @@ import type { Container } from '@/features/containers/types'
  * Create composite key from Container object
  *
  * @param container - Container-like object with host_id and id
- * @returns Composite key in format "{host_id}:{container_id}"
+ * @returns Composite key in format "{host_id}:{container_short_id}"
  *
  * @example
- * const container = { host_id: "host-123", id: "abc123", ... }
- * makeCompositeKey(container) // "host-123:abc123"
+ * const container = { host_id: "host-123", id: "abc123def456...", ... }
+ * makeCompositeKey(container) // "host-123:abc123def456"
  */
 export function makeCompositeKey(container: Pick<Container, 'host_id' | 'id'>): string {
-  return `${container.host_id}:${container.id}`
+  // Always use 12-char short ID for consistency (backend sparklines use 12-char IDs)
+  const shortId = container.id.slice(0, 12)
+  return `${container.host_id}:${shortId}`
 }
 
 /**
  * Create composite key from separate host ID and container ID
  *
  * @param hostId - Host UUID
- * @param containerId - Container SHORT ID (12 chars)
- * @returns Composite key in format "{host_id}:{container_id}"
+ * @param containerId - Container ID (can be 12 or 64 chars, will be truncated to 12)
+ * @returns Composite key in format "{host_id}:{container_short_id}"
  *
  * @example
  * makeCompositeKeyFrom("host-123", "abc123") // "host-123:abc123"
+ * makeCompositeKeyFrom("host-123", "abc123def456...") // "host-123:abc123def456"
  */
 export function makeCompositeKeyFrom(hostId: string, containerId: string): string {
-  return `${hostId}:${containerId}`
+  // Always truncate to 12 chars for consistency with makeCompositeKey
+  const shortId = containerId.slice(0, 12)
+  return `${hostId}:${shortId}`
 }
 
 /**

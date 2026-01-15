@@ -11,6 +11,13 @@
 export type UpdatePolicyValue = 'allow' | 'warn' | 'block' | null
 
 /**
+ * Update policy action type
+ * - 'warn': Show confirmation dialog before update (default)
+ * - 'ignore': Skip from automatic update checks (manual checks still allowed)
+ */
+export type UpdatePolicyAction = 'warn' | 'ignore'
+
+/**
  * Update policy category
  */
 export type UpdatePolicyCategory = 'databases' | 'proxies' | 'monitoring' | 'critical' | 'custom'
@@ -22,6 +29,7 @@ export interface UpdatePolicy {
   id: number
   pattern: string
   enabled: boolean
+  action: UpdatePolicyAction
   created_at: string | null
   updated_at: string | null
 }
@@ -69,6 +77,16 @@ export interface CreateCustomPatternResponse {
 export interface DeleteCustomPatternResponse {
   success: boolean
   deleted_pattern: string
+}
+
+/**
+ * Response from update policy action endpoint
+ */
+export interface UpdatePolicyActionResponse {
+  success: boolean
+  id: number
+  pattern: string
+  action: UpdatePolicyAction
 }
 
 /**
@@ -156,5 +174,21 @@ export const POLICY_OPTIONS: Array<{ value: UpdatePolicyValue; label: string; de
     value: 'block',
     label: 'Block Updates',
     description: 'Prevent automatic updates completely'
+  }
+]
+
+/**
+ * Action options for pattern action dropdown
+ */
+export const ACTION_OPTIONS: Array<{ value: UpdatePolicyAction; label: string; description: string }> = [
+  {
+    value: 'warn',
+    label: 'Warn',
+    description: 'Show confirmation dialog before update'
+  },
+  {
+    value: 'ignore',
+    label: 'Ignore',
+    description: 'Skip from automatic update checks'
   }
 ]

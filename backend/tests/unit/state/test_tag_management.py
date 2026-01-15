@@ -553,6 +553,7 @@ class TestTagValidation:
         container_id = "abc123def456"
         composite_key = make_composite_key(test_host.id, container_id)
 
+        # First session: create initial tag and assignment
         with test_db_manager.get_session() as session:
             tag = Tag(id="tag-1", name="production", color="#ff0000", kind="user", created_at=datetime.now(timezone.utc))
             session.add(tag)
@@ -569,9 +570,10 @@ class TestTagValidation:
             session.add(assignment1)
             session.commit()
 
-            # Try to create duplicate assignment
+        # Second session: try to create duplicate assignment (avoids identity map conflict warning)
+        with test_db_manager.get_session() as session:
             assignment2 = TagAssignment(
-                tag_id=tag.id,
+                tag_id="tag-1",
                 subject_type="container",
                 subject_id=composite_key,  # Same tag + subject
                 host_id_at_attach=test_host.id,

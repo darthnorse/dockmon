@@ -211,20 +211,6 @@ class TestUpdateExecutorIntegration:
         executor = UpdateExecutor(mock_db, mock_monitor)
         return executor
 
-    # v2.1.9: Tests below disabled - _create_container v1 removed in favor of _create_container_v2
-    # Podman filtering is now tested in test_passthrough_critical.py
-    # See: test_podman_nano_cpus_conversion_with_pascal_case
-    #      test_podman_memory_swappiness_removed_with_pascal_case
-    #      test_podman_filters_applied_before_passthrough
-
-    # def test_create_container_filters_params_for_podman(self, update_executor):
-    #     """DISABLED - v2 uses passthrough approach, see test_passthrough_critical.py"""
-    #     pass
-
-    # def test_create_container_preserves_params_for_docker(self, update_executor):
-    #     """DISABLED - v2 uses passthrough approach, see test_passthrough_critical.py"""
-    #     pass
-
     def test_get_is_podman_from_monitor_hosts(self, update_executor, mock_monitor):
         """Update should get is_podman flag from monitor.hosts"""
         # Add a Podman host to monitor
@@ -381,15 +367,3 @@ class TestEdgeCaseIntegration:
             DockerHostDB.id == "existing-host-uuid"
         ).first()
         assert retrieved.is_podman is True
-
-    # v2.1.9: Tests below disabled - filter_podman_incompatible_params removed
-    # Podman filtering now handled in _extract_container_config_v2
-    # See test_passthrough_critical.py for v2 Podman tests
-
-    # def test_filter_with_no_incompatible_params(self):
-    #     """DISABLED - v2 uses passthrough approach"""
-    #     pass
-
-    # def test_filter_preserves_user_set_cpu_quota(self):
-    #     """DISABLED - v2 uses passthrough approach"""
-    #     pass

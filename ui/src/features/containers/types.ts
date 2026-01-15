@@ -12,6 +12,7 @@ export interface Container {
   state: 'running' | 'stopped' | 'exited' | 'created' | 'paused' | 'restarting' | 'removing' | 'dead'
   status: string // e.g., "Up 2 hours", "Exited (0) 5 minutes ago"
   created: string // ISO timestamp
+  started_at?: string
   ports?: string[] // e.g., ["8080:80/tcp", "443:443/tcp"]
   labels?: Record<string, string>
   tags?: string[] // Phase 3d - Derived from labels (compose:*, swarm:*, custom)
@@ -92,6 +93,7 @@ export interface ContainerHttpHealthCheck {
   check_interval_seconds: number
   follow_redirects: boolean
   verify_ssl: boolean
+  check_from: 'backend' | 'agent'  // v2.2.0+: Where to run checks from
   headers_json: string | null
   auth_config_json: string | null
 

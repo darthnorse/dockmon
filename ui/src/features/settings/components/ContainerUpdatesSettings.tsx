@@ -6,9 +6,10 @@
 import { useState, useEffect } from 'react'
 import { useGlobalSettings, useUpdateGlobalSettings } from '@/hooks/useSettings'
 import { toast } from 'sonner'
-import { RefreshCw, Database, Clock, CheckCircle, XCircle } from 'lucide-react'
+import { RefreshCw, Database, Clock, CheckCircle, XCircle, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { apiClient } from '@/lib/api/client'
+import { useCheckAllUpdates } from '@/features/containers/hooks/useContainerUpdates'
 import { ToggleSwitch } from './ToggleSwitch'
 import { UpdatePoliciesSettings } from './UpdatePoliciesSettings'
 import { RegistryCredentialsSettings } from './RegistryCredentialsSettings'
@@ -39,6 +40,7 @@ interface ImageCacheResponse {
 export function ContainerUpdatesSettings() {
   const { data: settings } = useGlobalSettings()
   const updateSettings = useUpdateGlobalSettings()
+  const checkAllUpdates = useCheckAllUpdates()
 
   const [updateCheckTime, setUpdateCheckTime] = useState(settings?.update_check_time ?? '02:00')
   const [skipComposeContainers, setSkipComposeContainers] = useState(settings?.skip_compose_containers ?? true)
@@ -68,21 +70,37 @@ export function ContainerUpdatesSettings() {
     }
   }, [settings])
 
+  // Validate schedule format (HH:MM or cron expression)
+  const isValidSchedule = (schedule: string): boolean => {
+    const trimmed = schedule.trim()
+    // HH:MM format (simple daily time)
+    const timeRegex = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/
+    if (timeRegex.test(trimmed)) return true
+
+    // Cron expression (5 fields: minute hour day-of-month month day-of-week)
+    // Basic validation: 5 space-separated fields with valid characters
+    const cronParts = trimmed.split(/\s+/)
+    if (cronParts.length !== 5) return false
+
+    // Each field should contain only valid cron characters
+    const cronCharRegex = /^[\d,\-*/]+$/
+    return cronParts.every(part => cronCharRegex.test(part))
+  }
+
   const handleUpdateCheckTimeBlur = async () => {
     if (updateCheckTime !== settings?.update_check_time) {
-      // Validate time format (HH:MM)
-      const timeRegex = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/
-      if (!timeRegex.test(updateCheckTime)) {
-        toast.error('Invalid time format. Use HH:MM (24-hour format)')
+      const trimmed = updateCheckTime.trim()
+      if (!isValidSchedule(trimmed)) {
+        toast.error('Invalid schedule format. Use HH:MM (e.g., 02:00) or cron expression (e.g., 0 4 * * 6)')
         setUpdateCheckTime(settings?.update_check_time ?? '02:00')
         return
       }
 
       try {
-        await updateSettings.mutateAsync({ update_check_time: updateCheckTime })
-        toast.success('Update check time updated')
+        await updateSettings.mutateAsync({ update_check_time: trimmed })
+        toast.success('Update schedule updated')
       } catch (error) {
-        toast.error('Failed to update check time')
+        toast.error('Failed to update schedule')
       }
     }
   }
@@ -118,7 +136,8 @@ export function ContainerUpdatesSettings() {
   const handleCheckAllNow = async () => {
     setIsCheckingUpdates(true)
     try {
-      const stats = await apiClient.post<{ total: number; checked: number; updates_found: number; errors: number }>('/updates/check-all', {})
+      // Use the hook mutation which properly invalidates caches (fixes #115)
+      const stats = await checkAllUpdates.mutateAsync()
 
       if (stats.errors > 0) {
         toast.warning(
@@ -219,6 +238,18 @@ export function ContainerUpdatesSettings() {
     }
   }
 
+  const handleDeleteCacheEntry = async (cacheKey: string) => {
+    try {
+      await apiClient.delete(`/updates/image-cache/${encodeURIComponent(cacheKey)}`)
+      toast.success('Cache entry deleted')
+      // Refresh cache data
+      const data = await apiClient.get<ImageCacheResponse>('/updates/image-cache')
+      setCacheData(data)
+    } catch (error) {
+      toast.error(`Failed to delete cache entry: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    }
+  }
+
   const formatTimeRemaining = (seconds: number): string => {
     if (seconds <= 0) return 'Expired'
     if (seconds < 60) return `${seconds}s`
@@ -242,16 +273,17 @@ export function ContainerUpdatesSettings() {
         <div className="space-y-4">
           <div>
             <label htmlFor="update-check-time" className="block text-sm font-medium text-gray-300 mb-2">
-              Daily Update Check Time
+              Update Check Schedule
             </label>
             <div className="flex gap-3">
               <input
                 id="update-check-time"
-                type="time"
+                type="text"
                 value={updateCheckTime}
                 onChange={(e) => setUpdateCheckTime(e.target.value)}
                 onBlur={handleUpdateCheckTimeBlur}
-                className="flex-1 rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                placeholder="02:00 or 0 4 * * 6"
+                className="flex-1 rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white font-mono focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
               />
               <Button
                 onClick={handleCheckAllNow}
@@ -264,7 +296,8 @@ export function ContainerUpdatesSettings() {
               </Button>
             </div>
             <p className="mt-1 text-xs text-gray-400">
-              Time of day to check for container updates (24-hour format). The system will check for updates once per day at this time.
+              Schedule for update checks. Use HH:MM for daily checks (e.g., 02:00) or cron expression for flexible scheduling
+              (e.g., <code className="bg-gray-700 px-1 rounded">0 4 * * 6</code> for 4am every Saturday).
             </p>
           </div>
 
@@ -456,20 +489,31 @@ export function ContainerUpdatesSettings() {
                           )}
                         </div>
                       </div>
-                      <div className="flex items-center gap-4 mt-2 text-xs text-gray-400">
-                        <div className="flex items-center gap-1">
-                          <Clock className="h-3 w-3" />
-                          TTL: {formatTTL(entry.ttl_seconds)}
+                      <div className="flex items-center justify-between mt-2">
+                        <div className="flex items-center gap-4 text-xs text-gray-400">
+                          <div className="flex items-center gap-1">
+                            <Clock className="h-3 w-3" />
+                            TTL: {formatTTL(entry.ttl_seconds)}
+                          </div>
+                          <div>
+                            {entry.is_expired ? (
+                              <span className="text-red-400">Expired</span>
+                            ) : (
+                              <span className="text-green-400">
+                                Expires in {formatTimeRemaining(entry.remaining_seconds)}
+                              </span>
+                            )}
+                          </div>
                         </div>
-                        <div>
-                          {entry.is_expired ? (
-                            <span className="text-red-400">Expired</span>
-                          ) : (
-                            <span className="text-green-400">
-                              Expires in {formatTimeRemaining(entry.remaining_seconds)}
-                            </span>
-                          )}
-                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleDeleteCacheEntry(entry.cache_key)}
+                          className="h-6 px-2 text-xs text-gray-400 hover:text-red-400 hover:bg-red-400/10"
+                        >
+                          <Trash2 className="h-3 w-3 mr-1" />
+                          Delete
+                        </Button>
                       </div>
                     </div>
                   ))}

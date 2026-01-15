@@ -66,6 +66,8 @@ export function useCheckContainerUpdate() {
       queryClient.invalidateQueries({
         queryKey: ['container-update-status', variables.hostId, variables.containerId],
       })
+      // Invalidate updates summary so filters update immediately
+      queryClient.invalidateQueries({ queryKey: ['updates-summary'] })
     },
   })
 }
@@ -90,6 +92,8 @@ export function useCheckAllUpdates() {
       queryClient.invalidateQueries({
         queryKey: ['container-update-status'],
       })
+      // Invalidate updates summary so filters update immediately
+      queryClient.invalidateQueries({ queryKey: ['updates-summary'] })
     },
   })
 }

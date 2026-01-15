@@ -367,6 +367,7 @@ func main() {
 			TLSCACert   string `json:"tls_ca_cert,omitempty"`
 			TLSCert     string `json:"tls_cert,omitempty"`
 			TLSKey      string `json:"tls_key,omitempty"`
+			NumCPUs     int    `json:"num_cpus,omitempty"`
 		}
 
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -383,6 +384,11 @@ func main() {
 		if err := streamManager.AddDockerHost(req.HostID, req.HostName, req.HostAddress, req.TLSCACert, req.TLSCert, req.TLSKey); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+
+		// Store number of CPUs for host CPU aggregation
+		if req.NumCPUs > 0 {
+			cache.SetHostNumCPUs(req.HostID, req.NumCPUs)
 		}
 
 		w.WriteHeader(http.StatusOK)

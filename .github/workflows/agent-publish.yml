@@ -1,0 +1,350 @@
+name: Build and Publish Agent
+
+on:
+  push:
+    tags:
+      - 'agent-v*'  # Agent releases use agent-v* pattern (e.g., agent-v1.0.0)
+    branches:
+      - dev
+      - main
+      - 'feature/**'
+      - 'feat/**'
+  release:
+    types: [published]
+  pull_request:
+    paths:
+      - 'agent/**'
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}-agent
+
+jobs:
+  # Build standalone binaries for systemd/bare-metal deployment
+  # Go has native cross-compilation - no QEMU needed
+  build-binaries:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache-dependency-path: agent/go.sum
+
+      - name: Get version info
+        id: version
+        run: |
+          if [[ $GITHUB_REF == refs/tags/agent-v* ]]; then
+            # Extract version from agent-v* tag (e.g., agent-v1.0.0 -> 1.0.0)
+            VERSION=${GITHUB_REF#refs/tags/agent-v}
+          elif [[ $GITHUB_REF == refs/tags/* ]]; then
+            # Fallback for other tag formats
+            VERSION=${GITHUB_REF#refs/tags/v}
+          elif [[ $GITHUB_REF == refs/heads/feature/* ]] || [[ $GITHUB_REF == refs/heads/feat/* ]]; then
+            VERSION="dev-${GITHUB_SHA:0:7}"
+          else
+            VERSION="dev"
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "commit=${GITHUB_SHA:0:7}" >> $GITHUB_OUTPUT
+
+      - name: Build binaries
+        run: |
+          cd agent
+          mkdir -p dist
+
+          # Build for linux/amd64
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -ldflags="-s -w -X main.version=${{ steps.version.outputs.version }} -X main.commit=${{ steps.version.outputs.commit }}" \
+            -o dist/dockmon-agent-linux-amd64 \
+            ./cmd/agent
+
+          # Build for linux/arm64
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
+            -ldflags="-s -w -X main.version=${{ steps.version.outputs.version }} -X main.commit=${{ steps.version.outputs.commit }}" \
+            -o dist/dockmon-agent-linux-arm64 \
+            ./cmd/agent
+
+          # Build for linux/arm/v7 (32-bit ARM, e.g., Raspberry Pi)
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build \
+            -ldflags="-s -w -X main.version=${{ steps.version.outputs.version }} -X main.commit=${{ steps.version.outputs.commit }}" \
+            -o dist/dockmon-agent-linux-armv7 \
+            ./cmd/agent
+
+      - name: Generate checksums
+        run: |
+          cd agent/dist
+          sha256sum dockmon-agent-linux-amd64 > checksums.txt
+          sha256sum dockmon-agent-linux-arm64 >> checksums.txt
+          sha256sum dockmon-agent-linux-armv7 >> checksums.txt
+          echo "Generated checksums:"
+          cat checksums.txt
+
+      - name: Upload binaries as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-binaries
+          path: agent/dist/
+          retention-days: 30
+
+  # Build Docker images using native runners (QEMU only for arm/v7)
+  build-docker:
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            qemu: false
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            qemu: false
+          - platform: linux/arm/v7
+            runner: ubuntu-latest
+            qemu: true
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (for arm/v7 emulation)
+        if: matrix.qemu
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log into registry ${{ env.REGISTRY }}
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get version
+        id: version
+        run: |
+          BRANCH_TAG=""
+          if [[ $GITHUB_REF == refs/tags/agent-v* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/agent-v}
+          elif [[ $GITHUB_REF == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/v}
+          elif [[ $GITHUB_REF == refs/heads/main ]]; then
+            VERSION="latest"
+          elif [[ $GITHUB_REF == refs/heads/dev ]]; then
+            VERSION="dev"
+          elif [[ $GITHUB_REF == refs/heads/feature/* ]] || [[ $GITHUB_REF == refs/heads/feat/* ]]; then
+            VERSION="dev-${GITHUB_SHA:0:7}"
+            # Also create a branch-name tag for easy tracking (e.g., feature-v2.2.0-agent)
+            BRANCH_TAG="${GITHUB_REF#refs/heads/}"
+            BRANCH_TAG="${BRANCH_TAG//\//-}"  # Replace / with -
+          elif [[ $GITHUB_EVENT_NAME == "pull_request" ]]; then
+            VERSION="pr-${{ github.event.number }}"
+          else
+            VERSION="dev-${GITHUB_SHA:0:7}"
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "commit=${GITHUB_SHA:0:7}" >> $GITHUB_OUTPUT
+          echo "branch_tag=${BRANCH_TAG}" >> $GITHUB_OUTPUT
+
+      - name: Extract platform suffix
+        id: platform
+        run: |
+          PLATFORM="${{ matrix.platform }}"
+          SUFFIX="${PLATFORM#linux/}"
+          # Handle arm/v7 -> armv7 (remove slash)
+          SUFFIX="${SUFFIX//\//}"
+          echo "suffix=$SUFFIX" >> $GITHUB_OUTPUT
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            latest=false
+          tags: |
+            type=raw,value=${{ steps.version.outputs.version }},suffix=-${{ steps.platform.outputs.suffix }}
+            type=raw,value=${{ steps.version.outputs.branch_tag }},suffix=-${{ steps.platform.outputs.suffix }},enable=${{ steps.version.outputs.branch_tag != '' }}
+
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./agent/Dockerfile.multiarch
+          platforms: ${{ matrix.platform }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            COMMIT=${{ steps.version.outputs.commit }}
+
+  # Create multi-arch manifests
+  manifest:
+    needs: build-docker
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Log into registry ${{ env.REGISTRY }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get version info
+        id: version
+        run: |
+          if [[ $GITHUB_REF == refs/tags/agent-v* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/agent-v}
+            IS_RELEASE="true"
+          elif [[ $GITHUB_REF == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/v}
+            IS_RELEASE="true"
+          elif [[ $GITHUB_REF == refs/heads/main ]]; then
+            VERSION="latest"
+            IS_RELEASE="false"
+          elif [[ $GITHUB_REF == refs/heads/dev ]]; then
+            VERSION="dev"
+            IS_RELEASE="false"
+          elif [[ $GITHUB_REF == refs/heads/feature/* ]] || [[ $GITHUB_REF == refs/heads/feat/* ]]; then
+            # Extract branch name for feature branches
+            BRANCH=${GITHUB_REF#refs/heads/}
+            # Replace / with - for valid tag
+            VERSION="${BRANCH//\//-}"
+            IS_RELEASE="false"
+          else
+            VERSION="dev"
+            IS_RELEASE="false"
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "is_release=${IS_RELEASE}" >> $GITHUB_OUTPUT
+
+      - name: Create and push multi-arch manifest
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          IS_RELEASE="${{ steps.version.outputs.is_release }}"
+          REPO="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+
+          echo "Creating manifest for ${REPO}:${VERSION}"
+
+          # Create main version manifest
+          docker buildx imagetools create -t ${REPO}:${VERSION} \
+            ${REPO}:${VERSION}-amd64 \
+            ${REPO}:${VERSION}-arm64 \
+            ${REPO}:${VERSION}-armv7
+
+          # For releases, also create semver tags
+          if [ "$IS_RELEASE" == "true" ]; then
+            MAJOR=$(echo $VERSION | cut -d. -f1)
+            MINOR=$(echo $VERSION | cut -d. -f1-2)
+
+            # Create major.minor manifest
+            docker buildx imagetools create -t ${REPO}:${MINOR} \
+              ${REPO}:${VERSION}-amd64 \
+              ${REPO}:${VERSION}-arm64 \
+              ${REPO}:${VERSION}-armv7
+
+            # Create major manifest (only if >= 1.0.0)
+            if [ "$MAJOR" != "0" ]; then
+              docker buildx imagetools create -t ${REPO}:${MAJOR} \
+                ${REPO}:${VERSION}-amd64 \
+                ${REPO}:${VERSION}-arm64 \
+                ${REPO}:${VERSION}-armv7
+            fi
+
+            # Create latest manifest
+            docker buildx imagetools create -t ${REPO}:latest \
+              ${REPO}:${VERSION}-amd64 \
+              ${REPO}:${VERSION}-arm64 \
+              ${REPO}:${VERSION}-armv7
+          fi
+
+  # Upload binaries and checksums to GitHub Release
+  # Triggers on release publish for agent-v* releases
+  upload-release-assets:
+    if: github.event_name == 'release' && startsWith(github.event.release.tag_name, 'agent-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache-dependency-path: agent/go.sum
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION="${{ github.event.release.tag_name }}"
+          VERSION="${VERSION#agent-v}"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "commit=${GITHUB_SHA:0:7}" >> $GITHUB_OUTPUT
+
+      - name: Build binaries
+        run: |
+          cd agent
+          mkdir -p dist
+
+          # Build for linux/amd64
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -ldflags="-s -w -X main.version=${{ steps.version.outputs.version }} -X main.commit=${{ steps.version.outputs.commit }}" \
+            -o dist/dockmon-agent-linux-amd64 \
+            ./cmd/agent
+
+          # Build for linux/arm64
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
+            -ldflags="-s -w -X main.version=${{ steps.version.outputs.version }} -X main.commit=${{ steps.version.outputs.commit }}" \
+            -o dist/dockmon-agent-linux-arm64 \
+            ./cmd/agent
+
+          # Build for linux/arm/v7
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build \
+            -ldflags="-s -w -X main.version=${{ steps.version.outputs.version }} -X main.commit=${{ steps.version.outputs.commit }}" \
+            -o dist/dockmon-agent-linux-armv7 \
+            ./cmd/agent
+
+      - name: Generate checksums
+        run: |
+          cd agent/dist
+          sha256sum dockmon-agent-linux-amd64 > checksums.txt
+          sha256sum dockmon-agent-linux-arm64 >> checksums.txt
+          sha256sum dockmon-agent-linux-armv7 >> checksums.txt
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+
+          # Upload binaries
+          gh release upload "$TAG" agent/dist/dockmon-agent-linux-amd64 --repo ${{ github.repository }} --clobber
+          gh release upload "$TAG" agent/dist/dockmon-agent-linux-arm64 --repo ${{ github.repository }} --clobber
+          gh release upload "$TAG" agent/dist/dockmon-agent-linux-armv7 --repo ${{ github.repository }} --clobber
+          gh release upload "$TAG" agent/dist/checksums.txt --repo ${{ github.repository }} --clobber
+
+          echo "Uploaded release assets to $TAG"

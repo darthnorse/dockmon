@@ -3,14 +3,14 @@ Settings and Configuration Models for DockMon
 Pydantic models for global settings, alerts, and notifications
 """
 
+import re
 import uuid
 from datetime import datetime
 from typing import Optional, List
 
-from pydantic import BaseModel, Field, validator
-
-
-from typing import Optional, List
+from cronsim import CronSim
+from cronsim.cronsim import CronSimError
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 class GlobalSettings(BaseModel):
     """Global monitoring settings"""
@@ -29,8 +29,9 @@ class GlobalSettings(BaseModel):
     show_container_stats: bool = Field(True)  # Show container statistics on dashboard
     alert_retention_days: int = Field(90, ge=0, le=365)  # Keep resolved alerts for N days (0 = keep forever)
 
-    @validator('max_retries')
-    def validate_max_retries(cls, v):
+    @field_validator('max_retries')
+    @classmethod
+    def validate_max_retries(cls, v: int) -> int:
         """Validate retry count to prevent resource exhaustion"""
         if v < 0:
             raise ValueError('Max retries cannot be negative')
@@ -38,8 +39,9 @@ class GlobalSettings(BaseModel):
             raise ValueError('Max retries cannot exceed 10 to prevent resource exhaustion')
         return v
 
-    @validator('retry_delay')
-    def validate_retry_delay(cls, v):
+    @field_validator('retry_delay')
+    @classmethod
+    def validate_retry_delay(cls, v: int) -> int:
         """Validate retry delay to prevent system overload"""
         if v < 5:
             raise ValueError('Retry delay must be at least 5 seconds')
@@ -47,8 +49,9 @@ class GlobalSettings(BaseModel):
             raise ValueError('Retry delay cannot exceed 300 seconds')
         return v
 
-    @validator('polling_interval')
-    def validate_polling_interval(cls, v):
+    @field_validator('polling_interval')
+    @classmethod
+    def validate_polling_interval(cls, v: int) -> int:
         """Validate polling interval to prevent system overload"""
         if v < 1:
             raise ValueError('Polling interval must be at least 1 second')
@@ -56,8 +59,9 @@ class GlobalSettings(BaseModel):
             raise ValueError('Polling interval cannot exceed 300 seconds')
         return v
 
-    @validator('connection_timeout')
-    def validate_connection_timeout(cls, v):
+    @field_validator('connection_timeout')
+    @classmethod
+    def validate_connection_timeout(cls, v: int) -> int:
         """Validate connection timeout"""
         if v < 1:
             raise ValueError('Connection timeout must be at least 1 second')
@@ -103,16 +107,20 @@ class AlertRuleV2Create(BaseModel):
     metric: Optional[str] = None
     threshold: Optional[float] = None
     operator: Optional[str] = Field(None, pattern="^(>=|<=|>|<|==|!=)$")
-    duration_seconds: Optional[int] = Field(None, ge=0)
     occurrences: Optional[int] = Field(None, ge=1)
     clear_threshold: Optional[float] = None
-    clear_duration_seconds: Optional[int] = Field(None, ge=0)
 
-    # Timing configuration
-    cooldown_seconds: int = Field(300, ge=0)
+    # Alert timing
+    alert_active_delay_seconds: int = Field(0, ge=0, description="Condition must be TRUE for X seconds before raising alert")
+    alert_clear_delay_seconds: int = Field(0, ge=0, description="Condition must be FALSE for X seconds before clearing alert")
+
+    # Notification timing
+    notification_active_delay_seconds: int = Field(0, ge=0, description="Alert must be active for X seconds before sending notification")
+    notification_cooldown_seconds: int = Field(300, ge=0, description="Wait X seconds before sending another notification")
 
     # Behavior flags
-    auto_resolve: Optional[bool] = False  # Auto-resolve alert after notification (for update alerts)
+    auto_resolve: Optional[bool] = False  # Resolve immediately after notification (notification-only mode)
+    auto_resolve_on_clear: Optional[bool] = False  # Clear when condition resolves (e.g., container restarts)
     suppress_during_updates: Optional[bool] = False  # Suppress alert during container updates
 
     # Selectors (JSON strings)
@@ -132,19 +140,26 @@ class AlertRuleV2Update(BaseModel):
     enabled: Optional[bool] = None
     severity: Optional[str] = Field(None, pattern="^(info|warning|error|critical)$")
 
+    # Metric-based rule fields
     metric: Optional[str] = None
     threshold: Optional[float] = None
     operator: Optional[str] = Field(None, pattern="^(>=|<=|>|<|==|!=)$")
-    duration_seconds: Optional[int] = Field(None, ge=0)
     occurrences: Optional[int] = Field(None, ge=1)
     clear_threshold: Optional[float] = None
-    clear_duration_seconds: Optional[int] = Field(None, ge=0)
 
-    cooldown_seconds: Optional[int] = Field(None, ge=0)
+    # Alert timing
+    alert_active_delay_seconds: Optional[int] = Field(None, ge=0, description="Condition must be TRUE for X seconds before raising alert")
+    alert_clear_delay_seconds: Optional[int] = Field(None, ge=0, description="Condition must be FALSE for X seconds before clearing alert")
+
+    # Notification timing
+    notification_active_delay_seconds: Optional[int] = Field(None, ge=0, description="Alert must be active for X seconds before sending notification")
+    notification_cooldown_seconds: Optional[int] = Field(None, ge=0, description="Wait X seconds before sending another notification")
+
     depends_on_json: Optional[str] = None  # JSON array of condition dependencies
 
     # Behavior flags
-    auto_resolve: Optional[bool] = None  # Auto-resolve alert after notification (for update alerts)
+    auto_resolve: Optional[bool] = None  # Resolve immediately after notification (notification-only mode)
+    auto_resolve_on_clear: Optional[bool] = None  # Clear when condition resolves (e.g., container restarts)
     suppress_during_updates: Optional[bool] = None  # Suppress alert during container updates
 
     host_selector_json: Optional[str] = None
@@ -180,6 +195,9 @@ class GlobalSettingsUpdate(BaseModel):
     alert_retention_days: Optional[int] = Field(None, ge=0, le=730, description="Alert retention days (0=forever, max 730)")
     unused_tag_retention_days: Optional[int] = Field(None, ge=0, le=365, description="Unused tag retention (0=never, max 365)")
 
+    # Event suppression (v2.2.0+)
+    event_suppression_patterns: Optional[List[str]] = Field(None, description="Glob patterns for container names to suppress from event log")
+
     # Notification settings
     enable_notifications: Optional[bool] = None
     alert_template: Optional[str] = Field(None, max_length=5000)
@@ -200,7 +218,7 @@ class GlobalSettingsUpdate(BaseModel):
     # Update settings
     auto_update_enabled_default: Optional[bool] = None
     update_check_interval_hours: Optional[int] = Field(None, ge=1, le=168, description="Update check interval (1-168 hours)")
-    update_check_time: Optional[str] = Field(None, pattern=r'^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$', description="Time in HH:MM format (with or without leading zero)")
+    update_check_time: Optional[str] = Field(None, max_length=100, description="Schedule in HH:MM format or cron expression")
     skip_compose_containers: Optional[bool] = None
     health_check_timeout_seconds: Optional[int] = Field(None, ge=5, le=600, description="Health check timeout (5-600)")
 
@@ -209,11 +227,40 @@ class GlobalSettingsUpdate(BaseModel):
     image_retention_count: Optional[int] = Field(None, ge=0, le=10, description="Keep last N versions per image (0=only in-use images, 1-10=keep N versions)")
     image_prune_grace_hours: Optional[int] = Field(None, ge=1, le=168, description="Don't remove images newer than N hours (1-168)")
 
-    class Config:
-        extra = "forbid"  # Reject unknown keys (typos, attacks)
+    # External URL for notification action links (v2.2.0+)
+    external_url: Optional[str] = Field(None, max_length=500, description="External URL for notification action links (e.g., https://dockmon.example.com)")
 
-    @validator('blackout_windows')
-    def validate_blackout_windows(cls, v):
+    model_config = ConfigDict(extra="forbid")  # Reject unknown keys (typos, attacks)
+
+    @field_validator('update_check_time')
+    @classmethod
+    def validate_update_check_time(cls, v: Optional[str]) -> Optional[str]:
+        """Validate schedule format (HH:MM or cron expression)"""
+        if v is None:
+            return v
+
+        trimmed = v.strip()
+        if not trimmed:
+            raise ValueError("Schedule cannot be empty")
+
+        # Check HH:MM format
+        time_pattern = re.compile(r'^([0-1]?[0-9]|2[0-3]):([0-5][0-9])$')
+        if time_pattern.match(trimmed):
+            return trimmed
+
+        # Check cron expression
+        try:
+            CronSim(trimmed, datetime.now().astimezone())
+            return trimmed
+        except CronSimError:
+            raise ValueError(
+                "Invalid schedule format. Use HH:MM (e.g., 02:00) or "
+                "cron expression (e.g., 0 4 * * 6 for 4am every Saturday)"
+            )
+
+    @field_validator('blackout_windows')
+    @classmethod
+    def validate_blackout_windows(cls, v: Optional[List[dict]]) -> Optional[List[dict]]:
         """Validate blackout window structure"""
         if v is None:
             return v

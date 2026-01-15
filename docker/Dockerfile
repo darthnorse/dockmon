@@ -1,22 +1,28 @@
 # DockMon All-in-One Container
 # Multi-stage build: Go stats service + Python backend + React frontend
 
-# Stage 1: Build Go stats service
-FROM golang:1.23-alpine AS go-builder
+# Stage 1: Build Go services (stats-service and compose-service)
+FROM golang:1.24-alpine AS go-builder
 
 WORKDIR /build
 
-# Copy go mod files
+# Copy shared module first (needed by both services)
+# Place at /build/shared so relative paths ../shared work from service dirs
+COPY shared/ /build/shared/
+
+# Build stats-service
+WORKDIR /build/stats-service
 COPY stats-service/go.mod stats-service/go.sum* ./
-
-# Download dependencies
 RUN go mod download
-
-# Copy source code
 COPY stats-service/*.go ./
-
-# Build binary (static linking for alpine)
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o stats-service .
+
+# Build compose-service
+WORKDIR /build/compose-service
+COPY compose-service/go.mod compose-service/go.sum* ./
+RUN go mod download
+COPY compose-service/ ./
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o compose-service ./cmd/compose-service/
 
 # Stage 2: Build React frontend
 FROM node:20-alpine AS frontend-builder
@@ -53,7 +59,8 @@ LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.vendor="darthnorse"
 
 # Install runtime dependencies and build dependencies (temporarily for Python packages with C extensions)
-RUN apk add --no-cache \
+RUN apk upgrade --no-cache \
+    && apk add --no-cache \
     # Runtime dependencies
     nginx \
     curl \
@@ -73,9 +80,13 @@ RUN apk add --no-cache \
 # Create app directory
 WORKDIR /app
 
-# Copy Go stats service binary from builder
-COPY --from=go-builder /build/stats-service /usr/local/bin/stats-service
-RUN chmod +x /usr/local/bin/stats-service
+# Copy Go service binaries from builder
+COPY --from=go-builder /build/stats-service/stats-service /usr/local/bin/stats-service
+COPY --from=go-builder /build/compose-service/compose-service /usr/local/bin/compose-service
+RUN chmod +x /usr/local/bin/stats-service /usr/local/bin/compose-service
+
+# Upgrade pip to latest version for security fixes
+RUN pip install --no-cache-dir --upgrade pip
 
 # Install supervisor 4.3.0 from PyPI (removes pkg_resources dependency)
 RUN pip install --no-cache-dir supervisor==4.3.0

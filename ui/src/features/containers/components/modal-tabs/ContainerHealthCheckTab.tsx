@@ -25,9 +25,12 @@ export interface ContainerHealthCheckTabProps {
 }
 
 function ContainerHealthCheckTabInternal({ container }: ContainerHealthCheckTabProps) {
+  // CRITICAL: Always use 12-char short ID for API calls (backend expects short IDs)
+  const containerShortId = container.id.slice(0, 12)
+
   const { data: healthCheck, isLoading, error } = useContainerHealthCheck(
     container.host_id,
-    container.id
+    containerShortId
   )
   const updateHealthCheck = useUpdateHealthCheck()
   const testHealthCheck = useTestHealthCheck()
@@ -41,6 +44,7 @@ function ContainerHealthCheckTabInternal({ container }: ContainerHealthCheckTabP
   const [checkIntervalSeconds, setCheckIntervalSeconds] = useState(60)
   const [followRedirects, setFollowRedirects] = useState(true)
   const [verifySsl, setVerifySsl] = useState(true)
+  const [checkFrom, setCheckFrom] = useState<'backend' | 'agent'>('backend')  // v2.2.0+
   const [autoRestartOnFailure, setAutoRestartOnFailure] = useState(false)
   const [failureThreshold, setFailureThreshold] = useState(3)
   const [successThreshold, setSuccessThreshold] = useState(1)
@@ -58,6 +62,7 @@ function ContainerHealthCheckTabInternal({ container }: ContainerHealthCheckTabP
       setCheckIntervalSeconds(healthCheck.check_interval_seconds ?? 60)
       setFollowRedirects(healthCheck.follow_redirects ?? true)
       setVerifySsl(healthCheck.verify_ssl ?? true)
+      setCheckFrom(healthCheck.check_from ?? 'backend')  // v2.2.0+
       setAutoRestartOnFailure(healthCheck.auto_restart_on_failure ?? false)
       setFailureThreshold(healthCheck.failure_threshold ?? 3)
       setSuccessThreshold(healthCheck.success_threshold ?? 1)
@@ -89,7 +94,7 @@ function ContainerHealthCheckTabInternal({ container }: ContainerHealthCheckTabP
     try {
       const result = await testHealthCheck.mutateAsync({
         hostId: container.host_id,
-        containerId: container.id,
+        containerId: containerShortId,
         config: {
           url,
           method,
@@ -134,7 +139,7 @@ function ContainerHealthCheckTabInternal({ container }: ContainerHealthCheckTabP
     try {
       await updateHealthCheck.mutateAsync({
         hostId: container.host_id,
-        containerId: container.id,
+        containerId: containerShortId,
         config: {
           // Only send configuration fields, not read-only state tracking fields
           enabled,
@@ -145,6 +150,7 @@ function ContainerHealthCheckTabInternal({ container }: ContainerHealthCheckTabP
           check_interval_seconds: checkIntervalSeconds,
           follow_redirects: followRedirects,
           verify_ssl: verifySsl,
+          check_from: checkFrom,  // v2.2.0+
           auto_restart_on_failure: autoRestartOnFailure,
           failure_threshold: failureThreshold,
           success_threshold: successThreshold,
@@ -478,6 +484,33 @@ function ContainerHealthCheckTabInternal({ container }: ContainerHealthCheckTabP
               disabled={!enabled}
             />
           </div>
+        </div>
+
+        {/* Check Location (v2.2.0+) */}
+        <div className="space-y-2">
+          <label htmlFor="check-from" className="text-sm font-medium">
+            Check From
+          </label>
+          <Select
+            value={checkFrom}
+            onValueChange={(value) => setCheckFrom(value as 'backend' | 'agent')}
+            disabled={!enabled}
+          >
+            <SelectTrigger id="check-from">
+              <SelectValue>
+                {checkFrom === 'backend' ? 'DockMon Backend' : 'Remote Agent'}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="backend">DockMon Backend</SelectItem>
+              <SelectItem value="agent">Remote Agent</SelectItem>
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground">
+            {checkFrom === 'backend'
+              ? 'Health checks performed from the DockMon backend server'
+              : 'Health checks performed from the agent on the remote host (useful when backend cannot reach the container)'}
+          </p>
         </div>
 
         {/* Auto-restart section */}

@@ -13,6 +13,7 @@ from typing import Dict, Tuple
 from fastapi import Request, HTTPException, status, Depends
 
 from .audit import security_audit
+from utils.client_ip import get_client_ip
 
 logger = logging.getLogger(__name__)
 
@@ -212,7 +213,7 @@ rate_limiter = RateLimiter()
 def get_rate_limit_dependency(endpoint_type: str = "default"):
     """Create a dependency for rate limiting specific endpoint types"""
     def rate_limit_check(request: Request):
-        client_ip = request.client.host
+        client_ip = get_client_ip(request)
         endpoint_name = f"{endpoint_type}_{request.url.path}"
 
         allowed, reason = rate_limiter.is_allowed(client_ip, endpoint_name)

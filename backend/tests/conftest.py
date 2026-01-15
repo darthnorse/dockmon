@@ -14,10 +14,18 @@ The database only stores metadata: ContainerDesiredState, ContainerUpdate, Conta
 """
 
 import pytest
+
+
+def pytest_configure(config):
+    """Register custom pytest markers."""
+    config.addinivalue_line("markers", "unit: Unit tests (fast, no external dependencies)")
+    config.addinivalue_line("markers", "integration: Integration tests (may require Docker, network, etc.)")
+
+
 import tempfile
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, AsyncMock
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
@@ -237,7 +245,7 @@ def test_host(test_db: Session):
         name='test-host',
         url='unix:///var/run/docker.sock',
         is_active=True,
-        created_at=datetime.utcnow()
+        created_at=datetime.now(timezone.utc)
     )
     test_db.add(host)
     test_db.commit()
@@ -262,7 +270,7 @@ def test_user(test_db: Session):
         username='testuser',
         password_hash='$2b$12$test_hash_not_real',
         role='admin',
-        created_at=datetime.utcnow()
+        created_at=datetime.now(timezone.utc)
     )
     test_db.add(user)
     test_db.commit()
@@ -289,7 +297,7 @@ def test_container_data():
         'image': 'nginx:latest',
         'state': 'running',
         'status': 'Up 5 minutes',
-        'created': datetime.utcnow().isoformat(),
+        'created': datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -314,8 +322,8 @@ def test_container_desired_state(test_db: Session, test_host):
         container_name='test-nginx',  # REQUIRED field
         host_id=test_host.id,
         custom_tags='["test", "nginx"]',
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow()
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc)
     )
     test_db.add(state)
     test_db.commit()
@@ -342,15 +350,16 @@ def test_container_update(test_db: Session, test_host):
     update = ContainerUpdate(
         container_id=composite_key,
         host_id=test_host.id,
+        container_name='test-nginx-container',  # v2.2.3+: Store name for reattachment
         current_image='nginx:latest',
         current_digest='sha256:abc123def456789',  # Required field
         latest_image='nginx:alpine',
         latest_digest='sha256:def456abc789012',  # Required field
         update_available=True,
         floating_tag_mode='latest',  # For tracking mode tests
-        last_checked_at=datetime.utcnow(),
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow()
+        last_checked_at=datetime.now(timezone.utc),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc)
     )
     test_db.add(update)
     test_db.commit()
@@ -397,7 +406,7 @@ def test_api_key_read(test_db: Session):
     user = User(
         username="test_api_user",
         password_hash="$2b$12$test_hash_not_real",
-        created_at=datetime.utcnow()
+        created_at=datetime.now(timezone.utc)
     )
     test_db.add(user)
     test_db.flush()  # Get user.id without committing
@@ -414,8 +423,8 @@ def test_api_key_read(test_db: Session):
         key_hash=key_hash,
         key_prefix=raw_key[:12],  # First 12 chars for UI display ("dockmon_xxxx")
         scopes="read",  # Comma-separated string, not list
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
         revoked_at=None  # None means active
     )
     test_db.add(api_key)
@@ -440,7 +449,7 @@ def test_api_key_write(test_db: Session):
     user = User(
         username="test_api_write_user",
         password_hash="$2b$12$test_hash_not_real",
-        created_at=datetime.utcnow()
+        created_at=datetime.now(timezone.utc)
     )
     test_db.add(user)
     test_db.flush()  # Get user.id without committing
@@ -457,8 +466,8 @@ def test_api_key_write(test_db: Session):
         key_hash=key_hash,
         key_prefix=raw_key[:12],  # First 12 chars for UI display
         scopes="read,write",  # Write-enabled
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
         revoked_at=None
     )
     test_db.add(api_key)
@@ -498,7 +507,7 @@ def freeze_time():
     Usage:
         def test_something(freeze_time):
             freeze_time('2025-10-24 10:00:00')
-            # Now datetime.utcnow() always returns this time
+            # Now datetime.now(timezone.utc) always returns this time
     """
     from freezegun import freeze_time as _freeze_time
     return _freeze_time
@@ -613,8 +622,8 @@ def test_deployment(test_db: Session, test_host, test_user):
         definition='{"container": {"image": "nginx:alpine", "ports": {"80/tcp": 8080}}}',
         progress_percent=0,
         current_stage='Initializing',
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
         created_by='test_user'
     )
     test_db.add(deployment)
@@ -640,7 +649,7 @@ def test_deployment_container(test_db: Session, test_deployment, test_container_
         deployment_id=test_deployment.id,
         container_id=test_container_desired_state.container_id,  # Uses composite key
         service_name=None,  # NULL for single container deployments
-        created_at=datetime.utcnow()
+        created_at=datetime.now(timezone.utc)
     )
     test_db.add(link)
     test_db.commit()
@@ -679,8 +688,8 @@ def test_deployment_template(test_db: Session):
             'PORT': {'default': 8080, 'type': 'integer', 'description': 'Host port'}
         }),
         is_builtin=True,
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow()
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc)
     )
     test_db.add(template)
     test_db.commit()
@@ -714,8 +723,8 @@ def test_stack_deployment(test_db: Session, test_host, test_user):
         definition='{"stack": {"compose_file_path": "/app/data/stacks/wordpress/docker-compose.yml"}}',
         progress_percent=100,
         current_stage='Running',
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
         created_by='test_user'
     )
     test_db.add(deployment)

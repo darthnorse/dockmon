@@ -21,6 +21,10 @@ services:
       # Optional: Set BASE_PATH for runtime (must match build arg above)
       # - BASE_PATH=/dockmon/
 
+      # Optional: External URL for notification action links (one-click update buttons)
+      # Set this to your DockMon URL so notifications can include direct action links
+      # - DOCKMON_EXTERNAL_URL=https://dockmon.example.com
+
       # Optional: Set CORS origins for production deployment (uncomment and edit if needed)
       # Leave empty/commented for development (auto-detects localhost)
       # - DOCKMON_CORS_ORIGINS=https://dockmon.yourcompany.com

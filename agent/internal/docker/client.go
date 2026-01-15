@@ -759,3 +759,50 @@ func findString(s, substr string) int {
 	}
 	return -1
 }
+
+// ExecConfig contains configuration for creating an exec instance
+type ExecConfig struct {
+	Cmd          []string // Command to execute
+	AttachStdin  bool
+	AttachStdout bool
+	AttachStderr bool
+	Tty          bool
+	Env          []string // Environment variables
+}
+
+// ExecCreateResponse contains the exec ID
+type ExecCreateResponse struct {
+	ID string
+}
+
+// ExecCreate creates an exec instance for a container
+func (c *Client) ExecCreate(ctx context.Context, containerID string, config ExecConfig) (*ExecCreateResponse, error) {
+	execConfig := container.ExecOptions{
+		Cmd:          config.Cmd,
+		AttachStdin:  config.AttachStdin,
+		AttachStdout: config.AttachStdout,
+		AttachStderr: config.AttachStderr,
+		Tty:          config.Tty,
+		Env:          config.Env,
+	}
+
+	resp, err := c.cli.ContainerExecCreate(ctx, containerID, execConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create exec: %w", err)
+	}
+
+	return &ExecCreateResponse{ID: resp.ID}, nil
+}
+
+// ExecAttach attaches to an exec instance and returns a hijacked connection
+func (c *Client) ExecAttach(ctx context.Context, execID string, tty bool) (types.HijackedResponse, error) {
+	return c.cli.ContainerExecAttach(ctx, execID, container.ExecStartOptions{Tty: tty})
+}
+
+// ExecResize resizes the TTY of an exec instance
+func (c *Client) ExecResize(ctx context.Context, execID string, height, width uint) error {
+	return c.cli.ContainerExecResize(ctx, execID, container.ResizeOptions{
+		Height: height,
+		Width:  width,
+	})
+}

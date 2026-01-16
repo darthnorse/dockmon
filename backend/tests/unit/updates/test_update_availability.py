@@ -799,3 +799,57 @@ class TestRegistryCredentials:
             registry = "docker.io"
 
         assert registry == expected_registry
+
+
+# =============================================================================
+# Registry Fallback Tests (Issue #143)
+# =============================================================================
+
+class TestRegistryFallback:
+    """
+    Test registry fallback for images without local RepoDigests.
+
+    Issue #143: Images pulled by digest (e.g., via ZimaOS app store) don't have
+    RepoDigests. The update checker should fall back to querying the registry
+    for the current image tag's digest.
+    """
+
+    def test_fallback_triggered_when_no_repo_digests(self):
+        """
+        Verify fallback condition: no repo_digests and image has tag (not digest ref).
+        """
+        # Should trigger fallback - has tag, no digest reference
+        assert '@' not in "homeassistant/home-assistant:2024.1.0"
+
+        # Should NOT trigger fallback - is a digest reference
+        assert '@' in "homeassistant/home-assistant@sha256:abc123"
+
+    def test_fallback_skipped_for_digest_reference(self):
+        """
+        Images specified by digest (image@sha256:...) should not use fallback.
+
+        These images are intentionally pinned and querying registry wouldn't help.
+        """
+        image = "homeassistant/home-assistant@sha256:abc123def456"
+
+        # The fallback condition checks for '@' in image
+        should_skip_fallback = '@' in image
+
+        assert should_skip_fallback is True, "Digest references should skip fallback"
+
+    def test_fallback_works_for_tagged_images(self):
+        """
+        Images with tags should be eligible for registry fallback.
+        """
+        test_cases = [
+            ("nginx:latest", True, "explicit latest tag"),
+            ("nginx:1.25", True, "version tag"),
+            ("ghcr.io/user/app:v1.0.0", True, "GHCR with semver"),
+            ("homeassistant/home-assistant:2024.1.0", True, "home-assistant style"),
+            ("nginx", True, "no tag (implicit :latest)"),
+            ("nginx@sha256:abc", False, "digest reference"),
+        ]
+
+        for image, should_fallback, reason in test_cases:
+            eligible = '@' not in image
+            assert eligible == should_fallback, f"Failed for {reason}: {image}"

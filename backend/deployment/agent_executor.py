@@ -1,9 +1,13 @@
 """
-Agent-based deployment executor using native Docker Compose.
+Agent-based deployment executor using native Docker Compose (v2.2.7+).
 
 Routes deployment requests to agent and handles progress/completion events.
 For agent hosts, deployments are executed via native `docker compose up`
 on the agent instead of parsing compose files and creating containers individually.
+
+v2.2.7 Changes:
+- Compose content now read from filesystem (/app/data/stacks/{stack_name}/)
+- Container deployments deprecated - everything is a stack
 
 Benefits:
 - 100% Compose compatibility (all features work, current and future)
@@ -778,7 +782,7 @@ class AgentDeploymentExecutor:
             "type": event_type,
             "deployment_id": deployment.id,
             "host_id": deployment.host_id,
-            "name": deployment.name,
+            "name": deployment.stack_name,  # Keep 'name' key for API compatibility
             "status": deployment.status,
             "progress": progress,
             "created_at": deployment.created_at.isoformat() + "Z" if deployment.created_at else None,

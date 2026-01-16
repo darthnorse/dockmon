@@ -1,45 +1,49 @@
 """
-Deployment API routes for DockMon v2.1
+Deployment API routes for DockMon v2.2.7+
 
 Provides REST endpoints for:
-- Creating and executing container/stack deployments
-- Managing deployment templates
+- Creating and executing stack deployments
 - Tracking deployment progress
+
+Note: Template management has been replaced by the Stacks API (see stack_routes.py)
 """
 
-import json
 import logging
+import os
 import uuid
 import yaml
 from datetime import datetime, timezone
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy.orm import Session
 
-from database import Deployment, DeploymentTemplate, DatabaseManager, GlobalSettings, DeploymentMetadata
-from deployment import DeploymentExecutor, TemplateManager, SecurityException, SecurityValidator
+from database import Deployment, DatabaseManager, DeploymentMetadata, DockerHostDB
+from deployment import DeploymentExecutor
+from deployment import stack_storage
+from deployment.compose_generator import generate_compose_from_deployment, generate_compose_from_containers
 from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_scope
 from utils.keys import parse_composite_key
+from agent.command_executor import get_agent_command_executor, RetryPolicy
+from agent.manager import AgentManager
 
 logger = logging.getLogger(__name__)
 
 # Create router
 router = APIRouter(prefix="/api/deployments", tags=["deployments"])
-template_router = APIRouter(prefix="/api/templates", tags=["templates"])
 
 
 # ==================== Request/Response Models ====================
 
 class DeploymentCreate(BaseModel):
-    """Create deployment request."""
+    """Create deployment request (v2.2.7+).
+
+    Creates a deployment for an existing stack. The stack must be created
+    first via POST /api/stacks before creating a deployment.
+    """
     host_id: str = Field(..., description="UUID of the Docker host to deploy to")
-    name: str = Field(..., description="Human-readable name for the deployment")
-    deployment_type: str = Field(..., description="Type of deployment: 'container' or 'stack'")
-    definition: Dict[str, Any] = Field(
-        ...,
-        description="Deployment configuration. For stacks: must include 'compose_yaml' field with Docker Compose YAML as string. For containers: include image, ports, volumes, etc."
-    )
+    stack_name: str = Field(..., description="Name of the stack to deploy (must exist in /api/stacks)")
     rollback_on_failure: bool = Field(
         True,
         description="Automatically rollback if deployment fails (default: true)"
@@ -49,11 +53,7 @@ class DeploymentCreate(BaseModel):
         json_schema_extra={
             "example": {
                 "host_id": "86a10392-2289-409f-899d-5f5c799086da",
-                "name": "my-nginx-stack",
-                "deployment_type": "stack",
-                "definition": {
-                    "compose_yaml": "services:\n  web:\n    image: nginx:alpine\n    ports:\n      - 80:80"
-                },
+                "stack_name": "my-nginx-stack",
                 "rollback_on_failure": True
             }
         }
@@ -61,19 +61,20 @@ class DeploymentCreate(BaseModel):
 
 
 class DeploymentUpdate(BaseModel):
-    """Update deployment request."""
-    definition: Dict[str, Any]
-    name: Optional[str] = None
-    deployment_type: Optional[str] = None
-    host_id: Optional[str] = None
+    """Update deployment request (v2.2.7+).
+
+    Note: To update compose content, use PUT /api/stacks/{name} instead.
+    This endpoint only allows changing the target stack or host.
+    """
+    stack_name: Optional[str] = Field(None, description="Change target stack (must exist)")
+    host_id: Optional[str] = Field(None, description="Change target host")
 
 
 class DeploymentResponse(BaseModel):
-    """Deployment response."""
+    """Deployment response (v2.2.7+)."""
     id: str
     host_id: str
-    name: str
-    deployment_type: str
+    stack_name: str  # References stack in /app/data/stacks/{stack_name}/
     status: str
     progress_percent: int
     current_stage: Optional[str]
@@ -84,50 +85,11 @@ class DeploymentResponse(BaseModel):
     created_by: Optional[str] = None  # Username who created deployment
     committed: bool
     rollback_on_failure: bool
-    definition: Optional[Dict[str, Any]] = None
     updated_at: Optional[str] = None
     host_name: Optional[str] = None
     container_ids: Optional[List[str]] = None  # List of SHORT container IDs (12 chars) from deployment_metadata
 
 
-class TemplateCreate(BaseModel):
-    """Create template request."""
-    name: str = Field(..., description="Template name (must be unique)")
-    deployment_type: str = Field(..., description="Type: 'container' or 'stack'")
-    template_definition: Dict[str, Any] = Field(
-        ...,
-        description="Template definition with optional variables like ${VAR_NAME}"
-    )
-    category: Optional[str] = Field(None, description="Category for organization (e.g., 'media', 'networking')")
-    description: Optional[str] = Field(None, description="Human-readable description of what this template does")
-    variables: Optional[Dict[str, Any]] = Field(
-        None,
-        description="Variable definitions with defaults. Example: {'APP_PORT': '8080', 'APP_IMAGE': 'nginx:alpine'}"
-    )
-
-
-class TemplateUpdate(BaseModel):
-    """Update template request."""
-    name: Optional[str] = None
-    category: Optional[str] = None
-    description: Optional[str] = None
-    template_definition: Optional[Dict[str, Any]] = None
-    variables: Optional[Dict[str, Any]] = None
-
-
-class TemplateRenderRequest(BaseModel):
-    """Render template request."""
-    values: Dict[str, Any] = Field(
-        ...,
-        description="Variable values to substitute. Example: {'APP_PORT': '3000', 'APP_IMAGE': 'nginx:1.25'}"
-    )
-
-
-class SaveAsTemplateRequest(BaseModel):
-    """Request to save deployment as reusable template."""
-    name: str = Field(..., description="Template name (must be unique)")
-    category: Optional[str] = Field(None, description="Category for organization")
-    description: Optional[str] = Field(None, description="Template description")
 
 
 class ExecuteDeploymentRequest(BaseModel):
@@ -140,6 +102,31 @@ class ExecuteDeploymentRequest(BaseModel):
         False,
         description="Pull latest images before starting (for redeploy/update)"
     )
+
+
+class DeployStackRequest(BaseModel):
+    """Deploy a stack to a host (fire and forget - no persistent tracking).
+
+    This is a simplified deployment flow that doesn't create persistent
+    deployment records. Progress is tracked via WebSocket using a transient ID.
+    """
+    stack_name: str = Field(..., description="Name of the stack to deploy (must exist in /api/stacks)")
+    host_id: str = Field(..., description="UUID of the Docker host to deploy to")
+    force_recreate: bool = Field(
+        True,
+        description="Force recreate containers even if unchanged (default: true)"
+    )
+    pull_images: bool = Field(
+        True,
+        description="Pull latest images before starting (default: true)"
+    )
+
+
+class DeployStackResponse(BaseModel):
+    """Response from deploy endpoint with transient deployment ID."""
+    deployment_id: str = Field(..., description="Transient ID for progress tracking via WebSocket")
+    stack_name: str
+    host_id: str
 
 
 # ==================== Import Stack Models ====================
@@ -159,6 +146,8 @@ class ImportDeploymentRequest(BaseModel):
     env_content: Optional[str] = Field(None, description="Optional .env file content")
     project_name: Optional[str] = Field(None, description="Stack name (required if compose has no name: field)")
     host_id: Optional[str] = Field(None, description="Host ID for import when no running containers found")
+    overwrite_stack: bool = Field(False, description="If true, overwrite existing stack content")
+    use_existing_stack: bool = Field(False, description="If true, skip stack creation (use existing stack on disk)")
 
 
 class ImportDeploymentResponse(BaseModel):
@@ -167,6 +156,8 @@ class ImportDeploymentResponse(BaseModel):
     deployments_created: List[DeploymentResponse]
     requires_name_selection: bool = False
     known_stacks: Optional[List[KnownStack]] = None
+    stack_exists: bool = False
+    existing_stack_name: Optional[str] = None
 
 
 # ==================== Scan Compose Dirs Models ====================
@@ -213,11 +204,32 @@ class ReadComposeFileResponse(BaseModel):
     error: Optional[str] = None
 
 
+class ComposePreviewResponse(BaseModel):
+    """Preview of generated compose.yaml from containers."""
+    compose_yaml: str
+    services: List[str]
+    warnings: List[str]
+
+
+class GenerateFromContainersRequest(BaseModel):
+    """Request to generate compose.yaml from running containers."""
+    project_name: str = Field(..., description="Docker Compose project name (from container labels)")
+    host_id: str = Field(..., description="Host ID where containers are running")
+
+
+class RunningProject(BaseModel):
+    """A running Docker Compose project discovered from container labels."""
+    project_name: str
+    host_id: str
+    host_name: Optional[str]
+    container_count: int
+    services: List[str]
+
+
 # ==================== Dependency Injection ====================
 
 # These will be set by main.py during startup
 _deployment_executor: Optional[DeploymentExecutor] = None
-_template_manager: Optional[TemplateManager] = None
 _database_manager: Optional[DatabaseManager] = None
 _docker_monitor = None  # DockerMonitor instance
 
@@ -226,12 +238,6 @@ def set_deployment_executor(executor: DeploymentExecutor):
     """Set deployment executor instance (called from main.py)."""
     global _deployment_executor
     _deployment_executor = executor
-
-
-def set_template_manager(manager: TemplateManager):
-    """Set template manager instance (called from main.py)."""
-    global _template_manager
-    _template_manager = manager
 
 
 def set_database_manager(db: DatabaseManager):
@@ -245,13 +251,6 @@ def get_deployment_executor() -> DeploymentExecutor:
     if _deployment_executor is None:
         raise RuntimeError("DeploymentExecutor not initialized")
     return _deployment_executor
-
-
-def get_template_manager() -> TemplateManager:
-    """Get template manager (dependency)."""
-    if _template_manager is None:
-        raise RuntimeError("TemplateManager not initialized")
-    return _template_manager
 
 
 def get_database_manager() -> DatabaseManager:
@@ -276,6 +275,199 @@ def get_docker_monitor():
 
 # ==================== Deployment Endpoints ====================
 
+@router.post("/deploy", response_model=DeployStackResponse, dependencies=[Depends(require_scope("write"))])
+async def deploy_stack(
+    request: DeployStackRequest,
+    background_tasks: BackgroundTasks,
+    current_user=Depends(get_current_user),
+):
+    """
+    Deploy a stack to a host (fire and forget - no persistent tracking).
+
+    This is a simplified deployment flow:
+    1. Reads stack content from filesystem
+    2. Generates a transient deployment_id for WebSocket progress tracking
+    3. Executes docker-compose up via Go compose service
+    4. Does NOT persist any deployment records
+
+    Progress can be tracked via WebSocket events using the returned deployment_id:
+    - deployment_progress (real-time progress)
+    - deployment_completed (success)
+    - deployment_failed (error)
+
+    Use this for simple "deploy and forget" workflows. The deployed_to info
+    in the stacks list is derived from running container labels, not from
+    deployment records.
+    """
+    from deployment.compose_client import ComposeClient, ComposeServiceError, ComposeServiceUnavailable
+    from deployment.stack_executor import _get_host_connection_info
+
+    # Validate stack exists
+    if not await stack_storage.stack_exists(request.stack_name):
+        raise HTTPException(status_code=404, detail=f"Stack '{request.stack_name}' not found")
+
+    # Validate host exists
+    db = get_database_manager()
+    with db.get_session() as session:
+        host = session.query(DockerHostDB).filter_by(id=request.host_id).first()
+        if not host:
+            raise HTTPException(status_code=404, detail=f"Host '{request.host_id}' not found")
+        host_name = host.name
+
+    # Read stack content
+    compose_yaml, env_content = await stack_storage.read_stack(request.stack_name)
+
+    # Generate transient deployment ID for progress tracking
+    deployment_id = f"{request.host_id}:{request.stack_name}:{uuid.uuid4().hex[:8]}"
+
+    # Get docker monitor for broadcasting
+    docker_monitor = get_docker_monitor()
+
+    async def broadcast_event(payload: dict):
+        """Broadcast event via WebSocket."""
+        try:
+            if docker_monitor and hasattr(docker_monitor, 'manager'):
+                await docker_monitor.manager.broadcast(payload)
+        except Exception as e:
+            logger.error(f"Error broadcasting deployment event: {e}")
+
+    # Execute deployment in background
+    async def execute_deploy():
+        client = ComposeClient()
+
+        try:
+            # Get host connection info
+            host_info = _get_host_connection_info(request.host_id)
+
+            # Progress callback that broadcasts to WebSocket
+            async def on_progress(event):
+                await broadcast_event({
+                    'type': 'deployment_progress',
+                    'deployment_id': deployment_id,
+                    'host_id': request.host_id,
+                    'name': request.stack_name,
+                    'status': 'in_progress',
+                    'progress': {
+                        'overall_percent': event.progress,
+                        'stage': event.message,
+                    },
+                })
+
+            # Send initial progress
+            await broadcast_event({
+                'type': 'deployment_progress',
+                'deployment_id': deployment_id,
+                'host_id': request.host_id,
+                'name': request.stack_name,
+                'status': 'pending',
+                'progress': {
+                    'overall_percent': 0,
+                    'stage': 'Starting deployment...',
+                },
+            })
+
+            # Parse environment variables from .env content
+            env_vars = {}
+            if env_content:
+                for line in env_content.split('\n'):
+                    line = line.strip()
+                    if line and not line.startswith('#') and '=' in line:
+                        key, value = line.split('=', 1)
+                        env_vars[key.strip()] = value.strip()
+
+            # Execute deployment
+            result = await client.deploy_with_progress(
+                deployment_id=deployment_id,
+                project_name=request.stack_name,
+                compose_yaml=compose_yaml,
+                progress_callback=on_progress,
+                action="up",
+                environment=env_vars,
+                force_recreate=request.force_recreate,
+                pull_images=request.pull_images,
+                wait_for_healthy=True,
+                health_timeout=120,
+                docker_host=host_info.get('docker_host'),
+                tls_ca_cert=host_info.get('tls_ca_cert'),
+                tls_cert=host_info.get('tls_cert'),
+                tls_key=host_info.get('tls_key'),
+                registry_credentials=host_info.get('registry_credentials'),
+            )
+
+            if result.success or result.partial_success:
+                status = "running" if result.success else "partial"
+                await broadcast_event({
+                    'type': 'deployment_completed',
+                    'deployment_id': deployment_id,
+                    'host_id': request.host_id,
+                    'name': request.stack_name,
+                    'status': status,
+                    'progress': {
+                        'overall_percent': 100,
+                        'stage': 'Deployment complete',
+                    },
+                })
+                logger.info(f"Stack '{request.stack_name}' deployed to '{host_name}'")
+            else:
+                await broadcast_event({
+                    'type': 'deployment_failed',
+                    'deployment_id': deployment_id,
+                    'host_id': request.host_id,
+                    'name': request.stack_name,
+                    'status': 'failed',
+                    'error': result.error or 'Deployment failed',
+                    'progress': {
+                        'overall_percent': 0,
+                        'stage': 'Failed',
+                    },
+                })
+                logger.error(f"Stack deployment failed: {result.error}")
+
+        except ComposeServiceUnavailable as e:
+            await broadcast_event({
+                'type': 'deployment_failed',
+                'deployment_id': deployment_id,
+                'host_id': request.host_id,
+                'name': request.stack_name,
+                'status': 'failed',
+                'error': 'Compose service unavailable. Ensure compose-service is running.',
+            })
+            logger.error(f"Compose service unavailable: {e}")
+
+        except ComposeServiceError as e:
+            await broadcast_event({
+                'type': 'deployment_failed',
+                'deployment_id': deployment_id,
+                'host_id': request.host_id,
+                'name': request.stack_name,
+                'status': 'failed',
+                'error': str(e.message),
+            })
+            logger.error(f"Compose service error: {e.message}")
+
+        except Exception as e:
+            await broadcast_event({
+                'type': 'deployment_failed',
+                'deployment_id': deployment_id,
+                'host_id': request.host_id,
+                'name': request.stack_name,
+                'status': 'failed',
+                'error': str(e),
+            })
+            logger.error(f"Deployment failed: {e}", exc_info=True)
+
+    # Start deployment in background
+    background_tasks.add_task(execute_deploy)
+
+    logger.info(f"User {current_user['username']} started deployment of '{request.stack_name}' to '{host_name}'")
+
+    return DeployStackResponse(
+        deployment_id=deployment_id,
+        stack_name=request.stack_name,
+        host_id=request.host_id,
+    )
+
+
 @router.post("", response_model=DeploymentResponse, status_code=201, dependencies=[Depends(require_scope("write"))])
 async def create_deployment(
     request: DeploymentCreate,
@@ -284,51 +476,30 @@ async def create_deployment(
     executor: DeploymentExecutor = Depends(get_deployment_executor)
 ):
     """
-    Create a new deployment.
+    Create a new deployment (v2.2.7+).
 
     Creates a deployment in 'planning' state. Call /deployments/{id}/execute to start it.
 
-    **For Stack Deployments (Docker Compose):**
-    - Set `deployment_type: "stack"`
-    - Include `compose_yaml` in definition with Docker Compose YAML as a string
-    - Use `\\n` for newlines in the YAML string
+    **Workflow:**
+    1. Create a stack first via POST /api/stacks (compose.yaml + optional .env)
+    2. Create a deployment referencing the stack via this endpoint
+    3. Execute the deployment via POST /deployments/{id}/execute
 
-    **Example - Simple Stack:**
+    **Example:**
     ```json
     {
-      "host_id": "your-host-id",
-      "name": "nginx-redis",
-      "deployment_type": "stack",
-      "definition": {
-        "compose_yaml": "services:\\n  web:\\n    image: nginx:alpine\\n  cache:\\n    image: redis:alpine"
-      }
+      "host_id": "86a10392-2289-409f-899d-5f5c799086da",
+      "stack_name": "my-nginx-stack",
+      "rollback_on_failure": true
     }
     ```
 
-    **Example - Stack with Variables:**
-    ```json
-    {
-      "definition": {
-        "compose_yaml": "services:\\n  app:\\n    image: ${APP_IMAGE}",
-        "variables": {
-          "APP_IMAGE": "nginx:1.25"
-        }
-      }
-    }
-    ```
-
-    **For Container Deployments:**
-    - Set `deployment_type: "container"`
-    - Include container config directly in definition (image, ports, volumes, etc.)
-
-    Security validation is performed before creation.
+    The stack must exist before creating a deployment.
     """
     try:
         deployment_id = await executor.create_deployment(
             host_id=request.host_id,
-            name=request.name,
-            deployment_type=request.deployment_type,
-            definition=request.definition,
+            stack_name=request.stack_name,
             user_id=current_user['user_id'],
             rollback_on_failure=request.rollback_on_failure,
             created_by=current_user['username'],
@@ -340,8 +511,6 @@ async def create_deployment(
             deployment = session.query(Deployment).filter_by(id=deployment_id).first()
             return _deployment_to_response(deployment)
 
-    except SecurityException as e:
-        raise HTTPException(status_code=400, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -486,6 +655,148 @@ async def list_deployments(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ==================== Import Stack Endpoints ====================
+# NOTE: Static routes MUST be defined BEFORE path parameter routes (/{deployment_id})
+# to ensure FastAPI matches them first.
+
+@router.get("/known-stacks", response_model=List[KnownStack])
+async def get_known_stacks(
+    current_user=Depends(get_current_user),
+):
+    """
+    Get list of known stack names from container labels across all hosts.
+
+    Used for the fallback UI when a compose file has no 'name:' field.
+    Scans all containers for 'com.docker.compose.project' label.
+    """
+    from deployment.container_utils import scan_deployed_stacks
+
+    monitor = get_docker_monitor()
+    all_containers = monitor.get_last_containers()
+    deployed_stacks = scan_deployed_stacks(all_containers)
+
+    # Convert to KnownStack format
+    return [
+        KnownStack(
+            name=info.name,
+            hosts=[h.host_id for h in info.hosts],
+            host_names=[h.host_name for h in info.hosts],
+            container_count=info.container_count,
+            services=info.services,
+        )
+        for info in deployed_stacks.values()
+    ]
+
+
+def _get_container_project(container) -> str | None:
+    """Extract the compose project name from container labels."""
+    labels = getattr(container, 'labels', {}) or {}
+    return labels.get('com.docker.compose.project')
+
+
+@router.get("/running-projects", response_model=List[RunningProject])
+async def list_running_projects(
+    current_user=Depends(get_current_user),
+):
+    """
+    List all running Docker Compose projects discovered from container labels.
+
+    Returns projects that can be adopted into DockMon management.
+    Groups containers by com.docker.compose.project label.
+    """
+    monitor = get_docker_monitor()
+    db = get_database_manager()
+
+    # Group containers by (project_name, host_id)
+    projects: Dict[tuple, dict] = {}
+    all_containers = monitor.get_last_containers()
+    for container in all_containers:
+        labels = getattr(container, 'labels', {}) or {}
+        project_name = _get_container_project(container)
+        host_id = getattr(container, 'host_id', None)
+
+        if not project_name or not host_id:
+            continue
+
+        key = (project_name, host_id)
+        if key not in projects:
+            projects[key] = {'services': set(), 'count': 0}
+
+        projects[key]['count'] += 1
+        service_name = labels.get('com.docker.compose.service')
+        if service_name:
+            projects[key]['services'].add(service_name)
+
+    # Get host names
+    with db.get_session() as session:
+        host_names = {host.id: host.name for host in session.query(DockerHostDB).all()}
+
+    # Build and sort response
+    result = [
+        RunningProject(
+            project_name=project_name,
+            host_id=host_id,
+            host_name=host_names.get(host_id),
+            container_count=data['count'],
+            services=sorted(data['services']),
+        )
+        for (project_name, host_id), data in projects.items()
+    ]
+    result.sort(key=lambda p: (p.project_name, p.host_name or p.host_id))
+    return result
+
+
+@router.post("/generate-from-containers", response_model=ComposePreviewResponse)
+async def generate_compose_from_running_containers(
+    request: GenerateFromContainersRequest,
+    current_user=Depends(get_current_user),
+):
+    """
+    Generate compose.yaml from running containers with a specific project name.
+
+    Used to "adopt" existing docker-compose stacks into DockMon management.
+    Finds all containers on the specified host with the matching
+    com.docker.compose.project label and generates a compose file from their config.
+    """
+    monitor = get_docker_monitor()
+
+    # Find all containers on this host with matching project name
+    matching_containers = [
+        c for c in monitor.get_last_containers()
+        if getattr(c, 'host_id', None) == request.host_id
+        and _get_container_project(c) == request.project_name
+    ]
+
+    if not matching_containers:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No containers found with project '{request.project_name}' on host {request.host_id}"
+        )
+
+    # Generate compose from containers
+    compose_yaml, warnings = await generate_compose_from_containers(
+        project_name=request.project_name,
+        host_id=request.host_id,
+        containers=matching_containers,
+        monitor=monitor,
+    )
+
+    # Parse services from generated YAML
+    compose_dict = yaml.safe_load(compose_yaml)
+    services = list(compose_dict.get("services", {}).keys())
+
+    logger.info(f"User '{current_user['username']}' generated compose for project '{request.project_name}' ({len(services)} services)")
+
+    return ComposePreviewResponse(
+        compose_yaml=compose_yaml,
+        services=services,
+        warnings=warnings,
+    )
+
+
+# ==================== Deployment CRUD (Path Parameter Routes) ====================
+# NOTE: These routes with /{deployment_id} MUST come AFTER all static routes above.
+
 @router.get("/{deployment_id}", response_model=DeploymentResponse)
 async def get_deployment(
     deployment_id: str,
@@ -519,14 +830,12 @@ async def update_deployment(
     current_user=Depends(get_current_user),
 ):
     """
-    Update a deployment's definition.
+    Update a deployment (v2.2.7+).
 
     Allowed in: 'planning', 'failed', 'rolled_back', 'partial', or 'running' states.
 
-    This allows users to:
-    - Review and modify deployment configuration before execution ('planning')
-    - Edit and retry failed deployments ('failed', 'rolled_back', 'partial')
-    - Edit running deployments and redeploy to apply changes ('running')
+    Note: To update compose content, use PUT /api/stacks/{name} instead.
+    This endpoint allows changing the target stack or host.
     """
     try:
         db = get_database_manager()
@@ -548,9 +857,6 @@ async def update_deployment(
                     detail=f"Cannot edit deployment in status '{deployment.status}'. Only {editable_statuses} deployments can be edited."
                 )
 
-            # NOTE: Security validation removed - will be performed during execution
-            # No need to validate on update since user is just editing configuration
-
             # If retrying a failed/rolled_back/partial deployment, reset error state and progress
             if deployment.status in ['failed', 'rolled_back', 'partial']:
                 deployment.status = 'planning'  # Reset to planning for retry
@@ -559,22 +865,25 @@ async def update_deployment(
                 logger.info(f"Deployment {deployment_id} being retried (was {deployment.status})")
 
             # Update fields if provided
-            if request.name is not None:
-                deployment.name = request.name
-            if request.deployment_type is not None:
-                deployment.deployment_type = request.deployment_type
+            if request.stack_name is not None:
+                # Validate new stack exists
+                if not await stack_storage.stack_exists(request.stack_name):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Stack '{request.stack_name}' not found"
+                    )
+                deployment.stack_name = request.stack_name
+
             if request.host_id is not None:
                 deployment.host_id = request.host_id
 
-            # Update definition and timestamp
-            deployment.definition = json.dumps(request.definition)
             deployment.updated_at = datetime.now(timezone.utc)
 
             # Commit changes
             session.commit()
             session.refresh(deployment)
 
-            logger.info(f"Deployment {deployment_id} updated (name={deployment.name}, type={deployment.deployment_type})")
+            logger.info(f"Deployment {deployment_id} updated (stack={deployment.stack_name})")
             return _deployment_to_response(deployment)
 
     except HTTPException:
@@ -632,137 +941,44 @@ async def delete_deployment(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/{deployment_id}/save-as-template", status_code=200, dependencies=[Depends(require_scope("write"))])
-async def save_deployment_as_template(
+@router.get("/{deployment_id}/compose-preview", response_model=ComposePreviewResponse)
+async def preview_compose_from_containers(
     deployment_id: str,
-    request: SaveAsTemplateRequest,
     current_user=Depends(get_current_user),
 ):
     """
-    Convert a successful deployment into a reusable template.
+    Preview compose.yaml that would be generated from deployment's containers.
 
-    This allows users to save working configurations as templates for future deployments.
-
-    Requirements:
-    - Deployment must exist
-    - Template name must be unique
-
-    The endpoint:
-    1. Fetches the deployment
-    2. Extracts its configuration (definition JSON)
-    3. Creates a new template with the same deployment type and definition
-    4. Returns the created template ID
-
-    This enables the workflow:
-    1. User creates and tests a deployment
-    2. User saves it as template: POST /api/deployments/{id}/save-as-template
-    3. User can now deploy from template to other hosts
+    Used before "Recreate from containers" to show what will be created.
     """
-    try:
-        db = get_database_manager()
-
-        with db.get_session() as session:
-            # Fetch deployment
-            deployment = session.query(Deployment).filter_by(id=deployment_id).first()
-
-            if not deployment:
-                raise HTTPException(status_code=404, detail="Deployment not found")
-
-            # Check for duplicate template name
-            existing = session.query(DeploymentTemplate).filter_by(name=request.name).first()
-            if existing:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"Template with name '{request.name}' already exists"
-                )
-
-            # Generate template ID
-            template_id = str(uuid.uuid4())
-
-            # Use provided description or generate default
-            description = request.description or f"Template created from deployment '{deployment.name}'"
-
-            # Create template from deployment config
-            template = DeploymentTemplate(
-                id=template_id,
-                name=request.name,
-                category=request.category,
-                description=description,
-                deployment_type=deployment.deployment_type,
-                template_definition=deployment.definition,
-                variables=None,  # TODO: Add variable extraction from definition
-                is_builtin=False,
-                created_at=datetime.now(timezone.utc),
-                updated_at=datetime.now(timezone.utc),
-            )
-
-            session.add(template)
-            session.commit()
-
-            logger.info(f"Created template '{template.name}' from deployment '{deployment.name}'")
-
-            return {
-                "id": template.id,
-                "name": template.name,
-                "category": template.category,
-                "deployment_type": template.deployment_type
-            }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to save deployment as template: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ==================== Import Stack Endpoints ====================
-
-@router.get("/known-stacks", response_model=List[KnownStack])
-async def get_known_stacks(
-    current_user=Depends(get_current_user),
-):
-    """
-    Get list of known stack names from container labels across all hosts.
-
-    Used for the fallback UI when a compose file has no 'name:' field.
-    Scans all containers for 'com.docker.compose.project' label.
-    """
+    db = get_database_manager()
     monitor = get_docker_monitor()
-    all_containers = monitor.get_last_containers()
 
-    # Group containers by project name
-    stacks: Dict[str, KnownStack] = {}
+    with db.get_session() as session:
+        deployment = session.query(Deployment).filter_by(
+            id=deployment_id,
+            user_id=current_user['user_id']
+        ).first()
 
-    for container in all_containers:
-        labels = getattr(container, 'labels', {}) or {}
-        project = labels.get('com.docker.compose.project')
-        if not project:
-            continue
+        if not deployment:
+            raise HTTPException(status_code=404, detail="Deployment not found")
 
-        host_id = getattr(container, 'host_id', None)
-        host_name = getattr(container, 'host_name', None) or host_id
-        service = labels.get('com.docker.compose.service')
+        compose_yaml, warnings = await generate_compose_from_deployment(
+            deployment_id=deployment_id,
+            host_id=deployment.host_id,
+            session=session,
+            monitor=monitor,
+        )
 
-        if project not in stacks:
-            stacks[project] = KnownStack(
-                name=project,
-                hosts=[],
-                host_names=[],
-                container_count=0,
-                services=[]
-            )
+        # Parse services from generated YAML
+        compose_dict = yaml.safe_load(compose_yaml)
+        services = list(compose_dict.get("services", {}).keys())
 
-        stack = stacks[project]
-        stack.container_count += 1
-
-        if host_id and host_id not in stack.hosts:
-            stack.hosts.append(host_id)
-            stack.host_names.append(host_name)
-
-        if service and service not in stack.services:
-            stack.services.append(service)
-
-    return list(stacks.values())
+        return ComposePreviewResponse(
+            compose_yaml=compose_yaml,
+            services=services,
+            warnings=warnings,
+        )
 
 
 @router.post("/import", response_model=ImportDeploymentResponse, status_code=201, dependencies=[Depends(require_scope("write"))])
@@ -854,37 +1070,77 @@ async def import_deployment(
                 detail=f"No running containers found for stack '{project_name}'. Provide host_id to import anyway."
             )
 
-    # 5. Create deployment for each host
+    # 5. Create or update stack on filesystem (v2.2.7+)
+    stack_name = stack_storage.sanitize_stack_name(project_name)
+    stack_already_exists = await stack_storage.stack_exists(stack_name)
+
+    if stack_already_exists and not request.overwrite_stack and not request.use_existing_stack:
+        # Stack exists and user hasn't made a choice - ask them
+        return ImportDeploymentResponse(
+            success=False,
+            deployments_created=[],
+            requires_name_selection=False,
+            stack_exists=True,
+            existing_stack_name=stack_name,
+        )
+
+    if request.use_existing_stack:
+        # User chose to use existing stack - don't touch files
+        # Find actual filesystem name (may differ in case from sanitized name)
+        actual_stack_name = await stack_storage.find_stack_by_name(stack_name)
+        if actual_stack_name:
+            stack_name = actual_stack_name
+            logger.info(f"User '{current_user['username']}' using existing stack '{stack_name}' on filesystem")
+        else:
+            # Edge case: stack was deleted between check and import
+            await stack_storage.write_stack(
+                name=stack_name,
+                compose_yaml=request.compose_content,
+                env_content=request.env_content,
+            )
+            logger.info(f"User '{current_user['username']}' created stack '{stack_name}' (use_existing_stack but stack was missing)")
+    elif not stack_already_exists:
+        # Create new stack
+        await stack_storage.write_stack(
+            name=stack_name,
+            compose_yaml=request.compose_content,
+            env_content=request.env_content,
+        )
+        logger.info(f"User '{current_user['username']}' created stack '{stack_name}' on filesystem during import")
+    elif request.overwrite_stack:
+        # Overwrite existing stack content
+        await stack_storage.write_stack(
+            name=stack_name,
+            compose_yaml=request.compose_content,
+            env_content=request.env_content,
+        )
+        logger.info(f"User '{current_user['username']}' overwrote existing stack '{stack_name}' on filesystem during import")
+
+    # 6. Create deployment for each host
     db = get_database_manager()
     deployments_created = []
 
     with db.get_session() as session:
         for host_id, containers in hosts_with_stack.items():
-            # Check for duplicate deployment name on this host
+            # Check for duplicate deployment on this host (v2.2.7+: use stack_name)
             existing = session.query(Deployment).filter_by(
                 host_id=host_id,
-                name=project_name,
+                stack_name=stack_name,
                 user_id=user_id
             ).first()
             if existing:
-                logger.info(f"Deployment '{project_name}' already exists on host {host_id}, skipping")
+                logger.info(f"Deployment for stack '{stack_name}' already exists on host {host_id}, skipping")
                 continue
 
-            # Create Deployment record
+            # Create Deployment record (v2.2.7+: no definition, no deployment_type)
             deployment_id = str(uuid.uuid4())
-            definition = {
-                'compose_yaml': request.compose_content,
-                'env_content': request.env_content
-            }
 
             deployment = Deployment(
                 id=deployment_id,
                 host_id=host_id,
                 user_id=user_id,
-                name=project_name,
-                deployment_type='stack',
+                stack_name=stack_name,
                 status='stopped' if import_as_stopped else 'running',
-                definition=json.dumps(definition),
                 created_by=current_user['username'],
                 progress_percent=100,
                 committed=True,
@@ -904,7 +1160,7 @@ async def import_deployment(
                     deployment_id=deployment_id
                 )
 
-            logger.info(f"Imported deployment '{project_name}' on host {host_id} with {containers_linked} containers (stopped={import_as_stopped})")
+            logger.info(f"Imported deployment for stack '{stack_name}' on host {host_id} with {containers_linked} containers (stopped={import_as_stopped})")
             deployments_created.append(deployment)
 
         session.commit()
@@ -937,8 +1193,6 @@ async def scan_compose_dirs(
 
     Default paths scanned: /opt, /srv, /var/lib/docker/volumes, /home, /stacks, /docker
     """
-    from database import DockerHostDB
-
     # Validate host exists
     db = get_database_manager()
     with db.get_session() as session:
@@ -962,7 +1216,6 @@ async def scan_compose_dirs(
 
 def _is_path_safe(path: str) -> bool:
     """Check if a path is safe to access (not a system directory)."""
-    import os
     # Normalize path to resolve .. and symlinks
     try:
         path = os.path.realpath(path)
@@ -970,11 +1223,12 @@ def _is_path_safe(path: str) -> bool:
         return False
 
     # Block system directories (consistent with agent's scan.go)
+    # /etc is blocked entirely to prevent access to sensitive config files
     blocked_prefixes = [
         '/proc', '/sys', '/dev', '/run', '/boot',
         '/bin', '/sbin', '/lib', '/lib64',
         '/usr/bin', '/usr/sbin', '/usr/lib',
-        '/etc/passwd', '/etc/shadow', '/etc/sudoers',
+        '/etc',  # Block all of /etc, not just specific files
     ]
     for prefix in blocked_prefixes:
         if path == prefix or path.startswith(prefix + '/'):
@@ -984,9 +1238,6 @@ def _is_path_safe(path: str) -> bool:
 
 async def _scan_local_dirs(request: Optional[ScanComposeDirsRequest]) -> ScanComposeDirsResponse:
     """Scan directories within the DockMon container for compose files."""
-    import os
-    from datetime import datetime, timezone
-
     # Default paths to scan
     default_paths = [
         "/opt",
@@ -1045,7 +1296,6 @@ async def _scan_local_dirs(request: Optional[ScanComposeDirsRequest]) -> ScanCom
                             project_name = os.path.basename(root)
                             services = []
                             try:
-                                import yaml
                                 with open(filepath, 'r') as f:
                                     content = yaml.safe_load(f)
                                     if content:
@@ -1062,7 +1312,7 @@ async def _scan_local_dirs(request: Optional[ScanComposeDirsRequest]) -> ScanCom
                                 project_name=project_name,
                                 services=services,
                                 size=stat.st_size,
-                                modified=modified.isoformat()
+                                modified=modified.isoformat() + 'Z'
                             ))
                         except (OSError, IOError):
                             continue
@@ -1075,9 +1325,6 @@ async def _scan_local_dirs(request: Optional[ScanComposeDirsRequest]) -> ScanCom
 
 async def _scan_agent_dirs(host_id: str, request: Optional[ScanComposeDirsRequest]) -> ScanComposeDirsResponse:
     """Scan directories on an agent host via WebSocket command."""
-    from agent.command_executor import get_agent_command_executor, RetryPolicy
-    from agent.manager import AgentManager
-
     # Get agent ID for this host
     agent_manager = AgentManager()
     agent_id = agent_manager.get_agent_for_host(host_id)
@@ -1158,8 +1405,6 @@ async def read_compose_file(
     Returns the compose file content and optional .env content if present
     in the same directory. Works with local and agent-based hosts.
     """
-    from database import DockerHostDB
-
     # Validate host exists
     db = get_database_manager()
     with db.get_session() as session:
@@ -1183,8 +1428,6 @@ async def read_compose_file(
 
 async def _read_local_file(request: ReadComposeFileRequest) -> ReadComposeFileResponse:
     """Read a compose file from the local filesystem (within DockMon container)."""
-    import os
-
     path = request.path
 
     # Security: Validate path is absolute
@@ -1255,9 +1498,6 @@ async def _read_local_file(request: ReadComposeFileRequest) -> ReadComposeFileRe
 
 async def _read_agent_file(host_id: str, request: ReadComposeFileRequest) -> ReadComposeFileResponse:
     """Read a compose file from an agent host via WebSocket command."""
-    from agent.command_executor import get_agent_command_executor, RetryPolicy
-    from agent.manager import AgentManager
-
     # Get agent ID for this host
     agent_manager = AgentManager()
     agent_id = agent_manager.get_agent_for_host(host_id)
@@ -1362,170 +1602,10 @@ def _link_containers_for_host(
     return linked_count
 
 
-# ==================== Template Endpoints ====================
-
-@template_router.post("", status_code=201)
-async def create_template(
-    request: TemplateCreate,
-    current_user=Depends(get_current_user),
-    manager: TemplateManager = Depends(get_template_manager)
-):
-    """Create a new deployment template."""
-    try:
-        template_id = manager.create_template(
-            name=request.name,
-            deployment_type=request.deployment_type,
-            template_definition=request.template_definition,
-            category=request.category,
-            description=request.description,
-            variables=request.variables,
-        )
-
-        template = manager.get_template(template_id)
-        return template
-
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Failed to create template: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@template_router.get("")
-async def list_templates(
-    category: Optional[str] = None,
-    deployment_type: Optional[str] = None,
-    include_builtin: bool = True,
-    current_user=Depends(get_current_user),
-    manager: TemplateManager = Depends(get_template_manager)
-):
-    """List deployment templates with optional filters."""
-    try:
-        templates = manager.list_templates(
-            category=category,
-            deployment_type=deployment_type,
-            include_builtin=include_builtin
-        )
-        return templates
-
-    except Exception as e:
-        logger.error(f"Failed to list templates: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@template_router.get("/{template_id}")
-async def get_template(
-    template_id: str,
-    current_user=Depends(get_current_user),
-    manager: TemplateManager = Depends(get_template_manager)
-):
-    """Get template by ID."""
-    try:
-        template = manager.get_template(template_id)
-
-        if not template:
-            raise HTTPException(status_code=404, detail="Template not found")
-
-        return template
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get template: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@template_router.put("/{template_id}")
-async def update_template(
-    template_id: str,
-    request: TemplateUpdate,
-    current_user=Depends(get_current_user),
-    manager: TemplateManager = Depends(get_template_manager)
-):
-    """Update template fields."""
-    try:
-        success = manager.update_template(
-            template_id=template_id,
-            name=request.name,
-            category=request.category,
-            description=request.description,
-            template_definition=request.template_definition,
-            variables=request.variables,
-        )
-
-        if not success:
-            raise HTTPException(status_code=404, detail="Template not found")
-
-        template = manager.get_template(template_id)
-        return template
-
-    except RuntimeError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to update template: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@template_router.delete("/{template_id}")
-async def delete_template(
-    template_id: str,
-    current_user=Depends(get_current_user),
-    manager: TemplateManager = Depends(get_template_manager)
-):
-    """Delete a template."""
-    try:
-        success = manager.delete_template(template_id)
-
-        if not success:
-            raise HTTPException(status_code=404, detail="Template not found")
-
-        logger.info(f"Deleted template {template_id}")
-
-        return {"success": True, "message": "Template deleted"}
-
-    except RuntimeError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to delete template: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@template_router.post("/{template_id}/render")
-async def render_template(
-    template_id: str,
-    request: TemplateRenderRequest,
-    current_user=Depends(get_current_user),
-    manager: TemplateManager = Depends(get_template_manager)
-):
-    """
-    Render template with variable substitution.
-
-    Replaces ${VAR_NAME} placeholders with provided values.
-    Falls back to default values if not provided.
-
-    Returns rendered container/stack configuration ready for deployment.
-    """
-    try:
-        rendered = manager.render_template(template_id, request.values)
-        return rendered
-
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Failed to render template: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 # ==================== Helper Functions ====================
 
 def _deployment_to_response(deployment: Deployment, existing_session=None) -> DeploymentResponse:
-    """Convert deployment model to response.
+    """Convert deployment model to response (v2.2.7+).
 
     Args:
         deployment: The deployment model to convert
@@ -1557,8 +1637,7 @@ def _deployment_to_response(deployment: Deployment, existing_session=None) -> De
     return DeploymentResponse(
         id=deployment.id,
         host_id=deployment.host_id,
-        name=deployment.name,
-        deployment_type=deployment.deployment_type,
+        stack_name=deployment.stack_name,
         status=deployment.status,
         progress_percent=deployment.progress_percent,
         current_stage=deployment.current_stage,
@@ -1569,7 +1648,6 @@ def _deployment_to_response(deployment: Deployment, existing_session=None) -> De
         created_by=deployment.created_by,
         committed=deployment.committed,
         rollback_on_failure=deployment.rollback_on_failure,
-        definition=json.loads(deployment.definition) if deployment.definition else None,
         updated_at=deployment.updated_at.isoformat() + 'Z' if deployment.updated_at else None,
         host_name=deployment.host.name if deployment.host and deployment.host.name else None,
         container_ids=container_ids if container_ids else None,

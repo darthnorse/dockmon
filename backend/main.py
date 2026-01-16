@@ -83,7 +83,8 @@ from agent.manager import AgentManager
 from agent import handle_agent_websocket
 from agent.connection_manager import agent_connection_manager
 from packaging.version import parse as parse_version, InvalidVersion
-from deployment import routes as deployment_routes, DeploymentExecutor, TemplateManager
+from deployment import routes as deployment_routes, DeploymentExecutor
+from deployment import stack_routes
 
 # Configure logging
 setup_logging()
@@ -221,11 +222,9 @@ async def lifespan(app: FastAPI):
     monitor.http_health_check_task.add_done_callback(_handle_task_exception)
     logger.info("HTTP health checker task started")
 
-    # Initialize deployment services (v2.1)
+    # Initialize deployment services (v2.2.7+)
     deployment_executor = DeploymentExecutor(monitor.realtime, monitor, monitor.db)
-    template_manager = TemplateManager(monitor.db)
     deployment_routes.set_deployment_executor(deployment_executor)
-    deployment_routes.set_template_manager(template_manager)
     deployment_routes.set_database_manager(monitor.db)
     deployment_routes.set_docker_monitor(monitor)
     logger.info("Deployment services initialized")
@@ -473,8 +472,8 @@ from api.v2.user import router as user_v2_router
 
 app.include_router(auth_v2_router)  # v2 cookie-based auth
 app.include_router(user_v2_router)  # v2 user preferences
-app.include_router(deployment_routes.router)  # v2.1 deployment endpoints
-app.include_router(deployment_routes.template_router)  # v2.1 template endpoints
+app.include_router(deployment_routes.router)  # v2.2.7+ deployment endpoints
+app.include_router(stack_routes.router)  # v2.2.7+ stacks endpoints
 # app.include_router(alerts_router)  # MOVED: Registered after v2 rules routes
 
 # API key routes (v2.1.8+)

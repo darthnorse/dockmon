@@ -212,19 +212,34 @@ func (s *Service) runComposeUp(ctx context.Context, req DeployRequest, composeFi
 		project.Services[i] = svc
 	}
 
+	// Collect service and image information for detailed progress
+	serviceNames := make([]string, 0, len(project.Services))
+	imageNames := make([]string, 0, len(project.Services))
+	for _, svc := range project.Services {
+		serviceNames = append(serviceNames, svc.Name)
+		if svc.Image != "" {
+			imageNames = append(imageNames, svc.Image)
+		}
+	}
+
+	// Report services being deployed
 	s.sendProgress(ProgressEvent{
 		Stage:     StageCreating,
 		Progress:  25,
-		Message:   fmt.Sprintf("Creating %d service(s)...", len(project.Services)),
+		Message:   fmt.Sprintf("Deploying %d service(s): %s", len(project.Services), strings.Join(serviceNames, ", ")),
 		TotalSvcs: len(project.Services),
 	})
 
 	// Pull images if requested (for redeploy/update)
 	if req.PullImages {
+		pullMsg := fmt.Sprintf("Pulling %d image(s)...", len(imageNames))
+		if len(imageNames) <= 3 {
+			pullMsg = fmt.Sprintf("Pulling image(s): %s", strings.Join(imageNames, ", "))
+		}
 		s.sendProgress(ProgressEvent{
 			Stage:    StagePullingImage,
 			Progress: 30,
-			Message:  "Pulling images...",
+			Message:  pullMsg,
 		})
 
 		pullOpts := api.PullOptions{
@@ -232,9 +247,14 @@ func (s *Service) runComposeUp(ctx context.Context, req DeployRequest, composeFi
 		}
 		if err := composeService.Pull(ctx, project, pullOpts); err != nil {
 			s.logError("Image pull failed", err)
-			return s.failResult(req.DeploymentID, fmt.Sprintf("Image pull failed: %v", err))
+			// Include which images we were trying to pull in the error
+			return s.failResult(req.DeploymentID, fmt.Sprintf("Image pull failed for %s: %v", strings.Join(imageNames, ", "), err))
 		}
-		s.logInfo("Images pulled successfully", nil)
+		s.sendProgress(ProgressEvent{
+			Stage:    StagePullingImage,
+			Progress: 45,
+			Message:  fmt.Sprintf("Successfully pulled %d image(s)", len(imageNames)),
+		})
 	}
 
 	// Configure recreate behavior
@@ -274,9 +294,10 @@ func (s *Service) runComposeUp(ctx context.Context, req DeployRequest, composeFi
 	}
 
 	s.sendProgress(ProgressEvent{
-		Stage:    StageStarting,
-		Progress: 70,
-		Message:  "Starting services...",
+		Stage:     StageStarting,
+		Progress:  70,
+		Message:   fmt.Sprintf("Creating and starting %d container(s): %s", len(serviceNames), strings.Join(serviceNames, ", ")),
+		TotalSvcs: len(serviceNames),
 	})
 
 	if err := composeService.Up(ctx, project, upOpts); err != nil {
@@ -286,15 +307,17 @@ func (s *Service) runComposeUp(ctx context.Context, req DeployRequest, composeFi
 		s.logWarn("Deployment failed, attempting cleanup...")
 		_ = composeService.Down(ctx, req.ProjectName, api.DownOptions{RemoveOrphans: true})
 
-		return s.failResult(req.DeploymentID, fmt.Sprintf("Compose up failed: %v", err))
+		// Include service names in error for context
+		return s.failResult(req.DeploymentID, fmt.Sprintf("Failed to start services (%s): %v", strings.Join(serviceNames, ", "), err))
 	}
 
 	// Wait for health checks if requested
 	if req.WaitForHealthy {
 		s.sendProgress(ProgressEvent{
-			Stage:    StageHealthCheck,
-			Progress: 85,
-			Message:  "Waiting for services to be healthy...",
+			Stage:     StageHealthCheck,
+			Progress:  85,
+			Message:   fmt.Sprintf("Waiting for %d service(s) to be healthy: %s", len(serviceNames), strings.Join(serviceNames, ", ")),
+			TotalSvcs: len(serviceNames),
 		})
 
 		timeout := req.HealthTimeout
@@ -355,10 +378,26 @@ func (s *Service) runComposeUp(ctx context.Context, req DeployRequest, composeFi
 	result := AnalyzeServiceStatus(req.DeploymentID, services, s.log)
 
 	if result.Success {
+		// Build success message with running service count
+		runningCount := 0
+		for _, svc := range result.Services {
+			if svc.Status == "running" {
+				runningCount++
+			}
+		}
 		s.sendProgress(ProgressEvent{
-			Stage:    StageCompleted,
+			Stage:     StageCompleted,
+			Progress:  100,
+			Message:   fmt.Sprintf("Deployment completed: %d/%d service(s) running", runningCount, len(result.Services)),
+			TotalSvcs: len(result.Services),
+		})
+	} else if result.PartialSuccess {
+		// Report partial success with details
+		failedNames := strings.Join(result.FailedServices, ", ")
+		s.sendProgress(ProgressEvent{
+			Stage:    StageFailed,
 			Progress: 100,
-			Message:  "Deployment completed successfully",
+			Message:  fmt.Sprintf("Partial deployment: %d service(s) failed: %s", len(result.FailedServices), failedNames),
 		})
 	}
 
@@ -370,7 +409,7 @@ func (s *Service) runComposeDown(ctx context.Context, req DeployRequest, compose
 	s.sendProgress(ProgressEvent{
 		Stage:    StageStarting,
 		Progress: 20,
-		Message:  "Running compose down...",
+		Message:  fmt.Sprintf("Stopping stack: %s", req.ProjectName),
 	})
 
 	// Create compose service

@@ -659,46 +659,6 @@ def test_deployment_container(test_db: Session, test_deployment, test_container_
 
 
 @pytest.fixture
-def test_deployment_template(test_db: Session):
-    """
-    Create a test deployment template.
-
-    Templates store pre-configured deployments for common applications.
-
-    Returns:
-        DeploymentTemplate: Test template instance
-    """
-    from database import DeploymentTemplate
-    import json
-
-    template = DeploymentTemplate(
-        id='tpl_test_nginx',
-        name='test-nginx-template',
-        category='web',
-        description='Test Nginx template for testing',
-        deployment_type='container',
-        template_definition=json.dumps({
-            'container': {
-                'image': 'nginx:${VERSION}',
-                'ports': {'80/tcp': '${PORT}'}
-            }
-        }),
-        variables=json.dumps({
-            'VERSION': {'default': 'latest', 'type': 'string', 'description': 'Nginx version'},
-            'PORT': {'default': 8080, 'type': 'integer', 'description': 'Host port'}
-        }),
-        is_builtin=True,
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc)
-    )
-    test_db.add(template)
-    test_db.commit()
-    test_db.refresh(template)
-
-    return template
-
-
-@pytest.fixture
 def test_stack_deployment(test_db: Session, test_host, test_user):
     """
     Create a test stack deployment (multi-container).

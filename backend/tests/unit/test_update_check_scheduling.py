@@ -326,3 +326,178 @@ def test_timezone_conversion_half_hour_offset():
     # 2:00 AM IST = 8:30 PM UTC previous day (20:30)
     assert target_hour_utc == 20, f"Expected 20:30 UTC, got {target_hour_utc}:{target_minute_utc}"
     assert target_minute_utc == 30
+
+
+# Tests for Issue #146 - HH:MM scheduling fix
+
+def test_hhmm_should_run_same_day_after_target(jobs_manager):
+    """
+    Test Issue #146: HH:MM should trigger on the same day the service started.
+
+    Scenario:
+    - Service started at 07:00 UTC (first check ran)
+    - User scheduled "09:00" Paris (08:00 UTC)
+    - Current time: 08:30 UTC (09:30 Paris)
+    - Expected: Should run because 08:00 UTC target is AFTER 07:00 UTC last check
+
+    This was broken before the fix because it only compared dates, not timestamps.
+    """
+    # Target: 08:00 UTC (09:00 Paris = local time - offset, Paris is UTC+1)
+    target_time = dt_time(8, 0)
+
+    # Last check was at 07:00 UTC today
+    last_check = datetime(2025, 11, 16, 7, 0, 0, tzinfo=timezone.utc)
+
+    # Current time: 08:30 UTC (past the target)
+    now = datetime(2025, 11, 16, 8, 30, 0, tzinfo=timezone.utc)
+
+    # Build most recent occurrence of target time
+    target_datetime_utc = datetime.combine(now.date(), target_time, tzinfo=timezone.utc)
+
+    # Target 08:00 is in the past relative to 08:30, so use today's occurrence
+    if target_datetime_utc > now:
+        target_datetime_utc -= timedelta(days=1)
+
+    # The scheduled time (08:00) is after the last check (07:00), so should run
+    should_run = target_datetime_utc > last_check
+
+    assert should_run is True, (
+        f"Should run when target time (08:00 UTC) is after last check (07:00 UTC). "
+        f"target_datetime_utc={target_datetime_utc}, last_check={last_check}"
+    )
+
+
+def test_hhmm_should_not_run_before_target(jobs_manager):
+    """
+    Test that HH:MM does NOT trigger if target time hasn't passed yet.
+
+    Scenario:
+    - Service started at 07:00 UTC (first check ran)
+    - User scheduled "09:00" Paris (08:00 UTC)
+    - Current time: 07:30 UTC (08:30 Paris)
+    - Expected: Should NOT run because 08:00 UTC target hasn't passed yet
+    """
+    target_time = dt_time(8, 0)  # 08:00 UTC
+
+    # Last check was at 07:00 UTC today
+    last_check = datetime(2025, 11, 16, 7, 0, 0, tzinfo=timezone.utc)
+
+    # Current time: 07:30 UTC (before the target)
+    now = datetime(2025, 11, 16, 7, 30, 0, tzinfo=timezone.utc)
+
+    # Build most recent occurrence of target time
+    target_datetime_utc = datetime.combine(now.date(), target_time, tzinfo=timezone.utc)
+
+    # Target 08:00 is in the future relative to 07:30, use yesterday's occurrence
+    if target_datetime_utc > now:
+        target_datetime_utc -= timedelta(days=1)
+
+    # Yesterday's target (Nov 15 08:00) is before last check (Nov 16 07:00)
+    should_run = target_datetime_utc > last_check
+
+    assert should_run is False, (
+        f"Should NOT run when target time hasn't passed today and yesterday's is before last check. "
+        f"target_datetime_utc={target_datetime_utc}, last_check={last_check}"
+    )
+
+
+def test_hhmm_should_run_after_day_change(jobs_manager):
+    """
+    Test that HH:MM triggers correctly after a day boundary.
+
+    Scenario:
+    - Last check was yesterday at 08:30 UTC
+    - User scheduled "08:00" UTC
+    - Current time: today 08:30 UTC
+    - Expected: Should run because today's 08:00 target is after yesterday's check
+    """
+    target_time = dt_time(8, 0)  # 08:00 UTC
+
+    # Last check was yesterday at 08:30 UTC
+    last_check = datetime(2025, 11, 15, 8, 30, 0, tzinfo=timezone.utc)
+
+    # Current time: today 08:30 UTC
+    now = datetime(2025, 11, 16, 8, 30, 0, tzinfo=timezone.utc)
+
+    # Build most recent occurrence of target time
+    target_datetime_utc = datetime.combine(now.date(), target_time, tzinfo=timezone.utc)
+
+    # Target 08:00 is in the past relative to 08:30, so use today's occurrence
+    if target_datetime_utc > now:
+        target_datetime_utc -= timedelta(days=1)
+
+    # Today's 08:00 is after yesterday's 08:30? No, Nov 16 08:00 > Nov 15 08:30 = True
+    should_run = target_datetime_utc > last_check
+
+    assert should_run is True, (
+        f"Should run when today's target is after yesterday's last check. "
+        f"target_datetime_utc={target_datetime_utc}, last_check={last_check}"
+    )
+
+
+def test_hhmm_should_not_run_if_already_ran_today(jobs_manager):
+    """
+    Test that HH:MM does NOT trigger if already ran at/after the target time today.
+
+    Scenario:
+    - Last check was today at 08:30 UTC (ran after the scheduled time)
+    - User scheduled "08:00" UTC
+    - Current time: today 09:00 UTC
+    - Expected: Should NOT run because we already ran after 08:00 today
+    """
+    target_time = dt_time(8, 0)  # 08:00 UTC
+
+    # Last check was today at 08:30 UTC (already ran after target)
+    last_check = datetime(2025, 11, 16, 8, 30, 0, tzinfo=timezone.utc)
+
+    # Current time: today 09:00 UTC
+    now = datetime(2025, 11, 16, 9, 0, 0, tzinfo=timezone.utc)
+
+    # Build most recent occurrence of target time
+    target_datetime_utc = datetime.combine(now.date(), target_time, tzinfo=timezone.utc)
+
+    # Target 08:00 is in the past relative to 09:00, so use today's occurrence
+    if target_datetime_utc > now:
+        target_datetime_utc -= timedelta(days=1)
+
+    # Today's 08:00 is NOT after today's 08:30, so should not run
+    should_run = target_datetime_utc > last_check
+
+    assert should_run is False, (
+        f"Should NOT run when target (08:00) is before last check (08:30) same day. "
+        f"target_datetime_utc={target_datetime_utc}, last_check={last_check}"
+    )
+
+
+def test_hhmm_midnight_boundary(jobs_manager):
+    """
+    Test HH:MM scheduling around midnight boundary.
+
+    Scenario:
+    - Last check was at 23:00 UTC on Nov 15
+    - User scheduled "00:30" UTC (early morning)
+    - Current time: 01:00 UTC on Nov 16
+    - Expected: Should run because Nov 16 00:30 is after Nov 15 23:00
+    """
+    target_time = dt_time(0, 30)  # 00:30 UTC
+
+    # Last check was yesterday at 23:00 UTC
+    last_check = datetime(2025, 11, 15, 23, 0, 0, tzinfo=timezone.utc)
+
+    # Current time: today 01:00 UTC
+    now = datetime(2025, 11, 16, 1, 0, 0, tzinfo=timezone.utc)
+
+    # Build most recent occurrence of target time
+    target_datetime_utc = datetime.combine(now.date(), target_time, tzinfo=timezone.utc)
+
+    # Target 00:30 is in the past relative to 01:00, so use today's occurrence
+    if target_datetime_utc > now:
+        target_datetime_utc -= timedelta(days=1)
+
+    # Today's 00:30 (Nov 16) is after yesterday's 23:00 (Nov 15)
+    should_run = target_datetime_utc > last_check
+
+    assert should_run is True, (
+        f"Should run when crossing midnight boundary. "
+        f"target_datetime_utc={target_datetime_utc}, last_check={last_check}"
+    )

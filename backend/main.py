@@ -85,6 +85,7 @@ from agent.connection_manager import agent_connection_manager
 from packaging.version import parse as parse_version, InvalidVersion
 from deployment import routes as deployment_routes, DeploymentExecutor
 from deployment import stack_routes
+from git import routes as git_routes
 
 # Configure logging
 setup_logging()
@@ -228,6 +229,10 @@ async def lifespan(app: FastAPI):
     deployment_routes.set_database_manager(monitor.db)
     deployment_routes.set_docker_monitor(monitor)
     logger.info("Deployment services initialized")
+
+    # Initialize git services (v2.4.0+)
+    git_routes.set_database_manager(monitor.db)
+    logger.info("Git services initialized")
 
     yield
     # Shutdown
@@ -474,6 +479,7 @@ app.include_router(auth_v2_router)  # v2 cookie-based auth
 app.include_router(user_v2_router)  # v2 user preferences
 app.include_router(deployment_routes.router)  # v2.2.7+ deployment endpoints
 app.include_router(stack_routes.router)  # v2.2.7+ stacks endpoints
+app.include_router(git_routes.router)  # v2.4.0+ git endpoints
 # app.include_router(alerts_router)  # MOVED: Registered after v2 rules routes
 
 # API key routes (v2.1.8+)

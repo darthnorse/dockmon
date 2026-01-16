@@ -16,6 +16,7 @@ import bcrypt
 import uuid
 
 from utils.keys import make_composite_key
+from utils.encryption import encrypt_password, decrypt_password
 
 logger = logging.getLogger(__name__)
 
@@ -857,6 +858,129 @@ class RegistryCredential(Base):
     password_encrypted = Column(Text, nullable=False)  # Fernet-encrypted password
     created_at = Column(DateTime, default=utcnow, nullable=False)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class GitCredential(Base):
+    """
+    Git authentication credentials for repository access (v2.4.0+).
+
+    Stores encrypted credentials for authenticating with Git repositories.
+    Supports both HTTPS (username/password) and SSH (private key) authentication.
+
+    Security:
+        - Passwords and SSH keys are encrypted at rest using Fernet encryption
+        - Encryption key stored in /app/data/encryption.key
+        - Protects against database dumps, NOT against full container compromise
+        - SSH passphrases NOT supported (machine-to-machine auth uses passphrase-less keys)
+
+    Usage:
+        - Credentials are reusable across multiple repositories
+        - Use auth_type='none' for public repositories
+        - Use auth_type='https' for PAT/password auth
+        - Use auth_type='ssh' for deploy key auth
+    """
+    __tablename__ = "git_credentials"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String, nullable=False, unique=True)  # e.g., "github-deploy-key"
+    auth_type = Column(String, nullable=False)  # 'none', 'https', 'ssh'
+
+    # HTTPS authentication (encrypted)
+    username = Column(String, nullable=True)
+    _password = Column('password', Text, nullable=True)  # Fernet-encrypted
+
+    # SSH authentication (encrypted, passphrase-less keys only)
+    _ssh_private_key = Column('ssh_private_key', Text, nullable=True)  # Fernet-encrypted
+
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+    # Relationships
+    repositories = relationship("GitRepository", back_populates="credential")
+
+    @property
+    def password(self):
+        """Decrypt and return password."""
+        if self._password:
+            return decrypt_password(self._password)
+        return None
+
+    @password.setter
+    def password(self, value):
+        """Encrypt and store password."""
+        if value:
+            self._password = encrypt_password(value)
+        else:
+            self._password = None
+
+    @property
+    def ssh_private_key(self):
+        """Decrypt and return SSH private key."""
+        if self._ssh_private_key:
+            return decrypt_password(self._ssh_private_key)
+        return None
+
+    @ssh_private_key.setter
+    def ssh_private_key(self, value):
+        """Encrypt and store SSH private key."""
+        if value:
+            self._ssh_private_key = encrypt_password(value)
+        else:
+            self._ssh_private_key = None
+
+    def __repr__(self):
+        return f"<GitCredential(id={self.id}, name='{self.name}', auth_type='{self.auth_type}')>"
+
+
+class GitRepository(Base):
+    """
+    Git repository definitions for git-backed stacks (v2.4.0+).
+
+    Stores repository URL, branch, and sync configuration. Repositories are
+    cloned to /app/data/git-repos/repo-{id}/ and can be linked to multiple stacks.
+
+    Sync Status Flow:
+        pending -> syncing -> synced
+                          -> error
+
+    Auto-sync:
+        - Disabled by default (opt-in)
+        - Uses cron expression for scheduling (default: 3 AM daily)
+        - Concurrent sync protection via atomic database update
+
+    Deletion Behavior:
+        - Linked stacks get git.repository_id set to null
+        - Stacks show error state: "Git repository not found"
+        - Cloned repo directory deleted from disk
+    """
+    __tablename__ = "git_repositories"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String, nullable=False, unique=True)  # e.g., "infra-monorepo"
+    url = Column(String, nullable=False)  # e.g., "https://github.com/org/infra.git"
+    branch = Column(String, nullable=False, default='main', server_default='main')
+
+    # Foreign key to credential (optional - public repos don't need credentials)
+    credential_id = Column(Integer, ForeignKey('git_credentials.id', ondelete='SET NULL'), nullable=True)
+
+    # Auto-sync configuration (opt-in, disabled by default)
+    auto_sync_enabled = Column(Boolean, default=False, nullable=False, server_default='0')
+    auto_sync_cron = Column(String, default='0 3 * * *', nullable=False, server_default='0 3 * * *')  # Default: 3 AM daily
+
+    # Sync status tracking
+    last_sync_at = Column(DateTime, nullable=True)
+    last_commit = Column(String(40), nullable=True)  # Full SHA for comparison
+    sync_status = Column(String, default='pending', nullable=False, server_default='pending')  # pending, syncing, synced, error
+    sync_error = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+    # Relationships
+    credential = relationship("GitCredential", back_populates="repositories")
+
+    def __repr__(self):
+        return f"<GitRepository(id={self.id}, name='{self.name}', url='{self.url}', branch='{self.branch}')>"
 
 
 class Deployment(Base):

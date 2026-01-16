@@ -68,6 +68,9 @@ RUN apk upgrade --no-cache \
     openssl \
     bash \
     libffi \
+    # Git support for git-backed stacks (v2.4.0+)
+    git \
+    openssh-client \
     && apk add --no-cache --virtual .build-deps \
     # Build dependencies (will be removed after pip install)
     gcc \

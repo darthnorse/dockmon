@@ -109,18 +109,27 @@ function SelectPortalContent({ children }: { children: React.ReactNode }) {
   // Destructure to avoid unnecessary re-runs
   const { open, setOpen, triggerRef } = context
 
-  // Find the trigger button to position the dropdown
-  React.useEffect(() => {
-    if (open && triggerRef?.current) {
+  // Position the dropdown, measuring actual height to flip if needed
+  React.useLayoutEffect(() => {
+    if (open && triggerRef?.current && menuRef.current) {
       const trigger = triggerRef.current
-      const rect = trigger.getBoundingClientRect()
+      const menu = menuRef.current
+      const triggerRect = trigger.getBoundingClientRect()
+      const menuHeight = menu.offsetHeight
+      const viewportHeight = window.innerHeight
+      const spaceBelow = viewportHeight - triggerRect.bottom
+      const spaceAbove = triggerRect.top
+
+      // Position above if not enough space below and more space above
+      const positionAbove = spaceBelow < menuHeight + 8 && spaceAbove > spaceBelow
+
       setPosition({
-        top: rect.bottom + 4,
-        left: rect.left,
-        width: rect.width,
+        top: positionAbove ? triggerRect.top - menuHeight - 4 : triggerRect.bottom + 4,
+        left: triggerRect.left,
+        width: triggerRect.width,
       })
     }
-  }, [open, triggerRef])
+  }, [open, triggerRef, children])
 
   // Close dropdown on scroll (standard behavior)
   React.useEffect(() => {

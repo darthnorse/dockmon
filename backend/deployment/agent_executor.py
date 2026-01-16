@@ -433,6 +433,7 @@ class AgentDeploymentExecutor:
         Handle deploy_progress event from agent.
 
         Updates deployment status and broadcasts to WebSocket clients.
+        Supports both persistent deployments (database-backed) and transient deployments.
         Supports both coarse progress and fine-grained per-service progress (Phase 3).
 
         Args:
@@ -488,19 +489,28 @@ class AgentDeploymentExecutor:
 
         # Update deployment status (only for intermediate stages)
         if stage not in ("completed", "failed"):
-            await self._update_deployment_status(
-                deployment_id, status, progress=progress, stage=message
-            )
+            # Check if this is a persistent deployment (exists in database)
+            is_persistent = await self._is_persistent_deployment(deployment_id)
 
-            # Emit service-level progress if available (Phase 3)
-            if services:
-                await self._emit_service_progress(deployment_id, services)
+            if is_persistent:
+                await self._update_deployment_status(
+                    deployment_id, status, progress=progress, stage=message
+                )
+                # Emit service-level progress if available (Phase 3)
+                if services:
+                    await self._emit_service_progress(deployment_id, services)
+            else:
+                # Transient deployment - broadcast directly to WebSocket
+                await self._broadcast_transient_progress(
+                    deployment_id, status, progress, message
+                )
 
     async def handle_deploy_complete(self, payload: Dict[str, Any]) -> None:
         """
         Handle deploy_complete event from agent.
 
-        Updates database with final status and container IDs.
+        Updates database with final status and container IDs for persistent deployments.
+        Broadcasts completion event for transient deployments.
         Supports partial success where some services are running but others failed.
 
         Args:
@@ -531,6 +541,29 @@ class AgentDeploymentExecutor:
             f"failed_services={failed_services}, error={error}"
         )
 
+        # Check if this is a persistent deployment (exists in database)
+        is_persistent = await self._is_persistent_deployment(deployment_id)
+
+        if not is_persistent:
+            # Transient deployment - broadcast completion directly to WebSocket
+            if success:
+                await self._broadcast_transient_complete(
+                    deployment_id, "running", "Deployment completed"
+                )
+            elif partial_success:
+                error_details = self._build_partial_failure_message(
+                    services, failed_services, error
+                )
+                await self._broadcast_transient_complete(
+                    deployment_id, "partial", "Partial deployment - some services failed", error_details
+                )
+            else:
+                await self._broadcast_transient_complete(
+                    deployment_id, "failed", "Deployment failed", error or "Deployment failed"
+                )
+            return
+
+        # Persistent deployment - update database
         if success:
             # Full success - all services running
             await self._link_containers_to_deployment(deployment_id, services)
@@ -824,6 +857,109 @@ class AgentDeploymentExecutor:
                 await self.monitor.manager.broadcast(payload)
         except Exception as e:
             logger.debug(f"Error broadcasting service progress: {e}")
+
+    async def _is_persistent_deployment(self, deployment_id: str) -> bool:
+        """
+        Check if a deployment exists in the database (persistent) or is transient.
+
+        Transient deployments are fire-and-forget stack deployments that don't
+        create database records. They have IDs like: {host_id}:{stack_name}:{uuid}
+
+        Args:
+            deployment_id: Deployment ID to check
+
+        Returns:
+            True if deployment exists in database, False otherwise
+        """
+        with self.db.get_session() as session:
+            deployment = session.query(Deployment).filter_by(id=deployment_id).first()
+            return deployment is not None
+
+    async def _broadcast_transient_progress(
+        self,
+        deployment_id: str,
+        status: str,
+        progress: int,
+        message: str,
+    ) -> None:
+        """
+        Broadcast progress event for transient deployment to WebSocket clients.
+
+        Args:
+            deployment_id: Transient deployment ID ({host_id}:{stack_name}:{uuid})
+            status: Current status
+            progress: Progress percentage (0-100)
+            message: Human-readable stage description
+        """
+        # Parse deployment_id to extract host_id and stack_name
+        parts = deployment_id.split(':')
+        host_id = parts[0] if len(parts) > 0 else ""
+        stack_name = parts[1] if len(parts) > 1 else ""
+
+        payload = {
+            "type": "deployment_progress",
+            "deployment_id": deployment_id,
+            "host_id": host_id,
+            "name": stack_name,
+            "status": status,
+            "progress": {
+                "overall_percent": progress,
+                "stage": message,
+            },
+        }
+
+        try:
+            if self.monitor and hasattr(self.monitor, 'manager'):
+                await self.monitor.manager.broadcast(payload)
+                logger.debug(f"Broadcast transient progress: {deployment_id} - {message}")
+        except Exception as e:
+            logger.error(f"Error broadcasting transient progress: {e}")
+
+    async def _broadcast_transient_complete(
+        self,
+        deployment_id: str,
+        status: str,
+        message: str,
+        error: Optional[str] = None,
+    ) -> None:
+        """
+        Broadcast completion event for transient deployment to WebSocket clients.
+
+        Args:
+            deployment_id: Transient deployment ID ({host_id}:{stack_name}:{uuid})
+            status: Final status (running, partial, failed)
+            message: Human-readable completion message
+            error: Optional error message if failed
+        """
+        # Parse deployment_id to extract host_id and stack_name
+        parts = deployment_id.split(':')
+        host_id = parts[0] if len(parts) > 0 else ""
+        stack_name = parts[1] if len(parts) > 1 else ""
+
+        # Map status to event type
+        event_type = "deployment_completed" if status in ("running", "partial") else "deployment_failed"
+
+        payload = {
+            "type": event_type,
+            "deployment_id": deployment_id,
+            "host_id": host_id,
+            "name": stack_name,
+            "status": status,
+            "progress": {
+                "overall_percent": 100 if status != "failed" else 0,
+                "stage": message,
+            },
+        }
+
+        if error:
+            payload["error"] = error
+
+        try:
+            if self.monitor and hasattr(self.monitor, 'manager'):
+                await self.monitor.manager.broadcast(payload)
+                logger.info(f"Broadcast transient complete: {deployment_id} - {status}")
+        except Exception as e:
+            logger.error(f"Error broadcasting transient complete: {e}")
 
 
 # Global singleton instance (lazy-initialized)

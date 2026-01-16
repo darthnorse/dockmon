@@ -8,7 +8,7 @@
  */
 
 import { useState, useMemo } from 'react'
-import { Search, Plus } from 'lucide-react'
+import { Search, Plus, Download } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
@@ -21,6 +21,7 @@ interface StackListPanelProps {
   selectedStackName: string | null
   isCreateMode: boolean
   onStackSelect: (name: string) => void
+  onImport?: () => void
 }
 
 export function StackListPanel({
@@ -29,6 +30,7 @@ export function StackListPanel({
   selectedStackName,
   isCreateMode,
   onStackSelect,
+  onImport,
 }: StackListPanelProps) {
   const [searchQuery, setSearchQuery] = useState('')
 
@@ -88,20 +90,33 @@ export function StackListPanel({
   }
 
   return (
-    <div className="flex flex-col border-r pr-4 pt-1 pl-1 overflow-hidden">
-      {/* New Stack button */}
-      <Button
-        variant="outline"
-        size="sm"
-        onClick={() => onStackSelect('__new__')}
-        className={cn(
-          'mb-3 gap-2 shrink-0',
-          isCreateMode && 'bg-primary text-primary-foreground hover:bg-primary/90'
+    <div className="flex flex-col p-4 h-full overflow-hidden">
+      {/* Action buttons */}
+      <div className="flex gap-2 mb-3 shrink-0">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => onStackSelect('__new__')}
+          className={cn(
+            'flex-1 gap-2',
+            isCreateMode && 'bg-primary text-primary-foreground hover:bg-primary/90'
+          )}
+        >
+          <Plus className="h-4 w-4" />
+          New
+        </Button>
+        {onImport && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onImport}
+            className="flex-1 gap-2"
+          >
+            <Download className="h-4 w-4" />
+            Import
+          </Button>
         )}
-      >
-        <Plus className="h-4 w-4" />
-        New Stack
-      </Button>
+      </div>
 
       {/* Search input */}
       <div className="relative mb-3 shrink-0">

@@ -23,6 +23,7 @@ interface ConfigurationEditorProps {
   error?: string | undefined
   className?: string
   rows?: number
+  fillHeight?: boolean  // If true, fills available height instead of using rows
 }
 
 export interface ConfigurationEditorHandle {
@@ -45,7 +46,8 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
   mode = 'json',
   error,
   className = '',
-  rows = 12
+  rows = 12,
+  fillHeight = false
 }, ref) => {
   const [formatStatus, setFormatStatus] = useState<'idle' | 'success' | 'error'>('idle')
   const [validationError, setValidationError] = useState<string | null>(null)
@@ -329,9 +331,9 @@ networks:
   }
 
   return (
-    <div className="space-y-2">
+    <div className={fillHeight ? 'flex flex-col h-full' : 'space-y-2'}>
       {/* Format Button */}
-      <div className="flex justify-end">
+      <div className={`flex justify-end ${fillHeight ? 'mb-2 shrink-0' : ''}`}>
         <Button
           type="button"
           variant="outline"
@@ -381,25 +383,25 @@ networks:
           }
         }}
         placeholder={placeholders[type]}
-        rows={rows}
-        className={`font-mono text-sm ${error || validationError ? 'border-destructive' : ''} ${className}`}
+        rows={fillHeight ? undefined : rows}
+        className={`font-mono text-sm ${fillHeight ? 'flex-1 min-h-0 resize-none' : ''} ${error || validationError ? 'border-destructive' : ''} ${className}`}
       />
 
       {/* Help text */}
-      <p className="text-xs text-muted-foreground">
+      <p className={`text-xs text-muted-foreground ${fillHeight ? 'mt-2 shrink-0' : ''}`}>
         {helpText[type]}
       </p>
 
       {/* Validation error (from Format button) */}
       {validationError && (
-        <p className="text-xs text-destructive">
+        <p className={`text-xs text-destructive ${fillHeight ? 'shrink-0' : ''}`}>
           {validationError}
         </p>
       )}
 
       {/* Form validation error (from parent) */}
       {error && (
-        <p className="text-xs text-destructive">
+        <p className={`text-xs text-destructive ${fillHeight ? 'shrink-0' : ''}`}>
           {error}
         </p>
       )}

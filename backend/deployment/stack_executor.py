@@ -113,8 +113,8 @@ async def _execute_via_go_service(
     # Get host connection info
     host_info = _get_host_connection_info(deployment.host_id)
 
-    # Build project name from deployment name
-    project_name = deployment.name.lower().replace(' ', '-')
+    # Build project name from stack name
+    project_name = deployment.stack_name.lower().replace(' ', '-')
 
     # Create compose client
     client = ComposeClient()

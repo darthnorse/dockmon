@@ -106,6 +106,11 @@ class RateLimiter:
                 _get_int_env('DOCKMON_RATE_BURST_RULES_TEST', 2),
                 _get_int_env('DOCKMON_RATE_VIOLATIONS_RULES_TEST', 3)
             ),
+            "stacks": (
+                _get_int_env('DOCKMON_RATE_LIMIT_STACKS', 60),  # Stack CRUD operations
+                _get_int_env('DOCKMON_RATE_BURST_STACKS', 15),
+                _get_int_env('DOCKMON_RATE_VIOLATIONS_STACKS', 8)
+            ),
         }
 
         logger.info(f"Rate limiting configured: Default={self.limits['default'][0]}/min, "
@@ -234,4 +239,5 @@ rate_limit_auth = Depends(get_rate_limit_dependency("auth"))
 rate_limit_hosts = Depends(get_rate_limit_dependency("hosts"))
 rate_limit_containers = Depends(get_rate_limit_dependency("containers"))
 rate_limit_notifications = Depends(get_rate_limit_dependency("notifications"))
+rate_limit_stacks = Depends(get_rate_limit_dependency("stacks"))
 rate_limit_default = Depends(get_rate_limit_dependency("default"))

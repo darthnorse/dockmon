@@ -767,10 +767,8 @@ class AgentManager:
                             id=new_dep_id,
                             host_id=new_host_id,
                             user_id=dep.user_id,
-                            deployment_type=dep.deployment_type,
-                            name=dep.name,
+                            stack_name=dep.stack_name,
                             status=dep.status,
-                            definition=dep.definition,
                             error_message=dep.error_message,
                             progress_percent=dep.progress_percent,
                             current_stage=dep.current_stage,
@@ -836,8 +834,8 @@ class AgentManager:
                 existing_host.updated_at = now
                 logger.info(f"Marked old host {old_host_name} as migrated")
 
-                # Step 5: Increment token use count
-                token_record = session.query(RegistrationToken).filter_by(token=token).first()
+                # Step 5: Increment token use count (with_for_update for consistency with register_agent)
+                token_record = session.query(RegistrationToken).filter_by(token=token).with_for_update().first()
                 if token_record:
                     token_record.use_count += 1
                     token_record.last_used_at = now
@@ -1094,35 +1092,39 @@ class AgentManager:
                         _, short_dep_id = old_dep_id.split(':', 1)
                         new_dep_id = f"{new_host_id}:{short_dep_id}"
                         deployment_id_map[old_dep_id] = new_dep_id
+
+                        # Create new deployment with updated composite key (v2.2.7+ schema)
                         new_dep = Deployment(
                             id=new_dep_id,
                             host_id=new_host_id,
                             user_id=dep.user_id,
-                            name=dep.name,
-                            compose_content=dep.compose_content,
-                            env_content=dep.env_content,
+                            stack_name=dep.stack_name,
                             status=dep.status,
                             error_message=dep.error_message,
+                            progress_percent=dep.progress_percent,
+                            current_stage=dep.current_stage,
                             created_at=dep.created_at,
-                            updated_at=dep.updated_at
+                            updated_at=dep.updated_at,
+                            started_at=dep.started_at,
+                            completed_at=dep.completed_at,
+                            created_by=dep.created_by,
+                            committed=dep.committed,
+                            rollback_on_failure=dep.rollback_on_failure
                         )
                         session.add(new_dep)
+                        session.flush()  # Ensure new deployment exists for FK references
 
                         # Transfer deployment containers
                         dep_containers = session.query(DeploymentContainer).filter_by(deployment_id=old_dep_id).all()
                         for dc in dep_containers:
-                            old_composite = dc.container_id
-                            if ':' in old_composite:
-                                _, short_container_id = old_composite.split(':', 1)
-                                new_composite = f"{new_host_id}:{short_container_id}"
-                                new_dc = DeploymentContainer(
-                                    deployment_id=new_dep_id,
-                                    container_id=new_composite,
-                                    service_name=dc.service_name,
-                                    created_at=dc.created_at
-                                )
-                                session.add(new_dc)
-                                session.delete(dc)
+                            new_dc = DeploymentContainer(
+                                deployment_id=new_dep_id,
+                                container_id=dc.container_id,  # Short container ID, no host prefix
+                                service_name=dc.service_name,
+                                created_at=dc.created_at
+                            )
+                            session.add(new_dc)
+                            session.delete(dc)
 
                         session.delete(dep)
                         transferred_count += 1
@@ -1167,8 +1169,8 @@ class AgentManager:
                     if old_host_id in self.monitor.clients:
                         try:
                             self.monitor.clients[old_host_id].close()
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Error closing old client for {old_host_id}: {e}")
                         del self.monitor.clients[old_host_id]
 
                 return {

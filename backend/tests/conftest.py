@@ -600,7 +600,7 @@ def test_deployment(test_db: Session, test_host, test_user):
     """
     Create a test Deployment in the database.
 
-    For v2.1 deployment feature testing.
+    For v2.2.7+ deployment feature testing.
     Uses composite key format: {host_id}:{deployment_id}
 
     Returns:
@@ -616,10 +616,8 @@ def test_deployment(test_db: Session, test_host, test_user):
         id=composite_key,
         host_id=test_host.id,
         user_id=test_user.id,  # FK to users table
-        deployment_type='container',
-        name='test-nginx',
+        stack_name='test-nginx',  # v2.2.7+: renamed from 'name'
         status='planning',  # Valid status per CHECK constraint
-        definition='{"container": {"image": "nginx:alpine", "ports": {"80/tcp": 8080}}}',
         progress_percent=0,
         current_stage='Initializing',
         created_at=datetime.now(timezone.utc),
@@ -659,51 +657,11 @@ def test_deployment_container(test_db: Session, test_deployment, test_container_
 
 
 @pytest.fixture
-def test_deployment_template(test_db: Session):
-    """
-    Create a test deployment template.
-
-    Templates store pre-configured deployments for common applications.
-
-    Returns:
-        DeploymentTemplate: Test template instance
-    """
-    from database import DeploymentTemplate
-    import json
-
-    template = DeploymentTemplate(
-        id='tpl_test_nginx',
-        name='test-nginx-template',
-        category='web',
-        description='Test Nginx template for testing',
-        deployment_type='container',
-        template_definition=json.dumps({
-            'container': {
-                'image': 'nginx:${VERSION}',
-                'ports': {'80/tcp': '${PORT}'}
-            }
-        }),
-        variables=json.dumps({
-            'VERSION': {'default': 'latest', 'type': 'string', 'description': 'Nginx version'},
-            'PORT': {'default': 8080, 'type': 'integer', 'description': 'Host port'}
-        }),
-        is_builtin=True,
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc)
-    )
-    test_db.add(template)
-    test_db.commit()
-    test_db.refresh(template)
-
-    return template
-
-
-@pytest.fixture
 def test_stack_deployment(test_db: Session, test_host, test_user):
     """
     Create a test stack deployment (multi-container).
 
-    For testing Docker Compose stack deployments.
+    For testing Docker Compose stack deployments (v2.2.7+).
 
     Returns:
         Deployment: Test stack deployment instance
@@ -717,10 +675,8 @@ def test_stack_deployment(test_db: Session, test_host, test_user):
         id=composite_key,
         host_id=test_host.id,
         user_id=test_user.id,  # FK to users table
-        deployment_type='stack',
-        name='wordpress-stack',
+        stack_name='wordpress-stack',  # v2.2.7+: renamed from 'name'
         status='running',
-        definition='{"stack": {"compose_file_path": "/app/data/stacks/wordpress/docker-compose.yml"}}',
         progress_percent=100,
         current_stage='Running',
         created_at=datetime.now(timezone.utc),

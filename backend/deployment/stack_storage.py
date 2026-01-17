@@ -21,6 +21,10 @@ logger = logging.getLogger(__name__)
 
 STACKS_DIR = Path(os.environ.get('STACKS_DIR', '/app/data/stacks'))
 
+# Valid compose filenames (in priority order)
+# We write as compose.yaml but read any of these for compatibility
+COMPOSE_FILENAMES = ("compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml")
+
 # Valid stack name pattern: lowercase alphanumeric, hyphens, underscores
 # Must start with alphanumeric
 VALID_NAME_PATTERN = re.compile(r'^[a-z0-9][a-z0-9_-]*$')
@@ -132,6 +136,26 @@ def get_stack_path(name: str) -> Path:
     return path
 
 
+def find_compose_file(stack_path: Path) -> Optional[Path]:
+    """
+    Find compose file in stack directory.
+
+    Checks for compose.yaml, compose.yml, docker-compose.yaml, docker-compose.yml
+    in priority order.
+
+    Args:
+        stack_path: Path to stack directory
+
+    Returns:
+        Path to compose file if found, None otherwise
+    """
+    for filename in COMPOSE_FILENAMES:
+        compose_path = stack_path / filename
+        if compose_path.exists():
+            return compose_path
+    return None
+
+
 async def stack_exists(name: str) -> bool:
     """
     Check if stack exists on filesystem.
@@ -142,12 +166,12 @@ async def stack_exists(name: str) -> bool:
         name: Stack name
 
     Returns:
-        True if stack directory contains compose.yaml
+        True if stack directory contains a compose file
     """
     def _check():
         try:
             path = get_stack_path(name)
-            return (path / "compose.yaml").exists()
+            return find_compose_file(path) is not None
         except ValueError:
             return False
 
@@ -174,7 +198,7 @@ async def find_stack_by_name(name: str) -> Optional[str]:
         name_lower = name.lower()
         for d in STACKS_DIR.iterdir():
             if d.is_dir() and d.name.lower() == name_lower:
-                if (d / "compose.yaml").exists():
+                if find_compose_file(d) is not None:
                     return d.name
         return None
 
@@ -183,7 +207,9 @@ async def find_stack_by_name(name: str) -> Optional[str]:
 
 async def read_stack(name: str) -> Tuple[str, Optional[str]]:
     """
-    Read compose.yaml and .env for a stack.
+    Read compose file and .env for a stack.
+
+    Supports compose.yaml, compose.yml, docker-compose.yaml, docker-compose.yml.
 
     Args:
         name: Stack name
@@ -192,20 +218,21 @@ async def read_stack(name: str) -> Tuple[str, Optional[str]]:
         Tuple of (compose_yaml, env_content or None)
 
     Raises:
-        FileNotFoundError: If stack doesn't exist (missing compose.yaml)
+        FileNotFoundError: If stack doesn't exist (no compose file found)
     """
     stack_path = get_stack_path(name)
-    compose_path = stack_path / "compose.yaml"
     env_path = stack_path / ".env"
 
     # Check existence async (for NFS compatibility)
-    def _check_exists():
-        return compose_path.exists(), env_path.exists()
+    def _find_files():
+        compose_path = find_compose_file(stack_path)
+        env_exists = env_path.exists()
+        return compose_path, env_exists
 
-    compose_exists, env_exists = await asyncio.to_thread(_check_exists)
+    compose_path, env_exists = await asyncio.to_thread(_find_files)
 
-    if not compose_exists:
-        raise FileNotFoundError(f"Stack '{name}' not found (missing compose.yaml)")
+    if compose_path is None:
+        raise FileNotFoundError(f"Stack '{name}' not found (no compose file)")
 
     async with aiofiles.open(compose_path, 'r') as f:
         compose_yaml = await f.read()
@@ -362,14 +389,14 @@ async def list_stacks() -> List[str]:
     Async for NFS compatibility.
 
     Returns:
-        Sorted list of stack names (directories containing compose.yaml)
+        Sorted list of stack names (directories containing a compose file)
     """
     def _list():
         if not STACKS_DIR.exists():
             return []
         return sorted([
             d.name for d in STACKS_DIR.iterdir()
-            if d.is_dir() and (d / "compose.yaml").exists()
+            if d.is_dir() and find_compose_file(d) is not None
         ])
 
     return await asyncio.to_thread(_list)

@@ -22,6 +22,7 @@ import (
 	"github.com/docker/docker/api/types/registry"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/jsonmessage"
+	"github.com/docker/go-connections/tlsconfig"
 	"github.com/sirupsen/logrus"
 )
 
@@ -108,29 +109,58 @@ func (s *Service) Teardown(ctx context.Context, req DeployRequest) *DeployResult
 // createComposeService creates a new compose service connected to Docker.
 // If registry credentials are provided, they are configured on the CLI
 // so that compose can authenticate when pulling images from private registries.
-func (s *Service) createComposeService(ctx context.Context, credentials []RegistryCredential) (api.Compose, *dockercli.DockerCli, error) {
+// For remote Docker hosts, TLS certs are written to temp files (cleaned up by caller).
+func (s *Service) createComposeService(ctx context.Context, req DeployRequest) (api.Compose, *dockercli.DockerCli, *TLSFiles, error) {
 	cli, err := dockercli.NewDockerCli(
 		dockercli.WithOutputStream(os.Stdout),
 		dockercli.WithErrorStream(os.Stderr),
 	)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create Docker CLI: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to create Docker CLI: %w", err)
 	}
 
 	opts := flags.NewClientOptions()
+
+	// Configure remote Docker host if specified
+	var tlsFiles *TLSFiles
+	if req.DockerHost != "" {
+		opts.Hosts = []string{req.DockerHost}
+
+		// Configure TLS if certificates provided
+		if req.TLSCACert != "" || req.TLSCert != "" || req.TLSKey != "" {
+			tlsFiles, err = WriteTLSFiles(req.TLSCACert, req.TLSCert, req.TLSKey)
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("failed to write TLS files: %w", err)
+			}
+
+			opts.TLS = true
+			opts.TLSVerify = true
+			opts.TLSOptions = &tlsconfig.Options{
+				CAFile:   tlsFiles.CAFile,
+				CertFile: tlsFiles.CertFile,
+				KeyFile:  tlsFiles.KeyFile,
+			}
+		}
+
+		s.logInfo("Configuring remote Docker host", logrus.Fields{"host": req.DockerHost})
+	}
+
 	if err := cli.Initialize(opts); err != nil {
-		return nil, nil, fmt.Errorf("failed to initialize Docker CLI: %w", err)
+		if tlsFiles != nil {
+			tlsFiles.Cleanup(s.log)
+		}
+		return nil, nil, nil, fmt.Errorf("failed to initialize Docker CLI: %w", err)
 	}
 
 	// Configure registry credentials on the CLI's in-memory config.
 	// This allows compose to authenticate when pulling images from private registries.
-	if len(credentials) > 0 {
+	if len(req.RegistryCredentials) > 0 {
 		configFile := cli.ConfigFile()
 		if configFile.AuthConfigs == nil {
 			configFile.AuthConfigs = make(map[string]clitypes.AuthConfig)
 		}
 
-		for _, cred := range credentials {
+		for _, cred := range req.RegistryCredentials {
 			serverAddr := cred.RegistryURL
 			// Normalize Docker Hub addresses
 			if serverAddr == "" || serverAddr == "docker.io" {
@@ -148,11 +178,11 @@ func (s *Service) createComposeService(ctx context.Context, credentials []Regist
 		// Disable external credential stores to ensure our in-memory credentials are used.
 		configFile.CredentialsStore = ""
 
-		s.logInfo("Registry credentials configured for compose", logrus.Fields{"count": len(credentials)})
+		s.logInfo("Registry credentials configured for compose", logrus.Fields{"count": len(req.RegistryCredentials)})
 	}
 
 	composeService := compose.NewComposeService(cli)
-	return composeService, cli, nil
+	return composeService, cli, tlsFiles, nil
 }
 
 // loadProject loads a compose project from file content
@@ -193,12 +223,13 @@ func (s *Service) runComposeUp(ctx context.Context, req DeployRequest, composeFi
 		Message:  "Parsing compose file...",
 	})
 
-	// Create compose service with registry credentials for private image pulls
-	composeService, cli, err := s.createComposeService(ctx, req.RegistryCredentials)
+	// Create compose service with Docker connection and registry credentials
+	composeService, cli, tlsFiles, err := s.createComposeService(ctx, req)
 	if err != nil {
 		return s.failResult(req.DeploymentID, fmt.Sprintf("Failed to create compose service: %v", err))
 	}
 	defer cli.Client().Close()
+	defer tlsFiles.Cleanup(s.log)
 
 	// Load project
 	project, err := s.loadProject(ctx, composeFile, req.ProjectName, req.Environment, req.Profiles)
@@ -419,12 +450,13 @@ func (s *Service) runComposeDown(ctx context.Context, req DeployRequest, compose
 		Message:  fmt.Sprintf("Stopping stack: %s", req.ProjectName),
 	})
 
-	// Create compose service
-	composeService, cli, err := s.createComposeService(ctx, req.RegistryCredentials)
+	// Create compose service with Docker connection
+	composeService, cli, tlsFiles, err := s.createComposeService(ctx, req)
 	if err != nil {
 		return s.failResult(req.DeploymentID, fmt.Sprintf("Failed to create compose service: %v", err))
 	}
 	defer cli.Client().Close()
+	defer tlsFiles.Cleanup(s.log)
 
 	// Execute down
 	downOpts := api.DownOptions{

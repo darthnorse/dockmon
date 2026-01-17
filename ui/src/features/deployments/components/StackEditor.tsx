@@ -148,6 +148,12 @@ export function StackEditor({
     [hosts]
   )
 
+  // Check if selected host already has this stack deployed
+  const isRedeploy = useMemo(
+    () => hostId && deployedTo?.some((h) => h.host_id === hostId),
+    [hostId, deployedTo]
+  )
+
   // Reset form state
   const resetForm = useCallback(() => {
     setStackName('')
@@ -598,7 +604,7 @@ export function StackEditor({
                 className="gap-2"
               >
                 <Rocket className="h-4 w-4" />
-                Deploy
+                {isRedeploy ? 'Redeploy' : 'Deploy'}
               </Button>
             </div>
           </div>

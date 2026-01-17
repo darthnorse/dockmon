@@ -54,6 +54,8 @@ function getStatusDisplay(status: string): { label: string; type: 'info' | 'succ
   switch (status) {
     case 'pending':
       return { label: 'Pending...', type: 'info' }
+    case 'in_progress':
+      return { label: 'In Progress...', type: 'info' }
     case 'pulling_image':
       return { label: 'Pulling images...', type: 'info' }
     case 'creating':

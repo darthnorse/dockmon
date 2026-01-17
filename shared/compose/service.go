@@ -419,7 +419,7 @@ func (s *Service) runComposeUp(ctx context.Context, req DeployRequest, composeFi
 		// Build success message with running service count
 		runningCount := 0
 		for _, svc := range result.Services {
-			if svc.Status == "running" {
+			if IsServiceResultHealthy(svc) {
 				runningCount++
 			}
 		}

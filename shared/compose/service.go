@@ -1,11 +1,15 @@
 package compose
 
 import (
+	"bufio"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/compose-spec/compose-go/v2/cli"
 	"github.com/compose-spec/compose-go/v2/types"
@@ -14,7 +18,10 @@ import (
 	"github.com/docker/cli/cli/flags"
 	"github.com/docker/compose/v2/pkg/api"
 	"github.com/docker/compose/v2/pkg/compose"
+	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/registry"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/jsonmessage"
 	"github.com/sirupsen/logrus"
 )
 
@@ -102,7 +109,10 @@ func (s *Service) Teardown(ctx context.Context, req DeployRequest) *DeployResult
 // If registry credentials are provided, they are configured on the CLI
 // so that compose can authenticate when pulling images from private registries.
 func (s *Service) createComposeService(ctx context.Context, credentials []RegistryCredential) (api.Compose, *dockercli.DockerCli, error) {
-	cli, err := dockercli.NewDockerCli()
+	cli, err := dockercli.NewDockerCli(
+		dockercli.WithOutputStream(os.Stdout),
+		dockercli.WithErrorStream(os.Stderr),
+	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create Docker CLI: %w", err)
 	}
@@ -242,13 +252,10 @@ func (s *Service) runComposeUp(ctx context.Context, req DeployRequest, composeFi
 			Message:  pullMsg,
 		})
 
-		pullOpts := api.PullOptions{
-			IgnoreFailures: false,
-		}
-		if err := composeService.Pull(ctx, project, pullOpts); err != nil {
+		// Use Docker SDK directly for image pulls to get layer-level progress
+		if err := s.pullImagesWithProgress(ctx, imageNames, req.RegistryCredentials); err != nil {
 			s.logError("Image pull failed", err)
-			// Include which images we were trying to pull in the error
-			return s.failResult(req.DeploymentID, fmt.Sprintf("Image pull failed for %s: %v", strings.Join(imageNames, ", "), err))
+			return s.failResult(req.DeploymentID, fmt.Sprintf("Image pull failed: %v", err))
 		}
 		s.sendProgress(ProgressEvent{
 			Stage:    StagePullingImage,
@@ -449,6 +456,182 @@ func (s *Service) runComposeDown(ctx context.Context, req DeployRequest, compose
 		Success:      true,
 		Services:     make(map[string]ServiceResult),
 	}
+}
+
+// pullImagesWithProgress pulls images using the Docker SDK with progress streaming.
+// This provides layer-level progress that compose's Pull() doesn't expose.
+func (s *Service) pullImagesWithProgress(ctx context.Context, images []string, credentials []RegistryCredential) error {
+	// Build auth map for quick lookup
+	authMap := make(map[string]string)
+	for _, cred := range credentials {
+		// Encode auth as base64 JSON (Docker's expected format)
+		authConfig := registry.AuthConfig{
+			Username:      cred.Username,
+			Password:      cred.Password,
+			ServerAddress: cred.RegistryURL,
+		}
+		authJSON, err := json.Marshal(authConfig)
+		if err != nil {
+			s.logWarn(fmt.Sprintf("Failed to encode auth for registry %s: %v", cred.RegistryURL, err))
+			continue
+		}
+
+		encoded := base64.URLEncoding.EncodeToString(authJSON)
+
+		// Handle Docker Hub variations (empty string or docker.io)
+		if cred.RegistryURL == "" || cred.RegistryURL == "docker.io" {
+			authMap["docker.io"] = encoded
+			authMap["index.docker.io"] = encoded
+			authMap["https://index.docker.io/v1/"] = encoded
+		} else {
+			authMap[cred.RegistryURL] = encoded
+		}
+	}
+
+	for _, imageName := range images {
+		// Skip empty image names
+		if imageName == "" {
+			continue
+		}
+
+		// Pull single image with progress, using closure for proper defer cleanup
+		if err := s.pullSingleImage(ctx, imageName, authMap); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// pullSingleImage pulls a single image with progress streaming.
+// Separated into its own function to ensure proper defer cleanup of the reader.
+func (s *Service) pullSingleImage(ctx context.Context, imageName string, authMap map[string]string) error {
+	s.sendProgress(ProgressEvent{
+		Stage:   StagePullingImage,
+		Message: fmt.Sprintf("Pulling %s...", imageName),
+	})
+
+	// Determine auth for this image's registry
+	registryAuth := ""
+	// Extract registry from image name (e.g., "ghcr.io/user/image" -> "ghcr.io")
+	// Images without a dot in the first path segment are Docker Hub images
+	parts := strings.SplitN(imageName, "/", 2)
+	if len(parts) > 1 && strings.Contains(parts[0], ".") {
+		// Has explicit registry (e.g., ghcr.io, gcr.io)
+		if auth, ok := authMap[parts[0]]; ok {
+			registryAuth = auth
+		}
+	} else {
+		// Docker Hub (e.g., nginx, library/nginx, myuser/myimage)
+		if auth, ok := authMap["docker.io"]; ok {
+			registryAuth = auth
+		}
+	}
+
+	pullOpts := image.PullOptions{
+		RegistryAuth: registryAuth,
+	}
+
+	reader, err := s.dockerClient.ImagePull(ctx, imageName, pullOpts)
+	if err != nil {
+		return fmt.Errorf("failed to pull %s: %w", imageName, err)
+	}
+	defer reader.Close()
+
+	// Use bufio.Scanner with explicit buffer sizing for robustness with large JSON responses
+	scanner := bufio.NewScanner(reader)
+	buf := make([]byte, 64*1024)       // 64KB initial buffer
+	scanner.Buffer(buf, 1024*1024)     // 1MB max buffer
+
+	// Throttle progress broadcasts to avoid flooding the channel
+	var lastBroadcast time.Time
+	const throttleInterval = 250 * time.Millisecond
+	const layerIDDisplayLen = 8
+
+	for scanner.Scan() {
+		// Check for context cancellation
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		var msg jsonmessage.JSONMessage
+		if err := json.Unmarshal(line, &msg); err != nil {
+			// Non-fatal decode errors, continue
+			continue
+		}
+
+		// Check for errors in the message
+		if msg.Error != nil {
+			return fmt.Errorf("pull error for %s: %s", imageName, msg.Error.Message)
+		}
+
+		// Determine if this is a completion event (always send immediately)
+		isCompletion := msg.Status == "Pull complete" ||
+			msg.Status == "Already exists" ||
+			strings.HasPrefix(msg.Status, "Digest:") ||
+			strings.HasPrefix(msg.Status, "Status:")
+
+		// Throttle non-completion events
+		now := time.Now()
+		shouldSend := isCompletion || now.Sub(lastBroadcast) >= throttleInterval
+
+		if !shouldSend || msg.Status == "" {
+			continue
+		}
+
+		// Build progress message
+		var progressMsg string
+		idPrefix := msg.ID
+		if len(idPrefix) > layerIDDisplayLen {
+			idPrefix = idPrefix[:layerIDDisplayLen]
+		}
+
+		switch {
+		case strings.HasPrefix(msg.Status, "Pulling"):
+			progressMsg = fmt.Sprintf("%s: %s", imageName, msg.Status)
+		case strings.Contains(msg.Status, "Downloading"):
+			if msg.ID != "" {
+				progressMsg = fmt.Sprintf("Downloading %s: %s", idPrefix, msg.Progress)
+			}
+		case strings.Contains(msg.Status, "Extracting"):
+			if msg.ID != "" {
+				progressMsg = fmt.Sprintf("Extracting %s: %s", idPrefix, msg.Progress)
+			}
+		case msg.Status == "Pull complete" || msg.Status == "Already exists":
+			if msg.ID != "" {
+				progressMsg = fmt.Sprintf("Layer %s: %s", idPrefix, msg.Status)
+			}
+		case strings.HasPrefix(msg.Status, "Digest:") || strings.HasPrefix(msg.Status, "Status:"):
+			progressMsg = msg.Status
+		}
+
+		if progressMsg != "" {
+			s.sendProgress(ProgressEvent{
+				Stage:   StagePullingImage,
+				Message: progressMsg,
+			})
+			lastBroadcast = now
+		}
+	}
+
+	// Check for scanner errors (e.g., connection drop, read errors)
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("error reading pull stream for %s: %w", imageName, err)
+	}
+
+	s.sendProgress(ProgressEvent{
+		Stage:   StagePullingImage,
+		Message: fmt.Sprintf("Pulled %s", imageName),
+	})
+
+	return nil
 }
 
 // failResult creates a failure result

@@ -373,33 +373,13 @@ async def deploy_stack(
                     health_timeout=120,
                 )
 
+                # Note: Don't broadcast completion here - the agent sends deploy_complete
+                # which is handled by handle_deploy_complete and broadcasts to WebSocket
                 if success:
-                    await broadcast_event({
-                        'type': 'deployment_completed',
-                        'deployment_id': deployment_id,
-                        'host_id': request.host_id,
-                        'name': request.stack_name,
-                        'status': 'running',
-                        'progress': {
-                            'overall_percent': 100,
-                            'stage': 'Deployment complete',
-                        },
-                    })
-                    logger.info(f"Stack '{request.stack_name}' deployed to '{host_name}' via agent")
+                    logger.info(f"Stack '{request.stack_name}' deployment command accepted by agent for '{host_name}'")
                 else:
-                    await broadcast_event({
-                        'type': 'deployment_failed',
-                        'deployment_id': deployment_id,
-                        'host_id': request.host_id,
-                        'name': request.stack_name,
-                        'status': 'failed',
-                        'error': 'Deployment failed - check agent logs for details',
-                        'progress': {
-                            'overall_percent': 0,
-                            'stage': 'Failed',
-                        },
-                    })
-                    logger.error(f"Stack deployment to agent failed")
+                    # Agent executor already broadcasts failure via handle_deploy_complete
+                    logger.error(f"Stack deployment to agent failed for '{host_name}'")
 
             except Exception as e:
                 await broadcast_event({

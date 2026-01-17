@@ -5131,3 +5131,287 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
         # Clean up rate limiter tracking
         ws_rate_limiter.cleanup_connection(connection_id)
         logger.debug(f"WebSocket cleanup completed for {connection_id}")
+
+
+@app.websocket("/ws/shell/{host_id}/{container_id}")
+async def websocket_shell_endpoint(
+    websocket: WebSocket,
+    host_id: str,
+    container_id: str,
+    session_id: Optional[str] = Cookie(None)
+):
+    """
+    WebSocket endpoint for interactive container shell access.
+
+    Provides bidirectional communication for terminal I/O using Docker exec API.
+    Supports both direct Docker connections and agent-based hosts.
+
+    Path Parameters:
+        host_id: Docker host ID
+        container_id: Container ID to exec into
+
+    WebSocket Messages:
+        - Binary data: Terminal input/output
+        - JSON text: Control messages (e.g., {"type": "resize", "cols": 80, "rows": 24})
+    """
+    # Authenticate before accepting connection
+    if not session_id:
+        logger.warning("Shell WebSocket connection attempted without session cookie")
+        await websocket.close(code=1008, reason="Authentication required")
+        return
+
+    # Validate session using v2 auth
+    from auth.cookie_sessions import cookie_session_manager
+    client_ip = websocket.client.host if websocket.client else "unknown"
+    session_data = cookie_session_manager.validate_session(session_id, client_ip)
+
+    if not session_data:
+        logger.warning(f"Shell WebSocket connection with invalid session from {client_ip}")
+        await websocket.close(code=1008, reason="Invalid or expired session")
+        return
+
+    # Validate host exists
+    host = monitor.hosts.get(host_id)
+    if not host:
+        await websocket.close(code=1008, reason="Host not found")
+        return
+
+    # Route based on connection type
+    if host.connection_type == 'agent':
+        # Agent-based host: route through agent WebSocket
+        await _handle_agent_shell_session(websocket, host_id, container_id, session_data)
+    else:
+        # Local/Remote host: direct Docker connection
+        await _handle_direct_shell_session(websocket, host_id, container_id, session_data)
+
+
+async def _handle_agent_shell_session(
+    websocket: WebSocket,
+    host_id: str,
+    container_id: str,
+    session_data: dict
+):
+    """Handle shell session through agent WebSocket."""
+    from agent.shell_manager import get_shell_manager
+    from agent.connection_manager import agent_connection_manager
+    from database import DatabaseManager, Agent
+
+    # Normalize container ID to 12 chars early
+    container_id = normalize_container_id(container_id)
+
+    # Get agent ID for this host
+    db_manager = DatabaseManager()
+    agent_id = None
+    with db_manager.get_session() as session:
+        agent = session.query(Agent).filter_by(host_id=host_id).first()
+        if agent:
+            agent_id = agent.id
+
+    if not agent_id:
+        await websocket.close(code=1008, reason="Agent not found for host")
+        return
+
+    # Check agent is connected
+    if not agent_connection_manager.is_connected(agent_id):
+        await websocket.close(code=1008, reason="Agent not connected")
+        return
+
+    # Accept WebSocket connection
+    await websocket.accept()
+    logger.info(f"Shell session (via agent) started for container {container_id[:12]} by user {session_data.get('username')}")
+
+    shell_manager = get_shell_manager()
+    shell_session_id = None
+
+    try:
+        # Start shell session through agent
+        shell_session_id = await shell_manager.start_session(
+            host_id=host_id,
+            container_id=container_id,
+            agent_id=agent_id,
+            websocket=websocket
+        )
+
+        # Message loop - forward browser input to agent
+        while True:
+            message = await websocket.receive()
+
+            if message['type'] == 'websocket.disconnect':
+                break
+
+            if 'bytes' in message:
+                # Terminal input - forward to agent
+                await shell_manager.handle_browser_input(shell_session_id, message['bytes'])
+            elif 'text' in message:
+                # Control message (resize)
+                try:
+                    data = json.loads(message['text'])
+                    if data.get('type') == 'resize':
+                        await shell_manager.handle_resize(
+                            shell_session_id,
+                            data.get('cols', 80),
+                            data.get('rows', 24)
+                        )
+                except json.JSONDecodeError:
+                    pass
+
+    except WebSocketDisconnect:
+        logger.info(f"Shell session disconnected for container {container_id[:12]}")
+    except Exception as e:
+        logger.error(f"Shell session error for container {container_id[:12]}: {e}", exc_info=True)
+        try:
+            await websocket.close(code=1011, reason="Shell session error")
+        except Exception:
+            pass
+    finally:
+        if shell_session_id:
+            await shell_manager.close_session(shell_session_id)
+        logger.info(f"Shell session (via agent) ended for container {container_id[:12]}")
+
+
+async def _handle_direct_shell_session(
+    websocket: WebSocket,
+    host_id: str,
+    container_id: str,
+    session_data: dict
+):
+    """Handle shell session via direct Docker connection."""
+    # Normalize container ID to 12 chars early
+    container_id = normalize_container_id(container_id)
+
+    # Get Docker client for the host
+    client = monitor.clients.get(host_id)
+    if not client:
+        await websocket.close(code=1008, reason="Host not connected")
+        return
+
+    # Validate container exists and is running
+    try:
+        container = await async_docker_call(client.containers.get, container_id)
+        if container.status != 'running':
+            await websocket.close(code=1008, reason="Container is not running")
+            return
+    except docker.errors.NotFound:
+        await websocket.close(code=1008, reason="Container not found")
+        return
+    except Exception as e:
+        logger.error(f"Error accessing container {container_id}: {e}")
+        await websocket.close(code=1011, reason="Failed to access container")
+        return
+
+    # Accept WebSocket connection
+    await websocket.accept()
+    logger.info(f"Shell session started for container {container_id[:12]} by user {session_data.get('username')}")
+
+    exec_id = None
+    docker_socket = None
+
+    try:
+        # Create exec instance
+        exec_instance = await async_docker_call(
+            client.api.exec_create,
+            container.id,
+            cmd=['/bin/sh', '-c', 'if command -v bash >/dev/null 2>&1; then exec bash; else exec sh; fi'],
+            stdin=True,
+            stdout=True,
+            stderr=True,
+            tty=True,
+            environment={"TERM": "xterm-256color"}
+        )
+        exec_id = exec_instance['Id']
+
+        # Start exec with socket
+        docker_socket = await async_docker_call(
+            client.api.exec_start,
+            exec_id,
+            socket=True,
+            tty=True
+        )
+
+        # Get the underlying socket
+        sock = docker_socket._sock
+
+        # Set socket timeout to prevent blocking forever if Docker hangs
+        # 10 minutes allows for long idle sessions without disconnecting
+        sock.settimeout(600.0)
+
+        async def read_from_docker():
+            """Read from Docker socket and send to WebSocket"""
+            loop = asyncio.get_running_loop()
+            try:
+                while True:
+                    # Read from Docker socket in thread pool
+                    data = await loop.run_in_executor(None, sock.recv, 4096)
+                    if not data:
+                        break
+                    await websocket.send_bytes(data)
+            except Exception as e:
+                logger.debug(f"Docker read ended: {e}")
+
+        async def write_to_docker():
+            """Read from WebSocket and write to Docker socket"""
+            loop = asyncio.get_running_loop()
+            try:
+                while True:
+                    message = await websocket.receive()
+
+                    if message['type'] == 'websocket.disconnect':
+                        break
+
+                    if 'bytes' in message:
+                        # Terminal input - send to Docker
+                        await loop.run_in_executor(None, sock.sendall, message['bytes'])
+                    elif 'text' in message:
+                        # Control message (resize)
+                        try:
+                            data = json.loads(message['text'])
+                            if data.get('type') == 'resize':
+                                cols = data.get('cols', 80)
+                                rows = data.get('rows', 24)
+                                await async_docker_call(
+                                    client.api.exec_resize,
+                                    exec_id,
+                                    height=rows,
+                                    width=cols
+                                )
+                        except json.JSONDecodeError:
+                            pass
+            except WebSocketDisconnect:
+                logger.debug("WebSocket disconnected")
+            except Exception as e:
+                logger.debug(f"WebSocket write ended: {e}")
+
+        # Run both tasks concurrently
+        read_task = asyncio.create_task(read_from_docker())
+        write_task = asyncio.create_task(write_to_docker())
+
+        # Wait for either task to complete (connection closed)
+        done, pending = await asyncio.wait(
+            [read_task, write_task],
+            return_when=asyncio.FIRST_COMPLETED
+        )
+
+        # Cancel remaining tasks
+        for task in pending:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    except WebSocketDisconnect:
+        logger.info(f"Shell session disconnected for container {container_id[:12]}")
+    except Exception as e:
+        logger.error(f"Shell session error for container {container_id[:12]}: {e}", exc_info=True)
+        try:
+            await websocket.close(code=1011, reason="Shell session error")
+        except Exception:
+            pass
+    finally:
+        # Cleanup
+        if docker_socket:
+            try:
+                docker_socket.close()
+            except Exception:
+                pass
+        logger.info(f"Shell session ended for container {container_id[:12]}")

@@ -29,6 +29,7 @@ import { ContainerModalLogsTab } from './modal-tabs/ContainerModalLogsTab'
 import { ContainerModalAlertsTab } from './modal-tabs/ContainerModalAlertsTab'
 import { ContainerUpdatesTab } from './modal-tabs/ContainerUpdatesTab'
 import { ContainerHealthCheckTab } from './modal-tabs/ContainerHealthCheckTab'
+import { ContainerShellTab } from './modal-tabs/ContainerShellTab'
 import { DeleteContainerDialog } from './DeleteContainerDialog'
 
 export interface ContainerDetailsModalProps {
@@ -269,6 +270,11 @@ export function ContainerDetailsModal({
       id: 'logs',
       label: 'Logs',
       content: <ContainerModalLogsTab hostId={container.host_id!} containerId={container.id} containerName={container.name} />,
+    },
+    {
+      id: 'shell',
+      label: 'Shell',
+      content: <ContainerShellTab hostId={container.host_id!} containerId={container.id} containerName={container.name} isRunning={isRunning} />,
     },
     {
       id: 'events',

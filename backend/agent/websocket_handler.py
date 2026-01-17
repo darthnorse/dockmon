@@ -191,6 +191,14 @@ class AgentWebSocketHandler:
                 except Exception as e:
                     logger.warning(f"Failed to emit HOST_DISCONNECTED event: {e}")
 
+            # Close any shell sessions for this agent
+            if self.agent_id:
+                try:
+                    from agent.shell_manager import get_shell_manager
+                    await get_shell_manager().close_sessions_for_agent(self.agent_id)
+                except Exception as e:
+                    logger.warning(f"Error closing shell sessions for agent: {e}")
+
             # Clean up connection
             if self.agent_id:
                 await agent_connection_manager.unregister_connection(
@@ -435,6 +443,11 @@ class AgentWebSocketHandler:
                 # Compose deployment completed - contains container IDs
                 # Must update database with deployed containers
                 await self._handle_deploy_complete(payload)
+
+            elif event_type == "shell_data":
+                # Shell session data from agent
+                # Forward to browser via shell manager
+                await self._handle_shell_data(payload)
 
             else:
                 logger.warning(f"Unknown event type from agent {self.agent_id}: {event_type}")
@@ -1134,6 +1147,30 @@ class AgentWebSocketHandler:
 
         except Exception as e:
             logger.error(f"Error handling deploy progress: {e}", exc_info=True)
+
+    async def _handle_shell_data(self, payload: dict):
+        """
+        Handle shell data event from agent.
+
+        Forwards shell output to browser WebSocket via shell manager.
+        """
+        try:
+            from agent.shell_manager import get_shell_manager
+
+            session_id = payload.get("session_id")
+            action = payload.get("action")
+            data = payload.get("data")
+            error = payload.get("error")
+
+            if not session_id:
+                logger.warning(f"Shell data missing session_id from agent {self.agent_id}")
+                return
+
+            shell_manager = get_shell_manager()
+            await shell_manager.handle_shell_data(session_id, action, data, error)
+
+        except Exception as e:
+            logger.error(f"Error handling shell data from agent {self.agent_id}: {e}", exc_info=True)
 
     async def _handle_deploy_complete(self, payload: dict):
         """

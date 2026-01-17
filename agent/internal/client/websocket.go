@@ -41,6 +41,7 @@ type WebSocketClient struct {
 	healthCheckHandler *handlers.HealthCheckHandler
 	deployHandler      *handlers.DeployHandler
 	scanHandler        *handlers.ScanHandler
+	shellHandler       *handlers.ShellHandler
 
 	stopChan      chan struct{}
 	doneChan      chan struct{}
@@ -131,6 +132,10 @@ func NewWebSocketClient(
 	// Initialize scan handler for directory scanning
 	client.scanHandler = handlers.NewScanHandler(log, client.sendEvent)
 	log.Info("Scan handler initialized")
+
+	// Initialize shell handler for interactive container shell access
+	client.shellHandler = handlers.NewShellHandler(dockerClient, log, client.sendEvent)
+	log.Info("Shell handler initialized")
 
 	return client, nil
 }
@@ -316,6 +321,7 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 			"stats_collection":     true,
 			"self_update":          c.myContainerID != "",
 			"compose_deployments":  c.deployHandler != nil,
+			"shell_access":         true,
 		},
 	}
 
@@ -552,6 +558,9 @@ func (c *WebSocketClient) handleConnection(ctx context.Context) error {
 		c.healthCheckHandler.Stop()
 		c.log.Info("Connection cleanup: health checks stopped")
 
+		c.shellHandler.CloseAll()
+		c.log.Info("Connection cleanup: shell sessions closed")
+
 		// Wait for message handlers first - they may call backgroundWg.Add()
 		// This prevents the race: backgroundWg.Add() called after Wait() returns
 		c.log.Info("Connection cleanup: waiting for message handlers")
@@ -635,6 +644,12 @@ func (c *WebSocketClient) handleMessage(ctx context.Context, msg *types.Message)
 
 	if msg.Type == "health_check_config_remove" {
 		c.handleHealthCheckConfigRemove(msg)
+		return
+	}
+
+	// Handle shell session commands
+	if msg.Type == "shell_session" {
+		c.handleShellSession(ctx, msg)
 		return
 	}
 
@@ -1107,6 +1122,44 @@ func (c *WebSocketClient) parseHealthCheckConfig(data map[string]interface{}) *h
 	}
 
 	return config
+}
+
+// handleShellSession handles shell session commands from the backend
+func (c *WebSocketClient) handleShellSession(ctx context.Context, msg *types.Message) {
+	payload, ok := msg.Payload.(map[string]interface{})
+	if !ok {
+		c.log.Error("Invalid shell_session payload")
+		return
+	}
+
+	cmd := types.ShellSessionCommand{
+		Action:      getString(payload, "action"),
+		ContainerID: getString(payload, "container_id"),
+		SessionID:   getString(payload, "session_id"),
+		Data:        getString(payload, "data"),
+	}
+
+	if cols, ok := payload["cols"].(float64); ok {
+		cmd.Cols = int(cols)
+	}
+	if rows, ok := payload["rows"].(float64); ok {
+		cmd.Rows = int(rows)
+	}
+
+	c.log.WithFields(logrus.Fields{
+		"action":     cmd.Action,
+		"session_id": cmd.SessionID,
+	}).Debug("Handling shell session command")
+
+	c.shellHandler.HandleCommand(ctx, cmd)
+}
+
+// getString safely extracts a string from a map
+func getString(m map[string]interface{}, key string) string {
+	if v, ok := m[key].(string); ok {
+		return v
+	}
+	return ""
 }
 
 // closeConnection closes the WebSocket connection

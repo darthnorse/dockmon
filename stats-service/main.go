@@ -368,6 +368,7 @@ func main() {
 			TLSCert     string `json:"tls_cert,omitempty"`
 			TLSKey      string `json:"tls_key,omitempty"`
 			NumCPUs     int    `json:"num_cpus,omitempty"`
+			IsLocal     bool   `json:"is_local,omitempty"`
 		}
 
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -389,6 +390,11 @@ func main() {
 		// Store number of CPUs for host CPU aggregation
 		if req.NumCPUs > 0 {
 			cache.SetHostNumCPUs(req.HostID, req.NumCPUs)
+		}
+
+		// Mark host as local for /host/proc reading
+		if req.IsLocal {
+			cache.SetHostLocal(req.HostID, true)
 		}
 
 		w.WriteHeader(http.StatusOK)

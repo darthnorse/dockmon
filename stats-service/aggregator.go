@@ -13,14 +13,21 @@ type Aggregator struct {
 	cache             *StatsCache
 	streamManager     *StreamManager
 	aggregateInterval time.Duration
+	hostProcReader    *HostProcReader
 }
 
 // NewAggregator creates a new aggregator
 func NewAggregator(cache *StatsCache, streamManager *StreamManager, interval time.Duration) *Aggregator {
+	hostProcReader := NewHostProcReader()
+	if hostProcReader.IsAvailable() {
+		log.Println("Host /proc mounted at /host/proc - using actual host CPU/memory stats for local host")
+	}
+
 	return &Aggregator{
 		cache:             cache,
 		streamManager:     streamManager,
 		aggregateInterval: interval,
+		hostProcReader:    hostProcReader,
 	}
 }
 
@@ -68,20 +75,10 @@ func (a *Aggregator) aggregate() {
 
 // aggregateHostStats aggregates stats for a single host
 func (a *Aggregator) aggregateHostStats(hostID string, containers []*ContainerStats) *HostStats {
-	if len(containers) == 0 {
-		return &HostStats{
-			HostID:         hostID,
-			ContainerCount: 0,
-		}
-	}
-
 	var (
-		totalCPU         float64
-		totalMemUsage    uint64
-		totalMemLimit    uint64
-		totalNetRx       uint64
-		totalNetTx       uint64
-		validContainers  int
+		totalNetRx      uint64
+		totalNetTx      uint64
+		validContainers int
 	)
 
 	const maxUint64 = ^uint64(0)
@@ -89,14 +86,11 @@ func (a *Aggregator) aggregateHostStats(hostID string, containers []*ContainerSt
 	// Only count containers updated in the last 30 seconds
 	cutoff := time.Now().Add(-30 * time.Second)
 
+	// Always aggregate container stats for network and container count
 	for _, stats := range containers {
 		if stats.LastUpdate.Before(cutoff) {
 			continue // Skip stale stats
 		}
-
-		totalCPU += stats.CPUPercent
-		totalMemUsage += stats.MemoryUsage
-		totalMemLimit += stats.MemoryLimit
 
 		// Check for overflow before adding network bytes
 		if maxUint64-totalNetRx < stats.NetworkRx {
@@ -114,6 +108,51 @@ func (a *Aggregator) aggregateHostStats(hostID string, containers []*ContainerSt
 		}
 
 		validContainers++
+	}
+
+	// Check if we can use actual host stats from /host/proc (Issue #129)
+	// This provides accurate CPU/memory when /proc is mounted as /host/proc:ro
+	if a.cache.IsHostLocal(hostID) && a.hostProcReader.IsAvailable() {
+		hostProcStats, err := a.hostProcReader.GetStats()
+		if err == nil && hostProcStats != nil {
+			cpuPercent := dockerpkg.RoundToDecimal(hostProcStats.CPUPercent, 1)
+			memPercent := dockerpkg.RoundToDecimal(hostProcStats.MemoryPercent, 1)
+
+			return &HostStats{
+				HostID:           hostID,
+				CPUPercent:       cpuPercent,
+				MemoryPercent:    memPercent,
+				MemoryUsedBytes:  hostProcStats.MemoryUsedBytes,
+				MemoryLimitBytes: hostProcStats.MemoryTotalBytes,
+				NetworkRxBytes:   totalNetRx,
+				NetworkTxBytes:   totalNetTx,
+				ContainerCount:   validContainers,
+			}
+		}
+		// Fall through to container aggregation if /host/proc read failed
+	}
+
+	// Fallback: Aggregate CPU/memory from container stats
+	if len(containers) == 0 {
+		return &HostStats{
+			HostID:         hostID,
+			ContainerCount: 0,
+		}
+	}
+
+	var (
+		totalCPU      float64
+		totalMemUsage uint64
+		totalMemLimit uint64
+	)
+
+	for _, stats := range containers {
+		if stats.LastUpdate.Before(cutoff) {
+			continue
+		}
+		totalCPU += stats.CPUPercent
+		totalMemUsage += stats.MemoryUsage
+		totalMemLimit += stats.MemoryLimit
 	}
 
 	// Calculate totals and percentages

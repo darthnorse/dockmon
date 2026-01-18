@@ -9,10 +9,13 @@
  * - DeploymentForm (create/edit deployments)
  */
 
-import { useState, useImperativeHandle, forwardRef } from 'react'
+import { useState, useImperativeHandle, forwardRef, useCallback } from 'react'
 import { Wand2, CheckCircle2 } from 'lucide-react'
 import yaml from 'js-yaml'
-import { Textarea } from '@/components/ui/textarea'
+import CodeMirror from '@uiw/react-codemirror'
+import { yaml as yamlLang } from '@codemirror/lang-yaml'
+import { json as jsonLang } from '@codemirror/lang-json'
+import { githubDark } from '@uiw/codemirror-theme-github'
 import { Button } from '@/components/ui/button'
 
 interface ConfigurationEditorProps {
@@ -51,6 +54,11 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
 }, ref) => {
   const [formatStatus, setFormatStatus] = useState<'idle' | 'success' | 'error'>('idle')
   const [validationError, setValidationError] = useState<string | null>(null)
+
+  // Stable callback for CodeMirror onChange
+  const handleChange = useCallback((val: string) => {
+    onChange(val)
+  }, [onChange])
 
   /**
    * Validate content without formatting
@@ -361,30 +369,21 @@ networks:
         </Button>
       </div>
 
-      <Textarea
+      <CodeMirror
         value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={(e) => {
-          // Allow Tab key to insert spaces instead of moving focus (Issue #126)
-          if (e.key === 'Tab') {
-            e.preventDefault()
-            const target = e.target as HTMLTextAreaElement
-            const start = target.selectionStart
-            const end = target.selectionEnd
-
-            // Insert 2 spaces at cursor position
-            const newValue = value.substring(0, start) + '  ' + value.substring(end)
-            onChange(newValue)
-
-            // Move cursor after the inserted spaces
-            requestAnimationFrame(() => {
-              target.selectionStart = target.selectionEnd = start + 2
-            })
-          }
-        }}
+        onChange={handleChange}
+        extensions={type === 'stack' ? [yamlLang()] : [jsonLang()]}
+        theme={githubDark}
         placeholder={placeholders[type]}
-        rows={fillHeight ? undefined : rows}
-        className={`font-mono text-sm ${fillHeight ? 'flex-1 min-h-0 resize-none' : ''} ${error || validationError ? 'border-destructive' : ''} ${className}`}
+        height={fillHeight ? '100%' : `${rows * 1.5}rem`}
+        basicSetup={{
+          lineNumbers: true,
+          foldGutter: true,
+          highlightActiveLine: true,
+          indentOnInput: true,
+          tabSize: 2,
+        }}
+        className={`rounded-md border ${error || validationError ? 'border-destructive' : 'border-input'} ${fillHeight ? 'flex-1 min-h-0' : ''} ${className}`}
       />
 
       {/* Help text */}

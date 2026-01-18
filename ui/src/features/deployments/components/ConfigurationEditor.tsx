@@ -9,14 +9,28 @@
  * - DeploymentForm (create/edit deployments)
  */
 
-import { useState, useImperativeHandle, forwardRef, useCallback } from 'react'
+import { useState, useImperativeHandle, forwardRef, useCallback, useMemo } from 'react'
 import { Wand2, CheckCircle2 } from 'lucide-react'
 import yaml from 'js-yaml'
 import CodeMirror from '@uiw/react-codemirror'
 import { yaml as yamlLang } from '@codemirror/lang-yaml'
 import { json as jsonLang } from '@codemirror/lang-json'
 import { githubDark } from '@uiw/codemirror-theme-github'
+import { vscodeDark } from '@uiw/codemirror-theme-vscode'
+import { dracula } from '@uiw/codemirror-theme-dracula'
+import { materialDark } from '@uiw/codemirror-theme-material'
+import { nord } from '@uiw/codemirror-theme-nord'
 import { Button } from '@/components/ui/button'
+import { useGlobalSettings } from '@/hooks/useSettings'
+
+// Theme mapping for CodeMirror
+const EDITOR_THEMES = {
+  'github-dark': githubDark,
+  'vscode-dark': vscodeDark,
+  'dracula': dracula,
+  'material-dark': materialDark,
+  'nord': nord,
+} as const
 
 interface ConfigurationEditorProps {
   type: 'container' | 'stack'
@@ -54,6 +68,13 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
 }, ref) => {
   const [formatStatus, setFormatStatus] = useState<'idle' | 'success' | 'error'>('idle')
   const [validationError, setValidationError] = useState<string | null>(null)
+  const { data: globalSettings } = useGlobalSettings()
+
+  // Get the selected theme (memoized to avoid recreation on every render)
+  const editorTheme = useMemo(() => {
+    const themeName = globalSettings?.editor_theme ?? 'github-dark'
+    return EDITOR_THEMES[themeName as keyof typeof EDITOR_THEMES] ?? githubDark
+  }, [globalSettings?.editor_theme])
 
   // Stable callback for CodeMirror onChange
   const handleChange = useCallback((val: string) => {
@@ -373,7 +394,7 @@ networks:
         value={value}
         onChange={handleChange}
         extensions={type === 'stack' ? [yamlLang()] : [jsonLang()]}
-        theme={githubDark}
+        theme={editorTheme}
         placeholder={placeholders[type]}
         height={fillHeight ? '100%' : `${rows * 1.5}rem`}
         basicSetup={{

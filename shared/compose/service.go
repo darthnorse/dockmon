@@ -33,15 +33,14 @@ const (
 	layerIDDisplayLen = 8
 	// progressThrottleInterval limits how often progress updates are sent
 	progressThrottleInterval = 250 * time.Millisecond
+	// defaultHealthTimeout is the default timeout in seconds for health checks
+	defaultHealthTimeout = 60
 )
 
 // isDockerHub returns true if the registry URL refers to Docker Hub
 func isDockerHub(registryURL string) bool {
 	return registryURL == "" || registryURL == "docker.io" || registryURL == "index.docker.io"
 }
-
-// defaultHealthTimeout is the default timeout in seconds for health checks
-const defaultHealthTimeout = 60
 
 // healthTimeoutOrDefault returns the timeout if positive, otherwise the default
 func healthTimeoutOrDefault(timeout int) int {
@@ -109,44 +108,45 @@ func (s *Service) Deploy(ctx context.Context, req DeployRequest) *DeployResult {
 		Message:  "Validating deployment...",
 	})
 
-	// Write compose content to temp file
 	composeFile, err := WriteComposeFile(req.ComposeYAML)
 	if err != nil {
 		return s.failResult(req.DeploymentID, fmt.Sprintf("Failed to write compose file: %v", err))
 	}
 	defer CleanupTempFile(composeFile, s.log)
 
-	var result *DeployResult
-
 	switch req.Action {
 	case "up":
-		result = s.runComposeUp(ctx, req, composeFile)
+		return s.runComposeUp(ctx, req, composeFile)
 	case "down":
-		result = s.runComposeDown(ctx, req, composeFile)
+		return s.runComposeDown(ctx, req, composeFile)
 	case "restart":
-		s.sendProgress(ProgressEvent{
-			Stage:    StageStarting,
-			Progress: 30,
-			Message:  "Stopping services...",
-		})
-		downReq := req
-		downReq.RemoveVolumes = false
-		downResult := s.runComposeDown(ctx, downReq, composeFile)
-		if !downResult.Success {
-			return downResult
-		}
-
-		s.sendProgress(ProgressEvent{
-			Stage:    StageStarting,
-			Progress: 50,
-			Message:  "Starting services...",
-		})
-		result = s.runComposeUp(ctx, req, composeFile)
+		return s.runRestart(ctx, req, composeFile)
 	default:
-		result = s.failResult(req.DeploymentID, fmt.Sprintf("Unknown action: %s", req.Action))
+		return s.failResult(req.DeploymentID, fmt.Sprintf("Unknown action: %s", req.Action))
+	}
+}
+
+// runRestart performs a compose restart by stopping then starting services
+func (s *Service) runRestart(ctx context.Context, req DeployRequest, composeFile string) *DeployResult {
+	s.sendProgress(ProgressEvent{
+		Stage:    StageStarting,
+		Progress: 30,
+		Message:  "Stopping services...",
+	})
+
+	downReq := req
+	downReq.RemoveVolumes = false
+	downResult := s.runComposeDown(ctx, downReq, composeFile)
+	if !downResult.Success {
+		return downResult
 	}
 
-	return result
+	s.sendProgress(ProgressEvent{
+		Stage:    StageStarting,
+		Progress: 50,
+		Message:  "Starting services...",
+	})
+	return s.runComposeUp(ctx, req, composeFile)
 }
 
 // Teardown removes a compose stack
@@ -291,7 +291,7 @@ func (s *Service) pullProjectImages(ctx context.Context, imageNames []string, cr
 	})
 
 	if err := s.pullImagesWithProgress(ctx, imageNames, credentials); err != nil {
-		s.logError("Image pull failed", err)
+		s.logError("Image pull failed", err, nil)
 		return err
 	}
 
@@ -319,11 +319,11 @@ func (s *Service) waitForHealthyServices(ctx context.Context, composeService api
 		return nil
 	}
 
-	s.logError("Health check failed", err)
+	s.logError("Health check failed", err, nil)
 
 	services, discoverErr := DiscoverContainers(ctx, s.dockerClient, req.ProjectName, s.log)
 	if discoverErr != nil {
-		s.logWarn("Failed to discover containers after health check failure")
+		s.logWarn("Failed to discover containers after health check failure", nil)
 		return s.failResult(req.DeploymentID, fmt.Sprintf("Health check failed: %v", err))
 	}
 
@@ -408,7 +408,7 @@ func (s *Service) runComposeUp(ctx context.Context, req DeployRequest, composeFi
 	})
 
 	if err := composeService.Build(ctx, project, api.BuildOptions{}); err != nil {
-		s.logError("Compose build failed", err)
+		s.logError("Compose build failed", err, nil)
 		return s.failResult(req.DeploymentID, fmt.Sprintf("Compose build failed: %v", err))
 	}
 
@@ -420,8 +420,8 @@ func (s *Service) runComposeUp(ctx context.Context, req DeployRequest, composeFi
 	})
 
 	if err := composeService.Up(ctx, project, upOpts); err != nil {
-		s.logError("Compose up failed", err)
-		s.logWarn("Deployment failed, attempting cleanup...")
+		s.logError("Compose up failed", err, nil)
+		s.logWarn("Deployment failed, attempting cleanup...", nil)
 		_ = composeService.Down(ctx, req.ProjectName, api.DownOptions{RemoveOrphans: true})
 		return s.failResult(req.DeploymentID, fmt.Sprintf("Failed to start services (%s): %v", strings.Join(serviceNames, ", "), err))
 	}
@@ -440,7 +440,7 @@ func (s *Service) runComposeUp(ctx context.Context, req DeployRequest, composeFi
 
 	services, discoverErr := DiscoverContainers(ctx, s.dockerClient, req.ProjectName, s.log)
 	if discoverErr != nil {
-		s.logWarn("Failed to discover containers after deployment")
+		s.logWarn("Failed to discover containers after deployment", nil)
 		return &DeployResult{
 			DeploymentID: req.DeploymentID,
 			Success:      true,
@@ -485,7 +485,7 @@ func (s *Service) runComposeDown(ctx context.Context, req DeployRequest, compose
 	defer tlsFiles.Cleanup(s.log)
 
 	if req.RemoveVolumes {
-		s.logWarn("Removing volumes as requested (destructive operation)")
+		s.logWarn("Removing volumes as requested (destructive operation)", nil)
 	}
 
 	s.logInfo("Executing compose down", logrus.Fields{"project_name": req.ProjectName})
@@ -495,7 +495,7 @@ func (s *Service) runComposeDown(ctx context.Context, req DeployRequest, compose
 		Volumes:       req.RemoveVolumes,
 	}
 	if err := composeService.Down(ctx, req.ProjectName, downOpts); err != nil {
-		s.logError("Compose down failed", err)
+		s.logError("Compose down failed", err, nil)
 		return s.failResult(req.DeploymentID, fmt.Sprintf("Compose down failed: %v", err))
 	}
 
@@ -525,7 +525,10 @@ func (s *Service) buildRegistryAuthMap(credentials []RegistryCredential) map[str
 		}
 		authJSON, err := json.Marshal(authConfig)
 		if err != nil {
-			s.logWarn(fmt.Sprintf("Failed to encode auth for registry %s: %v", cred.RegistryURL, err))
+			s.logWarn("Failed to encode auth for registry", logrus.Fields{
+				"registry": cred.RegistryURL,
+				"error":    err.Error(),
+			})
 			continue
 		}
 		encoded := base64.URLEncoding.EncodeToString(authJSON)
@@ -601,10 +604,8 @@ func (s *Service) streamPullProgress(ctx context.Context, reader interface{ Read
 	var lastBroadcast time.Time
 
 	for scanner.Scan() {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 
 		line := scanner.Bytes()
@@ -626,20 +627,26 @@ func (s *Service) streamPullProgress(ctx context.Context, reader interface{ Read
 			continue
 		}
 
-		now := time.Now()
-		if isCompletion || now.Sub(lastBroadcast) >= progressThrottleInterval {
+		if shouldBroadcast(isCompletion, &lastBroadcast) {
 			s.sendProgress(ProgressEvent{
 				Stage:   StagePullingImage,
 				Message: progressMsg,
 			})
-			lastBroadcast = now
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("error reading pull stream for %s: %w", imageName, err)
+	return scanner.Err()
+}
+
+// shouldBroadcast determines if a progress update should be sent based on throttling.
+// Completion events always broadcast; otherwise throttle to progressThrottleInterval.
+func shouldBroadcast(isCompletion bool, lastBroadcast *time.Time) bool {
+	now := time.Now()
+	if isCompletion || now.Sub(*lastBroadcast) >= progressThrottleInterval {
+		*lastBroadcast = now
+		return true
 	}
-	return nil
+	return false
 }
 
 // formatPullProgressMessage formats a pull progress message and indicates if it's a completion event.
@@ -648,30 +655,39 @@ func (s *Service) formatPullProgressMessage(msg jsonmessage.JSONMessage, imageNa
 		return "", false
 	}
 
-	idPrefix := msg.ID
-	if len(idPrefix) > layerIDDisplayLen {
-		idPrefix = idPrefix[:layerIDDisplayLen]
+	idPrefix := truncateID(msg.ID)
+	status := msg.Status
+
+	// Completion events that should always be broadcast
+	switch {
+	case status == "Pull complete", status == "Already exists":
+		if msg.ID != "" {
+			return fmt.Sprintf("Layer %s: %s", idPrefix, status), true
+		}
+		return "", false
+	case strings.HasPrefix(status, "Digest:"), strings.HasPrefix(status, "Status:"):
+		return status, true
 	}
 
-	isCompletion := msg.Status == "Pull complete" ||
-		msg.Status == "Already exists" ||
-		strings.HasPrefix(msg.Status, "Digest:") ||
-		strings.HasPrefix(msg.Status, "Status:")
-
+	// Progress events (throttled)
 	switch {
-	case strings.HasPrefix(msg.Status, "Pulling"):
-		return fmt.Sprintf("%s: %s", imageName, msg.Status), isCompletion
-	case strings.Contains(msg.Status, "Downloading") && msg.ID != "":
-		return fmt.Sprintf("Downloading %s: %s", idPrefix, msg.Progress), isCompletion
-	case strings.Contains(msg.Status, "Extracting") && msg.ID != "":
-		return fmt.Sprintf("Extracting %s: %s", idPrefix, msg.Progress), isCompletion
-	case (msg.Status == "Pull complete" || msg.Status == "Already exists") && msg.ID != "":
-		return fmt.Sprintf("Layer %s: %s", idPrefix, msg.Status), isCompletion
-	case strings.HasPrefix(msg.Status, "Digest:"), strings.HasPrefix(msg.Status, "Status:"):
-		return msg.Status, isCompletion
+	case strings.HasPrefix(status, "Pulling"):
+		return fmt.Sprintf("%s: %s", imageName, status), false
+	case strings.Contains(status, "Downloading") && msg.ID != "":
+		return fmt.Sprintf("Downloading %s: %s", idPrefix, msg.Progress), false
+	case strings.Contains(status, "Extracting") && msg.ID != "":
+		return fmt.Sprintf("Extracting %s: %s", idPrefix, msg.Progress), false
 	default:
 		return "", false
 	}
+}
+
+// truncateID returns a truncated ID for display
+func truncateID(id string) string {
+	if len(id) > layerIDDisplayLen {
+		return id[:layerIDDisplayLen]
+	}
+	return id
 }
 
 func (s *Service) failResult(deploymentID, errorMsg string) *DeployResult {
@@ -698,8 +714,10 @@ func (s *Service) logWithFields(level logrus.Level, msg string, fields logrus.Fi
 	if s.log == nil {
 		return
 	}
-	entry := s.log.WithFields(fields)
-	entry.Log(level, msg)
+	if fields == nil {
+		fields = logrus.Fields{}
+	}
+	s.log.WithFields(fields).Log(level, msg)
 }
 
 func (s *Service) logInfo(msg string, fields logrus.Fields) {
@@ -710,12 +728,16 @@ func (s *Service) logDebug(msg string, fields logrus.Fields) {
 	s.logWithFields(logrus.DebugLevel, msg, fields)
 }
 
-func (s *Service) logWarn(msg string) {
-	s.logWithFields(logrus.WarnLevel, msg, nil)
+func (s *Service) logWarn(msg string, fields logrus.Fields) {
+	s.logWithFields(logrus.WarnLevel, msg, fields)
 }
 
-func (s *Service) logError(msg string, err error) {
-	s.logWithFields(logrus.ErrorLevel, msg, logrus.Fields{"error": err.Error()})
+func (s *Service) logError(msg string, err error, fields logrus.Fields) {
+	if fields == nil {
+		fields = logrus.Fields{}
+	}
+	fields["error"] = err.Error()
+	s.logWithFields(logrus.ErrorLevel, msg, fields)
 }
 
 // TestComposeLibrary validates that the compose library is functional

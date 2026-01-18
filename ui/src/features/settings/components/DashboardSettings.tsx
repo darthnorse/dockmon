@@ -5,14 +5,27 @@
 
 import { useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
 import { useSimplifiedWorkflow } from '@/lib/hooks/useUserPreferences'
+import { useGlobalSettings, useUpdateGlobalSettings } from '@/hooks/useSettings'
 import { ToggleSwitch } from './ToggleSwitch'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { toast } from 'sonner'
+
+const EDITOR_THEMES = [
+  { value: 'github-dark', label: 'GitHub Dark' },
+  { value: 'vscode-dark', label: 'VS Code Dark' },
+  { value: 'dracula', label: 'Dracula' },
+  { value: 'material-dark', label: 'Material Dark' },
+  { value: 'nord', label: 'Nord' },
+] as const
 
 export function DashboardSettings() {
   const { data: prefs } = useUserPreferences()
   const updatePreferences = useUpdatePreferences()
   const { enabled: simplifiedWorkflow, setEnabled: setSimplifiedWorkflow } = useSimplifiedWorkflow()
+  const { data: globalSettings } = useGlobalSettings()
+  const updateGlobalSettings = useUpdateGlobalSettings()
 
+  const editorTheme = globalSettings?.editor_theme ?? 'github-dark'
   const showKpiBar = prefs?.dashboard?.showKpiBar ?? true
   const showStatsWidgets = prefs?.dashboard?.showStatsWidgets ?? false
   const optimizedLoading = prefs?.dashboard?.optimizedLoading ?? true
@@ -61,6 +74,15 @@ export function DashboardSettings() {
   const handleToggleSimplifiedWorkflow = (checked: boolean) => {
     setSimplifiedWorkflow(checked)
     toast.success(checked ? 'Simplified workflow enabled - drawers skipped' : 'Simplified workflow disabled - drawers shown')
+  }
+
+  const handleEditorThemeChange = async (theme: string) => {
+    try {
+      await updateGlobalSettings.mutateAsync({ editor_theme: theme })
+      toast.success(`Editor theme changed to ${EDITOR_THEMES.find(t => t.value === theme)?.label}`)
+    } catch {
+      toast.error('Failed to update editor theme')
+    }
   }
 
   return (
@@ -133,6 +155,40 @@ export function DashboardSettings() {
             checked={optimizedLoading}
             onChange={handleToggleOptimizedLoading}
           />
+        </div>
+      </div>
+
+      {/* Editor */}
+      <div>
+        <div className="mb-4">
+          <h3 className="text-lg font-semibold text-white">Editor</h3>
+          <p className="text-xs text-gray-400 mt-1">
+            Customize the code editor appearance for stack and container configurations
+          </p>
+        </div>
+        <div className="space-y-4">
+          <div>
+            <label htmlFor="editor-theme" className="block text-sm font-medium text-gray-300 mb-2">
+              Editor Theme
+            </label>
+            <Select value={editorTheme} onValueChange={handleEditorThemeChange}>
+              <SelectTrigger id="editor-theme" className="w-full">
+                <SelectValue>
+                  {EDITOR_THEMES.find(t => t.value === editorTheme)?.label}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {EDITOR_THEMES.map((theme) => (
+                  <SelectItem key={theme.value} value={theme.value}>
+                    {theme.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="mt-1 text-xs text-gray-400">
+              Color theme for YAML and JSON editing in stack deployments
+            </p>
+          </div>
         </div>
       </div>
     </div>

@@ -2630,6 +2630,8 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
         # Priority: database value > env var > None
         "external_url": getattr(settings, 'external_url', None) or AppConfig.EXTERNAL_URL,
         "external_url_from_env": AppConfig.EXTERNAL_URL,  # Show env var value for UI placeholder
+        # Editor theme preference (v2.2.8+)
+        "editor_theme": getattr(settings, 'editor_theme', 'github-dark'),
     }
 
 @app.post("/api/settings", tags=["system"], dependencies=[Depends(require_scope("admin"))])
@@ -2717,6 +2719,8 @@ async def update_settings(
         # External URL for notification action links (v2.2.0+)
         "external_url": getattr(updated, 'external_url', None) or AppConfig.EXTERNAL_URL,
         "external_url_from_env": AppConfig.EXTERNAL_URL,
+        # Editor theme preference (v2.2.8+)
+        "editor_theme": getattr(updated, 'editor_theme', 'github-dark'),
     }
 
 

@@ -82,6 +82,90 @@ func CleanupTempFile(path string, log *logrus.Logger) {
 	}
 }
 
+// TLSFiles holds paths to TLS certificate temp files
+type TLSFiles struct {
+	CAFile   string
+	CertFile string
+	KeyFile  string
+}
+
+// WriteTLSFiles writes TLS PEM content to temp files for Docker CLI usage.
+// Returns paths to the temp files. Caller must call Cleanup() when done.
+func WriteTLSFiles(caCert, cert, key string) (*TLSFiles, error) {
+	// Ensure temp dir exists with proper permissions
+	if err := os.MkdirAll(tempDir, TempDirMode); err != nil {
+		return nil, fmt.Errorf("failed to create temp dir: %w", err)
+	}
+
+	files := &TLSFiles{}
+	var err error
+
+	// Write CA cert
+	if caCert != "" {
+		files.CAFile, err = writeTempPEM("ca-", caCert)
+		if err != nil {
+			return nil, fmt.Errorf("failed to write CA cert: %w", err)
+		}
+	}
+
+	// Write client cert
+	if cert != "" {
+		files.CertFile, err = writeTempPEM("cert-", cert)
+		if err != nil {
+			files.Cleanup(nil)
+			return nil, fmt.Errorf("failed to write client cert: %w", err)
+		}
+	}
+
+	// Write client key
+	if key != "" {
+		files.KeyFile, err = writeTempPEM("key-", key)
+		if err != nil {
+			files.Cleanup(nil)
+			return nil, fmt.Errorf("failed to write client key: %w", err)
+		}
+	}
+
+	return files, nil
+}
+
+// writeTempPEM writes PEM content to a temp file
+func writeTempPEM(prefix, content string) (string, error) {
+	f, err := os.CreateTemp(tempDir, TempFilePrefix+prefix+"*.pem")
+	if err != nil {
+		return "", err
+	}
+
+	if err := f.Chmod(TempFileMode); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return "", err
+	}
+
+	if _, err := f.WriteString(content); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return "", err
+	}
+
+	if err := f.Close(); err != nil {
+		os.Remove(f.Name())
+		return "", err
+	}
+
+	return f.Name(), nil
+}
+
+// Cleanup removes all TLS temp files
+func (t *TLSFiles) Cleanup(log *logrus.Logger) {
+	if t == nil {
+		return
+	}
+	CleanupTempFile(t.CAFile, log)
+	CleanupTempFile(t.CertFile, log)
+	CleanupTempFile(t.KeyFile, log)
+}
+
 // CleanupStaleFiles removes temp files older than StaleFileThreshold
 // Should be called on service startup to clean up from crashes
 func CleanupStaleFiles(log *logrus.Logger) {

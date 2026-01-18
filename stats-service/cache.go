@@ -48,6 +48,7 @@ type StatsCache struct {
 	hostStats      map[string]*HostStats          // key: hostID
 	lastNetStats   map[string]*networkBaseline    // key: composite key (hostID:containerID)
 	hostNumCPUs    map[string]int                 // key: hostID -> number of CPUs on host
+	localHosts     map[string]bool                // key: hostID -> true if local host
 }
 
 // NewStatsCache creates a new stats cache
@@ -57,6 +58,7 @@ func NewStatsCache() *StatsCache {
 		hostStats:      make(map[string]*HostStats),
 		lastNetStats:   make(map[string]*networkBaseline),
 		hostNumCPUs:    make(map[string]int),
+		localHosts:     make(map[string]bool),
 	}
 }
 
@@ -75,6 +77,20 @@ func (c *StatsCache) GetHostNumCPUs(hostID string) int {
 		return numCPUs
 	}
 	return 1 // Default to 1 to avoid division by zero
+}
+
+// SetHostLocal marks a host as local (for /host/proc reading)
+func (c *StatsCache) SetHostLocal(hostID string, isLocal bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.localHosts[hostID] = isLocal
+}
+
+// IsHostLocal returns true if the host is marked as local
+func (c *StatsCache) IsHostLocal(hostID string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.localHosts[hostID]
 }
 
 // UpdateContainerStats updates stats for a container and calculates network rate
@@ -212,6 +228,9 @@ func (c *StatsCache) RemoveHostStats(hostID string) {
 
 	// Remove host num_cpus
 	delete(c.hostNumCPUs, hostID)
+
+	// Remove local host flag
+	delete(c.localHosts, hostID)
 
 	// Remove all container stats and network baselines for this host
 	for id, stats := range c.containerStats {

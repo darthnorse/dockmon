@@ -502,11 +502,6 @@ class NotificationService:
                 logger.error(f"ntfy server_url must start with http:// or https://: {server_url}")
                 return False
 
-            # Clean up message - remove emojis, convert markdown bold to plain text
-            clean_message = re.sub(r'[^\x00-\x7F]+', '', message).strip()
-            clean_message = re.sub(r'\*\*(.*?)\*\*', r'\1', clean_message)  # Remove **bold**
-            clean_message = re.sub(r'`(.*?)`', r'\1', clean_message)  # Remove `code`
-
             # Determine priority (1-5: min, low, default, high, urgent)
             priority = '3'  # default (string for header)
             if event:
@@ -525,9 +520,11 @@ class NotificationService:
                 notification_title = f"DockMon: {event.container_name}"
 
             # Build headers - ntfy header-based API (more compatible)
+            # Enable markdown rendering (https://docs.ntfy.sh/publish/#markdown-formatting)
             headers = {
                 'Title': notification_title,
                 'Priority': priority,
+                'Markdown': 'yes',
             }
 
             # Add tags for critical events
@@ -558,8 +555,8 @@ class NotificationService:
                 credentials = base64.b64encode(f"{username}:{password}".encode()).decode()
                 headers['Authorization'] = f'Basic {credentials}'
 
-            # Send request - message as plain text body (not JSON)
-            response = await self.http_client.post(url, content=clean_message, headers=headers)
+            # Send request - message body with markdown (not JSON)
+            response = await self.http_client.post(url, content=message, headers=headers)
 
             response.raise_for_status()
 

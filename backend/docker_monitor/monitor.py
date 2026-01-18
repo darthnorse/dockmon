@@ -534,7 +534,8 @@ class DockerMonitor:
                             # Skip agent hosts - they send stats via WebSocket, not Docker API
                             # Agent hosts have url="agent://" which is not a valid Docker URL
                             if host.connection_type != "agent":
-                                await stats_client.add_docker_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key, host.num_cpus)
+                                is_local = host.url.startswith("unix://")
+                                await stats_client.add_docker_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key, host.num_cpus, is_local)
                                 logger.info(f"Registered {host.name} ({host.id[:8]}) with stats service")
 
                                 await stats_client.add_event_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key)
@@ -1154,7 +1155,8 @@ class DockerMonitor:
                         # Agent hosts have url="agent://" which is not a valid Docker URL
                         if host.connection_type != "agent":
                             # Re-register with stats service (automatically closes old client)
-                            await stats_client.add_docker_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key, host.num_cpus)
+                            is_local = host.url.startswith("unix://")
+                            await stats_client.add_docker_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key, host.num_cpus, is_local)
                             logger.info(f"Re-registered {host.name} ({host.id[:8]}) with stats service")
 
                             # Remove and re-add event monitoring
@@ -1582,7 +1584,8 @@ class DockerMonitor:
                     num_cpus = db_host.num_cpus if db_host else None
 
                 # Register with stats service
-                await stats_client.add_docker_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key, num_cpus)
+                is_local = host.url.startswith("unix://")
+                await stats_client.add_docker_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key, num_cpus, is_local)
                 logger.info(f"Registered host {host.name} ({host_id[:8]}) with stats service")
 
                 # Register with event service

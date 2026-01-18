@@ -5,16 +5,20 @@ Tests verify:
 - Deployment creation and validation
 - Deployment state transitions
 - Deployment-container relationships
-- Template-based deployments
 - Rollback scenarios
 - Database consistency during deployments
+
+Updated for v2.2.7 schema:
+- stack_name instead of name
+- No deployment_type column (everything is a stack)
+- No definition column (compose content on filesystem)
 """
 
 import pytest
 from datetime import datetime, timezone
 import uuid
 
-from database import Deployment, DeploymentContainer, DeploymentTemplate, DeploymentMetadata
+from database import Deployment, DeploymentContainer, DeploymentMetadata
 from tests.conftest import create_composite_key
 
 
@@ -26,26 +30,24 @@ from tests.conftest import create_composite_key
 class TestDeploymentCreation:
     """Test deployment creation and database persistence"""
 
-    def test_create_container_deployment(
+    def test_create_stack_deployment(
         self,
         db_session,
         test_host,
         test_user
     ):
-        """Test creating a single container deployment"""
+        """Test creating a stack deployment"""
         # Arrange
         deployment_short_id = "deploy123456"
         deployment_id = create_composite_key(test_host.id, deployment_short_id)
 
-        # Act: Create deployment
+        # Act: Create deployment (v2.2.7+: all deployments are stacks)
         deployment = Deployment(
             id=deployment_id,
             host_id=test_host.id,
             user_id=1,
-            deployment_type='container',
-            name='nginx-deployment',
+            stack_name='nginx-stack',
             status='planning',
-            definition='{"image": "nginx:latest", "ports": {"80/tcp": 8080}}',
             progress_percent=0,
             committed=False,
             rollback_on_failure=True,
@@ -61,19 +63,18 @@ class TestDeploymentCreation:
         ).first()
 
         assert retrieved is not None
-        assert retrieved.deployment_type == 'container'
-        assert retrieved.name == 'nginx-deployment'
+        assert retrieved.stack_name == 'nginx-stack'
         assert retrieved.status == 'planning'
         assert retrieved.committed is False
 
 
-    def test_create_stack_deployment(
+    def test_create_multi_service_stack_deployment(
         self,
         db_session,
         test_host,
         test_user
     ):
-        """Test creating a stack deployment"""
+        """Test creating a multi-service stack deployment"""
         # Arrange
         deployment_short_id = "stack123456"
         deployment_id = create_composite_key(test_host.id, deployment_short_id)
@@ -83,10 +84,8 @@ class TestDeploymentCreation:
             id=deployment_id,
             host_id=test_host.id,
             user_id=1,
-            deployment_type='stack',
-            name='wordpress-stack',
+            stack_name='wordpress-stack',
             status='planning',
-            definition='{"services": {"web": {"image": "wordpress"}, "db": {"image": "mysql"}}}',
             committed=False,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc)
@@ -100,41 +99,36 @@ class TestDeploymentCreation:
         ).first()
 
         assert retrieved is not None
-        assert retrieved.deployment_type == 'stack'
-        assert retrieved.name == 'wordpress-stack'
+        assert retrieved.stack_name == 'wordpress-stack'
 
 
-    def test_deployment_unique_name_per_host(
+    def test_deployment_unique_stack_name_per_host(
         self,
         db_session,
         test_host,
         test_user
     ):
-        """Test that deployment names must be unique per host"""
+        """Test that stack names must be unique per host"""
         # Arrange: Create first deployment
         deployment1 = Deployment(
             id=create_composite_key(test_host.id, "deploy1"),
             host_id=test_host.id,
             user_id=1,
-            deployment_type='container',
-            name='my-app',
+            stack_name='my-app',
             status='planning',
-            definition='{"image": "nginx"}',
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc)
         )
         db_session.add(deployment1)
         db_session.commit()
 
-        # Act: Try to create second deployment with same name on same host
+        # Act: Try to create second deployment with same stack_name on same host
         deployment2 = Deployment(
             id=create_composite_key(test_host.id, "deploy2"),
             host_id=test_host.id,
             user_id=1,
-            deployment_type='container',
-            name='my-app',  # Same name!
+            stack_name='my-app',  # Same name!
             status='planning',
-            definition='{"image": "redis"}',
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc)
         )
@@ -166,10 +160,8 @@ class TestDeploymentStateTransitions:
             id=deployment_id,
             host_id=test_host.id,
             user_id=1,
-            deployment_type='container',
-            name='test-deployment',
+            stack_name='test-deployment',
             status='planning',
-            definition='{"image": "nginx"}',
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc)
         )
@@ -214,10 +206,8 @@ class TestDeploymentStateTransitions:
             id=deployment_id,
             host_id=test_host.id,
             user_id=1,
-            deployment_type='container',
-            name='failed-deployment',
+            stack_name='failed-deployment',
             status='pulling_image',
-            definition='{"image": "nginx"}',
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc)
         )
@@ -245,23 +235,21 @@ class TestDeploymentStateTransitions:
 class TestDeploymentContainerRelationship:
     """Test deployment-container junction table"""
 
-    def test_single_container_deployment_link(
+    def test_single_service_deployment_link(
         self,
         db_session,
         test_host,
         test_user
     ):
-        """Test linking single container to deployment"""
+        """Test linking single service container to deployment"""
         # Arrange: Create deployment
         deployment_id = create_composite_key(test_host.id, "deploy123")
         deployment = Deployment(
             id=deployment_id,
             host_id=test_host.id,
             user_id=1,
-            deployment_type='container',
-            name='nginx-deployment',
+            stack_name='nginx-stack',
             status='running',
-            definition='{"image": "nginx"}',
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc)
         )
@@ -273,7 +261,7 @@ class TestDeploymentContainerRelationship:
         dc_link = DeploymentContainer(
             deployment_id=deployment_id,
             container_id=container_id,
-            service_name=None,  # NULL for single containers
+            service_name="nginx",  # Service name from compose
             created_at=datetime.now(timezone.utc)
         )
         db_session.add(dc_link)
@@ -286,7 +274,7 @@ class TestDeploymentContainerRelationship:
 
         assert len(links) == 1
         assert links[0].container_id == container_id
-        assert links[0].service_name is None
+        assert links[0].service_name == "nginx"
 
 
     def test_stack_deployment_multiple_containers(
@@ -302,10 +290,8 @@ class TestDeploymentContainerRelationship:
             id=deployment_id,
             host_id=test_host.id,
             user_id=1,
-            deployment_type='stack',
-            name='wordpress-stack',
+            stack_name='wordpress-stack',
             status='running',
-            definition='{"services": {"web": {}, "db": {}}}',
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc)
         )
@@ -353,10 +339,8 @@ class TestDeploymentContainerRelationship:
             id=deployment_id,
             host_id=test_host.id,
             user_id=1,
-            deployment_type='container',
-            name='test-deployment',
+            stack_name='test-deployment',
             status='running',
-            definition='{"image": "nginx"}',
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc)
         )
@@ -366,6 +350,7 @@ class TestDeploymentContainerRelationship:
         dc_link = DeploymentContainer(
             deployment_id=deployment_id,
             container_id="abc123",
+            service_name="app",
             created_at=datetime.now(timezone.utc)
         )
         db_session.add(dc_link)
@@ -381,123 +366,6 @@ class TestDeploymentContainerRelationship:
         ).all()
 
         assert len(links) == 0
-
-
-# =============================================================================
-# Deployment Template Tests
-# =============================================================================
-
-@pytest.mark.integration
-class TestDeploymentTemplates:
-    """Test deployment template CRUD and usage"""
-
-    def test_create_deployment_template(
-        self,
-        db_session
-    ):
-        """Test creating a deployment template"""
-        # Act: Create template
-        template = DeploymentTemplate(
-            id=str(uuid.uuid4()),
-            name='nginx-template',
-            category='web',
-            description='Basic Nginx web server',
-            deployment_type='container',
-            template_definition='{"image": "nginx:latest", "ports": {"80/tcp": "${PORT}"}}',
-            variables='{"PORT": {"default": 8080, "type": "integer"}}',
-            is_builtin=False,
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc)
-        )
-        db_session.add(template)
-        db_session.commit()
-
-        # Assert: Template persisted
-        retrieved = db_session.query(DeploymentTemplate).filter_by(
-            name='nginx-template'
-        ).first()
-
-        assert retrieved is not None
-        assert retrieved.category == 'web'
-        assert retrieved.deployment_type == 'container'
-        assert '${PORT}' in retrieved.template_definition
-
-
-    def test_template_unique_name_constraint(
-        self,
-        db_session
-    ):
-        """Test that template names must be unique"""
-        # Arrange: Create first template
-        template1 = DeploymentTemplate(
-            id=str(uuid.uuid4()),
-            name='unique-template',
-            deployment_type='container',
-            template_definition='{"image": "nginx"}',
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc)
-        )
-        db_session.add(template1)
-        db_session.commit()
-
-        # Act: Try to create second template with same name
-        template2 = DeploymentTemplate(
-            id=str(uuid.uuid4()),
-            name='unique-template',  # Same name!
-            deployment_type='container',
-            template_definition='{"image": "redis"}',
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc)
-        )
-        db_session.add(template2)
-
-        # Assert: Should raise IntegrityError
-        with pytest.raises(Exception):  # UniqueConstraint violation
-            db_session.commit()
-
-
-    def test_builtin_vs_user_templates(
-        self,
-        db_session
-    ):
-        """Test distinguishing between builtin and user-created templates"""
-        # Arrange: Create builtin template
-        builtin = DeploymentTemplate(
-            id=str(uuid.uuid4()),
-            name='builtin-nginx',
-            deployment_type='container',
-            template_definition='{"image": "nginx"}',
-            is_builtin=True,
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc)
-        )
-        db_session.add(builtin)
-
-        # Create user template
-        user = DeploymentTemplate(
-            id=str(uuid.uuid4()),
-            name='user-custom',
-            deployment_type='container',
-            template_definition='{"image": "custom"}',
-            is_builtin=False,
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc)
-        )
-        db_session.add(user)
-        db_session.commit()
-
-        # Assert: Can filter by builtin flag
-        builtin_templates = db_session.query(DeploymentTemplate).filter_by(
-            is_builtin=True
-        ).all()
-        assert len(builtin_templates) == 1
-        assert builtin_templates[0].name == 'builtin-nginx'
-
-        user_templates = db_session.query(DeploymentTemplate).filter_by(
-            is_builtin=False
-        ).all()
-        assert len(user_templates) == 1
-        assert user_templates[0].name == 'user-custom'
 
 
 # =============================================================================
@@ -597,10 +465,8 @@ class TestDeploymentCommitmentPoint:
             id=deployment_id,
             host_id=test_host.id,
             user_id=1,
-            deployment_type='container',
-            name='test-deployment',
+            stack_name='test-deployment',
             status='creating',
-            definition='{"image": "nginx"}',
             committed=False,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc)
@@ -630,10 +496,8 @@ class TestDeploymentCommitmentPoint:
             id=deployment_id,
             host_id=test_host.id,
             user_id=1,
-            deployment_type='container',
-            name='no-rollback-deployment',
+            stack_name='no-rollback-deployment',
             status='planning',
-            definition='{"image": "nginx"}',
             rollback_on_failure=False,  # User disabled rollback
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc)

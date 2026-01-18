@@ -11,7 +11,7 @@ import logging
 import os
 import re
 from datetime import datetime, timedelta, timezone
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
 from sqlalchemy.exc import IntegrityError
 from database import DatabaseManager, ContainerUpdate, GlobalSettings, RegistryCredential, UpdatePolicy
@@ -239,6 +239,23 @@ class UpdateChecker:
         # Get current digest from Docker API (the actual digest the container is running)
         current_digest = await self._get_container_image_digest(container)
         if not current_digest:
+            # Fallback for digest-pinned images (Issue #143)
+            # Images pulled by digest (e.g., image@sha256:...) don't have RepoDigests.
+            # Query registry for the current image tag's digest instead.
+            current_image = container.get("image")
+            if current_image and '@' not in current_image:
+                # Not a digest reference (image@sha256:...) - query registry
+                # Images without explicit tag default to :latest
+                logger.info(f"[{container['name']}] No local digest available, querying registry for {current_image}")
+                try:
+                    current_result = await self.registry.resolve_tag(current_image, auth=auth)
+                    if current_result:
+                        current_digest = current_result["digest"]
+                        logger.info(f"[{container['name']}] Got current digest from registry: {current_digest[:16]}...")
+                except Exception as e:
+                    logger.warning(f"[{container['name']}] Registry fallback failed: {e}")
+
+        if not current_digest:
             logger.warning(f"Could not get current digest for {container['name']}")
             return None
 
@@ -329,6 +346,24 @@ class UpdateChecker:
         if current_version or latest_version:
             logger.debug(f"Version info: current={current_version}, latest={latest_version}")
 
+        # Issue #147: Suppress false positive updates (downgrades)
+        # Some registries (e.g., Nextcloud) don't maintain floating tags - their "32.0" tag
+        # is a fixed old release, not "latest 32.0.x". Compare versions to catch this.
+        if update_available:
+            # Try OCI labels first, fall back to parsing from tag
+            current_ver = self._parse_version_from_tag(current_version or image)
+            latest_ver = self._parse_version_from_tag(latest_version or floating_tag)
+
+            # Debug logging when version parsing fails (helps diagnose missing downgrade protection)
+            if not current_ver:
+                logger.debug(f"[{container['name']}] Could not parse current version from {current_version or image}")
+            if not latest_ver:
+                logger.debug(f"[{container['name']}] Could not parse latest version from {latest_version or floating_tag}")
+
+            if current_ver and latest_ver and self._is_downgrade(current_ver, latest_ver):
+                update_available = False
+                logger.info(f"[{container['name']}] Suppressing update: {floating_tag} version {latest_ver} is not newer than current {current_ver}")
+
         # Check if user has manually set a changelog URL (v2.0.2+)
         # If manual, skip auto-detection to preserve user's choice
         if existing_record and existing_record.changelog_source == 'manual':
@@ -405,6 +440,61 @@ class UpdateChecker:
                 return True
 
         return False
+
+    def _parse_version_from_tag(self, tag: str) -> Optional[Tuple[int, int, int]]:
+        """
+        Parse version tuple from an image tag or full image reference.
+
+        Extracts semantic version components from tags like:
+        - "32.0.3-fpm-alpine" → (32, 0, 3)
+        - "1.25.3" → (1, 25, 3)
+        - "v2.1.0" → (2, 1, 0)
+        - "1.25" → (1, 25, 0)  # Missing patch treated as 0
+        - "nginx:1.25.3-alpine" → (1, 25, 3)  # Full image reference
+
+        Args:
+            tag: Image tag string, may include:
+                - Suffix like -alpine, -fpm (ignored after version)
+                - Full image reference with colon (tag extracted)
+
+        Returns:
+            Tuple of (major, minor, patch) or None if not parseable
+        """
+        if not tag:
+            return None
+
+        # Extract just the tag portion if full image reference
+        if ":" in tag:
+            tag = tag.rsplit(":", 1)[1]
+
+        # Match semver patterns: 1.25.3, v2.1.0, 32.0.3-fpm-alpine, etc.
+        version_match = re.match(r"v?(\d+)(?:\.(\d+))?(?:\.(\d+))?", tag)
+        if not version_match:
+            return None
+
+        major, minor, patch = version_match.groups()
+        return (
+            int(major),
+            int(minor) if minor else 0,
+            int(patch) if patch else 0,
+        )
+
+    def _is_downgrade(self, current_ver: Tuple[int, int, int], latest_ver: Tuple[int, int, int]) -> bool:
+        """
+        Check if the "latest" version would actually be a downgrade.
+
+        Note: Returns True only if latest is STRICTLY older than current.
+        Same version with different digest is allowed (could be security
+        patches in base image or 3rd party library updates).
+
+        Args:
+            current_ver: Current version tuple (major, minor, patch)
+            latest_ver: Latest version tuple (major, minor, patch)
+
+        Returns:
+            True if latest_ver < current_ver (would be downgrade)
+        """
+        return latest_ver < current_ver
 
     async def _get_container_image_digest(self, container: Dict) -> Optional[str]:
         """

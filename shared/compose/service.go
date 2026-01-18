@@ -1,11 +1,15 @@
 package compose
 
 import (
+	"bufio"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/compose-spec/compose-go/v2/cli"
 	"github.com/compose-spec/compose-go/v2/types"
@@ -14,9 +18,62 @@ import (
 	"github.com/docker/cli/cli/flags"
 	"github.com/docker/compose/v2/pkg/api"
 	"github.com/docker/compose/v2/pkg/compose"
+	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/registry"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/jsonmessage"
+	"github.com/docker/go-connections/tlsconfig"
 	"github.com/sirupsen/logrus"
 )
+
+const (
+	// dockerHubRegistry is the canonical Docker Hub registry address
+	dockerHubRegistry = "https://index.docker.io/v1/"
+	// layerIDDisplayLen is the number of characters to show for layer IDs
+	layerIDDisplayLen = 8
+	// progressThrottleInterval limits how often progress updates are sent
+	progressThrottleInterval = 250 * time.Millisecond
+)
+
+// isDockerHub returns true if the registry URL refers to Docker Hub
+func isDockerHub(registryURL string) bool {
+	return registryURL == "" || registryURL == "docker.io" || registryURL == "index.docker.io"
+}
+
+// defaultHealthTimeout is the default timeout in seconds for health checks
+const defaultHealthTimeout = 60
+
+// healthTimeoutOrDefault returns the timeout if positive, otherwise the default
+func healthTimeoutOrDefault(timeout int) int {
+	if timeout <= 0 {
+		return defaultHealthTimeout
+	}
+	return timeout
+}
+
+// collectServiceInfo extracts service names and image names from a compose project
+func collectServiceInfo(project *types.Project) (serviceNames, imageNames []string) {
+	serviceNames = make([]string, 0, len(project.Services))
+	imageNames = make([]string, 0, len(project.Services))
+	for _, svc := range project.Services {
+		serviceNames = append(serviceNames, svc.Name)
+		if svc.Image != "" {
+			imageNames = append(imageNames, svc.Image)
+		}
+	}
+	return serviceNames, imageNames
+}
+
+// countHealthyServices returns the number of healthy services in the result
+func countHealthyServices(services map[string]ServiceResult) int {
+	count := 0
+	for _, svc := range services {
+		if IsServiceResultHealthy(svc) {
+			count++
+		}
+	}
+	return count
+}
 
 // Service provides Docker Compose operations
 type Service struct {
@@ -101,30 +158,61 @@ func (s *Service) Teardown(ctx context.Context, req DeployRequest) *DeployResult
 // createComposeService creates a new compose service connected to Docker.
 // If registry credentials are provided, they are configured on the CLI
 // so that compose can authenticate when pulling images from private registries.
-func (s *Service) createComposeService(ctx context.Context, credentials []RegistryCredential) (api.Compose, *dockercli.DockerCli, error) {
-	cli, err := dockercli.NewDockerCli()
+// For remote Docker hosts, TLS certs are written to temp files (cleaned up by caller).
+func (s *Service) createComposeService(ctx context.Context, req DeployRequest) (api.Compose, *dockercli.DockerCli, *TLSFiles, error) {
+	cli, err := dockercli.NewDockerCli(
+		dockercli.WithOutputStream(os.Stdout),
+		dockercli.WithErrorStream(os.Stderr),
+	)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create Docker CLI: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to create Docker CLI: %w", err)
 	}
 
 	opts := flags.NewClientOptions()
+
+	// Configure remote Docker host if specified
+	var tlsFiles *TLSFiles
+	if req.DockerHost != "" {
+		opts.Hosts = []string{req.DockerHost}
+
+		// Configure TLS if certificates provided
+		if req.TLSCACert != "" || req.TLSCert != "" || req.TLSKey != "" {
+			tlsFiles, err = WriteTLSFiles(req.TLSCACert, req.TLSCert, req.TLSKey)
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("failed to write TLS files: %w", err)
+			}
+
+			opts.TLS = true
+			opts.TLSVerify = true
+			opts.TLSOptions = &tlsconfig.Options{
+				CAFile:   tlsFiles.CAFile,
+				CertFile: tlsFiles.CertFile,
+				KeyFile:  tlsFiles.KeyFile,
+			}
+		}
+
+		s.logInfo("Configuring remote Docker host", logrus.Fields{"host": req.DockerHost})
+	}
+
 	if err := cli.Initialize(opts); err != nil {
-		return nil, nil, fmt.Errorf("failed to initialize Docker CLI: %w", err)
+		if tlsFiles != nil {
+			tlsFiles.Cleanup(s.log)
+		}
+		return nil, nil, nil, fmt.Errorf("failed to initialize Docker CLI: %w", err)
 	}
 
 	// Configure registry credentials on the CLI's in-memory config.
 	// This allows compose to authenticate when pulling images from private registries.
-	if len(credentials) > 0 {
+	if len(req.RegistryCredentials) > 0 {
 		configFile := cli.ConfigFile()
 		if configFile.AuthConfigs == nil {
 			configFile.AuthConfigs = make(map[string]clitypes.AuthConfig)
 		}
 
-		for _, cred := range credentials {
+		for _, cred := range req.RegistryCredentials {
 			serverAddr := cred.RegistryURL
-			// Normalize Docker Hub addresses
-			if serverAddr == "" || serverAddr == "docker.io" {
-				serverAddr = "https://index.docker.io/v1/"
+			if isDockerHub(serverAddr) {
+				serverAddr = dockerHubRegistry
 			}
 
 			configFile.AuthConfigs[serverAddr] = clitypes.AuthConfig{
@@ -138,11 +226,11 @@ func (s *Service) createComposeService(ctx context.Context, credentials []Regist
 		// Disable external credential stores to ensure our in-memory credentials are used.
 		configFile.CredentialsStore = ""
 
-		s.logInfo("Registry credentials configured for compose", logrus.Fields{"count": len(credentials)})
+		s.logInfo("Registry credentials configured for compose", logrus.Fields{"count": len(req.RegistryCredentials)})
 	}
 
 	composeService := compose.NewComposeService(cli)
-	return composeService, cli, nil
+	return composeService, cli, tlsFiles, nil
 }
 
 // loadProject loads a compose project from file content
@@ -175,31 +263,8 @@ func (s *Service) loadProject(ctx context.Context, composeFile, projectName stri
 	return project, nil
 }
 
-// runComposeUp executes compose up using the library
-func (s *Service) runComposeUp(ctx context.Context, req DeployRequest, composeFile string) *DeployResult {
-	s.sendProgress(ProgressEvent{
-		Stage:    StageParsing,
-		Progress: 10,
-		Message:  "Parsing compose file...",
-	})
-
-	// Create compose service with registry credentials for private image pulls
-	composeService, cli, err := s.createComposeService(ctx, req.RegistryCredentials)
-	if err != nil {
-		return s.failResult(req.DeploymentID, fmt.Sprintf("Failed to create compose service: %v", err))
-	}
-	defer cli.Client().Close()
-
-	// Load project
-	project, err := s.loadProject(ctx, composeFile, req.ProjectName, req.Environment, req.Profiles)
-	if err != nil {
-		return s.failResult(req.DeploymentID, fmt.Sprintf("Failed to load compose project: %v", err))
-	}
-
-	// Remove unnecessary resources (like disabled services)
-	project = project.WithoutUnnecessaryResources()
-
-	// Set required CustomLabels for compose to track containers
+// applyComposeLabels sets the required CustomLabels for compose to track containers
+func (s *Service) applyComposeLabels(project *types.Project) {
 	for i, svc := range project.Services {
 		svc.CustomLabels = map[string]string{
 			api.ProjectLabel:     project.Name,
@@ -211,40 +276,116 @@ func (s *Service) runComposeUp(ctx context.Context, req DeployRequest, composeFi
 		}
 		project.Services[i] = svc
 	}
+}
+
+// pullProjectImages pulls images with progress reporting
+func (s *Service) pullProjectImages(ctx context.Context, imageNames []string, credentials []RegistryCredential) error {
+	pullMsg := fmt.Sprintf("Pulling %d image(s)...", len(imageNames))
+	if len(imageNames) <= 3 {
+		pullMsg = fmt.Sprintf("Pulling image(s): %s", strings.Join(imageNames, ", "))
+	}
+	s.sendProgress(ProgressEvent{
+		Stage:    StagePullingImage,
+		Progress: 30,
+		Message:  pullMsg,
+	})
+
+	if err := s.pullImagesWithProgress(ctx, imageNames, credentials); err != nil {
+		s.logError("Image pull failed", err)
+		return err
+	}
+
+	s.sendProgress(ProgressEvent{
+		Stage:    StagePullingImage,
+		Progress: 45,
+		Message:  fmt.Sprintf("Successfully pulled %d image(s)", len(imageNames)),
+	})
+	return nil
+}
+
+// waitForHealthyServices waits for health checks and returns a result if there's a failure
+func (s *Service) waitForHealthyServices(ctx context.Context, composeService api.Compose, req DeployRequest, serviceNames []string) *DeployResult {
+	s.sendProgress(ProgressEvent{
+		Stage:     StageHealthCheck,
+		Progress:  85,
+		Message:   fmt.Sprintf("Waiting for %d service(s) to be healthy: %s", len(serviceNames), strings.Join(serviceNames, ", ")),
+		TotalSvcs: len(serviceNames),
+	})
+
+	timeout := healthTimeoutOrDefault(req.HealthTimeout)
+	err := WaitForHealthy(ctx, composeService, req.ProjectName, timeout, s.log, s.progressFn)
+	if err == nil {
+		s.logInfo("All services healthy", nil)
+		return nil
+	}
+
+	s.logError("Health check failed", err)
+
+	services, discoverErr := DiscoverContainers(ctx, s.dockerClient, req.ProjectName, s.log)
+	if discoverErr != nil {
+		s.logWarn("Failed to discover containers after health check failure")
+		return s.failResult(req.DeploymentID, fmt.Sprintf("Health check failed: %v", err))
+	}
+
+	result := AnalyzeServiceStatus(req.DeploymentID, services, s.log)
+
+	if result.PartialSuccess {
+		result.Error = NewInternalError(fmt.Sprintf("Health check failed: %v. %s", err, result.Error.Message))
+	} else if !result.Success {
+		result.Error = NewInternalError(fmt.Sprintf("Health check failed: %v", err))
+	}
+
+	s.sendProgress(ProgressEvent{
+		Stage:    StageFailed,
+		Progress: 100,
+		Message:  fmt.Sprintf("Health check failed: %v", err),
+	})
+
+	return result
+}
+
+func (s *Service) runComposeUp(ctx context.Context, req DeployRequest, composeFile string) *DeployResult {
+	s.sendProgress(ProgressEvent{
+		Stage:    StageParsing,
+		Progress: 10,
+		Message:  "Parsing compose file...",
+	})
+
+	composeService, cli, tlsFiles, err := s.createComposeService(ctx, req)
+	if err != nil {
+		return s.failResult(req.DeploymentID, fmt.Sprintf("Failed to create compose service: %v", err))
+	}
+	defer cli.Client().Close()
+	defer tlsFiles.Cleanup(s.log)
+
+	project, err := s.loadProject(ctx, composeFile, req.ProjectName, req.Environment, req.Profiles)
+	if err != nil {
+		return s.failResult(req.DeploymentID, fmt.Sprintf("Failed to load compose project: %v", err))
+	}
+
+	project = project.WithoutUnnecessaryResources()
+	s.applyComposeLabels(project)
+	serviceNames, imageNames := collectServiceInfo(project)
 
 	s.sendProgress(ProgressEvent{
 		Stage:     StageCreating,
 		Progress:  25,
-		Message:   fmt.Sprintf("Creating %d service(s)...", len(project.Services)),
+		Message:   fmt.Sprintf("Deploying %d service(s): %s", len(project.Services), strings.Join(serviceNames, ", ")),
 		TotalSvcs: len(project.Services),
 	})
 
-	// Pull images if requested (for redeploy/update)
 	if req.PullImages {
-		s.sendProgress(ProgressEvent{
-			Stage:    StagePullingImage,
-			Progress: 30,
-			Message:  "Pulling images...",
-		})
-
-		pullOpts := api.PullOptions{
-			IgnoreFailures: false,
-		}
-		if err := composeService.Pull(ctx, project, pullOpts); err != nil {
-			s.logError("Image pull failed", err)
+		if err := s.pullProjectImages(ctx, imageNames, req.RegistryCredentials); err != nil {
 			return s.failResult(req.DeploymentID, fmt.Sprintf("Image pull failed: %v", err))
 		}
-		s.logInfo("Images pulled successfully", nil)
 	}
 
-	// Configure recreate behavior
-	recreatePolicy := api.RecreateDiverged // Default: recreate only if config changed
+	recreatePolicy := api.RecreateDiverged
 	if req.ForceRecreate {
-		recreatePolicy = api.RecreateForce // Force: always recreate containers
-		s.logInfo("Force recreate enabled - all containers will be recreated", nil)
+		recreatePolicy = api.RecreateForce
+		s.logInfo("Force recreate enabled", nil)
 	}
 
-	// Execute up
 	upOpts := api.UpOptions{
 		Create: api.CreateOptions{
 			RemoveOrphans: true,
@@ -266,75 +407,31 @@ func (s *Service) runComposeUp(ctx context.Context, req DeployRequest, composeFi
 		Message:  "Building images (if needed)...",
 	})
 
-	// Build images if compose file has build: directives
-	// This is a no-op if there are no build directives
 	if err := composeService.Build(ctx, project, api.BuildOptions{}); err != nil {
 		s.logError("Compose build failed", err)
 		return s.failResult(req.DeploymentID, fmt.Sprintf("Compose build failed: %v", err))
 	}
 
 	s.sendProgress(ProgressEvent{
-		Stage:    StageStarting,
-		Progress: 70,
-		Message:  "Starting services...",
+		Stage:     StageStarting,
+		Progress:  70,
+		Message:   fmt.Sprintf("Creating and starting %d container(s): %s", len(serviceNames), strings.Join(serviceNames, ", ")),
+		TotalSvcs: len(serviceNames),
 	})
 
 	if err := composeService.Up(ctx, project, upOpts); err != nil {
 		s.logError("Compose up failed", err)
-
-		// Attempt cleanup on failure
 		s.logWarn("Deployment failed, attempting cleanup...")
 		_ = composeService.Down(ctx, req.ProjectName, api.DownOptions{RemoveOrphans: true})
-
-		return s.failResult(req.DeploymentID, fmt.Sprintf("Compose up failed: %v", err))
+		return s.failResult(req.DeploymentID, fmt.Sprintf("Failed to start services (%s): %v", strings.Join(serviceNames, ", "), err))
 	}
 
-	// Wait for health checks if requested
 	if req.WaitForHealthy {
-		s.sendProgress(ProgressEvent{
-			Stage:    StageHealthCheck,
-			Progress: 85,
-			Message:  "Waiting for services to be healthy...",
-		})
-
-		timeout := req.HealthTimeout
-		if timeout <= 0 {
-			timeout = 60
-		}
-		if err := WaitForHealthy(ctx, composeService, req.ProjectName, timeout, s.log, s.progressFn); err != nil {
-			s.logError("Health check failed", err)
-
-			// Don't just fail - discover containers and check for partial success
-			// Some containers may be running even if health checks failed
-			services, discoverErr := DiscoverContainers(ctx, s.dockerClient, req.ProjectName, s.log)
-			if discoverErr != nil {
-				s.logWarn("Failed to discover containers after health check failure")
-				return s.failResult(req.DeploymentID, fmt.Sprintf("Health check failed: %v", err))
-			}
-
-			// Use AnalyzeServiceStatus to properly detect partial success
-			result := AnalyzeServiceStatus(req.DeploymentID, services, s.log)
-
-			// Override the error message to include health check failure info
-			if result.PartialSuccess {
-				result.Error = NewInternalError(fmt.Sprintf("Health check failed: %v. %s",
-					err, result.Error.Message))
-			} else if !result.Success {
-				result.Error = NewInternalError(fmt.Sprintf("Health check failed: %v", err))
-			}
-
-			s.sendProgress(ProgressEvent{
-				Stage:    StageFailed,
-				Progress: 100,
-				Message:  fmt.Sprintf("Health check failed: %v", err),
-			})
-
+		if result := s.waitForHealthyServices(ctx, composeService, req, serviceNames); result != nil {
 			return result
 		}
-		s.logInfo("All services healthy", nil)
 	}
 
-	// Discover containers
 	s.sendProgress(ProgressEvent{
 		Stage:    StageCompleted,
 		Progress: 95,
@@ -355,36 +452,37 @@ func (s *Service) runComposeUp(ctx context.Context, req DeployRequest, composeFi
 	result := AnalyzeServiceStatus(req.DeploymentID, services, s.log)
 
 	if result.Success {
+		runningCount := countHealthyServices(result.Services)
 		s.sendProgress(ProgressEvent{
-			Stage:    StageCompleted,
+			Stage:     StageCompleted,
+			Progress:  100,
+			Message:   fmt.Sprintf("Deployment completed: %d/%d service(s) running", runningCount, len(result.Services)),
+			TotalSvcs: len(result.Services),
+		})
+	} else if result.PartialSuccess {
+		s.sendProgress(ProgressEvent{
+			Stage:    StageFailed,
 			Progress: 100,
-			Message:  "Deployment completed successfully",
+			Message:  fmt.Sprintf("Partial deployment: %d service(s) failed: %s", len(result.FailedServices), strings.Join(result.FailedServices, ", ")),
 		})
 	}
 
 	return result
 }
 
-// runComposeDown executes compose down using the library
 func (s *Service) runComposeDown(ctx context.Context, req DeployRequest, composeFile string) *DeployResult {
 	s.sendProgress(ProgressEvent{
 		Stage:    StageStarting,
 		Progress: 20,
-		Message:  "Running compose down...",
+		Message:  fmt.Sprintf("Stopping stack: %s", req.ProjectName),
 	})
 
-	// Create compose service
-	composeService, cli, err := s.createComposeService(ctx, req.RegistryCredentials)
+	composeService, cli, tlsFiles, err := s.createComposeService(ctx, req)
 	if err != nil {
 		return s.failResult(req.DeploymentID, fmt.Sprintf("Failed to create compose service: %v", err))
 	}
 	defer cli.Client().Close()
-
-	// Execute down
-	downOpts := api.DownOptions{
-		RemoveOrphans: true,
-		Volumes:       req.RemoveVolumes,
-	}
+	defer tlsFiles.Cleanup(s.log)
 
 	if req.RemoveVolumes {
 		s.logWarn("Removing volumes as requested (destructive operation)")
@@ -392,13 +490,16 @@ func (s *Service) runComposeDown(ctx context.Context, req DeployRequest, compose
 
 	s.logInfo("Executing compose down", logrus.Fields{"project_name": req.ProjectName})
 
+	downOpts := api.DownOptions{
+		RemoveOrphans: true,
+		Volumes:       req.RemoveVolumes,
+	}
 	if err := composeService.Down(ctx, req.ProjectName, downOpts); err != nil {
 		s.logError("Compose down failed", err)
 		return s.failResult(req.DeploymentID, fmt.Sprintf("Compose down failed: %v", err))
 	}
 
-	s.logInfo("Compose down completed successfully", logrus.Fields{"deployment_id": req.DeploymentID})
-
+	s.logInfo("Compose down completed", logrus.Fields{"deployment_id": req.DeploymentID})
 	s.sendProgress(ProgressEvent{
 		Stage:    StageCompleted,
 		Progress: 100,
@@ -412,14 +513,173 @@ func (s *Service) runComposeDown(ctx context.Context, req DeployRequest, compose
 	}
 }
 
-// failResult creates a failure result
+// buildRegistryAuthMap creates a map of registry URLs to base64-encoded auth credentials.
+// Docker Hub is mapped to multiple keys to handle its various URL formats.
+func (s *Service) buildRegistryAuthMap(credentials []RegistryCredential) map[string]string {
+	authMap := make(map[string]string)
+	for _, cred := range credentials {
+		authConfig := registry.AuthConfig{
+			Username:      cred.Username,
+			Password:      cred.Password,
+			ServerAddress: cred.RegistryURL,
+		}
+		authJSON, err := json.Marshal(authConfig)
+		if err != nil {
+			s.logWarn(fmt.Sprintf("Failed to encode auth for registry %s: %v", cred.RegistryURL, err))
+			continue
+		}
+		encoded := base64.URLEncoding.EncodeToString(authJSON)
+
+		if isDockerHub(cred.RegistryURL) {
+			authMap["docker.io"] = encoded
+			authMap["index.docker.io"] = encoded
+			authMap[dockerHubRegistry] = encoded
+		} else {
+			authMap[cred.RegistryURL] = encoded
+		}
+	}
+	return authMap
+}
+
+// getRegistryFromImage extracts the registry hostname from an image reference.
+// Returns "docker.io" for Docker Hub images (those without a dot in the first path segment).
+func getRegistryFromImage(imageName string) string {
+	parts := strings.SplitN(imageName, "/", 2)
+	if len(parts) > 1 && strings.Contains(parts[0], ".") {
+		return parts[0]
+	}
+	return "docker.io"
+}
+
+// pullImagesWithProgress pulls images using the Docker SDK with progress streaming.
+func (s *Service) pullImagesWithProgress(ctx context.Context, images []string, credentials []RegistryCredential) error {
+	authMap := s.buildRegistryAuthMap(credentials)
+
+	for _, imageName := range images {
+		if imageName == "" {
+			continue
+		}
+		if err := s.pullSingleImage(ctx, imageName, authMap); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// pullSingleImage pulls a single image with progress streaming.
+func (s *Service) pullSingleImage(ctx context.Context, imageName string, authMap map[string]string) error {
+	s.sendProgress(ProgressEvent{
+		Stage:   StagePullingImage,
+		Message: fmt.Sprintf("Pulling %s...", imageName),
+	})
+
+	registryAuth := authMap[getRegistryFromImage(imageName)]
+	pullOpts := image.PullOptions{RegistryAuth: registryAuth}
+
+	reader, err := s.dockerClient.ImagePull(ctx, imageName, pullOpts)
+	if err != nil {
+		return fmt.Errorf("failed to pull %s: %w", imageName, err)
+	}
+	defer reader.Close()
+
+	if err := s.streamPullProgress(ctx, reader, imageName); err != nil {
+		return err
+	}
+
+	s.sendProgress(ProgressEvent{
+		Stage:   StagePullingImage,
+		Message: fmt.Sprintf("Pulled %s", imageName),
+	})
+	return nil
+}
+
+// streamPullProgress reads the image pull stream and sends progress updates.
+func (s *Service) streamPullProgress(ctx context.Context, reader interface{ Read([]byte) (int, error) }, imageName string) error {
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+
+	var lastBroadcast time.Time
+
+	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		var msg jsonmessage.JSONMessage
+		if err := json.Unmarshal(line, &msg); err != nil {
+			continue
+		}
+
+		if msg.Error != nil {
+			return fmt.Errorf("pull error for %s: %s", imageName, msg.Error.Message)
+		}
+
+		progressMsg, isCompletion := s.formatPullProgressMessage(msg, imageName)
+		if progressMsg == "" {
+			continue
+		}
+
+		now := time.Now()
+		if isCompletion || now.Sub(lastBroadcast) >= progressThrottleInterval {
+			s.sendProgress(ProgressEvent{
+				Stage:   StagePullingImage,
+				Message: progressMsg,
+			})
+			lastBroadcast = now
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("error reading pull stream for %s: %w", imageName, err)
+	}
+	return nil
+}
+
+// formatPullProgressMessage formats a pull progress message and indicates if it's a completion event.
+func (s *Service) formatPullProgressMessage(msg jsonmessage.JSONMessage, imageName string) (string, bool) {
+	if msg.Status == "" {
+		return "", false
+	}
+
+	idPrefix := msg.ID
+	if len(idPrefix) > layerIDDisplayLen {
+		idPrefix = idPrefix[:layerIDDisplayLen]
+	}
+
+	isCompletion := msg.Status == "Pull complete" ||
+		msg.Status == "Already exists" ||
+		strings.HasPrefix(msg.Status, "Digest:") ||
+		strings.HasPrefix(msg.Status, "Status:")
+
+	switch {
+	case strings.HasPrefix(msg.Status, "Pulling"):
+		return fmt.Sprintf("%s: %s", imageName, msg.Status), isCompletion
+	case strings.Contains(msg.Status, "Downloading") && msg.ID != "":
+		return fmt.Sprintf("Downloading %s: %s", idPrefix, msg.Progress), isCompletion
+	case strings.Contains(msg.Status, "Extracting") && msg.ID != "":
+		return fmt.Sprintf("Extracting %s: %s", idPrefix, msg.Progress), isCompletion
+	case (msg.Status == "Pull complete" || msg.Status == "Already exists") && msg.ID != "":
+		return fmt.Sprintf("Layer %s: %s", idPrefix, msg.Status), isCompletion
+	case strings.HasPrefix(msg.Status, "Digest:"), strings.HasPrefix(msg.Status, "Status:"):
+		return msg.Status, isCompletion
+	default:
+		return "", false
+	}
+}
+
 func (s *Service) failResult(deploymentID, errorMsg string) *DeployResult {
 	s.sendProgress(ProgressEvent{
 		Stage:    StageFailed,
 		Progress: 100,
 		Message:  errorMsg,
 	})
-
 	return &DeployResult{
 		DeploymentID: deploymentID,
 		Success:      false,
@@ -427,44 +687,35 @@ func (s *Service) failResult(deploymentID, errorMsg string) *DeployResult {
 	}
 }
 
-// sendProgress sends a progress event if callback is set
 func (s *Service) sendProgress(event ProgressEvent) {
 	if s.progressFn != nil {
 		s.progressFn(event)
 	}
 }
 
-// Logging helpers that are nil-safe
-func (s *Service) logInfo(msg string, fields logrus.Fields) {
-	if s.log != nil {
-		if fields != nil {
-			s.log.WithFields(fields).Info(msg)
-		} else {
-			s.log.Info(msg)
-		}
+// logWithFields is a nil-safe helper for structured logging
+func (s *Service) logWithFields(level logrus.Level, msg string, fields logrus.Fields) {
+	if s.log == nil {
+		return
 	}
+	entry := s.log.WithFields(fields)
+	entry.Log(level, msg)
+}
+
+func (s *Service) logInfo(msg string, fields logrus.Fields) {
+	s.logWithFields(logrus.InfoLevel, msg, fields)
 }
 
 func (s *Service) logDebug(msg string, fields logrus.Fields) {
-	if s.log != nil {
-		if fields != nil {
-			s.log.WithFields(fields).Debug(msg)
-		} else {
-			s.log.Debug(msg)
-		}
-	}
+	s.logWithFields(logrus.DebugLevel, msg, fields)
 }
 
 func (s *Service) logWarn(msg string) {
-	if s.log != nil {
-		s.log.Warn(msg)
-	}
+	s.logWithFields(logrus.WarnLevel, msg, nil)
 }
 
 func (s *Service) logError(msg string, err error) {
-	if s.log != nil {
-		s.log.WithField("error", err.Error()).Error(msg)
-	}
+	s.logWithFields(logrus.ErrorLevel, msg, logrus.Fields{"error": err.Error()})
 }
 
 // TestComposeLibrary validates that the compose library is functional

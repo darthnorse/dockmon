@@ -114,7 +114,7 @@ class StatsServiceClient:
                 return False
         return False
 
-    async def add_docker_host(self, host_id: str, host_name: str, host_address: str, tls_ca: str = None, tls_cert: str = None, tls_key: str = None, num_cpus: int = None) -> bool:
+    async def add_docker_host(self, host_id: str, host_name: str, host_address: str, tls_ca: str = None, tls_cert: str = None, tls_key: str = None, num_cpus: int = None, is_local: bool = False) -> bool:
         """Register a Docker host with the stats service"""
         for attempt in range(2):
             try:
@@ -134,6 +134,10 @@ class StatsServiceClient:
                 # Add num_cpus for proper host CPU aggregation
                 if num_cpus and num_cpus > 0:
                     payload["num_cpus"] = num_cpus
+
+                # Mark as local host for /host/proc reading (Issue #129)
+                if is_local:
+                    payload["is_local"] = True
 
                 async with session.post(
                     f"{self.base_url}/api/hosts/add",
@@ -452,12 +456,9 @@ class StatsServiceClient:
                 backoff = min(backoff * 2, max_backoff)
 
 
-# Global instance
-_stats_client = None
+# Global instance - initialized at module load to avoid race conditions
+_stats_client = StatsServiceClient()
 
 def get_stats_client() -> StatsServiceClient:
     """Get the global stats client instance"""
-    global _stats_client
-    if _stats_client is None:
-        _stats_client = StatsServiceClient()
     return _stats_client

@@ -861,14 +861,16 @@ class RegistryCredential(Base):
 
 class Deployment(Base):
     """
-    Deployment records for container lifecycle operations.
+    Deployment records for stack lifecycle operations (v2.2.7+).
 
-    Tracks container deployments and stacks with state machine support
-    and commitment point tracking for rollback safety.
+    Tracks stack deployments with state machine support and commitment point
+    tracking for rollback safety.
 
-    Deployment Types:
-        - container: Single container deployment
-        - stack: Multi-container stack deployment
+    v2.2.7 Changes:
+        - Compose content now stored on filesystem (/app/data/stacks/{stack_name}/)
+        - Renamed 'name' to 'stack_name' for clarity
+        - Removed 'definition' column (now on filesystem)
+        - Removed 'deployment_type' column (everything is a stack now)
 
     Status Flow (7-state machine):
         planning -> validating -> pulling_image -> creating -> starting -> running -> completed
@@ -893,16 +895,15 @@ class Deployment(Base):
         - id: Composite key format {host_id}:{deployment_short_id}
         - deployment_short_id: SHORT ID (12 chars), never full 64-char ID
         - Composite key prevents collisions across multiple hosts
+        - stack_name: References stack in /app/data/stacks/{stack_name}/
     """
     __tablename__ = "deployments"
 
     id = Column(String, primary_key=True)  # Composite: {host_id}:{deployment_short_id}
     host_id = Column(String, ForeignKey("docker_hosts.id", ondelete="CASCADE"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)  # User who created deployment (for authorization)
-    deployment_type = Column(String, nullable=False)  # 'container' | 'stack'
-    name = Column(String, nullable=False)
+    stack_name = Column(String, nullable=False)  # References stack in /app/data/stacks/{stack_name}/
     status = Column(String, nullable=False, default='planning')  # planning, validating, pulling_image, creating, starting, running, failed, rolled_back
-    definition = Column(Text, nullable=False)  # JSON: container/stack configuration
     error_message = Column(Text, nullable=True)
     progress_percent = Column(Integer, default=0, nullable=False)  # Deployment progress 0-100%
     current_stage = Column(Text, nullable=True)  # Current deployment stage (e.g., 'Pulling image', 'Creating container')
@@ -921,7 +922,7 @@ class Deployment(Base):
 
     # Indexes and constraints
     __table_args__ = (
-        UniqueConstraint('host_id', 'name', name='uq_deployment_host_name'),  # Unique name per host
+        UniqueConstraint('stack_name', 'host_id', name='uq_deployment_stack_host'),  # Same stack can be deployed to multiple hosts
         # Status must be one of the valid deployment states
         CheckConstraint(
             "status IN ('planning', 'validating', 'pulling_image', 'creating', 'starting', 'running', 'partial', 'failed', 'rolled_back')",
@@ -970,50 +971,6 @@ class DeploymentContainer(Base):
         Index('idx_deployment_container_container', 'container_id'),
         Index('idx_deployment_container_deployment_service', 'deployment_id', 'service_name'),  # Stack service lookup
         {"sqlite_autoincrement": True},
-    )
-
-
-class DeploymentTemplate(Base):
-    """
-    Saved deployment templates for reusable container configurations.
-
-    Allows users to save and reuse container configurations as templates.
-    Templates are categorized for organization (e.g., 'web', 'database', 'monitoring').
-
-    Template Variables:
-        Templates can include variables like ${PORT} that are substituted at deployment time.
-        Variables are defined in the 'variables' JSON field with default values and types.
-
-    Template Structure (template_definition):
-        Single container (deployment_type='container'):
-            {"container": {"image": "nginx:latest", "ports": {"80/tcp": "${PORT}"}, ...}}
-
-        Stack (deployment_type='stack'):
-            {
-                "services": {
-                    "web": {"image": "nginx:latest", ...},
-                    "db": {"image": "postgres:15", ...}
-                }
-            }
-    """
-    __tablename__ = "deployment_templates"
-
-    id = Column(String, primary_key=True)  # e.g., 'tpl_nginx_001'
-    name = Column(String, nullable=False, unique=True)
-    category = Column(String, nullable=True)  # e.g., 'web', 'database', 'monitoring'
-    description = Column(Text, nullable=True)
-    deployment_type = Column(String, nullable=False)  # 'container' | 'stack'
-    template_definition = Column(Text, nullable=False)  # JSON: container/stack configuration with variables
-    variables = Column(Text, nullable=True)  # JSON: {"PORT": {"default": 8080, "type": "integer", "description": "..."}}
-    is_builtin = Column(Boolean, default=False, nullable=False)  # Built-in vs user-created template
-    created_at = Column(DateTime, default=utcnow, nullable=False)
-    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
-
-    # Indexes
-    __table_args__ = (
-        Index('idx_deployment_template_name', 'name'),
-        Index('idx_deployment_template_category', 'category'),
-        {"sqlite_autoincrement": False},
     )
 
 
@@ -1517,6 +1474,74 @@ class DatabaseManager:
                 settings = GlobalSettings()
                 session.add(settings)
                 session.commit()
+
+            # Initialize default update validation policies if none exist
+            self._seed_update_policies(session)
+
+    def _seed_update_policies(self, session):
+        """
+        Seed default update validation policies if they don't exist.
+
+        This matches the v2.1.10 Alembic migration behavior - it defensively
+        inserts missing policies without affecting existing ones. This handles
+        fresh installs where migrations don't run (Base.metadata.create_all()
+        + stamp HEAD skips migrations).
+        """
+        # Get existing policies as (category, pattern) pairs
+        existing = set(
+            (row.category, row.pattern)
+            for row in session.query(UpdatePolicy.category, UpdatePolicy.pattern).all()
+        )
+
+        # Default patterns (matching v2.1.10 migration + extras)
+        # Action 'warn' = show confirmation before update
+        default_policies = [
+            # Databases - critical data containers
+            ("databases", "postgres"),
+            ("databases", "mysql"),
+            ("databases", "mariadb"),
+            ("databases", "mongodb"),
+            ("databases", "mongo"),
+            ("databases", "redis"),
+            ("databases", "sqlite"),
+            ("databases", "mssql"),
+            ("databases", "cassandra"),
+            ("databases", "influxdb"),
+            ("databases", "elasticsearch"),
+            # Proxies - ingress/routing containers
+            ("proxies", "traefik"),
+            ("proxies", "nginx"),
+            ("proxies", "caddy"),
+            ("proxies", "haproxy"),
+            ("proxies", "envoy"),
+            # Monitoring - observability stack
+            ("monitoring", "grafana"),
+            ("monitoring", "prometheus"),
+            ("monitoring", "alertmanager"),
+            ("monitoring", "uptime-kuma"),
+            # Critical - infrastructure management
+            ("critical", "portainer"),
+            ("critical", "watchtower"),
+            ("critical", "dockmon"),
+            ("critical", "komodo"),
+        ]
+
+        # Insert missing policies only
+        inserted = 0
+        for category, pattern in default_policies:
+            if (category, pattern) not in existing:
+                policy = UpdatePolicy(
+                    category=category,
+                    pattern=pattern,
+                    enabled=True,
+                    action='warn',
+                )
+                session.add(policy)
+                inserted += 1
+
+        if inserted > 0:
+            session.commit()
+            logger.info(f"Seeded {inserted} missing default update validation policies")
 
     def get_session(self) -> Session:
         """Get a database session"""

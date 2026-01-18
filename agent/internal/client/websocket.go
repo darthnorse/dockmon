@@ -79,14 +79,24 @@ func NewWebSocketClient(
 		client.sendEvent,
 	)
 
-	// Initialize host stats handler for systemd agents (not container mode)
-	// This collects real host metrics from /proc instead of aggregating container stats
+	// Initialize host stats handler for:
+	// - Systemd agents: read directly from /proc
+	// - Container agents with /host/proc mounted: read from /host/proc
+	// This provides real host metrics instead of aggregating container stats
 	if myContainerID == "" {
+		// Systemd mode - always enable, reads from /proc
 		client.hostStatsHandler = handlers.NewHostStatsHandler(
 			log,
 			client.sendJSON,
 		)
 		log.Info("Host stats handler initialized (systemd mode)")
+	} else if _, err := os.Stat("/host/proc/stat"); err == nil {
+		// Container mode with /host/proc mounted - enable host stats
+		client.hostStatsHandler = handlers.NewHostStatsHandler(
+			log,
+			client.sendJSON,
+		)
+		log.Info("Host stats handler initialized (container mode with /host/proc mount)")
 	}
 
 	// Initialize update handler with sendEvent callback

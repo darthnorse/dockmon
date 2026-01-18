@@ -9,10 +9,13 @@
  * - DeploymentForm (create/edit deployments)
  */
 
-import { useState, useImperativeHandle, forwardRef } from 'react'
+import { useState, useImperativeHandle, forwardRef, useCallback } from 'react'
 import { Wand2, CheckCircle2 } from 'lucide-react'
 import yaml from 'js-yaml'
-import { Textarea } from '@/components/ui/textarea'
+import CodeMirror from '@uiw/react-codemirror'
+import { yaml as yamlLang } from '@codemirror/lang-yaml'
+import { json as jsonLang } from '@codemirror/lang-json'
+import { githubDark } from '@uiw/codemirror-theme-github'
 import { Button } from '@/components/ui/button'
 
 interface ConfigurationEditorProps {
@@ -23,6 +26,7 @@ interface ConfigurationEditorProps {
   error?: string | undefined
   className?: string
   rows?: number
+  fillHeight?: boolean  // If true, fills available height instead of using rows
 }
 
 export interface ConfigurationEditorHandle {
@@ -45,10 +49,16 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
   mode = 'json',
   error,
   className = '',
-  rows = 12
+  rows = 12,
+  fillHeight = false
 }, ref) => {
   const [formatStatus, setFormatStatus] = useState<'idle' | 'success' | 'error'>('idle')
   const [validationError, setValidationError] = useState<string | null>(null)
+
+  // Stable callback for CodeMirror onChange
+  const handleChange = useCallback((val: string) => {
+    onChange(val)
+  }, [onChange])
 
   /**
    * Validate content without formatting
@@ -66,30 +76,32 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
         try {
           yaml.load(value)
           return { valid: true, error: null }
-        } catch (firstErr: any) {
+        } catch (firstErr: unknown) {
+          const firstErrMsg = firstErr instanceof Error ? firstErr.message : String(firstErr)
           // If parsing failed with indentation error, try auto-fix
-          if (firstErr.message?.includes('bad indentation') ||
-              firstErr.message?.includes('expected <block end>')) {
+          if (firstErrMsg.includes('bad indentation') ||
+              firstErrMsg.includes('expected <block end>')) {
             const fixedYaml = autoFixYamlIndentation(value)
 
             if (fixedYaml) {
               try {
                 yaml.load(fixedYaml)
                 return { valid: true, error: null }
-              } catch (secondErr: any) {
-                return { valid: false, error: firstErr.message }
+              } catch {
+                return { valid: false, error: firstErrMsg }
               }
             }
           }
-          return { valid: false, error: firstErr.message }
+          return { valid: false, error: firstErrMsg }
         }
       } else {
         // Validate JSON
         JSON.parse(value)
         return { valid: true, error: null }
       }
-    } catch (err: any) {
-      return { valid: false, error: err.message || 'Invalid format' }
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : 'Invalid format'
+      return { valid: false, error: errMsg }
     }
   }
 
@@ -101,7 +113,7 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
 
     try {
       if (type === 'stack') {
-        let contentToFormat = value
+        const contentToFormat = value
 
         // First attempt: Parse as-is
         try {
@@ -114,10 +126,11 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
           })
 
           return formatted
-        } catch (firstErr: any) {
+        } catch (firstErr: unknown) {
+          const firstErrMsg = firstErr instanceof Error ? firstErr.message : String(firstErr)
           // If parsing failed with indentation error, try auto-fix
-          if (firstErr.message?.includes('bad indentation') ||
-              firstErr.message?.includes('expected <block end>')) {
+          if (firstErrMsg.includes('bad indentation') ||
+              firstErrMsg.includes('expected <block end>')) {
             const fixedYaml = autoFixYamlIndentation(contentToFormat)
 
             if (fixedYaml) {
@@ -131,7 +144,7 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
                 })
 
                 return formatted
-              } catch (secondErr: any) {
+              } catch {
                 return null
               }
             }
@@ -144,7 +157,7 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
         const formatted = JSON.stringify(parsed, null, 2)
         return formatted
       }
-    } catch (err: any) {
+    } catch {
       return null
     }
   }
@@ -277,8 +290,9 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
         // Check for common YAML indentation errors
         try {
           yaml.load(value)
-        } catch (err: any) {
-          if (err.message?.includes('bad indentation')) {
+        } catch (err: unknown) {
+          const errMsg = err instanceof Error ? err.message : String(err)
+          if (errMsg.includes('bad indentation')) {
             helpfulMessage += '\n\nTip: Root-level keys (services, volumes, networks) must have NO indentation (column 0).'
           }
         }
@@ -325,9 +339,9 @@ networks:
   }
 
   return (
-    <div className="space-y-2">
+    <div className={fillHeight ? 'flex flex-col h-full' : 'space-y-2'}>
       {/* Format Button */}
-      <div className="flex justify-end">
+      <div className={`flex justify-end ${fillHeight ? 'mb-2 shrink-0' : ''}`}>
         <Button
           type="button"
           variant="outline"
@@ -355,47 +369,38 @@ networks:
         </Button>
       </div>
 
-      <Textarea
+      <CodeMirror
         value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={(e) => {
-          // Allow Tab key to insert spaces instead of moving focus (Issue #126)
-          if (e.key === 'Tab') {
-            e.preventDefault()
-            const target = e.target as HTMLTextAreaElement
-            const start = target.selectionStart
-            const end = target.selectionEnd
-
-            // Insert 2 spaces at cursor position
-            const newValue = value.substring(0, start) + '  ' + value.substring(end)
-            onChange(newValue)
-
-            // Move cursor after the inserted spaces
-            requestAnimationFrame(() => {
-              target.selectionStart = target.selectionEnd = start + 2
-            })
-          }
-        }}
+        onChange={handleChange}
+        extensions={type === 'stack' ? [yamlLang()] : [jsonLang()]}
+        theme={githubDark}
         placeholder={placeholders[type]}
-        rows={rows}
-        className={`font-mono text-sm ${error || validationError ? 'border-destructive' : ''} ${className}`}
+        height={fillHeight ? '100%' : `${rows * 1.5}rem`}
+        basicSetup={{
+          lineNumbers: true,
+          foldGutter: true,
+          highlightActiveLine: true,
+          indentOnInput: true,
+          tabSize: 2,
+        }}
+        className={`rounded-md border ${error || validationError ? 'border-destructive' : 'border-input'} ${fillHeight ? 'flex-1 min-h-0' : ''} ${className}`}
       />
 
       {/* Help text */}
-      <p className="text-xs text-muted-foreground">
+      <p className={`text-xs text-muted-foreground ${fillHeight ? 'mt-2 shrink-0' : ''}`}>
         {helpText[type]}
       </p>
 
       {/* Validation error (from Format button) */}
       {validationError && (
-        <p className="text-xs text-destructive">
+        <p className={`text-xs text-destructive ${fillHeight ? 'shrink-0' : ''}`}>
           {validationError}
         </p>
       )}
 
       {/* Form validation error (from parent) */}
       {error && (
-        <p className="text-xs text-destructive">
+        <p className={`text-xs text-destructive ${fillHeight ? 'shrink-0' : ''}`}>
           {error}
         </p>
       )}

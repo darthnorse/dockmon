@@ -1,28 +1,31 @@
 """
-Deployment executor service for DockMon v2.1
+Deployment executor service for DockMon v2.2.7
 
-Executes container and stack deployments with real-time progress tracking,
+Executes stack deployments with real-time progress tracking,
 state management, and rollback support.
 
 Usage:
     executor = DeploymentExecutor(event_bus, docker_monitor)
     deployment_id = await executor.create_deployment(
         host_id="host123",
-        name="my-nginx",
-        deployment_type="container",
-        definition={"image": "nginx:1.25", "ports": {80: 8080}},
+        stack_name="my-stack",  # References stack in /app/data/stacks/my-stack/
     )
     await executor.execute_deployment(deployment_id)
 
+v2.2.7 Changes:
+- Compose content now read from filesystem (/app/data/stacks/{stack_name}/)
+- Removed deployment_type - everything is a stack now
+- Removed definition column - compose.yaml and .env on filesystem
+- Stack must exist before creating deployment
+
 Refactored in v2.2.0:
-- Container deployment logic: container_executor.py
+- Container deployment logic: container_executor.py (deprecated)
 - Stack deployment logic: stack_executor.py
 - Container args builder: build_args.py
 - Network/IPAM helpers: network_helpers.py
 """
 
 import asyncio
-import json
 import logging
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
@@ -37,10 +40,9 @@ from database import (
     DockerHostDB,
 )
 from .state_machine import DeploymentStateMachine
-from .security_validator import SecurityValidator, SecurityLevel
 from .host_connector import get_host_connector
-from .container_executor import execute_container_deployment
 from .stack_executor import execute_stack_deployment
+from . import stack_storage
 from utils.image_pull_progress import ImagePullProgress
 
 logger = logging.getLogger(__name__)
@@ -48,11 +50,11 @@ logger = logging.getLogger(__name__)
 
 class DeploymentExecutor:
     """
-    Executes container and stack deployments with progress tracking.
+    Executes stack deployments with progress tracking (v2.2.7+).
 
     Integrates with:
     - DeploymentStateMachine for state transitions
-    - SecurityValidator for pre-deployment validation
+    - stack_storage for reading compose content from filesystem
     - EventBus for real-time progress updates
     - DockerMonitor for container operations
     """
@@ -70,7 +72,6 @@ class DeploymentExecutor:
         self.docker_monitor = docker_monitor
         self.db = database_manager
         self.state_machine = DeploymentStateMachine()
-        self.security_validator = SecurityValidator()
 
         # Image pull tracker initialized lazily to get running loop in async context
         self._image_pull_tracker = None
@@ -103,21 +104,17 @@ class DeploymentExecutor:
     async def create_deployment(
         self,
         host_id: str,
-        name: str,
-        deployment_type: str,
-        definition: Dict[str, Any],
+        stack_name: str,
         user_id: int,
         rollback_on_failure: bool = True,
         created_by: Optional[str] = None,
     ) -> str:
         """
-        Create a new deployment record.
+        Create a new deployment record for a stack (v2.2.7+).
 
         Args:
             host_id: Host UUID to deploy on
-            name: Deployment name (must be unique per host)
-            deployment_type: 'container' or 'stack'
-            definition: Container/stack configuration dictionary
+            stack_name: Name of stack (must exist in /app/data/stacks/{stack_name}/)
             user_id: User ID of creator (for authorization and audit)
             rollback_on_failure: Whether to rollback on failure (default: True)
             created_by: Username who created the deployment (for audit tracking)
@@ -126,67 +123,26 @@ class DeploymentExecutor:
             Deployment composite ID: {host_id}:{deployment_id}
 
         Raises:
-            ValueError: If deployment_type invalid or name already exists
-            SecurityException: If security validation fails with CRITICAL issues
+            ValueError: If stack doesn't exist or deployment already exists
         """
+        # Validate stack exists on filesystem
+        if not await stack_storage.stack_exists(stack_name):
+            raise ValueError(
+                f"Stack '{stack_name}' not found. "
+                "Create the stack first using POST /api/stacks."
+            )
+
         with self.db.get_session() as session:
-            # Validate deployment type
-            if deployment_type not in ('container', 'stack'):
-                raise ValueError(
-                    f"Invalid deployment_type: {deployment_type}. "
-                    "Must be 'container' or 'stack'"
-                )
-
-            # Validate definition structure matches deployment type
-            if deployment_type == 'container':
-                if 'image' not in definition:
-                    raise ValueError(
-                        "Container deployments require an 'image' field at root level. "
-                        "Example: {\"image\": \"nginx:alpine\", \"ports\": [\"80:80\"]}"
-                    )
-                if 'compose_yaml' in definition or 'services' in definition:
-                    raise ValueError(
-                        "Container deployments cannot use 'compose_yaml' or 'services'. "
-                        "Use deployment_type='stack' for Docker Compose multi-service deployments."
-                    )
-
-            elif deployment_type == 'stack':
-                if 'compose_yaml' not in definition:
-                    raise ValueError(
-                        "Stack deployments require a 'compose_yaml' field with Docker Compose YAML. "
-                        "Example: {\"compose_yaml\": \"services:\\n  nginx:\\n    image: nginx:alpine\"}"
-                    )
-                if 'image' in definition:
-                    raise ValueError(
-                        "Stack deployments use 'compose_yaml' with 'services', not a root-level 'image'. "
-                        "Use deployment_type='container' for single-container deployments."
-                    )
-
-            # Check for duplicate name on this host
+            # Check for duplicate deployment on this host
             existing = session.query(Deployment).filter_by(
                 host_id=host_id,
-                name=name
+                stack_name=stack_name
             ).first()
             if existing:
-                raise ValueError(f"Deployment with name '{name}' already exists on this host")
-
-            # Security validation (container deployments only)
-            # Stack deployments use native Docker Compose which handles its own execution.
-            # The SecurityValidator doesn't parse compose YAML, so it provides no value for stacks.
-            if deployment_type == 'container':
-                violations = self.security_validator.validate_container_config(definition, host_id)
-                if self.security_validator.has_blocking_violations(violations):
-                    formatted = self.security_validator.format_violations(violations)
-                    raise SecurityException(f"Security validation failed:\n{formatted}")
-
-                # Log warnings for non-blocking violations
-                warning_violations = self.security_validator.filter_by_level(
-                    violations, SecurityLevel.HIGH, include_higher=True
+                raise ValueError(
+                    f"Deployment for stack '{stack_name}' already exists on this host. "
+                    "Delete the existing deployment first or use a different host."
                 )
-                if warning_violations:
-                    logger.warning(
-                        f"Deployment {name} has security warnings: {len(warning_violations)} violations"
-                    )
 
             # Generate deployment ID
             deployment_id = self._generate_deployment_id(host_id)
@@ -197,10 +153,8 @@ class DeploymentExecutor:
                 id=deployment_id,
                 host_id=host_id,
                 user_id=user_id,
-                deployment_type=deployment_type,
-                name=name,
+                stack_name=stack_name,
                 status='planning',
-                definition=json.dumps(definition),
                 progress_percent=0,
                 created_at=utcnow,
                 updated_at=utcnow,
@@ -213,7 +167,7 @@ class DeploymentExecutor:
             session.commit()
 
             logger.info(
-                f"Created deployment {deployment_id} ({deployment_type}: {name}) "
+                f"Created deployment {deployment_id} (stack: {stack_name}) "
                 f"on host {host_id[:8]}"
             )
 
@@ -229,9 +183,9 @@ class DeploymentExecutor:
         pull_images: bool = False
     ) -> bool:
         """
-        Execute a deployment (pull image, create container, start container).
+        Execute a stack deployment (v2.2.7+).
 
-        This is the main deployment workflow with progress tracking.
+        Reads compose content from filesystem and executes via docker compose.
 
         Args:
             deployment_id: Composite deployment ID
@@ -263,8 +217,12 @@ class DeploymentExecutor:
             try:
                 # 30-minute timeout for entire deployment
                 async with asyncio.timeout(1800):
-                    # Parse definition
-                    definition = json.loads(deployment.definition)
+                    # Read compose content from filesystem (v2.2.7+)
+                    compose_yaml, env_content = await stack_storage.read_stack(deployment.stack_name)
+                    definition = {
+                        'compose_yaml': compose_yaml,
+                        'env_content': env_content,
+                    }
 
                     # Check if this is an agent-based host
                     host_connection_type = self._get_host_connection_type(deployment.host_id)
@@ -274,9 +232,9 @@ class DeploymentExecutor:
                         success = await self._execute_agent_deployment(
                             deployment_id=deployment_id,
                             host_id=deployment.host_id,
-                            deployment_type=deployment.deployment_type,
-                            definition=definition,
-                            name=deployment.name,
+                            compose_yaml=compose_yaml,
+                            stack_name=deployment.stack_name,
+                            env_content=env_content,
                             force_recreate=force_recreate,
                             pull_images=pull_images
                         )
@@ -287,30 +245,18 @@ class DeploymentExecutor:
                         return True
 
                     # Direct Docker SDK deployment (local or remote hosts)
-                    if deployment.deployment_type == 'container':
-                        await execute_container_deployment(
-                            deployment_id=deployment_id,
-                            definition=definition,
-                            db=self.db,
-                            docker_monitor=self.docker_monitor,
-                            state_machine=self.state_machine,
-                            transition_and_update=self._transition_and_update,
-                            create_deployment_metadata=self._create_deployment_metadata,
-                        )
-                    elif deployment.deployment_type == 'stack':
-                        await execute_stack_deployment(
-                            session=session,
-                            deployment=deployment,
-                            definition=definition,
-                            docker_monitor=self.docker_monitor,
-                            state_machine=self.state_machine,
-                            update_progress=self._update_progress,
-                            create_deployment_metadata=self._create_deployment_metadata,
-                            force_recreate=force_recreate,
-                            pull_images=pull_images,
-                        )
-                    else:
-                        raise ValueError(f"Unknown deployment_type: {deployment.deployment_type}")
+                    # All deployments are stacks now (v2.2.7+)
+                    await execute_stack_deployment(
+                        session=session,
+                        deployment=deployment,
+                        definition=definition,
+                        docker_monitor=self.docker_monitor,
+                        state_machine=self.state_machine,
+                        update_progress=self._update_progress,
+                        create_deployment_metadata=self._create_deployment_metadata,
+                        force_recreate=force_recreate,
+                        pull_images=pull_images,
+                    )
 
                     # Success - transition to running
                     deployment = session.query(Deployment).filter_by(id=deployment_id).first()
@@ -318,7 +264,7 @@ class DeploymentExecutor:
                     session.refresh(deployment)
                     self.state_machine.transition(deployment, 'running')
                     await self._update_progress(
-                        session, deployment, 100, 'Deployment completed - container running'
+                        session, deployment, 100, 'Deployment completed - stack running'
                     )
                     session.commit()
 
@@ -342,6 +288,19 @@ class DeploymentExecutor:
                     logger.info(f"Rolling back deployment {deployment_id} after timeout")
                     await self._rollback_deployment(session, deployment)
 
+                return False
+
+            except FileNotFoundError as e:
+                logger.error(f"Stack files not found for deployment {deployment_id}: {e}")
+
+                deployment = session.query(Deployment).filter_by(id=deployment_id).first()
+                session.expire(deployment)
+                session.refresh(deployment)
+                self.state_machine.transition(deployment, 'failed')
+                deployment.error_message = f"Stack '{deployment.stack_name}' not found on filesystem"
+                session.commit()
+
+                await self._emit_deployment_event(deployment, 'DEPLOYMENT_FAILED')
                 return False
 
             except Exception as e:
@@ -389,14 +348,14 @@ class DeploymentExecutor:
         self,
         deployment_id: str,
         host_id: str,
-        deployment_type: str,
-        definition: Dict[str, Any],
-        name: str,
+        compose_yaml: str,
+        stack_name: str,
+        env_content: Optional[str] = None,
         force_recreate: bool = False,
         pull_images: bool = False
     ) -> bool:
         """
-        Execute deployment via agent using native Docker Compose.
+        Execute stack deployment via agent using native Docker Compose (v2.2.7+).
 
         For agent-based hosts, we send the compose YAML to the agent which
         runs `docker compose up` natively.
@@ -404,9 +363,9 @@ class DeploymentExecutor:
         Args:
             deployment_id: Deployment composite ID
             host_id: Docker host UUID
-            deployment_type: 'container' or 'stack'
-            definition: Deployment definition dict
-            name: Deployment name (used as compose project name)
+            compose_yaml: Compose content from filesystem
+            stack_name: Stack name (used as compose project name)
+            env_content: Optional .env file content
             force_recreate: Force recreate containers even if unchanged
             pull_images: Pull latest images before starting
 
@@ -415,29 +374,13 @@ class DeploymentExecutor:
         """
         from .agent_executor import (
             get_agent_deployment_executor,
-            container_params_to_compose,
             validate_compose_for_agent
         )
 
         executor = get_agent_deployment_executor(self.docker_monitor)
 
-        # Convert definition to compose YAML based on deployment type
-        if deployment_type == 'container':
-            compose_content = container_params_to_compose(definition)
-            logger.info(
-                f"Converted container deployment {deployment_id} to compose format for agent"
-            )
-        elif deployment_type == 'stack':
-            compose_content = definition.get('compose_yaml')
-            if not compose_content:
-                logger.error(f"Stack deployment {deployment_id} missing compose_yaml")
-                return False
-        else:
-            logger.error(f"Unknown deployment_type: {deployment_type}")
-            return False
-
         # Validate compose content before sending to agent
-        is_valid, error = validate_compose_for_agent(compose_content)
+        is_valid, error = validate_compose_for_agent(compose_yaml)
         if not is_valid:
             logger.error(
                 f"Compose validation failed for deployment {deployment_id}: {error}"
@@ -450,17 +393,23 @@ class DeploymentExecutor:
                     session.commit()
             return False
 
-        # Get environment variables from definition
-        environment = definition.get('variables', {})
+        # Parse environment variables from .env content if provided
+        environment = {}
+        if env_content:
+            for line in env_content.splitlines():
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, _, value = line.partition('=')
+                    environment[key.strip()] = value.strip()
 
         logger.info(
-            f"Sending deployment {deployment_id} to agent for native compose execution"
+            f"Sending deployment {deployment_id} (stack: {stack_name}) to agent"
         )
         return await executor.deploy(
             host_id=host_id,
             deployment_id=deployment_id,
-            compose_content=compose_content,
-            project_name=name,
+            compose_content=compose_yaml,
+            project_name=stack_name,
             environment=environment,
             force_recreate=force_recreate,
             pull_images=pull_images
@@ -596,7 +545,7 @@ class DeploymentExecutor:
             'type': event_type.lower(),
             'deployment_id': deployment.id,
             'host_id': deployment.host_id,
-            'name': deployment.name,
+            'name': deployment.stack_name,  # Keep 'name' key for API compatibility
             'status': deployment.status,
             'progress': progress,
             'created_at': deployment.created_at.isoformat() + 'Z' if deployment.created_at else None,

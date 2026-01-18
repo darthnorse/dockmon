@@ -41,15 +41,21 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { useImportDeployment, useScanComposeDirs, useReadComposeFile } from '../hooks/useDeployments'
+import {
+  useImportDeployment,
+  useScanComposeDirs,
+  useReadComposeFile,
+  useRunningProjects,
+  useGenerateFromContainers,
+} from '../hooks/useDeployments'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
 import { useAllContainers } from '@/lib/stats/StatsProvider'
 import type {
   Deployment,
   KnownStack,
   ImportDeploymentRequest,
-  ImportDeploymentResponse,
   ComposeFileInfo,
+  RunningProject,
 } from '../types'
 import {
   CheckCircle2,
@@ -57,11 +63,12 @@ import {
   FolderSearch,
   Loader2,
   FileCode,
+  Container,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-type ImportStep = 'input' | 'select-name' | 'success'
-type ImportMethod = 'paste' | 'browse'
+type ImportStep = 'input' | 'select-name' | 'stack-exists' | 'success'
+type ImportMethod = 'paste' | 'browse' | 'running'
 
 interface ImportStackModalProps {
   isOpen: boolean
@@ -94,9 +101,15 @@ export function ImportStackModal({
   const [isBatchImporting, setIsBatchImporting] = useState(false)
   const [batchImportProgress, setBatchImportProgress] = useState({ current: 0, total: 0 })
 
+  // From running state
+  const [selectedRunningProject, setSelectedRunningProject] = useState<RunningProject | null>(null)
+  const [generatedCompose, setGeneratedCompose] = useState<string | null>(null)
+  const [generatedWarnings, setGeneratedWarnings] = useState<string[]>([])
+
   // Common state
   const [selectedProjectName, setSelectedProjectName] = useState('')
   const [knownStacks, setKnownStacks] = useState<KnownStack[]>([])
+  const [existingStackName, setExistingStackName] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [createdDeployments, setCreatedDeployments] = useState<Deployment[]>([])
 
@@ -104,10 +117,18 @@ export function ImportStackModal({
   const importDeployment = useImportDeployment()
   const scanComposeDirs = useScanComposeDirs()
   const readComposeFile = useReadComposeFile()
+  const generateFromContainers = useGenerateFromContainers()
+  const { data: runningProjects, isLoading: isLoadingProjects } = useRunningProjects()
   const { data: hosts } = useHosts()
 
   // Get containers for selected host to match service names to project names
   const hostContainers = useAllContainers(selectedHostId || undefined)
+
+  // Helper to check if a running project is currently selected
+  function isProjectSelected(project: RunningProject): boolean {
+    return selectedRunningProject?.project_name === project.project_name &&
+           selectedRunningProject?.host_id === project.host_id
+  }
 
   // Filter to show hosts that support directory scanning (local + agent)
   // Remote/mTLS hosts don't have filesystem access
@@ -129,20 +150,20 @@ export function ImportStackModal({
   })
 
   // Generate dynamic help text based on selected host
-  const getScanHelpText = () => {
+  const getScanHelpText = (): string => {
     if (!selectedHostId) {
       return 'Select a host to scan for compose files.'
     }
     if (isLocalHost) {
       return 'Scanning localhost. Mount paths like /opt or /srv into the DockMon container for scanning to work.'
     }
-    if (isAgentHost) {
-      if (agentInfo?.is_container_mode) {
-        return 'Agent runs in a container. Mount paths into the agent container for scanning to work.'
-      }
-      return 'Agent runs as a system service. Filesystem scanning is available.'
+    if (!isAgentHost) {
+      return 'Select a host to scan for compose files.'
     }
-    return 'Select a host to scan for compose files.'
+    if (agentInfo?.is_container_mode) {
+      return 'Agent runs in a container. Mount paths into the agent container for scanning to work.'
+    }
+    return 'Agent runs as a system service. Filesystem scanning is available.'
   }
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -354,8 +375,16 @@ export function ImportStackModal({
     }
   }
 
-  const handleImport = async (projectName?: string) => {
-    if (!composeContent.trim()) {
+  const handleImport = async (options?: {
+    projectName?: string
+    hostId?: string
+    overwriteStack?: boolean
+    useExistingStack?: boolean
+    composeContentOverride?: string
+  }) => {
+    // Use override if provided (for running mode where state update is async)
+    const contentToImport = options?.composeContentOverride || composeContent
+    if (!contentToImport.trim()) {
       setError('Please provide compose file content')
       return
     }
@@ -363,30 +392,36 @@ export function ImportStackModal({
     setError(null)
 
     try {
+      // Build request - only include optional fields when they have values
       const request: ImportDeploymentRequest = {
-        compose_content: composeContent,
+        compose_content: contentToImport,
       }
-      if (envContent) {
-        request.env_content = envContent
-      }
-      if (projectName) {
-        request.project_name = projectName
-      }
-      // Pass host_id when importing from browse mode (for fallback import)
-      if (method === 'browse' && selectedHostId) {
+      if (envContent) request.env_content = envContent
+      if (options?.projectName) request.project_name = options.projectName
+      if (options?.overwriteStack) request.overwrite_stack = true
+      if (options?.useExistingStack) request.use_existing_stack = true
+
+      // Pass host_id from options (running mode) or selected host (browse mode)
+      if (options?.hostId) {
+        request.host_id = options.hostId
+      } else if (method === 'browse' && selectedHostId) {
         request.host_id = selectedHostId
         // Also pass project_name from the selected file if available
-        if (selectedFilePath && !projectName) {
+        if (selectedFilePath && !options?.projectName) {
           const file = composeFiles.find((f) => f.path === selectedFilePath)
           if (file?.project_name) {
             request.project_name = file.project_name
           }
         }
       }
-      const result: ImportDeploymentResponse =
-        await importDeployment.mutateAsync(request)
 
-      if (result.requires_name_selection) {
+      const result = await importDeployment.mutateAsync(request)
+
+      if (result.stack_exists && result.existing_stack_name) {
+        // Stack already exists - ask user what to do
+        setExistingStackName(result.existing_stack_name)
+        setStep('stack-exists')
+      } else if (result.requires_name_selection) {
         // Compose file has no name: field - show selection UI
         setKnownStacks(result.known_stacks || [])
         setStep('select-name')
@@ -407,7 +442,46 @@ export function ImportStackModal({
       setError('Please select a stack name')
       return
     }
-    await handleImport(selectedProjectName)
+    await handleImport({ projectName: selectedProjectName })
+  }
+
+  // Handle selecting a running project and generating compose
+  const handleSelectRunningProject = async (project: RunningProject) => {
+    setSelectedRunningProject(project)
+    setGeneratedCompose(null)
+    setGeneratedWarnings([])
+    setError(null)
+
+    try {
+      const result = await generateFromContainers.mutateAsync({
+        project_name: project.project_name,
+        host_id: project.host_id,
+      })
+
+      setGeneratedCompose(result.compose_yaml)
+      setGeneratedWarnings(result.warnings)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to generate compose'
+      setError(message)
+    }
+  }
+
+  // Handle importing the generated compose
+  const handleImportFromRunning = async () => {
+    if (!selectedRunningProject || !generatedCompose) {
+      setError('Please select a running project first')
+      return
+    }
+
+    // Store compose content for stack-exists flow (may need it later)
+    setComposeContent(generatedCompose)
+
+    // Pass content directly to avoid async state timing issues
+    await handleImport({
+      projectName: selectedRunningProject.project_name,
+      hostId: selectedRunningProject.host_id,
+      composeContentOverride: generatedCompose,
+    })
   }
 
   const handleClose = () => {
@@ -429,8 +503,12 @@ export function ImportStackModal({
     setSelectedFilePaths(new Set())
     setIsBatchImporting(false)
     setBatchImportProgress({ current: 0, total: 0 })
+    setSelectedRunningProject(null)
+    setGeneratedCompose(null)
+    setGeneratedWarnings([])
     setSelectedProjectName('')
     setKnownStacks([])
+    setExistingStackName(null)
     setError(null)
     setCreatedDeployments([])
   }
@@ -480,6 +558,18 @@ export function ImportStackModal({
               >
                 <FolderSearch className="h-4 w-4" />
                 Browse Host
+              </button>
+              <button
+                onClick={() => setMethod('running')}
+                className={cn(
+                  'flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors',
+                  method === 'running'
+                    ? 'bg-background shadow text-foreground'
+                    : 'text-muted-foreground hover:text-foreground'
+                )}
+              >
+                <Container className="h-4 w-4" />
+                From Running
               </button>
             </div>
 
@@ -724,6 +814,89 @@ export function ImportStackModal({
               </>
             )}
 
+            {/* From Running Content */}
+            {method === 'running' && (
+              <>
+                <p className="text-sm text-muted-foreground">
+                  Select a running Docker Compose project to adopt into DockMon management.
+                  The compose configuration will be generated from the container state.
+                </p>
+
+                {isLoadingProjects ? (
+                  <div className="flex items-center justify-center py-8">
+                    <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                  </div>
+                ) : runningProjects && runningProjects.length > 0 ? (
+                  <div className="space-y-4">
+                    <Label>Running Projects</Label>
+                    <div className="border rounded-md divide-y max-h-64 overflow-y-auto">
+                      {runningProjects.map((project) => {
+                        const isSelected = isProjectSelected(project)
+                        const isLoading = generateFromContainers.isPending && isSelected
+                        const IconComponent = isLoading ? Loader2 : Container
+                        return (
+                          <button
+                            key={`${project.project_name}-${project.host_id}`}
+                            onClick={() => handleSelectRunningProject(project)}
+                            disabled={generateFromContainers.isPending}
+                            className={cn(
+                              'w-full flex items-start gap-3 p-3 text-left hover:bg-muted transition-colors disabled:opacity-50 disabled:cursor-not-allowed',
+                              isSelected && 'bg-primary/5 border-l-2 border-l-primary'
+                            )}
+                          >
+                            <IconComponent
+                              className={cn(
+                                'h-5 w-5 text-muted-foreground mt-0.5 shrink-0',
+                                isLoading && 'animate-spin'
+                              )}
+                            />
+                            <div className="min-w-0 flex-1">
+                              <div className="font-medium text-sm">{project.project_name}</div>
+                              <div className="text-xs text-muted-foreground">
+                                {project.host_name || project.host_id.slice(0, 8)}
+                              </div>
+                              <div className="text-xs text-muted-foreground mt-1">
+                                {project.container_count} container(s):{' '}
+                                {project.services.slice(0, 3).join(', ')}
+                                {project.services.length > 3 && '...'}
+                              </div>
+                            </div>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                ) : (
+                  <Alert>
+                    <AlertDescription>
+                      No running Docker Compose projects found. Make sure you have
+                      stacks running that were deployed with standard compose labels
+                      (com.docker.compose.project).
+                    </AlertDescription>
+                  </Alert>
+                )}
+
+                {/* Generated Compose Preview */}
+                {selectedRunningProject && generatedCompose && (
+                  <div className="space-y-2">
+                    <Label>Generated compose.yaml</Label>
+                    {generatedWarnings.length > 0 && (
+                      <div className="text-xs text-amber-600 dark:text-amber-500 space-y-1">
+                        {generatedWarnings.map((warning, i) => (
+                          <p key={i}>Note: {warning}</p>
+                        ))}
+                      </div>
+                    )}
+                    <Textarea
+                      value={generatedCompose}
+                      onChange={(e) => setGeneratedCompose(e.target.value)}
+                      className="font-mono text-xs h-[200px] resize-none"
+                    />
+                  </div>
+                )}
+              </>
+            )}
+
             {error && (
               <Alert variant="destructive">
                 <AlertDescription>{error}</AlertDescription>
@@ -755,6 +928,15 @@ export function ImportStackModal({
                 <Button
                   onClick={() => handleImport()}
                   disabled={importDeployment.isPending || !composeContent.trim()}
+                >
+                  {importDeployment.isPending ? 'Importing...' : 'Import Stack'}
+                </Button>
+              )}
+              {/* Import from running button */}
+              {method === 'running' && (
+                <Button
+                  onClick={handleImportFromRunning}
+                  disabled={importDeployment.isPending || !selectedRunningProject || !generatedCompose}
                 >
                   {importDeployment.isPending ? 'Importing...' : 'Import Stack'}
                 </Button>
@@ -832,6 +1014,86 @@ export function ImportStackModal({
           </div>
         )}
 
+        {step === 'stack-exists' && existingStackName && (
+          <div className="space-y-4">
+            <Alert>
+              <AlertDescription>
+                A stack named <strong>"{existingStackName}"</strong> already exists on the filesystem.
+                What would you like to do?
+              </AlertDescription>
+            </Alert>
+
+            <div className="space-y-3">
+              <Button
+                variant="outline"
+                className="w-full justify-start h-auto py-3 gap-3"
+                onClick={() => handleImport({
+                  useExistingStack: true,
+                  // Preserve context from running mode if applicable
+                  ...(selectedRunningProject && {
+                    hostId: selectedRunningProject.host_id,
+                    projectName: selectedRunningProject.project_name,
+                  }),
+                })}
+                disabled={importDeployment.isPending}
+              >
+                {importDeployment.isPending && (
+                  <Loader2 className="h-4 w-4 animate-spin shrink-0" />
+                )}
+                <div className="text-left">
+                  <div className="font-medium">Use existing stack content</div>
+                  <div className="text-sm text-muted-foreground">
+                    Create deployment using the existing compose.yaml on disk
+                  </div>
+                </div>
+              </Button>
+
+              <Button
+                variant="outline"
+                className="w-full justify-start h-auto py-3 gap-3"
+                onClick={() => handleImport({
+                  overwriteStack: true,
+                  // Preserve context from running mode if applicable
+                  ...(selectedRunningProject && {
+                    hostId: selectedRunningProject.host_id,
+                    projectName: selectedRunningProject.project_name,
+                  }),
+                  // Pass compose content directly for running mode (async state timing)
+                  ...(generatedCompose && { composeContentOverride: generatedCompose }),
+                })}
+                disabled={importDeployment.isPending}
+              >
+                {importDeployment.isPending && (
+                  <Loader2 className="h-4 w-4 animate-spin shrink-0" />
+                )}
+                <div className="text-left">
+                  <div className="font-medium">Overwrite with new content</div>
+                  <div className="text-sm text-muted-foreground">
+                    Replace the existing stack files with your imported content
+                  </div>
+                </div>
+              </Button>
+            </div>
+
+            {error && (
+              <Alert variant="destructive">
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            )}
+
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setStep('input')}
+                disabled={importDeployment.isPending}
+              >
+                Back
+              </Button>
+            </DialogFooter>
+          </div>
+        )}
+
         {step === 'success' && (
           <div className="space-y-4">
             <Alert className="border-green-500 bg-green-50 dark:bg-green-950">
@@ -844,7 +1106,7 @@ export function ImportStackModal({
             <ul className="list-disc list-inside space-y-1">
               {createdDeployments.map((d) => (
                 <li key={d.id}>
-                  <span className="font-medium">{d.name}</span> on{' '}
+                  <span className="font-medium">{d.stack_name}</span> on{' '}
                   {d.host_name || d.host_id}
                 </li>
               ))}

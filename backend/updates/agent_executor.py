@@ -273,6 +273,19 @@ class AgentUpdateExecutor:
             # - Container mode: uses 'image' to update own container
             # - Native mode: uses 'binary_url' to download and swap binary
             version = self._extract_version_from_image(update_record.latest_image)
+
+            # If version is "latest", resolve to actual version from GitHub releases
+            # Fetch fresh from GitHub to ensure we have the latest (don't wait for 6-hour poll)
+            if version == "latest":
+                from updates.dockmon_update_checker import get_dockmon_update_checker
+                checker = get_dockmon_update_checker(self.db)
+                agent_update_info = await checker.check_for_agent_update()
+                if agent_update_info.get('latest_version'):
+                    version = agent_update_info['latest_version']
+                    logger.info(f"Resolved 'latest' to actual agent version: {version}")
+                else:
+                    logger.warning("Could not resolve 'latest' - failed to fetch from GitHub")
+
             # Agent releases use agent-v* tag pattern (e.g., agent-v1.0.0)
             binary_url = f"https://github.com/darthnorse/dockmon/releases/download/agent-v{version}/dockmon-agent-{agent_os}-{agent_arch}"
 

@@ -5328,8 +5328,10 @@ async def _handle_direct_shell_session(
             tty=True
         )
 
-        # Get the underlying socket
-        sock = docker_socket._sock
+        # Get the underlying socket (handle both regular and TLS connections)
+        # For regular connections, docker_socket has _sock attribute
+        # For TLS/mTLS connections, docker_socket may be the socket directly
+        sock = getattr(docker_socket, '_sock', docker_socket)
 
         # Set socket timeout to prevent blocking forever if Docker hangs
         # 10 minutes allows for long idle sessions without disconnecting

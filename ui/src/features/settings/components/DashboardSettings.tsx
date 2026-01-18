@@ -16,6 +16,19 @@ const EDITOR_THEMES = [
   { value: 'dracula', label: 'Dracula' },
   { value: 'material-dark', label: 'Material Dark' },
   { value: 'nord', label: 'Nord' },
+  { value: 'atomone', label: 'Atom One Dark' },
+  { value: 'aura', label: 'Aura' },
+  { value: 'andromeda', label: 'Andromeda' },
+  { value: 'copilot', label: 'Copilot' },
+  { value: 'gruvbox-dark', label: 'Gruvbox Dark' },
+  { value: 'monokai', label: 'Monokai' },
+  { value: 'solarized-dark', label: 'Solarized Dark' },
+  { value: 'sublime', label: 'Sublime' },
+  { value: 'tokyo-night', label: 'Tokyo Night' },
+  { value: 'tokyo-night-storm', label: 'Tokyo Night Storm' },
+  { value: 'okaidia', label: 'Okaidia' },
+  { value: 'abyss', label: 'Abyss' },
+  { value: 'kimbie', label: 'Kimbie' },
 ] as const
 
 export function DashboardSettings() {

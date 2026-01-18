@@ -2631,7 +2631,7 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
         "external_url": getattr(settings, 'external_url', None) or AppConfig.EXTERNAL_URL,
         "external_url_from_env": AppConfig.EXTERNAL_URL,  # Show env var value for UI placeholder
         # Editor theme preference (v2.2.8+)
-        "editor_theme": getattr(settings, 'editor_theme', 'github-dark'),
+        "editor_theme": getattr(settings, 'editor_theme', 'aura'),
     }
 
 @app.post("/api/settings", tags=["system"], dependencies=[Depends(require_scope("admin"))])
@@ -2720,7 +2720,7 @@ async def update_settings(
         "external_url": getattr(updated, 'external_url', None) or AppConfig.EXTERNAL_URL,
         "external_url_from_env": AppConfig.EXTERNAL_URL,
         # Editor theme preference (v2.2.8+)
-        "editor_theme": getattr(updated, 'editor_theme', 'github-dark'),
+        "editor_theme": getattr(updated, 'editor_theme', 'aura'),
     }
 
 

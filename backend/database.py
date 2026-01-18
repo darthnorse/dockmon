@@ -404,7 +404,7 @@ class GlobalSettings(Base):
 
     # Editor theme preference (v2.2.8+)
     # Available: 'github-dark', 'vscode-dark', 'dracula', 'material-dark', 'nord'
-    editor_theme = Column(Text, default='github-dark')
+    editor_theme = Column(Text, default='aura')
 
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 

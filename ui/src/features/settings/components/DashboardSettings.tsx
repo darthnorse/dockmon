@@ -38,7 +38,7 @@ export function DashboardSettings() {
   const { data: globalSettings } = useGlobalSettings()
   const updateGlobalSettings = useUpdateGlobalSettings()
 
-  const editorTheme = globalSettings?.editor_theme ?? 'github-dark'
+  const editorTheme = globalSettings?.editor_theme ?? 'aura'
   const showKpiBar = prefs?.dashboard?.showKpiBar ?? true
   const showStatsWidgets = prefs?.dashboard?.showStatsWidgets ?? false
   const optimizedLoading = prefs?.dashboard?.optimizedLoading ?? true

@@ -81,7 +81,7 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
 
   // Get the selected theme (memoized to avoid recreation on every render)
   const editorTheme = useMemo(() => {
-    const themeName = globalSettings?.editor_theme ?? 'github-dark'
+    const themeName = globalSettings?.editor_theme ?? 'aura'
     return EDITOR_THEMES[themeName as keyof typeof EDITOR_THEMES] ?? themes.githubDark
   }, [globalSettings?.editor_theme])
 

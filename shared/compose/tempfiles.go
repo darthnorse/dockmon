@@ -28,7 +28,11 @@ var tempDir string
 func init() {
 	// Create dedicated temp directory on package init
 	tempDir = filepath.Join(os.TempDir(), TempDirName)
-	_ = os.MkdirAll(tempDir, TempDirMode)
+	if err := os.MkdirAll(tempDir, TempDirMode); err != nil {
+		// Log to stderr since logrus isn't initialized yet.
+		// Service continues; WriteComposeFile will fail with a clearer error.
+		fmt.Fprintf(os.Stderr, "CRITICAL: Failed to create compose temp directory %s: %v\n", tempDir, err)
+	}
 }
 
 // GetTempDir returns the compose temp directory path
@@ -36,38 +40,79 @@ func GetTempDir() string {
 	return tempDir
 }
 
-// WriteComposeFile writes compose content to a secure temp file
-// Returns the path to the temp file. Caller is responsible for cleanup.
+// isUnderTempDir checks if the given path is safely under our temp directory.
+// Returns the cleaned path if valid, or an error describing the validation failure.
+// This prevents path traversal attacks by checking the relative path.
+func isUnderTempDir(path string) (string, error) {
+	cleaned := filepath.Clean(path)
+	cleanTempDir := filepath.Clean(tempDir)
+
+	relPath, err := filepath.Rel(cleanTempDir, cleaned)
+	if err != nil {
+		return "", fmt.Errorf("failed to compute relative path: %w", err)
+	}
+
+	if strings.HasPrefix(relPath, "..") || relPath == "." {
+		return "", fmt.Errorf("path escapes temp directory: %s (relative: %s)", path, relPath)
+	}
+
+	return cleaned, nil
+}
+
+// WriteComposeFile writes compose content to a secure temp file in a unique subdirectory.
+// Each deployment gets its own subdirectory to prevent race conditions with .env files.
+// Returns the path to the temp file. Caller is responsible for cleanup via CleanupComposeDir.
 func WriteComposeFile(content string) (string, error) {
-	// Ensure temp dir exists with proper permissions
+	// Ensure base temp dir exists with proper permissions
 	if err := os.MkdirAll(tempDir, TempDirMode); err != nil {
 		return "", fmt.Errorf("failed to create temp dir: %w", err)
 	}
 
-	f, err := os.CreateTemp(tempDir, TempFilePrefix+"*.yml")
+	// Create a unique subdirectory for this deployment
+	// This isolates each deployment's .env file to prevent race conditions
+	subDir, err := os.MkdirTemp(tempDir, TempFilePrefix)
 	if err != nil {
-		return "", fmt.Errorf("failed to create temp file: %w", err)
+		return "", fmt.Errorf("failed to create deployment temp dir: %w", err)
 	}
 
-	// Ensure restrictive permissions
-	if err := f.Chmod(TempFileMode); err != nil {
-		f.Close()
-		os.Remove(f.Name())
-		return "", fmt.Errorf("failed to set permissions: %w", err)
+	// Set restrictive permissions on subdirectory
+	if err := os.Chmod(subDir, TempDirMode); err != nil {
+		os.RemoveAll(subDir)
+		return "", fmt.Errorf("failed to set dir permissions: %w", err)
 	}
 
-	if _, err := f.WriteString(content); err != nil {
-		f.Close()
-		os.Remove(f.Name())
-		return "", fmt.Errorf("failed to write content: %w", err)
+	// Write compose file into the subdirectory
+	composePath := filepath.Join(subDir, "docker-compose.yml")
+	if err := os.WriteFile(composePath, []byte(content), TempFileMode); err != nil {
+		os.RemoveAll(subDir)
+		return "", fmt.Errorf("failed to write compose file: %w", err)
 	}
 
-	if err := f.Close(); err != nil {
-		os.Remove(f.Name())
-		return "", fmt.Errorf("failed to close file: %w", err)
+	return composePath, nil
+}
+
+// WriteEnvFile writes .env content to the same directory as the compose file.
+// This allows env_file: .env references in compose files to resolve correctly.
+// Returns the path to the .env file. Caller is responsible for cleanup.
+func WriteEnvFile(composeFilePath, envContent string) (string, error) {
+	if envContent == "" {
+		return "", nil
 	}
 
-	return f.Name(), nil
+	// Defense in depth: validate the compose file path is under our temp directory
+	dir, err := isUnderTempDir(filepath.Dir(composeFilePath))
+	if err != nil {
+		return "", fmt.Errorf("invalid compose file path: %w", err)
+	}
+
+	// Write .env in the same directory as the compose file
+	envFilePath := filepath.Join(dir, ".env")
+
+	if err := os.WriteFile(envFilePath, []byte(envContent), TempFileMode); err != nil {
+		return "", fmt.Errorf("failed to write .env file: %w", err)
+	}
+
+	return envFilePath, nil
 }
 
 // CleanupTempFile removes a temp file
@@ -78,6 +123,50 @@ func CleanupTempFile(path string, log *logrus.Logger) {
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		if log != nil {
 			log.WithError(err).WithField("path", path).Warn("Failed to remove temp file")
+		}
+	}
+}
+
+// CleanupComposeDir removes the deployment subdirectory containing compose and .env files.
+// Pass the compose file path; this will remove its parent directory.
+func CleanupComposeDir(composeFilePath string, log *logrus.Logger) {
+	if composeFilePath == "" {
+		return
+	}
+
+	// Validate path is under temp directory (prevents path traversal attacks)
+	dir, err := isUnderTempDir(filepath.Dir(composeFilePath))
+	if err != nil {
+		if log != nil {
+			log.WithError(err).WithField("path", composeFilePath).Warn("Refusing to remove directory outside temp area")
+		}
+		return
+	}
+
+	// Check for symlink attacks: verify the directory is not a symlink
+	// that could redirect RemoveAll to an unintended location
+	info, err := os.Lstat(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return // Already gone, nothing to do
+		}
+		if log != nil {
+			log.WithError(err).WithField("path", dir).Warn("Failed to stat directory for cleanup")
+		}
+		return
+	}
+
+	// Reject symlinks - they could point outside our temp area
+	if info.Mode().Type() == os.ModeSymlink {
+		if log != nil {
+			log.WithField("path", dir).Warn("Refusing to remove symlink in cleanup")
+		}
+		return
+	}
+
+	if err := os.RemoveAll(dir); err != nil && !os.IsNotExist(err) {
+		if log != nil {
+			log.WithError(err).WithField("path", dir).Warn("Failed to remove compose temp dir")
 		}
 	}
 }
@@ -166,7 +255,7 @@ func (t *TLSFiles) Cleanup(log *logrus.Logger) {
 	CleanupTempFile(t.KeyFile, log)
 }
 
-// CleanupStaleFiles removes temp files older than StaleFileThreshold
+// CleanupStaleFiles removes temp files and directories older than StaleFileThreshold
 // Should be called on service startup to clean up from crashes
 func CleanupStaleFiles(log *logrus.Logger) {
 	entries, err := os.ReadDir(tempDir)
@@ -179,7 +268,10 @@ func CleanupStaleFiles(log *logrus.Logger) {
 	cleaned := 0
 
 	for _, entry := range entries {
-		if !strings.HasPrefix(entry.Name(), TempFilePrefix) {
+		name := entry.Name()
+
+		// Clean up deployment subdirectories (compose-*) and legacy files
+		if !strings.HasPrefix(name, TempFilePrefix) {
 			continue
 		}
 
@@ -188,11 +280,17 @@ func CleanupStaleFiles(log *logrus.Logger) {
 			continue
 		}
 
-		// Remove files older than threshold (likely from crash)
+		// Remove entries older than threshold (likely from crash)
 		if now.Sub(info.ModTime()) > StaleFileThreshold {
-			path := filepath.Join(tempDir, entry.Name())
-			if err := os.Remove(path); err == nil {
-				cleaned++
+			path := filepath.Join(tempDir, name)
+			if entry.IsDir() {
+				if err := os.RemoveAll(path); err == nil {
+					cleaned++
+				}
+			} else {
+				if err := os.Remove(path); err == nil {
+					cleaned++
+				}
 			}
 		}
 	}

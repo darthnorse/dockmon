@@ -333,15 +333,6 @@ async def deploy_stack(
         except Exception as e:
             logger.error(f"Error broadcasting deployment event: {e}")
 
-    # Parse environment variables from .env content
-    env_vars = {}
-    if env_content:
-        for line in env_content.split('\n'):
-            line = line.strip()
-            if line and not line.startswith('#') and '=' in line:
-                key, value = line.split('=', 1)
-                env_vars[key.strip()] = value.strip()
-
     # Route based on connection type
     if connection_type == 'agent':
         # Execute deployment via agent
@@ -366,7 +357,7 @@ async def deploy_stack(
                     deployment_id=deployment_id,
                     compose_content=compose_yaml,
                     project_name=request.stack_name,
-                    environment=env_vars if env_vars else None,
+                    env_file_content=env_content,
                     force_recreate=request.force_recreate,
                     pull_images=request.pull_images,
                     wait_for_healthy=True,
@@ -437,7 +428,7 @@ async def deploy_stack(
                     compose_yaml=compose_yaml,
                     progress_callback=on_progress,
                     action="up",
-                    environment=env_vars,
+                    env_file_content=env_content,
                     force_recreate=request.force_recreate,
                     pull_images=request.pull_images,
                     wait_for_healthy=True,

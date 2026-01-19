@@ -112,7 +112,15 @@ func (s *Service) Deploy(ctx context.Context, req DeployRequest) *DeployResult {
 	if err != nil {
 		return s.failResult(req.DeploymentID, fmt.Sprintf("Failed to write compose file: %v", err))
 	}
-	defer CleanupTempFile(composeFile, s.log)
+	defer CleanupComposeDir(composeFile, s.log) // Cleans up entire deployment subdirectory
+
+	// Write .env file if provided (allows env_file: .env in compose to work)
+	if req.EnvFileContent != "" {
+		if _, err := WriteEnvFile(composeFile, req.EnvFileContent); err != nil {
+			return s.failResult(req.DeploymentID, fmt.Sprintf("Failed to write .env file: %v", err))
+		}
+		// No separate cleanup needed - CleanupComposeDir removes entire directory
+	}
 
 	switch req.Action {
 	case "up":
@@ -233,23 +241,18 @@ func (s *Service) createComposeService(ctx context.Context, req DeployRequest) (
 	return composeService, cli, tlsFiles, nil
 }
 
-// loadProject loads a compose project from file content
-func (s *Service) loadProject(ctx context.Context, composeFile, projectName string, envVars map[string]string, profiles []string) (*types.Project, error) {
+// loadProject loads a compose project from file content.
+// Environment variables are loaded from .env file in the working directory
+// (written by WriteEnvFile before this is called).
+func (s *Service) loadProject(ctx context.Context, composeFile, projectName string, profiles []string) (*types.Project, error) {
 	workingDir := filepath.Dir(composeFile)
-
-	// Build environment variables slice
-	var envSlice []string
-	for k, v := range envVars {
-		envSlice = append(envSlice, fmt.Sprintf("%s=%s", k, v))
-	}
 
 	projectOpts, err := cli.NewProjectOptions(
 		[]string{composeFile},
 		cli.WithWorkingDirectory(workingDir),
 		cli.WithName(projectName),
-		cli.WithEnv(envSlice),
 		cli.WithProfiles(profiles),
-		cli.WithDotEnv,
+		cli.WithDotEnv, // Loads .env from workingDir automatically
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create project options: %w", err)
@@ -358,7 +361,7 @@ func (s *Service) runComposeUp(ctx context.Context, req DeployRequest, composeFi
 	defer cli.Client().Close()
 	defer tlsFiles.Cleanup(s.log)
 
-	project, err := s.loadProject(ctx, composeFile, req.ProjectName, req.Environment, req.Profiles)
+	project, err := s.loadProject(ctx, composeFile, req.ProjectName, req.Profiles)
 	if err != nil {
 		return s.failResult(req.DeploymentID, fmt.Sprintf("Failed to load compose project: %v", err))
 	}

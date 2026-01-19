@@ -25,11 +25,11 @@ type DeployComposeRequest struct {
 	DeploymentID        string                       `json:"deployment_id"`
 	ProjectName         string                       `json:"project_name"`
 	ComposeContent      string                       `json:"compose_content"`
-	Environment         map[string]string            `json:"environment,omitempty"`
-	Action              string                       `json:"action"`         // "up", "down", "restart"
-	RemoveVolumes       bool                         `json:"remove_volumes"` // Only for "down" action, default false
-	ForceRecreate       bool                         `json:"force_recreate,omitempty"` // Force recreate containers
-	PullImages          bool                         `json:"pull_images,omitempty"`    // Pull images before starting
+	EnvFileContent      string                       `json:"env_file_content,omitempty"` // Raw .env file content
+	Action              string                       `json:"action"`                     // "up", "down", "restart"
+	RemoveVolumes       bool                         `json:"remove_volumes"`             // Only for "down" action, default false
+	ForceRecreate       bool                         `json:"force_recreate,omitempty"`   // Force recreate containers
+	PullImages          bool                         `json:"pull_images,omitempty"`      // Pull images before starting
 	Profiles            []string                     `json:"profiles,omitempty"`
 	WaitForHealthy      bool                         `json:"wait_for_healthy,omitempty"`
 	HealthTimeout       int                          `json:"health_timeout,omitempty"`
@@ -97,7 +97,7 @@ func (h *DeployHandler) DeployCompose(ctx context.Context, req DeployComposeRequ
 		DeploymentID:        req.DeploymentID,
 		ProjectName:         req.ProjectName,
 		ComposeYAML:         req.ComposeContent,
-		Environment:         req.Environment,
+		EnvFileContent:      req.EnvFileContent,
 		Profiles:            req.Profiles,
 		Action:              req.Action,
 		RemoveVolumes:       req.RemoveVolumes,

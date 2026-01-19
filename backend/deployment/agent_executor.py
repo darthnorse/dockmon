@@ -241,7 +241,7 @@ class AgentDeploymentExecutor:
         deployment_id: str,
         compose_content: str,
         project_name: str,
-        environment: Optional[Dict[str, str]] = None,
+        env_file_content: Optional[str] = None,
         profiles: Optional[list[str]] = None,
         force_recreate: bool = False,
         pull_images: bool = False,
@@ -262,7 +262,7 @@ class AgentDeploymentExecutor:
             deployment_id: Deployment composite ID
             compose_content: Docker Compose YAML content
             project_name: Compose project name
-            environment: Optional environment variables dict
+            env_file_content: Optional raw .env file content (written to temp dir for env_file: .env)
             profiles: Optional list of compose profiles to activate
             force_recreate: Force recreate containers even if unchanged
             pull_images: Pull images before starting (for redeploy)
@@ -315,7 +315,7 @@ class AgentDeploymentExecutor:
                 "deployment_id": deployment_id,
                 "project_name": project_name,
                 "compose_content": compose_content,
-                "environment": environment or {},
+                "env_file_content": env_file_content or "",
                 "action": "up",
                 "profiles": profiles or [],
                 "force_recreate": force_recreate,

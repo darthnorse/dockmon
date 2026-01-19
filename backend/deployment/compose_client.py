@@ -138,7 +138,7 @@ class ComposeClient:
         project_name: str,
         compose_yaml: str,
         action: str = "up",
-        environment: Optional[Dict[str, str]] = None,
+        env_file_content: Optional[str] = None,
         profiles: Optional[List[str]] = None,
         remove_volumes: bool = False,
         force_recreate: bool = False,
@@ -160,7 +160,7 @@ class ComposeClient:
             project_name: Docker Compose project name
             compose_yaml: Docker Compose YAML content
             action: "up", "down", or "restart"
-            environment: Environment variables to pass
+            env_file_content: Raw .env file content (written to temp dir for env_file: .env)
             profiles: Compose profiles to activate
             remove_volumes: Remove volumes on "down" action
             force_recreate: Force recreate containers even if unchanged
@@ -182,7 +182,7 @@ class ComposeClient:
             "project_name": project_name,
             "compose_yaml": compose_yaml,
             "action": action,
-            "environment": environment or {},
+            "env_file_content": env_file_content or "",
             "profiles": profiles or [],
             "remove_volumes": remove_volumes,
             "force_recreate": force_recreate,
@@ -245,7 +245,7 @@ class ComposeClient:
         compose_yaml: str,
         progress_callback: Callable[[ProgressEvent], Awaitable[None]],
         action: str = "up",
-        environment: Optional[Dict[str, str]] = None,
+        env_file_content: Optional[str] = None,
         profiles: Optional[List[str]] = None,
         remove_volumes: bool = False,
         force_recreate: bool = False,
@@ -276,7 +276,7 @@ class ComposeClient:
             "project_name": project_name,
             "compose_yaml": compose_yaml,
             "action": action,
-            "environment": environment or {},
+            "env_file_content": env_file_content or "",
             "profiles": profiles or [],
             "remove_volumes": remove_volumes,
             "force_recreate": force_recreate,

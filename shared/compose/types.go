@@ -9,9 +9,9 @@ type DeployRequest struct {
 	ProjectName  string `json:"project_name"`
 
 	// Compose content
-	ComposeYAML string            `json:"compose_yaml"`
-	Environment map[string]string `json:"environment,omitempty"`
-	Profiles    []string          `json:"profiles,omitempty"`
+	ComposeYAML    string   `json:"compose_yaml"`
+	EnvFileContent string   `json:"env_file_content,omitempty"` // Raw .env file content (written to temp dir)
+	Profiles       []string `json:"profiles,omitempty"`
 
 	// Action
 	Action        string `json:"action"`                   // "up", "down", "restart"

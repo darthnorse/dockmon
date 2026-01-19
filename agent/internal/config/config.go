@@ -54,7 +54,7 @@ func LoadFromEnv() (*Config, error) {
 		DockerTLSVerify:  getEnvBool("DOCKER_TLS_VERIFY", false),
 
 		// Agent identity
-		AgentVersion:     getEnvOrDefault("AGENT_VERSION", "2.2.0"),
+		AgentVersion:     getEnvOrDefault("AGENT_VERSION", "1.0.3"),
 		ProtoVersion:     getEnvOrDefault("PROTO_VERSION", "1.0"),
 
 		// Reconnection (exponential backoff: 1s → 60s)

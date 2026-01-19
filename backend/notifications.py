@@ -845,16 +845,15 @@ class NotificationService:
             # Add structured event context if available (v2.2.8+)
             # This provides machine-readable fields so receivers don't need to parse message text
             if event:
-                if hasattr(event, 'container_name') and event.container_name:
-                    payload['container'] = event.container_name
-                if hasattr(event, 'host_name') and event.host_name:
-                    payload['host'] = event.host_name
-                if hasattr(event, 'host_id') and event.host_id:
-                    payload['host_id'] = event.host_id
+                # Extract standard fields using getattr for cleaner code
+                for attr, key in [('container_name', 'container'), ('host_name', 'host'), ('host_id', 'host_id')]:
+                    if value := getattr(event, attr, None):
+                        payload[key] = value
+
                 # Include rich context data (versions, digests, etc.) from alert events
-                if hasattr(event, 'event_context_json') and event.event_context_json:
+                if context_json := getattr(event, 'event_context_json', None):
                     try:
-                        payload['context'] = json.loads(event.event_context_json)
+                        payload['context'] = json.loads(context_json)
                     except (json.JSONDecodeError, TypeError):
                         pass
 

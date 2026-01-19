@@ -281,14 +281,9 @@ class AgentDeploymentExecutor:
             logger.error(f"Compose validation failed for deployment {deployment_id}: {error}")
             # Transient deployments (format: host_id:stack_name:uuid) don't have DB records
             # Broadcast error via WebSocket instead of trying to update non-existent record
-            if self._is_transient_deployment_id(deployment_id):
-                await self._broadcast_transient_complete(
-                    deployment_id, "failed", f"Validation failed: {error}", error=error
-                )
-            else:
-                await self._update_deployment_status(
-                    deployment_id, "failed", error_message=error
-                )
+            await self._report_deployment_status(
+                deployment_id, "failed", f"Validation failed: {error}", error=error
+            )
             return False
 
         # Get agent ID for this host
@@ -296,15 +291,9 @@ class AgentDeploymentExecutor:
             agent_id = self._get_agent_id_for_host(host_id)
         except ValueError as e:
             logger.error(f"Failed to get agent for host {host_id}: {e}")
-            # Transient deployments don't have DB records
-            if self._is_transient_deployment_id(deployment_id):
-                await self._broadcast_transient_complete(
-                    deployment_id, "failed", f"Agent not found: {e}", error=str(e)
-                )
-            else:
-                await self._update_deployment_status(
-                    deployment_id, "failed", error_message=str(e)
-                )
+            await self._report_deployment_status(
+                deployment_id, "failed", f"Agent not found: {e}", error=str(e)
+            )
             return False
 
         # Get all registry credentials for compose deployment
@@ -343,15 +332,9 @@ class AgentDeploymentExecutor:
         )
 
         # Update deployment status to pulling/executing
-        # Transient deployments use WebSocket broadcast, persistent use DB update
-        if self._is_transient_deployment_id(deployment_id):
-            await self._broadcast_transient_progress(
-                deployment_id, "pulling_image", 10, "Sending to agent..."
-            )
-        else:
-            await self._update_deployment_status(
-                deployment_id, "pulling_image", progress=10, stage="Sending to agent..."
-            )
+        await self._report_deployment_status(
+            deployment_id, "pulling_image", "Sending to agent...", progress=10
+        )
 
         # Execute command with retry policy
         # Compose deployments can take a long time (image pulls, etc.)
@@ -371,15 +354,9 @@ class AgentDeploymentExecutor:
         if not result.success:
             error_msg = result.error or "Unknown error during deployment"
             logger.error(f"Deployment {deployment_id} failed: {error_msg}")
-            # Transient deployments use WebSocket broadcast, persistent use DB update
-            if self._is_transient_deployment_id(deployment_id):
-                await self._broadcast_transient_complete(
-                    deployment_id, "failed", f"Command failed: {error_msg}", error=error_msg
-                )
-            else:
-                await self._update_deployment_status(
-                    deployment_id, "failed", error_message=error_msg
-                )
+            await self._report_deployment_status(
+                deployment_id, "failed", f"Command failed: {error_msg}", error=error_msg
+            )
             return False
 
         # Command was accepted - agent will send deploy_progress and deploy_complete events
@@ -901,6 +878,37 @@ class AgentDeploymentExecutor:
             True if ID has transient format (2+ colons), False otherwise
         """
         return deployment_id.count(':') >= 2
+
+    async def _report_deployment_status(
+        self,
+        deployment_id: str,
+        status: str,
+        message: str,
+        error: str = None,
+        progress: int = None
+    ) -> None:
+        """
+        Report deployment status via appropriate channel.
+
+        Automatically routes to WebSocket broadcast for transient deployments
+        or database update for persistent deployments.
+
+        Args:
+            deployment_id: Deployment ID
+            status: Status string (e.g., 'failed', 'pulling_image')
+            message: Human-readable message
+            error: Error message (for failure states)
+            progress: Progress percentage (for progress updates)
+        """
+        if self._is_transient_deployment_id(deployment_id):
+            if error or status == "failed":
+                await self._broadcast_transient_complete(deployment_id, status, message, error=error)
+            else:
+                await self._broadcast_transient_progress(deployment_id, status, progress or 0, message)
+        else:
+            await self._update_deployment_status(
+                deployment_id, status, error_message=error, progress=progress, stage=message
+            )
 
     async def _is_persistent_deployment(self, deployment_id: str) -> bool:
         """

@@ -922,6 +922,15 @@ func (c *Client) PruneImages(ctx context.Context) (*ImagePruneResult, error) {
 	}, nil
 }
 
+// truncateID truncates an ID to 12 characters (Docker short ID format).
+// Safe to call with IDs of any length.
+func truncateID(id string) string {
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
+}
+
 // NetworkContainerInfo represents a container connected to a network
 type NetworkContainerInfo struct {
 	ID   string `json:"id"`   // 12-char short container ID
@@ -959,30 +968,20 @@ func (c *Client) ListNetworks(ctx context.Context) ([]NetworkInfo, error) {
 	// Build result
 	result := make([]NetworkInfo, 0, len(networks))
 	for _, net := range networks {
-		// Get short ID (12 chars)
-		shortID := net.ID
-		if len(shortID) > 12 {
-			shortID = shortID[:12]
-		}
-
 		// Format created timestamp with Z suffix for frontend
 		created := net.Created.UTC().Format("2006-01-02T15:04:05Z")
 
 		// Get connected containers
-		containers := make([]NetworkContainerInfo, 0)
+		containers := make([]NetworkContainerInfo, 0, len(net.Containers))
 		for containerID, endpoint := range net.Containers {
-			cID := containerID
-			if len(cID) > 12 {
-				cID = cID[:12]
-			}
 			containers = append(containers, NetworkContainerInfo{
-				ID:   cID,
+				ID:   truncateID(containerID),
 				Name: strings.TrimPrefix(endpoint.Name, "/"),
 			})
 		}
 
 		result = append(result, NetworkInfo{
-			ID:             shortID,
+			ID:             truncateID(net.ID),
 			Name:           net.Name,
 			Driver:         net.Driver,
 			Scope:          net.Scope,
@@ -1002,7 +1001,7 @@ func (c *Client) DeleteNetwork(ctx context.Context, networkID string, force bool
 	// Get network to check if it's built-in and get name for error messages
 	net, err := c.cli.NetworkInspect(ctx, networkID, network.InspectOptions{})
 	if err != nil {
-		return fmt.Errorf("network not found: %w", err)
+		return fmt.Errorf("failed to inspect network: %w", err)
 	}
 
 	// Check if it's a built-in network
@@ -1019,7 +1018,7 @@ func (c *Client) DeleteNetwork(ctx context.Context, networkID string, force bool
 	if len(net.Containers) > 0 && force {
 		for containerID := range net.Containers {
 			if err := c.cli.NetworkDisconnect(ctx, networkID, containerID, true); err != nil {
-				c.log.WithError(err).Warnf("Failed to disconnect container %s from network %s", containerID[:12], net.Name)
+				c.log.WithError(err).Warnf("Failed to disconnect container %s from network %s", truncateID(containerID), net.Name)
 			}
 		}
 	}

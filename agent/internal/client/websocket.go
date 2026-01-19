@@ -785,6 +785,23 @@ func (c *WebSocketClient) handleMessage(ctx context.Context, msg *types.Message)
 		// Prune all unused images
 		result, err = c.docker.PruneImages(ctx)
 
+	case "list_networks":
+		// List all networks with connected container info
+		result, err = c.docker.ListNetworks(ctx)
+
+	case "delete_network":
+		// Delete a Docker network
+		var deleteReq struct {
+			NetworkID string `json:"network_id"`
+			Force     bool   `json:"force"`
+		}
+		if err = protocol.ParseCommand(msg, &deleteReq); err == nil {
+			err = c.docker.DeleteNetwork(ctx, deleteReq.NetworkID, deleteReq.Force)
+			if err == nil {
+				result = map[string]bool{"success": true}
+			}
+		}
+
 	default:
 		err = fmt.Errorf("unknown command: %s", msg.Command)
 	}

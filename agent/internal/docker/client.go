@@ -921,3 +921,113 @@ func (c *Client) PruneImages(ctx context.Context) (*ImagePruneResult, error) {
 		SpaceReclaimed: int64(report.SpaceReclaimed),
 	}, nil
 }
+
+// NetworkContainerInfo represents a container connected to a network
+type NetworkContainerInfo struct {
+	ID   string `json:"id"`   // 12-char short container ID
+	Name string `json:"name"` // Container name
+}
+
+// NetworkInfo represents a Docker network with connected container info
+type NetworkInfo struct {
+	ID             string                 `json:"id"`              // 12-char short ID
+	Name           string                 `json:"name"`            // Network name
+	Driver         string                 `json:"driver"`          // Network driver (bridge, overlay, etc.)
+	Scope          string                 `json:"scope"`           // Network scope (local, swarm, global)
+	Created        string                 `json:"created"`         // ISO timestamp with Z suffix
+	Internal       bool                   `json:"internal"`        // Whether network is internal
+	Containers     []NetworkContainerInfo `json:"containers"`      // Connected containers
+	ContainerCount int                    `json:"container_count"` // Number of connected containers
+	IsBuiltin      bool                   `json:"is_builtin"`      // True for bridge, host, none
+}
+
+// builtinNetworks contains the names of Docker's built-in networks
+var builtinNetworks = map[string]bool{
+	"bridge": true,
+	"host":   true,
+	"none":   true,
+}
+
+// ListNetworks returns all networks with connected container info
+func (c *Client) ListNetworks(ctx context.Context) ([]NetworkInfo, error) {
+	// Get all networks
+	networks, err := c.cli.NetworkList(ctx, network.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list networks: %w", err)
+	}
+
+	// Build result
+	result := make([]NetworkInfo, 0, len(networks))
+	for _, net := range networks {
+		// Get short ID (12 chars)
+		shortID := net.ID
+		if len(shortID) > 12 {
+			shortID = shortID[:12]
+		}
+
+		// Format created timestamp with Z suffix for frontend
+		created := net.Created.UTC().Format("2006-01-02T15:04:05Z")
+
+		// Get connected containers
+		containers := make([]NetworkContainerInfo, 0)
+		for containerID, endpoint := range net.Containers {
+			cID := containerID
+			if len(cID) > 12 {
+				cID = cID[:12]
+			}
+			containers = append(containers, NetworkContainerInfo{
+				ID:   cID,
+				Name: strings.TrimPrefix(endpoint.Name, "/"),
+			})
+		}
+
+		result = append(result, NetworkInfo{
+			ID:             shortID,
+			Name:           net.Name,
+			Driver:         net.Driver,
+			Scope:          net.Scope,
+			Created:        created,
+			Internal:       net.Internal,
+			Containers:     containers,
+			ContainerCount: len(containers),
+			IsBuiltin:      builtinNetworks[net.Name],
+		})
+	}
+
+	return result, nil
+}
+
+// DeleteNetwork removes a Docker network
+func (c *Client) DeleteNetwork(ctx context.Context, networkID string, force bool) error {
+	// Get network to check if it's built-in and get name for error messages
+	net, err := c.cli.NetworkInspect(ctx, networkID, network.InspectOptions{})
+	if err != nil {
+		return fmt.Errorf("network not found: %w", err)
+	}
+
+	// Check if it's a built-in network
+	if builtinNetworks[net.Name] {
+		return fmt.Errorf("cannot delete built-in network '%s'", net.Name)
+	}
+
+	// Check for connected containers
+	if len(net.Containers) > 0 && !force {
+		return fmt.Errorf("network has %d connected container(s), use force to disconnect and delete", len(net.Containers))
+	}
+
+	// If force is true and there are connected containers, disconnect them first
+	if len(net.Containers) > 0 && force {
+		for containerID := range net.Containers {
+			if err := c.cli.NetworkDisconnect(ctx, networkID, containerID, true); err != nil {
+				c.log.WithError(err).Warnf("Failed to disconnect container %s from network %s", containerID[:12], net.Name)
+			}
+		}
+	}
+
+	// Remove the network
+	if err := c.cli.NetworkRemove(ctx, networkID); err != nil {
+		return fmt.Errorf("failed to remove network: %w", err)
+	}
+
+	return nil
+}

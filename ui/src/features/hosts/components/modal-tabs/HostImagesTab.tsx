@@ -8,6 +8,9 @@ import { useState, useMemo, useCallback, useEffect } from 'react'
 import { Search, Trash2, Filter, AlertTriangle } from 'lucide-react'
 import { useHostImages, usePruneImages, useDeleteImages } from '../../hooks/useHostImages'
 import { ImageDeleteConfirmModal } from '../ImageDeleteConfirmModal'
+import { ConfirmModal } from '@/components/shared/ConfirmModal'
+import { StatusBadge } from '@/components/shared/StatusBadge'
+import { Spinner } from '@/components/shared/Spinner'
 import { formatBytes } from '@/lib/utils/formatting'
 import { formatRelativeTime } from '@/lib/utils/eventUtils'
 import { getImageDisplayName, makeImageCompositeKey } from '@/lib/utils/image'
@@ -17,29 +20,25 @@ interface HostImagesTabProps {
   hostId: string
 }
 
-/**
- * Get status badge for an image
- */
 function ImageStatusBadge({ image }: { image: DockerImage }) {
   if (image.in_use) {
     return (
-      <span className="inline-flex items-center gap-1 px-2 py-1 bg-success/10 text-success text-xs rounded-full">
+      <StatusBadge variant="success">
         In Use ({image.container_count})
-      </span>
+      </StatusBadge>
     )
   }
   if (image.dangling) {
     return (
-      <span className="inline-flex items-center gap-1 px-2 py-1 bg-warning/10 text-warning text-xs rounded-full">
-        <AlertTriangle className="h-3 w-3" />
+      <StatusBadge variant="warning" icon={<AlertTriangle className="h-3 w-3" />}>
         Dangling
-      </span>
+      </StatusBadge>
     )
   }
   return (
-    <span className="inline-flex items-center gap-1 px-2 py-1 bg-muted/30 text-muted-foreground text-xs rounded-full">
+    <StatusBadge variant="muted">
       Unused
-    </span>
+    </StatusBadge>
   )
 }
 
@@ -54,6 +53,7 @@ export function HostImagesTab({ hostId }: HostImagesTabProps) {
   const [selectedImageIds, setSelectedImageIds] = useState<Set<string>>(new Set())
   const [deleteModalOpen, setDeleteModalOpen] = useState(false)
   const [imagesToDelete, setImagesToDelete] = useState<DockerImage[]>([])
+  const [showPruneConfirm, setShowPruneConfirm] = useState(false)
 
   // Filter images
   const filteredImages = useMemo(() => {
@@ -187,11 +187,25 @@ export function HostImagesTab({ hostId }: HostImagesTabProps) {
     return images?.filter((img) => !img.in_use).length ?? 0
   }, [images])
 
-  // Loading state
+  // Handle prune confirmation
+  const handlePruneConfirm = useCallback(() => {
+    pruneMutation.mutate(undefined, {
+      onSuccess: () => {
+        setShowPruneConfirm(false)
+        setSelectedImageIds(new Set())
+      },
+      onError: () => setShowPruneConfirm(false),
+    })
+  }, [pruneMutation])
+
+  const handlePruneClose = useCallback(() => {
+    setShowPruneConfirm(false)
+  }, [])
+
   if (isLoading) {
     return (
       <div className="p-6 flex items-center justify-center">
-        <div className="animate-spin h-8 w-8 border-2 border-accent border-t-transparent rounded-full" />
+        <Spinner size="lg" />
       </div>
     )
   }
@@ -254,12 +268,7 @@ export function HostImagesTab({ hostId }: HostImagesTabProps) {
 
           {/* Prune button */}
           <button
-            onClick={() => pruneMutation.mutate(undefined, {
-              onSuccess: () => {
-                // Clear selection since pruned images are now deleted
-                setSelectedImageIds(new Set())
-              },
-            })}
+            onClick={() => setShowPruneConfirm(true)}
             disabled={pruneMutation.isPending || unusedCount === 0}
             className="flex items-center gap-2 px-3 py-2 text-sm rounded-lg bg-warning/10 text-warning border border-warning/30 hover:bg-warning/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
@@ -304,7 +313,7 @@ export function HostImagesTab({ hostId }: HostImagesTabProps) {
 
               return (
                 <tr
-                  key={image.id}
+                  key={compositeKey}
                   className={`hover:bg-surface-2 transition-colors ${isSelected ? 'bg-accent/5' : ''}`}
                 >
                   <td className="p-3">
@@ -399,6 +408,23 @@ export function HostImagesTab({ hostId }: HostImagesTabProps) {
         images={imagesToDelete}
         isPending={deleteMutation.isPending}
       />
+
+      <ConfirmModal
+        isOpen={showPruneConfirm}
+        onClose={handlePruneClose}
+        onConfirm={handlePruneConfirm}
+        title="Prune Unused Images"
+        description={`This will remove ${unusedCount} unused image${unusedCount !== 1 ? 's' : ''}.`}
+        confirmText="Prune Images"
+        pendingText="Pruning..."
+        variant="warning"
+        isPending={pruneMutation.isPending}
+      >
+        <p className="text-sm text-muted-foreground">
+          Images that are not used by any containers will be permanently deleted.
+          This includes dangling images (untagged layers).
+        </p>
+      </ConfirmModal>
     </div>
   )
 }

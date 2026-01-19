@@ -8,6 +8,9 @@ import { useState, useMemo, useCallback } from 'react'
 import { Search, Trash2, Filter, Shield, Network } from 'lucide-react'
 import { useHostNetworks, useDeleteNetwork, usePruneNetworks } from '../../hooks/useHostNetworks'
 import { NetworkDeleteConfirmModal } from '../NetworkDeleteConfirmModal'
+import { ConfirmModal } from '@/components/shared/ConfirmModal'
+import { StatusBadge } from '@/components/shared/StatusBadge'
+import { Spinner } from '@/components/shared/Spinner'
 import { formatRelativeTime } from '@/lib/utils/eventUtils'
 import { makeCompositeKeyFrom } from '@/lib/utils/containerKeys'
 import type { DockerNetwork } from '@/types/api'
@@ -16,29 +19,25 @@ interface HostNetworksTabProps {
   hostId: string
 }
 
-/**
- * Get status badge for a network
- */
 function NetworkStatusBadge({ network }: { network: DockerNetwork }) {
   if (network.is_builtin) {
     return (
-      <span className="inline-flex items-center gap-1 px-2 py-1 bg-success/10 text-success text-xs rounded-full">
-        <Shield className="h-3 w-3" />
+      <StatusBadge variant="success" icon={<Shield className="h-3 w-3" />}>
         System
-      </span>
+      </StatusBadge>
     )
   }
   if (network.container_count > 0) {
     return (
-      <span className="inline-flex items-center gap-1 px-2 py-1 bg-success/10 text-success text-xs rounded-full">
+      <StatusBadge variant="success">
         In Use ({network.container_count})
-      </span>
+      </StatusBadge>
     )
   }
   return (
-    <span className="inline-flex items-center gap-1 px-2 py-1 bg-muted/30 text-muted-foreground text-xs rounded-full">
+    <StatusBadge variant="muted">
       Unused
-    </span>
+    </StatusBadge>
   )
 }
 
@@ -72,6 +71,7 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
   const [showUnusedOnly, setShowUnusedOnly] = useState(false)
   const [deleteModalOpen, setDeleteModalOpen] = useState(false)
   const [networkToDelete, setNetworkToDelete] = useState<DockerNetwork | null>(null)
+  const [showPruneConfirm, setShowPruneConfirm] = useState(false)
 
   // Filter networks
   const filteredNetworks = useMemo(() => {
@@ -123,11 +123,22 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
     return networks?.filter((n) => n.container_count === 0 && !n.is_builtin).length ?? 0
   }, [networks])
 
-  // Loading state
+  // Handle prune confirmation
+  const handlePruneConfirm = useCallback(() => {
+    pruneMutation.mutate(undefined, {
+      onSuccess: () => setShowPruneConfirm(false),
+      onError: () => setShowPruneConfirm(false),
+    })
+  }, [pruneMutation])
+
+  const handlePruneClose = useCallback(() => {
+    setShowPruneConfirm(false)
+  }, [])
+
   if (isLoading) {
     return (
       <div className="p-6 flex items-center justify-center">
-        <div className="animate-spin h-8 w-8 border-2 border-accent border-t-transparent rounded-full" />
+        <Spinner size="lg" />
       </div>
     )
   }
@@ -191,7 +202,7 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
 
           {/* Prune button */}
           <button
-            onClick={() => pruneMutation.mutate()}
+            onClick={() => setShowPruneConfirm(true)}
             disabled={pruneMutation.isPending || unusedCount === 0}
             className="flex items-center gap-2 px-3 py-2 text-sm rounded-lg bg-warning/10 text-warning border border-warning/30 hover:bg-warning/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
@@ -299,6 +310,23 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
         network={networkToDelete}
         isPending={deleteMutation.isPending}
       />
+
+      <ConfirmModal
+        isOpen={showPruneConfirm}
+        onClose={handlePruneClose}
+        onConfirm={handlePruneConfirm}
+        title="Prune Unused Networks"
+        description={`This will remove ${unusedCount} unused network${unusedCount !== 1 ? 's' : ''}.`}
+        confirmText="Prune Networks"
+        pendingText="Pruning..."
+        variant="warning"
+        isPending={pruneMutation.isPending}
+      >
+        <p className="text-sm text-muted-foreground">
+          Networks that are not connected to any containers will be permanently deleted.
+          Built-in networks (bridge, host, none) are never removed.
+        </p>
+      </ConfirmModal>
     </div>
   )
 }

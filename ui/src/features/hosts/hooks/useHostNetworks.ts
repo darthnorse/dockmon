@@ -24,6 +24,11 @@ interface DeleteNetworkResponse {
   message: string
 }
 
+interface PruneNetworksResponse {
+  removed_count: number
+  networks_removed: string[]
+}
+
 /**
  * Fetch all networks for a host
  */
@@ -37,6 +42,13 @@ async function fetchHostNetworks(hostId: string): Promise<DockerNetwork[]> {
 async function deleteNetwork(params: DeleteNetworkParams): Promise<DeleteNetworkResponse> {
   const url = `/hosts/${params.hostId}/networks/${params.networkId}${params.force ? '?force=true' : ''}`
   return await apiClient.delete<DeleteNetworkResponse>(url)
+}
+
+/**
+ * Prune unused networks from a host
+ */
+async function pruneNetworks(hostId: string): Promise<PruneNetworksResponse> {
+  return await apiClient.post<PruneNetworksResponse>(`/hosts/${hostId}/networks/prune`)
 }
 
 /**
@@ -65,6 +77,28 @@ export function useDeleteNetwork() {
     },
     onError: (error: unknown) => {
       toast.error(getErrorMessage(error, 'Failed to delete network'))
+    },
+  })
+}
+
+/**
+ * Hook to prune unused networks from a host
+ */
+export function usePruneNetworks(hostId: string) {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: () => pruneNetworks(hostId),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['host-networks', hostId] })
+      if (data.removed_count > 0) {
+        toast.success(`Pruned ${data.removed_count} unused network${data.removed_count === 1 ? '' : 's'}`)
+      } else {
+        toast.info('No unused networks to prune')
+      }
+    },
+    onError: (error: unknown) => {
+      toast.error(getErrorMessage(error, 'Failed to prune networks'))
     },
   })
 }

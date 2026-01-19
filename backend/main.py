@@ -1453,6 +1453,48 @@ async def delete_host_network(
         raise HTTPException(status_code=500, detail="Failed to delete network")
 
 
+@app.post("/api/hosts/{host_id}/networks/prune", tags=["hosts"], dependencies=[Depends(require_scope("write"))])
+async def prune_host_networks(host_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    Prune all unused networks on a specific host.
+
+    Removes networks that are not connected to any container.
+    Built-in networks (bridge, host, none) are never removed.
+
+    Returns:
+        - removed_count: Number of networks removed
+        - networks_removed: List of removed network names
+    """
+    # Check if host uses agent - route through agent if available
+    agent_id = monitor.operations.agent_manager.get_agent_for_host(host_id)
+    if agent_id:
+        logger.info(f"Routing prune_networks for host {host_id} through agent {agent_id}")
+        return await monitor.operations.agent_operations.prune_networks(host_id)
+
+    # Legacy path: Direct Docker socket access
+    client = monitor.clients.get(host_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Host not found")
+
+    try:
+        # Use Docker's built-in prune which handles all edge cases
+        result = await async_docker_call(client.networks.prune)
+
+        # Result contains NetworksDeleted (list of network names)
+        networks_deleted = result.get('NetworksDeleted') or []
+
+        logger.info(f"Pruned {len(networks_deleted)} unused networks from host {host_id}: {networks_deleted}")
+
+        return {
+            'removed_count': len(networks_deleted),
+            'networks_removed': networks_deleted
+        }
+
+    except Exception as e:
+        logger.error(f"Error pruning networks for host {host_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to prune networks")
+
+
 @app.get("/api/containers", tags=["containers"])
 async def get_containers(host_id: Optional[str] = None, current_user: dict = Depends(get_current_user)):
     """Get all containers"""

@@ -6,7 +6,7 @@
 
 import { useState, useMemo, useCallback } from 'react'
 import { Search, Trash2, Filter, Shield, Network } from 'lucide-react'
-import { useHostNetworks, useDeleteNetwork } from '../../hooks/useHostNetworks'
+import { useHostNetworks, useDeleteNetwork, usePruneNetworks } from '../../hooks/useHostNetworks'
 import { NetworkDeleteConfirmModal } from '../NetworkDeleteConfirmModal'
 import { formatRelativeTime } from '@/lib/utils/eventUtils'
 import { makeCompositeKeyFrom } from '@/lib/utils/containerKeys'
@@ -65,10 +65,11 @@ function NetworkDriverBadge({ driver }: { driver: string }) {
 export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
   const { data: networks, isLoading, error } = useHostNetworks(hostId)
   const deleteMutation = useDeleteNetwork()
+  const pruneMutation = usePruneNetworks(hostId)
 
   // UI state
   const [searchQuery, setSearchQuery] = useState('')
-  const [hideBuiltin, setHideBuiltin] = useState(false)
+  const [showUnusedOnly, setShowUnusedOnly] = useState(false)
   const [deleteModalOpen, setDeleteModalOpen] = useState(false)
   const [networkToDelete, setNetworkToDelete] = useState<DockerNetwork | null>(null)
 
@@ -77,8 +78,8 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
     if (!networks) return []
 
     return networks.filter((network) => {
-      // Apply builtin filter
-      if (hideBuiltin && network.is_builtin) return false
+      // Apply unused filter (unused = no containers and not built-in)
+      if (showUnusedOnly && (network.container_count > 0 || network.is_builtin)) return false
 
       // Apply search filter (search in name, driver, or ID)
       if (searchQuery) {
@@ -92,7 +93,7 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
 
       return true
     })
-  }, [networks, hideBuiltin, searchQuery])
+  }, [networks, showUnusedOnly, searchQuery])
 
   // Handle delete button click
   const handleDeleteClick = useCallback((network: DockerNetwork) => {
@@ -117,9 +118,9 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
     })
   }, [networkToDelete, hostId, deleteMutation])
 
-  // Count of user-created networks (non-builtin)
-  const userNetworksCount = useMemo(() => {
-    return networks?.filter((n) => !n.is_builtin).length ?? 0
+  // Count of unused networks (not in use and not built-in)
+  const unusedCount = useMemo(() => {
+    return networks?.filter((n) => n.container_count === 0 && !n.is_builtin).length ?? 0
   }, [networks])
 
   // Loading state
@@ -170,22 +171,32 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
 
         {/* Actions */}
         <div className="flex items-center gap-2">
-          {/* Hide built-in toggle */}
+          {/* Show unused toggle */}
           <button
-            onClick={() => setHideBuiltin(!hideBuiltin)}
+            onClick={() => setShowUnusedOnly(!showUnusedOnly)}
             className={`flex items-center gap-2 px-3 py-2 text-sm rounded-lg border transition-colors ${
-              hideBuiltin
+              showUnusedOnly
                 ? 'bg-accent text-accent-foreground border-accent'
                 : 'bg-surface-2 text-foreground border-border hover:bg-surface-3'
             }`}
           >
             <Filter className="h-4 w-4" />
-            Hide System
-            {userNetworksCount > 0 && (
+            Unused Only
+            {unusedCount > 0 && (
               <span className="ml-1 px-1.5 py-0.5 bg-black/20 rounded text-xs">
-                {userNetworksCount}
+                {unusedCount}
               </span>
             )}
+          </button>
+
+          {/* Prune button */}
+          <button
+            onClick={() => pruneMutation.mutate()}
+            disabled={pruneMutation.isPending || unusedCount === 0}
+            className="flex items-center gap-2 px-3 py-2 text-sm rounded-lg bg-warning/10 text-warning border border-warning/30 hover:bg-warning/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            <Trash2 className="h-4 w-4" />
+            Prune All Unused
           </button>
         </div>
       </div>

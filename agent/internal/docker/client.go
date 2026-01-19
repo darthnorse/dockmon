@@ -1030,3 +1030,27 @@ func (c *Client) DeleteNetwork(ctx context.Context, networkID string, force bool
 
 	return nil
 }
+
+// NetworkPruneResult contains the result of a network prune operation
+type NetworkPruneResult struct {
+	RemovedCount    int      `json:"removed_count"`
+	NetworksRemoved []string `json:"networks_removed"`
+}
+
+// PruneNetworks removes all unused networks
+func (c *Client) PruneNetworks(ctx context.Context) (*NetworkPruneResult, error) {
+	report, err := c.cli.NetworksPrune(ctx, filters.Args{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to prune networks: %w", err)
+	}
+
+	networksRemoved := report.NetworksDeleted
+	if networksRemoved == nil {
+		networksRemoved = []string{}
+	}
+
+	return &NetworkPruneResult{
+		RemovedCount:    len(networksRemoved),
+		NetworksRemoved: networksRemoved,
+	}, nil
+}

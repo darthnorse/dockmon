@@ -802,6 +802,10 @@ func (c *WebSocketClient) handleMessage(ctx context.Context, msg *types.Message)
 			}
 		}
 
+	case "prune_networks":
+		// Prune all unused networks
+		result, err = c.docker.PruneNetworks(ctx)
+
 	default:
 		err = fmt.Errorf("unknown command: %s", msg.Command)
 	}

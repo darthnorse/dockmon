@@ -533,6 +533,9 @@ class ContainerDiscovery:
                         # Get auto-restart status
                         auto_restart = get_auto_restart_status_fn(host_id, container_id)
 
+                        # Get desired state and web UI URL from database
+                        desired_state, web_ui_url = self.db.get_desired_state(host_id, container_id)
+
                         # Extract ports - convert Docker API format to string list
                         # Docker API returns: [{"PrivatePort": 80, "PublicPort": 8080, "Type": "tcp", "IP": "0.0.0.0"}]
                         # We need: ["8080:80/tcp"]
@@ -600,6 +603,8 @@ class ContainerDiscovery:
                             volumes=volumes,
                             restart_policy=restart_policy,
                             auto_restart=auto_restart,
+                            desired_state=desired_state,
+                            web_ui_url=web_ui_url,
                             labels=labels,
                             compose_project=compose_project,
                             compose_service=compose_service,

@@ -22,7 +22,7 @@ interface HostNetworksTabProps {
 function NetworkStatusBadge({ network }: { network: DockerNetwork }) {
   if (network.is_builtin) {
     return (
-      <span className="inline-flex items-center gap-1 px-2 py-1 bg-muted/30 text-muted-foreground text-xs rounded-full">
+      <span className="inline-flex items-center gap-1 px-2 py-1 bg-success/10 text-success text-xs rounded-full">
         <Shield className="h-3 w-3" />
         System
       </span>
@@ -247,7 +247,7 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
                   {network.is_builtin ? (
                     <button
                       disabled
-                      className="p-2 rounded-lg text-muted-foreground/40 cursor-not-allowed"
+                      className="p-2 rounded-lg text-muted-foreground/30 cursor-not-allowed"
                       title="Cannot delete system network"
                       aria-label={`Cannot delete system network ${network.name}`}
                     >
@@ -256,7 +256,7 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
                   ) : (
                     <button
                       onClick={() => handleDeleteClick(network)}
-                      className="p-2 rounded-lg hover:bg-danger/10 text-muted-foreground hover:text-danger transition-colors"
+                      className="p-2 rounded-lg hover:bg-danger/10 text-danger/70 hover:text-danger transition-colors"
                       title="Delete network"
                       aria-label={`Delete network ${network.name}`}
                     >

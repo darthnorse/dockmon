@@ -92,7 +92,9 @@ export function getCategoryColor(category: EventCategory): string {
  * Format relative time (e.g., "2 minutes ago", "1 hour ago")
  */
 export function formatRelativeTime(timestamp: string): string {
+  if (!timestamp) return '-'
   const date = new Date(timestamp)
+  if (isNaN(date.getTime())) return '-'
   const now = new Date()
   const diffInSeconds = Math.floor((now.getTime() - date.getTime()) / 1000)
 

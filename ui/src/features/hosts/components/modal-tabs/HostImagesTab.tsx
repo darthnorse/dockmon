@@ -347,7 +347,7 @@ export function HostImagesTab({ hostId }: HostImagesTabProps) {
                   <td className="p-3">
                     <button
                       onClick={() => handleDeleteClick(image)}
-                      className="p-2 rounded-lg hover:bg-danger/10 text-muted-foreground hover:text-danger transition-colors"
+                      className="p-2 rounded-lg hover:bg-danger/10 text-danger/70 hover:text-danger transition-colors"
                       title="Delete image"
                     >
                       <Trash2 className="h-4 w-4" />

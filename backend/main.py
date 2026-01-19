@@ -1173,6 +1173,16 @@ async def list_host_images(host_id: str, current_user: dict = Depends(get_curren
         - container_count: Number of containers using this image
         - dangling: True if image has no tags
     """
+    # Check if host uses agent - route through agent if available
+    agent_id = monitor.operations.agent_manager.get_agent_for_host(host_id)
+    if agent_id:
+        logger.info(f"Routing list_images for host {host_id} through agent {agent_id}")
+        result = await monitor.operations.agent_operations.list_images(host_id)
+        # Sort by created date (newest first)
+        result.sort(key=lambda x: x.get('created', ''), reverse=True)
+        return result
+
+    # Legacy path: Direct Docker socket access
     client = monitor.clients.get(host_id)
     if not client:
         raise HTTPException(status_code=404, detail="Host not found")
@@ -1239,6 +1249,13 @@ async def prune_host_images(host_id: str, current_user: dict = Depends(get_curre
         - removed_count: Number of images removed
         - space_reclaimed: Bytes reclaimed
     """
+    # Check if host uses agent - route through agent if available
+    agent_id = monitor.operations.agent_manager.get_agent_for_host(host_id)
+    if agent_id:
+        logger.info(f"Routing prune_images for host {host_id} through agent {agent_id}")
+        return await monitor.operations.agent_operations.prune_images(host_id)
+
+    # Legacy path: Direct Docker socket access
     client = monitor.clients.get(host_id)
     if not client:
         raise HTTPException(status_code=404, detail="Host not found")

@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	sharedDocker "github.com/darthnorse/dockmon-shared/docker"
 	"github.com/docker/docker/api/types"
@@ -805,4 +806,134 @@ func (c *Client) ExecResize(ctx context.Context, execID string, height, width ui
 		Height: height,
 		Width:  width,
 	})
+}
+
+// ImageInfo represents image information for the Images tab
+type ImageInfo struct {
+	ID             string   `json:"id"`              // 12-char short ID
+	Tags           []string `json:"tags"`            // Image tags (e.g., ["nginx:latest"])
+	Size           int64    `json:"size"`            // Size in bytes
+	Created        string   `json:"created"`         // ISO timestamp with Z suffix
+	InUse          bool     `json:"in_use"`          // Whether any container uses this image
+	ContainerCount int      `json:"container_count"` // Number of containers using this image
+	Dangling       bool     `json:"dangling"`        // True if image has no tags
+}
+
+// ImagePruneResult represents the result of pruning images
+type ImagePruneResult struct {
+	RemovedCount    int   `json:"removed_count"`
+	SpaceReclaimed  int64 `json:"space_reclaimed"`
+}
+
+// ListImages returns all images with usage information
+func (c *Client) ListImages(ctx context.Context) ([]ImageInfo, error) {
+	// Get all images
+	images, err := c.cli.ImageList(ctx, image.ListOptions{All: true})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list images: %w", err)
+	}
+
+	// Get all containers to determine image usage
+	containers, err := c.cli.ContainerList(ctx, container.ListOptions{All: true})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list containers: %w", err)
+	}
+
+	// Build image usage map: image_id (12 chars) -> container count
+	imageUsage := make(map[string]int)
+	for _, ctr := range containers {
+		// Strip sha256: prefix and take first 12 chars
+		imageID := ctr.ImageID
+		if strings.HasPrefix(imageID, "sha256:") {
+			imageID = imageID[7:]
+		}
+		if len(imageID) > 12 {
+			imageID = imageID[:12]
+		}
+		imageUsage[imageID]++
+	}
+
+	// Build result
+	result := make([]ImageInfo, 0, len(images))
+	for _, img := range images {
+		// Get short ID (strip sha256: prefix, take 12 chars)
+		shortID := img.ID
+		if strings.HasPrefix(shortID, "sha256:") {
+			shortID = shortID[7:]
+		}
+		if len(shortID) > 12 {
+			shortID = shortID[:12]
+		}
+
+		containerCount := imageUsage[shortID]
+
+		// Format created timestamp with Z suffix
+		created := fmt.Sprintf("%sZ",
+			strings.TrimSuffix(
+				strings.Split(
+					fmt.Sprintf("%v",
+						java_time_format(img.Created)),
+					"+")[0],
+				"Z"))
+
+		// Handle tags - ensure non-nil slice
+		tags := img.RepoTags
+		if tags == nil {
+			tags = []string{}
+		}
+
+		result = append(result, ImageInfo{
+			ID:             shortID,
+			Tags:           tags,
+			Size:           img.Size,
+			Created:        created,
+			InUse:          containerCount > 0,
+			ContainerCount: containerCount,
+			Dangling:       len(tags) == 0,
+		})
+	}
+
+	return result, nil
+}
+
+// java_time_format converts Unix timestamp to ISO format
+func java_time_format(unixTime int64) string {
+	t := time.Unix(unixTime, 0).UTC()
+	return t.Format("2006-01-02T15:04:05")
+}
+
+// RemoveImage removes a Docker image
+func (c *Client) RemoveImage(ctx context.Context, imageID string, force bool) error {
+	_, err := c.cli.ImageRemove(ctx, imageID, image.RemoveOptions{
+		Force:         force,
+		PruneChildren: true,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to remove image: %w", err)
+	}
+	return nil
+}
+
+// PruneImages removes all unused images
+func (c *Client) PruneImages(ctx context.Context) (*ImagePruneResult, error) {
+	// Use filters to prune ALL unused images (not just dangling)
+	report, err := c.cli.ImagesPrune(ctx, filters.NewArgs(
+		filters.Arg("dangling", "false"),
+	))
+	if err != nil {
+		return nil, fmt.Errorf("failed to prune images: %w", err)
+	}
+
+	// Count actual image deletions (not layer deletions)
+	removedCount := 0
+	for _, deleted := range report.ImagesDeleted {
+		if deleted.Deleted != "" {
+			removedCount++
+		}
+	}
+
+	return &ImagePruneResult{
+		RemovedCount:   removedCount,
+		SpaceReclaimed: int64(report.SpaceReclaimed),
+	}, nil
 }

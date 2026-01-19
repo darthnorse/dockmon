@@ -869,3 +869,153 @@ class AgentContainerOperations:
 
             except Exception as e:
                 logger.error(f"Error logging container action to database: {e}", exc_info=True)
+
+    # ==================== Image Operations ====================
+
+    async def list_images(self, host_id: str) -> List[Dict[str, Any]]:
+        """
+        List all images on a host via agent.
+
+        Args:
+            host_id: Docker host ID
+
+        Returns:
+            List of image info dicts with keys: id, tags, size, created, in_use, container_count, dangling
+
+        Raises:
+            HTTPException: If agent not found or command fails
+        """
+        agent_id = self._get_agent_for_host(host_id)
+        if not agent_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No agent registered for host {host_id}"
+            )
+
+        command = {
+            "type": "command",
+            "command": "list_images",
+            "payload": {}
+        }
+
+        result = await self.command_executor.execute_command(
+            agent_id,
+            command,
+            timeout=30.0
+        )
+
+        if result.status == CommandStatus.SUCCESS:
+            return result.data if result.data else []
+        elif result.status == CommandStatus.TIMEOUT:
+            raise HTTPException(
+                status_code=504,
+                detail=f"Timeout listing images on host {host_id}"
+            )
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to list images: {result.error_message}"
+            )
+
+    async def remove_image(self, host_id: str, image_id: str, force: bool = False) -> bool:
+        """
+        Remove an image via agent.
+
+        Args:
+            host_id: Docker host ID
+            image_id: Image ID (short or full)
+            force: Force remove even if in use
+
+        Returns:
+            True if removed successfully
+
+        Raises:
+            HTTPException: If agent not found or command fails
+        """
+        agent_id = self._get_agent_for_host(host_id)
+        if not agent_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No agent registered for host {host_id}"
+            )
+
+        command = {
+            "type": "command",
+            "command": "remove_image",
+            "payload": {
+                "image_id": image_id,
+                "force": force
+            }
+        }
+
+        result = await self.command_executor.execute_command(
+            agent_id,
+            command,
+            timeout=60.0
+        )
+
+        if result.status == CommandStatus.SUCCESS:
+            logger.info(f"Removed image {image_id} from agent host {host_id}")
+            return True
+        elif result.status == CommandStatus.TIMEOUT:
+            raise HTTPException(
+                status_code=504,
+                detail=f"Timeout removing image {image_id} on host {host_id}"
+            )
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to remove image: {result.error_message}"
+            )
+
+    async def prune_images(self, host_id: str) -> Dict[str, Any]:
+        """
+        Prune unused images via agent.
+
+        Args:
+            host_id: Docker host ID
+
+        Returns:
+            Dict with removed_count and space_reclaimed
+
+        Raises:
+            HTTPException: If agent not found or command fails
+        """
+        agent_id = self._get_agent_for_host(host_id)
+        if not agent_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No agent registered for host {host_id}"
+            )
+
+        command = {
+            "type": "command",
+            "command": "prune_images",
+            "payload": {}
+        }
+
+        result = await self.command_executor.execute_command(
+            agent_id,
+            command,
+            timeout=120.0  # Pruning can take a while
+        )
+
+        if result.status == CommandStatus.SUCCESS:
+            data = result.data or {}
+            removed_count = data.get('removed_count', 0)
+            space_reclaimed = data.get('space_reclaimed', 0)
+            logger.info(f"Pruned {removed_count} images from agent host {host_id}, reclaimed {space_reclaimed} bytes")
+            return {
+                'removed_count': removed_count,
+                'space_reclaimed': space_reclaimed
+            }
+        elif result.status == CommandStatus.TIMEOUT:
+            raise HTTPException(
+                status_code=504,
+                detail=f"Timeout pruning images on host {host_id}"
+            )
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to prune images: {result.error_message}"
+            )

@@ -562,6 +562,8 @@ class BatchJobManager:
         """
         Delete a Docker image from a host.
 
+        Routes through agent if available, otherwise uses direct Docker client.
+
         Args:
             host_id: Host UUID
             image_id: Image short ID (12 chars)
@@ -571,6 +573,15 @@ class BatchJobManager:
         Raises:
             Exception: If deletion fails (host not found, image not found, etc.)
         """
+        # Check if host uses agent - route through agent if available
+        agent_id = self.monitor.operations.agent_manager.get_agent_for_host(host_id)
+        if agent_id:
+            logger.info(f"Routing remove_image for host {host_id} through agent {agent_id}")
+            await self.monitor.operations.agent_operations.remove_image(host_id, image_id, force)
+            logger.info(f"Deleted image {image_name} ({image_id}) from agent host {host_id}")
+            return
+
+        # Legacy path: Direct Docker socket access
         client = self.monitor.clients.get(host_id)
         if not client:
             raise Exception(f"Host {host_id} not found")

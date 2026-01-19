@@ -764,6 +764,27 @@ func (c *WebSocketClient) handleMessage(ctx context.Context, msg *types.Message)
 			result = readResult
 		}
 
+	case "list_images":
+		// List all images with usage information
+		result, err = c.docker.ListImages(ctx)
+
+	case "remove_image":
+		// Remove a Docker image
+		var removeReq struct {
+			ImageID string `json:"image_id"`
+			Force   bool   `json:"force"`
+		}
+		if err = protocol.ParseCommand(msg, &removeReq); err == nil {
+			err = c.docker.RemoveImage(ctx, removeReq.ImageID, removeReq.Force)
+			if err == nil {
+				result = map[string]bool{"success": true}
+			}
+		}
+
+	case "prune_images":
+		// Prune all unused images
+		result, err = c.docker.PruneImages(ctx)
+
 	default:
 		err = fmt.Errorf("unknown command: %s", msg.Command)
 	}

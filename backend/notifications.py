@@ -835,18 +835,28 @@ class NotificationService:
             headers = config.get('headers', {})
             payload_format = config.get('payload_format', 'json')
 
-            # Build payload
+            # Build payload with structured data for easy parsing
             payload = {
                 'title': title,
                 'message': message,
                 'timestamp': datetime.now(timezone.utc).isoformat()
             }
 
-            # Add optional event context if available
-            if event and hasattr(event, 'container_name'):
-                payload['container'] = event.container_name
-            if event and hasattr(event, 'host_name'):
-                payload['host'] = event.host_name
+            # Add structured event context if available (v2.2.8+)
+            # This provides machine-readable fields so receivers don't need to parse message text
+            if event:
+                if hasattr(event, 'container_name') and event.container_name:
+                    payload['container'] = event.container_name
+                if hasattr(event, 'host_name') and event.host_name:
+                    payload['host'] = event.host_name
+                if hasattr(event, 'host_id') and event.host_id:
+                    payload['host_id'] = event.host_id
+                # Include rich context data (versions, digests, etc.) from alert events
+                if hasattr(event, 'event_context_json') and event.event_context_json:
+                    try:
+                        payload['context'] = json.loads(event.event_context_json)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
 
             # Add action URL if provided (v2.2.0+)
             if action_url:
@@ -1130,7 +1140,7 @@ class NotificationService:
                             if await self._send_smtp(channel.config, message, title=alert.title, action_url=action_url):
                                 success_count += 1
                         elif channel.type == "webhook":
-                            if await self._send_webhook(channel.config, message, title=alert.title, action_url=action_url):
+                            if await self._send_webhook(channel.config, message, event=alert, title=alert.title, action_url=action_url):
                                 success_count += 1
                         elif channel.type == "teams":
                             if await self._send_teams(channel.config, message, action_url=action_url):

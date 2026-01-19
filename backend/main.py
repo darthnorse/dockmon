@@ -1282,6 +1282,178 @@ async def prune_host_images(host_id: str, current_user: dict = Depends(get_curre
         raise HTTPException(status_code=500, detail="Failed to prune images")
 
 
+# Built-in Docker networks that cannot be deleted
+BUILTIN_NETWORKS = frozenset(['bridge', 'host', 'none'])
+
+
+@app.get("/api/hosts/{host_id}/networks", tags=["hosts"])
+async def list_host_networks(host_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    List all Docker networks on a host with connected container info.
+
+    Returns:
+        List of networks with:
+        - id: 12-char short ID
+        - name: Network name
+        - driver: Network driver (bridge, overlay, host, null, etc.)
+        - scope: Network scope (local, swarm, global)
+        - created: ISO timestamp with Z suffix
+        - internal: Whether the network is internal (no external connectivity)
+        - containers: List of connected containers with id and name
+        - container_count: Number of connected containers
+        - is_builtin: True for bridge, host, none networks
+    """
+    # Check if host uses agent - route through agent if available
+    agent_id = monitor.operations.agent_manager.get_agent_for_host(host_id)
+    if agent_id:
+        logger.info(f"Routing list_networks for host {host_id} through agent {agent_id}")
+        result = await monitor.operations.agent_operations.list_networks(host_id)
+        # Sort by name
+        result.sort(key=lambda x: x.get('name', ''))
+        return result
+
+    # Legacy path: Direct Docker socket access
+    client = monitor.clients.get(host_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Host not found")
+
+    try:
+        # Get all networks
+        networks = await async_docker_call(client.networks.list)
+
+        # Format response
+        result = []
+        for network in networks:
+            attrs = network.attrs or {}
+            short_id = network.short_id if hasattr(network, 'short_id') and network.short_id else network.id[:12]
+
+            # Parse created timestamp - ensure Z suffix for frontend
+            created = attrs.get('Created', '')
+            if created and not created.endswith('Z'):
+                if '+' in created:
+                    created = created.split('+')[0] + 'Z'
+                else:
+                    created = created + 'Z'
+
+            # Get connected containers
+            containers_info = attrs.get('Containers') or {}
+            containers = []
+            for container_id, container_data in containers_info.items():
+                containers.append({
+                    'id': container_id[:12],
+                    'name': container_data.get('Name', '').lstrip('/')
+                })
+
+            result.append({
+                'id': short_id,
+                'name': network.name,
+                'driver': attrs.get('Driver', ''),
+                'scope': attrs.get('Scope', 'local'),
+                'created': created,
+                'internal': attrs.get('Internal', False),
+                'containers': containers,
+                'container_count': len(containers),
+                'is_builtin': network.name in BUILTIN_NETWORKS,
+            })
+
+        # Sort by name
+        result.sort(key=lambda x: x['name'])
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error listing networks for host {host_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list networks")
+
+
+@app.delete("/api/hosts/{host_id}/networks/{network_id}", tags=["hosts"], dependencies=[Depends(require_scope("write"))])
+async def delete_host_network(
+    host_id: str,
+    network_id: str,
+    force: bool = False,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Delete a Docker network from a host.
+
+    Args:
+        host_id: Host UUID
+        network_id: Network ID (12-char short ID)
+        force: If True, disconnect all containers before deleting
+
+    Returns:
+        {"success": True, "message": "Network deleted"}
+
+    Raises:
+        400: Attempting to delete a built-in network
+        409: Network has connected containers (without force)
+        404: Network or host not found
+        500: Docker API failure
+    """
+    # Normalize network ID to 12-char format (defense-in-depth)
+    network_id = network_id[:12]
+
+    # Check if host uses agent - route through agent if available
+    agent_id = monitor.operations.agent_manager.get_agent_for_host(host_id)
+    if agent_id:
+        logger.info(f"Routing delete_network for host {host_id} through agent {agent_id}")
+        return await monitor.operations.agent_operations.delete_network(host_id, network_id, force)
+
+    # Legacy path: Direct Docker socket access
+    client = monitor.clients.get(host_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Host not found")
+
+    try:
+        # Get the network
+        network = await async_docker_call(client.networks.get, network_id)
+        network_name = network.name
+
+        # Check if it's a built-in network
+        if network_name in BUILTIN_NETWORKS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot delete built-in network '{network_name}'"
+            )
+
+        # Check for connected containers
+        attrs = network.attrs or {}
+        containers_info = attrs.get('Containers') or {}
+
+        if containers_info and not force:
+            container_names = [c.get('Name', '').lstrip('/') for c in containers_info.values()]
+            raise HTTPException(
+                status_code=409,
+                detail=f"Network has {len(containers_info)} connected container(s): {', '.join(container_names[:3])}{'...' if len(container_names) > 3 else ''}. Use force=true to disconnect and delete."
+            )
+
+        # If force is true and there are connected containers, disconnect them first
+        if containers_info and force:
+            for container_id in containers_info.keys():
+                try:
+                    await async_docker_call(network.disconnect, container_id, force=True)
+                    logger.info(f"Disconnected container {container_id[:12]} from network {network_name}")
+                except Exception as e:
+                    logger.warning(f"Failed to disconnect container {container_id[:12]} from network {network_name}: {e}")
+
+        # Delete the network
+        await async_docker_call(network.remove)
+        logger.info(f"Deleted network {network_name} ({network_id}) from host {host_id}")
+
+        return {
+            "success": True,
+            "message": f"Network '{network_name}' deleted"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting network {network_id} from host {host_id}: {e}", exc_info=True)
+        if "not found" in str(e).lower():
+            raise HTTPException(status_code=404, detail="Network not found")
+        raise HTTPException(status_code=500, detail="Failed to delete network")
+
+
 @app.get("/api/containers", tags=["containers"])
 async def get_containers(host_id: Optional[str] = None, current_user: dict = Depends(get_current_user)):
     """Get all containers"""

@@ -144,6 +144,23 @@ export interface DockerImage {
   dangling: boolean        // True if image has no tags
 }
 
+// ==================== Docker Networks ====================
+
+export interface DockerNetwork {
+  id: string                // 12-char short ID
+  name: string              // Network name
+  driver: string            // bridge, overlay, host, null, etc.
+  scope: string             // local, swarm, global
+  created: string           // ISO timestamp
+  internal: boolean         // Internal network (no external connectivity)
+  containers: Array<{       // Connected containers
+    id: string
+    name: string
+  }>
+  container_count: number   // Number of connected containers
+  is_builtin: boolean       // True for bridge/host/none
+}
+
 // ==================== Registry Credentials ====================
 
 export interface RegistryCredential {

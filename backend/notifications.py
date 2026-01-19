@@ -839,7 +839,7 @@ class NotificationService:
             payload = {
                 'title': title,
                 'message': message,
-                'timestamp': datetime.now(timezone.utc).isoformat()
+                'timestamp': datetime.now(timezone.utc).isoformat() + 'Z'
             }
 
             # Add structured event context if available (v2.2.8+)

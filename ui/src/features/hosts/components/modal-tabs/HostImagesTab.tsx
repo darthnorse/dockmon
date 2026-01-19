@@ -10,7 +10,6 @@ import { useHostImages, usePruneImages, useDeleteImages } from '../../hooks/useH
 import { ImageDeleteConfirmModal } from '../ImageDeleteConfirmModal'
 import { ConfirmModal } from '@/components/shared/ConfirmModal'
 import { StatusBadge } from '@/components/shared/StatusBadge'
-import { Spinner } from '@/components/shared/Spinner'
 import { formatBytes } from '@/lib/utils/formatting'
 import { formatRelativeTime } from '@/lib/utils/eventUtils'
 import { getImageDisplayName, makeImageCompositeKey } from '@/lib/utils/image'
@@ -205,7 +204,7 @@ export function HostImagesTab({ hostId }: HostImagesTabProps) {
   if (isLoading) {
     return (
       <div className="p-6 flex items-center justify-center">
-        <Spinner size="lg" />
+        <div className="animate-spin h-8 w-8 border-2 rounded-full border-accent border-t-transparent" />
       </div>
     )
   }

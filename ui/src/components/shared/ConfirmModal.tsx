@@ -7,7 +7,6 @@
 
 import { ReactNode, useId, useEffect, useRef } from 'react'
 import { AlertTriangle, Info, AlertCircle } from 'lucide-react'
-import { Spinner } from './Spinner'
 
 type ConfirmVariant = 'danger' | 'warning' | 'info'
 
@@ -158,7 +157,7 @@ export function ConfirmModal({
           >
             {isPending ? (
               <span className="flex items-center gap-2">
-                <Spinner size="sm" variant="current" />
+                <span className="animate-spin h-4 w-4 border-2 rounded-full border-current border-t-transparent" aria-hidden="true" />
                 {pendingText}
               </span>
             ) : (

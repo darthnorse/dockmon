@@ -10,7 +10,6 @@ import { useHostNetworks, useDeleteNetwork, usePruneNetworks } from '../../hooks
 import { NetworkDeleteConfirmModal } from '../NetworkDeleteConfirmModal'
 import { ConfirmModal } from '@/components/shared/ConfirmModal'
 import { StatusBadge } from '@/components/shared/StatusBadge'
-import { Spinner } from '@/components/shared/Spinner'
 import { formatRelativeTime } from '@/lib/utils/eventUtils'
 import { makeCompositeKeyFrom } from '@/lib/utils/containerKeys'
 import type { DockerNetwork } from '@/types/api'
@@ -138,7 +137,7 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
   if (isLoading) {
     return (
       <div className="p-6 flex items-center justify-center">
-        <Spinner size="lg" />
+        <div className="animate-spin h-8 w-8 border-2 rounded-full border-accent border-t-transparent" />
       </div>
     )
   }

@@ -19,6 +19,49 @@ import * as themes from '@uiw/codemirror-themes-all'
 import { Button } from '@/components/ui/button'
 import { useGlobalSettings } from '@/hooks/useSettings'
 
+// Type guard for services object
+function isServicesRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+/**
+ * Validate compose-specific requirements
+ * Returns error if invalid, warning if there's a non-blocking issue, null otherwise
+ */
+function validateComposeContent(parsed: unknown): { error?: string; warning?: string } {
+  if (!parsed || typeof parsed !== 'object') {
+    return { error: 'Compose file must be a valid YAML object' }
+  }
+
+  const compose = parsed as Record<string, unknown>
+
+  // Check for required 'services' section
+  if (!('services' in compose) || !compose.services) {
+    return { error: "Compose file must contain a 'services' section" }
+  }
+
+  // Verify services is an object (not array or primitive)
+  if (!isServicesRecord(compose.services)) {
+    return { error: "'services' must be an object containing service definitions" }
+  }
+
+  // Check for 'build' directives (warning - works locally but not on agent hosts)
+  const servicesWithBuild: string[] = []
+  for (const [serviceName, serviceConfig] of Object.entries(compose.services)) {
+    if (isServicesRecord(serviceConfig) && 'build' in serviceConfig) {
+      servicesWithBuild.push(serviceName)
+    }
+  }
+
+  if (servicesWithBuild.length > 0) {
+    return {
+      warning: `Warning: 'build' directive found in service(s): ${servicesWithBuild.join(', ')}. This will not work on agent-based hosts.`
+    }
+  }
+
+  return {}
+}
+
 // Theme mapping for CodeMirror (dark themes only)
 const EDITOR_THEMES = {
   'github-dark': themes.githubDark,
@@ -77,6 +120,7 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
 }, ref) => {
   const [formatStatus, setFormatStatus] = useState<'idle' | 'success' | 'error'>('idle')
   const [validationError, setValidationError] = useState<string | null>(null)
+  const [validationWarning, setValidationWarning] = useState<string | null>(null)
   const { data: globalSettings } = useGlobalSettings()
 
   // Get the selected theme (memoized to avoid recreation on every render)
@@ -85,9 +129,13 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
     return EDITOR_THEMES[themeName as keyof typeof EDITOR_THEMES] ?? themes.githubDark
   }, [globalSettings?.editor_theme])
 
-  // Stable callback for CodeMirror onChange
+  // Stable callback for CodeMirror onChange - clears validation state when user edits
   const handleChange = useCallback((val: string) => {
     onChange(val)
+    // Clear validation state when content changes - user may have fixed the issue
+    setValidationError(null)
+    setValidationWarning(null)
+    setFormatStatus('idle')
   }, [onChange])
 
   /**
@@ -95,7 +143,7 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
    * Returns validation result for form submission
    * Note: Use format() function for auto-fix with corrected content
    */
-  const validateContent = (): { valid: boolean; error: string | null } => {
+  const validateContent = (): { valid: boolean; error: string | null; warning?: string } => {
     if (!value.trim()) {
       return { valid: true, error: null } // Empty is valid (will be caught by form validation)
     }
@@ -103,9 +151,9 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
     try {
       if (type === 'stack') {
         // Try parsing YAML as-is
+        let parsed: unknown
         try {
-          yaml.load(value)
-          return { valid: true, error: null }
+          parsed = yaml.load(value)
         } catch (firstErr: unknown) {
           const firstErrMsg = firstErr instanceof Error ? firstErr.message : String(firstErr)
           // If parsing failed with indentation error, try auto-fix
@@ -115,15 +163,27 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
 
             if (fixedYaml) {
               try {
-                yaml.load(fixedYaml)
-                return { valid: true, error: null }
+                parsed = yaml.load(fixedYaml)
               } catch {
                 return { valid: false, error: firstErrMsg }
               }
+            } else {
+              return { valid: false, error: firstErrMsg }
             }
+          } else {
+            return { valid: false, error: firstErrMsg }
           }
-          return { valid: false, error: firstErrMsg }
         }
+
+        // Compose-specific validation using shared helper
+        const composeResult = validateComposeContent(parsed)
+        if (composeResult.error) {
+          return { valid: false, error: composeResult.error }
+        }
+        if (composeResult.warning) {
+          return { valid: true, error: null, warning: composeResult.warning }
+        }
+        return { valid: true, error: null }
       } else {
         // Validate JSON
         JSON.parse(value)
@@ -306,10 +366,33 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
     if (formatted) {
       onChange(formatted)
       setValidationError(null)
+      setValidationWarning(null)
+
+      // Run compose-specific validation on formatted content
+      if (type === 'stack') {
+        try {
+          const parsed = yaml.load(formatted)
+          const composeResult = validateComposeContent(parsed)
+          if (composeResult.error) {
+            setValidationError(composeResult.error)
+            setFormatStatus('error')
+            setTimeout(() => setFormatStatus('idle'), 2000)
+            return
+          }
+          if (composeResult.warning) {
+            // Strip "Warning: " prefix for display (helper adds it)
+            setValidationWarning(composeResult.warning.replace(/^Warning:\s*/, ''))
+          }
+        } catch {
+          // YAML parsing error - shouldn't happen since formatContent succeeded
+        }
+      }
+
       setFormatStatus('success')
       setTimeout(() => setFormatStatus('idle'), 2000)
     } else {
       setValidationError('Invalid format - could not auto-fix')
+      setValidationWarning(null)
       setFormatStatus('error')
       setTimeout(() => setFormatStatus('idle'), 2000)
 
@@ -325,6 +408,17 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
           if (errMsg.includes('bad indentation')) {
             helpfulMessage += '\n\nTip: Root-level keys (services, volumes, networks) must have NO indentation (column 0).'
           }
+        }
+
+        // Also check for compose-specific issues (missing services, etc.)
+        try {
+          const parsed = yaml.load(value)
+          const composeResult = validateComposeContent(parsed)
+          if (composeResult.error) {
+            helpfulMessage = composeResult.error
+          }
+        } catch {
+          // Keep the YAML error message
         }
 
         setValidationError(helpfulMessage)
@@ -425,6 +519,13 @@ networks:
       {validationError && (
         <p className={`text-xs text-destructive ${fillHeight ? 'shrink-0' : ''}`}>
           {validationError}
+        </p>
+      )}
+
+      {/* Validation warning (from Format button) */}
+      {validationWarning && !validationError && (
+        <p className={`text-xs text-warning ${fillHeight ? 'shrink-0' : ''}`}>
+          {validationWarning}
         </p>
       )}
 

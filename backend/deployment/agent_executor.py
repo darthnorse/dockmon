@@ -279,9 +279,16 @@ class AgentDeploymentExecutor:
         is_valid, error = validate_compose_for_agent(compose_content)
         if not is_valid:
             logger.error(f"Compose validation failed for deployment {deployment_id}: {error}")
-            await self._update_deployment_status(
-                deployment_id, "failed", error_message=error
-            )
+            # Transient deployments (format: host_id:stack_name:uuid) don't have DB records
+            # Broadcast error via WebSocket instead of trying to update non-existent record
+            if self._is_transient_deployment_id(deployment_id):
+                await self._broadcast_transient_complete(
+                    deployment_id, "failed", f"Validation failed: {error}", error=error
+                )
+            else:
+                await self._update_deployment_status(
+                    deployment_id, "failed", error_message=error
+                )
             return False
 
         # Get agent ID for this host
@@ -289,9 +296,15 @@ class AgentDeploymentExecutor:
             agent_id = self._get_agent_id_for_host(host_id)
         except ValueError as e:
             logger.error(f"Failed to get agent for host {host_id}: {e}")
-            await self._update_deployment_status(
-                deployment_id, "failed", error_message=str(e)
-            )
+            # Transient deployments don't have DB records
+            if self._is_transient_deployment_id(deployment_id):
+                await self._broadcast_transient_complete(
+                    deployment_id, "failed", f"Agent not found: {e}", error=str(e)
+                )
+            else:
+                await self._update_deployment_status(
+                    deployment_id, "failed", error_message=str(e)
+                )
             return False
 
         # Get all registry credentials for compose deployment
@@ -330,9 +343,15 @@ class AgentDeploymentExecutor:
         )
 
         # Update deployment status to pulling/executing
-        await self._update_deployment_status(
-            deployment_id, "pulling_image", progress=10, stage="Sending to agent..."
-        )
+        # Transient deployments use WebSocket broadcast, persistent use DB update
+        if self._is_transient_deployment_id(deployment_id):
+            await self._broadcast_transient_progress(
+                deployment_id, "pulling_image", 10, "Sending to agent..."
+            )
+        else:
+            await self._update_deployment_status(
+                deployment_id, "pulling_image", progress=10, stage="Sending to agent..."
+            )
 
         # Execute command with retry policy
         # Compose deployments can take a long time (image pulls, etc.)
@@ -352,9 +371,15 @@ class AgentDeploymentExecutor:
         if not result.success:
             error_msg = result.error or "Unknown error during deployment"
             logger.error(f"Deployment {deployment_id} failed: {error_msg}")
-            await self._update_deployment_status(
-                deployment_id, "failed", error_message=error_msg
-            )
+            # Transient deployments use WebSocket broadcast, persistent use DB update
+            if self._is_transient_deployment_id(deployment_id):
+                await self._broadcast_transient_complete(
+                    deployment_id, "failed", f"Command failed: {error_msg}", error=error_msg
+                )
+            else:
+                await self._update_deployment_status(
+                    deployment_id, "failed", error_message=error_msg
+                )
             return False
 
         # Command was accepted - agent will send deploy_progress and deploy_complete events
@@ -857,6 +882,25 @@ class AgentDeploymentExecutor:
                 await self.monitor.manager.broadcast(payload)
         except Exception as e:
             logger.debug(f"Error broadcasting service progress: {e}")
+
+    @staticmethod
+    def _is_transient_deployment_id(deployment_id: str) -> bool:
+        """
+        Check if deployment ID has transient format (no DB record).
+
+        Transient deployments use format: {host_id}:{stack_name}:{uuid}
+        Persistent deployments use format: {uuid} (just a UUID, no colons)
+
+        This is a fast string-based check that avoids DB queries.
+        Use this for early validation failures where we don't want DB overhead.
+
+        Args:
+            deployment_id: Deployment ID to check
+
+        Returns:
+            True if ID has transient format (2+ colons), False otherwise
+        """
+        return deployment_id.count(':') >= 2
 
     async def _is_persistent_deployment(self, deployment_id: str) -> bool:
         """

@@ -111,6 +111,18 @@ export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkAc
             // Invalidate cache regardless of success/failure (shows current state)
             queryClient.invalidateQueries({ queryKey: ['containers'] })
 
+            // For delete-images action, invalidate host-images queries
+            if (action === 'delete-images') {
+              const items = (prev?.items || data.items) as BatchJobItem[] | undefined
+              if (items && items.length > 0) {
+                // Get unique host IDs from items
+                const hostIds = new Set(items.map((item: BatchJobItem) => item.host_id))
+                hostIds.forEach((hostId) => {
+                  queryClient.invalidateQueries({ queryKey: ['host-images', hostId] })
+                })
+              }
+            }
+
             // For auto-update and check-updates actions, also invalidate update-status queries
             // Force refetch even with staleTime: Infinity
             if (action === 'set-auto-update' || action === 'check-updates') {

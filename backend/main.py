@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import time
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any
 from contextlib import asynccontextmanager
@@ -1155,6 +1156,114 @@ async def trigger_agent_update(host_id: str, current_user: dict = Depends(get_cu
     except Exception as e:
         logger.error(f"Error triggering agent update: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/hosts/{host_id}/images", tags=["hosts"])
+async def list_host_images(host_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    List all Docker images on a host with usage information.
+
+    Returns:
+        List of images with:
+        - id: 12-char short ID
+        - tags: List of image tags
+        - size: Size in bytes
+        - created: ISO timestamp with Z suffix
+        - in_use: Whether any container uses this image
+        - container_count: Number of containers using this image
+        - dangling: True if image has no tags
+    """
+    client = monitor.clients.get(host_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Host not found")
+
+    try:
+        # Get all images
+        images = await async_docker_call(client.images.list, all=True)
+
+        # Get all containers to determine image usage
+        containers = await async_docker_call(client.containers.list, all=True)
+
+        # Build image usage map: image_id -> list of container IDs
+        image_usage: dict = defaultdict(list)
+        for container in containers:
+            # Strip sha256: prefix and take first 12 chars to match image.short_id format
+            image_id = container.image.id.replace('sha256:', '')[:12] if container.image else None
+            if image_id:
+                image_usage[image_id].append(container.short_id)
+
+        # Format response
+        result = []
+        for image in images:
+            # Strip sha256: prefix and take first 12 chars to match usage map keys
+            short_id = (image.short_id.replace('sha256:', '')[:12] if image.short_id else '') or image.id.replace('sha256:', '')[:12]
+            container_count = len(image_usage.get(short_id, []))
+
+            # Parse created timestamp - ensure Z suffix for frontend
+            created = image.attrs.get('Created', '')
+            if created and not created.endswith('Z'):
+                if '+' in created:
+                    created = created.split('+')[0] + 'Z'
+                else:
+                    created = created + 'Z'
+
+            tags = image.tags or []
+            result.append({
+                'id': short_id,
+                'tags': tags,
+                'size': image.attrs.get('Size', 0),
+                'created': created,
+                'in_use': container_count > 0,
+                'container_count': container_count,
+                'dangling': len(tags) == 0,
+            })
+
+        # Sort by created date (newest first)
+        result.sort(key=lambda x: x['created'], reverse=True)
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error listing images for host {host_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list images")
+
+
+@app.post("/api/hosts/{host_id}/images/prune", tags=["hosts"], dependencies=[Depends(require_scope("write"))])
+async def prune_host_images(host_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    Prune all unused images on a specific host.
+
+    Removes images that are not referenced by any container.
+
+    Returns:
+        - removed_count: Number of images removed
+        - space_reclaimed: Bytes reclaimed
+    """
+    client = monitor.clients.get(host_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Host not found")
+
+    try:
+        # Use Docker's built-in prune which handles all edge cases
+        result = await async_docker_call(client.images.prune, filters={'dangling': False})
+
+        # Result contains ImagesDeleted (list) and SpaceReclaimed (int)
+        images_deleted = result.get('ImagesDeleted') or []
+        space_reclaimed = result.get('SpaceReclaimed', 0)
+
+        # Count only actual image deletions (not layer deletions)
+        removed_count = len([i for i in images_deleted if i.get('Deleted')])
+
+        logger.info(f"Pruned {removed_count} unused images from host {host_id}, reclaimed {space_reclaimed} bytes")
+
+        return {
+            'removed_count': removed_count,
+            'space_reclaimed': space_reclaimed
+        }
+
+    except Exception as e:
+        logger.error(f"Error pruning images for host {host_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to prune images")
 
 
 @app.get("/api/containers", tags=["containers"])

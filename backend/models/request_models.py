@@ -339,25 +339,25 @@ class EventLogFilter(BaseModel):
 
 class BatchJobCreate(BaseModel):
     """Request model for creating batch jobs"""
-    scope: str = Field(..., pattern='^container$')  # Only 'container' for now
-    action: str = Field(..., pattern='^(start|stop|restart|add-tags|remove-tags|set-auto-restart|set-auto-update|set-desired-state|check-updates|delete-containers|update-containers)$')  # Container actions
-    ids: List[str] = Field(..., min_length=1, max_length=100)  # Container IDs
-    params: Optional[Dict[str, Any]] = None  # Optional parameters (e.g., tags, enabled, desired_state)
+    scope: str = Field(..., pattern='^(container|image)$')
+    action: str = Field(..., pattern='^(start|stop|restart|add-tags|remove-tags|set-auto-restart|set-auto-update|set-desired-state|check-updates|delete-containers|update-containers|delete-images)$')
+    ids: List[str] = Field(..., min_length=1, max_length=100)  # Container or Image IDs
+    params: Optional[Dict[str, Any]] = None  # Optional parameters (e.g., tags, enabled, desired_state, force)
     dry_run: bool = False  # Not implemented in Phase 1
 
     @field_validator('scope')
     @classmethod
     def validate_scope(cls, v: str) -> str:
         """Validate batch job scope"""
-        if v != 'container':
-            raise ValueError('Only "container" scope is supported')
+        if v not in ('container', 'image'):
+            raise ValueError('Scope must be "container" or "image"')
         return v
 
     @field_validator('action')
     @classmethod
     def validate_action(cls, v: str) -> str:
         """Validate batch job action"""
-        valid_actions = {'start', 'stop', 'restart', 'add-tags', 'remove-tags', 'set-auto-restart', 'set-auto-update', 'set-desired-state', 'check-updates', 'delete-containers', 'update-containers'}
+        valid_actions = {'start', 'stop', 'restart', 'add-tags', 'remove-tags', 'set-auto-restart', 'set-auto-update', 'set-desired-state', 'check-updates', 'delete-containers', 'update-containers', 'delete-images'}
         if v not in valid_actions:
             raise ValueError(f'Invalid action. Must be one of: {valid_actions}')
         return v

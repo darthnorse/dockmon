@@ -132,6 +132,18 @@ export interface Container {
   docker_ips?: Record<string, string> | null  // All network IPs {network_name: ip}
 }
 
+// ==================== Docker Images ====================
+
+export interface DockerImage {
+  id: string               // 12-char short ID
+  tags: string[]           // e.g., ["nginx:latest"]
+  size: number             // Size in bytes
+  created: string          // ISO timestamp
+  in_use: boolean          // Whether any container uses this image
+  container_count: number  // Number of containers using this image
+  dangling: boolean        // True if image has no tags
+}
+
 // ==================== Registry Credentials ====================
 
 export interface RegistryCredential {

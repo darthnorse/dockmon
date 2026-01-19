@@ -1208,13 +1208,12 @@ async def list_host_images(host_id: str, current_user: dict = Depends(get_curren
             short_id = normalize_image_id(image.short_id) if image.short_id else normalize_image_id(image.id)
             container_count = len(image_usage.get(short_id, []))
 
-            # Parse created timestamp - ensure Z suffix for frontend
+            # Parse created timestamp - strip timezone offset and add Z suffix
             created = image.attrs.get('Created', '')
             if created and not created.endswith('Z'):
-                if '+' in created:
-                    created = created.split('+')[0] + 'Z'
-                else:
-                    created = created + 'Z'
+                # Handle both +HH:MM and -HH:MM timezone offsets
+                import re
+                created = re.sub(r'[+-]\d{2}:\d{2}$', 'Z', created)
 
             tags = image.tags or []
             result.append({
@@ -1327,13 +1326,13 @@ async def list_host_networks(host_id: str, current_user: dict = Depends(get_curr
             attrs = network.attrs or {}
             short_id = network.short_id if hasattr(network, 'short_id') and network.short_id else network.id[:12]
 
-            # Parse created timestamp - ensure Z suffix for frontend
+            # Parse created timestamp - strip timezone offset and add Z suffix
             created = attrs.get('Created', '')
             if created and not created.endswith('Z'):
-                if '+' in created:
-                    created = created.split('+')[0] + 'Z'
-                else:
-                    created = created + 'Z'
+                # Handle both +HH:MM and -HH:MM timezone offsets
+                # Format: 2026-01-03T17:11:27.020018176-07:00
+                import re
+                created = re.sub(r'[+-]\d{2}:\d{2}$', 'Z', created)
 
             # Get connected containers
             containers_info = attrs.get('Containers') or {}

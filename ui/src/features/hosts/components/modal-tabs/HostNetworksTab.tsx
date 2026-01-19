@@ -10,6 +10,7 @@ import { useHostNetworks, useDeleteNetwork, usePruneNetworks } from '../../hooks
 import { NetworkDeleteConfirmModal } from '../NetworkDeleteConfirmModal'
 import { ConfirmModal } from '@/components/shared/ConfirmModal'
 import { StatusBadge } from '@/components/shared/StatusBadge'
+import { ContainerLinkList } from '@/components/shared/ContainerLinkList'
 import { formatRelativeTime } from '@/lib/utils/eventUtils'
 import { makeCompositeKeyFrom } from '@/lib/utils/containerKeys'
 import type { DockerNetwork } from '@/types/api'
@@ -224,8 +225,9 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
               <th className="text-left p-3 text-sm font-medium text-muted-foreground">Name</th>
               <th className="text-left p-3 text-sm font-medium text-muted-foreground hidden md:table-cell">Driver</th>
               <th className="text-left p-3 text-sm font-medium text-muted-foreground hidden lg:table-cell">Scope</th>
-              <th className="text-left p-3 text-sm font-medium text-muted-foreground hidden xl:table-cell">Created</th>
+              <th className="text-left p-3 text-sm font-medium text-muted-foreground hidden 2xl:table-cell">Created</th>
               <th className="text-left p-3 text-sm font-medium text-muted-foreground">Status</th>
+              <th className="text-left p-3 text-sm font-medium text-muted-foreground hidden xl:table-cell">Containers</th>
               <th className="w-20 p-3 text-sm font-medium text-muted-foreground">Actions</th>
             </tr>
           </thead>
@@ -256,13 +258,16 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
                 <td className="p-3 hidden lg:table-cell">
                   <span className="text-sm capitalize">{network.scope}</span>
                 </td>
-                <td className="p-3 hidden xl:table-cell">
+                <td className="p-3 hidden 2xl:table-cell">
                   <span className="text-sm text-muted-foreground">
                     {formatRelativeTime(network.created)}
                   </span>
                 </td>
                 <td className="p-3">
                   <NetworkStatusBadge network={network} />
+                </td>
+                <td className="p-3 hidden xl:table-cell">
+                  <ContainerLinkList containers={network.containers} hostId={hostId} />
                 </td>
                 <td className="p-3">
                   {network.is_builtin ? (

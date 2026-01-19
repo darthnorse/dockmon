@@ -10,6 +10,7 @@ import { useHostImages, usePruneImages, useDeleteImages } from '../../hooks/useH
 import { ImageDeleteConfirmModal } from '../ImageDeleteConfirmModal'
 import { ConfirmModal } from '@/components/shared/ConfirmModal'
 import { StatusBadge } from '@/components/shared/StatusBadge'
+import { ContainerLinkList } from '@/components/shared/ContainerLinkList'
 import { formatBytes } from '@/lib/utils/formatting'
 import { formatRelativeTime } from '@/lib/utils/eventUtils'
 import { getImageDisplayName, makeImageCompositeKey } from '@/lib/utils/image'
@@ -302,6 +303,7 @@ export function HostImagesTab({ hostId }: HostImagesTabProps) {
               <th className="text-left p-3 text-sm font-medium text-muted-foreground hidden md:table-cell">Size</th>
               <th className="text-left p-3 text-sm font-medium text-muted-foreground hidden lg:table-cell">Created</th>
               <th className="text-left p-3 text-sm font-medium text-muted-foreground">Status</th>
+              <th className="text-left p-3 text-sm font-medium text-muted-foreground hidden xl:table-cell">Containers</th>
               <th className="w-20 p-3 text-sm font-medium text-muted-foreground">Actions</th>
             </tr>
           </thead>
@@ -351,6 +353,9 @@ export function HostImagesTab({ hostId }: HostImagesTabProps) {
                   </td>
                   <td className="p-3">
                     <ImageStatusBadge image={image} />
+                  </td>
+                  <td className="p-3 hidden xl:table-cell">
+                    <ContainerLinkList containers={image.containers} hostId={hostId} />
                   </td>
                   <td className="p-3">
                     <button

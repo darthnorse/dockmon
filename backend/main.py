@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -1172,6 +1173,7 @@ async def list_host_images(host_id: str, current_user: dict = Depends(get_curren
         - created: ISO timestamp with Z suffix
         - in_use: Whether any container uses this image
         - container_count: Number of containers using this image
+        - containers: List of {id, name} for containers using this image
         - dangling: True if image has no tags
     """
     # Check if host uses agent - route through agent if available
@@ -1195,24 +1197,26 @@ async def list_host_images(host_id: str, current_user: dict = Depends(get_curren
         # Get all containers to determine image usage
         containers = await async_docker_call(client.containers.list, all=True)
 
-        # Build image usage map: image_id -> list of container IDs
+        # Build image usage map: image_id -> list of {id, name} objects
         image_usage: dict = defaultdict(list)
         for container in containers:
             image_id = normalize_image_id(container.image.id) if container.image else None
             if image_id:
-                image_usage[image_id].append(container.short_id)
+                image_usage[image_id].append({
+                    'id': container.short_id,
+                    'name': container.name,
+                })
 
         # Format response
         result = []
         for image in images:
             short_id = normalize_image_id(image.short_id) if image.short_id else normalize_image_id(image.id)
-            container_count = len(image_usage.get(short_id, []))
+            containers_using = image_usage.get(short_id, [])
 
             # Parse created timestamp - strip timezone offset and add Z suffix
             created = image.attrs.get('Created', '')
             if created and not created.endswith('Z'):
                 # Handle both +HH:MM and -HH:MM timezone offsets
-                import re
                 created = re.sub(r'[+-]\d{2}:\d{2}$', 'Z', created)
 
             tags = image.tags or []
@@ -1221,8 +1225,9 @@ async def list_host_images(host_id: str, current_user: dict = Depends(get_curren
                 'tags': tags,
                 'size': image.attrs.get('Size', 0),
                 'created': created,
-                'in_use': container_count > 0,
-                'container_count': container_count,
+                'in_use': len(containers_using) > 0,
+                'container_count': len(containers_using),
+                'containers': containers_using,
                 'dangling': len(tags) == 0,
             })
 
@@ -1331,7 +1336,6 @@ async def list_host_networks(host_id: str, current_user: dict = Depends(get_curr
             if created and not created.endswith('Z'):
                 # Handle both +HH:MM and -HH:MM timezone offsets
                 # Format: 2026-01-03T17:11:27.020018176-07:00
-                import re
                 created = re.sub(r'[+-]\d{2}:\d{2}$', 'Z', created)
 
             # Get connected containers
@@ -1493,6 +1497,87 @@ async def prune_host_networks(host_id: str, current_user: dict = Depends(get_cur
     except Exception as e:
         logger.error(f"Error pruning networks for host {host_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to prune networks")
+
+
+@app.get("/api/hosts/{host_id}/volumes", tags=["hosts"])
+async def list_host_volumes(host_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    List all Docker volumes on a host with usage information.
+
+    Returns:
+        List of volumes with:
+        - name: Volume name
+        - driver: Volume driver
+        - mountpoint: Mount point on host
+        - created: ISO timestamp with Z suffix
+        - containers: List of containers using this volume with id and name
+        - container_count: Number of containers using this volume
+        - in_use: Whether any container uses this volume
+    """
+    # Check if host uses agent - route through agent if available
+    agent_id = monitor.operations.agent_manager.get_agent_for_host(host_id)
+    if agent_id:
+        logger.info(f"Routing list_volumes for host {host_id} through agent {agent_id}")
+        result = await monitor.operations.agent_operations.list_volumes(host_id)
+        result.sort(key=lambda x: x.get('name', ''))
+        return result
+
+    # Legacy path: Direct Docker socket access
+    client = monitor.clients.get(host_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Host not found")
+
+    try:
+        # Get all volumes
+        volumes = await async_docker_call(client.volumes.list)
+
+        # Get all containers to determine volume usage
+        containers = await async_docker_call(client.containers.list, all=True)
+
+        # Build volume usage map: volume_name -> list of {id, name} objects
+        volume_usage: dict = defaultdict(list)
+        for container in containers:
+            mounts = container.attrs.get('Mounts', [])
+            for mount in mounts:
+                if mount.get('Type') == 'volume':
+                    vol_name = mount.get('Name', '')
+                    if vol_name:
+                        volume_usage[vol_name].append({
+                            'id': container.short_id,
+                            'name': container.name,
+                        })
+
+        # Format response
+        result = []
+        for volume in volumes:
+            attrs = volume.attrs or {}
+            name = volume.name
+
+            # Parse created timestamp - strip timezone offset and add Z suffix
+            created = attrs.get('CreatedAt', '')
+            if created and not created.endswith('Z'):
+                created = re.sub(r'[+-]\d{2}:\d{2}$', 'Z', created)
+
+            containers_using = volume_usage.get(name, [])
+
+            result.append({
+                'name': name,
+                'driver': attrs.get('Driver', 'local'),
+                'mountpoint': attrs.get('Mountpoint', ''),
+                'created': created,
+                'containers': containers_using,
+                'container_count': len(containers_using),
+                'in_use': len(containers_using) > 0,
+            })
+
+        # Sort by name
+        result.sort(key=lambda x: x['name'])
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error listing volumes for host {host_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list volumes")
 
 
 @app.get("/api/containers", tags=["containers"])

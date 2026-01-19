@@ -141,6 +141,10 @@ export interface DockerImage {
   created: string          // ISO timestamp
   in_use: boolean          // Whether any container uses this image
   container_count: number  // Number of containers using this image
+  containers: Array<{      // Containers using this image
+    id: string
+    name: string
+  }>
   dangling: boolean        // True if image has no tags
 }
 
@@ -159,6 +163,21 @@ export interface DockerNetwork {
   }>
   container_count: number   // Number of connected containers
   is_builtin: boolean       // True for bridge/host/none
+}
+
+// ==================== Docker Volumes ====================
+
+export interface DockerVolume {
+  name: string              // Volume name
+  driver: string            // Volume driver (local, etc.)
+  mountpoint: string        // Mount point on host
+  created: string           // ISO timestamp
+  containers: Array<{       // Containers using this volume
+    id: string
+    name: string
+  }>
+  container_count: number   // Number of containers using this volume
+  in_use: boolean           // Whether any container uses this volume
 }
 
 // ==================== Registry Credentials ====================

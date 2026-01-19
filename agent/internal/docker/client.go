@@ -867,14 +867,8 @@ func (c *Client) ListImages(ctx context.Context) ([]ImageInfo, error) {
 
 		containerCount := imageUsage[shortID]
 
-		// Format created timestamp with Z suffix
-		created := fmt.Sprintf("%sZ",
-			strings.TrimSuffix(
-				strings.Split(
-					fmt.Sprintf("%v",
-						java_time_format(img.Created)),
-					"+")[0],
-				"Z"))
+		// Format created timestamp with Z suffix for frontend
+		created := time.Unix(img.Created, 0).UTC().Format("2006-01-02T15:04:05Z")
 
 		// Handle tags - ensure non-nil slice
 		tags := img.RepoTags
@@ -894,12 +888,6 @@ func (c *Client) ListImages(ctx context.Context) ([]ImageInfo, error) {
 	}
 
 	return result, nil
-}
-
-// java_time_format converts Unix timestamp to ISO format
-func java_time_format(unixTime int64) string {
-	t := time.Unix(unixTime, 0).UTC()
-	return t.Format("2006-01-02T15:04:05")
 }
 
 // RemoveImage removes a Docker image

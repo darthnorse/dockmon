@@ -905,7 +905,7 @@ class AgentContainerOperations:
         )
 
         if result.status == CommandStatus.SUCCESS:
-            return result.data if result.data else []
+            return result.response if result.response else []
         elif result.status == CommandStatus.TIMEOUT:
             raise HTTPException(
                 status_code=504,
@@ -914,7 +914,7 @@ class AgentContainerOperations:
         else:
             raise HTTPException(
                 status_code=500,
-                detail=f"Failed to list images: {result.error_message}"
+                detail=f"Failed to list images: {result.error}"
             )
 
     async def remove_image(self, host_id: str, image_id: str, force: bool = False) -> bool:
@@ -965,7 +965,7 @@ class AgentContainerOperations:
         else:
             raise HTTPException(
                 status_code=500,
-                detail=f"Failed to remove image: {result.error_message}"
+                detail=f"Failed to remove image: {result.error}"
             )
 
     async def prune_images(self, host_id: str) -> Dict[str, Any]:
@@ -1001,7 +1001,7 @@ class AgentContainerOperations:
         )
 
         if result.status == CommandStatus.SUCCESS:
-            data = result.data or {}
+            data = result.response or {}
             removed_count = data.get('removed_count', 0)
             space_reclaimed = data.get('space_reclaimed', 0)
             logger.info(f"Pruned {removed_count} images from agent host {host_id}, reclaimed {space_reclaimed} bytes")
@@ -1017,5 +1017,5 @@ class AgentContainerOperations:
         else:
             raise HTTPException(
                 status_code=500,
-                detail=f"Failed to prune images: {result.error_message}"
+                detail=f"Failed to prune images: {result.error}"
             )

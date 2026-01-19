@@ -871,6 +871,17 @@ class AgentContainerOperations:
                 logger.error(f"Error logging container action to database: {e}", exc_info=True)
 
     # ==================== Image Operations ====================
+    #
+    # Note: Image operations use a different message format than container operations:
+    #
+    # Container operations:
+    #   {"type": "container_operation", "payload": {"action": "start", "container_id": "..."}}
+    #
+    # Image operations:
+    #   {"type": "command", "command": "list_images", "payload": {...}}
+    #
+    # This difference exists because image operations were added later using the
+    # generic command infrastructure, while container operations predate it.
 
     async def list_images(self, host_id: str) -> List[Dict[str, Any]]:
         """

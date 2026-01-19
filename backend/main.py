@@ -58,6 +58,7 @@ from event_logger import EventLogger, EventContext, EventCategory, EventSeverity
 from event_logger import EventType as LogEventType
 from event_bus import Event, EventType, get_event_bus
 from utils.container_id import normalize_container_id
+from utils.image_id import normalize_image_id
 
 # Import extracted modules
 from config.settings import AppConfig, get_cors_origins, setup_logging, HealthCheckFilter
@@ -1197,16 +1198,14 @@ async def list_host_images(host_id: str, current_user: dict = Depends(get_curren
         # Build image usage map: image_id -> list of container IDs
         image_usage: dict = defaultdict(list)
         for container in containers:
-            # Strip sha256: prefix and take first 12 chars to match image.short_id format
-            image_id = container.image.id.replace('sha256:', '')[:12] if container.image else None
+            image_id = normalize_image_id(container.image.id) if container.image else None
             if image_id:
                 image_usage[image_id].append(container.short_id)
 
         # Format response
         result = []
         for image in images:
-            # Strip sha256: prefix and take first 12 chars to match usage map keys
-            short_id = (image.short_id.replace('sha256:', '')[:12] if image.short_id else '') or image.id.replace('sha256:', '')[:12]
+            short_id = normalize_image_id(image.short_id) if image.short_id else normalize_image_id(image.id)
             container_count = len(image_usage.get(short_id, []))
 
             # Parse created timestamp - ensure Z suffix for frontend

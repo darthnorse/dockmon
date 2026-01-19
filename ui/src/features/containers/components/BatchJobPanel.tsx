@@ -228,6 +228,15 @@ export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkAc
     start: 'Starting',
     stop: 'Stopping',
     restart: 'Restarting',
+    'delete-images': 'Deleting images',
+    'delete-containers': 'Deleting containers',
+    'add-tags': 'Adding tags',
+    'remove-tags': 'Removing tags',
+    'set-auto-restart': 'Configuring auto-restart',
+    'set-auto-update': 'Configuring auto-update',
+    'set-desired-state': 'Setting desired state',
+    'check-updates': 'Checking for updates',
+    'update-containers': 'Updating containers',
   }
 
   const statusIcons = {

@@ -41,3 +41,21 @@ export function formatMemory(bytes: number): string {
   const gb = mb / 1024
   return `${gb.toFixed(2)}GB`
 }
+
+/**
+ * Pluralize a word based on count
+ *
+ * @param count - The count to check
+ * @param singular - Singular form of the word
+ * @param plural - Optional plural form (defaults to singular + 's')
+ * @returns The appropriate form based on count
+ *
+ * @example
+ * pluralize(1, 'image') // "image"
+ * pluralize(5, 'image') // "images"
+ * pluralize(0, 'container') // "containers"
+ * pluralize(2, 'entry', 'entries') // "entries"
+ */
+export function pluralize(count: number, singular: string, plural?: string): string {
+  return count === 1 ? singular : (plural ?? singular + 's')
+}

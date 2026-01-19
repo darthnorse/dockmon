@@ -11,6 +11,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { apiClient } from '@/lib/api/client'
 import { getErrorMessage } from '@/lib/utils/errors'
+import { pluralize } from '@/lib/utils/formatting'
 import type { DockerImage } from '@/types/api'
 
 interface PruneResult {
@@ -82,7 +83,7 @@ export function usePruneImages(hostId: string) {
       queryClient.invalidateQueries({ queryKey: ['host-images', hostId] })
       if (data.removed_count > 0) {
         const sizeInMB = (data.space_reclaimed / (1024 * 1024)).toFixed(1)
-        toast.success(`Pruned ${data.removed_count} image${data.removed_count !== 1 ? 's' : ''}, reclaimed ${sizeInMB} MB`)
+        toast.success(`Pruned ${data.removed_count} ${pluralize(data.removed_count, 'image')}, reclaimed ${sizeInMB} MB`)
       } else {
         toast.info('No unused images to prune')
       }
@@ -103,7 +104,7 @@ export function useDeleteImages() {
     mutationFn: deleteImages,
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['host-images', variables.hostId] })
-      toast.success(`Delete job started (${variables.imageIds.length} image${variables.imageIds.length !== 1 ? 's' : ''})`)
+      toast.success(`Delete job started (${variables.imageIds.length} ${pluralize(variables.imageIds.length, 'image')})`)
     },
     onError: (error: unknown) => {
       toast.error(getErrorMessage(error, 'Failed to delete images'))

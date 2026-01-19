@@ -761,6 +761,18 @@ func findString(s, substr string) int {
 	return -1
 }
 
+// normalizeImageID converts a Docker image ID to 12-char short format.
+// Handles both "sha256:abc123..." and "abc123..." formats.
+func normalizeImageID(id string) string {
+	if strings.HasPrefix(id, "sha256:") {
+		id = id[7:]
+	}
+	if len(id) > 12 {
+		id = id[:12]
+	}
+	return id
+}
+
 // ExecConfig contains configuration for creating an exec instance
 type ExecConfig struct {
 	Cmd          []string // Command to execute
@@ -842,29 +854,13 @@ func (c *Client) ListImages(ctx context.Context) ([]ImageInfo, error) {
 	// Build image usage map: image_id (12 chars) -> container count
 	imageUsage := make(map[string]int)
 	for _, ctr := range containers {
-		// Strip sha256: prefix and take first 12 chars
-		imageID := ctr.ImageID
-		if strings.HasPrefix(imageID, "sha256:") {
-			imageID = imageID[7:]
-		}
-		if len(imageID) > 12 {
-			imageID = imageID[:12]
-		}
-		imageUsage[imageID]++
+		imageUsage[normalizeImageID(ctr.ImageID)]++
 	}
 
 	// Build result
 	result := make([]ImageInfo, 0, len(images))
 	for _, img := range images {
-		// Get short ID (strip sha256: prefix, take 12 chars)
-		shortID := img.ID
-		if strings.HasPrefix(shortID, "sha256:") {
-			shortID = shortID[7:]
-		}
-		if len(shortID) > 12 {
-			shortID = shortID[:12]
-		}
-
+		shortID := normalizeImageID(img.ID)
 		containerCount := imageUsage[shortID]
 
 		// Format created timestamp with Z suffix for frontend

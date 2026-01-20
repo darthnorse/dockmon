@@ -64,7 +64,10 @@ func createTestHandler(t *testing.T) (*DeployHandler, *docker.Client) {
 		return nil
 	}
 
-	handler, err := NewDeployHandler(ctx, dockerClient, log, sendEvent)
+	// Use temp directory for test stacks
+	stacksDir := t.TempDir()
+
+	handler, err := NewDeployHandler(ctx, dockerClient, log, sendEvent, stacksDir)
 	if err != nil {
 		dockerClient.Close()
 		t.Fatalf("Failed to create deploy handler: %v", err)

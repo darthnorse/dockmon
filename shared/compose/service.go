@@ -35,6 +35,9 @@ const (
 	progressThrottleInterval = 250 * time.Millisecond
 	// defaultHealthTimeout is the default timeout in seconds for health checks
 	defaultHealthTimeout = 60
+	// defaultStacksDir is the default directory for persistent stack files
+	// Used when StacksDir is not specified in the request
+	defaultStacksDir = "/app/data/stacks"
 )
 
 // isDockerHub returns true if the registry URL refers to Docker Hub
@@ -96,10 +99,17 @@ func NewService(dockerClient *client.Client, log *logrus.Logger, opts ...Option)
 
 // Deploy executes a compose deployment
 func (s *Service) Deploy(ctx context.Context, req DeployRequest) *DeployResult {
+	// Default to standard stacks directory if not specified
+	stacksDir := req.StacksDir
+	if stacksDir == "" {
+		stacksDir = defaultStacksDir
+	}
+
 	s.logInfo("Starting compose deployment", logrus.Fields{
 		"deployment_id": req.DeploymentID,
 		"project_name":  req.ProjectName,
 		"action":        req.Action,
+		"stacks_dir":    stacksDir,
 	})
 
 	s.sendProgress(ProgressEvent{
@@ -108,18 +118,33 @@ func (s *Service) Deploy(ctx context.Context, req DeployRequest) *DeployResult {
 		Message:  "Validating deployment...",
 	})
 
-	composeFile, err := WriteComposeFile(req.ComposeYAML)
+	// Write compose file to persistent stack directory
+	// This allows relative bind mounts (./data) to persist across redeployments
+	composeFile, err := WriteStackComposeFile(stacksDir, req.ProjectName, req.ComposeYAML)
 	if err != nil {
 		return s.failResult(req.DeploymentID, fmt.Sprintf("Failed to write compose file: %v", err))
 	}
-	defer CleanupComposeDir(composeFile, s.log) // Cleans up entire deployment subdirectory
 
-	// Write .env file if provided (allows env_file: .env in compose to work)
-	if req.EnvFileContent != "" {
-		if _, err := WriteEnvFile(composeFile, req.EnvFileContent); err != nil {
-			return s.failResult(req.DeploymentID, fmt.Sprintf("Failed to write .env file: %v", err))
-		}
-		// No separate cleanup needed - CleanupComposeDir removes entire directory
+	// Write or remove .env file based on content
+	// WriteStackEnvFile removes existing .env when called with empty content
+	if _, err := WriteStackEnvFile(stacksDir, req.ProjectName, req.EnvFileContent); err != nil {
+		return s.failResult(req.DeploymentID, fmt.Sprintf("Failed to write .env file: %v", err))
+	}
+
+	s.logInfo("Using persistent stack directory", logrus.Fields{
+		"stack_dir": filepath.Dir(composeFile),
+	})
+
+	// For "down" action, optionally delete the stack directory
+	if req.Action == "down" && req.RemoveVolumes {
+		defer func() {
+			if err := DeleteStackDir(stacksDir, req.ProjectName, s.log); err != nil {
+				s.logWarn("Failed to delete stack directory", logrus.Fields{
+					"error": err.Error(),
+					"stack": req.ProjectName,
+				})
+			}
+		}()
 	}
 
 	switch req.Action {

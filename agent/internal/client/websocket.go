@@ -131,6 +131,7 @@ func NewWebSocketClient(
 		dockerClient,
 		log,
 		client.sendEvent,
+		cfg.StacksDir,
 	)
 	if err != nil {
 		log.WithError(err).Warn("Deploy handler not available (Docker Compose not installed)")

@@ -14,6 +14,7 @@
 #   TZ                   - Optional. Timezone (default: UTC)
 #   INSECURE_SKIP_VERIFY - Optional. Skip TLS verification (default: false)
 #   DATA_PATH            - Optional. Data directory (default: /var/lib/dockmon-agent)
+#   AGENT_STACKS_DIR     - Optional. Stack storage directory (default: $DATA_PATH/stacks)
 #
 
 set -e

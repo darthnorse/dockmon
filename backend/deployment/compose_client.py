@@ -14,6 +14,7 @@ Agent-based hosts continue to use agent_executor.py directly.
 import asyncio
 import json
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
@@ -23,6 +24,10 @@ logger = logging.getLogger(__name__)
 
 # Default socket path - matches compose-service default
 COMPOSE_SOCKET_PATH = "/tmp/compose.sock"
+
+# Default stacks directory for persistent stack storage
+# This allows relative bind mounts (./data) to persist across redeployments
+DEFAULT_STACKS_DIR = "/app/data/stacks"
 
 
 class ComposeServiceError(Exception):
@@ -151,6 +156,7 @@ class ComposeClient:
         tls_cert: Optional[str] = None,
         tls_key: Optional[str] = None,
         registry_credentials: Optional[List[Dict[str, str]]] = None,
+        stacks_dir: Optional[str] = None,
     ) -> DeployResult:
         """
         Deploy a compose stack (JSON response, no streaming).
@@ -173,38 +179,31 @@ class ComposeClient:
             tls_cert: TLS client certificate PEM
             tls_key: TLS client key PEM
             registry_credentials: List of registry credentials
+            stacks_dir: Persistent stacks directory (uses STACKS_DIR env or default)
 
         Returns:
             DeployResult with deployment outcome
         """
-        request = {
-            "deployment_id": deployment_id,
-            "project_name": project_name,
-            "compose_yaml": compose_yaml,
-            "action": action,
-            "env_file_content": env_file_content or "",
-            "profiles": profiles or [],
-            "remove_volumes": remove_volumes,
-            "force_recreate": force_recreate,
-            "pull_images": pull_images,
-            "wait_for_healthy": wait_for_healthy,
-            "health_timeout": health_timeout,
-            "timeout": timeout,
-        }
-
-        # Add remote connection info if provided
-        if docker_host:
-            request["docker_host"] = docker_host
-            if tls_ca_cert:
-                request["tls_ca_cert"] = tls_ca_cert
-            if tls_cert:
-                request["tls_cert"] = tls_cert
-            if tls_key:
-                request["tls_key"] = tls_key
-
-        # Add registry credentials if provided
-        if registry_credentials:
-            request["registry_credentials"] = registry_credentials
+        request = self._build_request(
+            deployment_id=deployment_id,
+            project_name=project_name,
+            compose_yaml=compose_yaml,
+            action=action,
+            env_file_content=env_file_content,
+            profiles=profiles,
+            remove_volumes=remove_volumes,
+            force_recreate=force_recreate,
+            pull_images=pull_images,
+            wait_for_healthy=wait_for_healthy,
+            health_timeout=health_timeout,
+            timeout=timeout,
+            stacks_dir=stacks_dir,
+            docker_host=docker_host,
+            tls_ca_cert=tls_ca_cert,
+            tls_cert=tls_cert,
+            tls_key=tls_key,
+            registry_credentials=registry_credentials,
+        )
 
         # HTTP timeout = operation timeout + 60s buffer
         http_timeout = timeout + 60
@@ -258,6 +257,7 @@ class ComposeClient:
         tls_cert: Optional[str] = None,
         tls_key: Optional[str] = None,
         registry_credentials: Optional[List[Dict[str, str]]] = None,
+        stacks_dir: Optional[str] = None,
     ) -> DeployResult:
         """
         Deploy with SSE progress streaming.
@@ -271,34 +271,26 @@ class ComposeClient:
         Returns:
             DeployResult with deployment outcome
         """
-        request = {
-            "deployment_id": deployment_id,
-            "project_name": project_name,
-            "compose_yaml": compose_yaml,
-            "action": action,
-            "env_file_content": env_file_content or "",
-            "profiles": profiles or [],
-            "remove_volumes": remove_volumes,
-            "force_recreate": force_recreate,
-            "pull_images": pull_images,
-            "wait_for_healthy": wait_for_healthy,
-            "health_timeout": health_timeout,
-            "timeout": timeout,
-        }
-
-        # Add remote connection info if provided
-        if docker_host:
-            request["docker_host"] = docker_host
-            if tls_ca_cert:
-                request["tls_ca_cert"] = tls_ca_cert
-            if tls_cert:
-                request["tls_cert"] = tls_cert
-            if tls_key:
-                request["tls_key"] = tls_key
-
-        # Add registry credentials if provided
-        if registry_credentials:
-            request["registry_credentials"] = registry_credentials
+        request = self._build_request(
+            deployment_id=deployment_id,
+            project_name=project_name,
+            compose_yaml=compose_yaml,
+            action=action,
+            env_file_content=env_file_content,
+            profiles=profiles,
+            remove_volumes=remove_volumes,
+            force_recreate=force_recreate,
+            pull_images=pull_images,
+            wait_for_healthy=wait_for_healthy,
+            health_timeout=health_timeout,
+            timeout=timeout,
+            stacks_dir=stacks_dir,
+            docker_host=docker_host,
+            tls_ca_cert=tls_ca_cert,
+            tls_cert=tls_cert,
+            tls_key=tls_key,
+            registry_credentials=registry_credentials,
+        )
 
         # HTTP timeout = operation timeout + 60s buffer
         http_timeout = timeout + 60
@@ -372,6 +364,60 @@ class ComposeClient:
             raise ComposeServiceUnavailable(
                 f"Cannot connect to compose service at {self.socket_path}"
             )
+
+    def _build_request(
+        self,
+        deployment_id: str,
+        project_name: str,
+        compose_yaml: str,
+        action: str,
+        env_file_content: Optional[str],
+        profiles: Optional[List[str]],
+        remove_volumes: bool,
+        force_recreate: bool,
+        pull_images: bool,
+        wait_for_healthy: bool,
+        health_timeout: int,
+        timeout: int,
+        stacks_dir: Optional[str],
+        docker_host: Optional[str],
+        tls_ca_cert: Optional[str],
+        tls_cert: Optional[str],
+        tls_key: Optional[str],
+        registry_credentials: Optional[List[Dict[str, str]]],
+    ) -> Dict[str, Any]:
+        """Build request payload for compose service."""
+        effective_stacks_dir = stacks_dir or os.getenv("STACKS_DIR") or DEFAULT_STACKS_DIR
+
+        request: Dict[str, Any] = {
+            "deployment_id": deployment_id,
+            "project_name": project_name,
+            "compose_yaml": compose_yaml,
+            "action": action,
+            "env_file_content": env_file_content or "",
+            "profiles": profiles or [],
+            "remove_volumes": remove_volumes,
+            "force_recreate": force_recreate,
+            "pull_images": pull_images,
+            "wait_for_healthy": wait_for_healthy,
+            "health_timeout": health_timeout,
+            "timeout": timeout,
+            "stacks_dir": effective_stacks_dir,
+        }
+
+        if docker_host:
+            request["docker_host"] = docker_host
+            if tls_ca_cert:
+                request["tls_ca_cert"] = tls_ca_cert
+            if tls_cert:
+                request["tls_cert"] = tls_cert
+            if tls_key:
+                request["tls_key"] = tls_key
+
+        if registry_credentials:
+            request["registry_credentials"] = registry_credentials
+
+        return request
 
     def _parse_result(self, data: Dict[str, Any]) -> DeployResult:
         """Parse JSON response into DeployResult."""

@@ -27,10 +27,9 @@ var tempDir string
 
 func init() {
 	// Create dedicated temp directory on package init
+	// Used for TLS certificate files and stale file cleanup
 	tempDir = filepath.Join(os.TempDir(), TempDirName)
 	if err := os.MkdirAll(tempDir, TempDirMode); err != nil {
-		// Log to stderr since logrus isn't initialized yet.
-		// Service continues; WriteComposeFile will fail with a clearer error.
 		fmt.Fprintf(os.Stderr, "CRITICAL: Failed to create compose temp directory %s: %v\n", tempDir, err)
 	}
 }
@@ -38,81 +37,6 @@ func init() {
 // GetTempDir returns the compose temp directory path
 func GetTempDir() string {
 	return tempDir
-}
-
-// isUnderTempDir checks if the given path is safely under our temp directory.
-// Returns the cleaned path if valid, or an error describing the validation failure.
-// This prevents path traversal attacks by checking the relative path.
-func isUnderTempDir(path string) (string, error) {
-	cleaned := filepath.Clean(path)
-	cleanTempDir := filepath.Clean(tempDir)
-
-	relPath, err := filepath.Rel(cleanTempDir, cleaned)
-	if err != nil {
-		return "", fmt.Errorf("failed to compute relative path: %w", err)
-	}
-
-	if strings.HasPrefix(relPath, "..") || relPath == "." {
-		return "", fmt.Errorf("path escapes temp directory: %s (relative: %s)", path, relPath)
-	}
-
-	return cleaned, nil
-}
-
-// WriteComposeFile writes compose content to a secure temp file in a unique subdirectory.
-// Each deployment gets its own subdirectory to prevent race conditions with .env files.
-// Returns the path to the temp file. Caller is responsible for cleanup via CleanupComposeDir.
-func WriteComposeFile(content string) (string, error) {
-	// Ensure base temp dir exists with proper permissions
-	if err := os.MkdirAll(tempDir, TempDirMode); err != nil {
-		return "", fmt.Errorf("failed to create temp dir: %w", err)
-	}
-
-	// Create a unique subdirectory for this deployment
-	// This isolates each deployment's .env file to prevent race conditions
-	subDir, err := os.MkdirTemp(tempDir, TempFilePrefix)
-	if err != nil {
-		return "", fmt.Errorf("failed to create deployment temp dir: %w", err)
-	}
-
-	// Set restrictive permissions on subdirectory
-	if err := os.Chmod(subDir, TempDirMode); err != nil {
-		os.RemoveAll(subDir)
-		return "", fmt.Errorf("failed to set dir permissions: %w", err)
-	}
-
-	// Write compose file into the subdirectory
-	composePath := filepath.Join(subDir, "docker-compose.yml")
-	if err := os.WriteFile(composePath, []byte(content), TempFileMode); err != nil {
-		os.RemoveAll(subDir)
-		return "", fmt.Errorf("failed to write compose file: %w", err)
-	}
-
-	return composePath, nil
-}
-
-// WriteEnvFile writes .env content to the same directory as the compose file.
-// This allows env_file: .env references in compose files to resolve correctly.
-// Returns the path to the .env file. Caller is responsible for cleanup.
-func WriteEnvFile(composeFilePath, envContent string) (string, error) {
-	if envContent == "" {
-		return "", nil
-	}
-
-	// Defense in depth: validate the compose file path is under our temp directory
-	dir, err := isUnderTempDir(filepath.Dir(composeFilePath))
-	if err != nil {
-		return "", fmt.Errorf("invalid compose file path: %w", err)
-	}
-
-	// Write .env in the same directory as the compose file
-	envFilePath := filepath.Join(dir, ".env")
-
-	if err := os.WriteFile(envFilePath, []byte(envContent), TempFileMode); err != nil {
-		return "", fmt.Errorf("failed to write .env file: %w", err)
-	}
-
-	return envFilePath, nil
 }
 
 // CleanupTempFile removes a temp file
@@ -123,50 +47,6 @@ func CleanupTempFile(path string, log *logrus.Logger) {
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		if log != nil {
 			log.WithError(err).WithField("path", path).Warn("Failed to remove temp file")
-		}
-	}
-}
-
-// CleanupComposeDir removes the deployment subdirectory containing compose and .env files.
-// Pass the compose file path; this will remove its parent directory.
-func CleanupComposeDir(composeFilePath string, log *logrus.Logger) {
-	if composeFilePath == "" {
-		return
-	}
-
-	// Validate path is under temp directory (prevents path traversal attacks)
-	dir, err := isUnderTempDir(filepath.Dir(composeFilePath))
-	if err != nil {
-		if log != nil {
-			log.WithError(err).WithField("path", composeFilePath).Warn("Refusing to remove directory outside temp area")
-		}
-		return
-	}
-
-	// Check for symlink attacks: verify the directory is not a symlink
-	// that could redirect RemoveAll to an unintended location
-	info, err := os.Lstat(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return // Already gone, nothing to do
-		}
-		if log != nil {
-			log.WithError(err).WithField("path", dir).Warn("Failed to stat directory for cleanup")
-		}
-		return
-	}
-
-	// Reject symlinks - they could point outside our temp area
-	if info.Mode().Type() == os.ModeSymlink {
-		if log != nil {
-			log.WithField("path", dir).Warn("Refusing to remove symlink in cleanup")
-		}
-		return
-	}
-
-	if err := os.RemoveAll(dir); err != nil && !os.IsNotExist(err) {
-		if log != nil {
-			log.WithError(err).WithField("path", dir).Warn("Failed to remove compose temp dir")
 		}
 	}
 }
@@ -298,4 +178,177 @@ func CleanupStaleFiles(log *logrus.Logger) {
 	if cleaned > 0 && log != nil {
 		log.WithField("count", cleaned).Info("Cleaned up stale temp files from previous run")
 	}
+}
+
+// =============================================================================
+// Persistent Stack Directory Functions
+// =============================================================================
+//
+// These functions manage persistent stack directories for compose deployments.
+// Unlike temp directories, stack directories persist after deployment to support
+// relative bind mounts (./data) in compose files.
+//
+// Directory structure: $STACKS_DIR/<project_name>/docker-compose.yml
+
+// StackDirMode is the directory permission for stack directories
+const StackDirMode os.FileMode = 0755
+
+// StackFileMode is the file permission for stack files (readable by all for bind mounts)
+const StackFileMode os.FileMode = 0644
+
+// ValidateStackName checks that a project name is safe for filesystem use.
+// Returns an error if the name could cause path traversal or other issues.
+func ValidateStackName(name string) error {
+	if name == "" {
+		return fmt.Errorf("stack name cannot be empty")
+	}
+
+	// Reject path separators
+	if strings.Contains(name, "/") || strings.Contains(name, "\\") {
+		return fmt.Errorf("stack name cannot contain path separators")
+	}
+
+	// Reject . and .. to prevent directory traversal
+	if name == "." || name == ".." {
+		return fmt.Errorf("stack name cannot be . or ..")
+	}
+
+	// Reject names starting with . (hidden files)
+	if strings.HasPrefix(name, ".") {
+		return fmt.Errorf("stack name cannot start with .")
+	}
+
+	// Reject null bytes
+	if strings.Contains(name, "\x00") {
+		return fmt.Errorf("stack name cannot contain null bytes")
+	}
+
+	return nil
+}
+
+// isUnderStacksDir checks if the given path is safely under the stacks directory.
+// Returns the cleaned path if valid, or an error describing the validation failure.
+func isUnderStacksDir(stacksDir, path string) (string, error) {
+	cleaned := filepath.Clean(path)
+	cleanStacksDir := filepath.Clean(stacksDir)
+
+	relPath, err := filepath.Rel(cleanStacksDir, cleaned)
+	if err != nil {
+		return "", fmt.Errorf("failed to compute relative path: %w", err)
+	}
+
+	if strings.HasPrefix(relPath, "..") || relPath == "." {
+		return "", fmt.Errorf("path escapes stacks directory: %s (relative: %s)", path, relPath)
+	}
+
+	return cleaned, nil
+}
+
+// GetStackDir returns the directory path for a stack.
+// Does not create the directory.
+func GetStackDir(stacksDir, projectName string) (string, error) {
+	if err := ValidateStackName(projectName); err != nil {
+		return "", err
+	}
+
+	stackDir := filepath.Join(stacksDir, projectName)
+
+	// Validate the resulting path is still under stacksDir
+	_, err := isUnderStacksDir(stacksDir, stackDir)
+	if err != nil {
+		return "", err
+	}
+
+	return stackDir, nil
+}
+
+// WriteStackComposeFile writes compose content to a persistent stack directory.
+// Creates the stack directory if it doesn't exist.
+// Returns the path to the compose file.
+// The directory persists after deployment to support relative bind mounts.
+func WriteStackComposeFile(stacksDir, projectName, content string) (string, error) {
+	stackDir, err := GetStackDir(stacksDir, projectName)
+	if err != nil {
+		return "", fmt.Errorf("invalid stack: %w", err)
+	}
+
+	// Create stack directory if it doesn't exist
+	if err := os.MkdirAll(stackDir, StackDirMode); err != nil {
+		return "", fmt.Errorf("failed to create stack directory: %w", err)
+	}
+
+	// Write compose file
+	composePath := filepath.Join(stackDir, "docker-compose.yml")
+	if err := os.WriteFile(composePath, []byte(content), StackFileMode); err != nil {
+		return "", fmt.Errorf("failed to write compose file: %w", err)
+	}
+
+	return composePath, nil
+}
+
+// WriteStackEnvFile writes .env content to a stack directory.
+// The stack directory must already exist (call WriteStackComposeFile first).
+// If envContent is empty, removes any existing .env file.
+// Returns the path to the .env file (empty string if no .env was written).
+func WriteStackEnvFile(stacksDir, projectName, envContent string) (string, error) {
+	stackDir, err := GetStackDir(stacksDir, projectName)
+	if err != nil {
+		return "", fmt.Errorf("invalid stack: %w", err)
+	}
+
+	envPath := filepath.Join(stackDir, ".env")
+
+	// If no env content, remove existing .env file if present
+	if envContent == "" {
+		if err := os.Remove(envPath); err != nil && !os.IsNotExist(err) {
+			return "", fmt.Errorf("failed to remove .env file: %w", err)
+		}
+		return "", nil
+	}
+
+	// Write .env file
+	if err := os.WriteFile(envPath, []byte(envContent), StackFileMode); err != nil {
+		return "", fmt.Errorf("failed to write .env file: %w", err)
+	}
+
+	return envPath, nil
+}
+
+// DeleteStackDir removes a stack directory and all its contents.
+// Used when a stack is deleted (after docker compose down).
+// Safe to call if directory doesn't exist.
+func DeleteStackDir(stacksDir, projectName string, log *logrus.Logger) error {
+	stackDir, err := GetStackDir(stacksDir, projectName)
+	if err != nil {
+		return fmt.Errorf("invalid stack: %w", err)
+	}
+
+	// Validate path is under stacks directory (defense in depth)
+	_, err = isUnderStacksDir(stacksDir, stackDir)
+	if err != nil {
+		return fmt.Errorf("refusing to delete: %w", err)
+	}
+
+	// Check for symlink attacks
+	info, err := os.Lstat(stackDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // Already gone, nothing to do
+		}
+		return fmt.Errorf("failed to stat stack directory: %w", err)
+	}
+
+	if info.Mode().Type() == os.ModeSymlink {
+		return fmt.Errorf("refusing to delete symlink: %s", stackDir)
+	}
+
+	if err := os.RemoveAll(stackDir); err != nil {
+		return fmt.Errorf("failed to delete stack directory: %w", err)
+	}
+
+	if log != nil {
+		log.WithField("stack", projectName).Info("Deleted stack directory")
+	}
+
+	return nil
 }

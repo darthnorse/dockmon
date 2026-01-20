@@ -3,7 +3,6 @@ package handlers
 import (
 	"context"
 	"fmt"
-	"sync"
 
 	"github.com/darthnorse/dockmon-agent/internal/docker"
 	"github.com/darthnorse/dockmon-shared/compose"
@@ -16,7 +15,7 @@ type DeployHandler struct {
 	dockerClient *docker.Client
 	log          *logrus.Logger
 	sendEvent    func(msgType string, payload interface{}) error
-	mu           sync.Mutex
+	stacksDir    string // Persistent stack directory for compose deployments
 }
 
 // DeployComposeRequest is sent from backend to agent
@@ -53,18 +52,20 @@ func NewDeployHandler(
 	dockerClient *docker.Client,
 	log *logrus.Logger,
 	sendEvent func(string, interface{}) error,
+	stacksDir string,
 ) (*DeployHandler, error) {
 	// Test that we can create a compose service (validates library availability)
 	if err := compose.TestComposeLibrary(); err != nil {
 		return nil, fmt.Errorf("Docker Compose library not available: %w", err)
 	}
 
-	log.Info("Deploy handler initialized using Docker Compose Go library")
+	log.WithField("stacks_dir", stacksDir).Info("Deploy handler initialized using Docker Compose Go library")
 
 	return &DeployHandler{
 		dockerClient: dockerClient,
 		log:          log,
 		sendEvent:    sendEvent,
+		stacksDir:    stacksDir,
 	}, nil
 }
 
@@ -106,6 +107,7 @@ func (h *DeployHandler) DeployCompose(ctx context.Context, req DeployComposeRequ
 		WaitForHealthy:      req.WaitForHealthy,
 		HealthTimeout:       req.HealthTimeout,
 		RegistryCredentials: req.RegistryCredentials,
+		StacksDir:           h.stacksDir,
 	}
 
 	// Execute deployment using shared package

@@ -157,6 +157,7 @@ export interface DockerNetwork {
   scope: string             // local, swarm, global
   created: string           // ISO timestamp
   internal: boolean         // Internal network (no external connectivity)
+  subnet: string            // IPAM subnet (e.g., "172.17.0.0/16")
   containers: Array<{       // Connected containers
     id: string
     name: string

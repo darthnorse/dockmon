@@ -32,7 +32,7 @@ export function ContainerLinkList({
           <button
             key={shortId}
             onClick={() => openModal(`${hostId}:${shortId}`)}
-            className="text-xs font-mono px-1.5 py-0.5 rounded bg-accent/10 text-accent hover:bg-accent/20 transition-colors truncate max-w-[120px]"
+            className="text-xs font-mono px-1.5 py-0.5 rounded bg-surface-3 text-foreground hover:bg-surface-3/80 transition-colors truncate max-w-[120px]"
             title={container.name}
           >
             {container.name}

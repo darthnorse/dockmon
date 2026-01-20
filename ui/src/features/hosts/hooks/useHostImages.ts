@@ -11,7 +11,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { apiClient } from '@/lib/api/client'
 import { getErrorMessage } from '@/lib/utils/errors'
-import { pluralize } from '@/lib/utils/formatting'
+import { formatBytes, pluralize } from '@/lib/utils/formatting'
 import type { DockerImage } from '@/types/api'
 
 interface PruneResult {
@@ -73,6 +73,10 @@ export function useHostImages(hostId: string) {
 
 /**
  * Hook to prune unused images on a host
+ *
+ * Note: Unlike delete operations, prune does NOT use optimistic updates because
+ * Docker may not remove all unused images (e.g., images with special tags).
+ * The API doesn't return a list of removed image IDs, so we invalidate the cache after success.
  */
 export function usePruneImages(hostId: string) {
   const queryClient = useQueryClient()
@@ -80,10 +84,12 @@ export function usePruneImages(hostId: string) {
   return useMutation({
     mutationFn: () => pruneImages(hostId),
     onSuccess: (data) => {
+      // Invalidate immediately to refresh the list
       queryClient.invalidateQueries({ queryKey: ['host-images', hostId] })
+
       if (data.removed_count > 0) {
-        const sizeInMB = (data.space_reclaimed / (1024 * 1024)).toFixed(1)
-        toast.success(`Pruned ${data.removed_count} ${pluralize(data.removed_count, 'image')}, reclaimed ${sizeInMB} MB`)
+        const spaceStr = formatBytes(data.space_reclaimed)
+        toast.success(`Pruned ${data.removed_count} ${pluralize(data.removed_count, 'image')}, reclaimed ${spaceStr}`)
       } else {
         toast.info('No unused images to prune')
       }
@@ -102,12 +108,39 @@ export function useDeleteImages() {
 
   return useMutation({
     mutationFn: deleteImages,
+    onMutate: async (variables) => {
+      // Cancel any outgoing refetches
+      await queryClient.cancelQueries({ queryKey: ['host-images', variables.hostId] })
+
+      // Snapshot previous value
+      const previousImages = queryClient.getQueryData<DockerImage[]>(['host-images', variables.hostId])
+
+      // Optimistically remove deleted images from cache
+      if (previousImages) {
+        const deletedIds = new Set(variables.imageIds.map(id => id.split(':')[1])) // Extract image ID from composite key
+        queryClient.setQueryData<DockerImage[]>(
+          ['host-images', variables.hostId],
+          previousImages.filter(img => !deletedIds.has(img.id))
+        )
+      }
+
+      return { previousImages }
+    },
     onSuccess: (_data, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['host-images', variables.hostId] })
       toast.success(`Delete job started (${variables.imageIds.length} ${pluralize(variables.imageIds.length, 'image')})`)
     },
-    onError: (error: unknown) => {
+    onError: (error: unknown, variables, context) => {
+      // Rollback on error
+      if (context?.previousImages) {
+        queryClient.setQueryData(['host-images', variables.hostId], context.previousImages)
+      }
       toast.error(getErrorMessage(error, 'Failed to delete images'))
+    },
+    onSettled: (_data, _error, variables) => {
+      // Refetch after a delay to sync with actual state
+      setTimeout(() => {
+        queryClient.invalidateQueries({ queryKey: ['host-images', variables.hostId] })
+      }, 2000)
     },
   })
 }

@@ -1,18 +1,18 @@
 /**
  * HostNetworksTab Component
  *
- * Networks tab for host modal - shows Docker networks with deletion capability
+ * Networks tab for host modal - shows Docker networks with bulk deletion capability
  */
 
-import { useState, useMemo, useCallback } from 'react'
+import { useState, useMemo, useCallback, useEffect, useDeferredValue } from 'react'
 import { Search, Trash2, Filter, Shield, Network } from 'lucide-react'
-import { useHostNetworks, useDeleteNetwork, usePruneNetworks } from '../../hooks/useHostNetworks'
+import { useHostNetworks, useDeleteNetwork, useDeleteNetworks, usePruneNetworks } from '../../hooks/useHostNetworks'
 import { NetworkDeleteConfirmModal } from '../NetworkDeleteConfirmModal'
 import { ConfirmModal } from '@/components/shared/ConfirmModal'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { ContainerLinkList } from '@/components/shared/ContainerLinkList'
-import { formatRelativeTime } from '@/lib/utils/eventUtils'
 import { makeCompositeKeyFrom } from '@/lib/utils/containerKeys'
+import { pluralize } from '@/lib/utils/formatting'
 import type { DockerNetwork } from '@/types/api'
 
 interface HostNetworksTabProps {
@@ -64,16 +64,19 @@ function NetworkDriverBadge({ driver }: { driver: string }) {
 export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
   const { data: networks, isLoading, error } = useHostNetworks(hostId)
   const deleteMutation = useDeleteNetwork()
+  const deleteNetworksMutation = useDeleteNetworks()
   const pruneMutation = usePruneNetworks(hostId)
 
   // UI state
   const [searchQuery, setSearchQuery] = useState('')
+  const deferredSearchQuery = useDeferredValue(searchQuery)
   const [showUnusedOnly, setShowUnusedOnly] = useState(false)
+  const [selectedNetworkIds, setSelectedNetworkIds] = useState<Set<string>>(new Set())
   const [deleteModalOpen, setDeleteModalOpen] = useState(false)
-  const [networkToDelete, setNetworkToDelete] = useState<DockerNetwork | null>(null)
+  const [networksToDelete, setNetworksToDelete] = useState<DockerNetwork[]>([])
   const [showPruneConfirm, setShowPruneConfirm] = useState(false)
 
-  // Filter networks
+  // Filter networks (using deferred search to prevent jank on large lists)
   const filteredNetworks = useMemo(() => {
     if (!networks) return []
 
@@ -82,8 +85,8 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
       if (showUnusedOnly && (network.container_count > 0 || network.is_builtin)) return false
 
       // Apply search filter (search in name, driver, or ID)
-      if (searchQuery) {
-        const query = searchQuery.toLowerCase()
+      if (deferredSearchQuery) {
+        const query = deferredSearchQuery.toLowerCase()
         return (
           network.name.toLowerCase().includes(query) ||
           (network.driver || '').toLowerCase().includes(query) ||
@@ -93,30 +96,128 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
 
       return true
     })
-  }, [networks, showUnusedOnly, searchQuery])
+  }, [networks, showUnusedOnly, deferredSearchQuery])
 
-  // Handle delete button click
+  // Deletable networks (not built-in)
+  const deletableNetworks = useMemo(
+    () => filteredNetworks.filter(n => !n.is_builtin),
+    [filteredNetworks]
+  )
+
+  // Memoize all network IDs (for cleaning up stale selections)
+  const allNetworkIds = useMemo(
+    () => new Set((networks ?? []).filter(n => !n.is_builtin).map(n => n.id)),
+    [networks]
+  )
+
+  // Clean up stale selections when networks change
+  useEffect(() => {
+    setSelectedNetworkIds((prev) => {
+      const validIds = new Set([...prev].filter((id) => allNetworkIds.has(id)))
+      if (validIds.size !== prev.size) {
+        return validIds
+      }
+      return prev
+    })
+  }, [allNetworkIds])
+
+  // Check if all deletable networks are selected
+  const allSelected = useMemo(
+    () => deletableNetworks.length > 0 && deletableNetworks.every(n => selectedNetworkIds.has(n.id)),
+    [deletableNetworks, selectedNetworkIds]
+  )
+
+  // Toggle selection for a single network
+  const toggleNetworkSelection = useCallback((networkId: string) => {
+    setSelectedNetworkIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(networkId)) {
+        next.delete(networkId)
+      } else {
+        next.add(networkId)
+      }
+      return next
+    })
+  }, [])
+
+  // Toggle select all (for current filtered deletable networks)
+  const toggleSelectAll = useCallback(() => {
+    if (allSelected) {
+      // Deselect all current deletable
+      setSelectedNetworkIds((prev) => {
+        const next = new Set(prev)
+        deletableNetworks.forEach(n => next.delete(n.id))
+        return next
+      })
+    } else {
+      // Select all current deletable
+      setSelectedNetworkIds((prev) => {
+        const next = new Set(prev)
+        deletableNetworks.forEach(n => next.add(n.id))
+        return next
+      })
+    }
+  }, [allSelected, deletableNetworks])
+
+  // Handle delete button click (single network)
   const handleDeleteClick = useCallback((network: DockerNetwork) => {
-    setNetworkToDelete(network)
+    setNetworksToDelete([network])
     setDeleteModalOpen(true)
   }, [])
 
+  // Handle bulk delete button click
+  const handleBulkDeleteClick = useCallback(() => {
+    if (!networks) return
+    const selected = networks.filter(n => selectedNetworkIds.has(n.id))
+    setNetworksToDelete(selected)
+    setDeleteModalOpen(true)
+  }, [networks, selectedNetworkIds])
+
   // Handle delete confirmation
   const handleDeleteConfirm = useCallback((force: boolean) => {
-    if (!networkToDelete) return
+    if (networksToDelete.length === 0) return
 
-    deleteMutation.mutate({
-      hostId,
-      networkId: networkToDelete.id,
-      networkName: networkToDelete.name,
-      force,
-    }, {
-      onSuccess: () => {
-        setDeleteModalOpen(false)
-        setNetworkToDelete(null)
-      },
-    })
-  }, [networkToDelete, hostId, deleteMutation])
+    const firstNetwork = networksToDelete[0]
+    if (networksToDelete.length === 1 && firstNetwork) {
+      // Single delete
+      deleteMutation.mutate({
+        hostId,
+        networkId: firstNetwork.id,
+        networkName: firstNetwork.name,
+        force,
+      }, {
+        onSuccess: () => {
+          setDeleteModalOpen(false)
+          setNetworksToDelete([])
+          setSelectedNetworkIds(prev => {
+            const next = new Set(prev)
+            next.delete(firstNetwork.id)
+            return next
+          })
+        },
+      })
+    } else {
+      // Bulk delete
+      deleteNetworksMutation.mutate({
+        hostId,
+        networks: networksToDelete.map(n => ({ id: n.id, name: n.name })),
+        force,
+      }, {
+        onSuccess: () => {
+          setDeleteModalOpen(false)
+          setNetworksToDelete([])
+          setSelectedNetworkIds(prev => {
+            const next = new Set(prev)
+            networksToDelete.forEach(n => next.delete(n.id))
+            return next
+          })
+        },
+      })
+    }
+  }, [networksToDelete, hostId, deleteMutation, deleteNetworksMutation])
+
+  // Count of selected networks
+  const selectedCount = selectedNetworkIds.size
 
   // Count of unused networks (not in use and not built-in)
   const unusedCount = useMemo(() => {
@@ -126,7 +227,10 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
   // Handle prune confirmation
   const handlePruneConfirm = useCallback(() => {
     pruneMutation.mutate(undefined, {
-      onSuccess: () => setShowPruneConfirm(false),
+      onSuccess: () => {
+        setShowPruneConfirm(false)
+        setSelectedNetworkIds(new Set())
+      },
       onError: () => setShowPruneConfirm(false),
     })
   }, [pruneMutation])
@@ -134,6 +238,8 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
   const handlePruneClose = useCallback(() => {
     setShowPruneConfirm(false)
   }, [])
+
+  const isPending = deleteMutation.isPending || deleteNetworksMutation.isPending
 
   if (isLoading) {
     return (
@@ -165,7 +271,7 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
   }
 
   return (
-    <div className="p-6 space-y-4">
+    <div className={`p-6 space-y-4 ${selectedCount > 0 ? 'pb-32' : ''}`}>
       {/* Header with search and actions */}
       <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
         {/* Search */}
@@ -215,6 +321,9 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
       {/* Network count */}
       <div className="text-sm text-muted-foreground">
         Showing {filteredNetworks.length} of {networks.length} networks
+        {selectedCount > 0 && (
+          <span className="ml-2 text-accent">({selectedCount} selected)</span>
+        )}
       </div>
 
       {/* Networks table */}
@@ -222,76 +331,105 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
         <table className="w-full">
           <thead className="bg-surface-2 border-b border-border">
             <tr>
+              <th className="w-10 p-3">
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  onChange={toggleSelectAll}
+                  disabled={deletableNetworks.length === 0}
+                  className="w-4 h-4 rounded border-border cursor-pointer disabled:opacity-50"
+                />
+              </th>
               <th className="text-left p-3 text-sm font-medium text-muted-foreground">Name</th>
               <th className="text-left p-3 text-sm font-medium text-muted-foreground hidden md:table-cell">Driver</th>
-              <th className="text-left p-3 text-sm font-medium text-muted-foreground hidden lg:table-cell">Scope</th>
-              <th className="text-left p-3 text-sm font-medium text-muted-foreground hidden 2xl:table-cell">Created</th>
+              <th className="text-left p-3 text-sm font-medium text-muted-foreground hidden lg:table-cell">Subnet</th>
+              <th className="text-left p-3 text-sm font-medium text-muted-foreground hidden 2xl:table-cell">Scope</th>
               <th className="text-left p-3 text-sm font-medium text-muted-foreground">Status</th>
               <th className="text-left p-3 text-sm font-medium text-muted-foreground hidden xl:table-cell">Containers</th>
               <th className="w-20 p-3 text-sm font-medium text-muted-foreground">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border">
-            {filteredNetworks.map((network) => (
-              <tr
-                key={makeCompositeKeyFrom(hostId, network.id)}
-                className="hover:bg-surface-2 transition-colors"
-              >
-                <td className="p-3">
-                  <div className="space-y-1">
-                    <div className="text-sm font-medium font-mono">
-                      {network.name}
-                    </div>
-                    <div className="text-xs text-muted-foreground font-mono">
-                      {network.id}
-                    </div>
-                    {network.internal && (
-                      <span className="inline-flex items-center px-1.5 py-0.5 text-xs rounded bg-muted/30 text-muted-foreground">
-                        Internal
-                      </span>
+            {filteredNetworks.map((network) => {
+              const isSelected = selectedNetworkIds.has(network.id)
+
+              return (
+                <tr
+                  key={makeCompositeKeyFrom(hostId, network.id)}
+                  className={`hover:bg-surface-2 transition-colors ${isSelected ? 'bg-accent/5' : ''}`}
+                >
+                  <td className="p-3">
+                    {network.is_builtin ? (
+                      <input
+                        type="checkbox"
+                        disabled
+                        className="w-4 h-4 rounded border-border opacity-30 cursor-not-allowed"
+                      />
+                    ) : (
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleNetworkSelection(network.id)}
+                        className="w-4 h-4 rounded border-border cursor-pointer"
+                      />
                     )}
-                  </div>
-                </td>
-                <td className="p-3 hidden md:table-cell">
-                  <NetworkDriverBadge driver={network.driver} />
-                </td>
-                <td className="p-3 hidden lg:table-cell">
-                  <span className="text-sm capitalize">{network.scope}</span>
-                </td>
-                <td className="p-3 hidden 2xl:table-cell">
-                  <span className="text-sm text-muted-foreground">
-                    {formatRelativeTime(network.created)}
-                  </span>
-                </td>
-                <td className="p-3">
-                  <NetworkStatusBadge network={network} />
-                </td>
-                <td className="p-3 hidden xl:table-cell">
-                  <ContainerLinkList containers={network.containers} hostId={hostId} />
-                </td>
-                <td className="p-3">
-                  {network.is_builtin ? (
-                    <button
-                      disabled
-                      className="p-2 rounded-lg text-muted-foreground/30 cursor-not-allowed"
-                      title="Cannot delete system network"
-                      aria-label={`Cannot delete system network ${network.name}`}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
-                  ) : (
-                    <button
-                      onClick={() => handleDeleteClick(network)}
-                      className="p-2 rounded-lg hover:bg-danger/10 text-danger/70 hover:text-danger transition-colors"
-                      title="Delete network"
-                      aria-label={`Delete network ${network.name}`}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
+                  </td>
+                  <td className="p-3">
+                    <div className="space-y-1">
+                      <div className="text-sm font-medium font-mono">
+                        {network.name}
+                      </div>
+                      <div className="text-xs text-muted-foreground font-mono">
+                        {network.id}
+                      </div>
+                      {network.internal && (
+                        <span className="inline-flex items-center px-1.5 py-0.5 text-xs rounded bg-muted/30 text-muted-foreground">
+                          Internal
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="p-3 hidden md:table-cell">
+                    <NetworkDriverBadge driver={network.driver} />
+                  </td>
+                  <td className="p-3 hidden lg:table-cell">
+                    <span className="text-sm font-mono text-muted-foreground">
+                      {network.subnet || '—'}
+                    </span>
+                  </td>
+                  <td className="p-3 hidden 2xl:table-cell">
+                    <span className="text-sm capitalize">{network.scope}</span>
+                  </td>
+                  <td className="p-3">
+                    <NetworkStatusBadge network={network} />
+                  </td>
+                  <td className="p-3 hidden xl:table-cell">
+                    <ContainerLinkList containers={network.containers} hostId={hostId} />
+                  </td>
+                  <td className="p-3">
+                    {network.is_builtin ? (
+                      <button
+                        disabled
+                        className="p-2 rounded-lg text-muted-foreground/30 cursor-not-allowed"
+                        title="Cannot delete system network"
+                        aria-label={`Cannot delete system network ${network.name}`}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => handleDeleteClick(network)}
+                        className="p-2 rounded-lg hover:bg-danger/10 text-danger/70 hover:text-danger transition-colors"
+                        title="Delete network"
+                        aria-label={`Delete network ${network.name}`}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>
@@ -303,16 +441,45 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
         </div>
       )}
 
+      {/* Bulk action bar */}
+      {selectedCount > 0 && (
+        <div className="fixed bottom-0 left-0 right-0 z-40 bg-surface-1 border-t border-border p-4 shadow-lg">
+          <div className="max-w-screen-xl mx-auto flex items-center justify-between">
+            <div className="text-sm">
+              <span className="font-medium">{selectedCount}</span>
+              {' '}{pluralize(selectedCount, 'network')} selected
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setSelectedNetworkIds(new Set())}
+                className="px-4 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
+              >
+                Clear Selection
+              </button>
+              <button
+                onClick={handleBulkDeleteClick}
+                disabled={isPending}
+                className="flex items-center gap-2 px-4 py-2 text-sm rounded-lg bg-danger text-danger-foreground hover:bg-danger/90 disabled:opacity-50 transition-colors"
+              >
+                <Trash2 className="h-4 w-4" />
+                Delete Selected
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Delete confirmation modal */}
       <NetworkDeleteConfirmModal
         isOpen={deleteModalOpen}
         onClose={() => {
           setDeleteModalOpen(false)
-          setNetworkToDelete(null)
+          setNetworksToDelete([])
         }}
         onConfirm={handleDeleteConfirm}
-        network={networkToDelete}
-        isPending={deleteMutation.isPending}
+        network={networksToDelete.length === 1 ? networksToDelete[0] ?? null : null}
+        networkCount={networksToDelete.length}
+        isPending={isPending}
       />
 
       <ConfirmModal
@@ -320,7 +487,7 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
         onClose={handlePruneClose}
         onConfirm={handlePruneConfirm}
         title="Prune Unused Networks"
-        description={`This will remove ${unusedCount} unused network${unusedCount !== 1 ? 's' : ''}.`}
+        description={`This will remove ${unusedCount} unused ${pluralize(unusedCount, 'network')}.`}
         confirmText="Prune Networks"
         pendingText="Pruning..."
         variant="warning"

@@ -1105,3 +1105,118 @@ class AgentContainerOperations:
                 status_code=500,
                 detail=f"Failed to prune networks: {result.error}"
             )
+
+    async def delete_volume(self, host_id: str, volume_name: str, force: bool = False) -> Dict[str, Any]:
+        """
+        Delete a volume via agent.
+
+        Args:
+            host_id: Docker host ID
+            volume_name: Volume name
+            force: Force delete even if volume is in use
+
+        Returns:
+            Dict with success status and message
+
+        Raises:
+            HTTPException: If agent not found or command fails
+        """
+        agent_id = self._get_agent_for_host(host_id)
+        if not agent_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No agent registered for host {host_id}"
+            )
+
+        command = {
+            "type": "command",
+            "command": "delete_volume",
+            "payload": {
+                "volume_name": volume_name,
+                "force": force
+            }
+        }
+
+        result = await self.command_executor.execute_command(
+            agent_id,
+            command,
+            timeout=60.0
+        )
+
+        if result.status == CommandStatus.SUCCESS:
+            data = result.response or {}
+            logger.info(f"Deleted volume {volume_name} from agent host {host_id}")
+            return {
+                "success": True,
+                "message": data.get('message', f"Volume '{volume_name}' deleted")
+            }
+        elif result.status == CommandStatus.TIMEOUT:
+            raise HTTPException(
+                status_code=504,
+                detail=f"Timeout deleting volume {volume_name} on host {host_id}"
+            )
+        else:
+            # Check for specific error types
+            error_msg = result.error or "Unknown error"
+            if "in use" in error_msg.lower() or "being used" in error_msg.lower():
+                raise HTTPException(status_code=409, detail=error_msg)
+            elif "not found" in error_msg.lower():
+                raise HTTPException(status_code=404, detail=error_msg)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to delete volume: {error_msg}"
+            )
+
+    async def prune_volumes(self, host_id: str) -> Dict[str, Any]:
+        """
+        Prune unused volumes via agent.
+
+        Args:
+            host_id: Docker host ID
+
+        Returns:
+            Dict with removed_count, space_reclaimed, and volumes_removed list
+
+        Raises:
+            HTTPException: If agent not found or command fails
+        """
+        agent_id = self._get_agent_for_host(host_id)
+        if not agent_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No agent registered for host {host_id}"
+            )
+
+        command = {
+            "type": "command",
+            "command": "prune_volumes",
+            "payload": {}
+        }
+
+        result = await self.command_executor.execute_command(
+            agent_id,
+            command,
+            timeout=60.0
+        )
+
+        if result.status == CommandStatus.SUCCESS:
+            data = result.response or {}
+            removed_count = data.get('removed_count', 0)
+            space_reclaimed = data.get('space_reclaimed', 0)
+            volumes_removed = data.get('volumes_removed', [])
+            logger.info(f"Pruned {removed_count} volumes from agent host {host_id}")
+            return {
+                'removed_count': removed_count,
+                'space_reclaimed': space_reclaimed,
+                'volumes_removed': volumes_removed
+            }
+        elif result.status == CommandStatus.TIMEOUT:
+            raise HTTPException(
+                status_code=504,
+                detail=f"Timeout pruning volumes on host {host_id}"
+            )
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to prune volumes: {result.error}"
+            )

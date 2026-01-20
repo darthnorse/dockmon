@@ -1347,6 +1347,11 @@ async def list_host_networks(host_id: str, current_user: dict = Depends(get_curr
                     'name': container_data.get('Name', '').lstrip('/')
                 })
 
+            # Extract IPAM subnet info
+            ipam = attrs.get('IPAM', {}) or {}
+            ipam_config = ipam.get('Config', []) or []
+            subnet = ipam_config[0].get('Subnet', '') if ipam_config else ''
+
             result.append({
                 'id': short_id,
                 'name': network.name,
@@ -1354,6 +1359,7 @@ async def list_host_networks(host_id: str, current_user: dict = Depends(get_curr
                 'scope': attrs.get('Scope', 'local'),
                 'created': created,
                 'internal': attrs.get('Internal', False),
+                'subnet': subnet,
                 'containers': containers,
                 'container_count': len(containers),
                 'is_builtin': network.name in BUILTIN_NETWORKS,
@@ -1578,6 +1584,122 @@ async def list_host_volumes(host_id: str, current_user: dict = Depends(get_curre
     except Exception as e:
         logger.error(f"Error listing volumes for host {host_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to list volumes")
+
+
+@app.delete("/api/hosts/{host_id}/volumes/{volume_name:path}", tags=["hosts"], dependencies=[Depends(require_scope("write"))])
+async def delete_host_volume(
+    host_id: str,
+    volume_name: str,
+    force: bool = False,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Delete a Docker volume from a host.
+
+    Args:
+        host_id: Host UUID
+        volume_name: Volume name
+        force: If True, remove even if in use (dangerous)
+
+    Returns:
+        {"success": True, "message": "Volume deleted"}
+
+    Raises:
+        409: Volume is in use by containers (without force)
+        404: Volume or host not found
+        500: Docker API failure
+    """
+    # Check if host uses agent - route through agent if available
+    agent_id = monitor.operations.agent_manager.get_agent_for_host(host_id)
+    if agent_id:
+        logger.info(f"Routing delete_volume for host {host_id} through agent {agent_id}")
+        return await monitor.operations.agent_operations.delete_volume(host_id, volume_name, force)
+
+    # Legacy path: Direct Docker socket access
+    client = monitor.clients.get(host_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Host not found")
+
+    try:
+        # Get the volume
+        volume = await async_docker_call(client.volumes.get, volume_name)
+
+        # Check if volume is in use by getting containers
+        containers = await async_docker_call(client.containers.list, all=True)
+        using_containers = []
+        for container in containers:
+            mounts = container.attrs.get('Mounts', [])
+            for mount in mounts:
+                if mount.get('Type') == 'volume' and mount.get('Name') == volume_name:
+                    using_containers.append(container.name)
+                    break
+
+        if using_containers and not force:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Volume is in use by {len(using_containers)} container(s): {', '.join(using_containers[:3])}{'...' if len(using_containers) > 3 else ''}. Use force=true to delete anyway (containers may fail)."
+            )
+
+        # Delete the volume
+        await async_docker_call(volume.remove, force=force)
+        logger.info(f"Deleted volume {volume_name} from host {host_id}")
+
+        return {
+            "success": True,
+            "message": f"Volume '{volume_name}' deleted"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting volume {volume_name} from host {host_id}: {e}", exc_info=True)
+        if "not found" in str(e).lower() or "no such volume" in str(e).lower():
+            raise HTTPException(status_code=404, detail="Volume not found")
+        if "in use" in str(e).lower():
+            raise HTTPException(status_code=409, detail="Volume is in use")
+        raise HTTPException(status_code=500, detail="Failed to delete volume")
+
+
+@app.post("/api/hosts/{host_id}/volumes/prune", tags=["hosts"], dependencies=[Depends(require_scope("write"))])
+async def prune_host_volumes(host_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    Prune all unused volumes on a specific host.
+
+    Removes volumes that are not mounted by any container.
+
+    Returns:
+        - removed_count: Number of volumes removed
+        - space_reclaimed: Bytes reclaimed (if available)
+        - volumes_removed: List of volume names removed
+    """
+    # Check if host uses agent - route through agent if available
+    agent_id = monitor.operations.agent_manager.get_agent_for_host(host_id)
+    if agent_id:
+        logger.info(f"Routing prune_volumes for host {host_id} through agent {agent_id}")
+        return await monitor.operations.agent_operations.prune_volumes(host_id)
+
+    # Legacy path: Direct Docker socket access
+    client = monitor.clients.get(host_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Host not found")
+
+    try:
+        result = await async_docker_call(client.volumes.prune)
+
+        volumes_removed = result.get('VolumesDeleted') or []
+        space_reclaimed = result.get('SpaceReclaimed', 0)
+
+        logger.info(f"Pruned {len(volumes_removed)} volumes from host {host_id}, reclaimed {space_reclaimed} bytes")
+
+        return {
+            "removed_count": len(volumes_removed),
+            "space_reclaimed": space_reclaimed,
+            "volumes_removed": volumes_removed,
+        }
+
+    except Exception as e:
+        logger.error(f"Error pruning volumes on host {host_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to prune volumes")
 
 
 @app.get("/api/containers", tags=["containers"])

@@ -4,14 +4,14 @@
  * Images tab for host modal - shows Docker images with bulk deletion
  */
 
-import { useState, useMemo, useCallback, useEffect } from 'react'
-import { Search, Trash2, Filter, AlertTriangle } from 'lucide-react'
+import { useState, useMemo, useCallback, useEffect, useDeferredValue } from 'react'
+import { Search, Trash2, Filter, AlertTriangle, Box } from 'lucide-react'
 import { useHostImages, usePruneImages, useDeleteImages } from '../../hooks/useHostImages'
 import { ImageDeleteConfirmModal } from '../ImageDeleteConfirmModal'
 import { ConfirmModal } from '@/components/shared/ConfirmModal'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { ContainerLinkList } from '@/components/shared/ContainerLinkList'
-import { formatBytes } from '@/lib/utils/formatting'
+import { formatBytes, pluralize } from '@/lib/utils/formatting'
 import { formatRelativeTime } from '@/lib/utils/eventUtils'
 import { getImageDisplayName, makeImageCompositeKey } from '@/lib/utils/image'
 import type { DockerImage } from '@/types/api'
@@ -49,13 +49,14 @@ export function HostImagesTab({ hostId }: HostImagesTabProps) {
 
   // UI state
   const [searchQuery, setSearchQuery] = useState('')
+  const deferredSearchQuery = useDeferredValue(searchQuery)
   const [showUnusedOnly, setShowUnusedOnly] = useState(false)
   const [selectedImageIds, setSelectedImageIds] = useState<Set<string>>(new Set())
   const [deleteModalOpen, setDeleteModalOpen] = useState(false)
   const [imagesToDelete, setImagesToDelete] = useState<DockerImage[]>([])
   const [showPruneConfirm, setShowPruneConfirm] = useState(false)
 
-  // Filter images
+  // Filter images (using deferred search to prevent jank on large lists)
   const filteredImages = useMemo(() => {
     if (!images) return []
 
@@ -64,8 +65,8 @@ export function HostImagesTab({ hostId }: HostImagesTabProps) {
       if (showUnusedOnly && image.in_use) return false
 
       // Apply search filter (search in tags and ID)
-      if (searchQuery) {
-        const query = searchQuery.toLowerCase()
+      if (deferredSearchQuery) {
+        const query = deferredSearchQuery.toLowerCase()
         const matchesTags = image.tags.some((tag) => tag.toLowerCase().includes(query))
         const matchesId = image.id.toLowerCase().includes(query)
         if (!matchesTags && !matchesId) return false
@@ -73,7 +74,7 @@ export function HostImagesTab({ hostId }: HostImagesTabProps) {
 
       return true
     })
-  }, [images, showUnusedOnly, searchQuery])
+  }, [images, showUnusedOnly, deferredSearchQuery])
 
   // Memoize all image keys (for cleaning up stale selections)
   const allImageKeys = useMemo(
@@ -225,6 +226,7 @@ export function HostImagesTab({ hostId }: HostImagesTabProps) {
   if (!images || images.length === 0) {
     return (
       <div className="p-6 text-center text-muted-foreground">
+        <Box className="h-12 w-12 mx-auto mb-3 opacity-50" />
         No images found on this host.
       </div>
     )
@@ -362,6 +364,7 @@ export function HostImagesTab({ hostId }: HostImagesTabProps) {
                       onClick={() => handleDeleteClick(image)}
                       className="p-2 rounded-lg hover:bg-danger/10 text-danger/70 hover:text-danger transition-colors"
                       title="Delete image"
+                      aria-label={`Delete image ${image.tags[0] || image.id}`}
                     >
                       <Trash2 className="h-4 w-4" />
                     </button>
@@ -373,13 +376,20 @@ export function HostImagesTab({ hostId }: HostImagesTabProps) {
         </table>
       </div>
 
+      {/* Empty filtered state */}
+      {filteredImages.length === 0 && images.length > 0 && (
+        <div className="text-center text-muted-foreground py-8">
+          No images match your filters.
+        </div>
+      )}
+
       {/* Bulk action bar */}
       {selectedCount > 0 && (
         <div className="fixed bottom-0 left-0 right-0 z-40 bg-surface-1 border-t border-border p-4 shadow-lg">
           <div className="max-w-screen-xl mx-auto flex items-center justify-between">
             <div className="text-sm">
               <span className="font-medium">{selectedCount}</span>
-              {' '}image{selectedCount !== 1 ? 's' : ''} selected
+              {' '}{pluralize(selectedCount, 'image')} selected
             </div>
             <div className="flex items-center gap-2">
               <button
@@ -418,7 +428,7 @@ export function HostImagesTab({ hostId }: HostImagesTabProps) {
         onClose={handlePruneClose}
         onConfirm={handlePruneConfirm}
         title="Prune Unused Images"
-        description={`This will remove ${unusedCount} unused image${unusedCount !== 1 ? 's' : ''}.`}
+        description={`This will remove ${unusedCount} unused ${pluralize(unusedCount, 'image')}.`}
         confirmText="Prune Images"
         pendingText="Pruning..."
         variant="warning"

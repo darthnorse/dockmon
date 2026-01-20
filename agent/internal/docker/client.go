@@ -945,6 +945,7 @@ type NetworkInfo struct {
 	Scope          string                 `json:"scope"`           // Network scope (local, swarm, global)
 	Created        string                 `json:"created"`         // ISO timestamp with Z suffix
 	Internal       bool                   `json:"internal"`        // Whether network is internal
+	Subnet         string                 `json:"subnet"`          // IPAM subnet (e.g., "172.17.0.0/16")
 	Containers     []NetworkContainerInfo `json:"containers"`      // Connected containers
 	ContainerCount int                    `json:"container_count"` // Number of connected containers
 	IsBuiltin      bool                   `json:"is_builtin"`      // True for bridge, host, none
@@ -980,6 +981,12 @@ func (c *Client) ListNetworks(ctx context.Context) ([]NetworkInfo, error) {
 			})
 		}
 
+		// Extract IPAM subnet
+		subnet := ""
+		if net.IPAM.Config != nil && len(net.IPAM.Config) > 0 {
+			subnet = net.IPAM.Config[0].Subnet
+		}
+
 		result = append(result, NetworkInfo{
 			ID:             truncateID(net.ID),
 			Name:           net.Name,
@@ -987,6 +994,7 @@ func (c *Client) ListNetworks(ctx context.Context) ([]NetworkInfo, error) {
 			Scope:          net.Scope,
 			Created:        created,
 			Internal:       net.Internal,
+			Subnet:         subnet,
 			Containers:     containers,
 			ContainerCount: len(containers),
 			IsBuiltin:      builtinNetworks[net.Name],

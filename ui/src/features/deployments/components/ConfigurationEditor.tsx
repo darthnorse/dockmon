@@ -85,7 +85,7 @@ const EDITOR_THEMES = {
 } as const
 
 interface ConfigurationEditorProps {
-  type: 'container' | 'stack'
+  type: 'container' | 'stack' | 'env'
   value: string
   onChange: (value: string) => void
   mode?: 'json'  // Future: add 'form' mode for structured editing
@@ -148,6 +148,11 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
       return { valid: true, error: null } // Empty is valid (will be caught by form validation)
     }
 
+    // Env files don't need validation
+    if (type === 'env') {
+      return { valid: true, error: null }
+    }
+
     try {
       if (type === 'stack') {
         // Try parsing YAML as-is
@@ -199,6 +204,11 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
   const formatContent = (): string | null => {
     if (!value.trim()) {
       return null
+    }
+
+    // Env files - just trim trailing whitespace from lines
+    if (type === 'env') {
+      return value.split('\n').map(line => line.trimEnd()).join('\n')
     }
 
     try {
@@ -453,13 +463,19 @@ services:
 
 networks:
   default:
-    driver: bridge`
+    driver: bridge`,
+
+    env: `# Environment variables for your stack
+DATABASE_URL=postgres://user:pass@localhost:5432/db
+API_KEY=your-secret-key
+DEBUG=false`
   }
 
   // Type-specific help text
   const helpText = {
     container: 'Container deployment JSON: specify image, ports, volumes, environment variables, and restart policy',
-    stack: 'Docker Compose YAML: define multiple services, networks, and volumes in YAML format'
+    stack: 'Docker Compose YAML: define multiple services, networks, and volumes in YAML format',
+    env: 'Environment variables in KEY=value format, one per line. Lines starting with # are comments.'
   }
 
   return (
@@ -496,7 +512,7 @@ networks:
       <CodeMirror
         value={value}
         onChange={handleChange}
-        extensions={type === 'stack' ? [yamlLang()] : [jsonLang()]}
+        extensions={type === 'stack' ? [yamlLang()] : type === 'container' ? [jsonLang()] : []}
         theme={editorTheme}
         placeholder={placeholders[type]}
         height={fillHeight ? '100%' : `${rows * 1.5}rem`}

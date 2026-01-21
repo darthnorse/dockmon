@@ -21,6 +21,8 @@ import {
   Clock,
   ArrowDownWideNarrow,
   ArrowUpNarrowWide,
+  ArrowDown,
+  ArrowUp,
 } from 'lucide-react'
 import { apiClient } from '@/lib/api/client'
 import { debug } from '@/lib/debug'
@@ -137,6 +139,16 @@ export function LogViewer({
     if (logContainerRef.current) {
       logContainerRef.current.scrollTop = 0
     }
+  }
+
+  // Jump to latest logs and resume auto-scroll
+  const handleJumpToLatest = () => {
+    if (sortOrder === 'desc') {
+      scrollToTop() // Newest at top in desc mode
+    } else {
+      scrollToBottom() // Newest at bottom in asc mode
+    }
+    setUserHasScrolled(false)
   }
 
   // Fetch logs from all selected containers
@@ -476,46 +488,63 @@ export function LogViewer({
       )}
 
       {/* Log Container */}
-      <div
-        ref={logContainerRef}
-        className={`flex-1 overflow-y-auto bg-card font-mono text-${logFontSize}`}
-        style={{ height }}
-        data-testid="logs-content"
-      >
-        {filteredLogs.length === 0 ? (
-          <div className="flex items-center justify-center h-full text-muted-foreground">
-            {containers.length === 0
-              ? 'Select containers to view logs'
-              : logs.length === 0
-              ? 'No logs available'
-              : 'No logs match search term'}
-          </div>
-        ) : (
-          <div className={compact ? 'p-2' : 'p-3'}>
-            {filteredLogs.map((log, index) => (
-              <div key={`${log.timestamp}-${index}`} className="leading-relaxed py-0.5">
-                {showTimestamps && (
-                  <span className="text-muted-foreground mr-2">
-                    {formatDateTime(log.timestamp, timeFormat, { includeSeconds: true })}
-                  </span>
-                )}
-                {showContainerNames && log.containerName && containers.length > 1 && (
-                  <span className={`font-semibold mr-2 ${getContainerColor(log.containerKey)}`}>
-                    [{log.containerName}]
-                  </span>
-                )}
-                <span
-                  className="text-foreground"
-                  dangerouslySetInnerHTML={{
-                    __html: DOMPurify.sanitize(ansiToHtml(log.log), {
-                      ALLOWED_TAGS: ['span'],
-                      ALLOWED_ATTR: ['class', 'style'],
-                    }),
-                  }}
-                />
-              </div>
-            ))}
-          </div>
+      <div className="relative flex-1" style={{ height }}>
+        <div
+          ref={logContainerRef}
+          className={`h-full overflow-y-auto bg-card font-mono text-${logFontSize}`}
+          data-testid="logs-content"
+        >
+          {filteredLogs.length === 0 ? (
+            <div className="flex items-center justify-center h-full text-muted-foreground">
+              {containers.length === 0
+                ? 'Select containers to view logs'
+                : logs.length === 0
+                ? 'No logs available'
+                : 'No logs match search term'}
+            </div>
+          ) : (
+            <div className={compact ? 'p-2' : 'p-3'}>
+              {filteredLogs.map((log, index) => (
+                <div key={`${log.timestamp}-${index}`} className="leading-relaxed py-0.5">
+                  {showTimestamps && (
+                    <span className="text-muted-foreground mr-2">
+                      {formatDateTime(log.timestamp, timeFormat, { includeSeconds: true })}
+                    </span>
+                  )}
+                  {showContainerNames && log.containerName && containers.length > 1 && (
+                    <span className={`font-semibold mr-2 ${getContainerColor(log.containerKey)}`}>
+                      [{log.containerName}]
+                    </span>
+                  )}
+                  <span
+                    className="text-foreground"
+                    dangerouslySetInnerHTML={{
+                      __html: DOMPurify.sanitize(ansiToHtml(log.log), {
+                        ALLOWED_TAGS: ['span'],
+                        ALLOWED_ATTR: ['class', 'style'],
+                      }),
+                    }}
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Jump to Latest button - shown when user has scrolled away */}
+        {userHasScrolled && filteredLogs.length > 0 && (
+          <button
+            onClick={handleJumpToLatest}
+            className="absolute bottom-3 right-3 flex items-center gap-1.5 px-3 py-1.5 bg-primary text-primary-foreground text-sm font-medium rounded-md shadow-lg hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 transition-colors"
+            aria-label="Jump to latest logs and resume auto-scroll"
+          >
+            {sortOrder === 'desc' ? (
+              <ArrowUp className="w-4 h-4" />
+            ) : (
+              <ArrowDown className="w-4 h-4" />
+            )}
+            Jump to Latest
+          </button>
         )}
       </div>
     </div>

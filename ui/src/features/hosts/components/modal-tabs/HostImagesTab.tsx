@@ -234,7 +234,7 @@ export function HostImagesTab({ hostId }: HostImagesTabProps) {
 
       {/* Images table */}
       <div className="border border-border rounded-lg overflow-hidden">
-        <table className="w-full">
+        <table className="w-full table-fixed">
           <thead className="bg-surface-2 border-b border-border">
             <tr>
               <th className="w-10 p-3">
@@ -246,10 +246,10 @@ export function HostImagesTab({ hostId }: HostImagesTabProps) {
                 />
               </th>
               <th className="text-left p-3 text-sm font-medium text-muted-foreground">Image</th>
-              <th className="text-left p-3 text-sm font-medium text-muted-foreground hidden md:table-cell">Size</th>
-              <th className="text-left p-3 text-sm font-medium text-muted-foreground hidden lg:table-cell">Created</th>
-              <th className="text-left p-3 text-sm font-medium text-muted-foreground">Status</th>
-              <th className="text-left p-3 text-sm font-medium text-muted-foreground hidden xl:table-cell">Containers</th>
+              <th className="w-24 text-left p-3 text-sm font-medium text-muted-foreground hidden md:table-cell">Size</th>
+              <th className="w-32 text-left p-3 text-sm font-medium text-muted-foreground hidden lg:table-cell">Created</th>
+              <th className="w-28 text-left p-3 text-sm font-medium text-muted-foreground">Status</th>
+              <th className="w-40 text-left p-3 text-sm font-medium text-muted-foreground hidden xl:table-cell">Containers</th>
               <th className="w-20 p-3 text-sm font-medium text-muted-foreground">Actions</th>
             </tr>
           </thead>

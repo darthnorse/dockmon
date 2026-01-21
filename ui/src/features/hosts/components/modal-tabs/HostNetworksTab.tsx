@@ -280,7 +280,7 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
 
       {/* Networks table */}
       <div className="border border-border rounded-lg overflow-hidden">
-        <table className="w-full">
+        <table className="w-full table-fixed">
           <thead className="bg-surface-2 border-b border-border">
             <tr>
               <th className="w-10 p-3">
@@ -293,11 +293,11 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
                 />
               </th>
               <th className="text-left p-3 text-sm font-medium text-muted-foreground">Name</th>
-              <th className="text-left p-3 text-sm font-medium text-muted-foreground hidden md:table-cell">Driver</th>
-              <th className="text-left p-3 text-sm font-medium text-muted-foreground hidden md:table-cell">Subnet</th>
-              <th className="text-left p-3 text-sm font-medium text-muted-foreground hidden 2xl:table-cell">Scope</th>
-              <th className="text-left p-3 text-sm font-medium text-muted-foreground">Status</th>
-              <th className="text-left p-3 text-sm font-medium text-muted-foreground hidden xl:table-cell">Containers</th>
+              <th className="w-24 text-left p-3 text-sm font-medium text-muted-foreground hidden md:table-cell">Driver</th>
+              <th className="w-36 text-left p-3 text-sm font-medium text-muted-foreground hidden md:table-cell">Subnet</th>
+              <th className="w-20 text-left p-3 text-sm font-medium text-muted-foreground hidden 2xl:table-cell">Scope</th>
+              <th className="w-28 text-left p-3 text-sm font-medium text-muted-foreground">Status</th>
+              <th className="w-40 text-left p-3 text-sm font-medium text-muted-foreground hidden xl:table-cell">Containers</th>
               <th className="w-20 p-3 text-sm font-medium text-muted-foreground">Actions</th>
             </tr>
           </thead>

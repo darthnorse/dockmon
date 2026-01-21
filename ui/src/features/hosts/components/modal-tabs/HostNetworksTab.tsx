@@ -56,7 +56,7 @@ function NetworkDriverBadge({ driver }: { driver: string }) {
   const colorClass = DRIVER_COLORS[driver?.toLowerCase()] ?? DEFAULT_DRIVER_COLOR
 
   return (
-    <span className={`inline-flex items-center px-2 py-1 text-xs rounded-full ${colorClass}`}>
+    <span className={`inline-flex items-center px-2 py-0.5 text-sm rounded-full ${colorClass}`}>
       {driver || 'default'}
     </span>
   )

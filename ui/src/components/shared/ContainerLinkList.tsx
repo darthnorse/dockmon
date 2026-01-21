@@ -22,7 +22,7 @@ export function ContainerLinkList({
 
   // Defensive: handle undefined/null containers (agent may not return this field)
   if (!containers || containers.length === 0) {
-    return <span className="text-xs text-muted-foreground">—</span>
+    return <span className="text-sm text-muted-foreground">—</span>
   }
 
   return (
@@ -33,7 +33,7 @@ export function ContainerLinkList({
           <button
             key={shortId}
             onClick={() => openModal(`${hostId}:${shortId}`)}
-            className="text-xs font-mono px-1.5 py-0.5 rounded bg-surface-3 text-foreground hover:bg-surface-3/80 transition-colors truncate max-w-[120px]"
+            className="text-sm font-mono px-1.5 py-0.5 rounded bg-surface-3 text-foreground hover:bg-surface-3/80 transition-colors truncate max-w-[120px]"
             title={container.name}
           >
             {container.name}
@@ -41,7 +41,7 @@ export function ContainerLinkList({
         )
       })}
       {containers.length > maxVisible && (
-        <span className="text-xs text-muted-foreground px-1.5 py-0.5">
+        <span className="text-sm text-muted-foreground px-1.5 py-0.5">
           +{containers.length - maxVisible} more
         </span>
       )}

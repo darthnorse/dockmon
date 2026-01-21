@@ -336,7 +336,7 @@ export function HostVolumesTab({ hostId }: HostVolumesTabProps) {
                     </div>
                   </td>
                   <td className="p-3 hidden md:table-cell">
-                    <span className="inline-flex items-center px-2 py-1 text-xs rounded-full bg-muted/30 text-muted-foreground">
+                    <span className="inline-flex items-center px-2 py-0.5 text-sm rounded-full bg-muted/30 text-muted-foreground">
                       {volume.driver}
                     </span>
                   </td>

@@ -24,7 +24,7 @@ const VARIANT_CLASSES: Record<BadgeVariant, string> = {
 
 export function StatusBadge({ variant, children, icon }: StatusBadgeProps) {
   return (
-    <span className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded-full ${VARIANT_CLASSES[variant]}`}>
+    <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-sm rounded-full ${VARIANT_CLASSES[variant]}`}>
       {icon}
       {children}
     </span>

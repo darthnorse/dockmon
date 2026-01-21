@@ -1289,6 +1289,18 @@ class AlertEvaluationService:
                     if cancelled > 0:
                         logger.info(f"Cancelled {cancelled} pending clear(s) for {container_name} (container unhealthy again)")
 
+            # Handle container deletion - clear all pending alerts for this container
+            # Container deletion is 'action_taken', not 'state_change', so needs separate handling
+            # This prevents stale alerts from firing for containers that no longer exist (Issue #160)
+            if event_data.get('container_deleted'):
+                cleared = self.engine.clear_pending_for_scope(
+                    scope_type="container",
+                    scope_id=make_composite_key(host_id, container_id),
+                    kinds=None  # Clear ALL kinds - container is gone
+                )
+                if cleared > 0:
+                    logger.info(f"Cleared {cleared} pending alert(s) for deleted container {container_name}")
+
             # Evaluate event-driven rules
             alerts = self.engine.evaluate_event(event_type, context, event_data)
 

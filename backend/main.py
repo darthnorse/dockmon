@@ -1684,7 +1684,9 @@ async def prune_host_volumes(host_id: str, current_user: dict = Depends(get_curr
         raise HTTPException(status_code=404, detail="Host not found")
 
     try:
-        result = await async_docker_call(client.volumes.prune)
+        # Use filters={'all': 'true'} to prune ALL unused volumes, not just anonymous ones
+        # Without this, named volumes are preserved even if unused
+        result = await async_docker_call(client.volumes.prune, filters={'all': 'true'})
 
         volumes_removed = result.get('VolumesDeleted') or []
         space_reclaimed = result.get('SpaceReclaimed', 0)

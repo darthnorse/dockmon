@@ -807,6 +807,27 @@ func (c *WebSocketClient) handleMessage(ctx context.Context, msg *types.Message)
 		// Prune all unused networks
 		result, err = c.docker.PruneNetworks(ctx)
 
+	case "list_volumes":
+		// List all volumes with usage information
+		result, err = c.docker.ListVolumes(ctx)
+
+	case "delete_volume":
+		// Delete a Docker volume
+		var deleteReq struct {
+			VolumeName string `json:"volume_name"`
+			Force      bool   `json:"force"`
+		}
+		if err = protocol.ParseCommand(msg, &deleteReq); err == nil {
+			err = c.docker.DeleteVolume(ctx, deleteReq.VolumeName, deleteReq.Force)
+			if err == nil {
+				result = map[string]bool{"success": true}
+			}
+		}
+
+	case "prune_volumes":
+		// Prune all unused volumes (including named volumes)
+		result, err = c.docker.PruneVolumes(ctx)
+
 	default:
 		err = fmt.Errorf("unknown command: %s", msg.Command)
 	}

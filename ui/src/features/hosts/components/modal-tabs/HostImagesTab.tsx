@@ -4,9 +4,10 @@
  * Images tab for host modal - shows Docker images with bulk deletion
  */
 
-import { useState, useMemo, useCallback, useEffect, useDeferredValue } from 'react'
+import { useState, useMemo, useCallback, useDeferredValue } from 'react'
 import { Search, Trash2, Filter, AlertTriangle, Box } from 'lucide-react'
 import { useHostImages, usePruneImages, useDeleteImages } from '../../hooks/useHostImages'
+import { useSelectionManager } from '@/hooks/useSelectionManager'
 import { ImageDeleteConfirmModal } from '../ImageDeleteConfirmModal'
 import { ConfirmModal } from '@/components/shared/ConfirmModal'
 import { StatusBadge } from '@/components/shared/StatusBadge'
@@ -51,7 +52,6 @@ export function HostImagesTab({ hostId }: HostImagesTabProps) {
   const [searchQuery, setSearchQuery] = useState('')
   const deferredSearchQuery = useDeferredValue(searchQuery)
   const [showUnusedOnly, setShowUnusedOnly] = useState(false)
-  const [selectedImageIds, setSelectedImageIds] = useState<Set<string>>(new Set())
   const [deleteModalOpen, setDeleteModalOpen] = useState(false)
   const [imagesToDelete, setImagesToDelete] = useState<DockerImage[]>([])
   const [showPruneConfirm, setShowPruneConfirm] = useState(false)
@@ -67,7 +67,8 @@ export function HostImagesTab({ hostId }: HostImagesTabProps) {
       // Apply search filter (search in tags and ID)
       if (deferredSearchQuery) {
         const query = deferredSearchQuery.toLowerCase()
-        const matchesTags = image.tags.some((tag) => tag.toLowerCase().includes(query))
+        const tags = image.tags ?? []
+        const matchesTags = tags.some((tag) => tag.toLowerCase().includes(query))
         const matchesId = image.id.toLowerCase().includes(query)
         if (!matchesTags && !matchesId) return false
       }
@@ -76,68 +77,19 @@ export function HostImagesTab({ hostId }: HostImagesTabProps) {
     })
   }, [images, showUnusedOnly, deferredSearchQuery])
 
-  // Memoize all image keys (for cleaning up stale selections)
-  const allImageKeys = useMemo(
-    () => new Set((images ?? []).map((img) => makeImageCompositeKey(hostId, img.id))),
-    [images, hostId]
-  )
-
-  // Clean up stale selections when images change (e.g., after deletion)
-  useEffect(() => {
-    setSelectedImageIds((prev) => {
-      const validKeys = new Set([...prev].filter((key) => allImageKeys.has(key)))
-      // Only update if something was removed
-      if (validKeys.size !== prev.size) {
-        return validKeys
-      }
-      return prev
-    })
-  }, [allImageKeys])
-
-  // Memoize current composite keys to avoid duplicate computation
-  const currentKeys = useMemo(
-    () => filteredImages.map((img) => makeImageCompositeKey(hostId, img.id)),
-    [filteredImages, hostId]
-  )
-
-  // Check if all current images are selected
-  const allSelected = useMemo(
-    () => currentKeys.length > 0 && currentKeys.every((key) => selectedImageIds.has(key)),
-    [currentKeys, selectedImageIds]
-  )
-
-  // Toggle selection for a single image
-  const toggleImageSelection = useCallback((imageId: string) => {
-    setSelectedImageIds((prev) => {
-      const next = new Set(prev)
-      const compositeKey = makeImageCompositeKey(hostId, imageId)
-      if (next.has(compositeKey)) {
-        next.delete(compositeKey)
-      } else {
-        next.add(compositeKey)
-      }
-      return next
-    })
-  }, [hostId])
-
-  // Toggle select all (for current filtered view)
-  const toggleSelectAll = useCallback(() => {
-    if (allSelected) {
-      // Deselect all current
-      setSelectedImageIds((prev) => {
-        const next = new Set(prev)
-        currentKeys.forEach((key) => next.delete(key))
-        return next
-      })
-    } else {
-      // Select all current
-      setSelectedImageIds((prev) => {
-        const next = new Set(prev)
-        currentKeys.forEach((key) => next.add(key))
-        return next
-      })
-    }
-  }, [allSelected, currentKeys])
+  // Selection management using shared hook
+  const {
+    selectedCount,
+    allSelected,
+    toggleSelection,
+    toggleSelectAll,
+    clearSelection,
+    isSelected,
+  } = useSelectionManager({
+    items: images,
+    filteredItems: filteredImages,
+    getKey: useCallback((img: DockerImage) => makeImageCompositeKey(hostId, img.id), [hostId]),
+  })
 
   // Handle delete button click (single image)
   const handleDeleteClick = useCallback((image: DockerImage) => {
@@ -148,10 +100,10 @@ export function HostImagesTab({ hostId }: HostImagesTabProps) {
   // Handle bulk delete button click
   const handleBulkDeleteClick = useCallback(() => {
     if (!images) return
-    const selected = images.filter((img) => selectedImageIds.has(makeImageCompositeKey(hostId, img.id)))
+    const selected = images.filter((img) => isSelected(makeImageCompositeKey(hostId, img.id)))
     setImagesToDelete(selected)
     setDeleteModalOpen(true)
-  }, [images, selectedImageIds, hostId])
+  }, [images, isSelected, hostId])
 
   // Handle delete confirmation
   const handleDeleteConfirm = useCallback((force: boolean) => {
@@ -170,18 +122,10 @@ export function HostImagesTab({ hostId }: HostImagesTabProps) {
       onSuccess: () => {
         setDeleteModalOpen(false)
         setImagesToDelete([])
-        // Clear selection for deleted images
-        setSelectedImageIds((prev) => {
-          const next = new Set(prev)
-          imageIds.forEach((id) => next.delete(id))
-          return next
-        })
+        // Stale selections cleaned up automatically by useSelectionManager
       },
     })
   }, [imagesToDelete, hostId, deleteMutation])
-
-  // Count of selected images
-  const selectedCount = selectedImageIds.size
 
   // Count of unused images
   const unusedCount = useMemo(() => {
@@ -193,11 +137,11 @@ export function HostImagesTab({ hostId }: HostImagesTabProps) {
     pruneMutation.mutate(undefined, {
       onSuccess: () => {
         setShowPruneConfirm(false)
-        setSelectedImageIds(new Set())
+        clearSelection()
       },
       onError: () => setShowPruneConfirm(false),
     })
-  }, [pruneMutation])
+  }, [pruneMutation, clearSelection])
 
   const handlePruneClose = useCallback(() => {
     setShowPruneConfirm(false)
@@ -312,25 +256,26 @@ export function HostImagesTab({ hostId }: HostImagesTabProps) {
           <tbody className="divide-y divide-border">
             {filteredImages.map((image) => {
               const compositeKey = makeImageCompositeKey(hostId, image.id)
-              const isSelected = selectedImageIds.has(compositeKey)
+              const selected = isSelected(compositeKey)
+              const tags = image.tags ?? []
 
               return (
                 <tr
                   key={compositeKey}
-                  className={`hover:bg-surface-2 transition-colors ${isSelected ? 'bg-accent/5' : ''}`}
+                  className={`hover:bg-surface-2 transition-colors ${selected ? 'bg-accent/5' : ''}`}
                 >
                   <td className="p-3">
                     <input
                       type="checkbox"
-                      checked={isSelected}
-                      onChange={() => toggleImageSelection(image.id)}
+                      checked={selected}
+                      onChange={() => toggleSelection(compositeKey)}
                       className="w-4 h-4 rounded border-border cursor-pointer"
                     />
                   </td>
                   <td className="p-3">
                     <div className="space-y-1">
-                      {image.tags.length > 0 ? (
-                        image.tags.map((tag, idx) => (
+                      {tags.length > 0 ? (
+                        tags.map((tag, idx) => (
                           <div key={idx} className="text-sm font-mono">
                             {tag}
                           </div>
@@ -364,7 +309,7 @@ export function HostImagesTab({ hostId }: HostImagesTabProps) {
                       onClick={() => handleDeleteClick(image)}
                       className="p-2 rounded-lg hover:bg-danger/10 text-danger/70 hover:text-danger transition-colors"
                       title="Delete image"
-                      aria-label={`Delete image ${image.tags[0] || image.id}`}
+                      aria-label={`Delete image ${image.tags?.[0] ?? image.id}`}
                     >
                       <Trash2 className="h-4 w-4" />
                     </button>
@@ -393,7 +338,7 @@ export function HostImagesTab({ hostId }: HostImagesTabProps) {
             </div>
             <div className="flex items-center gap-2">
               <button
-                onClick={() => setSelectedImageIds(new Set())}
+                onClick={clearSelection}
                 className="px-4 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
               >
                 Clear Selection

@@ -20,7 +20,8 @@ export function ContainerLinkList({
 }: ContainerLinkListProps) {
   const { openModal } = useContainerModal()
 
-  if (containers.length === 0) {
+  // Defensive: handle undefined/null containers (agent may not return this field)
+  if (!containers || containers.length === 0) {
     return <span className="text-xs text-muted-foreground">—</span>
   }
 

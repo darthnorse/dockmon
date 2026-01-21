@@ -4,9 +4,10 @@
  * Networks tab for host modal - shows Docker networks with bulk deletion capability
  */
 
-import { useState, useMemo, useCallback, useEffect, useDeferredValue } from 'react'
+import { useState, useMemo, useCallback, useDeferredValue } from 'react'
 import { Search, Trash2, Filter, Shield, Network } from 'lucide-react'
 import { useHostNetworks, useDeleteNetwork, useDeleteNetworks, usePruneNetworks } from '../../hooks/useHostNetworks'
+import { useSelectionManager } from '@/hooks/useSelectionManager'
 import { NetworkDeleteConfirmModal } from '../NetworkDeleteConfirmModal'
 import { ConfirmModal } from '@/components/shared/ConfirmModal'
 import { StatusBadge } from '@/components/shared/StatusBadge'
@@ -71,7 +72,6 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
   const [searchQuery, setSearchQuery] = useState('')
   const deferredSearchQuery = useDeferredValue(searchQuery)
   const [showUnusedOnly, setShowUnusedOnly] = useState(false)
-  const [selectedNetworkIds, setSelectedNetworkIds] = useState<Set<string>>(new Set())
   const [deleteModalOpen, setDeleteModalOpen] = useState(false)
   const [networksToDelete, setNetworksToDelete] = useState<DockerNetwork[]>([])
   const [showPruneConfirm, setShowPruneConfirm] = useState(false)
@@ -98,66 +98,29 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
     })
   }, [networks, showUnusedOnly, deferredSearchQuery])
 
-  // Deletable networks (not built-in)
-  const deletableNetworks = useMemo(
-    () => filteredNetworks.filter(n => !n.is_builtin),
+  // Selection management using shared hook (builtin networks not selectable)
+  const isNetworkSelectable = useCallback((n: DockerNetwork) => !n.is_builtin, [])
+  const getNetworkKey = useCallback((n: DockerNetwork) => n.id, [])
+
+  const {
+    selectedCount,
+    allSelected,
+    toggleSelection,
+    toggleSelectAll,
+    clearSelection,
+    isSelected,
+  } = useSelectionManager({
+    items: networks,
+    filteredItems: filteredNetworks,
+    getKey: getNetworkKey,
+    isSelectable: isNetworkSelectable,
+  })
+
+  // Deletable networks count (for checkbox disabled state)
+  const deletableNetworksCount = useMemo(
+    () => filteredNetworks.filter(n => !n.is_builtin).length,
     [filteredNetworks]
   )
-
-  // Memoize all network IDs (for cleaning up stale selections)
-  const allNetworkIds = useMemo(
-    () => new Set((networks ?? []).filter(n => !n.is_builtin).map(n => n.id)),
-    [networks]
-  )
-
-  // Clean up stale selections when networks change
-  useEffect(() => {
-    setSelectedNetworkIds((prev) => {
-      const validIds = new Set([...prev].filter((id) => allNetworkIds.has(id)))
-      if (validIds.size !== prev.size) {
-        return validIds
-      }
-      return prev
-    })
-  }, [allNetworkIds])
-
-  // Check if all deletable networks are selected
-  const allSelected = useMemo(
-    () => deletableNetworks.length > 0 && deletableNetworks.every(n => selectedNetworkIds.has(n.id)),
-    [deletableNetworks, selectedNetworkIds]
-  )
-
-  // Toggle selection for a single network
-  const toggleNetworkSelection = useCallback((networkId: string) => {
-    setSelectedNetworkIds((prev) => {
-      const next = new Set(prev)
-      if (next.has(networkId)) {
-        next.delete(networkId)
-      } else {
-        next.add(networkId)
-      }
-      return next
-    })
-  }, [])
-
-  // Toggle select all (for current filtered deletable networks)
-  const toggleSelectAll = useCallback(() => {
-    if (allSelected) {
-      // Deselect all current deletable
-      setSelectedNetworkIds((prev) => {
-        const next = new Set(prev)
-        deletableNetworks.forEach(n => next.delete(n.id))
-        return next
-      })
-    } else {
-      // Select all current deletable
-      setSelectedNetworkIds((prev) => {
-        const next = new Set(prev)
-        deletableNetworks.forEach(n => next.add(n.id))
-        return next
-      })
-    }
-  }, [allSelected, deletableNetworks])
 
   // Handle delete button click (single network)
   const handleDeleteClick = useCallback((network: DockerNetwork) => {
@@ -168,10 +131,10 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
   // Handle bulk delete button click
   const handleBulkDeleteClick = useCallback(() => {
     if (!networks) return
-    const selected = networks.filter(n => selectedNetworkIds.has(n.id))
+    const selected = networks.filter(n => isSelected(n.id))
     setNetworksToDelete(selected)
     setDeleteModalOpen(true)
-  }, [networks, selectedNetworkIds])
+  }, [networks, isSelected])
 
   // Handle delete confirmation
   const handleDeleteConfirm = useCallback((force: boolean) => {
@@ -189,11 +152,7 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
         onSuccess: () => {
           setDeleteModalOpen(false)
           setNetworksToDelete([])
-          setSelectedNetworkIds(prev => {
-            const next = new Set(prev)
-            next.delete(firstNetwork.id)
-            return next
-          })
+          // Stale selections cleaned up automatically by useSelectionManager
         },
       })
     } else {
@@ -206,18 +165,11 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
         onSuccess: () => {
           setDeleteModalOpen(false)
           setNetworksToDelete([])
-          setSelectedNetworkIds(prev => {
-            const next = new Set(prev)
-            networksToDelete.forEach(n => next.delete(n.id))
-            return next
-          })
+          // Stale selections cleaned up automatically by useSelectionManager
         },
       })
     }
   }, [networksToDelete, hostId, deleteMutation, deleteNetworksMutation])
-
-  // Count of selected networks
-  const selectedCount = selectedNetworkIds.size
 
   // Count of unused networks (not in use and not built-in)
   const unusedCount = useMemo(() => {
@@ -229,11 +181,11 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
     pruneMutation.mutate(undefined, {
       onSuccess: () => {
         setShowPruneConfirm(false)
-        setSelectedNetworkIds(new Set())
+        clearSelection()
       },
       onError: () => setShowPruneConfirm(false),
     })
-  }, [pruneMutation])
+  }, [pruneMutation, clearSelection])
 
   const handlePruneClose = useCallback(() => {
     setShowPruneConfirm(false)
@@ -336,13 +288,13 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
                   type="checkbox"
                   checked={allSelected}
                   onChange={toggleSelectAll}
-                  disabled={deletableNetworks.length === 0}
+                  disabled={deletableNetworksCount === 0}
                   className="w-4 h-4 rounded border-border cursor-pointer disabled:opacity-50"
                 />
               </th>
               <th className="text-left p-3 text-sm font-medium text-muted-foreground">Name</th>
               <th className="text-left p-3 text-sm font-medium text-muted-foreground hidden md:table-cell">Driver</th>
-              <th className="text-left p-3 text-sm font-medium text-muted-foreground hidden lg:table-cell">Subnet</th>
+              <th className="text-left p-3 text-sm font-medium text-muted-foreground hidden md:table-cell">Subnet</th>
               <th className="text-left p-3 text-sm font-medium text-muted-foreground hidden 2xl:table-cell">Scope</th>
               <th className="text-left p-3 text-sm font-medium text-muted-foreground">Status</th>
               <th className="text-left p-3 text-sm font-medium text-muted-foreground hidden xl:table-cell">Containers</th>
@@ -351,12 +303,12 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
           </thead>
           <tbody className="divide-y divide-border">
             {filteredNetworks.map((network) => {
-              const isSelected = selectedNetworkIds.has(network.id)
+              const selected = isSelected(network.id)
 
               return (
                 <tr
                   key={makeCompositeKeyFrom(hostId, network.id)}
-                  className={`hover:bg-surface-2 transition-colors ${isSelected ? 'bg-accent/5' : ''}`}
+                  className={`hover:bg-surface-2 transition-colors ${selected ? 'bg-accent/5' : ''}`}
                 >
                   <td className="p-3">
                     {network.is_builtin ? (
@@ -368,8 +320,8 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
                     ) : (
                       <input
                         type="checkbox"
-                        checked={isSelected}
-                        onChange={() => toggleNetworkSelection(network.id)}
+                        checked={selected}
+                        onChange={() => toggleSelection(network.id)}
                         className="w-4 h-4 rounded border-border cursor-pointer"
                       />
                     )}
@@ -392,7 +344,7 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
                   <td className="p-3 hidden md:table-cell">
                     <NetworkDriverBadge driver={network.driver} />
                   </td>
-                  <td className="p-3 hidden lg:table-cell">
+                  <td className="p-3 hidden md:table-cell">
                     <span className="text-sm font-mono text-muted-foreground">
                       {network.subnet || '—'}
                     </span>
@@ -451,7 +403,7 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
             </div>
             <div className="flex items-center gap-2">
               <button
-                onClick={() => setSelectedNetworkIds(new Set())}
+                onClick={clearSelection}
                 className="px-4 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
               >
                 Clear Selection

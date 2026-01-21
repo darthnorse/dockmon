@@ -23,6 +23,7 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/registry"
+	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/darthnorse/dockmon-agent/internal/config"
@@ -545,7 +546,7 @@ func (c *Client) IsPodman(ctx context.Context) (bool, error) {
 // Returns empty string if not found.
 func (c *Client) GetContainerByName(ctx context.Context, name string) (string, error) {
 	// Remove leading slash if present
-	name = strings.TrimPrefix(name, "/")
+	name = stripContainerNamePrefix(name)
 
 	containers, err := c.cli.ContainerList(ctx, container.ListOptions{
 		All:     true,
@@ -820,15 +821,22 @@ func (c *Client) ExecResize(ctx context.Context, execID string, height, width ui
 	})
 }
 
+// ContainerRef represents a minimal container reference for linking
+type ContainerRef struct {
+	ID   string `json:"id"`   // 12-char short ID
+	Name string `json:"name"` // Container name
+}
+
 // ImageInfo represents image information for the Images tab
 type ImageInfo struct {
-	ID             string   `json:"id"`              // 12-char short ID
-	Tags           []string `json:"tags"`            // Image tags (e.g., ["nginx:latest"])
-	Size           int64    `json:"size"`            // Size in bytes
-	Created        string   `json:"created"`         // ISO timestamp with Z suffix
-	InUse          bool     `json:"in_use"`          // Whether any container uses this image
-	ContainerCount int      `json:"container_count"` // Number of containers using this image
-	Dangling       bool     `json:"dangling"`        // True if image has no tags
+	ID             string         `json:"id"`              // 12-char short ID
+	Tags           []string       `json:"tags"`            // Image tags (e.g., ["nginx:latest"])
+	Size           int64          `json:"size"`            // Size in bytes
+	Created        string         `json:"created"`         // ISO timestamp with Z suffix
+	InUse          bool           `json:"in_use"`          // Whether any container uses this image
+	ContainerCount int            `json:"container_count"` // Number of containers using this image
+	Containers     []ContainerRef `json:"containers"`      // List of containers using this image
+	Dangling       bool           `json:"dangling"`        // True if image has no tags
 }
 
 // ImagePruneResult represents the result of pruning images
@@ -851,17 +859,24 @@ func (c *Client) ListImages(ctx context.Context) ([]ImageInfo, error) {
 		return nil, fmt.Errorf("failed to list containers: %w", err)
 	}
 
-	// Build image usage map: image_id (12 chars) -> container count
-	imageUsage := make(map[string]int)
+	// Build image usage map: image_id (12 chars) -> list of container refs
+	imageUsage := make(map[string][]ContainerRef)
 	for _, ctr := range containers {
-		imageUsage[normalizeImageID(ctr.ImageID)]++
+		imageID := normalizeImageID(ctr.ImageID)
+		imageUsage[imageID] = append(imageUsage[imageID], ContainerRef{
+			ID:   ctr.ID[:12],
+			Name: stripContainerNamePrefix(ctr.Names[0]),
+		})
 	}
 
 	// Build result
 	result := make([]ImageInfo, 0, len(images))
 	for _, img := range images {
 		shortID := normalizeImageID(img.ID)
-		containerCount := imageUsage[shortID]
+		containerRefs := imageUsage[shortID]
+		if containerRefs == nil {
+			containerRefs = []ContainerRef{}
+		}
 
 		// Format created timestamp with Z suffix for frontend
 		created := time.Unix(img.Created, 0).UTC().Format("2006-01-02T15:04:05Z")
@@ -877,8 +892,9 @@ func (c *Client) ListImages(ctx context.Context) ([]ImageInfo, error) {
 			Tags:           tags,
 			Size:           img.Size,
 			Created:        created,
-			InUse:          containerCount > 0,
-			ContainerCount: containerCount,
+			InUse:          len(containerRefs) > 0,
+			ContainerCount: len(containerRefs),
+			Containers:     containerRefs,
 			Dangling:       len(tags) == 0,
 		})
 	}
@@ -931,6 +947,15 @@ func truncateID(id string) string {
 	return id
 }
 
+// stripContainerNamePrefix removes the leading "/" from Docker container names.
+// Docker API returns container names with a "/" prefix (e.g., "/mycontainer").
+func stripContainerNamePrefix(name string) string {
+	if len(name) > 0 && name[0] == '/' {
+		return name[1:]
+	}
+	return name
+}
+
 // NetworkContainerInfo represents a container connected to a network
 type NetworkContainerInfo struct {
 	ID   string `json:"id"`   // 12-char short container ID
@@ -977,7 +1002,7 @@ func (c *Client) ListNetworks(ctx context.Context) ([]NetworkInfo, error) {
 		for containerID, endpoint := range net.Containers {
 			containers = append(containers, NetworkContainerInfo{
 				ID:   truncateID(containerID),
-				Name: strings.TrimPrefix(endpoint.Name, "/"),
+				Name: stripContainerNamePrefix(endpoint.Name),
 			})
 		}
 
@@ -1060,5 +1085,125 @@ func (c *Client) PruneNetworks(ctx context.Context) (*NetworkPruneResult, error)
 	return &NetworkPruneResult{
 		RemovedCount:    len(networksRemoved),
 		NetworksRemoved: networksRemoved,
+	}, nil
+}
+
+// ==================== Volume Operations ====================
+
+// VolumeContainerInfo represents a container using a volume
+type VolumeContainerInfo struct {
+	ID   string `json:"id"`   // 12-char short container ID
+	Name string `json:"name"` // Container name
+}
+
+// VolumeInfo represents a Docker volume with usage information
+type VolumeInfo struct {
+	Name           string                `json:"name"`            // Volume name
+	Driver         string                `json:"driver"`          // Volume driver (local, etc.)
+	Mountpoint     string                `json:"mountpoint"`      // Mount point on host
+	Created        string                `json:"created"`         // ISO timestamp with Z suffix
+	Containers     []VolumeContainerInfo `json:"containers"`      // Containers using this volume
+	ContainerCount int                   `json:"container_count"` // Number of containers using this volume
+	InUse          bool                  `json:"in_use"`          // Whether any container uses this volume
+}
+
+// ListVolumes returns all volumes with usage information
+func (c *Client) ListVolumes(ctx context.Context) ([]VolumeInfo, error) {
+	// Get all volumes
+	volumeListBody, err := c.cli.VolumeList(ctx, volume.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list volumes: %w", err)
+	}
+
+	// Get all containers to determine volume usage
+	containers, err := c.cli.ContainerList(ctx, container.ListOptions{All: true})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list containers: %w", err)
+	}
+
+	// Build volume usage map: volume_name -> list of container refs
+	volumeUsage := make(map[string][]VolumeContainerInfo)
+	for _, ctr := range containers {
+		for _, mount := range ctr.Mounts {
+			if mount.Type == "volume" && mount.Name != "" {
+				volumeUsage[mount.Name] = append(volumeUsage[mount.Name], VolumeContainerInfo{
+					ID:   ctr.ID[:12],
+					Name: stripContainerNamePrefix(ctr.Names[0]),
+				})
+			}
+		}
+	}
+
+	// Build result
+	result := make([]VolumeInfo, 0, len(volumeListBody.Volumes))
+	for _, vol := range volumeListBody.Volumes {
+		containerRefs := volumeUsage[vol.Name]
+		if containerRefs == nil {
+			containerRefs = []VolumeContainerInfo{}
+		}
+
+		// Format created timestamp with Z suffix for frontend
+		created := ""
+		if vol.CreatedAt != "" {
+			if t, err := time.Parse(time.RFC3339, vol.CreatedAt); err == nil {
+				created = t.UTC().Format("2006-01-02T15:04:05Z")
+			} else {
+				created = vol.CreatedAt // Fallback to original if parsing fails
+			}
+		}
+
+		result = append(result, VolumeInfo{
+			Name:           vol.Name,
+			Driver:         vol.Driver,
+			Mountpoint:     vol.Mountpoint,
+			Created:        created,
+			Containers:     containerRefs,
+			ContainerCount: len(containerRefs),
+			InUse:          len(containerRefs) > 0,
+		})
+	}
+
+	return result, nil
+}
+
+// DeleteVolume removes a Docker volume
+func (c *Client) DeleteVolume(ctx context.Context, volumeName string, force bool) error {
+	if volumeName == "" {
+		return fmt.Errorf("volume name cannot be empty")
+	}
+	err := c.cli.VolumeRemove(ctx, volumeName, force)
+	if err != nil {
+		return fmt.Errorf("failed to delete volume: %w", err)
+	}
+	return nil
+}
+
+// VolumePruneResult contains the result of a volume prune operation
+type VolumePruneResult struct {
+	RemovedCount   int      `json:"removed_count"`
+	SpaceReclaimed int64    `json:"space_reclaimed"`
+	VolumesRemoved []string `json:"volumes_removed"`
+}
+
+// PruneVolumes removes all unused volumes (including named volumes)
+func (c *Client) PruneVolumes(ctx context.Context) (*VolumePruneResult, error) {
+	// Use "all=true" filter to prune ALL unused volumes, not just anonymous ones
+	pruneFilters := filters.NewArgs()
+	pruneFilters.Add("all", "true")
+
+	report, err := c.cli.VolumesPrune(ctx, pruneFilters)
+	if err != nil {
+		return nil, fmt.Errorf("failed to prune volumes: %w", err)
+	}
+
+	volumesRemoved := report.VolumesDeleted
+	if volumesRemoved == nil {
+		volumesRemoved = []string{}
+	}
+
+	return &VolumePruneResult{
+		RemovedCount:   len(volumesRemoved),
+		SpaceReclaimed: int64(report.SpaceReclaimed),
+		VolumesRemoved: volumesRemoved,
 	}, nil
 }

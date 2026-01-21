@@ -994,12 +994,23 @@ func (c *Client) ListNetworks(ctx context.Context) ([]NetworkInfo, error) {
 	// Build result
 	result := make([]NetworkInfo, 0, len(networks))
 	for _, net := range networks {
+		// NetworkList doesn't populate Containers - need to inspect each network
+		inspected, err := c.cli.NetworkInspect(ctx, net.ID, network.InspectOptions{})
+		if err != nil {
+			c.log.WithError(err).Warnf("Failed to inspect network %s, skipping container info", net.Name)
+			// Continue with basic info from list
+		}
+
 		// Format created timestamp with Z suffix for frontend
 		created := net.Created.UTC().Format("2006-01-02T15:04:05Z")
 
-		// Get connected containers
-		containers := make([]NetworkContainerInfo, 0, len(net.Containers))
-		for containerID, endpoint := range net.Containers {
+		// Get connected containers from inspected data (if available)
+		containerMap := net.Containers
+		if inspected.Containers != nil {
+			containerMap = inspected.Containers
+		}
+		containers := make([]NetworkContainerInfo, 0, len(containerMap))
+		for containerID, endpoint := range containerMap {
 			containers = append(containers, NetworkContainerInfo{
 				ID:   truncateID(containerID),
 				Name: stripContainerNamePrefix(endpoint.Name),

@@ -5,8 +5,10 @@
  * Includes colored state transitions, metadata, and timestamps
  */
 
-import { formatTimestamp, getSeverityColor, formatSeverity } from '@/lib/utils/eventUtils'
+import { getSeverityColor, formatSeverity } from '@/lib/utils/eventUtils'
+import { formatTimestamp } from '@/lib/utils/timeFormat'
 import { makeCompositeKeyFrom } from '@/lib/utils/containerKeys'
+import { useTimeFormat } from '@/lib/hooks/useUserPreferences'
 import type { Event } from '@/types/events'
 
 interface EventRowProps {
@@ -124,6 +126,7 @@ const MetadataLinks = ({
 }
 
 export function EventRow({ event, showMetadata = true, compact = false, onContainerClick, onHostClick }: EventRowProps) {
+  const { timeFormat } = useTimeFormat()
   const severityColors = getSeverityColor(event.severity)
   const formattedMsg = formatMessage(event)
 
@@ -136,7 +139,7 @@ export function EventRow({ event, showMetadata = true, compact = false, onContai
             {formatSeverity(event.severity)}
           </span>
           <span className="text-xs text-muted-foreground whitespace-nowrap font-mono">
-            {formatTimestamp(event.timestamp)}
+            {formatTimestamp(event.timestamp, timeFormat)}
           </span>
         </div>
         <div className="text-sm leading-relaxed">
@@ -195,7 +198,7 @@ export function EventRow({ event, showMetadata = true, compact = false, onContai
     <div className="px-3 sm:px-6 py-2 grid grid-cols-[100px_80px_1fr] sm:grid-cols-[140px_100px_1fr] lg:grid-cols-[200px_120px_1fr] gap-2 sm:gap-4 hover:bg-surface-1 transition-colors items-start group">
       {/* Timestamp - Allow wrapping on mobile */}
       <div className="text-xs sm:text-sm font-mono text-muted-foreground pt-0.5 leading-tight">
-        {formatTimestamp(event.timestamp)}
+        {formatTimestamp(event.timestamp, timeFormat)}
       </div>
 
       {/* Severity */}

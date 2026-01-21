@@ -8,6 +8,8 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '@/lib/api/client'
 import { debug } from '@/lib/debug'
+import { DEFAULT_TIME_FORMAT } from '@/lib/utils/timeFormat'
+import type { TimeFormat } from '@/lib/utils/timeFormat'
 import type { DashboardLayout } from '@/features/dashboard/types'
 
 /**
@@ -26,6 +28,9 @@ export interface HostCardLayout {
   static?: boolean
 }
 
+// Re-export TimeFormat for consumers who import from this module
+export type { TimeFormat }
+
 export interface UserPreferences {
   theme: string
   group_by: string | null
@@ -36,6 +41,9 @@ export interface UserPreferences {
   sidebar_collapsed: boolean
   dashboard_layout_v2: DashboardLayout | null
   simplified_workflow: boolean
+
+  // Display preferences
+  time_format: TimeFormat
 
   // Table sorting preferences (TanStack Table format)
   host_table_sort: Array<{ id: string; desc: boolean }> | null
@@ -232,5 +240,23 @@ export function useDashboardPrefs() {
     updateDashboardPrefs,
     isUpdating: updatePreferences.isPending,
     isLoading: !prefs,
+  }
+}
+
+/**
+ * Convenience hook for time format preference
+ */
+export function useTimeFormat() {
+  const { data: preferences } = useUserPreferences()
+  const updatePreferences = useUpdatePreferences()
+
+  const setTimeFormat = (format: TimeFormat) => {
+    updatePreferences.mutate({ time_format: format })
+  }
+
+  return {
+    timeFormat: preferences?.time_format ?? DEFAULT_TIME_FORMAT,
+    setTimeFormat,
+    isLoading: updatePreferences.isPending,
   }
 }

@@ -4,6 +4,8 @@ import { apiClient } from '@/lib/api/client'
 import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
 import { useQueryClient } from '@tanstack/react-query'
 import { debug } from '@/lib/debug'
+import { useTimeFormat } from '@/lib/hooks/useUserPreferences'
+import { formatTime } from '@/lib/utils/timeFormat'
 import type { WebSocketMessage } from '@/lib/websocket/useWebSocket'
 
 interface BatchJobStatus {
@@ -43,6 +45,7 @@ interface BatchJobPanelProps {
 }
 
 export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkActionBarOpen = false }: BatchJobPanelProps) {
+  const { timeFormat } = useTimeFormat()
   const [job, setJob] = useState<BatchJobStatus | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -395,20 +398,7 @@ export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkAc
           <p className="text-xs text-muted-foreground text-center">
             {job.completed_at ? (
               <>
-                Completed at {(() => {
-                  const date = new Date(job.completed_at)
-                  // Validate date is valid
-                  if (isNaN(date.getTime())) {
-                    debug.error('BatchJobPanel', `Invalid completed_at timestamp: ${job.completed_at}`)
-                    return 'Invalid timestamp'
-                  }
-                  return date.toLocaleTimeString(undefined, {
-                    hour: 'numeric',
-                    minute: '2-digit',
-                    second: '2-digit',
-                    hour12: true
-                  })
-                })()}
+                Completed at {formatTime(job.completed_at, timeFormat, true)}
               </>
             ) : (
               'Completed'

@@ -12,6 +12,8 @@ import { Switch } from '@/components/ui/switch'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Input } from '@/components/ui/input'
 import { toast } from 'sonner'
+import { useTimeFormat } from '@/lib/hooks/useUserPreferences'
+import { formatDateTime } from '@/lib/utils/timeFormat'
 import { useContainerUpdateStatus, useCheckContainerUpdate, useUpdateAutoUpdateConfig, useExecuteUpdate } from '../../hooks/useContainerUpdates'
 import { useSetContainerUpdatePolicy } from '../../hooks/useUpdatePolicies'
 import { UpdateValidationConfirmModal } from '../UpdateValidationConfirmModal'
@@ -26,6 +28,7 @@ export interface ContainerUpdatesTabProps {
 }
 
 function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
+  const { timeFormat } = useTimeFormat()
   // CRITICAL: Always use 12-char short ID for API calls (backend expects short IDs)
   const containerShortId = container.id.slice(0, 12)
 
@@ -351,7 +354,7 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
 
   const hasUpdate = updateStatus?.update_available
   const lastChecked = updateStatus?.last_checked_at
-    ? new Date(updateStatus.last_checked_at).toLocaleString()
+    ? formatDateTime(updateStatus.last_checked_at, timeFormat)
     : 'Not Checked'
 
   // Check if auto-updates are enabled but won't work due to blockers

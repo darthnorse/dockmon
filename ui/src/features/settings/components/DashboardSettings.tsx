@@ -3,8 +3,7 @@
  * Controls for dashboard appearance and performance
  */
 
-import { useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
-import { useSimplifiedWorkflow } from '@/lib/hooks/useUserPreferences'
+import { useUserPreferences, useUpdatePreferences, useTimeFormat, useSimplifiedWorkflow } from '@/lib/hooks/useUserPreferences'
 import { useGlobalSettings, useUpdateGlobalSettings } from '@/hooks/useSettings'
 import { ToggleSwitch } from './ToggleSwitch'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -35,6 +34,7 @@ export function DashboardSettings() {
   const { data: prefs } = useUserPreferences()
   const updatePreferences = useUpdatePreferences()
   const { enabled: simplifiedWorkflow, setEnabled: setSimplifiedWorkflow } = useSimplifiedWorkflow()
+  const { timeFormat, setTimeFormat } = useTimeFormat()
   const { data: globalSettings } = useGlobalSettings()
   const updateGlobalSettings = useUpdateGlobalSettings()
 
@@ -98,6 +98,11 @@ export function DashboardSettings() {
     }
   }
 
+  const handleTimeFormatChange = (format: '12h' | '24h') => {
+    setTimeFormat(format)
+    toast.success(`Time format changed to ${format === '12h' ? '12-hour' : '24-hour'}`)
+  }
+
   return (
     <div className="space-y-6">
       {/* Dashboard Summary */}
@@ -130,6 +135,37 @@ export function DashboardSettings() {
             checked={showContainerStats}
             onChange={handleToggleContainerStats}
           />
+        </div>
+      </div>
+
+      {/* Display */}
+      <div>
+        <div className="mb-4">
+          <h3 className="text-lg font-semibold text-white">Display</h3>
+          <p className="text-xs text-gray-400 mt-1">
+            Customize how information is displayed
+          </p>
+        </div>
+        <div className="space-y-4">
+          <div>
+            <label htmlFor="time-format" className="block text-sm font-medium text-gray-300 mb-2">
+              Time Format
+            </label>
+            <Select value={timeFormat} onValueChange={(v) => handleTimeFormatChange(v as '12h' | '24h')}>
+              <SelectTrigger id="time-format" className="w-full max-w-xs">
+                <SelectValue>
+                  {timeFormat === '12h' ? '12-hour (1:30 PM)' : '24-hour (13:30)'}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="12h">12-hour (1:30 PM)</SelectItem>
+                <SelectItem value="24h">24-hour (13:30)</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="mt-1 text-xs text-gray-400">
+              Choose how times are displayed throughout the application
+            </p>
+          </div>
         </div>
       </div>
 

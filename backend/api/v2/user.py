@@ -22,6 +22,9 @@ from auth.api_key_auth import get_current_user_or_api_key as get_current_user, r
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v2/user", tags=["user-v2"])
 
+# Default time format (12h or 24h) - must match frontend DEFAULT_TIME_FORMAT
+DEFAULT_TIME_FORMAT = "24h"
+
 
 def validate_json_depth(obj: Any, max_depth: int = 10) -> None:
     """
@@ -88,6 +91,9 @@ class UserPreferences(BaseModel):
     dashboard: DashboardPreferences = Field(default_factory=DashboardPreferences)
     simplified_workflow: bool = Field(default=True)  # Skip drawer, open modal directly
 
+    # Display preferences
+    time_format: str = Field(default=DEFAULT_TIME_FORMAT, pattern="^(12h|24h)$")  # 12-hour or 24-hour time format
+
     # Table sorting preferences (TanStack Table format: [{ id: 'column', desc: bool }])
     host_table_sort: Optional[list[Dict[str, Any]]] = Field(default=None)
     container_table_sort: Optional[list[Dict[str, Any]]] = Field(default=None)
@@ -109,6 +115,9 @@ class PreferencesUpdate(BaseModel):
     dashboard_layout_v2: Optional[Dict[str, Any]] = None
     dashboard: Optional[DashboardPreferences] = None
     simplified_workflow: Optional[bool] = None
+
+    # Display preferences
+    time_format: Optional[str] = Field(None, pattern="^(12h|24h)$")
 
     # Table sorting preferences
     host_table_sort: Optional[list[Dict[str, Any]]] = None
@@ -238,6 +247,7 @@ async def get_user_preferences(
             dashboard_layout_v2=dashboard_layout_v2,
             dashboard=dashboard,
             simplified_workflow=user_result.simplified_workflow if user_result and hasattr(user_result, 'simplified_workflow') else True,
+            time_format=prefs_data.get("time_format", DEFAULT_TIME_FORMAT),
             host_table_sort=prefs_data.get("host_table_sort"),
             container_table_sort=prefs_data.get("container_table_sort"),
             container_table_column_visibility=prefs_data.get("container_table_column_visibility"),
@@ -367,6 +377,7 @@ async def update_user_preferences(
         # Handle prefs column (new JSONB-style preferences)
         needs_prefs_update = (
             updates.dashboard is not None or
+            updates.time_format is not None or
             updates.host_table_sort is not None or
             updates.container_table_sort is not None or
             updates.container_table_column_visibility is not None or
@@ -392,6 +403,10 @@ async def update_user_preferences(
                 if "dashboard" not in existing_prefs:
                     existing_prefs["dashboard"] = {}
                 existing_prefs["dashboard"].update(updates.dashboard.model_dump(exclude_unset=True))
+
+            # Update display preferences
+            if updates.time_format is not None:
+                existing_prefs["time_format"] = updates.time_format
 
             # Update table sorting preferences
             if updates.host_table_sort is not None:

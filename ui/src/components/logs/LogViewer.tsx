@@ -27,6 +27,8 @@ import { debug } from '@/lib/debug'
 import { toast } from 'sonner'
 import { makeCompositeKeyFrom } from '@/lib/utils/containerKeys'
 import { ansiToHtml } from '@/lib/utils/ansi'
+import { formatDateTime } from '@/lib/utils/timeFormat'
+import { useTimeFormat } from '@/lib/hooks/useUserPreferences'
 import DOMPurify from 'dompurify'
 import '@/styles/ansi.css'
 
@@ -81,6 +83,7 @@ export function LogViewer({
   compact = false,
   logFontSize = 'sm',
 }: LogViewerProps) {
+  const { timeFormat } = useTimeFormat()
   const [logs, setLogs] = useState<LogLine[]>([])
   const [filteredLogs, setFilteredLogs] = useState<LogLine[]>([])
   const [searchTerm, setSearchTerm] = useState('')
@@ -493,15 +496,7 @@ export function LogViewer({
               <div key={`${log.timestamp}-${index}`} className="leading-relaxed py-0.5">
                 {showTimestamps && (
                   <span className="text-muted-foreground mr-2">
-                    {new Date(log.timestamp).toLocaleString('en-US', {
-                      month: '2-digit',
-                      day: '2-digit',
-                      year: 'numeric',
-                      hour: '2-digit',
-                      minute: '2-digit',
-                      second: '2-digit',
-                      hour12: true,
-                    })}
+                    {formatDateTime(log.timestamp, timeFormat, { includeSeconds: true })}
                   </span>
                 )}
                 {showContainerNames && log.containerName && containers.length > 1 && (

@@ -161,21 +161,23 @@ export function ContainerDetailsModal({
     return cleanup
   }, [open, container, addMessageHandler, handleContainerUpdate])
 
-  // Handle ESC key
+  // Handle ESC key - stop propagation so parent modals don't also close
   useEffect(() => {
     const handleEscape = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && open) {
+        e.stopImmediatePropagation()
         onClose()
       }
     }
 
     if (open) {
-      document.addEventListener('keydown', handleEscape)
+      // Use capture phase to handle before other listeners
+      document.addEventListener('keydown', handleEscape, true)
       document.body.style.overflow = 'hidden'
     }
 
     return () => {
-      document.removeEventListener('keydown', handleEscape)
+      document.removeEventListener('keydown', handleEscape, true)
       document.body.style.overflow = ''
     }
   }, [open, onClose])

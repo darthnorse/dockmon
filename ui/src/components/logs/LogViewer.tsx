@@ -26,6 +26,9 @@ import { apiClient } from '@/lib/api/client'
 import { debug } from '@/lib/debug'
 import { toast } from 'sonner'
 import { makeCompositeKeyFrom } from '@/lib/utils/containerKeys'
+import { ansiToHtml } from '@/lib/utils/ansi'
+import DOMPurify from 'dompurify'
+import '@/styles/ansi.css'
 
 interface LogLine {
   timestamp: string
@@ -506,7 +509,15 @@ export function LogViewer({
                     [{log.containerName}]
                   </span>
                 )}
-                <span className="text-foreground">{log.log}</span>
+                <span
+                  className="text-foreground"
+                  dangerouslySetInnerHTML={{
+                    __html: DOMPurify.sanitize(ansiToHtml(log.log), {
+                      ALLOWED_TAGS: ['span'],
+                      ALLOWED_ATTR: ['class', 'style'],
+                    }),
+                  }}
+                />
               </div>
             ))}
           </div>

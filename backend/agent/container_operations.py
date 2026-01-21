@@ -512,20 +512,19 @@ class AgentContainerOperations:
             )
 
         command = {
-            "type": "container_operation",
-            "payload": {
-                "action": "list_volumes"
-            }
+            "type": "command",
+            "command": "list_volumes",
+            "payload": {}
         }
 
         result = await self.command_executor.execute_command(
             agent_id,
             command,
-            timeout=15.0
+            timeout=30.0
         )
 
         if result.status == CommandStatus.SUCCESS:
-            return result.response.get("volumes", [])
+            return result.response
         else:
             raise HTTPException(
                 status_code=500,
@@ -554,9 +553,9 @@ class AgentContainerOperations:
             )
 
         command = {
-            "type": "container_operation",
+            "type": "command",
+            "command": "create_volume",
             "payload": {
-                "action": "create_volume",
                 "name": name
             }
         }
@@ -568,7 +567,7 @@ class AgentContainerOperations:
         )
 
         if result.status == CommandStatus.SUCCESS:
-            return result.response.get("volume_name", name)
+            return result.response.get("name", name)
         else:
             raise HTTPException(
                 status_code=500,

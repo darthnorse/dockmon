@@ -373,10 +373,10 @@ export function LogViewer({
     setUserHasScrolled(false)
   }, [autoRefresh])
 
-  // Reset userHasScrolled when containers change
+  // Reset userHasScrolled when containers actually change (not just reference change)
   useEffect(() => {
     setUserHasScrolled(false)
-  }, [containers])
+  }, [currentContainerIds])
 
   const getContainerColor = (containerKey: string | undefined) => {
     if (!containerKey) return ''
@@ -488,10 +488,10 @@ export function LogViewer({
       )}
 
       {/* Log Container */}
-      <div className="relative flex-1" style={{ height }}>
+      <div className="relative overflow-hidden" style={{ height }}>
         <div
           ref={logContainerRef}
-          className={`h-full overflow-y-auto bg-card font-mono text-${logFontSize}`}
+          className={`absolute inset-0 overflow-y-auto bg-card font-mono text-${logFontSize}`}
           data-testid="logs-content"
         >
           {filteredLogs.length === 0 ? (
@@ -535,7 +535,7 @@ export function LogViewer({
         {userHasScrolled && filteredLogs.length > 0 && (
           <button
             onClick={handleJumpToLatest}
-            className="absolute bottom-3 right-3 flex items-center gap-1.5 px-3 py-1.5 bg-primary text-primary-foreground text-sm font-medium rounded-md shadow-lg hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 transition-colors"
+            className="absolute bottom-3 right-3 z-10 flex items-center gap-1.5 px-3 py-1.5 bg-primary text-primary-foreground text-sm font-medium rounded-md shadow-lg hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 transition-colors"
             aria-label="Jump to latest logs and resume auto-scroll"
           >
             {sortOrder === 'desc' ? (

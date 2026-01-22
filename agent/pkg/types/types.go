@@ -98,3 +98,21 @@ type ContainerEvent struct {
 	Timestamp     time.Time         `json:"timestamp"`
 	Attributes    map[string]string `json:"attributes,omitempty"`
 }
+
+// ShellSessionCommand represents a shell session command from the backend
+type ShellSessionCommand struct {
+	Action      string `json:"action"`       // start, data, resize, close
+	ContainerID string `json:"container_id"` // Container to exec into
+	SessionID   string `json:"session_id"`   // Unique session identifier
+	Data        string `json:"data,omitempty"`  // Base64-encoded terminal data (for action=data)
+	Cols        int    `json:"cols,omitempty"`  // Terminal columns (for action=resize)
+	Rows        int    `json:"rows,omitempty"`  // Terminal rows (for action=resize)
+}
+
+// ShellDataEvent represents shell data sent from agent to backend
+type ShellDataEvent struct {
+	SessionID string `json:"session_id"`         // Session identifier
+	Action    string `json:"action"`             // started, data, closed, error
+	Data      string `json:"data,omitempty"`     // Base64-encoded terminal output
+	Error     string `json:"error,omitempty"`    // Error message (for action=error)
+}

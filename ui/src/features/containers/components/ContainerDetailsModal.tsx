@@ -29,6 +29,7 @@ import { ContainerModalLogsTab } from './modal-tabs/ContainerModalLogsTab'
 import { ContainerModalAlertsTab } from './modal-tabs/ContainerModalAlertsTab'
 import { ContainerUpdatesTab } from './modal-tabs/ContainerUpdatesTab'
 import { ContainerHealthCheckTab } from './modal-tabs/ContainerHealthCheckTab'
+import { ContainerShellTab } from './modal-tabs/ContainerShellTab'
 import { DeleteContainerDialog } from './DeleteContainerDialog'
 
 export interface ContainerDetailsModalProps {
@@ -160,21 +161,23 @@ export function ContainerDetailsModal({
     return cleanup
   }, [open, container, addMessageHandler, handleContainerUpdate])
 
-  // Handle ESC key
+  // Handle ESC key - stop propagation so parent modals don't also close
   useEffect(() => {
     const handleEscape = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && open) {
+        e.stopImmediatePropagation()
         onClose()
       }
     }
 
     if (open) {
-      document.addEventListener('keydown', handleEscape)
+      // Use capture phase to handle before other listeners
+      document.addEventListener('keydown', handleEscape, true)
       document.body.style.overflow = 'hidden'
     }
 
     return () => {
-      document.removeEventListener('keydown', handleEscape)
+      document.removeEventListener('keydown', handleEscape, true)
       document.body.style.overflow = ''
     }
   }, [open, onClose])
@@ -269,6 +272,11 @@ export function ContainerDetailsModal({
       id: 'logs',
       label: 'Logs',
       content: <ContainerModalLogsTab hostId={container.host_id!} containerId={container.id} containerName={container.name} />,
+    },
+    {
+      id: 'shell',
+      label: 'Shell',
+      content: <ContainerShellTab hostId={container.host_id!} containerId={container.id} containerName={container.name} isRunning={isRunning} />,
     },
     {
       id: 'events',

@@ -53,6 +53,8 @@ export interface GlobalSettings {
   // External URL for notification action links (v2.2.0+)
   external_url?: string | null
   external_url_from_env?: string | null
+  // Editor theme preference (v2.2.8+)
+  editor_theme?: string
 }
 
 export interface TemplateVariable {

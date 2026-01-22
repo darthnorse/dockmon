@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	sharedDocker "github.com/darthnorse/dockmon-shared/docker"
 	"github.com/docker/docker/api/types"
@@ -22,6 +23,7 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/registry"
+	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/darthnorse/dockmon-agent/internal/config"
@@ -544,7 +546,7 @@ func (c *Client) IsPodman(ctx context.Context) (bool, error) {
 // Returns empty string if not found.
 func (c *Client) GetContainerByName(ctx context.Context, name string) (string, error) {
 	// Remove leading slash if present
-	name = strings.TrimPrefix(name, "/")
+	name = stripContainerNamePrefix(name)
 
 	containers, err := c.cli.ContainerList(ctx, container.ListOptions{
 		All:     true,
@@ -758,4 +760,461 @@ func findString(s, substr string) int {
 		}
 	}
 	return -1
+}
+
+// normalizeImageID converts a Docker image ID to 12-char short format.
+// Handles both "sha256:abc123..." and "abc123..." formats.
+func normalizeImageID(id string) string {
+	if strings.HasPrefix(id, "sha256:") {
+		id = id[7:]
+	}
+	if len(id) > 12 {
+		id = id[:12]
+	}
+	return id
+}
+
+// ExecConfig contains configuration for creating an exec instance
+type ExecConfig struct {
+	Cmd          []string // Command to execute
+	AttachStdin  bool
+	AttachStdout bool
+	AttachStderr bool
+	Tty          bool
+	Env          []string // Environment variables
+}
+
+// ExecCreateResponse contains the exec ID
+type ExecCreateResponse struct {
+	ID string
+}
+
+// ExecCreate creates an exec instance for a container
+func (c *Client) ExecCreate(ctx context.Context, containerID string, config ExecConfig) (*ExecCreateResponse, error) {
+	execConfig := container.ExecOptions{
+		Cmd:          config.Cmd,
+		AttachStdin:  config.AttachStdin,
+		AttachStdout: config.AttachStdout,
+		AttachStderr: config.AttachStderr,
+		Tty:          config.Tty,
+		Env:          config.Env,
+	}
+
+	resp, err := c.cli.ContainerExecCreate(ctx, containerID, execConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create exec: %w", err)
+	}
+
+	return &ExecCreateResponse{ID: resp.ID}, nil
+}
+
+// ExecAttach attaches to an exec instance and returns a hijacked connection
+func (c *Client) ExecAttach(ctx context.Context, execID string, tty bool) (types.HijackedResponse, error) {
+	return c.cli.ContainerExecAttach(ctx, execID, container.ExecStartOptions{Tty: tty})
+}
+
+// ExecResize resizes the TTY of an exec instance
+func (c *Client) ExecResize(ctx context.Context, execID string, height, width uint) error {
+	return c.cli.ContainerExecResize(ctx, execID, container.ResizeOptions{
+		Height: height,
+		Width:  width,
+	})
+}
+
+// ContainerRef represents a minimal container reference for linking
+type ContainerRef struct {
+	ID   string `json:"id"`   // 12-char short ID
+	Name string `json:"name"` // Container name
+}
+
+// ImageInfo represents image information for the Images tab
+type ImageInfo struct {
+	ID             string         `json:"id"`              // 12-char short ID
+	Tags           []string       `json:"tags"`            // Image tags (e.g., ["nginx:latest"])
+	Size           int64          `json:"size"`            // Size in bytes
+	Created        string         `json:"created"`         // ISO timestamp with Z suffix
+	InUse          bool           `json:"in_use"`          // Whether any container uses this image
+	ContainerCount int            `json:"container_count"` // Number of containers using this image
+	Containers     []ContainerRef `json:"containers"`      // List of containers using this image
+	Dangling       bool           `json:"dangling"`        // True if image has no tags
+}
+
+// ImagePruneResult represents the result of pruning images
+type ImagePruneResult struct {
+	RemovedCount    int   `json:"removed_count"`
+	SpaceReclaimed  int64 `json:"space_reclaimed"`
+}
+
+// ListImages returns all images with usage information
+func (c *Client) ListImages(ctx context.Context) ([]ImageInfo, error) {
+	// Get all images
+	images, err := c.cli.ImageList(ctx, image.ListOptions{All: true})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list images: %w", err)
+	}
+
+	// Get all containers to determine image usage
+	containers, err := c.cli.ContainerList(ctx, container.ListOptions{All: true})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list containers: %w", err)
+	}
+
+	// Build image usage map: image_id (12 chars) -> list of container refs
+	imageUsage := make(map[string][]ContainerRef)
+	for _, ctr := range containers {
+		imageID := normalizeImageID(ctr.ImageID)
+		imageUsage[imageID] = append(imageUsage[imageID], ContainerRef{
+			ID:   ctr.ID[:12],
+			Name: stripContainerNamePrefix(ctr.Names[0]),
+		})
+	}
+
+	// Build result
+	result := make([]ImageInfo, 0, len(images))
+	for _, img := range images {
+		shortID := normalizeImageID(img.ID)
+		containerRefs := imageUsage[shortID]
+		if containerRefs == nil {
+			containerRefs = []ContainerRef{}
+		}
+
+		// Format created timestamp with Z suffix for frontend
+		created := time.Unix(img.Created, 0).UTC().Format("2006-01-02T15:04:05Z")
+
+		// Handle tags - ensure non-nil slice
+		tags := img.RepoTags
+		if tags == nil {
+			tags = []string{}
+		}
+
+		result = append(result, ImageInfo{
+			ID:             shortID,
+			Tags:           tags,
+			Size:           img.Size,
+			Created:        created,
+			InUse:          len(containerRefs) > 0,
+			ContainerCount: len(containerRefs),
+			Containers:     containerRefs,
+			Dangling:       len(tags) == 0,
+		})
+	}
+
+	return result, nil
+}
+
+// RemoveImage removes a Docker image
+func (c *Client) RemoveImage(ctx context.Context, imageID string, force bool) error {
+	_, err := c.cli.ImageRemove(ctx, imageID, image.RemoveOptions{
+		Force:         force,
+		PruneChildren: true,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to remove image: %w", err)
+	}
+	return nil
+}
+
+// PruneImages removes all unused images
+func (c *Client) PruneImages(ctx context.Context) (*ImagePruneResult, error) {
+	// Use filters to prune ALL unused images (not just dangling)
+	report, err := c.cli.ImagesPrune(ctx, filters.NewArgs(
+		filters.Arg("dangling", "false"),
+	))
+	if err != nil {
+		return nil, fmt.Errorf("failed to prune images: %w", err)
+	}
+
+	// Count actual image deletions (not layer deletions)
+	removedCount := 0
+	for _, deleted := range report.ImagesDeleted {
+		if deleted.Deleted != "" {
+			removedCount++
+		}
+	}
+
+	return &ImagePruneResult{
+		RemovedCount:   removedCount,
+		SpaceReclaimed: int64(report.SpaceReclaimed),
+	}, nil
+}
+
+// truncateID truncates an ID to 12 characters (Docker short ID format).
+// Safe to call with IDs of any length.
+func truncateID(id string) string {
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
+}
+
+// stripContainerNamePrefix removes the leading "/" from Docker container names.
+// Docker API returns container names with a "/" prefix (e.g., "/mycontainer").
+func stripContainerNamePrefix(name string) string {
+	if len(name) > 0 && name[0] == '/' {
+		return name[1:]
+	}
+	return name
+}
+
+// NetworkContainerInfo represents a container connected to a network
+type NetworkContainerInfo struct {
+	ID   string `json:"id"`   // 12-char short container ID
+	Name string `json:"name"` // Container name
+}
+
+// NetworkInfo represents a Docker network with connected container info
+type NetworkInfo struct {
+	ID             string                 `json:"id"`              // 12-char short ID
+	Name           string                 `json:"name"`            // Network name
+	Driver         string                 `json:"driver"`          // Network driver (bridge, overlay, etc.)
+	Scope          string                 `json:"scope"`           // Network scope (local, swarm, global)
+	Created        string                 `json:"created"`         // ISO timestamp with Z suffix
+	Internal       bool                   `json:"internal"`        // Whether network is internal
+	Subnet         string                 `json:"subnet"`          // IPAM subnet (e.g., "172.17.0.0/16")
+	Containers     []NetworkContainerInfo `json:"containers"`      // Connected containers
+	ContainerCount int                    `json:"container_count"` // Number of connected containers
+	IsBuiltin      bool                   `json:"is_builtin"`      // True for bridge, host, none
+}
+
+// builtinNetworks contains the names of Docker's built-in networks
+var builtinNetworks = map[string]bool{
+	"bridge": true,
+	"host":   true,
+	"none":   true,
+}
+
+// ListNetworks returns all networks with connected container info
+func (c *Client) ListNetworks(ctx context.Context) ([]NetworkInfo, error) {
+	// Get all networks
+	networks, err := c.cli.NetworkList(ctx, network.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list networks: %w", err)
+	}
+
+	// Build result
+	result := make([]NetworkInfo, 0, len(networks))
+	for _, net := range networks {
+		// NetworkList doesn't populate Containers - need to inspect each network
+		inspected, err := c.cli.NetworkInspect(ctx, net.ID, network.InspectOptions{})
+		if err != nil {
+			c.log.WithError(err).Warnf("Failed to inspect network %s, skipping container info", net.Name)
+			// Continue with basic info from list
+		}
+
+		// Format created timestamp with Z suffix for frontend
+		created := net.Created.UTC().Format("2006-01-02T15:04:05Z")
+
+		// Get connected containers from inspected data (if available)
+		containerMap := net.Containers
+		if inspected.Containers != nil {
+			containerMap = inspected.Containers
+		}
+		containers := make([]NetworkContainerInfo, 0, len(containerMap))
+		for containerID, endpoint := range containerMap {
+			containers = append(containers, NetworkContainerInfo{
+				ID:   truncateID(containerID),
+				Name: stripContainerNamePrefix(endpoint.Name),
+			})
+		}
+
+		// Extract IPAM subnet
+		subnet := ""
+		if net.IPAM.Config != nil && len(net.IPAM.Config) > 0 {
+			subnet = net.IPAM.Config[0].Subnet
+		}
+
+		result = append(result, NetworkInfo{
+			ID:             truncateID(net.ID),
+			Name:           net.Name,
+			Driver:         net.Driver,
+			Scope:          net.Scope,
+			Created:        created,
+			Internal:       net.Internal,
+			Subnet:         subnet,
+			Containers:     containers,
+			ContainerCount: len(containers),
+			IsBuiltin:      builtinNetworks[net.Name],
+		})
+	}
+
+	return result, nil
+}
+
+// DeleteNetwork removes a Docker network
+func (c *Client) DeleteNetwork(ctx context.Context, networkID string, force bool) error {
+	// Get network to check if it's built-in and get name for error messages
+	net, err := c.cli.NetworkInspect(ctx, networkID, network.InspectOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to inspect network: %w", err)
+	}
+
+	// Check if it's a built-in network
+	if builtinNetworks[net.Name] {
+		return fmt.Errorf("cannot delete built-in network '%s'", net.Name)
+	}
+
+	// Check for connected containers
+	if len(net.Containers) > 0 && !force {
+		return fmt.Errorf("network has %d connected container(s), use force to disconnect and delete", len(net.Containers))
+	}
+
+	// If force is true and there are connected containers, disconnect them first
+	if len(net.Containers) > 0 && force {
+		for containerID := range net.Containers {
+			if err := c.cli.NetworkDisconnect(ctx, networkID, containerID, true); err != nil {
+				c.log.WithError(err).Warnf("Failed to disconnect container %s from network %s", truncateID(containerID), net.Name)
+			}
+		}
+	}
+
+	// Remove the network
+	if err := c.cli.NetworkRemove(ctx, networkID); err != nil {
+		return fmt.Errorf("failed to remove network: %w", err)
+	}
+
+	return nil
+}
+
+// NetworkPruneResult contains the result of a network prune operation
+type NetworkPruneResult struct {
+	RemovedCount    int      `json:"removed_count"`
+	NetworksRemoved []string `json:"networks_removed"`
+}
+
+// PruneNetworks removes all unused networks
+func (c *Client) PruneNetworks(ctx context.Context) (*NetworkPruneResult, error) {
+	report, err := c.cli.NetworksPrune(ctx, filters.Args{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to prune networks: %w", err)
+	}
+
+	networksRemoved := report.NetworksDeleted
+	if networksRemoved == nil {
+		networksRemoved = []string{}
+	}
+
+	return &NetworkPruneResult{
+		RemovedCount:    len(networksRemoved),
+		NetworksRemoved: networksRemoved,
+	}, nil
+}
+
+// ==================== Volume Operations ====================
+
+// VolumeContainerInfo represents a container using a volume
+type VolumeContainerInfo struct {
+	ID   string `json:"id"`   // 12-char short container ID
+	Name string `json:"name"` // Container name
+}
+
+// VolumeInfo represents a Docker volume with usage information
+type VolumeInfo struct {
+	Name           string                `json:"name"`            // Volume name
+	Driver         string                `json:"driver"`          // Volume driver (local, etc.)
+	Mountpoint     string                `json:"mountpoint"`      // Mount point on host
+	Created        string                `json:"created"`         // ISO timestamp with Z suffix
+	Containers     []VolumeContainerInfo `json:"containers"`      // Containers using this volume
+	ContainerCount int                   `json:"container_count"` // Number of containers using this volume
+	InUse          bool                  `json:"in_use"`          // Whether any container uses this volume
+}
+
+// ListVolumes returns all volumes with usage information
+func (c *Client) ListVolumes(ctx context.Context) ([]VolumeInfo, error) {
+	// Get all volumes
+	volumeListBody, err := c.cli.VolumeList(ctx, volume.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list volumes: %w", err)
+	}
+
+	// Get all containers to determine volume usage
+	containers, err := c.cli.ContainerList(ctx, container.ListOptions{All: true})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list containers: %w", err)
+	}
+
+	// Build volume usage map: volume_name -> list of container refs
+	volumeUsage := make(map[string][]VolumeContainerInfo)
+	for _, ctr := range containers {
+		for _, mount := range ctr.Mounts {
+			if mount.Type == "volume" && mount.Name != "" {
+				volumeUsage[mount.Name] = append(volumeUsage[mount.Name], VolumeContainerInfo{
+					ID:   ctr.ID[:12],
+					Name: stripContainerNamePrefix(ctr.Names[0]),
+				})
+			}
+		}
+	}
+
+	// Build result
+	result := make([]VolumeInfo, 0, len(volumeListBody.Volumes))
+	for _, vol := range volumeListBody.Volumes {
+		containerRefs := volumeUsage[vol.Name]
+		if containerRefs == nil {
+			containerRefs = []VolumeContainerInfo{}
+		}
+
+		// Format created timestamp with Z suffix for frontend
+		created := ""
+		if vol.CreatedAt != "" {
+			if t, err := time.Parse(time.RFC3339, vol.CreatedAt); err == nil {
+				created = t.UTC().Format("2006-01-02T15:04:05Z")
+			} else {
+				created = vol.CreatedAt // Fallback to original if parsing fails
+			}
+		}
+
+		result = append(result, VolumeInfo{
+			Name:           vol.Name,
+			Driver:         vol.Driver,
+			Mountpoint:     vol.Mountpoint,
+			Created:        created,
+			Containers:     containerRefs,
+			ContainerCount: len(containerRefs),
+			InUse:          len(containerRefs) > 0,
+		})
+	}
+
+	return result, nil
+}
+
+// DeleteVolume removes a Docker volume
+func (c *Client) DeleteVolume(ctx context.Context, volumeName string, force bool) error {
+	if volumeName == "" {
+		return fmt.Errorf("volume name cannot be empty")
+	}
+	err := c.cli.VolumeRemove(ctx, volumeName, force)
+	if err != nil {
+		return fmt.Errorf("failed to delete volume: %w", err)
+	}
+	return nil
+}
+
+// VolumePruneResult contains the result of a volume prune operation
+type VolumePruneResult struct {
+	RemovedCount   int      `json:"removed_count"`
+	SpaceReclaimed int64    `json:"space_reclaimed"`
+	VolumesRemoved []string `json:"volumes_removed"`
+}
+
+// PruneVolumes removes all unused volumes (including named volumes)
+func (c *Client) PruneVolumes(ctx context.Context) (*VolumePruneResult, error) {
+	// Use "all=true" filter to prune ALL unused volumes, not just anonymous ones
+	pruneFilters := filters.NewArgs()
+	pruneFilters.Add("all", "true")
+
+	report, err := c.cli.VolumesPrune(ctx, pruneFilters)
+	if err != nil {
+		return nil, fmt.Errorf("failed to prune volumes: %w", err)
+	}
+
+	volumesRemoved := report.VolumesDeleted
+	if volumesRemoved == nil {
+		volumesRemoved = []string{}
+	}
+
+	return &VolumePruneResult{
+		RemovedCount:   len(volumesRemoved),
+		SpaceReclaimed: int64(report.SpaceReclaimed),
+		VolumesRemoved: volumesRemoved,
+	}, nil
 }

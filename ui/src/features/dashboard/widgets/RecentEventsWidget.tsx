@@ -9,6 +9,8 @@ import { useQuery } from '@tanstack/react-query'
 import { Activity, Container, PlayCircle, StopCircle } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { apiClient } from '@/lib/api/client'
+import { useTimeFormat } from '@/lib/hooks/useUserPreferences'
+import { formatTime } from '@/lib/utils/timeFormat'
 
 interface DockerEvent {
   id: number
@@ -23,6 +25,7 @@ interface DockerEvent {
 }
 
 export function RecentEventsWidget() {
+  const { timeFormat } = useTimeFormat()
   const { data, isLoading, error } = useQuery<{ events: DockerEvent[] }>({
     queryKey: ['events', 'recent'],
     queryFn: () => apiClient.get('/events?limit=10'),
@@ -108,7 +111,7 @@ export function RecentEventsWidget() {
                       {displayName}
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      {new Date(event.timestamp).toLocaleTimeString()}
+                      {formatTime(event.timestamp, timeFormat)}
                     </p>
                   </div>
                 </div>

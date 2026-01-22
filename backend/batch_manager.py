@@ -17,6 +17,7 @@ from event_bus import Event, EventType, get_event_bus
 from updates.update_checker import get_update_checker
 from updates.update_executor import get_update_executor
 from utils.keys import make_composite_key
+from utils.async_docker import async_docker_call
 
 logger = logging.getLogger(__name__)
 
@@ -44,9 +45,9 @@ class BatchJobManager:
 
         Args:
             user_id: ID of user creating the job
-            scope: 'container' only for now
-            action: 'start', 'stop', or 'restart'
-            container_ids: List of container IDs to operate on
+            scope: 'container' or 'image'
+            action: 'start', 'stop', 'restart', 'delete-images', etc.
+            container_ids: List of container/image IDs to operate on (composite keys)
             params: Optional action parameters
 
         Returns:
@@ -54,26 +55,47 @@ class BatchJobManager:
         """
         job_id = f"job_{uuid.uuid4().hex[:12]}"
 
-        # Get container details from monitor
-        all_containers = await self.monitor.get_containers()
-        # Use composite keys {host_id}:{container_id} for multi-host support (cloned VMs)
-        container_map = {f"{c.host_id}:{c.short_id}": c for c in all_containers}
+        # Handle image scope differently - no container validation needed
+        if scope == 'image':
+            # For images, container_ids contains composite keys: {host_id}:{image_id}
+            # Build image map from the provided IDs
+            image_map = {}
+            for composite_id in container_ids:
+                if ":" not in composite_id:
+                    logger.warning(f"Invalid composite key format: {composite_id}")
+                    continue
+                parts = composite_id.split(":", 1)
+                host_id = parts[0]
+                image_id = parts[1]
+                # Get image name from params if provided, otherwise use image_id
+                image_names = params.get('image_names', {}) if params else {}
+                image_name = image_names.get(composite_id, image_id)
+                image_map[composite_id] = {
+                    'host_id': host_id,
+                    'image_id': image_id,
+                    'image_name': image_name
+                }
+        else:
+            # Get container details from monitor
+            all_containers = await self.monitor.get_containers()
+            # Use composite keys {host_id}:{container_id} for multi-host support (cloned VMs)
+            container_map = {f"{c.host_id}:{c.short_id}": c for c in all_containers}
 
-        # Check for dependency conflicts if this is an update action
-        if action == 'update-containers':
-            logger.info(f"Checking for dependency conflicts in batch update with {len(container_ids)} containers")
-            from updates.dependency_analyzer import DependencyConflictDetector
-            detector = DependencyConflictDetector(self.monitor)
-            logger.info(f"Created DependencyConflictDetector, calling check_batch with container_ids={container_ids}")
-            conflict_error = detector.check_batch(container_ids, container_map)
-            logger.info(f"Dependency check result: {conflict_error}")
-            if conflict_error:
-                # Dependency conflict detected - fail the entire batch
-                # Don't create individual items, just fail the job with the error message
-                logger.error(f"Batch job {job_id} blocked due to dependency conflict: {conflict_error}")
+            # Check for dependency conflicts if this is an update action
+            if action == 'update-containers':
+                logger.info(f"Checking for dependency conflicts in batch update with {len(container_ids)} containers")
+                from updates.dependency_analyzer import DependencyConflictDetector
+                detector = DependencyConflictDetector(self.monitor)
+                logger.info(f"Created DependencyConflictDetector, calling check_batch with container_ids={container_ids}")
+                conflict_error = detector.check_batch(container_ids, container_map)
+                logger.info(f"Dependency check result: {conflict_error}")
+                if conflict_error:
+                    # Dependency conflict detected - fail the entire batch
+                    # Don't create individual items, just fail the job with the error message
+                    logger.error(f"Batch job {job_id} blocked due to dependency conflict: {conflict_error}")
 
-                # Raise an exception that will be caught by the API endpoint
-                raise ValueError(conflict_error)
+                    # Raise an exception that will be caught by the API endpoint
+                    raise ValueError(conflict_error)
 
         # Create job record
         with self.db.get_session() as session:
@@ -89,21 +111,38 @@ class BatchJobManager:
             session.add(job)
 
             # Create job items
-            for container_id in container_ids:
-                container = container_map.get(container_id)
-                if not container:
-                    logger.warning(f"Container {container_id} not found, skipping")
-                    continue
+            if scope == 'image':
+                for composite_id in container_ids:
+                    image_info = image_map.get(composite_id)
+                    if not image_info:
+                        logger.warning(f"Image {composite_id} not found in map, skipping")
+                        continue
 
-                item = BatchJobItem(
-                    job_id=job_id,
-                    container_id=container.short_id,  # Use short_id for consistency
-                    container_name=container.name,
-                    host_id=container.host_id,
-                    host_name=container.host_name,
-                    status='queued'
-                )
-                session.add(item)
+                    item = BatchJobItem(
+                        job_id=job_id,
+                        container_id=image_info['image_id'],  # Store image_id in container_id field
+                        container_name=image_info['image_name'],  # Store image name/tag
+                        host_id=image_info['host_id'],
+                        host_name=None,  # Not used for images
+                        status='queued'
+                    )
+                    session.add(item)
+            else:
+                for container_id in container_ids:
+                    container = container_map.get(container_id)
+                    if not container:
+                        logger.warning(f"Container {container_id} not found, skipping")
+                        continue
+
+                    item = BatchJobItem(
+                        job_id=job_id,
+                        container_id=container.short_id,  # Use short_id for consistency
+                        container_name=container.name,
+                        host_id=container.host_id,
+                        host_name=container.host_name,
+                        status='queued'
+                    )
+                    session.add(item)
 
             session.commit()
             logger.info(f"Created batch job {job_id} with {len(container_ids)} items: {action}")
@@ -304,7 +343,8 @@ class BatchJobManager:
             # For delete operations, skip the cache check - just attempt deletion directly
             # This prevents race conditions during bulk deletions where containers might be
             # removed from cache by discovery before we process them
-            if action not in ['delete-containers']:
+            # Also skip for delete-images since those use image IDs, not container IDs
+            if action not in ['delete-containers', 'delete-images']:
                 # Get current container state for non-delete operations
                 containers = await self.monitor.get_containers(host_id)
                 container = next((c for c in containers if c.short_id == short_id), None)
@@ -441,6 +481,11 @@ class BatchJobManager:
                 remove_volumes = params.get('remove_volumes', False) if params else False
                 await self._delete_container(host_id, short_id, container_name, remove_volumes)
                 message = 'Deleted successfully'
+            elif action == 'delete-images':
+                # Delete image from host
+                force = params.get('force', False) if params else False
+                await self._delete_image(host_id, short_id, container_name, force)
+                message = 'Deleted successfully'
             elif action == 'update-containers':
                 # Update container with new image version
                 # Get update record from database
@@ -512,6 +557,37 @@ class BatchJobManager:
         # (Docker removal + complete database cleanup + event emission)
         await self.monitor.delete_container(host_id, container_id, container_name, remove_volumes)
         logger.info(f"Deleted container {container_name} ({container_id}) successfully")
+
+    async def _delete_image(self, host_id: str, image_id: str, image_name: str, force: bool = False) -> None:
+        """
+        Delete a Docker image from a host.
+
+        Routes through agent if available, otherwise uses direct Docker client.
+
+        Args:
+            host_id: Host UUID
+            image_id: Image short ID (12 chars)
+            image_name: Image name/tag for logging
+            force: Whether to force delete (removes even if in use)
+
+        Raises:
+            Exception: If deletion fails (host not found, image not found, etc.)
+        """
+        # Check if host uses agent - route through agent if available
+        agent_id = self.monitor.operations.agent_manager.get_agent_for_host(host_id)
+        if agent_id:
+            logger.info(f"Routing remove_image for host {host_id} through agent {agent_id}")
+            await self.monitor.operations.agent_operations.remove_image(host_id, image_id, force)
+            logger.info(f"Deleted image {image_name} ({image_id}) from agent host {host_id}")
+            return
+
+        # Legacy path: Direct Docker socket access
+        client = self.monitor.clients.get(host_id)
+        if not client:
+            raise Exception(f"Host {host_id} not found")
+
+        await async_docker_call(client.images.remove, image_id, force=force)
+        logger.info(f"Deleted image {image_name} ({image_id}) from host {host_id}")
 
     async def _broadcast_job_update(self, job_id: str, status: str, message: Optional[str]):
         """Broadcast job status update via WebSocket"""

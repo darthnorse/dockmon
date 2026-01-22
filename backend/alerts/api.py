@@ -16,7 +16,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any
 from fastapi import APIRouter, HTTPException, Depends, Query, status
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_serializer
 
 from database import DatabaseManager, AlertV2, AlertAnnotation
 from alerts.engine import AlertEngine
@@ -63,6 +63,13 @@ class AlertResponse(BaseModel):
     container_name: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_serializer('first_seen', 'last_seen', 'snoozed_until', 'resolved_at')
+    def serialize_datetime(self, dt: Optional[datetime]) -> Optional[str]:
+        """Serialize datetime with 'Z' suffix for UTC - required for correct frontend parsing"""
+        if dt is None:
+            return None
+        return dt.isoformat() + 'Z'
 
 
 class AlertListResponse(BaseModel):
@@ -316,7 +323,7 @@ async def get_annotations(
             "annotations": [
                 {
                     "id": ann.id,
-                    "timestamp": ann.timestamp,
+                    "timestamp": ann.timestamp.isoformat() + 'Z' if ann.timestamp else None,
                     "user": ann.user,
                     "text": ann.text
                 }

@@ -15,6 +15,8 @@ import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
 import { cn } from '@/lib/utils'
 import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
+import { useTimeFormat } from '@/lib/hooks/useUserPreferences'
+import { formatTime } from '@/lib/utils/timeFormat'
 import type { WebSocketMessage } from '@/lib/websocket/useWebSocket'
 
 interface DeploymentProgressProps {
@@ -84,6 +86,7 @@ export function DeploymentProgress({
   onBack,
   onComplete,
 }: DeploymentProgressProps) {
+  const { timeFormat } = useTimeFormat()
   const { addMessageHandler } = useWebSocketContext()
 
   const [progress, setProgress] = useState(0)
@@ -301,7 +304,7 @@ export function DeploymentProgress({
               )}
             >
               <span className="text-muted-foreground shrink-0">
-                {log.timestamp.toLocaleTimeString()}
+                {formatTime(log.timestamp, timeFormat)}
               </span>
               <span>{log.message}</span>
             </div>

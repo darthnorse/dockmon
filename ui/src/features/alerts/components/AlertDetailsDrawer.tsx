@@ -8,6 +8,8 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { X, CheckCircle2, Clock, MessageSquare, AlertCircle, Server, Container, Settings, MoreVertical, Activity, ChevronDown } from 'lucide-react'
 import { useAlert, useAlertAnnotations, useResolveAlert, useSnoozeAlert, useUnsnoozeAlert, useAddAnnotation, useAlertEvents } from '../hooks/useAlerts'
+import { useTimeFormat } from '@/lib/hooks/useUserPreferences'
+import { formatDateTime as formatDateTimeUtil } from '@/lib/utils/timeFormat'
 import type { AlertSeverity, AlertState } from '@/types/alerts'
 
 interface AlertDetailsDrawerProps {
@@ -25,6 +27,7 @@ const SNOOZE_DURATIONS = [
 
 export function AlertDetailsDrawer({ alertId, onClose }: AlertDetailsDrawerProps) {
   const navigate = useNavigate()
+  const { timeFormat } = useTimeFormat()
   const { data: alert, isLoading } = useAlert(alertId)
   const { data: annotationsData } = useAlertAnnotations(alertId)
   const { data: eventsData } = useAlertEvents(alert)
@@ -95,8 +98,7 @@ export function AlertDetailsDrawer({ alertId, onClose }: AlertDetailsDrawerProps
   }
 
   const formatDateTime = (dateString: string) => {
-    const date = new Date(dateString)
-    return date.toLocaleString()
+    return formatDateTimeUtil(dateString, timeFormat)
   }
 
   const getEventSeverityColor = (severity: string) => {
@@ -452,7 +454,7 @@ export function AlertDetailsDrawer({ alertId, onClose }: AlertDetailsDrawerProps
                 {alert.state === 'snoozed' ? (
                   <div className="flex flex-1 flex-col gap-2">
                     <div className="text-xs text-gray-400 text-center">
-                      Snoozed until {alert.snoozed_until ? new Date(alert.snoozed_until).toLocaleString() : 'unknown'}
+                      Snoozed until {alert.snoozed_until ? formatDateTime(alert.snoozed_until) : 'unknown'}
                     </div>
                     <button
                       onClick={handleUnsnooze}

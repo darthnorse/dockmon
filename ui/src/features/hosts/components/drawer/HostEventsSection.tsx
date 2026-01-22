@@ -8,13 +8,16 @@ import { Calendar, ArrowRight, AlertCircle } from 'lucide-react'
 import { DrawerSection } from '@/components/ui/drawer'
 import { Link } from 'react-router-dom'
 import { useHostEvents } from '@/hooks/useEvents'
-import { formatSeverity, getSeverityColor, formatRelativeTime, formatTimestamp } from '@/lib/utils/eventUtils'
+import { formatSeverity, getSeverityColor, formatRelativeTime } from '@/lib/utils/eventUtils'
+import { formatTimestamp } from '@/lib/utils/timeFormat'
+import { useTimeFormat } from '@/lib/hooks/useUserPreferences'
 
 interface HostEventsSectionProps {
   hostId: string
 }
 
 export function HostEventsSection({ hostId }: HostEventsSectionProps) {
+  const { timeFormat } = useTimeFormat()
   const { data: eventsData, isLoading, error } = useHostEvents(hostId, 5)
   const events = eventsData?.events ?? []
 
@@ -63,7 +66,7 @@ export function HostEventsSection({ hostId }: HostEventsSectionProps) {
                   </span>
                   <span
                     className="text-xs text-muted-foreground whitespace-nowrap"
-                    title={formatTimestamp(event.timestamp)}
+                    title={formatTimestamp(event.timestamp, timeFormat)}
                   >
                     {formatRelativeTime(event.timestamp)}
                   </span>

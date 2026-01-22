@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -34,6 +35,9 @@ type Config struct {
 	UpdateLockPath   string
 	UpdateTimeout    time.Duration
 
+	// Stack storage - persistent directory for compose deployments
+	StacksDir        string
+
 	// Logging
 	LogLevel         string
 	LogJSON          bool
@@ -54,7 +58,7 @@ func LoadFromEnv() (*Config, error) {
 		DockerTLSVerify:  getEnvBool("DOCKER_TLS_VERIFY", false),
 
 		// Agent identity
-		AgentVersion:     getEnvOrDefault("AGENT_VERSION", "2.2.0"),
+		AgentVersion:     getEnvOrDefault("AGENT_VERSION", "1.0.3"),
 		ProtoVersion:     getEnvOrDefault("PROTO_VERSION", "1.0"),
 
 		// Reconnection (exponential backoff: 1s → 60s)
@@ -71,7 +75,10 @@ func LoadFromEnv() (*Config, error) {
 	}
 
 	// Derived paths
-	cfg.UpdateLockPath = cfg.DataPath + "/update.lock"
+	cfg.UpdateLockPath = filepath.Join(cfg.DataPath, "update.lock")
+
+	// Stack storage directory - default to $DATA_PATH/stacks, allow override with AGENT_STACKS_DIR
+	cfg.StacksDir = getEnvOrDefault("AGENT_STACKS_DIR", filepath.Join(cfg.DataPath, "stacks"))
 
 	// Validation
 	if cfg.DockMonURL == "" {
@@ -80,7 +87,7 @@ func LoadFromEnv() (*Config, error) {
 
 	// Try to load permanent token from persisted file
 	if cfg.PermanentToken == "" {
-		tokenPath := cfg.DataPath + "/permanent_token"
+		tokenPath := filepath.Join(cfg.DataPath, "permanent_token")
 		if data, err := os.ReadFile(tokenPath); err == nil {
 			cfg.PermanentToken = strings.TrimSpace(string(data))
 		}

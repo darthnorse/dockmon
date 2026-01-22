@@ -339,7 +339,8 @@ class ContainerDiscovery:
                     tls_key = db_host.tls_key if db_host else None
                     num_cpus = db_host.num_cpus if db_host else None
 
-                    await stats_client.add_docker_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key, num_cpus)
+                    is_local = host.url.startswith("unix://")
+                    await stats_client.add_docker_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key, num_cpus, is_local)
                     await stats_client.add_event_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key)
                     logger.info(f"Re-registered {host.name} ({host_id[:8]}) with stats/events service after reconnection")
                 except Exception as e:
@@ -532,6 +533,9 @@ class ContainerDiscovery:
                         # Get auto-restart status
                         auto_restart = get_auto_restart_status_fn(host_id, container_id)
 
+                        # Get desired state and web UI URL from database
+                        desired_state, web_ui_url = self.db.get_desired_state(host_id, container_id)
+
                         # Extract ports - convert Docker API format to string list
                         # Docker API returns: [{"PrivatePort": 80, "PublicPort": 8080, "Type": "tcp", "IP": "0.0.0.0"}]
                         # We need: ["8080:80/tcp"]
@@ -599,6 +603,8 @@ class ContainerDiscovery:
                             volumes=volumes,
                             restart_policy=restart_policy,
                             auto_restart=auto_restart,
+                            desired_state=desired_state,
+                            web_ui_url=web_ui_url,
                             labels=labels,
                             compose_project=compose_project,
                             compose_service=compose_service,

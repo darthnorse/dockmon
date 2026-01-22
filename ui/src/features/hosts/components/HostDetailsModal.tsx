@@ -22,6 +22,9 @@ import type { Host } from '@/types/api'
 // Import tab content components
 import { HostOverviewTab } from './modal-tabs/HostOverviewTab'
 import { HostContainersTab } from './modal-tabs/HostContainersTab'
+import { HostImagesTab } from './modal-tabs/HostImagesTab'
+import { HostNetworksTab } from './modal-tabs/HostNetworksTab'
+import { HostVolumesTab } from './modal-tabs/HostVolumesTab'
 import { HostEventsTab } from './modal-tabs/HostEventsTab'
 
 export interface HostDetailsModalProps {
@@ -95,6 +98,21 @@ export function HostDetailsModal({
       id: 'containers',
       label: 'Containers',
       content: <HostContainersTab hostId={hostId} />,
+    },
+    {
+      id: 'images',
+      label: 'Images',
+      content: <HostImagesTab hostId={hostId} />,
+    },
+    {
+      id: 'networks',
+      label: 'Networks',
+      content: <HostNetworksTab hostId={hostId} />,
+    },
+    {
+      id: 'volumes',
+      label: 'Volumes',
+      content: <HostVolumesTab hostId={hostId} />,
     },
     {
       id: 'events',

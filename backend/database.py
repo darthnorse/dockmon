@@ -402,6 +402,10 @@ class GlobalSettings(Base):
     # Example: "https://dockmon.example.com" - used to generate action URLs in notifications
     external_url = Column(Text, nullable=True)
 
+    # Editor theme preference (v2.2.8+)
+    # Available: 'github-dark', 'vscode-dark', 'dracula', 'material-dark', 'nord'
+    editor_theme = Column(Text, default='aura')
+
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
 class ContainerUpdate(Base):
@@ -3000,7 +3004,9 @@ class DatabaseManager:
                     # Image pruning settings (v2.1+)
                     'prune_images_enabled', 'image_retention_count', 'image_prune_grace_hours',
                     # External URL for notification action links (v2.2.0+)
-                    'external_url'
+                    'external_url',
+                    # Editor theme preference (v2.2.8+)
+                    'editor_theme'
                 }
 
                 for key, value in updates.items():

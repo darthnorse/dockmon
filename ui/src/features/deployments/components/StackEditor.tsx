@@ -23,7 +23,6 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
 import {
   Select,
@@ -563,11 +562,11 @@ export function StackEditor({
             )}
 
             {activeTab === 'env' && (
-              <Textarea
+              <ConfigurationEditor
+                type="env"
                 value={envContent}
-                onChange={(e) => setEnvContent(e.target.value)}
-                placeholder={`# Optional .env file\nDATABASE_URL=postgres://...\nAPI_KEY=your-secret`}
-                className="font-mono text-sm flex-1 min-h-0 resize-none"
+                onChange={setEnvContent}
+                fillHeight
               />
             )}
           </div>

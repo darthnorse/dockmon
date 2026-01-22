@@ -393,15 +393,6 @@ class DeploymentExecutor:
                     session.commit()
             return False
 
-        # Parse environment variables from .env content if provided
-        environment = {}
-        if env_content:
-            for line in env_content.splitlines():
-                line = line.strip()
-                if line and not line.startswith('#') and '=' in line:
-                    key, _, value = line.partition('=')
-                    environment[key.strip()] = value.strip()
-
         logger.info(
             f"Sending deployment {deployment_id} (stack: {stack_name}) to agent"
         )
@@ -410,7 +401,7 @@ class DeploymentExecutor:
             deployment_id=deployment_id,
             compose_content=compose_yaml,
             project_name=stack_name,
-            environment=environment,
+            env_file_content=env_content,
             force_recreate=force_recreate,
             pull_images=pull_images
         )

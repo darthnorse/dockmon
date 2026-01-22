@@ -3,7 +3,6 @@ package handlers
 import (
 	"context"
 	"fmt"
-	"sync"
 
 	"github.com/darthnorse/dockmon-agent/internal/docker"
 	"github.com/darthnorse/dockmon-shared/compose"
@@ -16,7 +15,7 @@ type DeployHandler struct {
 	dockerClient *docker.Client
 	log          *logrus.Logger
 	sendEvent    func(msgType string, payload interface{}) error
-	mu           sync.Mutex
+	stacksDir    string // Persistent stack directory for compose deployments
 }
 
 // DeployComposeRequest is sent from backend to agent
@@ -25,11 +24,11 @@ type DeployComposeRequest struct {
 	DeploymentID        string                       `json:"deployment_id"`
 	ProjectName         string                       `json:"project_name"`
 	ComposeContent      string                       `json:"compose_content"`
-	Environment         map[string]string            `json:"environment,omitempty"`
-	Action              string                       `json:"action"`         // "up", "down", "restart"
-	RemoveVolumes       bool                         `json:"remove_volumes"` // Only for "down" action, default false
-	ForceRecreate       bool                         `json:"force_recreate,omitempty"` // Force recreate containers
-	PullImages          bool                         `json:"pull_images,omitempty"`    // Pull images before starting
+	EnvFileContent      string                       `json:"env_file_content,omitempty"` // Raw .env file content
+	Action              string                       `json:"action"`                     // "up", "down", "restart"
+	RemoveVolumes       bool                         `json:"remove_volumes"`             // Only for "down" action, default false
+	ForceRecreate       bool                         `json:"force_recreate,omitempty"`   // Force recreate containers
+	PullImages          bool                         `json:"pull_images,omitempty"`      // Pull images before starting
 	Profiles            []string                     `json:"profiles,omitempty"`
 	WaitForHealthy      bool                         `json:"wait_for_healthy,omitempty"`
 	HealthTimeout       int                          `json:"health_timeout,omitempty"`
@@ -53,18 +52,20 @@ func NewDeployHandler(
 	dockerClient *docker.Client,
 	log *logrus.Logger,
 	sendEvent func(string, interface{}) error,
+	stacksDir string,
 ) (*DeployHandler, error) {
 	// Test that we can create a compose service (validates library availability)
 	if err := compose.TestComposeLibrary(); err != nil {
 		return nil, fmt.Errorf("Docker Compose library not available: %w", err)
 	}
 
-	log.Info("Deploy handler initialized using Docker Compose Go library")
+	log.WithField("stacks_dir", stacksDir).Info("Deploy handler initialized using Docker Compose Go library")
 
 	return &DeployHandler{
 		dockerClient: dockerClient,
 		log:          log,
 		sendEvent:    sendEvent,
+		stacksDir:    stacksDir,
 	}, nil
 }
 
@@ -97,7 +98,7 @@ func (h *DeployHandler) DeployCompose(ctx context.Context, req DeployComposeRequ
 		DeploymentID:        req.DeploymentID,
 		ProjectName:         req.ProjectName,
 		ComposeYAML:         req.ComposeContent,
-		Environment:         req.Environment,
+		EnvFileContent:      req.EnvFileContent,
 		Profiles:            req.Profiles,
 		Action:              req.Action,
 		RemoveVolumes:       req.RemoveVolumes,
@@ -106,6 +107,7 @@ func (h *DeployHandler) DeployCompose(ctx context.Context, req DeployComposeRequ
 		WaitForHealthy:      req.WaitForHealthy,
 		HealthTimeout:       req.HealthTimeout,
 		RegistryCredentials: req.RegistryCredentials,
+		StacksDir:           h.stacksDir,
 	}
 
 	// Execute deployment using shared package

@@ -491,97 +491,6 @@ class AgentContainerOperations:
                 detail=f"Failed to create container: {result.error}"
             )
 
-    async def list_networks(self, host_id: str) -> List[Dict[str, Any]]:
-        """
-        List Docker networks via agent.
-
-        Args:
-            host_id: Docker host ID
-
-        Returns:
-            List of network dicts
-
-        Raises:
-            HTTPException: If agent not found or command fails
-        """
-        agent_id = self._get_agent_for_host(host_id)
-        if not agent_id:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No agent registered for host {host_id}"
-            )
-
-        command = {
-            "type": "container_operation",
-            "payload": {
-                "action": "list_networks"
-            }
-        }
-
-        result = await self.command_executor.execute_command(
-            agent_id,
-            command,
-            timeout=15.0
-        )
-
-        if result.status == CommandStatus.SUCCESS:
-            return result.response.get("networks", [])
-        else:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to list networks: {result.error}"
-            )
-
-    async def create_network(
-        self,
-        host_id: str,
-        name: str,
-        driver: str = "bridge"
-    ) -> str:
-        """
-        Create Docker network via agent.
-
-        Args:
-            host_id: Docker host ID
-            name: Network name
-            driver: Network driver (default: bridge)
-
-        Returns:
-            Network ID
-
-        Raises:
-            HTTPException: If agent not found or command fails
-        """
-        agent_id = self._get_agent_for_host(host_id)
-        if not agent_id:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No agent registered for host {host_id}"
-            )
-
-        command = {
-            "type": "container_operation",
-            "payload": {
-                "action": "create_network",
-                "name": name,
-                "driver": driver
-            }
-        }
-
-        result = await self.command_executor.execute_command(
-            agent_id,
-            command,
-            timeout=30.0
-        )
-
-        if result.status == CommandStatus.SUCCESS:
-            return result.response.get("network_id", "")
-        else:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to create network: {result.error}"
-            )
-
     async def list_volumes(self, host_id: str) -> List[Dict[str, Any]]:
         """
         List Docker volumes via agent.
@@ -603,20 +512,19 @@ class AgentContainerOperations:
             )
 
         command = {
-            "type": "container_operation",
-            "payload": {
-                "action": "list_volumes"
-            }
+            "type": "command",
+            "command": "list_volumes",
+            "payload": {}
         }
 
         result = await self.command_executor.execute_command(
             agent_id,
             command,
-            timeout=15.0
+            timeout=30.0
         )
 
         if result.status == CommandStatus.SUCCESS:
-            return result.response.get("volumes", [])
+            return result.response
         else:
             raise HTTPException(
                 status_code=500,
@@ -645,9 +553,9 @@ class AgentContainerOperations:
             )
 
         command = {
-            "type": "container_operation",
+            "type": "command",
+            "command": "create_volume",
             "payload": {
-                "action": "create_volume",
                 "name": name
             }
         }
@@ -659,7 +567,7 @@ class AgentContainerOperations:
         )
 
         if result.status == CommandStatus.SUCCESS:
-            return result.response.get("volume_name", name)
+            return result.response.get("name", name)
         else:
             raise HTTPException(
                 status_code=500,
@@ -869,3 +777,445 @@ class AgentContainerOperations:
 
             except Exception as e:
                 logger.error(f"Error logging container action to database: {e}", exc_info=True)
+
+    # ==================== Image Operations ====================
+    #
+    # Note: Image operations use a different message format than container operations:
+    #
+    # Container operations:
+    #   {"type": "container_operation", "payload": {"action": "start", "container_id": "..."}}
+    #
+    # Image operations:
+    #   {"type": "command", "command": "list_images", "payload": {...}}
+    #
+    # This difference exists because image operations were added later using the
+    # generic command infrastructure, while container operations predate it.
+
+    async def list_images(self, host_id: str) -> List[Dict[str, Any]]:
+        """
+        List all images on a host via agent.
+
+        Args:
+            host_id: Docker host ID
+
+        Returns:
+            List of image info dicts with keys: id, tags, size, created, in_use, container_count, dangling
+
+        Raises:
+            HTTPException: If agent not found or command fails
+        """
+        agent_id = self._get_agent_for_host(host_id)
+        if not agent_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No agent registered for host {host_id}"
+            )
+
+        command = {
+            "type": "command",
+            "command": "list_images",
+            "payload": {}
+        }
+
+        result = await self.command_executor.execute_command(
+            agent_id,
+            command,
+            timeout=30.0
+        )
+
+        if result.status == CommandStatus.SUCCESS:
+            return result.response if result.response else []
+        elif result.status == CommandStatus.TIMEOUT:
+            raise HTTPException(
+                status_code=504,
+                detail=f"Timeout listing images on host {host_id}"
+            )
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to list images: {result.error}"
+            )
+
+    async def remove_image(self, host_id: str, image_id: str, force: bool = False) -> bool:
+        """
+        Remove an image via agent.
+
+        Args:
+            host_id: Docker host ID
+            image_id: Image ID (short or full)
+            force: Force remove even if in use
+
+        Returns:
+            True if removed successfully
+
+        Raises:
+            HTTPException: If agent not found or command fails
+        """
+        agent_id = self._get_agent_for_host(host_id)
+        if not agent_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No agent registered for host {host_id}"
+            )
+
+        command = {
+            "type": "command",
+            "command": "remove_image",
+            "payload": {
+                "image_id": image_id,
+                "force": force
+            }
+        }
+
+        result = await self.command_executor.execute_command(
+            agent_id,
+            command,
+            timeout=60.0
+        )
+
+        if result.status == CommandStatus.SUCCESS:
+            logger.info(f"Removed image {image_id} from agent host {host_id}")
+            return True
+        elif result.status == CommandStatus.TIMEOUT:
+            raise HTTPException(
+                status_code=504,
+                detail=f"Timeout removing image {image_id} on host {host_id}"
+            )
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to remove image: {result.error}"
+            )
+
+    async def prune_images(self, host_id: str) -> Dict[str, Any]:
+        """
+        Prune unused images via agent.
+
+        Args:
+            host_id: Docker host ID
+
+        Returns:
+            Dict with removed_count and space_reclaimed
+
+        Raises:
+            HTTPException: If agent not found or command fails
+        """
+        agent_id = self._get_agent_for_host(host_id)
+        if not agent_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No agent registered for host {host_id}"
+            )
+
+        command = {
+            "type": "command",
+            "command": "prune_images",
+            "payload": {}
+        }
+
+        result = await self.command_executor.execute_command(
+            agent_id,
+            command,
+            timeout=120.0  # Pruning can take a while
+        )
+
+        if result.status == CommandStatus.SUCCESS:
+            data = result.response or {}
+            removed_count = data.get('removed_count', 0)
+            space_reclaimed = data.get('space_reclaimed', 0)
+            logger.info(f"Pruned {removed_count} images from agent host {host_id}, reclaimed {space_reclaimed} bytes")
+            return {
+                'removed_count': removed_count,
+                'space_reclaimed': space_reclaimed
+            }
+        elif result.status == CommandStatus.TIMEOUT:
+            raise HTTPException(
+                status_code=504,
+                detail=f"Timeout pruning images on host {host_id}"
+            )
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to prune images: {result.error}"
+            )
+
+    # ==================== Network Operations ====================
+
+    async def list_networks(self, host_id: str) -> List[Dict[str, Any]]:
+        """
+        List all networks on a host via agent.
+
+        Args:
+            host_id: Docker host ID
+
+        Returns:
+            List of network info dicts with keys: id, name, driver, scope, created,
+            internal, containers, container_count, is_builtin
+
+        Raises:
+            HTTPException: If agent not found or command fails
+        """
+        agent_id = self._get_agent_for_host(host_id)
+        if not agent_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No agent registered for host {host_id}"
+            )
+
+        command = {
+            "type": "command",
+            "command": "list_networks",
+            "payload": {}
+        }
+
+        result = await self.command_executor.execute_command(
+            agent_id,
+            command,
+            timeout=30.0
+        )
+
+        if result.status == CommandStatus.SUCCESS:
+            return result.response if result.response else []
+        elif result.status == CommandStatus.TIMEOUT:
+            raise HTTPException(
+                status_code=504,
+                detail=f"Timeout listing networks on host {host_id}"
+            )
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to list networks: {result.error}"
+            )
+
+    async def delete_network(self, host_id: str, network_id: str, force: bool = False) -> Dict[str, Any]:
+        """
+        Delete a network via agent.
+
+        Args:
+            host_id: Docker host ID
+            network_id: Network ID (short or full)
+            force: Force delete by disconnecting containers first
+
+        Returns:
+            Dict with success status and message
+
+        Raises:
+            HTTPException: If agent not found or command fails
+        """
+        # Normalize network ID to 12-char format (defense-in-depth)
+        network_id = network_id[:12]
+
+        agent_id = self._get_agent_for_host(host_id)
+        if not agent_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No agent registered for host {host_id}"
+            )
+
+        command = {
+            "type": "command",
+            "command": "delete_network",
+            "payload": {
+                "network_id": network_id,
+                "force": force
+            }
+        }
+
+        result = await self.command_executor.execute_command(
+            agent_id,
+            command,
+            timeout=60.0
+        )
+
+        if result.status == CommandStatus.SUCCESS:
+            data = result.response or {}
+            logger.info(f"Deleted network {network_id} from agent host {host_id}")
+            return {
+                "success": True,
+                "message": data.get('message', f"Network '{network_id}' deleted")
+            }
+        elif result.status == CommandStatus.TIMEOUT:
+            raise HTTPException(
+                status_code=504,
+                detail=f"Timeout deleting network {network_id} on host {host_id}"
+            )
+        else:
+            # Check for specific error types
+            error_msg = result.error or "Unknown error"
+            if "built-in" in error_msg.lower() or "cannot delete" in error_msg.lower():
+                raise HTTPException(status_code=400, detail=error_msg)
+            elif "connected container" in error_msg.lower() or "in use" in error_msg.lower():
+                raise HTTPException(status_code=409, detail=error_msg)
+            elif "not found" in error_msg.lower():
+                raise HTTPException(status_code=404, detail=error_msg)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to delete network: {error_msg}"
+            )
+
+    async def prune_networks(self, host_id: str) -> Dict[str, Any]:
+        """
+        Prune unused networks via agent.
+
+        Args:
+            host_id: Docker host ID
+
+        Returns:
+            Dict with removed_count and networks_removed list
+
+        Raises:
+            HTTPException: If agent not found or command fails
+        """
+        agent_id = self._get_agent_for_host(host_id)
+        if not agent_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No agent registered for host {host_id}"
+            )
+
+        command = {
+            "type": "command",
+            "command": "prune_networks",
+            "payload": {}
+        }
+
+        result = await self.command_executor.execute_command(
+            agent_id,
+            command,
+            timeout=60.0
+        )
+
+        if result.status == CommandStatus.SUCCESS:
+            data = result.response or {}
+            removed_count = data.get('removed_count', 0)
+            networks_removed = data.get('networks_removed', [])
+            logger.info(f"Pruned {removed_count} networks from agent host {host_id}")
+            return {
+                'removed_count': removed_count,
+                'networks_removed': networks_removed
+            }
+        elif result.status == CommandStatus.TIMEOUT:
+            raise HTTPException(
+                status_code=504,
+                detail=f"Timeout pruning networks on host {host_id}"
+            )
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to prune networks: {result.error}"
+            )
+
+    async def delete_volume(self, host_id: str, volume_name: str, force: bool = False) -> Dict[str, Any]:
+        """
+        Delete a volume via agent.
+
+        Args:
+            host_id: Docker host ID
+            volume_name: Volume name
+            force: Force delete even if volume is in use
+
+        Returns:
+            Dict with success status and message
+
+        Raises:
+            HTTPException: If agent not found or command fails
+        """
+        agent_id = self._get_agent_for_host(host_id)
+        if not agent_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No agent registered for host {host_id}"
+            )
+
+        command = {
+            "type": "command",
+            "command": "delete_volume",
+            "payload": {
+                "volume_name": volume_name,
+                "force": force
+            }
+        }
+
+        result = await self.command_executor.execute_command(
+            agent_id,
+            command,
+            timeout=60.0
+        )
+
+        if result.status == CommandStatus.SUCCESS:
+            data = result.response or {}
+            logger.info(f"Deleted volume {volume_name} from agent host {host_id}")
+            return {
+                "success": True,
+                "message": data.get('message', f"Volume '{volume_name}' deleted")
+            }
+        elif result.status == CommandStatus.TIMEOUT:
+            raise HTTPException(
+                status_code=504,
+                detail=f"Timeout deleting volume {volume_name} on host {host_id}"
+            )
+        else:
+            # Check for specific error types
+            error_msg = result.error or "Unknown error"
+            if "in use" in error_msg.lower() or "being used" in error_msg.lower():
+                raise HTTPException(status_code=409, detail=error_msg)
+            elif "not found" in error_msg.lower():
+                raise HTTPException(status_code=404, detail=error_msg)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to delete volume: {error_msg}"
+            )
+
+    async def prune_volumes(self, host_id: str) -> Dict[str, Any]:
+        """
+        Prune unused volumes via agent.
+
+        Args:
+            host_id: Docker host ID
+
+        Returns:
+            Dict with removed_count, space_reclaimed, and volumes_removed list
+
+        Raises:
+            HTTPException: If agent not found or command fails
+        """
+        agent_id = self._get_agent_for_host(host_id)
+        if not agent_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No agent registered for host {host_id}"
+            )
+
+        command = {
+            "type": "command",
+            "command": "prune_volumes",
+            "payload": {}
+        }
+
+        result = await self.command_executor.execute_command(
+            agent_id,
+            command,
+            timeout=60.0
+        )
+
+        if result.status == CommandStatus.SUCCESS:
+            data = result.response or {}
+            removed_count = data.get('removed_count', 0)
+            space_reclaimed = data.get('space_reclaimed', 0)
+            volumes_removed = data.get('volumes_removed', [])
+            logger.info(f"Pruned {removed_count} volumes from agent host {host_id}")
+            return {
+                'removed_count': removed_count,
+                'space_reclaimed': space_reclaimed,
+                'volumes_removed': volumes_removed
+            }
+        elif result.status == CommandStatus.TIMEOUT:
+            raise HTTPException(
+                status_code=504,
+                detail=f"Timeout pruning volumes on host {host_id}"
+            )
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to prune volumes: {result.error}"
+            )

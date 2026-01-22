@@ -214,7 +214,7 @@ services:
                         deployment_id="deploy-123",
                         compose_content=valid_compose,
                         project_name="test-project",
-                        environment={"ENV_VAR": "value"},
+                        env_file_content="ENV_VAR=value\nOTHER_VAR=test",
                         profiles=["dev", "debug"],
                         wait_for_healthy=True,
                         health_timeout=120,
@@ -230,7 +230,7 @@ services:
                     assert payload["deployment_id"] == "deploy-123"
                     assert payload["project_name"] == "test-project"
                     assert payload["action"] == "up"
-                    assert payload["environment"] == {"ENV_VAR": "value"}
+                    assert payload["env_file_content"] == "ENV_VAR=value\nOTHER_VAR=test"
                     assert payload["profiles"] == ["dev", "debug"]
                     assert payload["wait_for_healthy"] is True
                     assert payload["health_timeout"] == 120

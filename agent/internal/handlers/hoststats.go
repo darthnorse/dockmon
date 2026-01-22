@@ -13,10 +13,14 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// HostStatsHandler collects host-level metrics from /proc for systemd agents
+// HostStatsHandler collects host-level metrics from /proc (or /host/proc in container mode)
 type HostStatsHandler struct {
 	log      *logrus.Logger
 	sendJSON func(payload interface{}) error
+
+	// Paths to proc and sys filesystems (auto-detected)
+	procPath string // /proc or /host/proc
+	sysPath  string // /sys or /host/sys
 
 	// Previous values for calculating deltas
 	prevCPU  cpuStats
@@ -42,10 +46,28 @@ type netStats struct {
 }
 
 // NewHostStatsHandler creates a new host stats handler
+// Auto-detects /host/proc (container mode) vs /proc (systemd mode)
 func NewHostStatsHandler(log *logrus.Logger, sendJSON func(interface{}) error) *HostStatsHandler {
+	procPath := "/proc"
+	sysPath := "/sys"
+
+	// Check if /host/proc is available (container mode with host proc mounted)
+	if _, err := os.Stat("/host/proc/stat"); err == nil {
+		procPath = "/host/proc"
+		log.Info("Using /host/proc for host stats (container mode with mount)")
+	}
+
+	// Check if /host/sys is available (container mode with host sys mounted)
+	if _, err := os.Stat("/host/sys/class/net"); err == nil {
+		sysPath = "/host/sys"
+		log.Info("Using /host/sys for network stats (container mode with mount)")
+	}
+
 	return &HostStatsHandler{
 		log:      log,
 		sendJSON: sendJSON,
+		procPath: procPath,
+		sysPath:  sysPath,
 		prevNet:  make(map[string]netStats),
 	}
 }
@@ -105,11 +127,12 @@ func (h *HostStatsHandler) collect() {
 	}
 }
 
-// calculateCPUPercent reads /proc/stat and calculates CPU usage percentage
+// calculateCPUPercent reads /proc/stat (or /host/proc/stat) and calculates CPU usage percentage
 func (h *HostStatsHandler) calculateCPUPercent() float64 {
-	file, err := os.Open("/proc/stat")
+	statPath := filepath.Join(h.procPath, "stat")
+	file, err := os.Open(statPath)
 	if err != nil {
-		h.log.Errorf("Failed to open /proc/stat: %v", err)
+		h.log.Errorf("Failed to open %s: %v", statPath, err)
 		return 0
 	}
 	defer file.Close()
@@ -168,11 +191,12 @@ func (h *HostStatsHandler) calculateCPUPercent() float64 {
 	return 0
 }
 
-// calculateMemPercent reads /proc/meminfo and calculates memory usage percentage
+// calculateMemPercent reads /proc/meminfo (or /host/proc/meminfo) and calculates memory usage percentage
 func (h *HostStatsHandler) calculateMemPercent() float64 {
-	file, err := os.Open("/proc/meminfo")
+	meminfoPath := filepath.Join(h.procPath, "meminfo")
+	file, err := os.Open(meminfoPath)
 	if err != nil {
-		h.log.Errorf("Failed to open /proc/meminfo: %v", err)
+		h.log.Errorf("Failed to open %s: %v", meminfoPath, err)
 		return 0
 	}
 	defer file.Close()
@@ -206,7 +230,14 @@ func (h *HostStatsHandler) calculateMemPercent() float64 {
 		return 0
 	}
 
-	memUsed := memTotal - memAvailable
+	// Underflow protection - shouldn't happen but be defensive
+	var memUsed uint64
+	if memAvailable > memTotal {
+		memUsed = 0
+	} else {
+		memUsed = memTotal - memAvailable
+	}
+
 	return float64(memUsed) / float64(memTotal) * 100
 }
 
@@ -243,7 +274,7 @@ func (h *HostStatsHandler) calculateNetBytesPerSec(now time.Time) float64 {
 func (h *HostStatsHandler) readNetStats() map[string]netStats {
 	result := make(map[string]netStats)
 
-	netPath := "/sys/class/net"
+	netPath := filepath.Join(h.sysPath, "class", "net")
 	entries, err := os.ReadDir(netPath)
 	if err != nil {
 		h.log.Errorf("Failed to read %s: %v", netPath, err)
@@ -253,9 +284,15 @@ func (h *HostStatsHandler) readNetStats() map[string]netStats {
 	for _, entry := range entries {
 		iface := entry.Name()
 
-		// Skip loopback and virtual interfaces
-		if iface == "lo" || strings.HasPrefix(iface, "veth") || strings.HasPrefix(iface, "br-") ||
-			strings.HasPrefix(iface, "docker") {
+		// Skip virtual and container-related interfaces
+		// We want to count physical NICs, bonds, and VLANs but not Docker/container interfaces
+		if h.isVirtualInterface(iface) {
+			continue
+		}
+
+		// Only count interfaces that are up (operstate == "up" or "unknown")
+		// "unknown" is used by some drivers for interfaces that are up but don't report state
+		if !h.isInterfaceUp(iface) {
 			continue
 		}
 
@@ -271,8 +308,58 @@ func (h *HostStatsHandler) readNetStats() map[string]netStats {
 	return result
 }
 
+// isVirtualInterface returns true if the interface is a virtual/container interface
+func (h *HostStatsHandler) isVirtualInterface(iface string) bool {
+	// Skip loopback
+	if iface == "lo" {
+		return true
+	}
+
+	// Skip Docker/container virtual interfaces
+	virtualPrefixes := []string{
+		"veth",    // Docker veth pairs
+		"br-",     // Docker bridge networks
+		"docker",  // Docker default bridge
+		"virbr",   // libvirt bridges
+		"vnet",    // libvirt/KVM vnet interfaces
+		"tun",     // VPN tunnels
+		"tap",     // TAP devices
+		"dummy",   // Dummy interfaces
+		"gre",     // GRE tunnels
+		"sit",     // IPv6-in-IPv4 tunnels
+		"ip6tnl",  // IPv6 tunnels
+		"vxlan",   // VXLAN interfaces
+		"flannel", // Kubernetes flannel
+		"cni",     // Kubernetes CNI
+		"cali",    // Calico interfaces
+		"weave",   // Weave interfaces
+	}
+
+	for _, prefix := range virtualPrefixes {
+		if strings.HasPrefix(iface, prefix) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// isInterfaceUp checks if the interface operstate is "up" or "unknown"
+func (h *HostStatsHandler) isInterfaceUp(iface string) bool {
+	operstateFile := filepath.Join(h.sysPath, "class", "net", iface, "operstate")
+	data, err := os.ReadFile(operstateFile)
+	if err != nil {
+		// If we can't read operstate, assume it's up (conservative)
+		return true
+	}
+
+	state := strings.TrimSpace(string(data))
+	// "up" = interface is up, "unknown" = driver doesn't report state (treat as up)
+	return state == "up" || state == "unknown"
+}
+
 func (h *HostStatsHandler) readNetStat(iface, stat string) uint64 {
-	path := filepath.Join("/sys/class/net", iface, "statistics", stat)
+	path := filepath.Join(h.sysPath, "class", "net", iface, "statistics", stat)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return 0

@@ -214,6 +214,7 @@ class GlobalSettingsUpdate(BaseModel):
     show_host_stats: Optional[bool] = None
     show_container_stats: Optional[bool] = None
     show_container_alerts_on_hosts: Optional[bool] = None
+    editor_theme: Optional[str] = Field(None, pattern="^(github-dark|vscode-dark|dracula|material-dark|nord|atomone|aura|andromeda|copilot|gruvbox-dark|monokai|solarized-dark|sublime|tokyo-night|tokyo-night-storm|okaidia|abyss|kimbie)$", description="Editor theme for YAML/JSON editing")
 
     # Update settings
     auto_update_enabled_default: Optional[bool] = None

@@ -285,7 +285,7 @@ class TestReadStack:
         stack_dir = temp_stacks_dir / "empty"
         stack_dir.mkdir()
 
-        with pytest.raises(FileNotFoundError, match="missing compose.yaml"):
+        with pytest.raises(FileNotFoundError, match="not found"):
             await read_stack("empty")
 
 

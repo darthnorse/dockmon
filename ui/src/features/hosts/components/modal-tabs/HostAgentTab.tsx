@@ -23,6 +23,8 @@ import {
 import { Button } from '@/components/ui/button'
 import { apiClient } from '@/lib/api/client'
 import { cn } from '@/lib/utils'
+import { useTimeFormat } from '@/lib/hooks/useUserPreferences'
+import { formatDateTime } from '@/lib/utils/timeFormat'
 
 interface HostAgentTabProps {
   hostId: string
@@ -42,6 +44,7 @@ interface AgentInfo {
 }
 
 export function HostAgentTab({ hostId }: HostAgentTabProps) {
+  const { timeFormat } = useTimeFormat()
   const queryClient = useQueryClient()
   const [updateTriggered, setUpdateTriggered] = useState(false)
 
@@ -94,7 +97,7 @@ export function HostAgentTab({ hostId }: HostAgentTabProps) {
   }
 
   const lastSeenDate = agent.last_seen_at
-    ? new Date(agent.last_seen_at).toLocaleString()
+    ? formatDateTime(agent.last_seen_at, timeFormat)
     : 'Never'
 
   return (

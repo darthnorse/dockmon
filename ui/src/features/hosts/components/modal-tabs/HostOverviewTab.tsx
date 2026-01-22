@@ -19,6 +19,8 @@ import { Button } from '@/components/ui/button'
 import { useHostTagEditor } from '@/hooks/useHostTagEditor'
 import { useHostEvents } from '@/hooks/useEvents'
 import { apiClient } from '@/lib/api/client'
+import { useTimeFormat } from '@/lib/hooks/useUserPreferences'
+import { formatTime } from '@/lib/utils/timeFormat'
 import type { Host } from '@/types/api'
 
 interface HostOverviewTabProps {
@@ -39,6 +41,7 @@ interface AgentInfo {
 }
 
 export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
+  const { timeFormat } = useTimeFormat()
   const queryClient = useQueryClient()
   const [updateTriggered, setUpdateTriggered] = useState(false)
 
@@ -309,7 +312,7 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
                     {events.map((event) => (
                       <div key={event.id} className="px-3 py-2 grid grid-cols-[60px_60px_1fr] sm:grid-cols-[80px_70px_1fr] gap-2 text-xs hover:bg-surface-2 transition-colors">
                         <div className="font-mono text-muted-foreground truncate">
-                          {new Date(event.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
+                          {formatTime(event.timestamp, timeFormat)}
                         </div>
                         <div className={`font-medium ${
                           event.severity === 'critical' ? 'text-red-500' :

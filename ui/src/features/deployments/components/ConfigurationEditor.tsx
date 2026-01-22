@@ -9,14 +9,83 @@
  * - DeploymentForm (create/edit deployments)
  */
 
-import { useState, useImperativeHandle, forwardRef } from 'react'
+import { useState, useImperativeHandle, forwardRef, useCallback, useMemo } from 'react'
 import { Wand2, CheckCircle2 } from 'lucide-react'
 import yaml from 'js-yaml'
-import { Textarea } from '@/components/ui/textarea'
+import CodeMirror from '@uiw/react-codemirror'
+import { yaml as yamlLang } from '@codemirror/lang-yaml'
+import { json as jsonLang } from '@codemirror/lang-json'
+import * as themes from '@uiw/codemirror-themes-all'
 import { Button } from '@/components/ui/button'
+import { useGlobalSettings } from '@/hooks/useSettings'
+
+// Type guard for services object
+function isServicesRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+/**
+ * Validate compose-specific requirements
+ * Returns error if invalid, warning if there's a non-blocking issue, null otherwise
+ */
+function validateComposeContent(parsed: unknown): { error?: string; warning?: string } {
+  if (!parsed || typeof parsed !== 'object') {
+    return { error: 'Compose file must be a valid YAML object' }
+  }
+
+  const compose = parsed as Record<string, unknown>
+
+  // Check for required 'services' section
+  if (!('services' in compose) || !compose.services) {
+    return { error: "Compose file must contain a 'services' section" }
+  }
+
+  // Verify services is an object (not array or primitive)
+  if (!isServicesRecord(compose.services)) {
+    return { error: "'services' must be an object containing service definitions" }
+  }
+
+  // Check for 'build' directives (warning - works locally but not on agent hosts)
+  const servicesWithBuild: string[] = []
+  for (const [serviceName, serviceConfig] of Object.entries(compose.services)) {
+    if (isServicesRecord(serviceConfig) && 'build' in serviceConfig) {
+      servicesWithBuild.push(serviceName)
+    }
+  }
+
+  if (servicesWithBuild.length > 0) {
+    return {
+      warning: `Warning: 'build' directive found in service(s): ${servicesWithBuild.join(', ')}. This will not work on agent-based hosts.`
+    }
+  }
+
+  return {}
+}
+
+// Theme mapping for CodeMirror (dark themes only)
+const EDITOR_THEMES = {
+  'github-dark': themes.githubDark,
+  'vscode-dark': themes.vscodeDark,
+  'dracula': themes.dracula,
+  'material-dark': themes.materialDark,
+  'nord': themes.nord,
+  'atomone': themes.atomone,
+  'aura': themes.aura,
+  'andromeda': themes.andromeda,
+  'copilot': themes.copilot,
+  'gruvbox-dark': themes.gruvboxDark,
+  'monokai': themes.monokai,
+  'solarized-dark': themes.solarizedDark,
+  'sublime': themes.sublime,
+  'tokyo-night': themes.tokyoNight,
+  'tokyo-night-storm': themes.tokyoNightStorm,
+  'okaidia': themes.okaidia,
+  'abyss': themes.abyss,
+  'kimbie': themes.kimbie,
+} as const
 
 interface ConfigurationEditorProps {
-  type: 'container' | 'stack'
+  type: 'container' | 'stack' | 'env'
   value: string
   onChange: (value: string) => void
   mode?: 'json'  // Future: add 'form' mode for structured editing
@@ -51,23 +120,45 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
 }, ref) => {
   const [formatStatus, setFormatStatus] = useState<'idle' | 'success' | 'error'>('idle')
   const [validationError, setValidationError] = useState<string | null>(null)
+  const [validationWarning, setValidationWarning] = useState<string | null>(null)
+  const { data: globalSettings } = useGlobalSettings()
+
+  // Get the selected theme (memoized to avoid recreation on every render)
+  const editorTheme = useMemo(() => {
+    const themeName = globalSettings?.editor_theme ?? 'aura'
+    return EDITOR_THEMES[themeName as keyof typeof EDITOR_THEMES] ?? themes.githubDark
+  }, [globalSettings?.editor_theme])
+
+  // Stable callback for CodeMirror onChange - clears validation state when user edits
+  const handleChange = useCallback((val: string) => {
+    onChange(val)
+    // Clear validation state when content changes - user may have fixed the issue
+    setValidationError(null)
+    setValidationWarning(null)
+    setFormatStatus('idle')
+  }, [onChange])
 
   /**
    * Validate content without formatting
    * Returns validation result for form submission
    * Note: Use format() function for auto-fix with corrected content
    */
-  const validateContent = (): { valid: boolean; error: string | null } => {
+  const validateContent = (): { valid: boolean; error: string | null; warning?: string } => {
     if (!value.trim()) {
       return { valid: true, error: null } // Empty is valid (will be caught by form validation)
+    }
+
+    // Env files don't need validation
+    if (type === 'env') {
+      return { valid: true, error: null }
     }
 
     try {
       if (type === 'stack') {
         // Try parsing YAML as-is
+        let parsed: unknown
         try {
-          yaml.load(value)
-          return { valid: true, error: null }
+          parsed = yaml.load(value)
         } catch (firstErr: unknown) {
           const firstErrMsg = firstErr instanceof Error ? firstErr.message : String(firstErr)
           // If parsing failed with indentation error, try auto-fix
@@ -77,15 +168,27 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
 
             if (fixedYaml) {
               try {
-                yaml.load(fixedYaml)
-                return { valid: true, error: null }
+                parsed = yaml.load(fixedYaml)
               } catch {
                 return { valid: false, error: firstErrMsg }
               }
+            } else {
+              return { valid: false, error: firstErrMsg }
             }
+          } else {
+            return { valid: false, error: firstErrMsg }
           }
-          return { valid: false, error: firstErrMsg }
         }
+
+        // Compose-specific validation using shared helper
+        const composeResult = validateComposeContent(parsed)
+        if (composeResult.error) {
+          return { valid: false, error: composeResult.error }
+        }
+        if (composeResult.warning) {
+          return { valid: true, error: null, warning: composeResult.warning }
+        }
+        return { valid: true, error: null }
       } else {
         // Validate JSON
         JSON.parse(value)
@@ -101,6 +204,11 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
   const formatContent = (): string | null => {
     if (!value.trim()) {
       return null
+    }
+
+    // Env files - just trim trailing whitespace from lines
+    if (type === 'env') {
+      return value.split('\n').map(line => line.trimEnd()).join('\n')
     }
 
     try {
@@ -268,10 +376,33 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
     if (formatted) {
       onChange(formatted)
       setValidationError(null)
+      setValidationWarning(null)
+
+      // Run compose-specific validation on formatted content
+      if (type === 'stack') {
+        try {
+          const parsed = yaml.load(formatted)
+          const composeResult = validateComposeContent(parsed)
+          if (composeResult.error) {
+            setValidationError(composeResult.error)
+            setFormatStatus('error')
+            setTimeout(() => setFormatStatus('idle'), 2000)
+            return
+          }
+          if (composeResult.warning) {
+            // Strip "Warning: " prefix for display (helper adds it)
+            setValidationWarning(composeResult.warning.replace(/^Warning:\s*/, ''))
+          }
+        } catch {
+          // YAML parsing error - shouldn't happen since formatContent succeeded
+        }
+      }
+
       setFormatStatus('success')
       setTimeout(() => setFormatStatus('idle'), 2000)
     } else {
       setValidationError('Invalid format - could not auto-fix')
+      setValidationWarning(null)
       setFormatStatus('error')
       setTimeout(() => setFormatStatus('idle'), 2000)
 
@@ -287,6 +418,17 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
           if (errMsg.includes('bad indentation')) {
             helpfulMessage += '\n\nTip: Root-level keys (services, volumes, networks) must have NO indentation (column 0).'
           }
+        }
+
+        // Also check for compose-specific issues (missing services, etc.)
+        try {
+          const parsed = yaml.load(value)
+          const composeResult = validateComposeContent(parsed)
+          if (composeResult.error) {
+            helpfulMessage = composeResult.error
+          }
+        } catch {
+          // Keep the YAML error message
         }
 
         setValidationError(helpfulMessage)
@@ -321,13 +463,19 @@ services:
 
 networks:
   default:
-    driver: bridge`
+    driver: bridge`,
+
+    env: `# Environment variables for your stack
+DATABASE_URL=postgres://user:pass@localhost:5432/db
+API_KEY=your-secret-key
+DEBUG=false`
   }
 
   // Type-specific help text
   const helpText = {
     container: 'Container deployment JSON: specify image, ports, volumes, environment variables, and restart policy',
-    stack: 'Docker Compose YAML: define multiple services, networks, and volumes in YAML format'
+    stack: 'Docker Compose YAML: define multiple services, networks, and volumes in YAML format',
+    env: 'Environment variables in KEY=value format, one per line. Lines starting with # are comments.'
   }
 
   return (
@@ -361,30 +509,21 @@ networks:
         </Button>
       </div>
 
-      <Textarea
+      <CodeMirror
         value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={(e) => {
-          // Allow Tab key to insert spaces instead of moving focus (Issue #126)
-          if (e.key === 'Tab') {
-            e.preventDefault()
-            const target = e.target as HTMLTextAreaElement
-            const start = target.selectionStart
-            const end = target.selectionEnd
-
-            // Insert 2 spaces at cursor position
-            const newValue = value.substring(0, start) + '  ' + value.substring(end)
-            onChange(newValue)
-
-            // Move cursor after the inserted spaces
-            requestAnimationFrame(() => {
-              target.selectionStart = target.selectionEnd = start + 2
-            })
-          }
-        }}
+        onChange={handleChange}
+        extensions={type === 'stack' ? [yamlLang()] : type === 'container' ? [jsonLang()] : []}
+        theme={editorTheme}
         placeholder={placeholders[type]}
-        rows={fillHeight ? undefined : rows}
-        className={`font-mono text-sm ${fillHeight ? 'flex-1 min-h-0 resize-none' : ''} ${error || validationError ? 'border-destructive' : ''} ${className}`}
+        height={fillHeight ? '100%' : `${rows * 1.5}rem`}
+        basicSetup={{
+          lineNumbers: true,
+          foldGutter: true,
+          highlightActiveLine: true,
+          indentOnInput: true,
+          tabSize: 2,
+        }}
+        className={`rounded-md border ${error || validationError ? 'border-destructive' : 'border-input'} ${fillHeight ? 'flex-1 min-h-0' : ''} ${className}`}
       />
 
       {/* Help text */}
@@ -396,6 +535,13 @@ networks:
       {validationError && (
         <p className={`text-xs text-destructive ${fillHeight ? 'shrink-0' : ''}`}>
           {validationError}
+        </p>
+      )}
+
+      {/* Validation warning (from Format button) */}
+      {validationWarning && !validationError && (
+        <p className={`text-xs text-warning ${fillHeight ? 'shrink-0' : ''}`}>
+          {validationWarning}
         </p>
       )}
 

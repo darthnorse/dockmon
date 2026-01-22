@@ -1,0 +1,55 @@
+/**
+ * ANSI Color Classes for Log Viewer
+ *
+ * Colors match the terminal theme from ContainerShellTab.tsx for consistency.
+ * These classes are used by the ansiToHtml() utility to style terminal output.
+ *
+ * Note: 256-color mode (38;5;N and 48;5;N) uses inline styles instead of
+ * CSS classes for full color support without generating 240+ classes.
+ */
+
+/* ===== Standard Foreground Colors (30-37) ===== */
+.ansi-fg-black { color: #18181b; }
+.ansi-fg-red { color: #ef4444; }
+.ansi-fg-green { color: #22c55e; }
+.ansi-fg-yellow { color: #eab308; }
+.ansi-fg-blue { color: #3b82f6; }
+.ansi-fg-magenta { color: #a855f7; }
+.ansi-fg-cyan { color: #06b6d4; }
+.ansi-fg-white { color: #e4e4e7; }
+
+/* ===== Bright Foreground Colors (90-97) ===== */
+.ansi-fg-bright-black { color: #71717a; }
+.ansi-fg-bright-red { color: #f87171; }
+.ansi-fg-bright-green { color: #4ade80; }
+.ansi-fg-bright-yellow { color: #facc15; }
+.ansi-fg-bright-blue { color: #60a5fa; }
+.ansi-fg-bright-magenta { color: #c084fc; }
+.ansi-fg-bright-cyan { color: #22d3ee; }
+.ansi-fg-bright-white { color: #fafafa; }
+
+/* ===== Standard Background Colors (40-47) ===== */
+.ansi-bg-black { background-color: #18181b; }
+.ansi-bg-red { background-color: #ef4444; }
+.ansi-bg-green { background-color: #22c55e; }
+.ansi-bg-yellow { background-color: #eab308; }
+.ansi-bg-blue { background-color: #3b82f6; }
+.ansi-bg-magenta { background-color: #a855f7; }
+.ansi-bg-cyan { background-color: #06b6d4; }
+.ansi-bg-white { background-color: #e4e4e7; }
+
+/* ===== Bright Background Colors (100-107) ===== */
+.ansi-bg-bright-black { background-color: #71717a; }
+.ansi-bg-bright-red { background-color: #f87171; }
+.ansi-bg-bright-green { background-color: #4ade80; }
+.ansi-bg-bright-yellow { background-color: #facc15; }
+.ansi-bg-bright-blue { background-color: #60a5fa; }
+.ansi-bg-bright-magenta { background-color: #c084fc; }
+.ansi-bg-bright-cyan { background-color: #22d3ee; }
+.ansi-bg-bright-white { background-color: #fafafa; }
+
+/* ===== Text Styles ===== */
+.ansi-bold { font-weight: bold; }
+.ansi-dim { opacity: 0.7; }
+.ansi-italic { font-style: italic; }
+.ansi-underline { text-decoration: underline; }

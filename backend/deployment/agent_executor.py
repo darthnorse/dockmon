@@ -241,7 +241,7 @@ class AgentDeploymentExecutor:
         deployment_id: str,
         compose_content: str,
         project_name: str,
-        environment: Optional[Dict[str, str]] = None,
+        env_file_content: Optional[str] = None,
         profiles: Optional[list[str]] = None,
         force_recreate: bool = False,
         pull_images: bool = False,
@@ -262,7 +262,7 @@ class AgentDeploymentExecutor:
             deployment_id: Deployment composite ID
             compose_content: Docker Compose YAML content
             project_name: Compose project name
-            environment: Optional environment variables dict
+            env_file_content: Optional raw .env file content (written to temp dir for env_file: .env)
             profiles: Optional list of compose profiles to activate
             force_recreate: Force recreate containers even if unchanged
             pull_images: Pull images before starting (for redeploy)
@@ -279,8 +279,10 @@ class AgentDeploymentExecutor:
         is_valid, error = validate_compose_for_agent(compose_content)
         if not is_valid:
             logger.error(f"Compose validation failed for deployment {deployment_id}: {error}")
-            await self._update_deployment_status(
-                deployment_id, "failed", error_message=error
+            # Transient deployments (format: host_id:stack_name:uuid) don't have DB records
+            # Broadcast error via WebSocket instead of trying to update non-existent record
+            await self._report_deployment_status(
+                deployment_id, "failed", f"Validation failed: {error}", error=error
             )
             return False
 
@@ -289,8 +291,8 @@ class AgentDeploymentExecutor:
             agent_id = self._get_agent_id_for_host(host_id)
         except ValueError as e:
             logger.error(f"Failed to get agent for host {host_id}: {e}")
-            await self._update_deployment_status(
-                deployment_id, "failed", error_message=str(e)
+            await self._report_deployment_status(
+                deployment_id, "failed", f"Agent not found: {e}", error=str(e)
             )
             return False
 
@@ -313,7 +315,7 @@ class AgentDeploymentExecutor:
                 "deployment_id": deployment_id,
                 "project_name": project_name,
                 "compose_content": compose_content,
-                "environment": environment or {},
+                "env_file_content": env_file_content or "",
                 "action": "up",
                 "profiles": profiles or [],
                 "force_recreate": force_recreate,
@@ -330,8 +332,8 @@ class AgentDeploymentExecutor:
         )
 
         # Update deployment status to pulling/executing
-        await self._update_deployment_status(
-            deployment_id, "pulling_image", progress=10, stage="Sending to agent..."
+        await self._report_deployment_status(
+            deployment_id, "pulling_image", "Sending to agent...", progress=10
         )
 
         # Execute command with retry policy
@@ -352,8 +354,8 @@ class AgentDeploymentExecutor:
         if not result.success:
             error_msg = result.error or "Unknown error during deployment"
             logger.error(f"Deployment {deployment_id} failed: {error_msg}")
-            await self._update_deployment_status(
-                deployment_id, "failed", error_message=error_msg
+            await self._report_deployment_status(
+                deployment_id, "failed", f"Command failed: {error_msg}", error=error_msg
             )
             return False
 
@@ -857,6 +859,56 @@ class AgentDeploymentExecutor:
                 await self.monitor.manager.broadcast(payload)
         except Exception as e:
             logger.debug(f"Error broadcasting service progress: {e}")
+
+    @staticmethod
+    def _is_transient_deployment_id(deployment_id: str) -> bool:
+        """
+        Check if deployment ID has transient format (no DB record).
+
+        Transient deployments use format: {host_id}:{stack_name}:{uuid}
+        Persistent deployments use format: {uuid} (just a UUID, no colons)
+
+        This is a fast string-based check that avoids DB queries.
+        Use this for early validation failures where we don't want DB overhead.
+
+        Args:
+            deployment_id: Deployment ID to check
+
+        Returns:
+            True if ID has transient format (2+ colons), False otherwise
+        """
+        return deployment_id.count(':') >= 2
+
+    async def _report_deployment_status(
+        self,
+        deployment_id: str,
+        status: str,
+        message: str,
+        error: str = None,
+        progress: int = None
+    ) -> None:
+        """
+        Report deployment status via appropriate channel.
+
+        Automatically routes to WebSocket broadcast for transient deployments
+        or database update for persistent deployments.
+
+        Args:
+            deployment_id: Deployment ID
+            status: Status string (e.g., 'failed', 'pulling_image')
+            message: Human-readable message
+            error: Error message (for failure states)
+            progress: Progress percentage (for progress updates)
+        """
+        if self._is_transient_deployment_id(deployment_id):
+            if error or status == "failed":
+                await self._broadcast_transient_complete(deployment_id, status, message, error=error)
+            else:
+                await self._broadcast_transient_progress(deployment_id, status, progress or 0, message)
+        else:
+            await self._update_deployment_status(
+                deployment_id, status, error_message=error, progress=progress, stage=message
+            )
 
     async def _is_persistent_deployment(self, deployment_id: str) -> bool:
         """

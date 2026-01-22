@@ -132,6 +132,55 @@ export interface Container {
   docker_ips?: Record<string, string> | null  // All network IPs {network_name: ip}
 }
 
+// ==================== Docker Images ====================
+
+export interface DockerImage {
+  id: string               // 12-char short ID
+  tags: string[]           // e.g., ["nginx:latest"]
+  size: number             // Size in bytes
+  created: string          // ISO timestamp
+  in_use: boolean          // Whether any container uses this image
+  container_count: number  // Number of containers using this image
+  containers: Array<{      // Containers using this image
+    id: string
+    name: string
+  }>
+  dangling: boolean        // True if image has no tags
+}
+
+// ==================== Docker Networks ====================
+
+export interface DockerNetwork {
+  id: string                // 12-char short ID
+  name: string              // Network name
+  driver: string            // bridge, overlay, host, null, etc.
+  scope: string             // local, swarm, global
+  created: string           // ISO timestamp
+  internal: boolean         // Internal network (no external connectivity)
+  subnet: string            // IPAM subnet (e.g., "172.17.0.0/16")
+  containers: Array<{       // Connected containers
+    id: string
+    name: string
+  }>
+  container_count: number   // Number of connected containers
+  is_builtin: boolean       // True for bridge/host/none
+}
+
+// ==================== Docker Volumes ====================
+
+export interface DockerVolume {
+  name: string              // Volume name
+  driver: string            // Volume driver (local, etc.)
+  mountpoint: string        // Mount point on host
+  created: string           // ISO timestamp
+  containers: Array<{       // Containers using this volume
+    id: string
+    name: string
+  }>
+  container_count: number   // Number of containers using this volume
+  in_use: boolean           // Whether any container uses this volume
+}
+
 // ==================== Registry Credentials ====================
 
 export interface RegistryCredential {

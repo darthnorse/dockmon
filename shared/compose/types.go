@@ -9,9 +9,9 @@ type DeployRequest struct {
 	ProjectName  string `json:"project_name"`
 
 	// Compose content
-	ComposeYAML string            `json:"compose_yaml"`
-	Environment map[string]string `json:"environment,omitempty"`
-	Profiles    []string          `json:"profiles,omitempty"`
+	ComposeYAML    string   `json:"compose_yaml"`
+	EnvFileContent string   `json:"env_file_content,omitempty"` // Raw .env file content (written to stack dir)
+	Profiles       []string `json:"profiles,omitempty"`
 
 	// Action
 	Action        string `json:"action"`                   // "up", "down", "restart"
@@ -27,6 +27,12 @@ type DeployRequest struct {
 
 	// Timeout for the entire operation (seconds)
 	Timeout int `json:"timeout,omitempty"` // default 1800 (30 minutes)
+
+	// Persistent stack directory
+	// Compose files are written to $StacksDir/$ProjectName/ and kept after deployment.
+	// This allows relative bind mounts (./data) to persist across redeployments.
+	// If empty, defaults to /app/data/stacks (compose-service) or $DATA_PATH/stacks (agent).
+	StacksDir string `json:"stacks_dir,omitempty"`
 
 	// Docker connection (determines local vs remote)
 	// Empty DockerHost means use local socket

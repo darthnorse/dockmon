@@ -4,6 +4,8 @@ import { apiClient } from '@/lib/api/client'
 import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
 import { useQueryClient } from '@tanstack/react-query'
 import { debug } from '@/lib/debug'
+import { useTimeFormat } from '@/lib/hooks/useUserPreferences'
+import { formatTime } from '@/lib/utils/timeFormat'
 import type { WebSocketMessage } from '@/lib/websocket/useWebSocket'
 
 interface BatchJobStatus {
@@ -43,6 +45,7 @@ interface BatchJobPanelProps {
 }
 
 export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkActionBarOpen = false }: BatchJobPanelProps) {
+  const { timeFormat } = useTimeFormat()
   const [job, setJob] = useState<BatchJobStatus | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -110,6 +113,18 @@ export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkAc
 
             // Invalidate cache regardless of success/failure (shows current state)
             queryClient.invalidateQueries({ queryKey: ['containers'] })
+
+            // For delete-images action, invalidate host-images queries
+            if (action === 'delete-images') {
+              const items = (prev?.items || data.items) as BatchJobItem[] | undefined
+              if (items && items.length > 0) {
+                // Get unique host IDs from items
+                const hostIds = new Set(items.map((item: BatchJobItem) => item.host_id))
+                hostIds.forEach((hostId) => {
+                  queryClient.invalidateQueries({ queryKey: ['host-images', hostId] })
+                })
+              }
+            }
 
             // For auto-update and check-updates actions, also invalidate update-status queries
             // Force refetch even with staleTime: Infinity
@@ -216,6 +231,15 @@ export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkAc
     start: 'Starting',
     stop: 'Stopping',
     restart: 'Restarting',
+    'delete-images': 'Deleting images',
+    'delete-containers': 'Deleting containers',
+    'add-tags': 'Adding tags',
+    'remove-tags': 'Removing tags',
+    'set-auto-restart': 'Configuring auto-restart',
+    'set-auto-update': 'Configuring auto-update',
+    'set-desired-state': 'Setting desired state',
+    'check-updates': 'Checking for updates',
+    'update-containers': 'Updating containers',
   }
 
   const statusIcons = {
@@ -374,20 +398,7 @@ export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkAc
           <p className="text-xs text-muted-foreground text-center">
             {job.completed_at ? (
               <>
-                Completed at {(() => {
-                  const date = new Date(job.completed_at)
-                  // Validate date is valid
-                  if (isNaN(date.getTime())) {
-                    debug.error('BatchJobPanel', `Invalid completed_at timestamp: ${job.completed_at}`)
-                    return 'Invalid timestamp'
-                  }
-                  return date.toLocaleTimeString(undefined, {
-                    hour: 'numeric',
-                    minute: '2-digit',
-                    second: '2-digit',
-                    hour12: true
-                  })
-                })()}
+                Completed at {formatTime(job.completed_at, timeFormat, true)}
               </>
             ) : (
               'Completed'

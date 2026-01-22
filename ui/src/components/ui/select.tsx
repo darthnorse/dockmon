@@ -131,9 +131,13 @@ function SelectPortalContent({ children }: { children: React.ReactNode }) {
     }
   }, [open, triggerRef, children])
 
-  // Close dropdown on scroll (standard behavior)
+  // Close dropdown on scroll outside the menu (allow scrolling inside)
   React.useEffect(() => {
-    const handleScroll = () => {
+    const handleScroll = (event: Event) => {
+      // Don't close if scrolling inside the dropdown menu
+      if (menuRef.current && menuRef.current.contains(event.target as Node)) {
+        return
+      }
       setOpen(false)
     }
 

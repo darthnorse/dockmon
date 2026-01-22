@@ -9,6 +9,8 @@ import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Loader2, Server, CheckCircle2, XCircle, Clock } from 'lucide-react'
 import { useAgents } from '../hooks/useAgents'
+import { useTimeFormat } from '@/lib/hooks/useUserPreferences'
+import { formatDateTime } from '@/lib/utils/timeFormat'
 import type { Agent } from '../types'
 
 function AgentStatusBadge({ agent }: { agent: Agent }) {
@@ -39,10 +41,10 @@ function AgentStatusBadge({ agent }: { agent: Agent }) {
 }
 
 function AgentCard({ agent }: { agent: Agent }) {
+  const { timeFormat } = useTimeFormat()
   const formatDate = (isoString: string | null) => {
     if (!isoString) return 'Never'
-    const date = new Date(isoString)
-    return date.toLocaleString()
+    return formatDateTime(isoString, timeFormat)
   }
 
   return (

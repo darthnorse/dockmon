@@ -16,7 +16,9 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any
 from contextlib import asynccontextmanager
@@ -57,6 +59,7 @@ from event_logger import EventLogger, EventContext, EventCategory, EventSeverity
 from event_logger import EventType as LogEventType
 from event_bus import Event, EventType, get_event_bus
 from utils.container_id import normalize_container_id
+from utils.image_id import normalize_image_id
 
 # Import extracted modules
 from config.settings import AppConfig, get_cors_origins, setup_logging, HealthCheckFilter
@@ -1155,6 +1158,550 @@ async def trigger_agent_update(host_id: str, current_user: dict = Depends(get_cu
     except Exception as e:
         logger.error(f"Error triggering agent update: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/hosts/{host_id}/images", tags=["hosts"])
+async def list_host_images(host_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    List all Docker images on a host with usage information.
+
+    Returns:
+        List of images with:
+        - id: 12-char short ID
+        - tags: List of image tags
+        - size: Size in bytes
+        - created: ISO timestamp with Z suffix
+        - in_use: Whether any container uses this image
+        - container_count: Number of containers using this image
+        - containers: List of {id, name} for containers using this image
+        - dangling: True if image has no tags
+    """
+    # Check if host uses agent - route through agent if available
+    agent_id = monitor.operations.agent_manager.get_agent_for_host(host_id)
+    if agent_id:
+        logger.info(f"Routing list_images for host {host_id} through agent {agent_id}")
+        result = await monitor.operations.agent_operations.list_images(host_id)
+        # Sort by created date (newest first)
+        result.sort(key=lambda x: x.get('created', ''), reverse=True)
+        return result
+
+    # Legacy path: Direct Docker socket access
+    client = monitor.clients.get(host_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Host not found")
+
+    try:
+        # Get all images
+        images = await async_docker_call(client.images.list, all=True)
+
+        # Get all containers to determine image usage
+        containers = await async_docker_call(client.containers.list, all=True)
+
+        # Build image usage map: image_id -> list of {id, name} objects
+        image_usage: dict = defaultdict(list)
+        for container in containers:
+            image_id = normalize_image_id(container.image.id) if container.image else None
+            if image_id:
+                image_usage[image_id].append({
+                    'id': container.short_id,
+                    'name': container.name,
+                })
+
+        # Format response
+        result = []
+        for image in images:
+            short_id = normalize_image_id(image.short_id) if image.short_id else normalize_image_id(image.id)
+            containers_using = image_usage.get(short_id, [])
+
+            # Parse created timestamp - strip timezone offset and add Z suffix
+            created = image.attrs.get('Created', '')
+            if created and not created.endswith('Z'):
+                # Handle both +HH:MM and -HH:MM timezone offsets
+                created = re.sub(r'[+-]\d{2}:\d{2}$', 'Z', created)
+
+            tags = image.tags or []
+            result.append({
+                'id': short_id,
+                'tags': tags,
+                'size': image.attrs.get('Size', 0),
+                'created': created,
+                'in_use': len(containers_using) > 0,
+                'container_count': len(containers_using),
+                'containers': containers_using,
+                'dangling': len(tags) == 0,
+            })
+
+        # Sort by created date (newest first)
+        result.sort(key=lambda x: x['created'], reverse=True)
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error listing images for host {host_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list images")
+
+
+@app.post("/api/hosts/{host_id}/images/prune", tags=["hosts"], dependencies=[Depends(require_scope("write"))])
+async def prune_host_images(host_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    Prune all unused images on a specific host.
+
+    Removes images that are not referenced by any container.
+
+    Returns:
+        - removed_count: Number of images removed
+        - space_reclaimed: Bytes reclaimed
+    """
+    # Check if host uses agent - route through agent if available
+    agent_id = monitor.operations.agent_manager.get_agent_for_host(host_id)
+    if agent_id:
+        logger.info(f"Routing prune_images for host {host_id} through agent {agent_id}")
+        return await monitor.operations.agent_operations.prune_images(host_id)
+
+    # Legacy path: Direct Docker socket access
+    client = monitor.clients.get(host_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Host not found")
+
+    try:
+        # Use Docker's built-in prune which handles all edge cases
+        result = await async_docker_call(client.images.prune, filters={'dangling': False})
+
+        # Result contains ImagesDeleted (list) and SpaceReclaimed (int)
+        images_deleted = result.get('ImagesDeleted') or []
+        space_reclaimed = result.get('SpaceReclaimed', 0)
+
+        # Count only actual image deletions (not layer deletions)
+        removed_count = len([i for i in images_deleted if i.get('Deleted')])
+
+        logger.info(f"Pruned {removed_count} unused images from host {host_id}, reclaimed {space_reclaimed} bytes")
+
+        return {
+            'removed_count': removed_count,
+            'space_reclaimed': space_reclaimed
+        }
+
+    except Exception as e:
+        logger.error(f"Error pruning images for host {host_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to prune images")
+
+
+# Built-in Docker networks that cannot be deleted
+BUILTIN_NETWORKS = frozenset(['bridge', 'host', 'none'])
+
+
+@app.get("/api/hosts/{host_id}/networks", tags=["hosts"])
+async def list_host_networks(host_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    List all Docker networks on a host with connected container info.
+
+    Returns:
+        List of networks with:
+        - id: 12-char short ID
+        - name: Network name
+        - driver: Network driver (bridge, overlay, host, null, etc.)
+        - scope: Network scope (local, swarm, global)
+        - created: ISO timestamp with Z suffix
+        - internal: Whether the network is internal (no external connectivity)
+        - containers: List of connected containers with id and name
+        - container_count: Number of connected containers
+        - is_builtin: True for bridge, host, none networks
+    """
+    # Check if host uses agent - route through agent if available
+    agent_id = monitor.operations.agent_manager.get_agent_for_host(host_id)
+    if agent_id:
+        logger.info(f"Routing list_networks for host {host_id} through agent {agent_id}")
+        result = await monitor.operations.agent_operations.list_networks(host_id)
+        # Sort by name
+        result.sort(key=lambda x: x.get('name', ''))
+        return result
+
+    # Legacy path: Direct Docker socket access
+    client = monitor.clients.get(host_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Host not found")
+
+    try:
+        # Get all networks
+        networks = await async_docker_call(client.networks.list)
+
+        # Format response
+        result = []
+        for network in networks:
+            attrs = network.attrs or {}
+            short_id = network.short_id if hasattr(network, 'short_id') and network.short_id else network.id[:12]
+
+            # Parse created timestamp - strip timezone offset and add Z suffix
+            created = attrs.get('Created', '')
+            if created and not created.endswith('Z'):
+                # Handle both +HH:MM and -HH:MM timezone offsets
+                # Format: 2026-01-03T17:11:27.020018176-07:00
+                created = re.sub(r'[+-]\d{2}:\d{2}$', 'Z', created)
+
+            # Get connected containers
+            containers_info = attrs.get('Containers') or {}
+            containers = []
+            for container_id, container_data in containers_info.items():
+                containers.append({
+                    'id': container_id[:12],
+                    'name': container_data.get('Name', '').lstrip('/')
+                })
+
+            # Extract IPAM subnet info
+            ipam = attrs.get('IPAM', {}) or {}
+            ipam_config = ipam.get('Config', []) or []
+            subnet = ipam_config[0].get('Subnet', '') if ipam_config else ''
+
+            result.append({
+                'id': short_id,
+                'name': network.name,
+                'driver': attrs.get('Driver', ''),
+                'scope': attrs.get('Scope', 'local'),
+                'created': created,
+                'internal': attrs.get('Internal', False),
+                'subnet': subnet,
+                'containers': containers,
+                'container_count': len(containers),
+                'is_builtin': network.name in BUILTIN_NETWORKS,
+            })
+
+        # Sort by name
+        result.sort(key=lambda x: x['name'])
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error listing networks for host {host_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list networks")
+
+
+@app.delete("/api/hosts/{host_id}/networks/{network_id}", tags=["hosts"], dependencies=[Depends(require_scope("write"))])
+async def delete_host_network(
+    host_id: str,
+    network_id: str,
+    force: bool = False,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Delete a Docker network from a host.
+
+    Args:
+        host_id: Host UUID
+        network_id: Network ID (12-char short ID)
+        force: If True, disconnect all containers before deleting
+
+    Returns:
+        {"success": True, "message": "Network deleted"}
+
+    Raises:
+        400: Attempting to delete a built-in network
+        409: Network has connected containers (without force)
+        404: Network or host not found
+        500: Docker API failure
+    """
+    # Normalize network ID to 12-char format (defense-in-depth)
+    network_id = network_id[:12]
+
+    # Check if host uses agent - route through agent if available
+    agent_id = monitor.operations.agent_manager.get_agent_for_host(host_id)
+    if agent_id:
+        logger.info(f"Routing delete_network for host {host_id} through agent {agent_id}")
+        return await monitor.operations.agent_operations.delete_network(host_id, network_id, force)
+
+    # Legacy path: Direct Docker socket access
+    client = monitor.clients.get(host_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Host not found")
+
+    try:
+        # Get the network
+        network = await async_docker_call(client.networks.get, network_id)
+        network_name = network.name
+
+        # Check if it's a built-in network
+        if network_name in BUILTIN_NETWORKS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot delete built-in network '{network_name}'"
+            )
+
+        # Check for connected containers
+        attrs = network.attrs or {}
+        containers_info = attrs.get('Containers') or {}
+
+        if containers_info and not force:
+            container_names = [c.get('Name', '').lstrip('/') for c in containers_info.values()]
+            raise HTTPException(
+                status_code=409,
+                detail=f"Network has {len(containers_info)} connected container(s): {', '.join(container_names[:3])}{'...' if len(container_names) > 3 else ''}. Use force=true to disconnect and delete."
+            )
+
+        # If force is true and there are connected containers, disconnect them first
+        if containers_info and force:
+            for container_id in containers_info.keys():
+                try:
+                    await async_docker_call(network.disconnect, container_id, force=True)
+                    logger.info(f"Disconnected container {container_id[:12]} from network {network_name}")
+                except Exception as e:
+                    logger.warning(f"Failed to disconnect container {container_id[:12]} from network {network_name}: {e}")
+
+        # Delete the network
+        await async_docker_call(network.remove)
+        logger.info(f"Deleted network {network_name} ({network_id}) from host {host_id}")
+
+        return {
+            "success": True,
+            "message": f"Network '{network_name}' deleted"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting network {network_id} from host {host_id}: {e}", exc_info=True)
+        if "not found" in str(e).lower():
+            raise HTTPException(status_code=404, detail="Network not found")
+        raise HTTPException(status_code=500, detail="Failed to delete network")
+
+
+@app.post("/api/hosts/{host_id}/networks/prune", tags=["hosts"], dependencies=[Depends(require_scope("write"))])
+async def prune_host_networks(host_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    Prune all unused networks on a specific host.
+
+    Removes networks that are not connected to any container.
+    Built-in networks (bridge, host, none) are never removed.
+
+    Returns:
+        - removed_count: Number of networks removed
+        - networks_removed: List of removed network names
+    """
+    # Check if host uses agent - route through agent if available
+    agent_id = monitor.operations.agent_manager.get_agent_for_host(host_id)
+    if agent_id:
+        logger.info(f"Routing prune_networks for host {host_id} through agent {agent_id}")
+        return await monitor.operations.agent_operations.prune_networks(host_id)
+
+    # Legacy path: Direct Docker socket access
+    client = monitor.clients.get(host_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Host not found")
+
+    try:
+        # Use Docker's built-in prune which handles all edge cases
+        result = await async_docker_call(client.networks.prune)
+
+        # Result contains NetworksDeleted (list of network names)
+        networks_deleted = result.get('NetworksDeleted') or []
+
+        logger.info(f"Pruned {len(networks_deleted)} unused networks from host {host_id}: {networks_deleted}")
+
+        return {
+            'removed_count': len(networks_deleted),
+            'networks_removed': networks_deleted
+        }
+
+    except Exception as e:
+        logger.error(f"Error pruning networks for host {host_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to prune networks")
+
+
+@app.get("/api/hosts/{host_id}/volumes", tags=["hosts"])
+async def list_host_volumes(host_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    List all Docker volumes on a host with usage information.
+
+    Returns:
+        List of volumes with:
+        - name: Volume name
+        - driver: Volume driver
+        - mountpoint: Mount point on host
+        - created: ISO timestamp with Z suffix
+        - containers: List of containers using this volume with id and name
+        - container_count: Number of containers using this volume
+        - in_use: Whether any container uses this volume
+    """
+    # Check if host uses agent - route through agent if available
+    agent_id = monitor.operations.agent_manager.get_agent_for_host(host_id)
+    if agent_id:
+        logger.info(f"Routing list_volumes for host {host_id} through agent {agent_id}")
+        result = await monitor.operations.agent_operations.list_volumes(host_id)
+        result.sort(key=lambda x: x.get('name', ''))
+        return result
+
+    # Legacy path: Direct Docker socket access
+    client = monitor.clients.get(host_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Host not found")
+
+    try:
+        # Get all volumes
+        volumes = await async_docker_call(client.volumes.list)
+
+        # Get all containers to determine volume usage
+        containers = await async_docker_call(client.containers.list, all=True)
+
+        # Build volume usage map: volume_name -> list of {id, name} objects
+        volume_usage: dict = defaultdict(list)
+        for container in containers:
+            mounts = container.attrs.get('Mounts', [])
+            for mount in mounts:
+                if mount.get('Type') == 'volume':
+                    vol_name = mount.get('Name', '')
+                    if vol_name:
+                        volume_usage[vol_name].append({
+                            'id': container.short_id,
+                            'name': container.name,
+                        })
+
+        # Format response
+        result = []
+        for volume in volumes:
+            attrs = volume.attrs or {}
+            name = volume.name
+
+            # Parse created timestamp - strip timezone offset and add Z suffix
+            created = attrs.get('CreatedAt', '')
+            if created and not created.endswith('Z'):
+                created = re.sub(r'[+-]\d{2}:\d{2}$', 'Z', created)
+
+            containers_using = volume_usage.get(name, [])
+
+            result.append({
+                'name': name,
+                'driver': attrs.get('Driver', 'local'),
+                'mountpoint': attrs.get('Mountpoint', ''),
+                'created': created,
+                'containers': containers_using,
+                'container_count': len(containers_using),
+                'in_use': len(containers_using) > 0,
+            })
+
+        # Sort by name
+        result.sort(key=lambda x: x['name'])
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error listing volumes for host {host_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list volumes")
+
+
+@app.delete("/api/hosts/{host_id}/volumes/{volume_name:path}", tags=["hosts"], dependencies=[Depends(require_scope("write"))])
+async def delete_host_volume(
+    host_id: str,
+    volume_name: str,
+    force: bool = False,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Delete a Docker volume from a host.
+
+    Args:
+        host_id: Host UUID
+        volume_name: Volume name
+        force: If True, remove even if in use (dangerous)
+
+    Returns:
+        {"success": True, "message": "Volume deleted"}
+
+    Raises:
+        409: Volume is in use by containers (without force)
+        404: Volume or host not found
+        500: Docker API failure
+    """
+    # Check if host uses agent - route through agent if available
+    agent_id = monitor.operations.agent_manager.get_agent_for_host(host_id)
+    if agent_id:
+        logger.info(f"Routing delete_volume for host {host_id} through agent {agent_id}")
+        return await monitor.operations.agent_operations.delete_volume(host_id, volume_name, force)
+
+    # Legacy path: Direct Docker socket access
+    client = monitor.clients.get(host_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Host not found")
+
+    try:
+        # Get the volume
+        volume = await async_docker_call(client.volumes.get, volume_name)
+
+        # Check if volume is in use by getting containers
+        containers = await async_docker_call(client.containers.list, all=True)
+        using_containers = []
+        for container in containers:
+            mounts = container.attrs.get('Mounts', [])
+            for mount in mounts:
+                if mount.get('Type') == 'volume' and mount.get('Name') == volume_name:
+                    using_containers.append(container.name)
+                    break
+
+        if using_containers and not force:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Volume is in use by {len(using_containers)} container(s): {', '.join(using_containers[:3])}{'...' if len(using_containers) > 3 else ''}. Use force=true to delete anyway (containers may fail)."
+            )
+
+        # Delete the volume
+        await async_docker_call(volume.remove, force=force)
+        logger.info(f"Deleted volume {volume_name} from host {host_id}")
+
+        return {
+            "success": True,
+            "message": f"Volume '{volume_name}' deleted"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting volume {volume_name} from host {host_id}: {e}", exc_info=True)
+        if "not found" in str(e).lower() or "no such volume" in str(e).lower():
+            raise HTTPException(status_code=404, detail="Volume not found")
+        if "in use" in str(e).lower():
+            raise HTTPException(status_code=409, detail="Volume is in use")
+        raise HTTPException(status_code=500, detail="Failed to delete volume")
+
+
+@app.post("/api/hosts/{host_id}/volumes/prune", tags=["hosts"], dependencies=[Depends(require_scope("write"))])
+async def prune_host_volumes(host_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    Prune all unused volumes on a specific host.
+
+    Removes volumes that are not mounted by any container.
+
+    Returns:
+        - removed_count: Number of volumes removed
+        - space_reclaimed: Bytes reclaimed (if available)
+        - volumes_removed: List of volume names removed
+    """
+    # Check if host uses agent - route through agent if available
+    agent_id = monitor.operations.agent_manager.get_agent_for_host(host_id)
+    if agent_id:
+        logger.info(f"Routing prune_volumes for host {host_id} through agent {agent_id}")
+        return await monitor.operations.agent_operations.prune_volumes(host_id)
+
+    # Legacy path: Direct Docker socket access
+    client = monitor.clients.get(host_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Host not found")
+
+    try:
+        # Use filters={'all': 'true'} to prune ALL unused volumes, not just anonymous ones
+        # Without this, named volumes are preserved even if unused
+        result = await async_docker_call(client.volumes.prune, filters={'all': 'true'})
+
+        volumes_removed = result.get('VolumesDeleted') or []
+        space_reclaimed = result.get('SpaceReclaimed', 0)
+
+        logger.info(f"Pruned {len(volumes_removed)} volumes from host {host_id}, reclaimed {space_reclaimed} bytes")
+
+        return {
+            "removed_count": len(volumes_removed),
+            "space_reclaimed": space_reclaimed,
+            "volumes_removed": volumes_removed,
+        }
+
+    except Exception as e:
+        logger.error(f"Error pruning volumes on host {host_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to prune volumes")
 
 
 @app.get("/api/containers", tags=["containers"])
@@ -2630,6 +3177,8 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
         # Priority: database value > env var > None
         "external_url": getattr(settings, 'external_url', None) or AppConfig.EXTERNAL_URL,
         "external_url_from_env": AppConfig.EXTERNAL_URL,  # Show env var value for UI placeholder
+        # Editor theme preference (v2.2.8+)
+        "editor_theme": getattr(settings, 'editor_theme', 'aura'),
     }
 
 @app.post("/api/settings", tags=["system"], dependencies=[Depends(require_scope("admin"))])
@@ -2717,6 +3266,8 @@ async def update_settings(
         # External URL for notification action links (v2.2.0+)
         "external_url": getattr(updated, 'external_url', None) or AppConfig.EXTERNAL_URL,
         "external_url_from_env": AppConfig.EXTERNAL_URL,
+        # Editor theme preference (v2.2.8+)
+        "editor_theme": getattr(updated, 'editor_theme', 'aura'),
     }
 
 
@@ -5131,3 +5682,289 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
         # Clean up rate limiter tracking
         ws_rate_limiter.cleanup_connection(connection_id)
         logger.debug(f"WebSocket cleanup completed for {connection_id}")
+
+
+@app.websocket("/ws/shell/{host_id}/{container_id}")
+async def websocket_shell_endpoint(
+    websocket: WebSocket,
+    host_id: str,
+    container_id: str,
+    session_id: Optional[str] = Cookie(None)
+):
+    """
+    WebSocket endpoint for interactive container shell access.
+
+    Provides bidirectional communication for terminal I/O using Docker exec API.
+    Supports both direct Docker connections and agent-based hosts.
+
+    Path Parameters:
+        host_id: Docker host ID
+        container_id: Container ID to exec into
+
+    WebSocket Messages:
+        - Binary data: Terminal input/output
+        - JSON text: Control messages (e.g., {"type": "resize", "cols": 80, "rows": 24})
+    """
+    # Authenticate before accepting connection
+    if not session_id:
+        logger.warning("Shell WebSocket connection attempted without session cookie")
+        await websocket.close(code=1008, reason="Authentication required")
+        return
+
+    # Validate session using v2 auth
+    from auth.cookie_sessions import cookie_session_manager
+    client_ip = websocket.client.host if websocket.client else "unknown"
+    session_data = cookie_session_manager.validate_session(session_id, client_ip)
+
+    if not session_data:
+        logger.warning(f"Shell WebSocket connection with invalid session from {client_ip}")
+        await websocket.close(code=1008, reason="Invalid or expired session")
+        return
+
+    # Validate host exists
+    host = monitor.hosts.get(host_id)
+    if not host:
+        await websocket.close(code=1008, reason="Host not found")
+        return
+
+    # Route based on connection type
+    if host.connection_type == 'agent':
+        # Agent-based host: route through agent WebSocket
+        await _handle_agent_shell_session(websocket, host_id, container_id, session_data)
+    else:
+        # Local/Remote host: direct Docker connection
+        await _handle_direct_shell_session(websocket, host_id, container_id, session_data)
+
+
+async def _handle_agent_shell_session(
+    websocket: WebSocket,
+    host_id: str,
+    container_id: str,
+    session_data: dict
+):
+    """Handle shell session through agent WebSocket."""
+    from agent.shell_manager import get_shell_manager
+    from agent.connection_manager import agent_connection_manager
+    from database import DatabaseManager, Agent
+
+    # Normalize container ID to 12 chars early
+    container_id = normalize_container_id(container_id)
+
+    # Get agent ID for this host
+    db_manager = DatabaseManager()
+    agent_id = None
+    with db_manager.get_session() as session:
+        agent = session.query(Agent).filter_by(host_id=host_id).first()
+        if agent:
+            agent_id = agent.id
+
+    if not agent_id:
+        await websocket.close(code=1008, reason="Agent not found for host")
+        return
+
+    # Check agent is connected
+    if not agent_connection_manager.is_connected(agent_id):
+        await websocket.close(code=1008, reason="Agent not connected")
+        return
+
+    # Accept WebSocket connection
+    await websocket.accept()
+    logger.info(f"Shell session (via agent) started for container {container_id[:12]} by user {session_data.get('username')}")
+
+    shell_manager = get_shell_manager()
+    shell_session_id = None
+
+    try:
+        # Start shell session through agent
+        shell_session_id = await shell_manager.start_session(
+            host_id=host_id,
+            container_id=container_id,
+            agent_id=agent_id,
+            websocket=websocket
+        )
+
+        # Message loop - forward browser input to agent
+        while True:
+            message = await websocket.receive()
+
+            if message['type'] == 'websocket.disconnect':
+                break
+
+            if 'bytes' in message:
+                # Terminal input - forward to agent
+                await shell_manager.handle_browser_input(shell_session_id, message['bytes'])
+            elif 'text' in message:
+                # Control message (resize)
+                try:
+                    data = json.loads(message['text'])
+                    if data.get('type') == 'resize':
+                        await shell_manager.handle_resize(
+                            shell_session_id,
+                            data.get('cols', 80),
+                            data.get('rows', 24)
+                        )
+                except json.JSONDecodeError:
+                    pass
+
+    except WebSocketDisconnect:
+        logger.info(f"Shell session disconnected for container {container_id[:12]}")
+    except Exception as e:
+        logger.error(f"Shell session error for container {container_id[:12]}: {e}", exc_info=True)
+        try:
+            await websocket.close(code=1011, reason="Shell session error")
+        except Exception:
+            pass
+    finally:
+        if shell_session_id:
+            await shell_manager.close_session(shell_session_id)
+        logger.info(f"Shell session (via agent) ended for container {container_id[:12]}")
+
+
+async def _handle_direct_shell_session(
+    websocket: WebSocket,
+    host_id: str,
+    container_id: str,
+    session_data: dict
+):
+    """Handle shell session via direct Docker connection."""
+    # Normalize container ID to 12 chars early
+    container_id = normalize_container_id(container_id)
+
+    # Get Docker client for the host
+    client = monitor.clients.get(host_id)
+    if not client:
+        await websocket.close(code=1008, reason="Host not connected")
+        return
+
+    # Validate container exists and is running
+    try:
+        container = await async_docker_call(client.containers.get, container_id)
+        if container.status != 'running':
+            await websocket.close(code=1008, reason="Container is not running")
+            return
+    except docker.errors.NotFound:
+        await websocket.close(code=1008, reason="Container not found")
+        return
+    except Exception as e:
+        logger.error(f"Error accessing container {container_id}: {e}")
+        await websocket.close(code=1011, reason="Failed to access container")
+        return
+
+    # Accept WebSocket connection
+    await websocket.accept()
+    logger.info(f"Shell session started for container {container_id[:12]} by user {session_data.get('username')}")
+
+    exec_id = None
+    docker_socket = None
+
+    try:
+        # Create exec instance
+        exec_instance = await async_docker_call(
+            client.api.exec_create,
+            container.id,
+            cmd=['/bin/sh', '-c', 'if command -v bash >/dev/null 2>&1; then exec bash; else exec sh; fi'],
+            stdin=True,
+            stdout=True,
+            stderr=True,
+            tty=True,
+            environment={"TERM": "xterm-256color"}
+        )
+        exec_id = exec_instance['Id']
+
+        # Start exec with socket
+        docker_socket = await async_docker_call(
+            client.api.exec_start,
+            exec_id,
+            socket=True,
+            tty=True
+        )
+
+        # Get the underlying socket (handle both regular and TLS connections)
+        # For regular connections, docker_socket has _sock attribute
+        # For TLS/mTLS connections, docker_socket may be the socket directly
+        sock = getattr(docker_socket, '_sock', docker_socket)
+
+        # Set socket timeout to prevent blocking forever if Docker hangs
+        # 10 minutes allows for long idle sessions without disconnecting
+        sock.settimeout(600.0)
+
+        async def read_from_docker():
+            """Read from Docker socket and send to WebSocket"""
+            loop = asyncio.get_running_loop()
+            try:
+                while True:
+                    # Read from Docker socket in thread pool
+                    data = await loop.run_in_executor(None, sock.recv, 4096)
+                    if not data:
+                        break
+                    await websocket.send_bytes(data)
+            except Exception as e:
+                logger.debug(f"Docker read ended: {e}")
+
+        async def write_to_docker():
+            """Read from WebSocket and write to Docker socket"""
+            loop = asyncio.get_running_loop()
+            try:
+                while True:
+                    message = await websocket.receive()
+
+                    if message['type'] == 'websocket.disconnect':
+                        break
+
+                    if 'bytes' in message:
+                        # Terminal input - send to Docker
+                        await loop.run_in_executor(None, sock.sendall, message['bytes'])
+                    elif 'text' in message:
+                        # Control message (resize)
+                        try:
+                            data = json.loads(message['text'])
+                            if data.get('type') == 'resize':
+                                cols = data.get('cols', 80)
+                                rows = data.get('rows', 24)
+                                await async_docker_call(
+                                    client.api.exec_resize,
+                                    exec_id,
+                                    height=rows,
+                                    width=cols
+                                )
+                        except json.JSONDecodeError:
+                            pass
+            except WebSocketDisconnect:
+                logger.debug("WebSocket disconnected")
+            except Exception as e:
+                logger.debug(f"WebSocket write ended: {e}")
+
+        # Run both tasks concurrently
+        read_task = asyncio.create_task(read_from_docker())
+        write_task = asyncio.create_task(write_to_docker())
+
+        # Wait for either task to complete (connection closed)
+        done, pending = await asyncio.wait(
+            [read_task, write_task],
+            return_when=asyncio.FIRST_COMPLETED
+        )
+
+        # Cancel remaining tasks
+        for task in pending:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    except WebSocketDisconnect:
+        logger.info(f"Shell session disconnected for container {container_id[:12]}")
+    except Exception as e:
+        logger.error(f"Shell session error for container {container_id[:12]}: {e}", exc_info=True)
+        try:
+            await websocket.close(code=1011, reason="Shell session error")
+        except Exception:
+            pass
+    finally:
+        # Cleanup
+        if docker_socket:
+            try:
+                docker_socket.close()
+            except Exception:
+                pass
+        logger.info(f"Shell session ended for container {container_id[:12]}")

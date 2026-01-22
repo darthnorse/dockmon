@@ -4,6 +4,7 @@ Handles sending alerts via Discord, Telegram, and Pushover
 """
 
 import asyncio
+import base64
 import html
 import json
 import logging
@@ -470,6 +471,8 @@ class NotificationService:
         ntfy is a simple HTTP-based pub-sub notification service.
         API docs: https://docs.ntfy.sh/publish/
 
+        Uses JSON API for proper Unicode/emoji support in titles.
+
         Config fields:
             server_url (required): Base URL (e.g., https://ntfy.sh or https://ntfy.example.com)
             topic (required): The notification topic/channel name
@@ -503,28 +506,26 @@ class NotificationService:
                 return False
 
             # Determine priority (1-5: min, low, default, high, urgent)
-            priority = '3'  # default (string for header)
+            priority = 3  # default
             if event:
                 if hasattr(event, 'new_state') and event.new_state in ['exited', 'dead']:
-                    priority = '5'  # urgent for critical states
+                    priority = 5  # urgent for critical states
                 elif hasattr(event, 'event_type') and event.event_type in ['die', 'oom', 'kill']:
-                    priority = '5'  # urgent for critical events
-
-            # Build URL: server_url/topic
-            base_url = server_url.rstrip('/')
-            url = f"{base_url}/{topic}"
+                    priority = 5  # urgent for critical events
 
             # Determine title
             notification_title = title
             if event and hasattr(event, 'container_name') and event.container_name:
                 notification_title = f"DockMon: {event.container_name}"
 
-            # Build headers - ntfy header-based API (more compatible)
-            # Enable markdown rendering (https://docs.ntfy.sh/publish/#markdown-formatting)
-            headers = {
-                'Title': notification_title,
-                'Priority': priority,
-                'Markdown': 'yes',
+            # Build JSON payload - handles Unicode/emoji properly (Issue #163)
+            # https://docs.ntfy.sh/publish/#publish-as-json
+            payload = {
+                "topic": topic,
+                "title": notification_title,
+                "message": message,
+                "priority": priority,
+                "markdown": True,
             }
 
             # Add tags for critical events
@@ -536,14 +537,20 @@ class NotificationService:
                     elif event.event_type in ['start', 'restart']:
                         tags.append('white_check_mark')
                 if tags:
-                    headers['Tags'] = ','.join(tags)
+                    payload['tags'] = tags
 
-            # Add action button if URL provided (ntfy action header format)
+            # Add action button if URL provided
             if action_url:
-                # ntfy action format: "view, Update Now, <url>"
-                headers['Actions'] = f'view, Update Now, {action_url}'
+                payload['actions'] = [
+                    {
+                        "action": "view",
+                        "label": "Update Now",
+                        "url": action_url
+                    }
+                ]
 
-            # Handle authentication
+            # Build auth headers (only auth goes in headers, not content)
+            headers = {}
             access_token = config.get('access_token', '').strip()
             username = config.get('username', '').strip()
             password = config.get('password', '').strip()
@@ -551,12 +558,12 @@ class NotificationService:
             if access_token:
                 headers['Authorization'] = f'Bearer {access_token}'
             elif username and password:
-                import base64
                 credentials = base64.b64encode(f"{username}:{password}".encode()).decode()
                 headers['Authorization'] = f'Basic {credentials}'
 
-            # Send request - message body with markdown (not JSON)
-            response = await self.http_client.post(url, content=message, headers=headers)
+            # Send JSON request to server root (topic is in payload)
+            url = server_url.rstrip('/')
+            response = await self.http_client.post(url, json=payload, headers=headers)
 
             response.raise_for_status()
 
@@ -835,18 +842,27 @@ class NotificationService:
             headers = config.get('headers', {})
             payload_format = config.get('payload_format', 'json')
 
-            # Build payload
+            # Build payload with structured data for easy parsing
             payload = {
                 'title': title,
                 'message': message,
-                'timestamp': datetime.now(timezone.utc).isoformat()
+                'timestamp': datetime.now(timezone.utc).isoformat() + 'Z'
             }
 
-            # Add optional event context if available
-            if event and hasattr(event, 'container_name'):
-                payload['container'] = event.container_name
-            if event and hasattr(event, 'host_name'):
-                payload['host'] = event.host_name
+            # Add structured event context if available (v2.2.8+)
+            # This provides machine-readable fields so receivers don't need to parse message text
+            if event:
+                # Extract standard fields using getattr for cleaner code
+                for attr, key in [('container_name', 'container'), ('host_name', 'host'), ('host_id', 'host_id')]:
+                    if value := getattr(event, attr, None):
+                        payload[key] = value
+
+                # Include rich context data (versions, digests, etc.) from alert events
+                if context_json := getattr(event, 'event_context_json', None):
+                    try:
+                        payload['context'] = json.loads(context_json)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
 
             # Add action URL if provided (v2.2.0+)
             if action_url:
@@ -1130,7 +1146,7 @@ class NotificationService:
                             if await self._send_smtp(channel.config, message, title=alert.title, action_url=action_url):
                                 success_count += 1
                         elif channel.type == "webhook":
-                            if await self._send_webhook(channel.config, message, title=alert.title, action_url=action_url):
+                            if await self._send_webhook(channel.config, message, event=alert, title=alert.title, action_url=action_url):
                                 success_count += 1
                         elif channel.type == "teams":
                             if await self._send_teams(channel.config, message, action_url=action_url):

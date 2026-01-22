@@ -17,6 +17,8 @@ import {
 } from '@/components/ui/select'
 import { Input } from '@/components/ui/input'
 import { toast } from 'sonner'
+import { useTimeFormat } from '@/lib/hooks/useUserPreferences'
+import { formatDateTime } from '@/lib/utils/timeFormat'
 import { useContainerHealthCheck, useUpdateHealthCheck, useTestHealthCheck } from '../../hooks/useContainerHealthCheck'
 import type { Container } from '../../types'
 
@@ -25,6 +27,7 @@ export interface ContainerHealthCheckTabProps {
 }
 
 function ContainerHealthCheckTabInternal({ container }: ContainerHealthCheckTabProps) {
+  const { timeFormat } = useTimeFormat()
   // CRITICAL: Always use 12-char short ID for API calls (backend expects short IDs)
   const containerShortId = container.id.slice(0, 12)
 
@@ -180,7 +183,7 @@ function ContainerHealthCheckTabInternal({ container }: ContainerHealthCheckTabP
 
   const currentStatus = healthCheck?.current_status || 'unknown'
   const lastChecked = healthCheck?.last_checked_at
-    ? new Date(healthCheck.last_checked_at).toLocaleString()
+    ? formatDateTime(healthCheck.last_checked_at, timeFormat)
     : 'Never'
 
   const getStatusIcon = () => {

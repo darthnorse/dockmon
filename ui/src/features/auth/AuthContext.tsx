@@ -17,11 +17,22 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { authApi } from './api'
 import type { LoginRequest } from '@/types/api'
 
+interface AuthUser {
+  id: number
+  username: string
+  display_name?: string | null
+  is_first_login?: boolean
+  must_change_password?: boolean
+  role?: 'admin' | 'user' | 'readonly'
+}
+
 interface AuthContextValue {
-  user: { id: number; username: string; display_name?: string | null; is_first_login?: boolean } | null
+  user: AuthUser | null
   isLoading: boolean
   isAuthenticated: boolean
   isFirstLogin: boolean
+  mustChangePassword: boolean
+  isAdmin: boolean
   login: (credentials: LoginRequest) => Promise<void>
   logout: () => Promise<void>
 }
@@ -66,6 +77,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     isLoading: isLoading || loginMutation.isPending || logoutMutation.isPending,
     isAuthenticated: !isError && data?.user != null,
     isFirstLogin: data?.user?.is_first_login ?? false,
+    mustChangePassword: data?.user?.must_change_password ?? false,
+    isAdmin: data?.user?.role === 'admin',
     login: async (credentials) => {
       await loginMutation.mutateAsync(credentials)
     },

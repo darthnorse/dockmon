@@ -484,6 +484,10 @@ app.include_router(stack_routes.router)  # v2.2.7+ stacks endpoints
 from auth import api_key_routes
 app.include_router(api_key_routes.router)  # API key management
 
+# User management routes (v2.3.0+) - admin-only user CRUD
+from auth.user_management_routes import router as user_management_router
+app.include_router(user_management_router)  # User management (admin only)
+
 # Action token routes (v2.2.0+) - notification action links
 from auth import action_token_routes
 app.include_router(action_token_routes.router)  # One-time action tokens

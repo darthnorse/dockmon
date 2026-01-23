@@ -373,7 +373,9 @@ async def get_current_user_v2(
                 "id": current_user["user_id"],
                 "username": current_user["username"],
                 "display_name": user.display_name if user else None,
-                "is_first_login": user.is_first_login if user else False
+                "is_first_login": user.is_first_login if user else False,
+                "must_change_password": user.must_change_password if user else False,
+                "role": user.role if user else "user"
             }
         }
 

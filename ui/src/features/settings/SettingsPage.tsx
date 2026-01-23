@@ -3,8 +3,8 @@
  * User preferences and configuration
  */
 
-import { useState } from 'react'
-import { LayoutDashboard, Bell, AlertTriangle, Settings, Package, Key, ScrollText, LucideIcon } from 'lucide-react'
+import { useState, useMemo } from 'react'
+import { LayoutDashboard, Bell, AlertTriangle, Settings, Package, Key, ScrollText, Users, LucideIcon } from 'lucide-react'
 import { DashboardSettings } from './components/DashboardSettings'
 import { NotificationChannelsSection } from './components/NotificationChannelsSection'
 import { AlertTemplateSettings } from './components/AlertTemplateSettings'
@@ -13,13 +13,16 @@ import { SystemSettings } from './components/SystemSettings'
 import { ContainerUpdatesSettings } from './components/ContainerUpdatesSettings'
 import { ApiKeysSettings } from './components/ApiKeysSettings'
 import { EventsSettings } from './components/EventsSettings'
+import { UsersSettings } from './components/UsersSettings'
+import { useAuth } from '@/features/auth/AuthContext'
 
-type TabId = 'dashboard' | 'alerts' | 'notifications' | 'updates' | 'events' | 'api-keys' | 'system'
+type TabId = 'dashboard' | 'alerts' | 'notifications' | 'updates' | 'events' | 'api-keys' | 'users' | 'system'
 
 interface Tab {
   id: TabId
   label: string
   icon: LucideIcon
+  adminOnly?: boolean
 }
 
 const TABS: Tab[] = [
@@ -29,11 +32,19 @@ const TABS: Tab[] = [
   { id: 'updates', label: 'Container Updates', icon: Package },
   { id: 'events', label: 'Events', icon: ScrollText },
   { id: 'api-keys', label: 'API Keys', icon: Key },
+  { id: 'users', label: 'Users', icon: Users, adminOnly: true },
   { id: 'system', label: 'System', icon: Settings },
 ]
 
 export function SettingsPage() {
+  const { isAdmin } = useAuth()
   const [activeTab, setActiveTab] = useState<TabId>('dashboard')
+
+  // Filter tabs based on user role
+  const visibleTabs = useMemo(
+    () => TABS.filter((tab) => !tab.adminOnly || isAdmin),
+    [isAdmin]
+  )
 
   return (
     <div className="flex h-full flex-col bg-[#0a0e14]">
@@ -46,7 +57,7 @@ export function SettingsPage() {
       {/* Tabs */}
       <div className="border-b border-gray-800 bg-[#0d1117]">
         <div className="flex gap-1 px-3 sm:px-4 md:px-6 overflow-x-auto">
-          {TABS.map((tab) => {
+          {visibleTabs.map((tab) => {
             const Icon = tab.icon
             const isActive = activeTab === tab.id
             return (
@@ -87,6 +98,7 @@ export function SettingsPage() {
           {activeTab === 'updates' && <ContainerUpdatesSettings />}
           {activeTab === 'events' && <EventsSettings />}
           {activeTab === 'api-keys' && <ApiKeysSettings />}
+          {activeTab === 'users' && isAdmin && <UsersSettings />}
           {activeTab === 'system' && <SystemSettings />}
         </div>
       </div>

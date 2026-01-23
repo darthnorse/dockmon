@@ -27,6 +27,8 @@ export interface CurrentUserResponse {
     username: string
     display_name?: string | null
     is_first_login?: boolean
+    must_change_password?: boolean
+    role?: 'admin' | 'user' | 'readonly'
   }
 }
 

@@ -388,3 +388,221 @@ def require_scope(required_scope: str):
         return current_user
 
     return check_scope
+
+
+# ==================== Capability-Based Authorization (v2.3.0) ====================
+#
+# Granular capability system for multi-user support.
+# Maps capabilities to existing scope system for backward compatibility.
+#
+
+
+class Capabilities:
+    """
+    Capability name constants for type-safe authorization checks.
+
+    Using these constants instead of string literals enables IDE autocomplete
+    and catches typos at import time rather than runtime.
+
+    Usage:
+        from auth.api_key_auth import Capabilities, has_capability
+        if has_capability(user_scopes, Capabilities.CONTAINERS_VIEW_ENV):
+            ...
+    """
+    # Admin-only capabilities
+    HOSTS_MANAGE = 'hosts.manage'
+    STACKS_EDIT = 'stacks.edit'
+    STACKS_VIEW_ENV = 'stacks.view_env'
+    ALERTS_MANAGE = 'alerts.manage'
+    NOTIFICATIONS_MANAGE = 'notifications.manage'
+    REGISTRY_MANAGE = 'registry.manage'
+    REGISTRY_VIEW = 'registry.view'
+    AGENTS_MANAGE = 'agents.manage'
+    SETTINGS_MANAGE = 'settings.manage'
+    USERS_MANAGE = 'users.manage'
+    AUDIT_VIEW = 'audit.view'
+    CONTAINERS_SHELL = 'containers.shell'
+    CONTAINERS_UPDATE = 'containers.update'
+    CONTAINERS_VIEW_ENV = 'containers.view_env'
+    HEALTHCHECKS_MANAGE = 'healthchecks.manage'
+    POLICIES_MANAGE = 'policies.manage'
+    APIKEYS_MANAGE_OTHER = 'apikeys.manage_other'
+
+    # User capabilities (write scope)
+    STACKS_DEPLOY = 'stacks.deploy'
+    CONTAINERS_OPERATE = 'containers.operate'
+    BATCH_CREATE = 'batch.create'
+    TAGS_MANAGE = 'tags.manage'
+    HEALTHCHECKS_TEST = 'healthchecks.test'
+    APIKEYS_MANAGE_OWN = 'apikeys.manage_own'
+
+    # Read-only capabilities
+    HOSTS_VIEW = 'hosts.view'
+    STACKS_VIEW = 'stacks.view'
+    CONTAINERS_VIEW = 'containers.view'
+    CONTAINERS_LOGS = 'containers.logs'
+    ALERTS_VIEW = 'alerts.view'
+    NOTIFICATIONS_VIEW = 'notifications.view'
+    HEALTHCHECKS_VIEW = 'healthchecks.view'
+    POLICIES_VIEW = 'policies.view'
+    EVENTS_VIEW = 'events.view'
+    BATCH_VIEW = 'batch.view'
+    TAGS_VIEW = 'tags.view'
+    AGENTS_VIEW = 'agents.view'
+
+
+# Capability to minimum scope mapping
+# 'admin' = admin only
+# 'write' = user role and above (can manage containers)
+# 'read' = readonly role and above (view-only)
+CAPABILITY_SCOPES = {
+    # Admin-only capabilities
+    'hosts.manage': 'admin',
+    'stacks.edit': 'admin',
+    'stacks.view_env': 'write',          # .env files - User can view, Read-only cannot
+    'alerts.manage': 'admin',
+    'notifications.manage': 'admin',
+    'registry.manage': 'admin',
+    'registry.view': 'admin',           # Contains passwords
+    'agents.manage': 'admin',
+    'settings.manage': 'admin',
+    'users.manage': 'admin',
+    'audit.view': 'admin',
+    'containers.shell': 'admin',
+    'containers.update': 'admin',
+    'containers.view_env': 'write',     # Env vars - User can view, Read-only cannot
+    'healthchecks.manage': 'admin',
+    'policies.manage': 'admin',
+    'apikeys.manage_other': 'admin',
+
+    # User capabilities (write scope)
+    'stacks.deploy': 'write',
+    'containers.operate': 'write',
+    'batch.create': 'write',
+    'tags.manage': 'write',
+    'healthchecks.test': 'write',
+    'apikeys.manage_own': 'write',
+
+    # Read-only capabilities
+    'hosts.view': 'read',
+    'stacks.view': 'read',
+    'containers.view': 'read',
+    'containers.logs': 'read',
+    'alerts.view': 'read',
+    'notifications.view': 'read',       # Names only, not configs
+    'healthchecks.view': 'read',
+    'policies.view': 'read',
+    'events.view': 'read',
+    'batch.view': 'read',
+    'tags.view': 'read',
+    'agents.view': 'read',
+}
+
+
+def has_capability(user_scopes: list[str], capability: str) -> bool:
+    """
+    Check if user has a specific capability.
+
+    Uses scope hierarchy:
+    - 'admin' scope grants ALL capabilities
+    - 'write' scope grants write and read capabilities
+    - 'read' scope grants only read capabilities
+
+    Args:
+        user_scopes: List of user's scopes (e.g., ['admin'], ['read', 'write'], ['read'])
+        capability: Capability to check (e.g., 'hosts.manage', 'containers.operate')
+
+    Returns:
+        True if user has the capability, False otherwise
+    """
+    # Admin scope grants all permissions
+    if 'admin' in user_scopes:
+        return True
+
+    # Get required scope for this capability
+    required_scope = CAPABILITY_SCOPES.get(capability)
+
+    if required_scope is None:
+        # Unknown capability - deny by default for security
+        logger.warning(f"Unknown capability requested: {capability}")
+        return False
+
+    # Check scope hierarchy
+    if required_scope == 'admin':
+        # Only admin scope can access admin capabilities
+        return False  # Already checked admin above
+    elif required_scope == 'write':
+        # Write scope required
+        return 'write' in user_scopes
+    elif required_scope == 'read':
+        # Read scope required - write includes read
+        return 'read' in user_scopes or 'write' in user_scopes
+
+    return False
+
+
+def require_capability(capability: str):
+    """
+    Dependency factory for capability-based authorization.
+
+    Usage:
+        @app.post("/api/...", dependencies=[Depends(require_capability("hosts.manage"))])
+
+    Args:
+        capability: Required capability (e.g., 'hosts.manage', 'containers.operate')
+
+    Returns:
+        Dependency function that checks capabilities
+
+    Raises:
+        HTTPException: 403 if user lacks required capability
+    """
+    async def check_capability(current_user: dict = Depends(get_current_user_or_api_key)):
+        user_scopes = current_user.get("scopes", [])
+
+        if has_capability(user_scopes, capability):
+            return current_user
+
+        # Log and audit the violation
+        logger.warning(
+            f"User {current_user['username']} denied capability {capability} "
+            f"with scopes: {user_scopes}"
+        )
+
+        security_audit.log_event(
+            event_type="capability_violation",
+            severity="warning",
+            user_id=current_user.get("user_id"),
+            details={
+                "username": current_user["username"],
+                "required_capability": capability,
+                "user_scopes": user_scopes,
+                "auth_type": current_user.get("auth_type")
+            }
+        )
+
+        raise HTTPException(
+            status_code=403,
+            detail=f"Insufficient permissions - requires '{capability}' capability"
+        )
+
+    return check_capability
+
+
+def get_user_capabilities(user_scopes: list[str]) -> list[str]:
+    """
+    Get all capabilities available to a user based on their scopes.
+
+    Useful for UI to know what features to show/hide.
+
+    Args:
+        user_scopes: List of user's scopes
+
+    Returns:
+        List of capability names the user has access to
+    """
+    capabilities = []
+    for capability in CAPABILITY_SCOPES:
+        if has_capability(user_scopes, capability):
+            capabilities.append(capability)
+    return capabilities

@@ -72,7 +72,7 @@ from models.request_models import (
 )
 from security.audit import security_audit
 from security.rate_limiting import rate_limiter, rate_limit_auth, rate_limit_hosts, rate_limit_containers, rate_limit_notifications, rate_limit_default
-from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_scope  # v2 hybrid auth (cookies + API keys)
+from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_scope, require_capability, has_capability, _get_user_scopes, CAPABILITY_SCOPES, Capabilities  # v2 hybrid auth (cookies + API keys)
 from websocket.connection import ConnectionManager, DateTimeEncoder
 from websocket.rate_limiter import ws_rate_limiter
 from docker_monitor.monitor import DockerMonitor
@@ -81,6 +81,7 @@ from utils.keys import make_composite_key
 from utils.encryption import encrypt_password, decrypt_password
 from utils.async_docker import async_docker_call
 from utils.base_path import get_base_path
+from utils.response_filtering import filter_container_env, filter_container_inspect_env, filter_ws_container_message
 from updates.container_validator import ContainerValidator, ValidationResult
 from agent.manager import AgentManager
 from agent import handle_agent_websocket
@@ -1706,8 +1707,16 @@ async def prune_host_volumes(host_id: str, current_user: dict = Depends(get_curr
 
 @app.get("/api/containers", tags=["containers"])
 async def get_containers(host_id: Optional[str] = None, current_user: dict = Depends(get_current_user)):
-    """Get all containers"""
-    return await monitor.get_containers(host_id)
+    """Get all containers.
+
+    Note: Environment variables are filtered for users without containers.view_env capability (v2.3.0+).
+    """
+    containers = await monitor.get_containers(host_id)
+
+    # Filter env vars for users without containers.view_env capability (v2.3.0+)
+    user_scopes = current_user.get("scopes", [])
+    can_view_env = has_capability(user_scopes, Capabilities.CONTAINERS_VIEW_ENV)
+    return filter_container_env(containers, can_view_env)
 
 @app.post("/api/hosts/{host_id}/containers/{container_id}/restart", tags=["containers"], dependencies=[Depends(require_scope("write"))])
 async def restart_container(host_id: str, container_id: str, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
@@ -1801,12 +1810,19 @@ async def inspect_container(
     - NetworkSettings: IP addresses, ports, DNS
     - Mounts: volumes, bind mounts
     - HostConfig: resource limits, restart policy
+
+    Note: Env vars in Config.Env are filtered for users without containers.view_env capability (v2.3.0+).
     """
     # Normalize container ID (defense-in-depth)
     container_id = normalize_container_id(container_id)
 
     # Delegate to operations (handles agent routing)
-    return await monitor.operations.inspect_container(host_id, container_id)
+    result = await monitor.operations.inspect_container(host_id, container_id)
+
+    # Filter env vars for users without containers.view_env capability (v2.3.0+)
+    user_scopes = current_user.get("scopes", [])
+    can_view_env = has_capability(user_scopes, Capabilities.CONTAINERS_VIEW_ENV)
+    return filter_container_inspect_env(result, can_view_env)
 
 # Container exec endpoint removed for security reasons
 # Users should use direct SSH, Docker CLI, or other appropriate tools for container access
@@ -2099,7 +2115,7 @@ async def check_container_update(
     }
 
 
-@app.post("/api/hosts/{host_id}/containers/{container_id}/execute-update", tags=["container-updates"], dependencies=[Depends(require_scope("write"))])
+@app.post("/api/hosts/{host_id}/containers/{container_id}/execute-update", tags=["container-updates"], dependencies=[Depends(require_capability("containers.update"))])
 async def execute_container_update(
     host_id: str,
     container_id: str,
@@ -2908,7 +2924,7 @@ async def suggest_host_tags(
 
 # ==================== Batch Operations ====================
 
-@app.post("/api/batch", tags=["batch-operations"], status_code=201)
+@app.post("/api/batch", tags=["batch-operations"], status_code=201, dependencies=[Depends(require_capability("batch.create"))])
 async def create_batch_job(request: BatchJobCreate, current_user: dict = Depends(get_current_user)):
     """
     Create a batch job for bulk operations on containers
@@ -2940,7 +2956,7 @@ async def create_batch_job(request: BatchJobCreate, current_user: dict = Depends
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/batch/validate-update", tags=["batch-operations"])
+@app.post("/api/batch/validate-update", tags=["batch-operations"], dependencies=[Depends(require_capability("batch.create"))])
 async def validate_batch_update(request: dict, current_user: dict = Depends(get_current_user)):
     """
     Pre-flight validation for bulk container updates.
@@ -3315,7 +3331,7 @@ async def dismiss_upgrade_notice(current_user: dict = Depends(get_current_user),
 
 # ==================== HTTP Health Checks ====================
 
-@app.get("/api/containers/{host_id}/{container_id}/http-health-check", tags=["container-health"])
+@app.get("/api/containers/{host_id}/{container_id}/http-health-check", tags=["container-health"], dependencies=[Depends(require_capability("healthchecks.view"))])
 async def get_http_health_check(
     host_id: str,
     container_id: str,
@@ -3391,7 +3407,7 @@ async def get_http_health_check(
         }
 
 
-@app.put("/api/containers/{host_id}/{container_id}/http-health-check", tags=["container-health"])
+@app.put("/api/containers/{host_id}/{container_id}/http-health-check", tags=["container-health"], dependencies=[Depends(require_capability("healthchecks.manage"))])
 async def update_http_health_check(
     host_id: str,
     container_id: str,
@@ -3421,6 +3437,9 @@ async def update_http_health_check(
         # Track if check_from changed (for removing from agent if switched to backend)
         old_check_from = check.check_from if check else None
 
+        # Get user_id for audit tracking (v2.3.0+)
+        user_id = current_user.get("user_id")
+
         if check:
             # Update existing
             check.enabled = config.enabled
@@ -3438,6 +3457,7 @@ async def update_http_health_check(
             check.max_restart_attempts = config.max_restart_attempts  # v2.0.2+
             check.restart_retry_delay_seconds = config.restart_retry_delay_seconds  # v2.0.2+
             check.updated_at = datetime.now(timezone.utc)
+            check.updated_by = user_id  # v2.3.0+
             if container_name:
                 check.container_name = container_name
         else:
@@ -3459,7 +3479,9 @@ async def update_http_health_check(
                 failure_threshold=config.failure_threshold,
                 success_threshold=config.success_threshold,
                 max_restart_attempts=config.max_restart_attempts,  # v2.0.2+
-                restart_retry_delay_seconds=config.restart_retry_delay_seconds  # v2.0.2+
+                restart_retry_delay_seconds=config.restart_retry_delay_seconds,  # v2.0.2+
+                created_by=user_id,  # v2.3.0+
+                updated_by=user_id   # v2.3.0+
             )
             session.add(check)
 
@@ -3476,7 +3498,7 @@ async def update_http_health_check(
     return {"success": True}
 
 
-@app.delete("/api/containers/{host_id}/{container_id}/http-health-check", tags=["container-health"])
+@app.delete("/api/containers/{host_id}/{container_id}/http-health-check", tags=["container-health"], dependencies=[Depends(require_capability("healthchecks.manage"))])
 async def delete_http_health_check(
     host_id: str,
     container_id: str,
@@ -3507,7 +3529,7 @@ async def delete_http_health_check(
     return {"success": True}
 
 
-@app.post("/api/containers/{host_id}/{container_id}/http-health-check/test", tags=["container-health"])
+@app.post("/api/containers/{host_id}/{container_id}/http-health-check/test", tags=["container-health"], dependencies=[Depends(require_capability("healthchecks.test"))])
 async def test_http_health_check(
     host_id: str,
     container_id: str,
@@ -3987,13 +4009,22 @@ Rule: {RULE_NAME}""",
 
 @app.get("/api/notifications/channels", tags=["notifications"])
 async def get_notification_channels(current_user: dict = Depends(get_current_user)):
-    """Get all notification channels"""
+    """Get all notification channels.
+
+    Note: Config is filtered out for non-admin users (v2.3.0+) as it contains
+    webhook URLs, API keys, and other sensitive information.
+    """
     channels = monitor.db.get_notification_channels(enabled_only=False)
+
+    # Non-admin users can see channel names/types but not configs (v2.3.0+)
+    user_scopes = current_user.get("scopes", [])
+    show_config = "admin" in user_scopes
+
     return [{
         "id": ch.id,
         "name": ch.name,
         "type": ch.type,
-        "config": ch.config,
+        "config": ch.config if show_config else None,
         "enabled": ch.enabled,
         "created_at": ch.created_at.isoformat() + 'Z',
         "updated_at": ch.updated_at.isoformat() + 'Z'
@@ -5045,7 +5076,7 @@ async def cleanup_old_events(days: int = 30, current_user: dict = Depends(get_cu
 # ==================== Registry Credentials Endpoints ====================
 
 
-@app.get("/api/registry-credentials", tags=["registry"])
+@app.get("/api/registry-credentials", tags=["registry"], dependencies=[Depends(require_capability("registry.view"))])
 async def get_registry_credentials(current_user: dict = Depends(get_current_user)):
     """
     Get all registry credentials (passwords hidden for security).
@@ -5073,7 +5104,7 @@ async def get_registry_credentials(current_user: dict = Depends(get_current_user
         raise HTTPException(status_code=500, detail=f"Failed to get credentials: {str(e)}")
 
 
-@app.post("/api/registry-credentials", tags=["registry"])
+@app.post("/api/registry-credentials", tags=["registry"], dependencies=[Depends(require_capability("registry.manage"))])
 async def create_registry_credential(
     data: dict,
     current_user: dict = Depends(get_current_user)
@@ -5161,7 +5192,7 @@ async def create_registry_credential(
         raise HTTPException(status_code=500, detail=f"Failed to create credential: {str(e)}")
 
 
-@app.put("/api/registry-credentials/{credential_id}", tags=["registry"])
+@app.put("/api/registry-credentials/{credential_id}", tags=["registry"], dependencies=[Depends(require_capability("registry.manage"))])
 async def update_registry_credential(
     credential_id: int,
     data: dict,
@@ -5231,7 +5262,7 @@ async def update_registry_credential(
         raise HTTPException(status_code=500, detail=f"Failed to update credential: {str(e)}")
 
 
-@app.delete("/api/registry-credentials/{credential_id}", tags=["registry"])
+@app.delete("/api/registry-credentials/{credential_id}", tags=["registry"], dependencies=[Depends(require_capability("registry.manage"))])
 async def delete_registry_credential(
     credential_id: int,
     current_user: dict = Depends(get_current_user)
@@ -5484,11 +5515,23 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
         await websocket.close(code=1008, reason="Invalid or expired session")
         return
 
-    logger.debug(f"WebSocket authenticated for user: {session_data.get('username')}")
+    # Get user role and scopes for filtering (v2.3.0+)
+    user_id = session_data.get("user_id")
+    user_scopes = []
+    with monitor.db.get_session() as session:
+        user = session.query(User).filter(User.id == user_id).first()
+        if user:
+            user_scopes = _get_user_scopes(user.role)
+
+    # Check if user can see container env vars
+    can_view_env = has_capability(user_scopes, Capabilities.CONTAINERS_VIEW_ENV)
+
+    logger.debug(f"WebSocket authenticated for user: {session_data.get('username')} (can_view_env={can_view_env})")
 
     try:
         # Accept connection and subscribe to events
-        await monitor.manager.connect(websocket)
+        # Pass user_scopes for per-connection filtering (v2.3.0+)
+        await monitor.manager.connect(websocket, user_scopes=user_scopes)
         await monitor.realtime.subscribe_to_events(websocket)
 
         # Event-driven stats control: Start stats streams when first viewer connects
@@ -5543,11 +5586,12 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
         # Get current blackout window status
         is_blackout, window_name = monitor.notification_service.blackout_manager.is_in_blackout_window()
 
+        containers_data = await monitor.get_containers()
         initial_state = {
             "type": "initial_state",
             "data": {
                 "hosts": [h.dict() for h in monitor.hosts.values()],
-                "containers": [c.dict() for c in await monitor.get_containers()],
+                "containers": filter_container_env(containers_data, can_view_env),
                 "settings": settings_dict,
                 "blackout": {
                     "is_active": is_blackout,
@@ -5562,7 +5606,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
         containers = await monitor.get_containers()
         broadcast_data = {
             "timestamp": datetime.now(timezone.utc).isoformat() + 'Z',
-            "containers": [c.dict() for c in containers]
+            "containers": filter_container_env(containers, can_view_env)
         }
 
         # Include sparklines if available
@@ -5721,6 +5765,37 @@ async def websocket_shell_endpoint(
         await websocket.close(code=1008, reason="Invalid or expired session")
         return
 
+    # CRITICAL: Check shell permission (v2.3.0 multi-user)
+    # Shell access is admin-only - essentially root access to container
+    user_id = session_data.get("user_id")
+    with monitor.db.get_session() as session:
+        user = session.query(User).filter(User.id == user_id).first()
+        if not user:
+            logger.warning(f"Shell WebSocket: user {user_id} not found")
+            await websocket.close(code=1008, reason="User not found")
+            return
+
+        user_scopes = _get_user_scopes(user.role)
+        if not has_capability(user_scopes, Capabilities.CONTAINERS_SHELL):
+            logger.warning(
+                f"Shell access denied for user {user.username} (role={user.role}) "
+                f"to container {container_id} on host {host_id}"
+            )
+            security_audit.log_event(
+                event_type="shell_access_denied",
+                severity="warning",
+                user_id=user_id,
+                details={
+                    "username": user.username,
+                    "role": user.role,
+                    "host_id": host_id,
+                    "container_id": container_id,
+                    "client_ip": client_ip
+                }
+            )
+            await websocket.close(code=4003, reason="Shell access denied - admin only")
+            return
+
     # Validate host exists
     host = monitor.hosts.get(host_id)
     if not host:
@@ -5859,9 +5934,10 @@ async def _handle_direct_shell_session(
 
     try:
         # Create exec instance
+        # Use short_id (12 chars) per DockMon standards - Docker API accepts both formats
         exec_instance = await async_docker_call(
             client.api.exec_create,
-            container.id,
+            container.short_id,
             cmd=['/bin/sh', '-c', 'if command -v bash >/dev/null 2>&1; then exec bash; else exec sh; fi'],
             stdin=True,
             stdout=True,

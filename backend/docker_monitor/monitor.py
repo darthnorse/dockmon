@@ -1867,10 +1867,11 @@ class DockerMonitor:
                         logger.debug(f"  {key}: cpu={len(sparklines['cpu'])}, mem={len(sparklines['mem'])}, net={len(sparklines['net'])}")
 
                     # Broadcast update to all connected clients
+                    # Enable container filtering for role-based env var visibility (v2.3.0+)
                     await self.manager.broadcast({
                         "type": "containers_update",
                         "data": broadcast_data
-                    })
+                    }, filter_containers=True)
 
             except Exception as e:
                 logger.error(f"Error in monitoring loop: {e}")

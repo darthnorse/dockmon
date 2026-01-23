@@ -37,14 +37,21 @@ def utcnow():
 Base = declarative_base()
 
 class User(Base):
-    """User authentication and settings"""
+    """User authentication and settings
+
+    v2.3.0 Multi-User Support:
+    - Added email for password reset and OIDC matching
+    - Added auth_provider for local vs OIDC authentication
+    - Added oidc_subject for OIDC user identification
+    - Added soft delete support (deleted_at, deleted_by)
+    """
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     username = Column(String, nullable=False, unique=True)
     password_hash = Column(String, nullable=False)
     display_name = Column(String, nullable=True)  # Optional friendly display name
-    role = Column(Text, nullable=False, default="admin")  # "admin", "user", "readonly" - for future RBAC
+    role = Column(Text, nullable=False, default="admin")  # "admin", "user", "readonly"
     is_first_login = Column(Boolean, default=True)
     must_change_password = Column(Boolean, default=False)
     dashboard_layout_v2 = Column(Text, nullable=True)  # JSON string of react-grid-layout (v2)
@@ -58,6 +65,25 @@ class User(Base):
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
     last_login = Column(DateTime, nullable=True)
 
+    # v2.3.0 Multi-User Support
+    email = Column(Text, nullable=True, unique=True)  # Required for password reset and OIDC matching
+    auth_provider = Column(Text, nullable=False, default='local')  # 'local' or 'oidc'
+    oidc_subject = Column(Text, nullable=True, index=True)  # OIDC subject identifier for user matching (indexed for login performance)
+
+    # Soft delete support - preserves audit trail
+    deleted_at = Column(DateTime, nullable=True)  # NULL = active, set = soft deleted
+    deleted_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+
+    @property
+    def is_deleted(self) -> bool:
+        """Check if user is soft deleted"""
+        return self.deleted_at is not None
+
+    @property
+    def is_oidc_user(self) -> bool:
+        """Check if user authenticates via OIDC"""
+        return self.auth_provider == 'oidc'
+
 class UserPrefs(Base):
     """User preferences table (theme and defaults)"""
     __tablename__ = "user_prefs"
@@ -69,6 +95,135 @@ class UserPrefs(Base):
     dismissed_agent_update_version = Column(Text, nullable=True)  # Agent version user dismissed (v2.2.0+)
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+# ==================== v2.3.0 Multi-User Support Tables ====================
+
+class RolePermission(Base):
+    """
+    Customizable role permissions for RBAC (v2.3.0).
+
+    Defines which capabilities each role has access to.
+    Default permissions set via migration, customizable by admin.
+    """
+    __tablename__ = "role_permissions"
+
+    role = Column(Text, nullable=False, primary_key=True)  # 'admin', 'user', 'readonly'
+    capability = Column(Text, nullable=False, primary_key=True)  # 'hosts.manage', 'stacks.edit', etc.
+    allowed = Column(Boolean, nullable=False, default=False)
+
+
+class PasswordResetToken(Base):
+    """
+    Password reset tokens for self-service password recovery (v2.3.0).
+
+    Tokens are hashed before storage and have a 1-hour expiration.
+    Single-use: marked as used after successful password reset.
+    """
+    __tablename__ = "password_reset_tokens"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    token_hash = Column(Text, nullable=False, unique=True)  # SHA256 hash (unique implies index)
+    expires_at = Column(DateTime, nullable=False)  # 1 hour from creation (UTC)
+    used_at = Column(DateTime, nullable=True)  # NULL until used
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+    @property
+    def is_expired(self) -> bool:
+        """Check if token has expired"""
+        return datetime.now(timezone.utc) > self.expires_at
+
+    @property
+    def is_used(self) -> bool:
+        """Check if token has been used"""
+        return self.used_at is not None
+
+
+class OIDCConfig(Base):
+    """
+    OIDC provider configuration (v2.3.0).
+
+    Singleton table (id=1 enforced) for OIDC provider settings.
+    Client secret is encrypted before storage.
+    """
+    __tablename__ = "oidc_config"
+
+    id = Column(Integer, primary_key=True)
+    enabled = Column(Boolean, nullable=False, default=False)
+    provider_url = Column(Text, nullable=True)  # e.g., https://auth.example.com/realms/myrealm
+    client_id = Column(Text, nullable=True)
+    client_secret_encrypted = Column(Text, nullable=True)  # Fernet-encrypted
+    scopes = Column(Text, nullable=False, default='openid profile email groups')
+    claim_for_groups = Column(Text, nullable=False, default='groups')  # Which claim contains group membership
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (
+        CheckConstraint('id = 1', name='ck_oidc_config_singleton'),
+    )
+
+
+class OIDCRoleMapping(Base):
+    """
+    OIDC group to DockMon role mappings (v2.3.0).
+
+    Maps OIDC groups/claims to DockMon roles.
+    Priority determines which role wins when user has multiple matching groups.
+    """
+    __tablename__ = "oidc_role_mappings"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    oidc_value = Column(Text, nullable=False, index=True)  # Group/role value to match
+    dockmon_role = Column(Text, nullable=False)  # 'admin', 'user', 'readonly'
+    priority = Column(Integer, nullable=False, default=0)  # Higher priority wins
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class StackMetadata(Base):
+    """
+    Audit trail for filesystem-based stacks (v2.3.0).
+
+    Tracks who created/modified stacks since stack content is stored on filesystem.
+    """
+    __tablename__ = "stack_metadata"
+
+    stack_name = Column(Text, primary_key=True)
+    created_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    updated_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+
+
+class AuditLog(Base):
+    """
+    Comprehensive action audit log (v2.3.0).
+
+    Records all significant user actions for security and compliance.
+    Actions include: login, logout, create, update, delete, start, stop,
+    restart, deploy, shell, etc.
+    """
+    __tablename__ = "audit_log"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    username = Column(Text, nullable=False)  # Stored separately for audit trail preservation
+    action = Column(Text, nullable=False)  # 'create', 'update', 'delete', 'login', 'shell', etc.
+    entity_type = Column(Text, nullable=False)  # 'host', 'stack', 'container', 'user', 'session', etc.
+    entity_id = Column(Text, nullable=True)  # ID of affected entity
+    entity_name = Column(Text, nullable=True)  # Human-readable name
+    host_id = Column(Text, nullable=True)  # For container operations
+    details = Column(Text, nullable=True)  # JSON with additional context
+    ip_address = Column(Text, nullable=True)
+    user_agent = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+    __table_args__ = (
+        Index('idx_audit_log_user', 'user_id'),
+        Index('idx_audit_log_entity', 'entity_type', 'entity_id'),
+        Index('idx_audit_log_action', 'action'),
+        Index('idx_audit_log_created', 'created_at'),
+    )
 
 
 class ApiKey(Base):
@@ -150,7 +305,7 @@ class ActionToken(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
 
     # Token storage (SECURITY CRITICAL)
-    token_hash = Column(Text, nullable=False, unique=True, index=True)  # SHA256 hash
+    token_hash = Column(Text, nullable=False, unique=True)  # SHA256 hash (unique implies index)
     token_prefix = Column(Text, nullable=False)  # First 12 chars for logs
 
 
@@ -234,6 +389,10 @@ class DockerHostDB(Base):
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+    # v2.3.0 Multi-User Support - Audit columns
+    created_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    updated_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
     # Phase 3d - Host organization
     tags = Column(Text, nullable=True)  # JSON array of tags
     description = Column(Text, nullable=True)  # Optional host description
@@ -274,6 +433,10 @@ class AutoRestartConfig(Base):
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
+    # v2.3.0 Multi-User Support - Audit columns
+    created_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    updated_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+
     # Relationships
     host = relationship("DockerHostDB", back_populates="auto_restart_configs")
 
@@ -291,6 +454,10 @@ class ContainerDesiredState(Base):
     web_ui_url = Column(Text, nullable=True)  # URL to container's web interface
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+    # v2.3.0 Multi-User Support - Audit columns
+    created_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    updated_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
 
     # Relationships
     host = relationship("DockerHostDB")
@@ -525,6 +692,10 @@ class ContainerHttpHealthCheck(Base):
     created_at = Column(DateTime, default=utcnow, nullable=False)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
 
+    # v2.3.0 Multi-User Support - Audit columns
+    created_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    updated_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+
     __table_args__ = (
         Index('idx_http_health_enabled', 'enabled'),
         Index('idx_http_health_host', 'host_id'),
@@ -545,6 +716,10 @@ class UpdatePolicy(Base):
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
+    # v2.3.0 Multi-User Support - Audit columns
+    created_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    updated_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+
     __table_args__ = (
         UniqueConstraint('category', 'pattern', name='uq_update_policies_category_pattern'),
     )
@@ -561,6 +736,10 @@ class NotificationChannel(Base):
     enabled = Column(Boolean, default=True)
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+    # v2.3.0 Multi-User Support - Audit columns
+    created_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    updated_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
 
 # ==================== Alerts v2 Tables ====================
 
@@ -805,6 +984,10 @@ class Tag(Base):
     created_at = Column(DateTime, default=utcnow, nullable=False)
     last_used_at = Column(DateTime, nullable=True)  # Last time tag was assigned to something
 
+    # v2.3.0 Multi-User Support - Audit columns
+    created_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    updated_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+
     # Relationships
     assignments = relationship("TagAssignment", back_populates="tag", cascade="all, delete-orphan")
 
@@ -861,6 +1044,10 @@ class RegistryCredential(Base):
     password_encrypted = Column(Text, nullable=False)  # Fernet-encrypted password
     created_at = Column(DateTime, default=utcnow, nullable=False)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+    # v2.3.0 Multi-User Support - Audit columns
+    created_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    updated_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
 
 
 class Deployment(Base):

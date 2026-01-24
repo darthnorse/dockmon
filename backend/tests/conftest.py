@@ -270,6 +270,7 @@ def test_user(test_db: Session):
         username='testuser',
         password_hash='$2b$12$test_hash_not_real',
         role='admin',
+        auth_provider='local',  # v2.4.0: Required for group-based auth
         created_at=datetime.now(timezone.utc)
     )
     test_db.add(user)

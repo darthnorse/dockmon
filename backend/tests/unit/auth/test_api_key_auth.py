@@ -23,7 +23,7 @@ from auth.api_key_auth import (
     get_current_user_or_api_key,
     require_scope
 )
-from database import ApiKey, User
+from database import ApiKey, User, CustomGroup
 
 
 class TestApiKeyGeneration:
@@ -124,7 +124,7 @@ class TestIpAllowlist:
 
 
 class TestValidateApiKey:
-    """Test API key validation logic"""
+    """Test API key validation logic (v2.4.0: Group-based)"""
 
     def setup_method(self):
         """Setup mock database and API key"""
@@ -136,44 +136,50 @@ class TestValidateApiKey:
         # Generate test key
         self.plaintext_key, self.key_hash, self.key_prefix = generate_api_key()
 
-        # Create mock API key record
-        self.api_key = ApiKey(
-            id=1,
-            user_id=1,
-            name="Test Key",
-            key_hash=self.key_hash,
-            key_prefix=self.key_prefix,
-            scopes="read,write",
-            allowed_ips=None,
-            expires_at=None,
-            revoked_at=None,
-            last_used_at=None,
-            usage_count=0
-        )
+        # Create mock group
+        self.group = Mock()
+        self.group.id = 1
+        self.group.name = "Operators"
 
-        # Create mock user
-        self.user = User(
-            id=1,
-            username="testuser",
-            role="admin"
-        )
+        # Create mock user who created the key
+        self.created_by_user = Mock()
+        self.created_by_user.id = 1
+        self.created_by_user.username = "testuser"
+
+        # Create mock API key record (v2.4.0: uses group_id instead of user_id/scopes)
+        self.api_key = Mock()
+        self.api_key.id = 1
+        self.api_key.name = "Test Key"
+        self.api_key.key_hash = self.key_hash
+        self.api_key.key_prefix = self.key_prefix
+        self.api_key.group_id = 1
+        self.api_key.created_by_user_id = 1
+        self.api_key.allowed_ips = None
+        self.api_key.expires_at = None
+        self.api_key.revoked_at = None
+        self.api_key.last_used_at = None
+        self.api_key.usage_count = 0
 
     def test_validate_api_key_success(self):
-        """Valid API key returns user context"""
+        """Valid API key returns group context"""
+        # Mock the three queries: ApiKey, CustomGroup, User (created_by)
         self.session.query.return_value.filter.return_value.first.side_effect = [
             self.api_key,
-            self.user
+            self.group,
+            self.created_by_user
         ]
 
         result = validate_api_key(self.plaintext_key, "192.168.1.100", self.db)
 
         assert result is not None
-        assert result["user_id"] == 1
-        assert result["username"] == "testuser"
         assert result["api_key_id"] == 1
         assert result["api_key_name"] == "Test Key"
-        assert result["scopes"] == ["read", "write"]
+        assert result["group_id"] == 1
+        assert result["group_name"] == "Operators"
+        assert result["created_by_user_id"] == 1
+        assert result["created_by_username"] == "testuser"
         assert result["auth_type"] == "api_key"
+        assert "scopes" not in result  # v2.4.0: No more scopes
 
         # Check usage tracking updated
         assert self.api_key.usage_count == 1
@@ -217,7 +223,8 @@ class TestValidateApiKey:
         self.api_key.expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
         self.session.query.return_value.filter.return_value.first.side_effect = [
             self.api_key,
-            self.user
+            self.group,
+            self.created_by_user
         ]
 
         result = validate_api_key(self.plaintext_key, "192.168.1.100", self.db)
@@ -228,7 +235,8 @@ class TestValidateApiKey:
         self.api_key.allowed_ips = "192.168.1.0/24"
         self.session.query.return_value.filter.return_value.first.side_effect = [
             self.api_key,
-            self.user
+            self.group,
+            self.created_by_user
         ]
 
         result = validate_api_key(self.plaintext_key, "192.168.1.100", self.db)
@@ -242,11 +250,11 @@ class TestValidateApiKey:
         result = validate_api_key(self.plaintext_key, "10.0.0.1", self.db)
         assert result is None
 
-    def test_validate_api_key_user_not_found(self):
-        """API key with missing user returns None"""
+    def test_validate_api_key_group_not_found(self):
+        """API key with missing group returns None"""
         self.session.query.return_value.filter.return_value.first.side_effect = [
             self.api_key,
-            None  # User not found
+            None  # Group not found
         ]
 
         result = validate_api_key(self.plaintext_key, "192.168.1.100", self.db)
@@ -275,62 +283,75 @@ class TestGetUserScopes:
 
 
 class TestRequireScope:
-    """Test scope-based authorization decorator"""
+    """Test scope-based authorization decorator (v2.4.0: Group-based)
+
+    require_scope() now uses group-based permissions internally:
+    - "admin" scope maps to users.manage capability
+    - "write" scope maps to containers.operate capability
+    - "read" scope maps to containers.view capability
+    """
 
     @pytest.mark.asyncio
-    async def test_require_scope_admin_has_all_permissions(self):
-        """Admin scope grants access to all operations"""
+    async def test_require_scope_admin_session_user(self):
+        """Session user with admin capability can access admin operations"""
         current_user = {
             "user_id": 1,
             "username": "admin",
-            "scopes": ["admin"]
+            "auth_type": "session",
         }
 
-        # Admin can access write operations
-        check_write = require_scope("write")
-        result = await check_write(current_user)
-        assert result == current_user
-
-        # Admin can access admin operations
-        check_admin = require_scope("admin")
-        result = await check_admin(current_user)
-        assert result == current_user
+        with patch('auth.api_key_auth.has_capability_for_user', return_value=True):
+            check_admin = require_scope("admin")
+            result = await check_admin(current_user)
+            assert result == current_user
 
     @pytest.mark.asyncio
-    async def test_require_scope_user_has_read_write(self):
-        """User with read,write scopes can access read and write"""
+    async def test_require_scope_write_session_user(self):
+        """Session user with write capability can access write operations"""
         current_user = {
             "user_id": 2,
             "username": "user",
-            "scopes": ["read", "write"]
+            "auth_type": "session",
         }
 
-        # Can access read
-        check_read = require_scope("read")
-        result = await check_read(current_user)
-        assert result == current_user
+        with patch('auth.api_key_auth.has_capability_for_user', return_value=True):
+            check_write = require_scope("write")
+            result = await check_write(current_user)
+            assert result == current_user
 
-        # Can access write
-        check_write = require_scope("write")
-        result = await check_write(current_user)
-        assert result == current_user
+    @pytest.mark.asyncio
+    async def test_require_scope_api_key_with_capability(self):
+        """API key with capability can access operations"""
+        current_user = {
+            "api_key_id": 1,
+            "api_key_name": "Test Key",
+            "group_id": 1,
+            "group_name": "Operators",
+            "auth_type": "api_key",
+        }
+
+        with patch('auth.api_key_auth.has_capability_for_group', return_value=True):
+            check_write = require_scope("write")
+            result = await check_write(current_user)
+            assert result == current_user
 
     @pytest.mark.asyncio
     async def test_require_scope_user_denied_admin(self):
-        """User without admin scope denied admin access"""
+        """User without admin capability denied admin access"""
         current_user = {
             "user_id": 2,
             "username": "user",
-            "scopes": ["read", "write"]
+            "auth_type": "session",
         }
 
-        check_admin = require_scope("admin")
+        with patch('auth.api_key_auth.has_capability_for_user', return_value=False):
+            check_admin = require_scope("admin")
 
-        with pytest.raises(HTTPException) as exc_info:
-            await check_admin(current_user)
+            with pytest.raises(HTTPException) as exc_info:
+                await check_admin(current_user)
 
-        assert exc_info.value.status_code == 403
-        assert "admin" in exc_info.value.detail
+            assert exc_info.value.status_code == 403
+            assert "admin" in exc_info.value.detail
 
     @pytest.mark.asyncio
     async def test_require_scope_readonly_denied_write(self):
@@ -338,29 +359,50 @@ class TestRequireScope:
         current_user = {
             "user_id": 3,
             "username": "readonly",
-            "scopes": ["read"]
+            "auth_type": "session",
         }
 
-        check_write = require_scope("write")
+        with patch('auth.api_key_auth.has_capability_for_user', return_value=False):
+            check_write = require_scope("write")
 
-        with pytest.raises(HTTPException) as exc_info:
-            await check_write(current_user)
+            with pytest.raises(HTTPException) as exc_info:
+                await check_write(current_user)
 
-        assert exc_info.value.status_code == 403
-        assert "write" in exc_info.value.detail
+            assert exc_info.value.status_code == 403
+            assert "write" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_require_scope_api_key_denied_without_capability(self):
+        """API key without capability denied access"""
+        current_user = {
+            "api_key_id": 1,
+            "api_key_name": "ReadOnly Key",
+            "group_id": 3,
+            "group_name": "Read Only",
+            "auth_type": "api_key",
+        }
+
+        with patch('auth.api_key_auth.has_capability_for_group', return_value=False):
+            check_write = require_scope("write")
+
+            with pytest.raises(HTTPException) as exc_info:
+                await check_write(current_user)
+
+            assert exc_info.value.status_code == 403
 
 
 class TestGetCurrentUserOrApiKey:
-    """Test hybrid authentication dependency"""
+    """Test hybrid authentication dependency (v2.4.0: Group-based)"""
 
     @pytest.mark.asyncio
     async def test_get_current_user_session_auth(self):
-        """Session cookie authentication succeeds"""
+        """Session cookie authentication succeeds (v2.4.0: includes groups)"""
         request = Mock(spec=Request)
         request.client.host = "192.168.1.100"
 
         with patch('auth.api_key_auth.cookie_session_manager') as mock_session_mgr, \
-             patch('auth.api_key_auth.db') as mock_db:
+             patch('auth.api_key_auth.db') as mock_db, \
+             patch('auth.api_key_auth.get_user_groups') as mock_get_groups:
 
             # Mock session validation
             mock_session_mgr.validate_session.return_value = {
@@ -370,10 +412,15 @@ class TestGetCurrentUserOrApiKey:
 
             # Mock user lookup
             mock_session = MagicMock()
-            mock_user = User(id=1, username="testuser", role="admin")
+            mock_user = Mock()
+            mock_user.id = 1
+            mock_user.username = "testuser"
             mock_session.query.return_value.filter.return_value.first.return_value = mock_user
             mock_db.get_session.return_value.__enter__ = Mock(return_value=mock_session)
             mock_db.get_session.return_value.__exit__ = Mock(return_value=False)
+
+            # Mock get_user_groups
+            mock_get_groups.return_value = [{"id": 1, "name": "Administrators"}]
 
             result = await get_current_user_or_api_key(
                 request=request,
@@ -384,21 +431,23 @@ class TestGetCurrentUserOrApiKey:
             assert result["user_id"] == 1
             assert result["username"] == "testuser"
             assert result["auth_type"] == "session"
-            assert result["scopes"] == ["admin"]
+            assert result["groups"] == [{"id": 1, "name": "Administrators"}]  # v2.4.0: Groups included
 
     @pytest.mark.asyncio
     async def test_get_current_user_api_key_auth(self):
-        """API key authentication succeeds"""
+        """API key authentication succeeds (v2.4.0: Group-based)"""
         request = Mock(spec=Request)
         request.client.host = "192.168.1.100"
 
         with patch('auth.api_key_auth.validate_api_key') as mock_validate:
+            # v2.4.0: API key returns group info, not user/scopes
             mock_validate.return_value = {
-                "user_id": 1,
-                "username": "testuser",
                 "api_key_id": 1,
                 "api_key_name": "Test Key",
-                "scopes": ["read", "write"],
+                "group_id": 1,
+                "group_name": "Operators",
+                "created_by_user_id": 1,
+                "created_by_username": "testuser",
                 "auth_type": "api_key"
             }
 
@@ -408,9 +457,10 @@ class TestGetCurrentUserOrApiKey:
                 authorization="Bearer dockmon_abc123"
             )
 
-            assert result["user_id"] == 1
+            assert result["api_key_id"] == 1
+            assert result["group_id"] == 1
             assert result["auth_type"] == "api_key"
-            assert result["scopes"] == ["read", "write"]
+            assert "scopes" not in result  # v2.4.0: No more scopes
 
     @pytest.mark.asyncio
     async def test_get_current_user_no_auth(self):

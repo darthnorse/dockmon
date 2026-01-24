@@ -11,8 +11,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from auth.api_key_auth import require_scope, get_current_user_or_api_key, invalidate_role_permissions_cache
-from database import get_db, RolePermission
-from utils.audit import log_audit
+from auth.shared import db
+from database import RolePermission
+from audit.audit_logger import log_audit
 
 
 router = APIRouter(prefix="/api/v2/roles", tags=["roles"])
@@ -428,8 +429,7 @@ async def get_capabilities(
 
 @router.get("/permissions", response_model=RolePermissionsResponse, dependencies=[Depends(require_scope("admin"))])
 async def get_role_permissions(
-    current_user: dict = Depends(get_current_user_or_api_key),
-    db=Depends(get_db)
+    current_user: dict = Depends(get_current_user_or_api_key)
 ):
     """
     Get all role permissions.
@@ -437,25 +437,25 @@ async def get_role_permissions(
     Returns a mapping of role -> capability -> allowed for all roles.
     Admin only.
     """
-    permissions: dict[str, dict[str, bool]] = {role: {} for role in VALID_ROLES}
+    with db.get_session() as session:
+        permissions: dict[str, dict[str, bool]] = {role: {} for role in VALID_ROLES}
 
-    # Query all permissions
-    all_perms = db.query(RolePermission).all()
+        # Query all permissions
+        all_perms = session.query(RolePermission).all()
 
-    for perm in all_perms:
-        if perm.role in permissions:
-            permissions[perm.role][perm.capability] = perm.allowed
+        for perm in all_perms:
+            if perm.role in permissions:
+                permissions[perm.role][perm.capability] = perm.allowed
 
-    _fill_missing_capabilities(permissions)
+        _fill_missing_capabilities(permissions)
 
-    return RolePermissionsResponse(permissions=permissions)
+        return RolePermissionsResponse(permissions=permissions)
 
 
 @router.put("/permissions", response_model=UpdatePermissionsResponse, dependencies=[Depends(require_scope("admin"))])
 async def update_role_permissions(
     request: UpdatePermissionsRequest,
-    current_user: dict = Depends(get_current_user_or_api_key),
-    db=Depends(get_db)
+    current_user: dict = Depends(get_current_user_or_api_key)
 ):
     """
     Update role permissions (batch).
@@ -463,74 +463,73 @@ async def update_role_permissions(
     Updates multiple role-capability permissions at once.
     Admin only.
     """
-    updated_count = 0
-    now = datetime.now(timezone.utc)
+    with db.get_session() as session:
+        updated_count = 0
 
-    for update in request.permissions:
-        # Validate role
-        if update.role not in VALID_ROLES:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid role: {update.role}. Valid roles: {VALID_ROLES}"
-            )
+        for update in request.permissions:
+            # Validate role
+            if update.role not in VALID_ROLES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid role: {update.role}. Valid roles: {VALID_ROLES}"
+                )
 
-        # Validate capability
-        if update.capability not in ALL_CAPABILITIES:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid capability: {update.capability}"
-            )
+            # Validate capability
+            if update.capability not in ALL_CAPABILITIES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid capability: {update.capability}"
+                )
 
-        # Check if permission exists
-        existing = db.query(RolePermission).filter(
-            RolePermission.role == update.role,
-            RolePermission.capability == update.capability
-        ).first()
+            # Check if permission exists
+            existing = session.query(RolePermission).filter(
+                RolePermission.role == update.role,
+                RolePermission.capability == update.capability
+            ).first()
 
-        if existing:
-            # Update existing
-            if existing.allowed != update.allowed:
-                existing.allowed = update.allowed
+            if existing:
+                # Update existing
+                if existing.allowed != update.allowed:
+                    existing.allowed = update.allowed
+                    updated_count += 1
+            else:
+                # Create new
+                new_perm = RolePermission(
+                    role=update.role,
+                    capability=update.capability,
+                    allowed=update.allowed
+                )
+                session.add(new_perm)
                 updated_count += 1
-        else:
-            # Create new
-            new_perm = RolePermission(
-                role=update.role,
-                capability=update.capability,
-                allowed=update.allowed
+
+        # Audit log (before commit for atomicity)
+        if updated_count > 0:
+            log_audit(
+                session,
+                user_id=current_user.get('user_id'),
+                username=current_user.get('username', 'unknown'),
+                action='update',
+                entity_type='role_permissions',
+                entity_id=None,
+                entity_name=f'{updated_count} permissions',
+                details={'changes': [p.model_dump() for p in request.permissions]},
             )
-            db.add(new_perm)
-            updated_count += 1
 
-    db.commit()
+        session.commit()
 
-    # Invalidate cache so permission changes take effect immediately
-    invalidate_role_permissions_cache()
+        # Invalidate cache so permission changes take effect immediately
+        invalidate_role_permissions_cache()
 
-    # Audit log
-    if updated_count > 0:
-        log_audit(
-            db=db,
-            user_id=current_user.get('user_id'),
-            username=current_user.get('username', 'unknown'),
-            action='update',
-            entity_type='role_permissions',
-            entity_id=None,
-            entity_name=f'{updated_count} permissions',
-            details={'changes': [p.model_dump() for p in request.permissions]},
+        return UpdatePermissionsResponse(
+            updated=updated_count,
+            message=f"Updated {updated_count} permission(s)"
         )
-
-    return UpdatePermissionsResponse(
-        updated=updated_count,
-        message=f"Updated {updated_count} permission(s)"
-    )
 
 
 @router.post("/permissions/reset", response_model=ResetPermissionsResponse, dependencies=[Depends(require_scope("admin"))])
 async def reset_role_permissions(
     request: ResetPermissionsRequest,
-    current_user: dict = Depends(get_current_user_or_api_key),
-    db=Depends(get_db)
+    current_user: dict = Depends(get_current_user_or_api_key)
 ):
     """
     Reset role permissions to defaults.
@@ -551,45 +550,46 @@ async def reset_role_permissions(
     # Determine which roles to reset
     roles_to_reset = [role] if role else VALID_ROLES
 
-    deleted_count = 0
+    with db.get_session() as session:
+        deleted_count = 0
 
-    for r in roles_to_reset:
-        # Delete existing permissions for this role
-        deleted = db.query(RolePermission).filter(RolePermission.role == r).delete()
-        deleted_count += deleted
+        for r in roles_to_reset:
+            # Delete existing permissions for this role
+            deleted = session.query(RolePermission).filter(RolePermission.role == r).delete()
+            deleted_count += deleted
 
-        # Re-insert default permissions using pre-grouped lookup
-        for cap, allowed in DEFAULT_PERMISSIONS_BY_ROLE.get(r, []):
-            new_perm = RolePermission(
-                role=r,
-                capability=cap,
-                allowed=allowed
-            )
-            db.add(new_perm)
+            # Re-insert default permissions using pre-grouped lookup
+            for cap, allowed in DEFAULT_PERMISSIONS_BY_ROLE.get(r, []):
+                new_perm = RolePermission(
+                    role=r,
+                    capability=cap,
+                    allowed=allowed
+                )
+                session.add(new_perm)
 
-    db.commit()
+        # Audit log (before commit for atomicity)
+        log_audit(
+            session,
+            user_id=current_user.get('user_id'),
+            username=current_user.get('username', 'unknown'),
+            action='reset',
+            entity_type='role_permissions',
+            entity_id=None,
+            entity_name=role or 'all roles',
+            details={'roles_reset': roles_to_reset},
+        )
 
-    # Invalidate cache so permission changes take effect immediately
-    invalidate_role_permissions_cache()
+        session.commit()
 
-    # Audit log
-    log_audit(
-        db=db,
-        user_id=current_user.get('user_id'),
-        username=current_user.get('username', 'unknown'),
-        action='reset',
-        entity_type='role_permissions',
-        entity_id=None,
-        entity_name=role or 'all roles',
-        details={'roles_reset': roles_to_reset},
-    )
+        # Invalidate cache so permission changes take effect immediately
+        invalidate_role_permissions_cache()
 
-    message = f"Reset permissions for role '{role}'" if role else "Reset all permissions to defaults"
+        message = f"Reset permissions for role '{role}'" if role else "Reset all permissions to defaults"
 
-    return ResetPermissionsResponse(
-        deleted_count=deleted_count,
-        message=message
-    )
+        return ResetPermissionsResponse(
+            deleted_count=deleted_count,
+            message=message
+        )
 
 
 @router.get("/permissions/defaults", response_model=RolePermissionsResponse, dependencies=[Depends(require_scope("admin"))])

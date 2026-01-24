@@ -19,11 +19,11 @@ from fastapi import APIRouter, HTTPException, Request, Depends
 from pydantic import BaseModel, Field, field_validator, EmailStr
 from argon2 import PasswordHasher
 
-from auth.shared import db
+from auth.shared import db, safe_audit_log
 from auth.api_key_auth import require_scope, get_current_user_or_api_key
 from database import User
 from audit import get_client_info, AuditAction
-from audit.audit_logger import log_audit, AuditEntityType
+from audit.audit_logger import AuditEntityType
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v2/users", tags=["user-management"])
@@ -112,6 +112,43 @@ class ResetPasswordRequest(BaseModel):
 
 # ==================== Helper Functions ====================
 
+def _format_timestamp(dt: Optional[datetime]) -> Optional[str]:
+    """Format datetime to ISO string with 'Z' suffix for frontend."""
+    if dt is None:
+        return None
+    return dt.isoformat() + 'Z'
+
+
+def _format_timestamp_required(dt: Optional[datetime]) -> str:
+    """Format datetime to ISO string, using now() if None."""
+    if dt is None:
+        return datetime.now(timezone.utc).isoformat() + 'Z'
+    return dt.isoformat() + 'Z'
+
+
+def _ensure_not_last_admin(session, user_id: int, action: str) -> None:
+    """
+    Raise HTTPException if the user is the last admin.
+
+    Args:
+        session: Database session
+        user_id: ID of the user being modified
+        action: Description for error message (e.g., "delete", "change role of")
+    """
+    user = session.query(User).filter(User.id == user_id).first()
+    if user and user.role == 'admin':
+        admin_count = session.query(User).filter(
+            User.role == 'admin',
+            User.deleted_at.is_(None),
+            User.id != user_id
+        ).count()
+        if admin_count == 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot {action}: this is the last admin user"
+            )
+
+
 def _user_to_response(user: User) -> UserResponse:
     """Convert User model to response"""
     return UserResponse(
@@ -123,21 +160,12 @@ def _user_to_response(user: User) -> UserResponse:
         auth_provider=user.auth_provider,
         is_first_login=user.is_first_login,
         must_change_password=user.must_change_password,
-        last_login=user.last_login.isoformat() + 'Z' if user.last_login else None,
-        created_at=user.created_at.isoformat() + 'Z' if user.created_at else datetime.now(timezone.utc).isoformat() + 'Z',
-        updated_at=user.updated_at.isoformat() + 'Z' if user.updated_at else datetime.now(timezone.utc).isoformat() + 'Z',
-        deleted_at=user.deleted_at.isoformat() + 'Z' if user.deleted_at else None,
+        last_login=_format_timestamp(user.last_login),
+        created_at=_format_timestamp_required(user.created_at),
+        updated_at=_format_timestamp_required(user.updated_at),
+        deleted_at=_format_timestamp(user.deleted_at),
         is_deleted=user.is_deleted
     )
-
-
-def _safe_audit_log(session, *args, **kwargs) -> None:
-    """Execute audit logging with error handling"""
-    try:
-        log_audit(session, *args, **kwargs)
-        session.commit()
-    except Exception as e:
-        logger.warning(f"Failed to log audit entry: {e}")
 
 
 # ==================== API Endpoints ====================
@@ -217,13 +245,10 @@ async def create_user(
         )
 
         session.add(new_user)
-        session.commit()
-        session.refresh(new_user)
+        session.flush()  # Get new_user.id for audit log
 
-        logger.info(f"User '{user_data.username}' created by admin '{current_user['username']}'")
-
-        # Audit log
-        _safe_audit_log(
+        # Audit log (before commit for atomicity)
+        safe_audit_log(
             session,
             current_user['user_id'],
             current_user['username'],
@@ -234,6 +259,11 @@ async def create_user(
             details={'role': user_data.role, 'must_change_password': user_data.must_change_password},
             **get_client_info(request)
         )
+
+        session.commit()
+        session.refresh(new_user)
+
+        logger.info(f"User '{user_data.username}' created by admin '{current_user['username']}'")
 
         return _user_to_response(new_user)
 
@@ -307,28 +337,15 @@ async def update_user(
         if user_data.role is not None:
             # Prevent removing the last admin
             if user.role == 'admin' and user_data.role != 'admin':
-                admin_count = session.query(User).filter(
-                    User.role == 'admin',
-                    User.deleted_at.is_(None),
-                    User.id != user_id
-                ).count()
-                if admin_count == 0:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Cannot change role: this is the last admin user"
-                    )
+                _ensure_not_last_admin(session, user_id, "change role of")
             changes['role'] = {'old': user.role, 'new': user_data.role}
             user.role = user_data.role
 
         user.updated_at = datetime.now(timezone.utc)
-        session.commit()
-        session.refresh(user)
 
-        logger.info(f"User '{user.username}' updated by admin '{current_user['username']}': {changes}")
-
-        # Audit log
+        # Audit log (before commit for atomicity)
         if changes:
-            _safe_audit_log(
+            safe_audit_log(
                 session,
                 current_user['user_id'],
                 current_user['username'],
@@ -339,6 +356,11 @@ async def update_user(
                 details={'changes': changes},
                 **get_client_info(request)
             )
+
+        session.commit()
+        session.refresh(user)
+
+        logger.info(f"User '{user.username}' updated by admin '{current_user['username']}': {changes}")
 
         return _user_to_response(user)
 
@@ -372,17 +394,7 @@ async def delete_user(
             )
 
         # Prevent deleting the last admin
-        if user.role == 'admin':
-            admin_count = session.query(User).filter(
-                User.role == 'admin',
-                User.deleted_at.is_(None),
-                User.id != user_id
-            ).count()
-            if admin_count == 0:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Cannot delete: this is the last admin user"
-                )
+        _ensure_not_last_admin(session, user_id, "delete")
 
         # Check if already deleted
         if user.is_deleted:
@@ -395,12 +407,9 @@ async def delete_user(
         user.deleted_at = datetime.now(timezone.utc)
         user.deleted_by = current_user['user_id']
         user.updated_at = datetime.now(timezone.utc)
-        session.commit()
 
-        logger.info(f"User '{user.username}' deactivated by admin '{current_user['username']}'")
-
-        # Audit log
-        _safe_audit_log(
+        # Audit log (before commit for atomicity)
+        safe_audit_log(
             session,
             current_user['user_id'],
             current_user['username'],
@@ -410,6 +419,10 @@ async def delete_user(
             entity_name=user.username,
             **get_client_info(request)
         )
+
+        session.commit()
+
+        logger.info(f"User '{user.username}' deactivated by admin '{current_user['username']}'")
 
         return {"message": f"User '{user.username}' has been deactivated"}
 
@@ -442,13 +455,9 @@ async def reactivate_user(
         user.deleted_at = None
         user.deleted_by = None
         user.updated_at = datetime.now(timezone.utc)
-        session.commit()
-        session.refresh(user)
 
-        logger.info(f"User '{user.username}' reactivated by admin '{current_user['username']}'")
-
-        # Audit log
-        _safe_audit_log(
+        # Audit log (before commit for atomicity)
+        safe_audit_log(
             session,
             current_user['user_id'],
             current_user['username'],
@@ -459,6 +468,11 @@ async def reactivate_user(
             details={'action': 'reactivate'},
             **get_client_info(request)
         )
+
+        session.commit()
+        session.refresh(user)
+
+        logger.info(f"User '{user.username}' reactivated by admin '{current_user['username']}'")
 
         return _user_to_response(user)
 
@@ -504,12 +518,9 @@ async def reset_user_password(
         user.password_hash = ph.hash(new_password)
         user.must_change_password = True
         user.updated_at = datetime.now(timezone.utc)
-        session.commit()
 
-        logger.info(f"Password reset for user '{user.username}' by admin '{current_user['username']}'")
-
-        # Audit log
-        _safe_audit_log(
+        # Audit log (before commit for atomicity)
+        safe_audit_log(
             session,
             current_user['user_id'],
             current_user['username'],
@@ -520,6 +531,10 @@ async def reset_user_password(
             details={'admin_reset': True},
             **get_client_info(request)
         )
+
+        session.commit()
+
+        logger.info(f"Password reset for user '{user.username}' by admin '{current_user['username']}'")
 
         return {
             "message": f"Password reset for user '{user.username}'",

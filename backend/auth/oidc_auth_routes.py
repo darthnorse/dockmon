@@ -33,26 +33,29 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
-from auth.shared import db
+from sqlalchemy.exc import IntegrityError
+
+from auth.shared import db, safe_audit_log
 from auth.cookie_sessions import cookie_session_manager
+from auth.api_key_auth import invalidate_user_groups_cache
 from config.settings import AppConfig
-from database import User, OIDCConfig, OIDCRoleMapping, PendingOIDCAuth
+from database import User, OIDCConfig, OIDCGroupMapping, PendingOIDCAuth, CustomGroup, UserGroupMembership
 from security.rate_limiting import rate_limit_auth
 from audit import log_login, log_login_failure, get_client_info, AuditAction
-from audit.audit_logger import log_audit, AuditEntityType
+from audit.audit_logger import AuditEntityType
 from utils.encryption import decrypt_password
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v2/auth/oidc", tags=["oidc-auth"])
-
-# Default role for users with no matching group mappings
-DEFAULT_OIDC_ROLE = "readonly"
 
 # Pending auth request expiry time
 PENDING_AUTH_EXPIRY_MINUTES = 10
 
 # Session cookie duration (matches v2_routes.py)
 SESSION_MAX_AGE_SECONDS = 86400 * 7  # 7 days
+
+# HTTP client timeout for OIDC provider requests
+OIDC_HTTP_TIMEOUT = 10.0
 
 
 # ==================== Helper Functions ====================
@@ -113,7 +116,7 @@ async def _fetch_oidc_discovery(provider_url: str) -> dict:
     """Fetch OIDC provider discovery document."""
     discovery_url = f"{provider_url}/.well-known/openid-configuration"
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(timeout=OIDC_HTTP_TIMEOUT) as client:
         response = await client.get(discovery_url)
         response.raise_for_status()
         return response.json()
@@ -137,7 +140,7 @@ async def _exchange_code_for_tokens(
         'code_verifier': code_verifier,
     }
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(timeout=OIDC_HTTP_TIMEOUT) as client:
         response = await client.post(token_endpoint, data=data)
         response.raise_for_status()
         return response.json()
@@ -147,7 +150,7 @@ async def _fetch_userinfo(userinfo_endpoint: str, access_token: str) -> dict:
     """Fetch user info from OIDC provider."""
     headers = {'Authorization': f'Bearer {access_token}'}
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(timeout=OIDC_HTTP_TIMEOUT) as client:
         response = await client.get(userinfo_endpoint, headers=headers)
         response.raise_for_status()
         return response.json()
@@ -184,38 +187,43 @@ def _normalize_groups_claim(groups_value) -> list:
     return []
 
 
-def _map_groups_to_role(groups: list, session) -> str:
+def _get_groups_for_oidc_user(oidc_groups: list, session) -> list[int]:
     """
-    Map OIDC groups to DockMon role using configured mappings.
+    Map OIDC groups to DockMon groups.
 
-    Returns the role of the highest priority matching mapping,
-    or DEFAULT_OIDC_ROLE if no mappings match.
+    Returns ALL matching group IDs (user gets added to all matching groups).
+    If no matches, returns [default_group_id] from config.
+    If no default configured, returns empty list.
+
+    Args:
+        oidc_groups: List of OIDC group values from the provider
+        session: Database session
+
+    Returns:
+        List of DockMon group IDs to assign to the user
     """
-    if not groups:
-        return DEFAULT_OIDC_ROLE
+    # Get all group mappings
+    mappings = session.query(OIDCGroupMapping).all()
 
-    # Get all mappings ordered by priority (highest first)
-    mappings = session.query(OIDCRoleMapping).order_by(
-        OIDCRoleMapping.priority.desc()
-    ).all()
-
-    # Find the highest priority matching mapping
+    # Find ALL matching groups (not just highest priority)
+    matched_group_ids = []
     for mapping in mappings:
-        if mapping.oidc_value in groups:
-            logger.debug(f"OIDC group '{mapping.oidc_value}' matched role '{mapping.dockmon_role}'")
-            return mapping.dockmon_role
+        if mapping.oidc_value in oidc_groups:
+            matched_group_ids.append(mapping.group_id)
+            logger.debug(f"OIDC group '{mapping.oidc_value}' matched DockMon group {mapping.group_id}")
 
-    logger.debug(f"No matching OIDC group mapping for groups: {groups}")
-    return DEFAULT_OIDC_ROLE
+    if matched_group_ids:
+        # Deduplicate in case same group mapped multiple times
+        return list(set(matched_group_ids))
 
+    # No matches - use default group from config
+    config = session.query(OIDCConfig).filter(OIDCConfig.id == 1).first()
+    if config and config.default_group_id:
+        logger.debug(f"No OIDC group matches, using default group {config.default_group_id}")
+        return [config.default_group_id]
 
-def _safe_audit_log(session, *args, **kwargs) -> None:
-    """Execute audit logging with error handling."""
-    try:
-        log_audit(session, *args, **kwargs)
-        session.commit()
-    except Exception as e:
-        logger.warning(f"Failed to log audit entry: {e}")
+    logger.warning("No OIDC group matches and no default group configured")
+    return []
 
 
 # ==================== OIDC Flow Endpoints ====================
@@ -431,12 +439,9 @@ async def oidc_callback(
             # Get groups from configured claim (with type safety)
             groups_claim = config.claim_for_groups
             groups_raw = userinfo.get(groups_claim)
-            groups = _normalize_groups_claim(groups_raw)
+            oidc_groups = _normalize_groups_claim(groups_raw)
 
-            # Map groups to role
-            role = _map_groups_to_role(groups, session)
-
-            logger.info(f"OIDC callback: sub={oidc_subject}, email={email}, groups={groups}, role={role}")
+            logger.info(f"OIDC callback: sub={oidc_subject}, email={email}, oidc_groups={oidc_groups}")
 
             # Find or create user
             user = session.query(User).filter(User.oidc_subject == oidc_subject).first()
@@ -444,28 +449,63 @@ async def oidc_callback(
             now = datetime.now(timezone.utc)
 
             if user:
-                # Existing OIDC user - update role if changed
-                old_role = user.role
-                if old_role != role:
-                    user.role = role
-                    logger.info(f"OIDC user '{user.username}' role changed: {old_role} -> {role}")
+                # Existing OIDC user - sync group memberships (full replacement)
+                new_group_ids = set(_get_groups_for_oidc_user(oidc_groups, session))
 
-                    # Audit role change
-                    _safe_audit_log(
-                        session,
-                        user.id,
-                        user.username,
-                        AuditAction.ROLE_CHANGE,
-                        AuditEntityType.USER,
-                        entity_id=str(user.id),
-                        entity_name=user.username,
-                        details={'old_role': old_role, 'new_role': role, 'source': 'oidc_refresh'},
-                        **get_client_info(request)
+                # Get existing memberships
+                existing = session.query(UserGroupMembership).filter_by(user_id=user.id).all()
+                existing_group_ids = {m.group_id for m in existing}
+
+                # Track changes for logging
+                added_groups = new_group_ids - existing_group_ids
+                removed_groups = existing_group_ids - new_group_ids
+
+                # Add new groups
+                # Note: Race conditions are unlikely since we checked existing memberships above.
+                # If a concurrent request added the same membership, the unique constraint
+                # will fail at commit time and the entire transaction retries.
+                for gid in added_groups:
+                    membership = UserGroupMembership(
+                        user_id=user.id,
+                        group_id=gid,
+                        added_by=None,  # System-assigned via OIDC
+                        added_at=now
                     )
+                    session.add(membership)
+                    logger.info(f"OIDC user '{user.username}' added to group {gid}")
+
+                # Remove groups no longer in OIDC claims
+                for membership in existing:
+                    if membership.group_id in removed_groups:
+                        session.delete(membership)
+                        logger.info(f"OIDC user '{user.username}' removed from group {membership.group_id}")
 
                 user.last_login = now
                 user.updated_at = now
+
+                # Audit group sync if changes occurred (before commit for atomicity)
+                if added_groups or removed_groups:
+                    safe_audit_log(
+                        session,
+                        user.id,
+                        user.username,
+                        AuditAction.UPDATE,
+                        AuditEntityType.USER,
+                        entity_id=str(user.id),
+                        entity_name=user.username,
+                        details={
+                            'source': 'oidc_group_sync',
+                            'added_groups': list(added_groups),
+                            'removed_groups': list(removed_groups),
+                            'oidc_groups': oidc_groups
+                        },
+                        **get_client_info(request)
+                    )
+
                 session.commit()
+
+                # Invalidate user's group cache after sync
+                invalidate_user_groups_cache(user.id)
 
             else:
                 # New OIDC user - check for email conflict
@@ -476,7 +516,7 @@ async def oidc_callback(
                     ).first()
                     if existing_email:
                         logger.warning(f"OIDC login blocked: email '{email}' exists as local user")
-                        _safe_audit_log(
+                        safe_audit_log(
                             session,
                             None,
                             preferred_username,
@@ -485,6 +525,7 @@ async def oidc_callback(
                             details={'reason': 'email_conflict', 'email': email},
                             **get_client_info(request)
                         )
+                        session.commit()  # Commit the audit log
                         return RedirectResponse(
                             url="/login?error=oidc_error&message=Email+already+exists+as+local+account"
                         )
@@ -499,13 +540,48 @@ async def oidc_callback(
                     if counter > 100:
                         raise ValueError("Could not generate unique username")
 
-                # Auto-provision new user
+                # Check if this is the first user ever (auto-assign to Administrators)
+                user_count = session.query(User).count()
+                is_first_user = user_count == 0
+
+                if is_first_user:
+                    # First user ever - assign to Administrators regardless of OIDC claims
+                    admin_group = session.query(CustomGroup).filter_by(name="Administrators").first()
+                    if admin_group:
+                        group_ids = [admin_group.id]
+                        logger.info(f"First OIDC user '{username}' auto-assigned to Administrators")
+                    else:
+                        # Fallback: use OIDC-based groups if Administrators doesn't exist
+                        group_ids = _get_groups_for_oidc_user(oidc_groups, session)
+                        logger.warning("Administrators group not found, using OIDC-based groups")
+                else:
+                    # Normal flow - map OIDC groups to DockMon groups
+                    group_ids = _get_groups_for_oidc_user(oidc_groups, session)
+
+                # Validate user will have at least one group
+                if not group_ids:
+                    logger.error(f"OIDC user '{username}' would have no groups - login blocked")
+                    safe_audit_log(
+                        session,
+                        None,
+                        username,
+                        AuditAction.LOGIN_FAILED,
+                        AuditEntityType.SESSION,
+                        details={'reason': 'no_matching_groups', 'oidc_groups': oidc_groups},
+                        **get_client_info(request)
+                    )
+                    session.commit()  # Commit the audit log
+                    return RedirectResponse(
+                        url="/login?error=oidc_error&message=No+matching+group+configuration"
+                    )
+
+                # Auto-provision new user (no role field - groups provide permissions)
                 user = User(
                     username=username,
                     password_hash='',  # OIDC users don't have passwords
                     display_name=name,
                     email=email,
-                    role=role,
+                    role='user',  # Legacy field - kept for compatibility but groups determine permissions
                     auth_provider='oidc',
                     oidc_subject=oidc_subject,
                     is_first_login=False,
@@ -516,13 +592,19 @@ async def oidc_callback(
                 )
 
                 session.add(user)
-                session.commit()
-                session.refresh(user)
+                session.flush()  # Get user.id for group memberships
 
-                logger.info(f"OIDC user '{username}' auto-provisioned with role '{role}'")
+                # Add user to all matching groups
+                for gid in group_ids:
+                    session.add(UserGroupMembership(
+                        user_id=user.id,
+                        group_id=gid,
+                        added_by=None,  # System-assigned via OIDC
+                        added_at=now
+                    ))
 
-                # Audit user creation
-                _safe_audit_log(
+                # Audit user creation (before commit for atomicity)
+                safe_audit_log(
                     session,
                     user.id,
                     user.username,
@@ -530,14 +612,28 @@ async def oidc_callback(
                     AuditEntityType.USER,
                     entity_id=str(user.id),
                     entity_name=user.username,
-                    details={'source': 'oidc_auto_provision', 'role': role, 'email': email},
+                    details={
+                        'source': 'oidc_auto_provision',
+                        'groups': group_ids,
+                        'oidc_groups': oidc_groups,
+                        'email': email,
+                        'is_first_user': is_first_user
+                    },
                     **get_client_info(request)
                 )
+
+                session.commit()
+                session.refresh(user)
+
+                logger.info(f"OIDC user '{username}' auto-provisioned with groups {group_ids}")
+
+                # Invalidate cache for new user (defensive - ensures fresh state)
+                invalidate_user_groups_cache(user.id)
 
             # Check if user is soft-deleted
             if user.is_deleted:
                 logger.warning(f"OIDC login blocked: user '{user.username}' is deactivated")
-                _safe_audit_log(
+                safe_audit_log(
                     session,
                     user.id,
                     user.username,
@@ -546,6 +642,7 @@ async def oidc_callback(
                     details={'reason': 'user_deactivated'},
                     **get_client_info(request)
                 )
+                session.commit()  # Commit the audit log
                 return RedirectResponse(url="/login?error=oidc_error&message=Account+deactivated")
 
             # Create session
@@ -576,7 +673,13 @@ async def oidc_callback(
                 domain=None
             )
 
-            logger.info(f"OIDC login successful: user='{user.username}', role='{user.role}'")
+            # Get user's current groups for logging
+            user_memberships = session.query(UserGroupMembership).filter_by(user_id=user.id).all()
+            user_group_ids = [m.group_id for m in user_memberships]
+            user_groups = session.query(CustomGroup).filter(CustomGroup.id.in_(user_group_ids)).all() if user_group_ids else []
+            group_names = [g.name for g in user_groups]
+
+            logger.info(f"OIDC login successful: user='{user.username}', groups={group_names}")
             return redirect_response
 
         except httpx.HTTPStatusError as e:

@@ -2,9 +2,10 @@
 DockMon OIDC Configuration Routes - Admin-only OIDC Settings Management
 
 Phase 4 of Multi-User Support (v2.3.0)
+Updated for group-based permissions (v2.4.0)
 
 SECURITY:
-- All endpoints require admin role
+- All endpoints require admin capabilities
 - Client secret is encrypted before storage
 - Provider URL must use HTTPS
 """
@@ -17,18 +18,19 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request, Depends
 from pydantic import BaseModel, Field, field_validator
 
-from auth.shared import db
+from auth.shared import db, safe_audit_log
 from auth.api_key_auth import require_scope, get_current_user_or_api_key
-from database import OIDCConfig, OIDCRoleMapping
+from database import OIDCConfig, OIDCGroupMapping, CustomGroup
 from audit import get_client_info, AuditAction
-from audit.audit_logger import log_audit, AuditEntityType
+from audit.audit_logger import AuditEntityType
 from utils.encryption import encrypt_password, decrypt_password
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/v2/oidc", tags=["oidc-config"])
 
-# Valid DockMon roles
-VALID_ROLES = ["admin", "user", "readonly"]
+# HTTP client timeout for OIDC provider requests (shared with oidc_auth_routes)
+OIDC_HTTP_TIMEOUT = 10.0
+
+router = APIRouter(prefix="/api/v2/oidc", tags=["oidc-config"])
 
 
 # ==================== Request/Response Models ====================
@@ -42,6 +44,8 @@ class OIDCConfigResponse(BaseModel):
     client_secret_configured: bool
     scopes: str
     claim_for_groups: str
+    default_group_id: Optional[int] = None
+    default_group_name: Optional[str] = None  # For display
     created_at: str
     updated_at: str
 
@@ -54,6 +58,7 @@ class OIDCConfigUpdateRequest(BaseModel):
     client_secret: Optional[str] = Field(None, max_length=500)
     scopes: Optional[str] = Field(None, max_length=500)
     claim_for_groups: Optional[str] = Field(None, max_length=100)
+    default_group_id: Optional[int] = None
 
     @field_validator('provider_url')
     @classmethod
@@ -66,41 +71,28 @@ class OIDCConfigUpdateRequest(BaseModel):
         return v
 
 
-class OIDCRoleMappingResponse(BaseModel):
-    """OIDC role mapping response"""
+class OIDCGroupMappingResponse(BaseModel):
+    """OIDC group mapping response"""
     id: int
     oidc_value: str
-    dockmon_role: str
+    group_id: int
+    group_name: str  # For display
     priority: int
     created_at: str
 
 
-class OIDCRoleMappingCreateRequest(BaseModel):
-    """Create a new role mapping"""
+class OIDCGroupMappingCreateRequest(BaseModel):
+    """Create a new group mapping"""
     oidc_value: str = Field(..., min_length=1, max_length=200)
-    dockmon_role: str = Field(...)
+    group_id: int
     priority: int = Field(default=0, ge=0, le=1000)
 
-    @field_validator('dockmon_role')
-    @classmethod
-    def validate_role(cls, v: str) -> str:
-        if v not in VALID_ROLES:
-            raise ValueError(f"Invalid role. Must be one of: {', '.join(VALID_ROLES)}")
-        return v
 
-
-class OIDCRoleMappingUpdateRequest(BaseModel):
-    """Update a role mapping"""
+class OIDCGroupMappingUpdateRequest(BaseModel):
+    """Update a group mapping"""
     oidc_value: Optional[str] = Field(None, min_length=1, max_length=200)
-    dockmon_role: Optional[str] = None
+    group_id: Optional[int] = None
     priority: Optional[int] = Field(None, ge=0, le=1000)
-
-    @field_validator('dockmon_role')
-    @classmethod
-    def validate_role(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None and v not in VALID_ROLES:
-            raise ValueError(f"Invalid role. Must be one of: {', '.join(VALID_ROLES)}")
-        return v
 
 
 class OIDCDiscoveryResponse(BaseModel):
@@ -124,8 +116,29 @@ class OIDCStatusResponse(BaseModel):
 
 # ==================== Helper Functions ====================
 
-def _config_to_response(config: OIDCConfig) -> OIDCConfigResponse:
+def _format_timestamp(dt: Optional[datetime]) -> Optional[str]:
+    """Format datetime to ISO string with 'Z' suffix for frontend."""
+    if dt is None:
+        return None
+    return dt.isoformat() + 'Z'
+
+
+def _format_timestamp_required(dt: Optional[datetime]) -> str:
+    """Format datetime to ISO string, using now() if None."""
+    if dt is None:
+        return datetime.now(timezone.utc).isoformat() + 'Z'
+    return dt.isoformat() + 'Z'
+
+
+def _config_to_response(config: OIDCConfig, session) -> OIDCConfigResponse:
     """Convert OIDCConfig model to response"""
+    # Get default group name for display
+    default_group_name = None
+    if config.default_group_id:
+        default_group = session.query(CustomGroup).filter(CustomGroup.id == config.default_group_id).first()
+        if default_group:
+            default_group_name = default_group.name
+
     return OIDCConfigResponse(
         enabled=config.enabled,
         provider_url=config.provider_url,
@@ -133,29 +146,42 @@ def _config_to_response(config: OIDCConfig) -> OIDCConfigResponse:
         client_secret_configured=config.client_secret_encrypted is not None,
         scopes=config.scopes,
         claim_for_groups=config.claim_for_groups,
-        created_at=config.created_at.isoformat() + 'Z' if config.created_at else datetime.now(timezone.utc).isoformat() + 'Z',
-        updated_at=config.updated_at.isoformat() + 'Z' if config.updated_at else datetime.now(timezone.utc).isoformat() + 'Z',
+        default_group_id=config.default_group_id,
+        default_group_name=default_group_name,
+        created_at=_format_timestamp_required(config.created_at),
+        updated_at=_format_timestamp_required(config.updated_at),
     )
 
 
-def _mapping_to_response(mapping: OIDCRoleMapping) -> OIDCRoleMappingResponse:
-    """Convert OIDCRoleMapping model to response"""
-    return OIDCRoleMappingResponse(
+def _mapping_to_response(
+    mapping: OIDCGroupMapping,
+    group_names: Optional[dict[int, str]] = None,
+    session=None
+) -> OIDCGroupMappingResponse:
+    """Convert OIDCGroupMapping model to response.
+
+    Args:
+        mapping: The mapping to convert
+        group_names: Optional pre-fetched dict of {group_id: group_name} to avoid N+1 queries
+        session: Database session (only needed if group_names not provided)
+    """
+    # Get group name from pre-fetched dict or query
+    if group_names is not None:
+        group_name = group_names.get(mapping.group_id, "Unknown")
+    elif session is not None:
+        group = session.query(CustomGroup).filter(CustomGroup.id == mapping.group_id).first()
+        group_name = group.name if group else "Unknown"
+    else:
+        group_name = "Unknown"
+
+    return OIDCGroupMappingResponse(
         id=mapping.id,
         oidc_value=mapping.oidc_value,
-        dockmon_role=mapping.dockmon_role,
+        group_id=mapping.group_id,
+        group_name=group_name,
         priority=mapping.priority,
-        created_at=mapping.created_at.isoformat() + 'Z' if mapping.created_at else datetime.now(timezone.utc).isoformat() + 'Z',
+        created_at=_format_timestamp_required(mapping.created_at),
     )
-
-
-def _safe_audit_log(session, *args, **kwargs) -> None:
-    """Execute audit logging with error handling"""
-    try:
-        log_audit(session, *args, **kwargs)
-        session.commit()
-    except Exception as e:
-        logger.warning(f"Failed to log audit entry: {e}")
 
 
 def _get_or_create_config(session) -> OIDCConfig:
@@ -210,7 +236,7 @@ async def get_oidc_config(
     """
     with db.get_session() as session:
         config = _get_or_create_config(session)
-        return _config_to_response(config)
+        return _config_to_response(config, session)
 
 
 @router.put("/config", response_model=OIDCConfigResponse, dependencies=[Depends(require_scope("admin"))])
@@ -256,15 +282,23 @@ async def update_oidc_config(
             changes['claim_for_groups'] = {'old': config.claim_for_groups, 'new': config_data.claim_for_groups}
             config.claim_for_groups = config_data.claim_for_groups if config_data.claim_for_groups else 'groups'
 
+        if config_data.default_group_id is not None:
+            # Validate group exists (allow setting to None to clear)
+            if config_data.default_group_id != 0:  # 0 means clear the default
+                group = session.query(CustomGroup).filter(CustomGroup.id == config_data.default_group_id).first()
+                if not group:
+                    raise HTTPException(status_code=400, detail=f"Group {config_data.default_group_id} not found")
+                changes['default_group_id'] = {'old': config.default_group_id, 'new': config_data.default_group_id}
+                config.default_group_id = config_data.default_group_id
+            else:
+                # Setting to 0 clears the default group
+                changes['default_group_id'] = {'old': config.default_group_id, 'new': None}
+                config.default_group_id = None
+
         config.updated_at = datetime.now(timezone.utc)
-        session.commit()
-        session.refresh(config)
-
-        logger.info(f"OIDC configuration updated by admin '{current_user['username']}'")
-
-        # Audit log
+        # Audit log (before commit for atomicity)
         if changes:
-            _safe_audit_log(
+            safe_audit_log(
                 session,
                 current_user['user_id'],
                 current_user['username'],
@@ -276,7 +310,12 @@ async def update_oidc_config(
                 **get_client_info(request)
             )
 
-        return _config_to_response(config)
+        session.commit()
+        session.refresh(config)
+
+        logger.info(f"OIDC configuration updated by admin '{current_user['username']}'")
+
+        return _config_to_response(config, session)
 
 
 @router.post("/discover", response_model=OIDCDiscoveryResponse, dependencies=[Depends(require_scope("admin"))])
@@ -301,7 +340,7 @@ async def discover_oidc_provider(
         discovery_url = f"{config.provider_url}/.well-known/openid-configuration"
 
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=OIDC_HTTP_TIMEOUT) as client:
                 response = await client.get(discovery_url)
                 response.raise_for_status()
                 discovery = response.json()
@@ -338,105 +377,128 @@ async def discover_oidc_provider(
             )
 
 
-# ==================== Role Mapping Endpoints ====================
+# ==================== Group Mapping Endpoints ====================
 
-@router.get("/role-mappings", response_model=List[OIDCRoleMappingResponse], dependencies=[Depends(require_scope("admin"))])
-async def list_role_mappings(
+@router.get("/group-mappings", response_model=List[OIDCGroupMappingResponse], dependencies=[Depends(require_scope("admin"))])
+async def list_group_mappings(
     current_user: dict = Depends(get_current_user_or_api_key)
-) -> List[OIDCRoleMappingResponse]:
+) -> List[OIDCGroupMappingResponse]:
     """
-    List all OIDC role mappings (admin only).
+    List all OIDC group mappings (admin only).
 
     Mappings are returned sorted by priority (highest first).
     """
     with db.get_session() as session:
-        mappings = session.query(OIDCRoleMapping).order_by(
-            OIDCRoleMapping.priority.desc(),
-            OIDCRoleMapping.id.asc()
+        mappings = session.query(OIDCGroupMapping).order_by(
+            OIDCGroupMapping.priority.desc(),
+            OIDCGroupMapping.id.asc()
         ).all()
 
-        return [_mapping_to_response(m) for m in mappings]
+        # Pre-fetch all group names in a single query to avoid N+1
+        group_ids = list({m.group_id for m in mappings})
+        if group_ids:
+            groups = session.query(CustomGroup).filter(CustomGroup.id.in_(group_ids)).all()
+            group_names = {g.id: g.name for g in groups}
+        else:
+            group_names = {}
+
+        return [_mapping_to_response(m, group_names=group_names) for m in mappings]
 
 
-@router.post("/role-mappings", response_model=OIDCRoleMappingResponse, dependencies=[Depends(require_scope("admin"))])
-async def create_role_mapping(
-    mapping_data: OIDCRoleMappingCreateRequest,
+@router.post("/group-mappings", response_model=OIDCGroupMappingResponse, dependencies=[Depends(require_scope("admin"))])
+async def create_group_mapping(
+    mapping_data: OIDCGroupMappingCreateRequest,
     request: Request,
     current_user: dict = Depends(get_current_user_or_api_key)
-) -> OIDCRoleMappingResponse:
+) -> OIDCGroupMappingResponse:
     """
-    Create a new OIDC role mapping (admin only).
+    Create a new OIDC group mapping (admin only).
 
-    Maps an OIDC group/claim value to a DockMon role.
-    Higher priority mappings take precedence when a user has multiple matching groups.
+    Maps an OIDC group/claim value to a DockMon group. Each OIDC value maps
+    to exactly one DockMon group (one-to-one). Users in multiple OIDC groups
+    get added to all corresponding DockMon groups and receive the union of
+    all group permissions.
+
+    This follows industry best practice (Kubernetes, AWS, Vault, etc.).
     """
     with db.get_session() as session:
-        # Check for duplicate OIDC value
-        existing = session.query(OIDCRoleMapping).filter(
-            OIDCRoleMapping.oidc_value == mapping_data.oidc_value
+        # One-to-one mapping: each OIDC value maps to exactly one DockMon group
+        existing = session.query(OIDCGroupMapping).filter(
+            OIDCGroupMapping.oidc_value == mapping_data.oidc_value
         ).first()
         if existing:
             raise HTTPException(
                 status_code=400,
-                detail=f"Mapping for '{mapping_data.oidc_value}' already exists"
+                detail=f"Mapping for '{mapping_data.oidc_value}' already exists. Each OIDC group can only map to one DockMon group."
             )
 
-        mapping = OIDCRoleMapping(
+        # Validate group exists
+        group = session.query(CustomGroup).filter(CustomGroup.id == mapping_data.group_id).first()
+        if not group:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Group {mapping_data.group_id} not found"
+            )
+
+        mapping = OIDCGroupMapping(
             oidc_value=mapping_data.oidc_value,
-            dockmon_role=mapping_data.dockmon_role,
+            group_id=mapping_data.group_id,
             priority=mapping_data.priority,
             created_at=datetime.now(timezone.utc),
         )
 
         session.add(mapping)
-        session.commit()
-        session.refresh(mapping)
+        session.flush()  # Get mapping.id for audit log
 
-        logger.info(f"OIDC role mapping '{mapping_data.oidc_value}' -> '{mapping_data.dockmon_role}' created by admin '{current_user['username']}'")
-
-        # Audit log
-        _safe_audit_log(
+        # Audit log (before commit for atomicity)
+        safe_audit_log(
             session,
             current_user['user_id'],
             current_user['username'],
             AuditAction.CREATE,
             AuditEntityType.OIDC_CONFIG,
             entity_id=str(mapping.id),
-            entity_name=f"role_mapping:{mapping_data.oidc_value}",
+            entity_name=f"group_mapping:{mapping_data.oidc_value}",
             details={
                 'oidc_value': mapping_data.oidc_value,
-                'dockmon_role': mapping_data.dockmon_role,
+                'group_id': mapping_data.group_id,
+                'group_name': group.name,
                 'priority': mapping_data.priority,
             },
             **get_client_info(request)
         )
 
-        return _mapping_to_response(mapping)
+        session.commit()
+        session.refresh(mapping)
+
+        logger.info(f"OIDC group mapping '{mapping_data.oidc_value}' -> group {mapping_data.group_id} ('{group.name}') created by admin '{current_user['username']}'")
+
+        return _mapping_to_response(mapping, session=session)
 
 
-@router.put("/role-mappings/{mapping_id}", response_model=OIDCRoleMappingResponse, dependencies=[Depends(require_scope("admin"))])
-async def update_role_mapping(
+@router.put("/group-mappings/{mapping_id}", response_model=OIDCGroupMappingResponse, dependencies=[Depends(require_scope("admin"))])
+async def update_group_mapping(
     mapping_id: int,
-    mapping_data: OIDCRoleMappingUpdateRequest,
+    mapping_data: OIDCGroupMappingUpdateRequest,
     request: Request,
     current_user: dict = Depends(get_current_user_or_api_key)
-) -> OIDCRoleMappingResponse:
+) -> OIDCGroupMappingResponse:
     """
-    Update an OIDC role mapping (admin only).
+    Update an OIDC group mapping (admin only).
     """
     with db.get_session() as session:
-        mapping = session.query(OIDCRoleMapping).filter(OIDCRoleMapping.id == mapping_id).first()
+        mapping = session.query(OIDCGroupMapping).filter(OIDCGroupMapping.id == mapping_id).first()
 
         if not mapping:
-            raise HTTPException(status_code=404, detail="Role mapping not found")
+            raise HTTPException(status_code=404, detail="Group mapping not found")
 
         changes = {}
 
         if mapping_data.oidc_value is not None:
-            # Check for duplicate
-            existing = session.query(OIDCRoleMapping).filter(
-                OIDCRoleMapping.oidc_value == mapping_data.oidc_value,
-                OIDCRoleMapping.id != mapping_id
+            # One-to-one mapping: check for duplicate OIDC value
+            existing = session.query(OIDCGroupMapping).filter(
+                OIDCGroupMapping.oidc_value == mapping_data.oidc_value,
+                OIDCGroupMapping.id != mapping_id
             ).first()
             if existing:
                 raise HTTPException(
@@ -446,67 +508,77 @@ async def update_role_mapping(
             changes['oidc_value'] = {'old': mapping.oidc_value, 'new': mapping_data.oidc_value}
             mapping.oidc_value = mapping_data.oidc_value
 
-        if mapping_data.dockmon_role is not None:
-            changes['dockmon_role'] = {'old': mapping.dockmon_role, 'new': mapping_data.dockmon_role}
-            mapping.dockmon_role = mapping_data.dockmon_role
+        if mapping_data.group_id is not None:
+            # Validate group exists
+            group = session.query(CustomGroup).filter(CustomGroup.id == mapping_data.group_id).first()
+            if not group:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Group {mapping_data.group_id} not found"
+                )
+            changes['group_id'] = {'old': mapping.group_id, 'new': mapping_data.group_id}
+            mapping.group_id = mapping_data.group_id
 
         if mapping_data.priority is not None:
             changes['priority'] = {'old': mapping.priority, 'new': mapping_data.priority}
             mapping.priority = mapping_data.priority
 
-        session.commit()
-        session.refresh(mapping)
-
-        logger.info(f"OIDC role mapping {mapping_id} updated by admin '{current_user['username']}'")
-
-        # Audit log
+        # Audit log (before commit for atomicity)
         if changes:
-            _safe_audit_log(
+            safe_audit_log(
                 session,
                 current_user['user_id'],
                 current_user['username'],
                 AuditAction.UPDATE,
                 AuditEntityType.OIDC_CONFIG,
                 entity_id=str(mapping.id),
-                entity_name=f"role_mapping:{mapping.oidc_value}",
+                entity_name=f"group_mapping:{mapping.oidc_value}",
                 details={'changes': changes},
                 **get_client_info(request)
             )
 
-        return _mapping_to_response(mapping)
+        session.commit()
+        session.refresh(mapping)
+
+        logger.info(f"OIDC group mapping {mapping_id} updated by admin '{current_user['username']}'")
+
+        return _mapping_to_response(mapping, session=session)
 
 
-@router.delete("/role-mappings/{mapping_id}", dependencies=[Depends(require_scope("admin"))])
-async def delete_role_mapping(
+@router.delete("/group-mappings/{mapping_id}", dependencies=[Depends(require_scope("admin"))])
+async def delete_group_mapping(
     mapping_id: int,
     request: Request,
     current_user: dict = Depends(get_current_user_or_api_key)
 ) -> dict:
     """
-    Delete an OIDC role mapping (admin only).
+    Delete an OIDC group mapping (admin only).
     """
     with db.get_session() as session:
-        mapping = session.query(OIDCRoleMapping).filter(OIDCRoleMapping.id == mapping_id).first()
+        mapping = session.query(OIDCGroupMapping).filter(OIDCGroupMapping.id == mapping_id).first()
 
         if not mapping:
-            raise HTTPException(status_code=404, detail="Role mapping not found")
+            raise HTTPException(status_code=404, detail="Group mapping not found")
 
         oidc_value = mapping.oidc_value
+        group_id = mapping.group_id
         session.delete(mapping)
-        session.commit()
 
-        logger.info(f"OIDC role mapping '{oidc_value}' deleted by admin '{current_user['username']}'")
-
-        # Audit log
-        _safe_audit_log(
+        # Audit log (before commit for atomicity)
+        safe_audit_log(
             session,
             current_user['user_id'],
             current_user['username'],
             AuditAction.DELETE,
             AuditEntityType.OIDC_CONFIG,
             entity_id=str(mapping_id),
-            entity_name=f"role_mapping:{oidc_value}",
+            entity_name=f"group_mapping:{oidc_value}",
+            details={'oidc_value': oidc_value, 'group_id': group_id},
             **get_client_info(request)
         )
 
-        return {"message": f"Role mapping '{oidc_value}' deleted"}
+        session.commit()
+
+        logger.info(f"OIDC group mapping '{oidc_value}' deleted by admin '{current_user['username']}'")
+
+        return {"message": f"Group mapping '{oidc_value}' deleted"}

@@ -502,6 +502,10 @@ app.include_router(role_permissions_router)  # Role permission management (admin
 from auth.custom_groups_routes import router as custom_groups_router
 app.include_router(custom_groups_router)  # Custom group management (admin only)
 
+# Audit log routes (v2.3.0 Phase 6) - audit log viewer and management
+from audit.audit_routes import router as audit_routes_router
+app.include_router(audit_routes_router)  # Audit log management (admin only)
+
 # Action token routes (v2.2.0+) - notification action links
 from auth import action_token_routes
 app.include_router(action_token_routes.router)  # One-time action tokens

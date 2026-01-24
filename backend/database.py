@@ -621,6 +621,9 @@ class GlobalSettings(Base):
     # Alert system settings
     alert_retention_days = Column(Integer, default=90)  # Keep resolved alerts for N days (0 = keep forever)
 
+    # Audit log settings (v2.3.0 Phase 6)
+    audit_log_retention_days = Column(Integer, default=90)  # Keep audit entries for N days (0 = unlimited)
+
     # Version tracking and upgrade notifications
     app_version = Column(String, default="2.0.0")  # Current application version
     upgrade_notice_dismissed = Column(Boolean, default=True)  # Whether user has seen v2 upgrade notice (False for v1→v2 upgrades set by migration)

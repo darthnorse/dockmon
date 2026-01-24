@@ -10,12 +10,17 @@
  * - Tailwind CSS + shadcn/ui components
  * - Grafana/Portainer-inspired dark theme
  * - WCAG 2.1 AA accessible
+ *
+ * OIDC (v2.3.0):
+ * - Shows SSO button when OIDC is enabled
+ * - Handles OIDC callback error messages
  */
 
-import { useState, type FormEvent } from 'react'
-import { LogIn } from 'lucide-react'
+import { useState, useEffect, type FormEvent } from 'react'
+import { LogIn, KeyRound } from 'lucide-react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { useAuth } from './AuthContext'
+import { useOIDCStatus } from '@/hooks/useOIDC'
 import { ApiError, apiClient } from '@/lib/api/client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -23,6 +28,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 
 export function LoginPage() {
   const { login, isLoading } = useAuth()
+  const { data: oidcStatus } = useOIDCStatus()
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const [username, setUsername] = useState('')
@@ -31,6 +37,25 @@ export function LoginPage() {
 
   // Get redirect URL from query params (e.g., /login?redirect=/quick-action?token=xxx)
   const redirectUrl = searchParams.get('redirect')
+
+  // Check for OIDC error from callback
+  const oidcError = searchParams.get('error')
+  const oidcErrorMessage = searchParams.get('message')
+
+  useEffect(() => {
+    if (oidcError === 'oidc_error' && oidcErrorMessage) {
+      setError(`SSO Error: ${decodeURIComponent(oidcErrorMessage.replace(/\+/g, ' '))}`)
+    }
+  }, [oidcError, oidcErrorMessage])
+
+  const handleOIDCLogin = () => {
+    // Redirect to OIDC authorize endpoint, preserving redirect URL
+    const authorizeUrl = new URL('/api/v2/auth/oidc/authorize', window.location.origin)
+    if (redirectUrl) {
+      authorizeUrl.searchParams.set('redirect', redirectUrl)
+    }
+    window.location.href = authorizeUrl.toString()
+  }
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -161,6 +186,31 @@ export function LoginPage() {
               )}
             </Button>
           </form>
+
+          {/* OIDC SSO Button */}
+          {oidcStatus?.enabled && (
+            <>
+              <div className="relative my-4">
+                <div className="absolute inset-0 flex items-center">
+                  <span className="w-full border-t border-border" />
+                </div>
+                <div className="relative flex justify-center text-xs uppercase">
+                  <span className="bg-card px-2 text-muted-foreground">or</span>
+                </div>
+              </div>
+
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                size="lg"
+                onClick={handleOIDCLogin}
+              >
+                <KeyRound className="h-4 w-4" />
+                Sign in with SSO
+              </Button>
+            </>
+          )}
         </CardContent>
       </Card>
     </div>

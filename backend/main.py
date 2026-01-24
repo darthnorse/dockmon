@@ -488,6 +488,12 @@ app.include_router(api_key_routes.router)  # API key management
 from auth.user_management_routes import router as user_management_router
 app.include_router(user_management_router)  # User management (admin only)
 
+# OIDC routes (v2.3.0+) - OpenID Connect configuration and authentication
+from auth.oidc_config_routes import router as oidc_config_router
+from auth.oidc_auth_routes import router as oidc_auth_router
+app.include_router(oidc_config_router)  # OIDC configuration (admin only)
+app.include_router(oidc_auth_router)  # OIDC authentication flow
+
 # Action token routes (v2.2.0+) - notification action links
 from auth import action_token_routes
 app.include_router(action_token_routes.router)  # One-time action tokens

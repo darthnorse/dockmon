@@ -180,6 +180,30 @@ class OIDCRoleMapping(Base):
     created_at = Column(DateTime, nullable=False, default=utcnow)
 
 
+class PendingOIDCAuth(Base):
+    """
+    Pending OIDC authentication requests (v2.3.0).
+
+    Stores state, nonce, and PKCE verifier for OIDC authorization flow.
+    Supports multi-instance deployments by using database instead of in-memory storage.
+    Expires after 10 minutes.
+    """
+    __tablename__ = "pending_oidc_auth"
+
+    state = Column(Text, primary_key=True)  # State parameter (CSRF protection)
+    nonce = Column(Text, nullable=False)  # Nonce parameter (replay protection)
+    code_verifier = Column(Text, nullable=False)  # PKCE code verifier
+    redirect_uri = Column(Text, nullable=False)  # Callback URL
+    frontend_redirect = Column(Text, nullable=False, default='/')  # Where to redirect after auth
+    expires_at = Column(DateTime, nullable=False, index=True)  # 10 minutes from creation
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+    @property
+    def is_expired(self) -> bool:
+        """Check if auth request has expired"""
+        return datetime.now(timezone.utc) > self.expires_at
+
+
 class StackMetadata(Base):
     """
     Audit trail for filesystem-based stacks (v2.3.0).

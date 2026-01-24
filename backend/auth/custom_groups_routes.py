@@ -1,0 +1,632 @@
+"""
+Custom Groups Management API (v2.3.0 Phase 5)
+
+Provides endpoints for managing custom user groups.
+Groups are organizational units that users can be assigned to.
+Admin-only endpoints for CRUD operations on groups and membership.
+"""
+from datetime import datetime, timezone
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from sqlalchemy import func
+from sqlalchemy.orm import aliased
+
+from auth.api_key_auth import require_scope, get_current_user_or_api_key
+from database import get_db, CustomGroup, UserGroupMembership, User
+from utils.audit import log_audit
+
+
+router = APIRouter(prefix="/api/v2/groups", tags=["groups"])
+
+
+# =============================================================================
+# Request/Response Models
+# =============================================================================
+
+class GroupMemberResponse(BaseModel):
+    """User in a group"""
+    user_id: int
+    username: str
+    display_name: Optional[str] = None
+    email: Optional[str] = None
+    role: str
+    added_at: str
+    added_by: Optional[str] = None
+
+
+class GroupResponse(BaseModel):
+    """Group with metadata"""
+    id: int
+    name: str
+    description: Optional[str] = None
+    member_count: int
+    created_at: str
+    created_by: Optional[str] = None
+    updated_at: str
+
+
+class GroupDetailResponse(BaseModel):
+    """Group with full member list"""
+    id: int
+    name: str
+    description: Optional[str] = None
+    members: list[GroupMemberResponse]
+    created_at: str
+    created_by: Optional[str] = None
+    updated_at: str
+
+
+class GroupListResponse(BaseModel):
+    """List of groups"""
+    groups: list[GroupResponse]
+    total: int
+
+
+class CreateGroupRequest(BaseModel):
+    """Request to create a new group"""
+    name: str
+    description: Optional[str] = None
+
+
+class UpdateGroupRequest(BaseModel):
+    """Request to update a group"""
+    name: Optional[str] = None
+    description: Optional[str] = None
+
+
+class AddMemberRequest(BaseModel):
+    """Request to add a member to a group"""
+    user_id: int
+
+
+class AddMemberResponse(BaseModel):
+    """Response when adding a member"""
+    success: bool
+    message: str
+
+
+class RemoveMemberResponse(BaseModel):
+    """Response when removing a member"""
+    success: bool
+    message: str
+
+
+class DeleteGroupResponse(BaseModel):
+    """Response when deleting a group"""
+    success: bool
+    message: str
+
+
+# =============================================================================
+# Constants
+# =============================================================================
+
+MAX_GROUP_NAME_LENGTH = 100
+MAX_GROUP_DESCRIPTION_LENGTH = 500
+
+
+# =============================================================================
+# Helper Functions
+# =============================================================================
+
+def _get_username_by_id(db, user_id: int) -> Optional[str]:
+    """Get username by user ID"""
+    if user_id is None:
+        return None
+    user = db.query(User).filter(User.id == user_id).first()
+    return user.username if user else None
+
+
+def _validate_group_name(name: str) -> str:
+    """Validate and sanitize group name. Returns sanitized name or raises HTTPException."""
+    if not name or not name.strip():
+        raise HTTPException(status_code=400, detail="Group name cannot be empty")
+
+    sanitized = name.strip()
+
+    if len(sanitized) > MAX_GROUP_NAME_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Group name cannot exceed {MAX_GROUP_NAME_LENGTH} characters"
+        )
+
+    return sanitized
+
+
+def _validate_group_description(description: Optional[str]) -> Optional[str]:
+    """Validate and sanitize group description. Returns sanitized description."""
+    if description is None:
+        return None
+
+    sanitized = description.strip()
+    if not sanitized:
+        return None
+
+    if len(sanitized) > MAX_GROUP_DESCRIPTION_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Group description cannot exceed {MAX_GROUP_DESCRIPTION_LENGTH} characters"
+        )
+
+    return sanitized
+
+
+def _format_datetime(dt: datetime) -> Optional[str]:
+    """Format datetime for API response with Z suffix"""
+    if dt is None:
+        return None
+    iso = dt.isoformat()
+    return iso if iso.endswith('Z') else iso + 'Z'
+
+
+def _get_group_members(db, group_id: int) -> list[GroupMemberResponse]:
+    """Get all members of a group with user details. Avoids N+1 queries."""
+    memberships = db.query(UserGroupMembership, User).join(
+        User, UserGroupMembership.user_id == User.id
+    ).filter(
+        UserGroupMembership.group_id == group_id
+    ).all()
+
+    if not memberships:
+        return []
+
+    # Prefetch all added_by usernames to avoid N+1 queries
+    added_by_ids = {m.added_by for m, _ in memberships if m.added_by is not None}
+    if added_by_ids:
+        adders = db.query(User.id, User.username).filter(User.id.in_(added_by_ids)).all()
+        adder_map = {user_id: username for user_id, username in adders}
+    else:
+        adder_map = {}
+
+    members = []
+    for membership, user in memberships:
+        members.append(GroupMemberResponse(
+            user_id=user.id,
+            username=user.username,
+            display_name=user.display_name,
+            email=user.email,
+            role=user.role,
+            added_at=_format_datetime(membership.added_at),
+            added_by=adder_map.get(membership.added_by) if membership.added_by else None,
+        ))
+
+    return members
+
+
+# =============================================================================
+# Endpoints
+# =============================================================================
+
+@router.get("", response_model=GroupListResponse, dependencies=[Depends(require_scope("admin"))])
+async def list_groups(
+    current_user: dict = Depends(get_current_user_or_api_key),
+    db=Depends(get_db)
+):
+    """
+    List all custom groups.
+
+    Returns groups with member counts.
+    Admin only.
+    """
+    groups = db.query(CustomGroup).all()
+
+    # Get member counts for each group in a single query
+    count_results = db.query(
+        UserGroupMembership.group_id,
+        func.count(UserGroupMembership.id)
+    ).group_by(UserGroupMembership.group_id).all()
+    count_map = {group_id: count for group_id, count in count_results}
+
+    # Prefetch all usernames for created_by to avoid N+1 queries
+    creator_ids = {g.created_by for g in groups if g.created_by is not None}
+    if creator_ids:
+        creators = db.query(User.id, User.username).filter(User.id.in_(creator_ids)).all()
+        username_map = {user_id: username for user_id, username in creators}
+    else:
+        username_map = {}
+
+    group_responses = []
+    for group in groups:
+        group_responses.append(GroupResponse(
+            id=group.id,
+            name=group.name,
+            description=group.description,
+            member_count=count_map.get(group.id, 0),
+            created_at=_format_datetime(group.created_at),
+            created_by=username_map.get(group.created_by) if group.created_by else None,
+            updated_at=_format_datetime(group.updated_at),
+        ))
+
+    return GroupListResponse(
+        groups=group_responses,
+        total=len(group_responses)
+    )
+
+
+@router.post("", response_model=GroupResponse, dependencies=[Depends(require_scope("admin"))])
+async def create_group(
+    request: CreateGroupRequest,
+    current_user: dict = Depends(get_current_user_or_api_key),
+    db=Depends(get_db)
+):
+    """
+    Create a new custom group.
+
+    Admin only.
+    """
+    # Validate and sanitize inputs
+    sanitized_name = _validate_group_name(request.name)
+    sanitized_description = _validate_group_description(request.description)
+
+    # Check if group name already exists
+    existing = db.query(CustomGroup).filter(
+        func.lower(CustomGroup.name) == func.lower(sanitized_name)
+    ).first()
+
+    if existing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Group with name '{sanitized_name}' already exists"
+        )
+
+    now = datetime.now(timezone.utc)
+    user_id = current_user.get('user_id')
+
+    new_group = CustomGroup(
+        name=sanitized_name,
+        description=sanitized_description,
+        created_by=user_id,
+        updated_by=user_id,
+        created_at=now,
+        updated_at=now,
+    )
+
+    db.add(new_group)
+    db.commit()
+    db.refresh(new_group)
+
+    # Audit log
+    log_audit(
+        db=db,
+        user_id=user_id,
+        username=current_user.get('username', 'unknown'),
+        action='create',
+        entity_type='custom_group',
+        entity_id=str(new_group.id),
+        entity_name=new_group.name,
+        details={'description': new_group.description},
+    )
+
+    return GroupResponse(
+        id=new_group.id,
+        name=new_group.name,
+        description=new_group.description,
+        member_count=0,
+        created_at=_format_datetime(new_group.created_at),
+        created_by=current_user.get('username'),
+        updated_at=_format_datetime(new_group.updated_at),
+    )
+
+
+@router.get("/{group_id}", response_model=GroupDetailResponse, dependencies=[Depends(require_scope("admin"))])
+async def get_group(
+    group_id: int,
+    current_user: dict = Depends(get_current_user_or_api_key),
+    db=Depends(get_db)
+):
+    """
+    Get a group with its members.
+
+    Admin only.
+    """
+    # Fetch group with creator username in one query
+    Creator = aliased(User)
+    result = db.query(CustomGroup, Creator.username).outerjoin(
+        Creator, CustomGroup.created_by == Creator.id
+    ).filter(CustomGroup.id == group_id).first()
+
+    if not result:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Group with ID {group_id} not found"
+        )
+
+    group, creator_username = result
+
+    return GroupDetailResponse(
+        id=group.id,
+        name=group.name,
+        description=group.description,
+        members=_get_group_members(db, group_id),
+        created_at=_format_datetime(group.created_at),
+        created_by=creator_username,
+        updated_at=_format_datetime(group.updated_at),
+    )
+
+
+@router.put("/{group_id}", response_model=GroupResponse, dependencies=[Depends(require_scope("admin"))])
+async def update_group(
+    group_id: int,
+    request: UpdateGroupRequest,
+    current_user: dict = Depends(get_current_user_or_api_key),
+    db=Depends(get_db)
+):
+    """
+    Update a group.
+
+    Admin only.
+    """
+    group = db.query(CustomGroup).filter(CustomGroup.id == group_id).first()
+
+    if not group:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Group with ID {group_id} not found"
+        )
+
+    # Validate and sanitize inputs
+    sanitized_name = _validate_group_name(request.name) if request.name is not None else None
+    sanitized_description = _validate_group_description(request.description) if request.description is not None else None
+
+    # Check name uniqueness if changing
+    if sanitized_name and sanitized_name.lower() != group.name.lower():
+        existing = db.query(CustomGroup).filter(
+            func.lower(CustomGroup.name) == func.lower(sanitized_name),
+            CustomGroup.id != group_id
+        ).first()
+
+        if existing:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Group with name '{sanitized_name}' already exists"
+            )
+
+    # Update fields
+    changes = {}
+    if sanitized_name is not None:
+        changes['name'] = {'old': group.name, 'new': sanitized_name}
+        group.name = sanitized_name
+
+    if request.description is not None:
+        changes['description'] = {'old': group.description, 'new': sanitized_description}
+        group.description = sanitized_description
+
+    now = datetime.now(timezone.utc)
+    user_id = current_user.get('user_id')
+
+    group.updated_by = user_id
+    group.updated_at = now
+
+    db.commit()
+    db.refresh(group)
+
+    # Get member count
+    member_count = db.query(UserGroupMembership).filter(
+        UserGroupMembership.group_id == group_id
+    ).count()
+
+    # Audit log
+    if changes:
+        log_audit(
+            db=db,
+            user_id=user_id,
+            username=current_user.get('username', 'unknown'),
+            action='update',
+            entity_type='custom_group',
+            entity_id=str(group.id),
+            entity_name=group.name,
+            details={'changes': changes},
+        )
+
+    return GroupResponse(
+        id=group.id,
+        name=group.name,
+        description=group.description,
+        member_count=member_count,
+        created_at=_format_datetime(group.created_at),
+        created_by=_get_username_by_id(db, group.created_by),
+        updated_at=_format_datetime(group.updated_at),
+    )
+
+
+@router.delete("/{group_id}", response_model=DeleteGroupResponse, dependencies=[Depends(require_scope("admin"))])
+async def delete_group(
+    group_id: int,
+    current_user: dict = Depends(get_current_user_or_api_key),
+    db=Depends(get_db)
+):
+    """
+    Delete a group.
+
+    All memberships are automatically removed (cascade).
+    Admin only.
+    """
+    group = db.query(CustomGroup).filter(CustomGroup.id == group_id).first()
+
+    if not group:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Group with ID {group_id} not found"
+        )
+
+    group_name = group.name
+    member_count = db.query(UserGroupMembership).filter(
+        UserGroupMembership.group_id == group_id
+    ).count()
+
+    # Delete group (memberships cascade)
+    db.delete(group)
+    db.commit()
+
+    # Audit log
+    log_audit(
+        db=db,
+        user_id=current_user.get('user_id'),
+        username=current_user.get('username', 'unknown'),
+        action='delete',
+        entity_type='custom_group',
+        entity_id=str(group_id),
+        entity_name=group_name,
+        details={'member_count': member_count},
+    )
+
+    return DeleteGroupResponse(
+        success=True,
+        message=f"Deleted group '{group_name}' with {member_count} member(s)"
+    )
+
+
+@router.post("/{group_id}/members", response_model=AddMemberResponse, dependencies=[Depends(require_scope("admin"))])
+async def add_member(
+    group_id: int,
+    request: AddMemberRequest,
+    current_user: dict = Depends(get_current_user_or_api_key),
+    db=Depends(get_db)
+):
+    """
+    Add a user to a group.
+
+    Admin only.
+    """
+    # Check group exists
+    group = db.query(CustomGroup).filter(CustomGroup.id == group_id).first()
+    if not group:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Group with ID {group_id} not found"
+        )
+
+    # Check user exists and is not deleted
+    user = db.query(User).filter(
+        User.id == request.user_id,
+        User.deleted_at.is_(None)
+    ).first()
+
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail=f"User with ID {request.user_id} not found or is deactivated"
+        )
+
+    # Check if already a member
+    existing = db.query(UserGroupMembership).filter(
+        UserGroupMembership.group_id == group_id,
+        UserGroupMembership.user_id == request.user_id
+    ).first()
+
+    if existing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"User '{user.username}' is already a member of group '{group.name}'"
+        )
+
+    # Add membership
+    now = datetime.now(timezone.utc)
+    membership = UserGroupMembership(
+        user_id=request.user_id,
+        group_id=group_id,
+        added_by=current_user.get('user_id'),
+        added_at=now,
+    )
+
+    db.add(membership)
+    db.commit()
+
+    # Audit log
+    log_audit(
+        db=db,
+        user_id=current_user.get('user_id'),
+        username=current_user.get('username', 'unknown'),
+        action='add_member',
+        entity_type='custom_group',
+        entity_id=str(group_id),
+        entity_name=group.name,
+        details={'member_user_id': request.user_id, 'member_username': user.username},
+    )
+
+    return AddMemberResponse(
+        success=True,
+        message=f"Added user '{user.username}' to group '{group.name}'"
+    )
+
+
+@router.delete("/{group_id}/members/{user_id}", response_model=RemoveMemberResponse, dependencies=[Depends(require_scope("admin"))])
+async def remove_member(
+    group_id: int,
+    user_id: int,
+    current_user: dict = Depends(get_current_user_or_api_key),
+    db=Depends(get_db)
+):
+    """
+    Remove a user from a group.
+
+    Admin only.
+    """
+    # Check group exists
+    group = db.query(CustomGroup).filter(CustomGroup.id == group_id).first()
+    if not group:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Group with ID {group_id} not found"
+        )
+
+    # Check membership exists
+    membership = db.query(UserGroupMembership).filter(
+        UserGroupMembership.group_id == group_id,
+        UserGroupMembership.user_id == user_id
+    ).first()
+
+    if not membership:
+        raise HTTPException(
+            status_code=404,
+            detail=f"User is not a member of group '{group.name}'"
+        )
+
+    # Get username for audit
+    user = db.query(User).filter(User.id == user_id).first()
+    username = user.username if user else f"user_{user_id}"
+
+    # Remove membership
+    db.delete(membership)
+    db.commit()
+
+    # Audit log
+    log_audit(
+        db=db,
+        user_id=current_user.get('user_id'),
+        username=current_user.get('username', 'unknown'),
+        action='remove_member',
+        entity_type='custom_group',
+        entity_id=str(group_id),
+        entity_name=group.name,
+        details={'member_user_id': user_id, 'member_username': username},
+    )
+
+    return RemoveMemberResponse(
+        success=True,
+        message=f"Removed user '{username}' from group '{group.name}'"
+    )
+
+
+@router.get("/{group_id}/members", response_model=list[GroupMemberResponse], dependencies=[Depends(require_scope("admin"))])
+async def list_group_members(
+    group_id: int,
+    current_user: dict = Depends(get_current_user_or_api_key),
+    db=Depends(get_db)
+):
+    """
+    List all members of a group.
+
+    Admin only.
+    """
+    # Check group exists
+    group = db.query(CustomGroup).filter(CustomGroup.id == group_id).first()
+    if not group:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Group with ID {group_id} not found"
+        )
+
+    return _get_group_members(db, group_id)

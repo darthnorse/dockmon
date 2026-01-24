@@ -22,7 +22,7 @@ from ipaddress import ip_address, ip_network
 from fastapi import Header, Cookie, Request, HTTPException, Depends
 from sqlalchemy.orm import Session
 
-from database import ApiKey, User, DatabaseManager
+from database import ApiKey, User, DatabaseManager, RolePermission
 from auth.cookie_sessions import cookie_session_manager
 from auth.shared import db
 from utils.client_ip import get_client_ip
@@ -188,7 +188,8 @@ def validate_api_key(
             "api_key_id": api_key_record.id,
             "api_key_name": api_key_record.name,
             "scopes": scopes,
-            "auth_type": "api_key"
+            "auth_type": "api_key",
+            "role": user.role  # User's role for DB-based permission checks
         }
 
 
@@ -305,7 +306,8 @@ async def get_current_user_or_api_key(
                     return {
                         **session_data,
                         "auth_type": "session",
-                        "scopes": user_scopes
+                        "scopes": user_scopes,
+                        "role": user.role
                     }
 
     # Priority 2: Try API key from Authorization header
@@ -499,22 +501,103 @@ CAPABILITY_SCOPES = {
 }
 
 
-def has_capability(user_scopes: list[str], capability: str) -> bool:
+# Role permissions cache for performance (invalidated on permission updates)
+# Maps role -> {capability -> allowed}
+# Thread-safe with lock to prevent race conditions in multi-threaded environment
+import threading
+_role_permissions_cache: dict[str, dict[str, bool]] = {}
+_cache_loaded = False
+_cache_lock = threading.Lock()
+
+
+def _load_role_permissions_cache() -> None:
+    """
+    Load all role permissions into memory cache.
+
+    Called once on first permission check, then cached.
+    Cache should be invalidated when permissions are updated.
+    Thread-safe: uses lock to prevent concurrent cache updates.
+    """
+    global _role_permissions_cache, _cache_loaded
+
+    with _cache_lock:
+        # Double-check after acquiring lock (another thread may have loaded)
+        if _cache_loaded:
+            return
+
+        with db.get_session() as session:
+            all_perms = session.query(RolePermission).all()
+            new_cache: dict[str, dict[str, bool]] = {}
+
+            for perm in all_perms:
+                if perm.role not in new_cache:
+                    new_cache[perm.role] = {}
+                new_cache[perm.role][perm.capability] = perm.allowed
+
+            _role_permissions_cache = new_cache
+            _cache_loaded = True
+            logger.debug(f"Loaded role permissions cache: {len(all_perms)} entries")
+
+
+def invalidate_role_permissions_cache() -> None:
+    """
+    Invalidate the role permissions cache.
+
+    Call this after updating role permissions in the database.
+    Thread-safe: uses lock to prevent race conditions.
+    """
+    global _role_permissions_cache, _cache_loaded
+
+    with _cache_lock:
+        _role_permissions_cache = {}
+        _cache_loaded = False
+        logger.debug("Role permissions cache invalidated")
+
+
+def has_capability_for_role(role: str, capability: str) -> bool:
+    """
+    Check if a role has a specific capability using database.
+
+    Uses in-memory cache for performance.
+    Thread-safe: cache access is protected by lock during load.
+
+    Args:
+        role: User's role ('admin', 'user', 'readonly')
+        capability: Capability to check (e.g., 'hosts.manage')
+
+    Returns:
+        True if the role has the capability, False otherwise
+    """
+    # Load cache if not loaded (thread-safe check inside function)
+    if not _cache_loaded:
+        _load_role_permissions_cache()
+
+    # Read from cache (safe after load completes)
+    role_perms = _role_permissions_cache.get(role, {})
+    return role_perms.get(capability, False)
+
+
+def has_capability(user_scopes: list[str], capability: str, role: str = None) -> bool:
     """
     Check if user has a specific capability.
 
-    Uses scope hierarchy:
-    - 'admin' scope grants ALL capabilities
-    - 'write' scope grants write and read capabilities
-    - 'read' scope grants only read capabilities
+    Priority:
+    1. If role is provided, use database-backed permission check (customizable)
+    2. Otherwise, fall back to static scope-based check (backward compatibility)
 
     Args:
         user_scopes: List of user's scopes (e.g., ['admin'], ['read', 'write'], ['read'])
         capability: Capability to check (e.g., 'hosts.manage', 'containers.operate')
+        role: Optional user role for database-backed check
 
     Returns:
         True if user has the capability, False otherwise
     """
+    # If role is provided, use database-backed permission check
+    if role:
+        return has_capability_for_role(role, capability)
+
+    # Fallback to static scope-based check (backward compatibility)
     # Admin scope grants all permissions
     if 'admin' in user_scopes:
         return True
@@ -559,14 +642,15 @@ def require_capability(capability: str):
     """
     async def check_capability(current_user: dict = Depends(get_current_user_or_api_key)):
         user_scopes = current_user.get("scopes", [])
+        user_role = current_user.get("role")  # Use role for DB-backed permission check
 
-        if has_capability(user_scopes, capability):
+        if has_capability(user_scopes, capability, role=user_role):
             return current_user
 
         # Log and audit the violation
         logger.warning(
             f"User {current_user['username']} denied capability {capability} "
-            f"with scopes: {user_scopes}"
+            f"with scopes: {user_scopes}, role: {user_role}"
         )
 
         security_audit.log_event(
@@ -589,20 +673,21 @@ def require_capability(capability: str):
     return check_capability
 
 
-def get_user_capabilities(user_scopes: list[str]) -> list[str]:
+def get_user_capabilities(user_scopes: list[str], role: str = None) -> list[str]:
     """
-    Get all capabilities available to a user based on their scopes.
+    Get all capabilities available to a user based on their role/scopes.
 
     Useful for UI to know what features to show/hide.
 
     Args:
         user_scopes: List of user's scopes
+        role: Optional user role for database-backed lookup
 
     Returns:
         List of capability names the user has access to
     """
     capabilities = []
     for capability in CAPABILITY_SCOPES:
-        if has_capability(user_scopes, capability):
+        if has_capability(user_scopes, capability, role=role):
             capabilities.append(capability)
     return capabilities

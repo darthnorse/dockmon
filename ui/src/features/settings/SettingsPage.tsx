@@ -4,7 +4,7 @@
  */
 
 import { useState, useMemo } from 'react'
-import { LayoutDashboard, Bell, AlertTriangle, Settings, Package, Key, ScrollText, Users, LucideIcon, KeyRound } from 'lucide-react'
+import { LayoutDashboard, Bell, AlertTriangle, Settings, Package, Key, ScrollText, Users, LucideIcon, KeyRound, Shield, UserSquare2 } from 'lucide-react'
 import { DashboardSettings } from './components/DashboardSettings'
 import { NotificationChannelsSection } from './components/NotificationChannelsSection'
 import { AlertTemplateSettings } from './components/AlertTemplateSettings'
@@ -15,9 +15,11 @@ import { ApiKeysSettings } from './components/ApiKeysSettings'
 import { EventsSettings } from './components/EventsSettings'
 import { UsersSettings } from './components/UsersSettings'
 import { OIDCSettings } from './components/OIDCSettings'
+import { RolesSettings } from './components/RolesSettings'
+import { GroupsSettings } from './components/GroupsSettings'
 import { useAuth } from '@/features/auth/AuthContext'
 
-type TabId = 'dashboard' | 'alerts' | 'notifications' | 'updates' | 'events' | 'api-keys' | 'users' | 'oidc' | 'system'
+type TabId = 'dashboard' | 'alerts' | 'notifications' | 'updates' | 'events' | 'api-keys' | 'users' | 'roles' | 'groups' | 'oidc' | 'system'
 
 interface Tab {
   id: TabId
@@ -34,6 +36,8 @@ const TABS: Tab[] = [
   { id: 'events', label: 'Events', icon: ScrollText },
   { id: 'api-keys', label: 'API Keys', icon: Key },
   { id: 'users', label: 'Users', icon: Users, adminOnly: true },
+  { id: 'roles', label: 'Roles', icon: Shield, adminOnly: true },
+  { id: 'groups', label: 'Groups', icon: UserSquare2, adminOnly: true },
   { id: 'oidc', label: 'OIDC', icon: KeyRound, adminOnly: true },
   { id: 'system', label: 'System', icon: Settings },
 ]
@@ -101,6 +105,8 @@ export function SettingsPage() {
           {activeTab === 'events' && <EventsSettings />}
           {activeTab === 'api-keys' && <ApiKeysSettings />}
           {activeTab === 'users' && isAdmin && <UsersSettings />}
+          {activeTab === 'roles' && isAdmin && <RolesSettings />}
+          {activeTab === 'groups' && isAdmin && <GroupsSettings />}
           {activeTab === 'oidc' && isAdmin && <OIDCSettings />}
           {activeTab === 'system' && <SystemSettings />}
         </div>

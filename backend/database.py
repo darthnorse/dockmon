@@ -180,6 +180,52 @@ class OIDCRoleMapping(Base):
     created_at = Column(DateTime, nullable=False, default=utcnow)
 
 
+class CustomGroup(Base):
+    """
+    Custom user groups for organization (v2.3.0 Phase 5).
+
+    Groups are organizational units that users can be assigned to.
+    Future: Groups can have custom permission overrides.
+    """
+    __tablename__ = "custom_groups"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(Text, nullable=False, unique=True)  # Group name (unique)
+    description = Column(Text, nullable=True)  # Optional description
+    created_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    updated_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+
+    # Relationship to memberships
+    memberships = relationship("UserGroupMembership", back_populates="group", cascade="all, delete-orphan")
+
+
+class UserGroupMembership(Base):
+    """
+    User to group membership mapping (v2.3.0 Phase 5).
+
+    Maps users to custom groups. A user can belong to multiple groups.
+    """
+    __tablename__ = "user_group_memberships"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    group_id = Column(Integer, ForeignKey('custom_groups.id', ondelete='CASCADE'), nullable=False)
+    added_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    added_at = Column(DateTime, nullable=False, default=utcnow)
+
+    # Relationships
+    group = relationship("CustomGroup", back_populates="memberships")
+    user = relationship("User", foreign_keys=[user_id])
+
+    __table_args__ = (
+        UniqueConstraint('user_id', 'group_id', name='uq_user_group_membership'),
+        Index('idx_user_group_user', 'user_id'),
+        Index('idx_user_group_group', 'group_id'),
+    )
+
+
 class PendingOIDCAuth(Base):
     """
     Pending OIDC authentication requests (v2.3.0).

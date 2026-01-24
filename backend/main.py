@@ -494,6 +494,14 @@ from auth.oidc_auth_routes import router as oidc_auth_router
 app.include_router(oidc_config_router)  # OIDC configuration (admin only)
 app.include_router(oidc_auth_router)  # OIDC authentication flow
 
+# Role permissions routes (v2.3.0 Phase 5) - role customization
+from auth.role_permissions_routes import router as role_permissions_router
+app.include_router(role_permissions_router)  # Role permission management (admin only)
+
+# Custom groups routes (v2.3.0 Phase 5) - custom user groups
+from auth.custom_groups_routes import router as custom_groups_router
+app.include_router(custom_groups_router)  # Custom group management (admin only)
+
 # Action token routes (v2.2.0+) - notification action links
 from auth import action_token_routes
 app.include_router(action_token_routes.router)  # One-time action tokens

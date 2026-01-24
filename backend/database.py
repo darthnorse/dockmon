@@ -101,16 +101,42 @@ class UserPrefs(Base):
 
 class RolePermission(Base):
     """
-    Customizable role permissions for RBAC (v2.3.0).
-
-    Defines which capabilities each role has access to.
-    Default permissions set via migration, customizable by admin.
+    DEPRECATED: Role-based permissions - replaced by GroupPermission.
+    Kept for backwards compatibility during migration.
     """
     __tablename__ = "role_permissions"
 
     role = Column(Text, nullable=False, primary_key=True)  # 'admin', 'user', 'readonly'
     capability = Column(Text, nullable=False, primary_key=True)  # 'hosts.manage', 'stacks.edit', etc.
     allowed = Column(Boolean, nullable=False, default=False)
+
+
+class GroupPermission(Base):
+    """
+    Group-based permissions for RBAC (v2.3.0 refactor).
+
+    Defines which capabilities each group has access to.
+    Replaces RolePermission - groups are now the permission source.
+
+    Users can belong to multiple groups (union of permissions).
+    API keys belong to exactly one group.
+    """
+    __tablename__ = "group_permissions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    group_id = Column(Integer, ForeignKey('custom_groups.id', ondelete='CASCADE'), nullable=False)
+    capability = Column(Text, nullable=False)  # 'hosts.manage', 'stacks.edit', etc.
+    allowed = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+
+    # Relationship to group
+    group = relationship("CustomGroup", back_populates="permissions")
+
+    __table_args__ = (
+        UniqueConstraint('group_id', 'capability', name='uq_group_capability'),
+        Index('idx_group_permissions_group', 'group_id'),
+    )
 
 
 class PasswordResetToken(Base):
@@ -156,8 +182,15 @@ class OIDCConfig(Base):
     client_secret_encrypted = Column(Text, nullable=True)  # Fernet-encrypted
     scopes = Column(Text, nullable=False, default='openid profile email groups')
     claim_for_groups = Column(Text, nullable=False, default='groups')  # Which claim contains group membership
+
+    # v2.3.0 refactor: Default group for users with no OIDC group mappings
+    default_group_id = Column(Integer, ForeignKey('custom_groups.id', ondelete='SET NULL'), nullable=True)
+
     created_at = Column(DateTime, nullable=False, default=utcnow)
     updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+
+    # Relationship to default group
+    default_group = relationship("CustomGroup", foreign_keys=[default_group_id])
 
     __table_args__ = (
         CheckConstraint('id = 1', name='ck_oidc_config_singleton'),
@@ -166,10 +199,8 @@ class OIDCConfig(Base):
 
 class OIDCRoleMapping(Base):
     """
-    OIDC group to DockMon role mappings (v2.3.0).
-
-    Maps OIDC groups/claims to DockMon roles.
-    Priority determines which role wins when user has multiple matching groups.
+    DEPRECATED: OIDC group to role mappings - replaced by OIDCGroupMapping.
+    Kept for backwards compatibility during migration.
     """
     __tablename__ = "oidc_role_mappings"
 
@@ -180,25 +211,53 @@ class OIDCRoleMapping(Base):
     created_at = Column(DateTime, nullable=False, default=utcnow)
 
 
+class OIDCGroupMapping(Base):
+    """
+    OIDC group to DockMon group mappings (v2.3.0 refactor).
+
+    Maps OIDC groups/claims to DockMon groups.
+    Replaces OIDCRoleMapping - now maps to groups instead of roles.
+    """
+    __tablename__ = "oidc_group_mappings"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    oidc_value = Column(Text, nullable=False, unique=True, index=True)  # Group value from OIDC provider
+    group_id = Column(Integer, ForeignKey('custom_groups.id', ondelete='CASCADE'), nullable=False)
+    priority = Column(Integer, nullable=False, default=0)  # Higher priority evaluated first
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+    # Relationship to group
+    group = relationship("CustomGroup", foreign_keys=[group_id])
+
+
 class CustomGroup(Base):
     """
-    Custom user groups for organization (v2.3.0 Phase 5).
+    User groups with permissions (v2.3.0 refactor).
 
-    Groups are organizational units that users can be assigned to.
-    Future: Groups can have custom permission overrides.
+    Groups are the permission source for users and API keys.
+    - Users can belong to multiple groups (union of permissions)
+    - API keys belong to exactly one group
+    - System groups (is_system=True) cannot be deleted
+
+    Default system groups: Administrators, Operators, Read Only
     """
     __tablename__ = "custom_groups"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(Text, nullable=False, unique=True)  # Group name (unique)
     description = Column(Text, nullable=True)  # Optional description
+
+    # v2.3.0 refactor: System groups cannot be deleted
+    is_system = Column(Boolean, nullable=False, default=False)
+
     created_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
     updated_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
     created_at = Column(DateTime, nullable=False, default=utcnow)
     updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
 
-    # Relationship to memberships
+    # Relationships
     memberships = relationship("UserGroupMembership", back_populates="group", cascade="all, delete-orphan")
+    permissions = relationship("GroupPermission", back_populates="group", cascade="all, delete-orphan")
 
 
 class UserGroupMembership(Base):
@@ -300,11 +359,16 @@ class ApiKey(Base):
     """
     API keys for programmatic access (Ansible, Homepage, monitoring tools).
 
+    v2.3.0 Refactor:
+    - Permissions come from group (not scopes/roles)
+    - created_by_user_id for audit (who created the key)
+    - group_id for permissions (what the key can do)
+
     SECURITY:
     - Keys are hashed (SHA256) before storage - NEVER store plaintext
     - key_prefix allows user identification without exposing full key
     - Optional IP restrictions for additional security
-    - Scoped permissions (read/write/admin)
+    - Permissions determined by group assignment
 
     CONSISTENCY:
     - All datetime fields use timezone.utc for consistency
@@ -315,8 +379,13 @@ class ApiKey(Base):
     # Primary key
     id = Column(Integer, primary_key=True, autoincrement=True)
 
-    # Owner
-    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    # v2.3.0 refactor: Group for permissions (replaces scopes)
+    # ON DELETE RESTRICT - cannot delete group if API keys reference it
+    group_id = Column(Integer, ForeignKey('custom_groups.id', ondelete='RESTRICT'), nullable=False)
+
+    # v2.3.0 refactor: Audit trail - who created this key
+    # ON DELETE SET NULL - preserve key if creator is deleted
+    created_by_user_id = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
 
     # Key identification (user-friendly)
     name = Column(Text, nullable=False)  # "Homepage Dashboard", "Ansible Automation"
@@ -325,9 +394,6 @@ class ApiKey(Base):
     # Key storage (SECURITY CRITICAL)
     key_hash = Column(Text, nullable=False, unique=True)  # SHA256 hash of full key
     key_prefix = Column(Text, nullable=False)  # First 12 chars for UI display
-
-    # Permissions (mandatory enforcement)
-    scopes = Column(Text, nullable=False, default="read")  # Comma-separated: "read", "read,write", "admin"
 
     # IP restrictions (optional security layer)
     # WARNING: Only works correctly with REVERSE_PROXY_MODE=true
@@ -345,8 +411,12 @@ class ApiKey(Base):
     created_at = Column(DateTime, nullable=False)
     updated_at = Column(DateTime, nullable=False)
 
+    # Relationships
+    group = relationship("CustomGroup", foreign_keys=[group_id])
+    created_by = relationship("User", foreign_keys=[created_by_user_id])
+
     def __repr__(self):
-        return f"<ApiKey(id={self.id}, name='{self.name}', prefix='{self.key_prefix}', scopes='{self.scopes}')>"
+        return f"<ApiKey(id={self.id}, name='{self.name}', prefix='{self.key_prefix}', group_id={self.group_id})>"
 
 
 class ActionToken(Base):

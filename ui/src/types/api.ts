@@ -22,14 +22,16 @@ export interface LoginResponse {
 }
 
 export interface CurrentUserResponse {
+  auth_type: 'session' | 'api_key'
   user: {
     id: number
     username: string
     display_name?: string | null
     is_first_login?: boolean
     must_change_password?: boolean
-    role?: 'admin' | 'user' | 'readonly'
+    groups: Array<{ id: number; name: string }>
   }
+  capabilities: string[]
 }
 
 // ==================== User Preferences ====================

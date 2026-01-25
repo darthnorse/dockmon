@@ -9,8 +9,9 @@ export interface GroupMember {
   username: string
   display_name: string | null
   email: string | null
+  role: string  // User's legacy role (for display)
   added_at: string
-  added_by: string | null
+  added_by: string | null  // Username of who added this member
 }
 
 // Group summary (for list view)

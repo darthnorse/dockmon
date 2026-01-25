@@ -46,13 +46,11 @@ def patch_db_for_tests(db_session: Session):
     from auth.api_key_auth import (
         invalidate_group_permissions_cache,
         invalidate_user_groups_cache,
-        invalidate_role_permissions_cache,
     )
 
     # Invalidate all caches before each test
     invalidate_group_permissions_cache()
     invalidate_user_groups_cache()
-    invalidate_role_permissions_cache()
 
     @contextmanager
     def get_session():
@@ -64,7 +62,6 @@ def patch_db_for_tests(db_session: Session):
     # Invalidate caches after test completes (cleanup)
     invalidate_group_permissions_cache()
     invalidate_user_groups_cache()
-    invalidate_role_permissions_cache()
 
 
 # =============================================================================

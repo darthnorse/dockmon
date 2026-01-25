@@ -23,7 +23,7 @@ from ipaddress import ip_address, ip_network
 from fastapi import Header, Cookie, Request, HTTPException, Depends
 from sqlalchemy.orm import Session
 
-from database import ApiKey, User, DatabaseManager, RolePermission, GroupPermission, UserGroupMembership, CustomGroup
+from database import ApiKey, User, DatabaseManager, GroupPermission, UserGroupMembership, CustomGroup
 from sqlalchemy.orm import joinedload
 from auth.cookie_sessions import cookie_session_manager
 from auth.shared import db
@@ -353,9 +353,12 @@ async def get_current_user_or_api_key(
     )
 
 
-def _check_auth_capability(current_user: dict, capability: str) -> bool:
+def check_auth_capability(current_user: dict, capability: str) -> bool:
     """
     Check if the authenticated user/API key has a specific capability.
+
+    Use this for inline capability checks after authentication.
+    For endpoint-level checks, use require_capability() decorator instead.
 
     Handles both auth types:
     - API key: Checks the single group's permissions
@@ -367,6 +370,12 @@ def _check_auth_capability(current_user: dict, capability: str) -> bool:
 
     Returns:
         True if the auth context has the capability, False otherwise
+
+    Example:
+        @app.get("/api/containers")
+        async def get_containers(current_user: dict = Depends(get_current_user)):
+            can_view_env = check_auth_capability(current_user, "containers.view_env")
+            return filter_container_env(containers, can_view_env)
     """
     if current_user.get("auth_type") == "api_key":
         group_id = current_user.get("group_id")
@@ -414,8 +423,8 @@ class Capabilities:
     and catches typos at import time rather than runtime.
 
     Usage:
-        from auth.api_key_auth import Capabilities, has_capability
-        if has_capability(user_scopes, Capabilities.CONTAINERS_VIEW_ENV):
+        from auth.api_key_auth import Capabilities, check_auth_capability
+        if check_auth_capability(current_user, Capabilities.CONTAINERS_VIEW_ENV):
             ...
     """
     # Admin-only capabilities
@@ -461,183 +470,11 @@ class Capabilities:
     AGENTS_VIEW = 'agents.view'
 
 
-# Capability to minimum scope mapping
-# 'admin' = admin only
-# 'write' = user role and above (can manage containers)
-# 'read' = readonly role and above (view-only)
-CAPABILITY_SCOPES = {
-    # Admin-only capabilities
-    'hosts.manage': 'admin',
-    'stacks.edit': 'admin',
-    'stacks.view_env': 'write',          # .env files - User can view, Read-only cannot
-    'alerts.manage': 'admin',
-    'notifications.manage': 'admin',
-    'registry.manage': 'admin',
-    'registry.view': 'admin',           # Contains passwords
-    'agents.manage': 'admin',
-    'settings.manage': 'admin',
-    'users.manage': 'admin',
-    'groups.manage': 'admin',
-    'oidc.manage': 'admin',
-    'audit.view': 'admin',
-    'containers.shell': 'admin',
-    'containers.update': 'admin',
-    'containers.view_env': 'write',     # Env vars - User can view, Read-only cannot
-    'healthchecks.manage': 'admin',
-    'policies.manage': 'admin',
-    'apikeys.manage_other': 'admin',
-
-    # User capabilities (write scope)
-    'stacks.deploy': 'write',
-    'containers.operate': 'write',
-    'batch.create': 'write',
-    'tags.manage': 'write',
-    'healthchecks.test': 'write',
-    'apikeys.manage_own': 'write',
-
-    # Read-only capabilities
-    'hosts.view': 'read',
-    'stacks.view': 'read',
-    'containers.view': 'read',
-    'containers.logs': 'read',
-    'alerts.view': 'read',
-    'notifications.view': 'read',       # Names only, not configs
-    'healthchecks.view': 'read',
-    'policies.view': 'read',
-    'events.view': 'read',
-    'batch.view': 'read',
-    'tags.view': 'read',
-    'agents.view': 'read',
-}
-
-
-# Role permissions cache for performance (invalidated on permission updates)
-# Maps role -> {capability -> allowed}
-# Thread-safe with lock to prevent race conditions in multi-threaded environment
-_role_permissions_cache: dict[str, dict[str, bool]] = {}
-_cache_loaded = False
-_cache_lock = threading.Lock()
-
-
-def _load_role_permissions_cache() -> None:
-    """
-    Load all role permissions into memory cache.
-
-    Called once on first permission check, then cached.
-    Cache should be invalidated when permissions are updated.
-    Thread-safe: uses lock to prevent concurrent cache updates.
-    """
-    global _role_permissions_cache, _cache_loaded
-
-    with _cache_lock:
-        # Double-check after acquiring lock (another thread may have loaded)
-        if _cache_loaded:
-            return
-
-        with db.get_session() as session:
-            all_perms = session.query(RolePermission).all()
-            new_cache: dict[str, dict[str, bool]] = {}
-
-            for perm in all_perms:
-                if perm.role not in new_cache:
-                    new_cache[perm.role] = {}
-                new_cache[perm.role][perm.capability] = perm.allowed
-
-            _role_permissions_cache = new_cache
-            _cache_loaded = True
-            logger.debug(f"Loaded role permissions cache: {len(all_perms)} entries")
-
-
-def invalidate_role_permissions_cache() -> None:
-    """
-    Invalidate the role permissions cache.
-
-    Call this after updating role permissions in the database.
-    Thread-safe: uses lock to prevent race conditions.
-    """
-    global _role_permissions_cache, _cache_loaded
-
-    with _cache_lock:
-        _role_permissions_cache = {}
-        _cache_loaded = False
-        logger.debug("Role permissions cache invalidated")
-
-
-def has_capability_for_role(role: str, capability: str) -> bool:
-    """
-    Check if a role has a specific capability using database.
-
-    Uses in-memory cache for performance.
-    Thread-safe: cache access is protected by lock during load.
-
-    Args:
-        role: User's role ('admin', 'user', 'readonly')
-        capability: Capability to check (e.g., 'hosts.manage')
-
-    Returns:
-        True if the role has the capability, False otherwise
-    """
-    # Load cache if not loaded (thread-safe check inside function)
-    if not _cache_loaded:
-        _load_role_permissions_cache()
-
-    # Read from cache (safe after load completes)
-    role_perms = _role_permissions_cache.get(role, {})
-    return role_perms.get(capability, False)
-
-
-def has_capability(user_scopes: list[str], capability: str, role: str = None) -> bool:
-    """
-    Check if user has a specific capability.
-
-    Priority:
-    1. If role is provided, use database-backed permission check (customizable)
-    2. Otherwise, fall back to static scope-based check (backward compatibility)
-
-    Args:
-        user_scopes: List of user's scopes (e.g., ['admin'], ['read', 'write'], ['read'])
-        capability: Capability to check (e.g., 'hosts.manage', 'containers.operate')
-        role: Optional user role for database-backed check
-
-    Returns:
-        True if user has the capability, False otherwise
-    """
-    # If role is provided, use database-backed permission check
-    if role:
-        return has_capability_for_role(role, capability)
-
-    # Fallback to static scope-based check (backward compatibility)
-    # Admin scope grants all permissions
-    if 'admin' in user_scopes:
-        return True
-
-    # Get required scope for this capability
-    required_scope = CAPABILITY_SCOPES.get(capability)
-
-    if required_scope is None:
-        # Unknown capability - deny by default for security
-        logger.warning(f"Unknown capability requested: {capability}")
-        return False
-
-    # Check scope hierarchy
-    if required_scope == 'admin':
-        # Only admin scope can access admin capabilities
-        return False  # Already checked admin above
-    elif required_scope == 'write':
-        # Write scope required
-        return 'write' in user_scopes
-    elif required_scope == 'read':
-        # Read scope required - write includes read
-        return 'read' in user_scopes or 'write' in user_scopes
-
-    return False
-
-
 def require_capability(capability: str):
     """
     Dependency factory for capability-based authorization.
 
-    v2.4.0: Now uses group-based permissions instead of role-based.
+    Uses group-based permissions - checks user's groups or API key's group.
 
     Usage:
         @app.post("/api/...", dependencies=[Depends(require_capability("hosts.manage"))])
@@ -653,7 +490,7 @@ def require_capability(capability: str):
     """
     async def check_capability(current_user: dict = Depends(get_current_user_or_api_key)):
         # Check capability using helper
-        if _check_auth_capability(current_user, capability):
+        if check_auth_capability(current_user, capability):
             return current_user
 
         # Get identifier for logging (include group for capability violations)
@@ -680,29 +517,9 @@ def require_capability(capability: str):
     return check_capability
 
 
-def get_user_capabilities(user_scopes: list[str], role: str = None) -> list[str]:
-    """
-    Get all capabilities available to a user based on their role/scopes.
-
-    Useful for UI to know what features to show/hide.
-
-    Args:
-        user_scopes: List of user's scopes
-        role: Optional user role for database-backed lookup
-
-    Returns:
-        List of capability names the user has access to
-    """
-    capabilities = []
-    for capability in CAPABILITY_SCOPES:
-        if has_capability(user_scopes, capability, role=role):
-            capabilities.append(capability)
-    return capabilities
-
-
-# ==================== Group-Based Permissions (v2.4.0) ====================
+# ==================== Group-Based Permissions ====================
 #
-# New group-based permission system replacing role-based permissions.
+# Group-based permission system for fine-grained access control.
 # Users can belong to multiple groups, getting union of all capabilities.
 # API keys belong to exactly one group.
 #

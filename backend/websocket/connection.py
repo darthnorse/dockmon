@@ -1,8 +1,6 @@
 """
 WebSocket Connection Management for DockMon
 Handles WebSocket connections and message broadcasting
-
-v2.3.0: Added per-connection user scopes for role-based data filtering
 """
 
 import asyncio
@@ -14,7 +12,7 @@ from typing import List, Dict, Optional
 
 from fastapi import WebSocket
 
-from auth.api_key_auth import has_capability, Capabilities
+from auth.api_key_auth import has_capability_for_user, Capabilities
 from utils.response_filtering import filter_ws_container_message
 
 
@@ -32,27 +30,27 @@ class DateTimeEncoder(json.JSONEncoder):
 class ConnectionManager:
     """Manages WebSocket connections with thread-safe operations.
 
-    v2.3.0: Supports per-connection user scopes for role-based filtering.
+    Supports per-connection user_id for group-based capability filtering.
     """
 
     def __init__(self):
         self.active_connections: List[WebSocket] = []
-        self._connection_scopes: Dict[WebSocket, List[str]] = {}  # v2.3.0: Store user scopes per connection
+        self._connection_user_ids: Dict[WebSocket, int] = {}  # Store user_id per connection
         self._lock = asyncio.Lock()
         self.update_executor = None  # Set by monitor after initialization
 
-    async def connect(self, websocket: WebSocket, user_scopes: Optional[List[str]] = None):
-        """Accept WebSocket connection and optionally store user scopes.
+    async def connect(self, websocket: WebSocket, user_id: Optional[int] = None):
+        """Accept WebSocket connection and store user_id for capability checks.
 
         Args:
             websocket: The WebSocket connection
-            user_scopes: Optional list of user scopes (e.g., ['admin'], ['read', 'write'])
+            user_id: User ID for group-based capability filtering
         """
         await websocket.accept()
         async with self._lock:
             self.active_connections.append(websocket)
-            if user_scopes is not None:
-                self._connection_scopes[websocket] = user_scopes
+            if user_id is not None:
+                self._connection_user_ids[websocket] = user_id
         logger.debug(f"New WebSocket connection. Total connections: {len(self.active_connections)}")
 
         # Send active pull progress to newly connected client
@@ -62,13 +60,13 @@ class ConnectionManager:
         async with self._lock:
             if websocket in self.active_connections:
                 self.active_connections.remove(websocket)
-            # Clean up scopes (v2.3.0+)
-            self._connection_scopes.pop(websocket, None)
+            # Clean up user_id mapping
+            self._connection_user_ids.pop(websocket, None)
         logger.debug(f"WebSocket disconnected. Total connections: {len(self.active_connections)}")
 
-    def get_connection_scopes(self, websocket: WebSocket) -> List[str]:
-        """Get user scopes for a connection (v2.3.0+)."""
-        return self._connection_scopes.get(websocket, [])
+    def get_connection_user_id(self, websocket: WebSocket) -> Optional[int]:
+        """Get user_id for a connection."""
+        return self._connection_user_ids.get(websocket)
 
     def has_active_connections(self) -> bool:
         """Check if there are any active WebSocket connections"""
@@ -79,25 +77,25 @@ class ConnectionManager:
 
         Args:
             message: Message to broadcast
-            filter_containers: If True, filter container env vars based on user scopes (v2.3.0+)
+            filter_containers: If True, filter container env vars based on user capabilities
         """
         # Get snapshot of connections with lock
         async with self._lock:
             connections = self.active_connections.copy()
-            # Also snapshot scopes if filtering needed
+            # Also snapshot user_ids if filtering needed
             if filter_containers:
-                scopes_snapshot = dict(self._connection_scopes)
+                user_ids_snapshot = dict(self._connection_user_ids)
             else:
-                scopes_snapshot = {}
+                user_ids_snapshot = {}
 
         # Send messages without lock (IO can block)
         dead_connections = []
         for connection in connections:
             try:
-                # Filter data if needed (v2.3.0+)
+                # Filter data if needed based on user capabilities
                 if filter_containers and message.get("type") == "containers_update":
-                    user_scopes = scopes_snapshot.get(connection, [])
-                    filtered_message = self._filter_container_message(message, user_scopes)
+                    user_id = user_ids_snapshot.get(connection)
+                    filtered_message = self._filter_container_message(message, user_id)
                     await connection.send_text(json.dumps(filtered_message, cls=DateTimeEncoder))
                 else:
                     await connection.send_text(json.dumps(message, cls=DateTimeEncoder))
@@ -112,13 +110,13 @@ class ConnectionManager:
                     if conn in self.active_connections:
                         self.active_connections.remove(conn)
 
-    def _filter_container_message(self, message: dict, user_scopes: List[str]) -> dict:
-        """Filter container data based on user scopes (v2.3.0+).
+    def _filter_container_message(self, message: dict, user_id: Optional[int]) -> dict:
+        """Filter container data based on user capabilities.
 
         Removes env vars from containers for users without containers.view_env capability.
         Uses centralized filter_ws_container_message utility for consistency.
         """
-        can_view_env = has_capability(user_scopes, Capabilities.CONTAINERS_VIEW_ENV)
+        can_view_env = user_id is not None and has_capability_for_user(user_id, Capabilities.CONTAINERS_VIEW_ENV)
         return filter_ws_container_message(message, can_view_env)
 
     async def send_active_pull_progress(self, websocket: WebSocket):

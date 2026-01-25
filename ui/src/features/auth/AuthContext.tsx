@@ -17,22 +17,29 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { authApi } from './api'
 import type { LoginRequest } from '@/types/api'
 
+interface AuthUserGroup {
+  id: number
+  name: string
+}
+
 interface AuthUser {
   id: number
   username: string
   display_name?: string | null
   is_first_login?: boolean
   must_change_password?: boolean
-  role?: 'admin' | 'user' | 'readonly'
+  groups: AuthUserGroup[]
 }
 
 interface AuthContextValue {
   user: AuthUser | null
+  capabilities: string[]
   isLoading: boolean
   isAuthenticated: boolean
   isFirstLogin: boolean
   mustChangePassword: boolean
   isAdmin: boolean
+  hasCapability: (capability: string) => boolean
   login: (credentials: LoginRequest) => Promise<void>
   logout: () => Promise<void>
 }
@@ -72,13 +79,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     },
   })
 
+  // Extract capabilities from response
+  const capabilities = data?.capabilities ?? []
+
+  // Check if user is admin (in Administrators group or has users.manage capability)
+  const isAdmin =
+    data?.user?.groups?.some((g) => g.name === 'Administrators') ??
+    capabilities.includes('users.manage') ??
+    false
+
+  // Helper to check if user has a specific capability
+  const hasCapability = (capability: string): boolean => {
+    return capabilities.includes(capability)
+  }
+
   const value: AuthContextValue = {
     user: data?.user ?? null,
+    capabilities,
     isLoading: isLoading || loginMutation.isPending || logoutMutation.isPending,
     isAuthenticated: !isError && data?.user != null,
     isFirstLogin: data?.user?.is_first_login ?? false,
     mustChangePassword: data?.user?.must_change_password ?? false,
-    isAdmin: data?.user?.role === 'admin',
+    isAdmin,
+    hasCapability,
     login: async (credentials) => {
       await loginMutation.mutateAsync(credentials)
     },

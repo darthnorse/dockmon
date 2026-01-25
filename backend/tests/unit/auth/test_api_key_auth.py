@@ -19,7 +19,6 @@ from auth.api_key_auth import (
     generate_api_key,
     validate_api_key,
     _check_ip_allowed,
-    _get_user_scopes,
     get_current_user_or_api_key,
 )
 from database import ApiKey, User, CustomGroup
@@ -258,27 +257,6 @@ class TestValidateApiKey:
 
         result = validate_api_key(self.plaintext_key, "192.168.1.100", self.db)
         assert result is None
-
-
-class TestGetUserScopes:
-    """Test user role to scope mapping"""
-
-    def test_get_user_scopes_admin(self):
-        """Admin role gets admin scope"""
-        assert _get_user_scopes("admin") == ["admin"]
-
-    def test_get_user_scopes_user(self):
-        """User role gets read and write scopes"""
-        assert _get_user_scopes("user") == ["read", "write"]
-
-    def test_get_user_scopes_readonly(self):
-        """Readonly role gets only read scope"""
-        assert _get_user_scopes("readonly") == ["read"]
-
-    def test_get_user_scopes_unknown(self):
-        """Unknown role defaults to read scope"""
-        assert _get_user_scopes("unknown") == ["read"]
-        assert _get_user_scopes("") == ["read"]
 
 
 class TestGetCurrentUserOrApiKey:

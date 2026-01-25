@@ -102,6 +102,11 @@ class AgentWebSocketHandler:
             # Authenticate
             auth_result = await self.authenticate(auth_message)
             if not auth_result["success"]:
+                logger.warning(
+                    f"Agent authentication failed: {auth_result.get('error')} "
+                    f"(hostname: {auth_message.get('hostname', 'unknown')}, "
+                    f"engine_id: {auth_message.get('engine_id', 'unknown')[:12] if auth_message.get('engine_id') else 'unknown'})"
+                )
                 await self.websocket.send_json({
                     "type": "auth_error",
                     "error": auth_result.get("error", "Authentication failed")

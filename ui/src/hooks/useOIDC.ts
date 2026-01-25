@@ -1,8 +1,8 @@
 /**
  * OIDC Hooks
- * React Query hooks for OIDC configuration and role mappings
+ * React Query hooks for OIDC configuration and group mappings
  *
- * Phase 4 of Multi-User Support (v2.3.0)
+ * Group-Based Permissions Refactor (v2.4.0)
  */
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -12,16 +12,16 @@ import type {
   OIDCConfig,
   OIDCConfigUpdateRequest,
   OIDCDiscoveryResponse,
-  OIDCRoleMapping,
-  OIDCRoleMappingCreateRequest,
-  OIDCRoleMappingUpdateRequest,
+  OIDCGroupMapping,
+  OIDCGroupMappingCreateRequest,
+  OIDCGroupMappingUpdateRequest,
   OIDCStatus,
 } from '@/types/oidc'
 
 const QUERY_KEYS = {
   config: ['oidc', 'config'],
   status: ['oidc', 'status'],
-  roleMappings: ['oidc', 'role-mappings'],
+  groupMappings: ['oidc', 'group-mappings'],
 }
 
 // ==================== OIDC Status (Public) ====================
@@ -82,28 +82,28 @@ export function useDiscoverOIDC() {
   })
 }
 
-// ==================== OIDC Role Mappings (Admin) ====================
+// ==================== OIDC Group Mappings (Admin) ====================
 
-export function useOIDCRoleMappings() {
-  return useQuery<OIDCRoleMapping[]>({
-    queryKey: QUERY_KEYS.roleMappings,
+export function useOIDCGroupMappings() {
+  return useQuery<OIDCGroupMapping[]>({
+    queryKey: QUERY_KEYS.groupMappings,
     queryFn: async () => {
-      return apiClient.get('/v2/oidc/role-mappings')
+      return apiClient.get('/v2/oidc/group-mappings')
     },
   })
 }
 
-export function useCreateOIDCRoleMapping() {
+export function useCreateOIDCGroupMapping() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async (data: OIDCRoleMappingCreateRequest) => {
-      return apiClient.post<OIDCRoleMapping>('/v2/oidc/role-mappings', data)
+    mutationFn: async (data: OIDCGroupMappingCreateRequest) => {
+      return apiClient.post<OIDCGroupMapping>('/v2/oidc/group-mappings', data)
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.roleMappings })
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.groupMappings })
       toast.success('Mapping created', {
-        description: 'OIDC role mapping has been created.',
+        description: 'OIDC group mapping has been created.',
       })
     },
     onError: (error: Error) => {
@@ -114,17 +114,17 @@ export function useCreateOIDCRoleMapping() {
   })
 }
 
-export function useUpdateOIDCRoleMapping() {
+export function useUpdateOIDCGroupMapping() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async ({ id, data }: { id: number; data: OIDCRoleMappingUpdateRequest }) => {
-      return apiClient.put<OIDCRoleMapping>(`/v2/oidc/role-mappings/${id}`, data)
+    mutationFn: async ({ id, data }: { id: number; data: OIDCGroupMappingUpdateRequest }) => {
+      return apiClient.put<OIDCGroupMapping>(`/v2/oidc/group-mappings/${id}`, data)
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.roleMappings })
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.groupMappings })
       toast.success('Mapping updated', {
-        description: 'OIDC role mapping has been updated.',
+        description: 'OIDC group mapping has been updated.',
       })
     },
     onError: (error: Error) => {
@@ -135,17 +135,17 @@ export function useUpdateOIDCRoleMapping() {
   })
 }
 
-export function useDeleteOIDCRoleMapping() {
+export function useDeleteOIDCGroupMapping() {
   const queryClient = useQueryClient()
 
   return useMutation({
     mutationFn: async (id: number) => {
-      return apiClient.delete(`/v2/oidc/role-mappings/${id}`)
+      return apiClient.delete(`/v2/oidc/group-mappings/${id}`)
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.roleMappings })
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.groupMappings })
       toast.success('Mapping deleted', {
-        description: 'OIDC role mapping has been deleted.',
+        description: 'OIDC group mapping has been deleted.',
       })
     },
     onError: (error: Error) => {
@@ -155,3 +155,14 @@ export function useDeleteOIDCRoleMapping() {
     },
   })
 }
+
+// ==================== Legacy Aliases (for backward compatibility) ====================
+
+/** @deprecated Use useOIDCGroupMappings instead */
+export const useOIDCRoleMappings = useOIDCGroupMappings
+/** @deprecated Use useCreateOIDCGroupMapping instead */
+export const useCreateOIDCRoleMapping = useCreateOIDCGroupMapping
+/** @deprecated Use useUpdateOIDCGroupMapping instead */
+export const useUpdateOIDCRoleMapping = useUpdateOIDCGroupMapping
+/** @deprecated Use useDeleteOIDCGroupMapping instead */
+export const useDeleteOIDCRoleMapping = useDeleteOIDCGroupMapping

@@ -1,6 +1,6 @@
 /**
  * Custom Groups Types
- * Phase 5 of Multi-User Support (v2.3.0)
+ * Group-Based Permissions Refactor (v2.4.0)
  */
 
 // Group member
@@ -9,7 +9,6 @@ export interface GroupMember {
   username: string
   display_name: string | null
   email: string | null
-  role: string
   added_at: string
   added_by: string | null
 }
@@ -19,10 +18,38 @@ export interface Group {
   id: number
   name: string
   description: string | null
+  is_system: boolean  // System groups cannot be deleted
   member_count: number
   created_at: string
   created_by: string | null
   updated_at: string
+}
+
+// Group permission (capability assigned to a group)
+export interface GroupPermission {
+  capability: string
+  allowed: boolean
+}
+
+// Group permissions response
+export interface GroupPermissionsResponse {
+  group_id: number
+  group_name: string
+  permissions: Record<string, boolean>  // capability -> allowed
+}
+
+// Update group permissions request
+export interface UpdateGroupPermissionsRequest {
+  permissions: Array<{
+    capability: string
+    allowed: boolean
+  }>
+}
+
+// User's group membership (for /me endpoint)
+export interface UserGroupInfo {
+  id: number
+  name: string
 }
 
 // Group with members (for detail view)

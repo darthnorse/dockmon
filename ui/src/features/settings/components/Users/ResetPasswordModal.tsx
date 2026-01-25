@@ -2,7 +2,7 @@
  * Reset Password Modal
  * Admin-initiated password reset for users
  *
- * Phase 3 of Multi-User Support (v2.3.0)
+ * Group-Based Permissions Refactor (v2.4.0)
  */
 
 import { useState, type FormEvent } from 'react'
@@ -20,7 +20,8 @@ interface ResetPasswordModalProps {
 }
 
 export function ResetPasswordModal({ isOpen, onClose, userId }: ResetPasswordModalProps) {
-  const { data: user } = useUser(userId)
+  // Only fetch user data when modal is open and we have a valid userId
+  const { data: user } = useUser(isOpen && userId > 0 ? userId : null)
   const resetPassword = useResetUserPassword()
 
   const [mode, setMode] = useState<'generate' | 'custom'>('generate')

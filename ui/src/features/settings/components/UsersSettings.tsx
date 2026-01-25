@@ -2,7 +2,7 @@
  * Users Settings Component
  * Admin-only user management interface
  *
- * Phase 3 of Multi-User Support (v2.3.0)
+ * Group-Based Permissions Refactor (v2.4.0)
  */
 
 import { useState } from 'react'
@@ -10,9 +10,8 @@ import {
   Trash2,
   Edit2,
   Plus,
-  Shield,
   User as UserIcon,
-  Eye,
+  Users,
   RotateCcw,
   Key,
   AlertTriangle,
@@ -23,7 +22,6 @@ import { CreateUserModal } from './Users/CreateUserModal'
 import { EditUserModal } from './Users/EditUserModal'
 import { ResetPasswordModal } from './Users/ResetPasswordModal'
 import type { User } from '@/types/users'
-import { ROLE_LABELS } from '@/types/users'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -34,18 +32,6 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { formatDateTime } from '@/lib/utils/timeFormat'
-
-const ROLE_ICONS: Record<string, typeof Shield> = {
-  admin: Shield,
-  user: UserIcon,
-  readonly: Eye,
-}
-
-const ROLE_COLORS: Record<string, string> = {
-  admin: 'bg-purple-900/50 text-purple-300',
-  user: 'bg-blue-900/50 text-blue-300',
-  readonly: 'bg-gray-700/50 text-gray-300',
-}
 
 export function UsersSettings() {
   const [showDeleted, setShowDeleted] = useState(false)
@@ -91,7 +77,7 @@ export function UsersSettings() {
         <div>
           <h2 className="text-lg font-semibold text-white">User Management</h2>
           <p className="mt-1 text-sm text-gray-400">
-            Create and manage user accounts with role-based access control
+            Create and manage user accounts with group-based access control
           </p>
         </div>
         <div className="flex gap-2">
@@ -133,8 +119,6 @@ export function UsersSettings() {
       ) : (
         <div className="space-y-3">
           {activeUsers.map((user) => {
-            const RoleIcon = ROLE_ICONS[user.role] || UserIcon
-            const roleColor = ROLE_COLORS[user.role] || ROLE_COLORS.readonly
             const isOidc = user.auth_provider === 'oidc'
 
             return (
@@ -148,17 +132,28 @@ export function UsersSettings() {
               >
                 <div className="flex items-start justify-between">
                   <div className="flex-1">
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <h3 className="font-medium text-white">
                         {user.display_name || user.username}
                       </h3>
                       {user.display_name && (
                         <span className="text-sm text-gray-500">@{user.username}</span>
                       )}
-                      <span className={`rounded px-2 py-0.5 text-xs ${roleColor}`}>
-                        <RoleIcon className="mr-1 inline-block h-3 w-3" />
-                        {ROLE_LABELS[user.role]}
-                      </span>
+                      {/* Group badges */}
+                      {user.groups?.map((group) => (
+                        <span
+                          key={group.id}
+                          className="rounded bg-blue-900/50 px-2 py-0.5 text-xs text-blue-300"
+                        >
+                          <Users className="mr-1 inline-block h-3 w-3" />
+                          {group.name}
+                        </span>
+                      ))}
+                      {(!user.groups || user.groups.length === 0) && (
+                        <span className="rounded bg-gray-700/50 px-2 py-0.5 text-xs text-gray-400">
+                          No groups
+                        </span>
+                      )}
                       {isOidc && (
                         <span className="rounded bg-cyan-900/50 px-2 py-0.5 text-xs text-cyan-300">
                           SSO

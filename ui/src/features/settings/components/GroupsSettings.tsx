@@ -2,7 +2,7 @@
  * Groups Settings Component
  * Admin-only custom groups management interface
  *
- * Phase 5 of Multi-User Support (v2.3.0)
+ * Group-Based Permissions Refactor (v2.4.0)
  */
 
 import { useState, useEffect } from 'react'
@@ -16,6 +16,8 @@ import {
   UserMinus,
   ChevronDown,
   ChevronRight,
+  Lock,
+  Shield,
 } from 'lucide-react'
 import {
   useGroups,
@@ -97,7 +99,7 @@ export function GroupsSettings() {
 
   // Handle delete group
   const handleDeleteConfirm = async () => {
-    if (!deletingGroup) return
+    if (!deletingGroup || deletingGroup.is_system) return
     await deleteGroup.mutateAsync(deletingGroup.id)
     setDeletingGroup(null)
     if (expandedGroupId === deletingGroup.id) {
@@ -137,9 +139,9 @@ export function GroupsSettings() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold text-white">Custom Groups</h2>
+          <h2 className="text-lg font-semibold text-white">Groups</h2>
           <p className="mt-1 text-sm text-gray-400">
-            Organize users into groups for easier management
+            Organize users into groups with customizable permissions
           </p>
         </div>
         <div className="flex gap-2">
@@ -312,7 +314,15 @@ function GroupRow({
           )}
           <Users className="h-5 w-5 text-blue-400" />
           <div>
-            <h3 className="font-medium text-white">{group.name}</h3>
+            <div className="flex items-center gap-2">
+              <h3 className="font-medium text-white">{group.name}</h3>
+              {group.is_system && (
+                <span className="flex items-center gap-1 rounded bg-purple-900/50 px-1.5 py-0.5 text-xs text-purple-300">
+                  <Shield className="h-3 w-3" />
+                  System
+                </span>
+              )}
+            </div>
             {group.description && (
               <p className="text-sm text-gray-400">{group.description}</p>
             )}
@@ -326,8 +336,15 @@ function GroupRow({
             <Button variant="ghost" size="sm" onClick={onEdit}>
               <Edit2 className="h-4 w-4" />
             </Button>
-            <Button variant="ghost" size="sm" onClick={onDelete} className="text-red-400">
-              <Trash2 className="h-4 w-4" />
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onDelete}
+              className={group.is_system ? 'text-gray-600 cursor-not-allowed' : 'text-red-400'}
+              disabled={group.is_system}
+              title={group.is_system ? 'System groups cannot be deleted' : 'Delete group'}
+            >
+              {group.is_system ? <Lock className="h-4 w-4" /> : <Trash2 className="h-4 w-4" />}
             </Button>
           </div>
         </div>
@@ -366,17 +383,6 @@ function GroupRow({
                       {member.display_name && (
                         <span className="ml-2 text-sm text-gray-400">({member.display_name})</span>
                       )}
-                      <span
-                        className={`ml-2 rounded-full px-1.5 py-0.5 text-xs ${
-                          member.role === 'admin'
-                            ? 'bg-purple-900/50 text-purple-300'
-                            : member.role === 'user'
-                              ? 'bg-blue-900/50 text-blue-300'
-                              : 'bg-gray-700/50 text-gray-300'
-                        }`}
-                      >
-                        {member.role}
-                      </span>
                     </div>
                   </div>
                   <Button
@@ -595,7 +601,6 @@ function AddMemberModal({
                       <SelectItem key={user.id} value={user.id.toString()}>
                         {user.username}
                         {user.display_name && ` (${user.display_name})`}
-                        <span className="ml-2 text-xs text-gray-400">{user.role}</span>
                       </SelectItem>
                     ))}
                   </SelectContent>

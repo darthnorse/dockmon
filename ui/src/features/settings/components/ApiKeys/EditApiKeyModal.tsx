@@ -1,14 +1,17 @@
 /**
  * Edit API Key Modal
- * Allows updating name, description, scopes, and IP restrictions
+ * Allows updating name, description, and IP restrictions
+ * Note: Group cannot be changed after creation
+ *
+ * Group-Based Permissions Refactor (v2.4.0)
  */
 
 import { useState, useEffect, type FormEvent } from 'react'
-import { X } from 'lucide-react'
+import { X, Users } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useApiKeys, useUpdateApiKey } from '@/hooks/useApiKeys'
-import { ApiKeyScope, UpdateApiKeyRequest, type ApiKey } from '@/types/api-keys'
+import { UpdateApiKeyRequest, type ApiKey } from '@/types/api-keys'
 import { toast } from 'sonner'
 
 interface EditApiKeyModalProps {
@@ -23,7 +26,6 @@ export function EditApiKeyModal({ isOpen, onClose, keyId }: EditApiKeyModalProps
 
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
-  const [selectedScopes, setSelectedScopes] = useState<Set<ApiKeyScope>>(new Set())
   const [allowedIps, setAllowedIps] = useState('')
 
   // Find the key being edited
@@ -34,22 +36,11 @@ export function EditApiKeyModal({ isOpen, onClose, keyId }: EditApiKeyModalProps
     if (key) {
       setName(key.name)
       setDescription(key.description || '')
-      setSelectedScopes(new Set(key.scopes.split(',') as ApiKeyScope[]))
       setAllowedIps(key.allowed_ips || '')
     }
   }, [key])
 
   if (!isOpen || !key) return null
-
-  const handleScopeToggle = (scope: ApiKeyScope) => {
-    const newScopes = new Set(selectedScopes)
-    if (newScopes.has(scope)) {
-      newScopes.delete(scope)
-    } else {
-      newScopes.add(scope)
-    }
-    setSelectedScopes(newScopes)
-  }
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -59,17 +50,10 @@ export function EditApiKeyModal({ isOpen, onClose, keyId }: EditApiKeyModalProps
       return
     }
 
-    if (selectedScopes.size === 0) {
-      toast.error('Select at least one scope')
-      return
-    }
-
     // Check if anything changed
-    const scopesString = Array.from(selectedScopes).sort().join(',')
     const hasChanges =
       name !== key.name ||
       description !== (key.description || '') ||
-      scopesString !== key.scopes ||
       allowedIps !== (key.allowed_ips || '')
 
     if (!hasChanges) {
@@ -86,10 +70,6 @@ export function EditApiKeyModal({ isOpen, onClose, keyId }: EditApiKeyModalProps
 
       if (description !== (key.description || '')) {
         updateData.description = description.trim() || null
-      }
-
-      if (scopesString !== key.scopes) {
-        updateData.scopes = scopesString
       }
 
       if (allowedIps !== (key.allowed_ips || '')) {
@@ -148,28 +128,15 @@ export function EditApiKeyModal({ isOpen, onClose, keyId }: EditApiKeyModalProps
             />
           </div>
 
-          {/* Scopes */}
+          {/* Group (read-only) */}
           <div>
-            <label className="block text-sm font-medium text-gray-300 mb-3">Permissions *</label>
-            <div className="space-y-2 p-3 bg-gray-800/50 rounded border border-gray-700">
-              {(['read', 'write', 'admin'] as const).map((scope) => (
-                <label key={scope} className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={selectedScopes.has(scope)}
-                    onChange={() => handleScopeToggle(scope)}
-                    disabled={updateKey.isPending}
-                    className="w-4 h-4"
-                  />
-                  <span className="text-sm text-gray-300">
-                    {scope.charAt(0).toUpperCase() + scope.slice(1)}
-                  </span>
-                </label>
-              ))}
+            <label className="block text-sm font-medium text-gray-300 mb-2">Permissions Group</label>
+            <div className="flex items-center gap-2 p-3 bg-gray-800/50 rounded border border-gray-700">
+              <Users className="h-4 w-4 text-blue-400" />
+              <span className="text-gray-300">{key.group_name}</span>
             </div>
-            <p className="text-xs text-gray-500 mt-2">
-              <strong>read:</strong> View data • <strong>write:</strong> Manage containers •{' '}
-              <strong>admin:</strong> Full access
+            <p className="text-xs text-gray-500 mt-1">
+              Group cannot be changed after creation. To use a different group, create a new key.
             </p>
           </div>
 

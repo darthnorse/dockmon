@@ -1,8 +1,8 @@
 /**
  * OIDC Types
- * TypeScript interfaces for OIDC configuration and role mappings
+ * TypeScript interfaces for OIDC configuration and group mappings
  *
- * Phase 4 of Multi-User Support (v2.3.0)
+ * Group-Based Permissions Refactor (v2.4.0)
  */
 
 // ==================== OIDC Configuration ====================
@@ -14,6 +14,8 @@ export interface OIDCConfig {
   client_secret_configured: boolean
   scopes: string
   claim_for_groups: string
+  default_group_id: number | null  // Default group for users with no matching OIDC claims
+  default_group_name: string | null  // For display
   created_at: string
   updated_at: string
 }
@@ -25,6 +27,7 @@ export interface OIDCConfigUpdateRequest {
   client_secret?: string | null
   scopes?: string | null
   claim_for_groups?: string | null
+  default_group_id?: number | null
 }
 
 // ==================== OIDC Discovery ====================
@@ -41,25 +44,26 @@ export interface OIDCDiscoveryResponse {
   claims_supported?: string[]
 }
 
-// ==================== OIDC Role Mappings ====================
+// ==================== OIDC Group Mappings ====================
 
-export interface OIDCRoleMapping {
+export interface OIDCGroupMapping {
   id: number
   oidc_value: string
-  dockmon_role: string
+  group_id: number
+  group_name: string  // For display
   priority: number
   created_at: string
 }
 
-export interface OIDCRoleMappingCreateRequest {
+export interface OIDCGroupMappingCreateRequest {
   oidc_value: string
-  dockmon_role: string
+  group_id: number
   priority?: number
 }
 
-export interface OIDCRoleMappingUpdateRequest {
+export interface OIDCGroupMappingUpdateRequest {
   oidc_value?: string
-  dockmon_role?: string
+  group_id?: number
   priority?: number
 }
 
@@ -70,19 +74,12 @@ export interface OIDCStatus {
   provider_configured: boolean
 }
 
-// ==================== Role Options ====================
+// ==================== Legacy Role Types (for migration) ====================
+// Re-export from roles.ts for backward compatibility
+export { VALID_ROLES as DOCKMON_ROLES, ROLE_LABELS, ROLE_DESCRIPTIONS } from './roles'
+export type { RoleType as DockMonRole } from './roles'
 
-export const DOCKMON_ROLES = ['admin', 'user', 'readonly'] as const
-export type DockMonRole = (typeof DOCKMON_ROLES)[number]
-
-export const ROLE_LABELS: Record<DockMonRole, string> = {
-  admin: 'Admin',
-  user: 'User',
-  readonly: 'Read-only',
-}
-
-export const ROLE_DESCRIPTIONS: Record<DockMonRole, string> = {
-  admin: 'Full access to all features',
-  user: 'Can operate containers and deploy stacks',
-  readonly: 'View only, no modifications',
-}
+// Legacy type aliases for OIDCRoleMapping (now OIDCGroupMapping)
+export type OIDCRoleMapping = OIDCGroupMapping
+export type OIDCRoleMappingCreateRequest = OIDCGroupMappingCreateRequest
+export type OIDCRoleMappingUpdateRequest = OIDCGroupMappingUpdateRequest

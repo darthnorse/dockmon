@@ -1,12 +1,12 @@
 /**
  * User Management Type Definitions
  *
- * Phase 3 of Multi-User Support (v2.3.0)
+ * Group-Based Permissions Refactor (v2.4.0)
  */
 
-// ==================== User Types ====================
+import type { UserGroupInfo } from './groups'
 
-export type UserRole = 'admin' | 'user' | 'readonly'
+// ==================== User Types ====================
 
 export type AuthProvider = 'local' | 'oidc'
 
@@ -15,7 +15,7 @@ export interface User {
   username: string
   email: string | null
   display_name: string | null
-  role: UserRole
+  groups: UserGroupInfo[]  // User's group memberships
   auth_provider: AuthProvider
   is_first_login: boolean
   must_change_password: boolean
@@ -38,14 +38,14 @@ export interface CreateUserRequest {
   password: string
   email?: string
   display_name?: string
-  role?: UserRole
+  group_ids: number[]  // Required: at least one group
   must_change_password?: boolean
 }
 
 export interface UpdateUserRequest {
   email?: string | null
   display_name?: string | null
-  role?: UserRole
+  group_ids?: number[]  // If provided, replaces all groups
 }
 
 export interface ResetPasswordRequest {
@@ -64,24 +64,7 @@ export interface DeleteUserResponse {
 
 export interface ReactivateUserResponse extends User {}
 
-// ==================== Role Constants ====================
-
-/**
- * Available user roles - single source of truth
- * Used for role selection in UI components
- */
-export const USER_ROLES: readonly UserRole[] = ['admin', 'user', 'readonly'] as const
-
-// ==================== Role Display Helpers ====================
-
-export const ROLE_LABELS: Record<UserRole, string> = {
-  admin: 'Admin',
-  user: 'User',
-  readonly: 'Read-only',
-}
-
-export const ROLE_DESCRIPTIONS: Record<UserRole, string> = {
-  admin: 'Full access to all features',
-  user: 'Can operate containers and deploy stacks',
-  readonly: 'View only, no modifications',
-}
+// ==================== Legacy Role Constants (for migration) ====================
+// Re-export from roles.ts for backward compatibility
+export { VALID_ROLES as USER_ROLES, ROLE_LABELS, ROLE_DESCRIPTIONS } from './roles'
+export type { RoleType as UserRole } from './roles'

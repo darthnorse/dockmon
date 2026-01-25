@@ -1,8 +1,11 @@
 /**
  * useRoles Hook
- * Manages Role Permissions with React Query
+ * Manages capabilities and legacy role permissions with React Query
  *
- * Phase 5 of Multi-User Support (v2.3.0)
+ * Group-Based Permissions Refactor (v2.4.0)
+ *
+ * Note: Role permission hooks are deprecated. Use useGroups.ts for group permissions instead.
+ * Only useCapabilities is still actively used (for the permission matrix).
  */
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -22,6 +25,7 @@ const CAPABILITIES_QUERY_KEY = ['capabilities']
 
 /**
  * Fetch all capabilities with metadata
+ * This is still used by the group permissions UI
  */
 export function useCapabilities() {
   return useQuery({
@@ -34,8 +38,10 @@ export function useCapabilities() {
   })
 }
 
+// ==================== Legacy Hooks (Deprecated) ====================
+
 /**
- * Fetch all role permissions (admin only)
+ * @deprecated Use useGroupPermissions from useGroups.ts instead
  */
 export function useRolePermissions() {
   return useQuery({
@@ -44,12 +50,12 @@ export function useRolePermissions() {
       const response = await apiClient.get<RolePermissionsResponse>('/v2/roles/permissions')
       return response
     },
-    staleTime: 30 * 1000, // 30 seconds
+    staleTime: 30 * 1000,
   })
 }
 
 /**
- * Fetch default role permissions (admin only)
+ * @deprecated Role defaults no longer used - groups have their own permissions
  */
 export function useDefaultPermissions() {
   return useQuery({
@@ -58,12 +64,12 @@ export function useDefaultPermissions() {
       const response = await apiClient.get<RolePermissionsResponse>('/v2/roles/permissions/defaults')
       return response
     },
-    staleTime: 5 * 60 * 1000, // 5 minutes - defaults don't change
+    staleTime: 5 * 60 * 1000,
   })
 }
 
 /**
- * Update role permissions (admin only)
+ * @deprecated Use useUpdateGroupPermissions from useGroups.ts instead
  */
 export function useUpdatePermissions() {
   const queryClient = useQueryClient()
@@ -84,7 +90,7 @@ export function useUpdatePermissions() {
 }
 
 /**
- * Reset role permissions to defaults (admin only)
+ * @deprecated Role resets no longer used - groups have their own permissions
  */
 export function useResetPermissions() {
   const queryClient = useQueryClient()

@@ -48,6 +48,7 @@ class GroupResponse(BaseModel):
     id: int
     name: str
     description: Optional[str] = None
+    is_system: bool = False
     member_count: int
     created_at: str
     created_by: Optional[str] = None
@@ -59,6 +60,7 @@ class GroupDetailResponse(BaseModel):
     id: int
     name: str
     description: Optional[str] = None
+    is_system: bool = False
     members: list[GroupMemberResponse]
     created_at: str
     created_by: Optional[str] = None
@@ -274,6 +276,7 @@ async def list_groups(
                 id=group.id,
                 name=group.name,
                 description=group.description,
+                is_system=group.is_system,
                 member_count=count_map.get(group.id, 0),
                 created_at=_format_datetime(group.created_at),
                 created_by=username_map.get(group.created_by) if group.created_by else None,
@@ -346,6 +349,7 @@ async def create_group(
             id=new_group.id,
             name=new_group.name,
             description=new_group.description,
+            is_system=new_group.is_system,
             member_count=0,
             created_at=_format_datetime(new_group.created_at),
             created_by=current_user.get('username'),
@@ -382,6 +386,7 @@ async def get_group(
             id=group.id,
             name=group.name,
             description=group.description,
+            is_system=group.is_system,
             members=_get_group_members(session, group_id),
             created_at=_format_datetime(group.created_at),
             created_by=creator_username,
@@ -467,6 +472,7 @@ async def update_group(
             id=group.id,
             name=group.name,
             description=group.description,
+            is_system=group.is_system,
             member_count=member_count,
             created_at=_format_datetime(group.created_at),
             created_by=_get_username_by_id(session, group.created_by),

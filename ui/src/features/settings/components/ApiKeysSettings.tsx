@@ -1,10 +1,12 @@
 /**
  * API Keys Settings Component
  * Manage API keys for programmatic access (Ansible, Homepage, scripts, etc.)
+ *
+ * Group-Based Permissions Refactor (v2.4.0)
  */
 
 import { useState } from 'react'
-import { Trash2, Edit2, Plus, AlertCircle, Key, AlertTriangle } from 'lucide-react'
+import { Trash2, Edit2, Plus, AlertCircle, Key, AlertTriangle, Users } from 'lucide-react'
 import { useApiKeys, useRevokeApiKey } from '@/hooks/useApiKeys'
 import { CreateApiKeyModal } from './ApiKeys/CreateApiKeyModal'
 import { DisplayNewKeyModal } from './ApiKeys/DisplayNewKeyModal'
@@ -153,8 +155,10 @@ export function ApiKeysSettings() {
 
                     {/* Key Details */}
                     <div className="flex flex-wrap gap-4 mt-3 text-xs text-gray-500">
-                      <div>
-                        <span className="text-gray-400">Scopes:</span> {key.scopes}
+                      <div className="flex items-center gap-1">
+                        <span className="text-gray-400">Group:</span>
+                        <Users className="h-3 w-3 text-blue-400" />
+                        {key.group_name || 'Unknown'}
                       </div>
                       <div>
                         <span className="text-gray-400">Usage:</span> {key.usage_count} calls

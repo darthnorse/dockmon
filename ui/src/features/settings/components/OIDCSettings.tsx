@@ -1,8 +1,8 @@
 /**
  * OIDC Settings Component
- * Admin-only OIDC configuration and role mapping interface
+ * Admin-only OIDC configuration and group mapping interface
  *
- * Phase 4 of Multi-User Support (v2.3.0)
+ * Group-Based Permissions Refactor (v2.4.0)
  */
 
 import { useState, useEffect } from 'react'
@@ -17,25 +17,24 @@ import {
   Save,
   Key,
   Globe,
-  Shield,
+  Users,
   AlertTriangle,
 } from 'lucide-react'
 import {
   useOIDCConfig,
   useUpdateOIDCConfig,
   useDiscoverOIDC,
-  useOIDCRoleMappings,
-  useCreateOIDCRoleMapping,
-  useUpdateOIDCRoleMapping,
-  useDeleteOIDCRoleMapping,
+  useOIDCGroupMappings,
+  useCreateOIDCGroupMapping,
+  useUpdateOIDCGroupMapping,
+  useDeleteOIDCGroupMapping,
 } from '@/hooks/useOIDC'
+import { useGroups } from '@/hooks/useGroups'
 import type {
-  OIDCRoleMapping,
+  OIDCGroupMapping,
   OIDCDiscoveryResponse,
   OIDCConfigUpdateRequest,
-  DockMonRole,
 } from '@/types/oidc'
-import { DOCKMON_ROLES, ROLE_LABELS } from '@/types/oidc'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -55,19 +54,24 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { toast } from 'sonner'
 
 // Default OIDC configuration values
 const DEFAULT_SCOPES = 'openid profile email groups'
 const DEFAULT_GROUPS_CLAIM = 'groups'
+const NO_DEFAULT_GROUP = '__none__' // Sentinel value for "no default group"
 
 export function OIDCSettings() {
   const { data: config, isLoading: configLoading, refetch: refetchConfig } = useOIDCConfig()
-  const { data: mappings, isLoading: mappingsLoading, refetch: refetchMappings } = useOIDCRoleMappings()
+  const { data: mappings, isLoading: mappingsLoading, refetch: refetchMappings } = useOIDCGroupMappings()
+  const { data: groupsData } = useGroups()
   const updateConfig = useUpdateOIDCConfig()
   const discoverOIDC = useDiscoverOIDC()
-  const createMapping = useCreateOIDCRoleMapping()
-  const updateMapping = useUpdateOIDCRoleMapping()
-  const deleteMapping = useDeleteOIDCRoleMapping()
+  const createMapping = useCreateOIDCGroupMapping()
+  const updateMapping = useUpdateOIDCGroupMapping()
+  const deleteMapping = useDeleteOIDCGroupMapping()
+
+  const groups = groupsData?.groups || []
 
   // Local form state
   const [enabled, setEnabled] = useState(false)
@@ -76,6 +80,7 @@ export function OIDCSettings() {
   const [clientSecret, setClientSecret] = useState('')
   const [scopes, setScopes] = useState(DEFAULT_SCOPES)
   const [claimForGroups, setClaimForGroups] = useState(DEFAULT_GROUPS_CLAIM)
+  const [defaultGroupId, setDefaultGroupId] = useState<string>('')
   const [hasChanges, setHasChanges] = useState(false)
 
   // Discovery state
@@ -83,8 +88,8 @@ export function OIDCSettings() {
 
   // Modal states
   const [showCreateMapping, setShowCreateMapping] = useState(false)
-  const [editingMapping, setEditingMapping] = useState<OIDCRoleMapping | null>(null)
-  const [deletingMapping, setDeletingMapping] = useState<OIDCRoleMapping | null>(null)
+  const [editingMapping, setEditingMapping] = useState<OIDCGroupMapping | null>(null)
+  const [deletingMapping, setDeletingMapping] = useState<OIDCGroupMapping | null>(null)
 
   // Sync form state from API
   useEffect(() => {
@@ -94,6 +99,7 @@ export function OIDCSettings() {
       setClientId(config.client_id || '')
       setScopes(config.scopes || DEFAULT_SCOPES)
       setClaimForGroups(config.claim_for_groups || DEFAULT_GROUPS_CLAIM)
+      setDefaultGroupId(config.default_group_id?.toString() || NO_DEFAULT_GROUP)
       // Don't sync client_secret - it's never returned
       setHasChanges(false)
     }
@@ -108,9 +114,10 @@ export function OIDCSettings() {
       clientId !== (config.client_id || '') ||
       clientSecret !== '' ||
       scopes !== (config.scopes || DEFAULT_SCOPES) ||
-      claimForGroups !== (config.claim_for_groups || DEFAULT_GROUPS_CLAIM)
+      claimForGroups !== (config.claim_for_groups || DEFAULT_GROUPS_CLAIM) ||
+      defaultGroupId !== (config.default_group_id?.toString() || NO_DEFAULT_GROUP)
     setHasChanges(changed)
-  }, [config, enabled, providerUrl, clientId, clientSecret, scopes, claimForGroups])
+  }, [config, enabled, providerUrl, clientId, clientSecret, scopes, claimForGroups, defaultGroupId])
 
   const handleSaveConfig = async () => {
     const data: OIDCConfigUpdateRequest = {}
@@ -120,6 +127,9 @@ export function OIDCSettings() {
     if (clientSecret) data.client_secret = clientSecret
     if (scopes !== (config?.scopes || DEFAULT_SCOPES)) data.scopes = scopes || null
     if (claimForGroups !== (config?.claim_for_groups || DEFAULT_GROUPS_CLAIM)) data.claim_for_groups = claimForGroups || null
+    if (defaultGroupId !== (config?.default_group_id?.toString() || NO_DEFAULT_GROUP)) {
+      data.default_group_id = defaultGroupId && defaultGroupId !== NO_DEFAULT_GROUP ? parseInt(defaultGroupId, 10) : null
+    }
 
     try {
       await updateConfig.mutateAsync(data)
@@ -245,7 +255,7 @@ export function OIDCSettings() {
               </p>
             </div>
 
-            <div className="space-y-2 md:col-span-2">
+            <div className="space-y-2">
               <Label htmlFor="claim-for-groups" className="text-sm text-gray-300">
                 Groups Claim
               </Label>
@@ -258,6 +268,29 @@ export function OIDCSettings() {
               />
               <p className="text-xs text-gray-500">
                 The claim in the ID token/userinfo that contains group membership
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="default-group" className="text-sm text-gray-300">
+                Default Group
+              </Label>
+              <Select value={defaultGroupId} onValueChange={setDefaultGroupId}>
+                <SelectTrigger className="max-w-xs">
+                  <SelectValue placeholder="Select a default group" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">No default (deny access)</SelectItem>
+                  {groups.map((group) => (
+                    <SelectItem key={group.id} value={group.id.toString()}>
+                      {group.name}
+                      {group.is_system && ' (System)'}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-gray-500">
+                Group to assign when no OIDC groups match
               </p>
             </div>
           </div>
@@ -326,13 +359,13 @@ export function OIDCSettings() {
         )}
       </section>
 
-      {/* Role Mappings */}
+      {/* Group Mappings */}
       <section className="space-y-4">
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="text-lg font-semibold text-white">OIDC Group to Role Mappings</h2>
+            <h2 className="text-lg font-semibold text-white">OIDC Group to DockMon Group Mappings</h2>
             <p className="mt-1 text-sm text-gray-400">
-              Map OIDC groups to DockMon roles. Higher priority mappings take precedence.
+              Map OIDC groups to DockMon groups. Higher priority mappings take precedence.
             </p>
           </div>
           <Button onClick={() => setShowCreateMapping(true)}>
@@ -347,7 +380,7 @@ export function OIDCSettings() {
               <thead>
                 <tr className="border-b border-gray-800 bg-gray-800/50">
                   <th className="px-4 py-3 text-left text-sm font-medium text-gray-400">OIDC Group</th>
-                  <th className="px-4 py-3 text-left text-sm font-medium text-gray-400">DockMon Role</th>
+                  <th className="px-4 py-3 text-left text-sm font-medium text-gray-400">DockMon Group</th>
                   <th className="px-4 py-3 text-left text-sm font-medium text-gray-400">Priority</th>
                   <th className="px-4 py-3 text-right text-sm font-medium text-gray-400">Actions</th>
                 </tr>
@@ -361,7 +394,10 @@ export function OIDCSettings() {
                       </code>
                     </td>
                     <td className="px-4 py-3">
-                      <RoleBadge role={mapping.dockmon_role as DockMonRole} />
+                      <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-900/50 px-2.5 py-0.5 text-xs font-medium text-blue-300">
+                        <Users className="h-3 w-3" />
+                        {mapping.group_name}
+                      </span>
                     </td>
                     <td className="px-4 py-3 text-sm text-gray-300">{mapping.priority}</td>
                     <td className="px-4 py-3 text-right">
@@ -391,29 +427,36 @@ export function OIDCSettings() {
             </table>
           ) : (
             <div className="px-4 py-8 text-center text-gray-500">
-              <Shield className="mx-auto h-8 w-8 text-gray-600 mb-2" />
-              <p>No role mappings configured</p>
-              <p className="text-sm">Users without matching groups will be assigned the read-only role</p>
+              <Users className="mx-auto h-8 w-8 text-gray-600 mb-2" />
+              <p>No group mappings configured</p>
+              <p className="text-sm">Users without matching groups will use the default group</p>
             </div>
           )}
         </div>
 
-        {/* Default Role Note */}
+        {/* Default Group Note */}
         <div className="flex items-start gap-3 rounded-lg border border-yellow-800/50 bg-yellow-900/20 p-4">
           <AlertTriangle className="h-5 w-5 text-yellow-400 mt-0.5" />
           <div className="text-sm">
-            <p className="font-medium text-yellow-300">Default Role</p>
+            <p className="font-medium text-yellow-300">Default Group</p>
             <p className="text-yellow-200/70">
-              Users whose OIDC groups don't match any mapping will be assigned the <strong>read-only</strong> role.
+              Users whose OIDC groups don't match any mapping will be assigned to{' '}
+              {config?.default_group_name ? (
+                <strong>{config.default_group_name}</strong>
+              ) : (
+                <span>no group (access denied)</span>
+              )}
+              .
             </p>
           </div>
         </div>
       </section>
 
       {/* Create Mapping Modal */}
-      <RoleMappingModal
+      <GroupMappingModal
         isOpen={showCreateMapping}
         onClose={() => setShowCreateMapping(false)}
+        groups={groups}
         onSubmit={async (data) => {
           await createMapping.mutateAsync(data)
           setShowCreateMapping(false)
@@ -422,10 +465,11 @@ export function OIDCSettings() {
       />
 
       {/* Edit Mapping Modal */}
-      <RoleMappingModal
+      <GroupMappingModal
         isOpen={!!editingMapping}
         onClose={() => setEditingMapping(null)}
         mapping={editingMapping}
+        groups={groups}
         onSubmit={async (data) => {
           if (!editingMapping) return
           await updateMapping.mutateAsync({ id: editingMapping.id, data })
@@ -438,7 +482,7 @@ export function OIDCSettings() {
       <Dialog open={!!deletingMapping} onOpenChange={() => setDeletingMapping(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Delete Role Mapping</DialogTitle>
+            <DialogTitle>Delete Group Mapping</DialogTitle>
             <DialogDescription>
               Are you sure you want to delete the mapping for <code className="rounded bg-gray-800 px-2 py-1">{deletingMapping?.oidc_value}</code>?
             </DialogDescription>
@@ -467,50 +511,52 @@ export function OIDCSettings() {
 
 // ==================== Helper Components ====================
 
-function RoleBadge({ role }: { role: DockMonRole }) {
-  const colors: Record<DockMonRole, string> = {
-    admin: 'bg-purple-900/50 text-purple-300',
-    user: 'bg-blue-900/50 text-blue-300',
-    readonly: 'bg-gray-700/50 text-gray-300',
-  }
-
-  return (
-    <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${colors[role]}`}>
-      {ROLE_LABELS[role]}
-    </span>
-  )
-}
-
-interface RoleMappingModalProps {
+interface GroupMappingModalProps {
   isOpen: boolean
   onClose: () => void
-  mapping?: OIDCRoleMapping | null
-  onSubmit: (data: { oidc_value: string; dockmon_role: string; priority: number }) => Promise<void>
+  mapping?: OIDCGroupMapping | null
+  groups: Array<{ id: number; name: string; is_system: boolean }>
+  onSubmit: (data: { oidc_value: string; group_id: number; priority: number }) => Promise<void>
   isSubmitting: boolean
 }
 
-function RoleMappingModal({ isOpen, onClose, mapping, onSubmit, isSubmitting }: RoleMappingModalProps) {
+function GroupMappingModal({ isOpen, onClose, mapping, groups, onSubmit, isSubmitting }: GroupMappingModalProps) {
   const [oidcValue, setOidcValue] = useState('')
-  const [dockmonRole, setDockmonRole] = useState<DockMonRole>('readonly')
+  const [groupId, setGroupId] = useState<string>('')
   const [priority, setPriority] = useState(0)
 
   useEffect(() => {
+    if (!isOpen) {
+      // Reset form when modal closes
+      setOidcValue('')
+      setGroupId('')
+      setPriority(0)
+      return
+    }
     if (mapping) {
       setOidcValue(mapping.oidc_value)
-      setDockmonRole(mapping.dockmon_role as DockMonRole)
+      setGroupId(mapping.group_id.toString())
       setPriority(mapping.priority)
     } else {
       setOidcValue('')
-      setDockmonRole('readonly')
+      setGroupId('')
       setPriority(0)
     }
   }, [mapping, isOpen])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (!oidcValue.trim()) {
+      toast.error('OIDC group name is required')
+      return
+    }
+    if (!groupId) {
+      toast.error('Please select a DockMon group')
+      return
+    }
     await onSubmit({
-      oidc_value: oidcValue,
-      dockmon_role: dockmonRole,
+      oidc_value: oidcValue.trim(),
+      group_id: parseInt(groupId, 10),
       priority,
     })
   }
@@ -520,9 +566,9 @@ function RoleMappingModal({ isOpen, onClose, mapping, onSubmit, isSubmitting }: 
       <DialogContent>
         <form onSubmit={handleSubmit}>
           <DialogHeader>
-            <DialogTitle>{mapping ? 'Edit Role Mapping' : 'Create Role Mapping'}</DialogTitle>
+            <DialogTitle>{mapping ? 'Edit Group Mapping' : 'Create Group Mapping'}</DialogTitle>
             <DialogDescription>
-              Map an OIDC group to a DockMon role. Users with this group will receive the specified role.
+              Map an OIDC group to a DockMon group. Users with this OIDC group will be assigned to the specified DockMon group.
             </DialogDescription>
           </DialogHeader>
 
@@ -542,15 +588,19 @@ function RoleMappingModal({ isOpen, onClose, mapping, onSubmit, isSubmitting }: 
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="dockmon-role">DockMon Role</Label>
-              <Select value={dockmonRole} onValueChange={(v) => setDockmonRole(v as DockMonRole)}>
+              <Label htmlFor="dockmon-group">DockMon Group</Label>
+              <Select value={groupId} onValueChange={setGroupId}>
                 <SelectTrigger>
-                  <SelectValue />
+                  <SelectValue placeholder="Select a group" />
                 </SelectTrigger>
                 <SelectContent>
-                  {DOCKMON_ROLES.map((role) => (
-                    <SelectItem key={role} value={role}>
-                      {ROLE_LABELS[role]}
+                  {groups.map((group) => (
+                    <SelectItem key={group.id} value={group.id.toString()}>
+                      <span className="flex items-center gap-2">
+                        <Users className="h-3 w-3 text-blue-400" />
+                        {group.name}
+                        {group.is_system && ' (System)'}
+                      </span>
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -568,7 +618,7 @@ function RoleMappingModal({ isOpen, onClose, mapping, onSubmit, isSubmitting }: 
                 onChange={(e) => setPriority(parseInt(e.target.value) || 0)}
               />
               <p className="text-xs text-gray-500">
-                Higher priority mappings take precedence when a user has multiple matching groups
+                Higher priority mappings take precedence when a user has multiple matching OIDC groups
               </p>
             </div>
           </div>
@@ -577,7 +627,7 @@ function RoleMappingModal({ isOpen, onClose, mapping, onSubmit, isSubmitting }: 
             <Button type="button" variant="outline" onClick={onClose}>
               Cancel
             </Button>
-            <Button type="submit" disabled={!oidcValue || isSubmitting}>
+            <Button type="submit" disabled={!oidcValue || !groupId || isSubmitting}>
               {isSubmitting ? 'Saving...' : mapping ? 'Save Changes' : 'Create Mapping'}
             </Button>
           </DialogFooter>

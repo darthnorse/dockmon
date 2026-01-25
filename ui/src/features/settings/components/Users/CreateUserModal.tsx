@@ -1,17 +1,17 @@
 /**
  * Create User Modal
- * Form to create a new user with role selection
+ * Form to create a new user with group selection
  *
- * Phase 3 of Multi-User Support (v2.3.0)
+ * Group-Based Permissions Refactor (v2.4.0)
  */
 
 import { useState, type FormEvent } from 'react'
-import { X, Eye, EyeOff } from 'lucide-react'
+import { X, Eye, EyeOff, Users } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useCreateUser } from '@/hooks/useUsers'
-import type { CreateUserRequest, UserRole } from '@/types/users'
-import { USER_ROLES, ROLE_LABELS, ROLE_DESCRIPTIONS } from '@/types/users'
+import { useGroups } from '@/hooks/useGroups'
+import type { CreateUserRequest } from '@/types/users'
 import { toast } from 'sonner'
 
 interface CreateUserModalProps {
@@ -21,29 +21,62 @@ interface CreateUserModalProps {
 
 export function CreateUserModal({ isOpen, onClose }: CreateUserModalProps) {
   const createUser = useCreateUser()
+  const { data: groupsData, isLoading: loadingGroups } = useGroups()
 
   const [username, setUsername] = useState('')
   const [email, setEmail] = useState('')
   const [displayName, setDisplayName] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
-  const [role, setRole] = useState<UserRole>('user')
+  const [selectedGroupIds, setSelectedGroupIds] = useState<Set<number>>(new Set())
   const [mustChangePassword, setMustChangePassword] = useState(true)
   const [showPassword, setShowPassword] = useState(false)
 
+  const groups = groupsData?.groups || []
+
   if (!isOpen) return null
+
+  const handleGroupToggle = (groupId: number) => {
+    setSelectedGroupIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(groupId)) {
+        next.delete(groupId)
+      } else {
+        next.add(groupId)
+      }
+      return next
+    })
+  }
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
 
     // Validation
-    if (!username.trim()) {
+    const trimmedUsername = username.trim()
+    if (!trimmedUsername) {
       toast.error('Username is required')
       return
     }
 
-    if (!/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(username)) {
+    if (trimmedUsername.length < 3) {
+      toast.error('Username must be at least 3 characters')
+      return
+    }
+
+    if (trimmedUsername.length > 32) {
+      toast.error('Username must be 32 characters or less')
+      return
+    }
+
+    if (!/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(trimmedUsername)) {
       toast.error('Username must start with a letter and contain only letters, numbers, underscores, and hyphens')
+      return
+    }
+
+    // Check for reserved usernames
+    const reservedNames = ['admin', 'root', 'system', 'administrator', 'guest', 'api', 'auth', 'oauth', 'oidc']
+    if (reservedNames.includes(trimmedUsername.toLowerCase())) {
+      toast.error(`Username "${trimmedUsername}" is reserved`)
       return
     }
 
@@ -62,11 +95,16 @@ export function CreateUserModal({ isOpen, onClose }: CreateUserModalProps) {
       return
     }
 
+    if (selectedGroupIds.size === 0) {
+      toast.error('Select at least one group')
+      return
+    }
+
     try {
       const request: CreateUserRequest = {
         username: username.trim(),
         password,
-        role,
+        group_ids: Array.from(selectedGroupIds),
         must_change_password: mustChangePassword,
       }
 
@@ -94,7 +132,7 @@ export function CreateUserModal({ isOpen, onClose }: CreateUserModalProps) {
     setDisplayName('')
     setPassword('')
     setConfirmPassword('')
-    setRole('user')
+    setSelectedGroupIds(new Set())
     setMustChangePassword(true)
     setShowPassword(false)
   }
@@ -203,35 +241,53 @@ export function CreateUserModal({ isOpen, onClose }: CreateUserModalProps) {
             />
           </div>
 
-          {/* Role Selection */}
+          {/* Group Selection */}
           <div>
-            <label className="mb-3 block text-sm font-medium text-gray-300">Role *</label>
-            <div className="space-y-2">
-              {USER_ROLES.map((r) => (
-                <label
-                  key={r}
-                  className={`flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors ${
-                    role === r
-                      ? 'border-blue-500 bg-blue-900/30'
-                      : 'border-gray-700 bg-gray-800/50 hover:border-gray-600'
-                  }`}
-                >
-                  <input
-                    type="radio"
-                    name="role"
-                    value={r}
-                    checked={role === r}
-                    onChange={() => setRole(r)}
-                    disabled={createUser.isPending}
-                    className="mt-0.5 h-4 w-4 border-gray-600 bg-gray-800 text-blue-600 focus:ring-blue-500"
-                  />
-                  <div>
-                    <div className="font-medium text-white">{ROLE_LABELS[r]}</div>
-                    <div className="text-xs text-gray-400">{ROLE_DESCRIPTIONS[r]}</div>
-                  </div>
-                </label>
-              ))}
-            </div>
+            <label className="mb-3 block text-sm font-medium text-gray-300">
+              Groups * <span className="text-xs text-gray-500">(select at least one)</span>
+            </label>
+            {loadingGroups ? (
+              <div className="text-sm text-gray-500">Loading groups...</div>
+            ) : groups.length === 0 ? (
+              <div className="rounded-lg border border-yellow-900/30 bg-yellow-900/10 p-3 text-sm text-yellow-300">
+                No groups available. Create a group first in the Groups settings.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {groups.map((group) => (
+                  <label
+                    key={group.id}
+                    className={`flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors ${
+                      selectedGroupIds.has(group.id)
+                        ? 'border-blue-500 bg-blue-900/30'
+                        : 'border-gray-700 bg-gray-800/50 hover:border-gray-600'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedGroupIds.has(group.id)}
+                      onChange={() => handleGroupToggle(group.id)}
+                      disabled={createUser.isPending}
+                      className="mt-0.5 h-4 w-4 rounded border-gray-600 bg-gray-800 text-blue-600 focus:ring-blue-500"
+                    />
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <Users className="h-4 w-4 text-blue-400" />
+                        <span className="font-medium text-white">{group.name}</span>
+                        {group.is_system && (
+                          <span className="rounded bg-gray-700 px-1.5 py-0.5 text-xs text-gray-400">
+                            System
+                          </span>
+                        )}
+                      </div>
+                      {group.description && (
+                        <div className="mt-1 text-xs text-gray-400">{group.description}</div>
+                      )}
+                    </div>
+                  </label>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Must Change Password */}

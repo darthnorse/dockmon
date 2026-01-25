@@ -477,35 +477,27 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
           requestData.host_selector_json = JSON.stringify({ include: formData.host_selector_ids })
         }
       } else if (formData.scope === 'container') {
+        // Helper to apply should_run filter based on run mode
+        const applyRunModeFilter = (selector: ContainerSelector): ContainerSelector => {
+          if (formData.container_run_mode === 'should_run') {
+            selector.should_run = true
+          } else if (formData.container_run_mode === 'on_demand') {
+            selector.should_run = false
+          }
+          return selector
+        }
+
         // Container scope selectors
         if (selectedTags.length > 0) {
           // Tag-based: containers with ANY of these tags
-          const containerSelector: ContainerSelector = { tags: selectedTags }
-          // Add should_run filter if specified
-          if (formData.container_run_mode === 'should_run') {
-            containerSelector.should_run = true
-          } else if (formData.container_run_mode === 'on_demand') {
-            containerSelector.should_run = false
-          }
-          requestData.container_selector_json = JSON.stringify(containerSelector)
+          const selector = applyRunModeFilter({ tags: selectedTags })
+          requestData.container_selector_json = JSON.stringify(selector)
         } else if (formData.container_selector_all) {
-          const containerSelector: ContainerSelector = { include_all: true }
-          // Add should_run filter if specified
-          if (formData.container_run_mode === 'should_run') {
-            containerSelector.should_run = true
-          } else if (formData.container_run_mode === 'on_demand') {
-            containerSelector.should_run = false
-          }
-          requestData.container_selector_json = JSON.stringify(containerSelector)
+          const selector = applyRunModeFilter({ include_all: true })
+          requestData.container_selector_json = JSON.stringify(selector)
         } else if (formData.container_selector_included.length > 0) {
-          const containerSelector: ContainerSelector = { include: formData.container_selector_included }
-          // Add should_run filter if specified
-          if (formData.container_run_mode === 'should_run') {
-            containerSelector.should_run = true
-          } else if (formData.container_run_mode === 'on_demand') {
-            containerSelector.should_run = false
-          }
-          requestData.container_selector_json = JSON.stringify(containerSelector)
+          const selector = applyRunModeFilter({ include: formData.container_selector_included })
+          requestData.container_selector_json = JSON.stringify(selector)
         }
       }
 
@@ -698,6 +690,10 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
 
     return parts
   }
+
+  // Compute button text - avoid nested ternary in JSX
+  const isSaving = createRule.isPending || updateRule.isPending
+  const submitButtonText = isSaving ? 'Saving...' : (isEditing ? 'Update Rule' : 'Create Rule')
 
   return (
     <>
@@ -1559,18 +1555,18 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
               </label>
 
               {formData.custom_template !== null && formData.custom_template !== undefined && (
-                <textarea
-                  value={formData.custom_template}
-                  onChange={(e) => handleChange('custom_template', e.target.value)}
-                  rows={6}
-                  placeholder="Enter custom template or leave empty to use category default..."
-                  className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white font-mono text-sm placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
-              )}
-              {formData.custom_template !== null && formData.custom_template !== undefined && (
-                <p className="mt-2 text-xs text-gray-400">
-                  Leave empty to use the category-specific template from Settings. Use variables like {'{CONTAINER_NAME}'}.
-                </p>
+                <>
+                  <textarea
+                    value={formData.custom_template}
+                    onChange={(e) => handleChange('custom_template', e.target.value)}
+                    rows={6}
+                    placeholder="Enter custom template or leave empty to use category default..."
+                    className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white font-mono text-sm placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                  <p className="mt-2 text-xs text-gray-400">
+                    Leave empty to use the category-specific template from Settings. Use variables like {'{CONTAINER_NAME}'}.
+                  </p>
+                </>
               )}
             </div>
           </div>
@@ -1621,14 +1617,10 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                 form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
               }
             }}
-            disabled={createRule.isPending || updateRule.isPending}
+            disabled={isSaving}
             className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
           >
-            {createRule.isPending || updateRule.isPending
-              ? 'Saving...'
-              : isEditing
-                ? 'Update Rule'
-                : 'Create Rule'}
+            {submitButtonText}
           </button>
         </div>
         </div>

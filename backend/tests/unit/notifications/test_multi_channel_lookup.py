@@ -9,39 +9,106 @@ Issue: #167
 
 import json
 import pytest
-from unittest.mock import Mock, AsyncMock, patch, MagicMock
+from unittest.mock import Mock, AsyncMock, MagicMock
 from contextlib import contextmanager
 
 from notifications import NotificationService
 from database import NotificationChannel, AlertRuleV2, AlertV2
 
 
+# ==================== Shared Test Helpers ====================
+
+def create_mock_channel(id: int, name: str, type: str, config: dict, enabled: bool = True):
+    """Helper to create mock NotificationChannel"""
+    channel = Mock(spec=NotificationChannel)
+    channel.id = id
+    channel.name = name
+    channel.type = type
+    channel.config = config
+    channel.enabled = enabled
+    return channel
+
+
+def create_mock_alert(id: str = "alert-1", rule_id: str = "rule-1"):
+    """Helper to create mock AlertV2"""
+    alert = Mock(spec=AlertV2)
+    alert.id = id
+    alert.rule_id = rule_id
+    alert.title = "Test Alert"
+    alert.message = "Test message"
+    alert.severity = "warning"
+    alert.kind = "container_stopped"
+    alert.scope_type = "container"
+    alert.scope_id = "host1:abc123"
+    alert.container_name = "nginx"
+    alert.host_name = "server1"
+    alert.notified_at = None  # Not yet notified
+    return alert
+
+
+def create_mock_rule(id: str = "rule-1", notify_channels_json: str = "[1, 2]"):
+    """Helper to create mock AlertRuleV2"""
+    rule = Mock(spec=AlertRuleV2)
+    rule.id = id
+    rule.name = "Test Rule"
+    rule.notify_channels_json = notify_channels_json
+    rule.custom_template = None
+    rule.category = "container"
+    return rule
+
+
+# ==================== Shared Fixtures ====================
+
+@pytest.fixture
+def mock_db():
+    """Create mock database manager"""
+    db = Mock()
+    db.get_session = MagicMock()
+    db.get_settings = Mock(return_value=Mock(external_url=None))
+    return db
+
+
+@pytest.fixture
+def mock_db_with_session():
+    """Create mock database manager with context manager session"""
+    db = Mock()
+
+    @contextmanager
+    def mock_session():
+        session = Mock()
+        session.query.return_value.filter.return_value.first.return_value = None
+        yield session
+
+    db.get_session = mock_session
+    db.get_settings = Mock(return_value=Mock(external_url=None))
+    return db
+
+
+@pytest.fixture
+def notification_service(mock_db):
+    """Create NotificationService with mocked dependencies"""
+    service = NotificationService(db=mock_db, event_logger=None)
+    service.http_client = AsyncMock()
+    return service
+
+
+@pytest.fixture
+def notification_service_full(mock_db_with_session):
+    """Create NotificationService with full mocking for end-to-end tests"""
+    service = NotificationService(db=mock_db_with_session, event_logger=None)
+    service.http_client = AsyncMock()
+    service.blackout_manager = Mock()
+    service.blackout_manager.is_in_blackout_window.return_value = (False, None)
+    service._is_rate_limited = Mock(return_value=False)
+    service._get_template_for_alert_v2 = Mock(return_value="Test: {title}")
+    service._format_message_v2 = Mock(return_value="Formatted test message")
+    return service
+
+
+# ==================== Test Classes ====================
+
 class TestMultiChannelLookup:
     """Test notification channel lookup with multiple channels of same type"""
-
-    @pytest.fixture
-    def mock_db(self):
-        """Create mock database manager"""
-        db = Mock()
-        db.get_session = MagicMock()
-        return db
-
-    @pytest.fixture
-    def notification_service(self, mock_db):
-        """Create NotificationService with mocked dependencies"""
-        service = NotificationService(db=mock_db, event_logger=None)
-        service.http_client = AsyncMock()
-        return service
-
-    def create_mock_channel(self, id: int, name: str, type: str, config: dict, enabled: bool = True):
-        """Helper to create mock NotificationChannel"""
-        channel = Mock(spec=NotificationChannel)
-        channel.id = id
-        channel.name = name
-        channel.type = type
-        channel.config = config
-        channel.enabled = enabled
-        return channel
 
     def test_channel_map_by_type_overwrites_duplicates(self, notification_service, mock_db):
         """
@@ -49,11 +116,11 @@ class TestMultiChannelLookup:
         This demonstrates the bug when using type-based lookup.
         """
         # Create two Discord channels
-        discord_alerts = self.create_mock_channel(
+        discord_alerts = create_mock_channel(
             id=1, name="Discord - Alerts", type="discord",
             config={"webhook_url": "https://discord.com/webhook1"}
         )
-        discord_critical = self.create_mock_channel(
+        discord_critical = create_mock_channel(
             id=2, name="Discord - Critical", type="discord",
             config={"webhook_url": "https://discord.com/webhook2"}
         )
@@ -73,11 +140,11 @@ class TestMultiChannelLookup:
         This is the correct approach for multi-channel support.
         """
         # Create two Discord channels
-        discord_alerts = self.create_mock_channel(
+        discord_alerts = create_mock_channel(
             id=1, name="Discord - Alerts", type="discord",
             config={"webhook_url": "https://discord.com/webhook1"}
         )
-        discord_critical = self.create_mock_channel(
+        discord_critical = create_mock_channel(
             id=2, name="Discord - Critical", type="discord",
             config={"webhook_url": "https://discord.com/webhook2"}
         )
@@ -97,11 +164,11 @@ class TestMultiChannelLookup:
         Test that ID-based channel lookup (integers) selects the correct channel.
         """
         # Create two Discord channels
-        discord_alerts = self.create_mock_channel(
+        discord_alerts = create_mock_channel(
             id=1, name="Discord - Alerts", type="discord",
             config={"webhook_url": "https://discord.com/webhook1"}
         )
-        discord_critical = self.create_mock_channel(
+        discord_critical = create_mock_channel(
             id=2, name="Discord - Critical", type="discord",
             config={"webhook_url": "https://discord.com/webhook2"}
         )
@@ -130,15 +197,15 @@ class TestMultiChannelLookup:
         Test that notify_channels_json with integer IDs works correctly.
         """
         # Create channels of different types
-        discord = self.create_mock_channel(
+        discord = create_mock_channel(
             id=1, name="Discord", type="discord",
             config={"webhook_url": "https://discord.com/webhook1"}
         )
-        telegram = self.create_mock_channel(
+        telegram = create_mock_channel(
             id=2, name="Telegram", type="telegram",
             config={"bot_token": "token", "chat_id": "123"}
         )
-        discord2 = self.create_mock_channel(
+        discord2 = create_mock_channel(
             id=3, name="Discord 2", type="discord",
             config={"webhook_url": "https://discord.com/webhook2"}
         )
@@ -160,11 +227,11 @@ class TestMultiChannelLookup:
         """
         Test that old format (type strings) still works but only selects one channel per type.
         """
-        discord1 = self.create_mock_channel(
+        discord1 = create_mock_channel(
             id=1, name="Discord 1", type="discord",
             config={"webhook_url": "https://discord.com/webhook1"}
         )
-        discord2 = self.create_mock_channel(
+        discord2 = create_mock_channel(
             id=2, name="Discord 2", type="discord",
             config={"webhook_url": "https://discord.com/webhook2"}
         )
@@ -192,11 +259,11 @@ class TestMultiChannelLookup:
         """
         Test that mixed arrays (IDs + type strings) work for migration period.
         """
-        discord1 = self.create_mock_channel(
+        discord1 = create_mock_channel(
             id=1, name="Discord 1", type="discord",
             config={"webhook_url": "https://discord.com/webhook1"}
         )
-        telegram = self.create_mock_channel(
+        telegram = create_mock_channel(
             id=2, name="Telegram", type="telegram",
             config={"bot_token": "token", "chat_id": "123"}
         )
@@ -226,42 +293,15 @@ class TestMultiChannelLookup:
 class TestMultiChannelNotificationSending:
     """Integration-style tests for sending to multiple channels of same type"""
 
-    @pytest.fixture
-    def mock_db(self):
-        """Create mock database manager"""
-        db = Mock()
-        db.get_session = MagicMock()
-        return db
-
-    @pytest.fixture
-    def notification_service(self, mock_db):
-        """Create NotificationService with mocked dependencies"""
-        service = NotificationService(db=mock_db, event_logger=None)
-        service.http_client = AsyncMock()
-        # Mock the blackout manager
-        service.blackout_manager = Mock()
-        service.blackout_manager.is_in_blackout_window.return_value = (False, None)
-        return service
-
-    def create_mock_channel(self, id: int, name: str, type: str, config: dict, enabled: bool = True):
-        """Helper to create mock NotificationChannel"""
-        channel = Mock(spec=NotificationChannel)
-        channel.id = id
-        channel.name = name
-        channel.type = type
-        channel.config = config
-        channel.enabled = enabled
-        return channel
-
     @pytest.mark.asyncio
     async def test_sends_to_multiple_discord_channels(self, notification_service, mock_db):
         """Test that notifications are sent to all specified Discord channels"""
         # Create two Discord channels with different webhooks
-        discord_alerts = self.create_mock_channel(
+        discord_alerts = create_mock_channel(
             id=1, name="Discord - Alerts", type="discord",
             config={"webhook_url": "https://discord.com/api/webhooks/alerts"}
         )
-        discord_critical = self.create_mock_channel(
+        discord_critical = create_mock_channel(
             id=2, name="Discord - Critical", type="discord",
             config={"webhook_url": "https://discord.com/api/webhooks/critical"}
         )
@@ -298,203 +338,133 @@ class TestMultiChannelNotificationSending:
 class TestSendAlertV2EndToEnd:
     """End-to-end tests that call actual send_alert_v2 method"""
 
-    def create_mock_channel(self, id: int, name: str, type: str, config: dict, enabled: bool = True):
-        """Helper to create mock NotificationChannel"""
-        channel = Mock(spec=NotificationChannel)
-        channel.id = id
-        channel.name = name
-        channel.type = type
-        channel.config = config
-        channel.enabled = enabled
-        return channel
-
-    def create_mock_alert(self, id: str = "alert-1", rule_id: str = "rule-1"):
-        """Helper to create mock AlertV2"""
-        alert = Mock(spec=AlertV2)
-        alert.id = id
-        alert.rule_id = rule_id
-        alert.title = "Test Alert"
-        alert.message = "Test message"
-        alert.severity = "warning"
-        alert.kind = "container_stopped"
-        alert.scope_type = "container"
-        alert.scope_id = "host1:abc123"
-        alert.container_name = "nginx"
-        alert.host_name = "server1"
-        alert.notified_at = None  # Not yet notified
-        return alert
-
-    def create_mock_rule(self, id: str = "rule-1", notify_channels_json: str = "[1, 2]"):
-        """Helper to create mock AlertRuleV2"""
-        rule = Mock(spec=AlertRuleV2)
-        rule.id = id
-        rule.name = "Test Rule"
-        rule.notify_channels_json = notify_channels_json
-        rule.custom_template = None
-        rule.category = "container"
-        return rule
-
-    @pytest.fixture
-    def mock_db(self):
-        """Create comprehensive mock database manager"""
-        db = Mock()
-
-        @contextmanager
-        def mock_session():
-            session = Mock()
-            session.query.return_value.filter.return_value.first.return_value = None
-            yield session
-
-        db.get_session = mock_session
-        db.get_settings.return_value = Mock(external_url=None)
-        return db
-
-    @pytest.fixture
-    def notification_service(self, mock_db):
-        """Create NotificationService with mocked dependencies"""
-        service = NotificationService(db=mock_db, event_logger=None)
-        service.http_client = AsyncMock()
-
-        # Mock blackout manager
-        service.blackout_manager = Mock()
-        service.blackout_manager.is_in_blackout_window.return_value = (False, None)
-
-        # Mock rate limiting
-        service._is_rate_limited = Mock(return_value=False)
-
-        # Mock template methods
-        service._get_template_for_alert_v2 = Mock(return_value="Test: {title}")
-        service._format_message_v2 = Mock(return_value="Formatted test message")
-
-        return service
-
     @pytest.mark.asyncio
-    async def test_send_alert_v2_with_integer_channel_ids(self, notification_service, mock_db):
+    async def test_send_alert_v2_with_integer_channel_ids(self, notification_service_full, mock_db_with_session):
         """
         End-to-end test: send_alert_v2 correctly sends to multiple Discord channels
         when notify_channels_json contains integer IDs.
         """
         # Create two Discord channels
-        discord1 = self.create_mock_channel(
+        discord1 = create_mock_channel(
             id=1, name="Discord - Alerts", type="discord",
             config={"webhook_url": "https://discord.com/api/webhooks/111/alerts"}
         )
-        discord2 = self.create_mock_channel(
+        discord2 = create_mock_channel(
             id=2, name="Discord - Critical", type="discord",
             config={"webhook_url": "https://discord.com/api/webhooks/222/critical"}
         )
 
         # Mock database returns both channels
-        mock_db.get_notification_channels.return_value = [discord1, discord2]
+        mock_db_with_session.get_notification_channels.return_value = [discord1, discord2]
 
         # Create alert and rule with integer channel IDs
-        alert = self.create_mock_alert()
-        rule = self.create_mock_rule(notify_channels_json='[1, 2]')  # Integer IDs
+        alert = create_mock_alert()
+        rule = create_mock_rule(notify_channels_json='[1, 2]')  # Integer IDs
 
         # Mock successful Discord webhook responses
         mock_response = Mock()
         mock_response.raise_for_status = Mock()
-        notification_service.http_client.post = AsyncMock(return_value=mock_response)
+        notification_service_full.http_client.post = AsyncMock(return_value=mock_response)
 
         # Call the actual method
-        result = await notification_service.send_alert_v2(alert, rule)
+        result = await notification_service_full.send_alert_v2(alert, rule)
 
         # Verify success
         assert result is True
 
         # Verify both Discord webhooks were called
-        assert notification_service.http_client.post.call_count == 2
+        assert notification_service_full.http_client.post.call_count == 2
 
         # Extract webhook URLs that were called
         called_urls = [
-            call.args[0] for call in notification_service.http_client.post.call_args_list
+            call.args[0] for call in notification_service_full.http_client.post.call_args_list
         ]
         assert "https://discord.com/api/webhooks/111/alerts" in called_urls
         assert "https://discord.com/api/webhooks/222/critical" in called_urls
 
     @pytest.mark.asyncio
-    async def test_send_alert_v2_with_legacy_type_strings(self, notification_service, mock_db):
+    async def test_send_alert_v2_with_legacy_type_strings(self, notification_service_full, mock_db_with_session):
         """
         End-to-end test: send_alert_v2 still works with legacy type strings
         (but only sends to one channel per type due to map overwrite).
         """
         # Create two Discord channels
-        discord1 = self.create_mock_channel(
+        discord1 = create_mock_channel(
             id=1, name="Discord 1", type="discord",
             config={"webhook_url": "https://discord.com/api/webhooks/111"}
         )
-        discord2 = self.create_mock_channel(
+        discord2 = create_mock_channel(
             id=2, name="Discord 2", type="discord",
             config={"webhook_url": "https://discord.com/api/webhooks/222"}
         )
 
-        mock_db.get_notification_channels.return_value = [discord1, discord2]
+        mock_db_with_session.get_notification_channels.return_value = [discord1, discord2]
 
-        alert = self.create_mock_alert()
-        rule = self.create_mock_rule(notify_channels_json='["discord"]')  # Legacy type string
+        alert = create_mock_alert()
+        rule = create_mock_rule(notify_channels_json='["discord"]')  # Legacy type string
 
         mock_response = Mock()
         mock_response.raise_for_status = Mock()
-        notification_service.http_client.post = AsyncMock(return_value=mock_response)
+        notification_service_full.http_client.post = AsyncMock(return_value=mock_response)
 
-        result = await notification_service.send_alert_v2(alert, rule)
+        result = await notification_service_full.send_alert_v2(alert, rule)
 
         assert result is True
         # With legacy format, only ONE Discord channel is called (the last one in map)
-        assert notification_service.http_client.post.call_count == 1
+        assert notification_service_full.http_client.post.call_count == 1
 
     @pytest.mark.asyncio
-    async def test_send_alert_v2_with_mixed_format(self, notification_service, mock_db):
+    async def test_send_alert_v2_with_mixed_format(self, notification_service_full, mock_db_with_session):
         """
         End-to-end test: send_alert_v2 handles mixed array of IDs and type strings.
         """
-        discord = self.create_mock_channel(
+        discord = create_mock_channel(
             id=1, name="Discord", type="discord",
             config={"webhook_url": "https://discord.com/api/webhooks/111"}
         )
-        telegram = self.create_mock_channel(
+        telegram = create_mock_channel(
             id=2, name="Telegram", type="telegram",
             config={"bot_token": "token123", "chat_id": "456"}
         )
 
-        mock_db.get_notification_channels.return_value = [discord, telegram]
+        mock_db_with_session.get_notification_channels.return_value = [discord, telegram]
 
-        alert = self.create_mock_alert()
+        alert = create_mock_alert()
         # Mixed format: ID 1 (Discord) + type string "telegram"
-        rule = self.create_mock_rule(notify_channels_json='[1, "telegram"]')
+        rule = create_mock_rule(notify_channels_json='[1, "telegram"]')
 
         mock_response = Mock()
         mock_response.raise_for_status = Mock()
-        notification_service.http_client.post = AsyncMock(return_value=mock_response)
+        notification_service_full.http_client.post = AsyncMock(return_value=mock_response)
 
-        result = await notification_service.send_alert_v2(alert, rule)
+        result = await notification_service_full.send_alert_v2(alert, rule)
 
         assert result is True
         # Both channels should be called
-        assert notification_service.http_client.post.call_count == 2
+        assert notification_service_full.http_client.post.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_send_alert_v2_skips_nonexistent_channel_ids(self, notification_service, mock_db):
+    async def test_send_alert_v2_skips_nonexistent_channel_ids(self, notification_service_full, mock_db_with_session):
         """
         End-to-end test: send_alert_v2 gracefully skips channel IDs that don't exist.
         """
-        discord = self.create_mock_channel(
+        discord = create_mock_channel(
             id=1, name="Discord", type="discord",
             config={"webhook_url": "https://discord.com/api/webhooks/111"}
         )
 
-        mock_db.get_notification_channels.return_value = [discord]
+        mock_db_with_session.get_notification_channels.return_value = [discord]
 
-        alert = self.create_mock_alert()
+        alert = create_mock_alert()
         # Channel ID 999 doesn't exist
-        rule = self.create_mock_rule(notify_channels_json='[1, 999]')
+        rule = create_mock_rule(notify_channels_json='[1, 999]')
 
         mock_response = Mock()
         mock_response.raise_for_status = Mock()
-        notification_service.http_client.post = AsyncMock(return_value=mock_response)
+        notification_service_full.http_client.post = AsyncMock(return_value=mock_response)
 
-        result = await notification_service.send_alert_v2(alert, rule)
+        result = await notification_service_full.send_alert_v2(alert, rule)
 
         assert result is True
         # Only the existing channel (ID 1) should be called
-        assert notification_service.http_client.post.call_count == 1
+        assert notification_service_full.http_client.post.call_count == 1

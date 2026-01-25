@@ -33,7 +33,7 @@ class AlertRuleValidator:
     VALID_SCOPES = {'host', 'container', 'group'}
     VALID_SEVERITIES = {'info', 'warning', 'error', 'critical'}
     VALID_OPERATORS = {'>=', '<=', '==', '>', '<', '!='}
-    VALID_NOTIFICATION_CHANNELS = {'slack', 'discord', 'telegram', 'pushover', 'gotify', 'ntfy', 'smtp', 'webhook'}
+    VALID_NOTIFICATION_CHANNELS = {'slack', 'discord', 'telegram', 'pushover', 'gotify', 'ntfy', 'smtp', 'webhook', 'teams'}
 
     # Percentage-based metrics
     PERCENTAGE_METRICS = {
@@ -198,66 +198,26 @@ class AlertRuleValidator:
                     "Clear threshold must be above threshold for < operator"
                 )
 
+    def _validate_duration_field(self, value: Any, field_name: str) -> None:
+        """Validate a single duration field (reusable helper)"""
+        if value is None:
+            return
+
+        if not isinstance(value, int):
+            raise AlertRuleValidationError(f"{field_name} must be an integer")
+
+        if value < 0 or value > self.MAX_DURATION_SECONDS:
+            raise AlertRuleValidationError(
+                f"{field_name} must be between 0 and {self.MAX_DURATION_SECONDS}s (24 hours)"
+            )
+
     def _validate_durations(self, rule_data: Dict[str, Any]) -> None:
         """Validate timing fields"""
-        # Alert timing
-        alert_active_delay = rule_data.get('alert_active_delay_seconds')
-        alert_clear_delay = rule_data.get('alert_clear_delay_seconds')
-        # Notification timing
-        notification_active_delay = rule_data.get('notification_active_delay_seconds')
-        notification_cooldown = rule_data.get('notification_cooldown_seconds')
-        # Legacy field
-        grace = rule_data.get('grace_seconds')
-
-        # Alert active delay validation
-        if alert_active_delay is not None:
-            if not isinstance(alert_active_delay, int):
-                raise AlertRuleValidationError("Alert active delay must be an integer")
-
-            if alert_active_delay < 0 or alert_active_delay > self.MAX_DURATION_SECONDS:
-                raise AlertRuleValidationError(
-                    f"Alert active delay must be between 0 and {self.MAX_DURATION_SECONDS}s (24 hours)"
-                )
-
-        # Alert clear delay validation
-        if alert_clear_delay is not None:
-            if not isinstance(alert_clear_delay, int):
-                raise AlertRuleValidationError("Alert clear delay must be an integer")
-
-            if alert_clear_delay < 0 or alert_clear_delay > self.MAX_DURATION_SECONDS:
-                raise AlertRuleValidationError(
-                    f"Alert clear delay must be between 0 and {self.MAX_DURATION_SECONDS}s (24 hours)"
-                )
-
-        # Notification active delay validation
-        if notification_active_delay is not None:
-            if not isinstance(notification_active_delay, int):
-                raise AlertRuleValidationError("Notification active delay must be an integer")
-
-            if notification_active_delay < 0 or notification_active_delay > self.MAX_DURATION_SECONDS:
-                raise AlertRuleValidationError(
-                    f"Notification active delay must be between 0 and {self.MAX_DURATION_SECONDS}s (24 hours)"
-                )
-
-        # Notification cooldown validation
-        if notification_cooldown is not None:
-            if not isinstance(notification_cooldown, int):
-                raise AlertRuleValidationError("Notification cooldown must be an integer")
-
-            if notification_cooldown < 0 or notification_cooldown > self.MAX_DURATION_SECONDS:
-                raise AlertRuleValidationError(
-                    f"Notification cooldown must be between 0 and {self.MAX_DURATION_SECONDS}s (24 hours)"
-                )
-
-        # Grace validation (legacy)
-        if grace is not None:
-            if not isinstance(grace, int):
-                raise AlertRuleValidationError("Grace period must be an integer")
-
-            if grace < 0 or grace > self.MAX_DURATION_SECONDS:
-                raise AlertRuleValidationError(
-                    f"Grace period must be between 0 and {self.MAX_DURATION_SECONDS}s (24 hours)"
-                )
+        self._validate_duration_field(rule_data.get('alert_active_delay_seconds'), "Alert active delay")
+        self._validate_duration_field(rule_data.get('alert_clear_delay_seconds'), "Alert clear delay")
+        self._validate_duration_field(rule_data.get('notification_active_delay_seconds'), "Notification active delay")
+        self._validate_duration_field(rule_data.get('notification_cooldown_seconds'), "Notification cooldown")
+        self._validate_duration_field(rule_data.get('grace_seconds'), "Grace period")
 
     def _validate_occurrences(self, occurrences: int) -> None:
         """Validate occurrences field"""

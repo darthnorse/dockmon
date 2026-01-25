@@ -3743,7 +3743,6 @@ async def create_alert_rule_v2(
         channels = []
         if new_rule.notify_channels_json:
             try:
-                import json
                 channels = json.loads(new_rule.notify_channels_json)
             except (json.JSONDecodeError, TypeError, AttributeError):
                 channels = []

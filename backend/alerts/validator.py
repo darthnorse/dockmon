@@ -377,13 +377,21 @@ class AlertRuleValidator:
             )
 
         for channel in channels:
-            if not isinstance(channel, str):
-                raise AlertRuleValidationError("Notification channel must be a string")
-
-            if channel not in self.VALID_NOTIFICATION_CHANNELS:
+            # Accept both integer IDs (new format) and string types (legacy format)
+            if isinstance(channel, int):
+                # Integer channel ID - valid format, actual ID validation happens at send time
+                if channel <= 0:
+                    raise AlertRuleValidationError(f"Invalid channel ID: {channel}")
+            elif isinstance(channel, str):
+                # Legacy string type format - validate against known types
+                if channel not in self.VALID_NOTIFICATION_CHANNELS:
+                    raise AlertRuleValidationError(
+                        f"Invalid notification channel '{channel}'. "
+                        f"Must be one of: {', '.join(self.VALID_NOTIFICATION_CHANNELS)}"
+                    )
+            else:
                 raise AlertRuleValidationError(
-                    f"Invalid notification channel '{channel}'. "
-                    f"Must be one of: {', '.join(self.VALID_NOTIFICATION_CHANNELS)}"
+                    f"Notification channel must be an integer ID or string type, got {type(channel).__name__}"
                 )
 
     def _validate_dependencies(self, rule_data: Dict[str, Any]) -> None:

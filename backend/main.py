@@ -4115,15 +4115,17 @@ async def get_dependent_alerts(channel_id: int, current_user: dict = Depends(get
             # Get all alert rules
             all_rules = session.query(AlertRuleV2).all()
 
-            # Filter rules that use this channel type
+            # Filter rules that use this channel (by ID or legacy type string)
             dependent_rules = []
             for rule in all_rules:
                 if rule.notify_channels_json:
                     try:
-                        # Parse the JSON array of channel types
+                        # Parse the JSON array of channel IDs/types
                         notify_channels = json.loads(rule.notify_channels_json)
-                        if isinstance(notify_channels, list) and channel_type in notify_channels:
-                            dependent_rules.append(rule.name)
+                        if isinstance(notify_channels, list):
+                            # Check for channel_id (new format) or channel_type (legacy format)
+                            if channel_id in notify_channels or channel_type in notify_channels:
+                                dependent_rules.append(rule.name)
                     except (json.JSONDecodeError, TypeError) as e:
                         # Log malformed JSON but continue processing other rules
                         logger.warning(f"Malformed notify_channels_json in rule {rule.id}: {e}")

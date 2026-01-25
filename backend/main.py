@@ -4054,19 +4054,44 @@ async def update_notification_channel(channel_id: int, updates: NotificationChan
         logger.error(f"Failed to update notification channel: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
-# V1 alert system endpoint removed - V2 alerts don't get orphaned when channels are deleted
-
 @app.delete("/api/notifications/channels/{channel_id}", tags=["notifications"], dependencies=[Depends(require_scope("admin"))])
 async def delete_notification_channel(channel_id: int, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
     """Delete a notification channel"""
     try:
-        # V1 cleanup logic removed - V1 alert system has been removed
-        # V2 alerts don't get orphaned when channels are deleted
+        # Single transaction: clean up references AND delete channel atomically (#166)
+        with monitor.db.get_session() as session:
+            # First verify channel exists
+            channel = session.query(NotificationChannel).filter(
+                NotificationChannel.id == channel_id
+            ).first()
+            if not channel:
+                raise HTTPException(status_code=404, detail="Channel not found")
 
-        # Delete the channel
-        success = monitor.db.delete_notification_channel(channel_id)
-        if not success:
-            raise HTTPException(status_code=404, detail="Channel not found")
+            channel_name = channel.name
+
+            # Clean up channel references from all alert rules
+            all_rules = session.query(AlertRuleV2).all()
+            updated_count = 0
+            for rule in all_rules:
+                if rule.notify_channels_json:
+                    try:
+                        channels = json.loads(rule.notify_channels_json)
+                        if isinstance(channels, list) and channel_id in channels:
+                            # Remove the deleted channel ID
+                            channels = [c for c in channels if c != channel_id]
+                            rule.notify_channels_json = json.dumps(channels)
+                            updated_count += 1
+                    except (json.JSONDecodeError, TypeError) as e:
+                        logger.warning(f"Skipping rule {rule.id} - malformed notify_channels_json: {e}")
+                        continue
+
+            # Delete the channel in the same transaction
+            session.delete(channel)
+            session.commit()
+
+            if updated_count > 0:
+                logger.info(f"Removed channel {channel_id} from {updated_count} alert rule(s)")
+            logger.info(f"Deleted notification channel: {channel_name} (ID: {channel_id})")
 
         return {
             "status": "success",

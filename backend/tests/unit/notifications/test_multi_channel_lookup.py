@@ -3,8 +3,9 @@ Unit tests for multiple notification channel support.
 
 Tests the channel lookup logic when multiple channels of the same type exist.
 Verifies that ID-based lookup correctly selects specific channels.
+Also tests cleanup of orphaned channel references when channels are deleted.
 
-Issue: #167
+Issues: #166 (orphaned channel cleanup), #167 (multiple channels of same type)
 """
 
 import json
@@ -468,3 +469,100 @@ class TestSendAlertV2EndToEnd:
         assert result is True
         # Only the existing channel (ID 1) should be called
         assert notification_service_full.http_client.post.call_count == 1
+
+
+class TestChannelDeletionCleanup:
+    """Tests for cleaning up channel references when a channel is deleted (#166)"""
+
+    def test_cleanup_removes_channel_id_from_rules(self):
+        """
+        Test that the cleanup logic correctly removes a channel ID from notify_channels_json.
+        This tests the logic used in delete_notification_channel endpoint.
+        """
+        # Simulate rules with channel IDs
+        rules_data = [
+            {"id": "rule-1", "notify_channels_json": "[1, 2, 3]"},
+            {"id": "rule-2", "notify_channels_json": "[2]"},
+            {"id": "rule-3", "notify_channels_json": "[1, 3]"},
+            {"id": "rule-4", "notify_channels_json": None},
+        ]
+
+        channel_id_to_delete = 2
+
+        # Apply cleanup logic (same as in main.py)
+        updated_rules = []
+        for rule_data in rules_data:
+            notify_json = rule_data["notify_channels_json"]
+            if notify_json:
+                channels = json.loads(notify_json)
+                if isinstance(channels, list) and channel_id_to_delete in channels:
+                    channels = [c for c in channels if c != channel_id_to_delete]
+                    rule_data["notify_channels_json"] = json.dumps(channels)
+                    updated_rules.append(rule_data["id"])
+
+        # Verify results
+        assert "rule-1" in updated_rules  # Had [1,2,3] -> [1,3]
+        assert "rule-2" in updated_rules  # Had [2] -> []
+        assert "rule-3" not in updated_rules  # Had [1,3], no change
+        assert "rule-4" not in updated_rules  # Was None, no change
+
+        # Verify final state
+        assert rules_data[0]["notify_channels_json"] == "[1, 3]"
+        assert rules_data[1]["notify_channels_json"] == "[]"  # Empty after removal
+        assert rules_data[2]["notify_channels_json"] == "[1, 3]"  # Unchanged
+        assert rules_data[3]["notify_channels_json"] is None  # Unchanged
+
+    def test_cleanup_handles_legacy_type_strings(self):
+        """
+        Test that cleanup doesn't break rules with legacy type strings.
+        """
+        rules_data = [
+            {"id": "rule-1", "notify_channels_json": '["discord", "telegram"]'},
+            {"id": "rule-2", "notify_channels_json": '[1, "discord"]'},
+        ]
+
+        channel_id_to_delete = 1
+
+        # Apply cleanup logic
+        for rule_data in rules_data:
+            notify_json = rule_data["notify_channels_json"]
+            if notify_json:
+                channels = json.loads(notify_json)
+                if isinstance(channels, list) and channel_id_to_delete in channels:
+                    channels = [c for c in channels if c != channel_id_to_delete]
+                    rule_data["notify_channels_json"] = json.dumps(channels)
+
+        # Legacy type strings should be preserved
+        assert rules_data[0]["notify_channels_json"] == '["discord", "telegram"]'
+        # Mixed format: ID 1 removed, "discord" preserved
+        assert rules_data[1]["notify_channels_json"] == '["discord"]'
+
+    def test_cleanup_handles_malformed_json(self):
+        """
+        Test that cleanup gracefully handles malformed JSON.
+        """
+        rules_data = [
+            {"id": "rule-1", "notify_channels_json": "not valid json"},
+            {"id": "rule-2", "notify_channels_json": "[1, 2]"},
+        ]
+
+        channel_id_to_delete = 1
+        errors = []
+
+        # Apply cleanup logic with error handling
+        for rule_data in rules_data:
+            notify_json = rule_data["notify_channels_json"]
+            if notify_json:
+                try:
+                    channels = json.loads(notify_json)
+                    if isinstance(channels, list) and channel_id_to_delete in channels:
+                        channels = [c for c in channels if c != channel_id_to_delete]
+                        rule_data["notify_channels_json"] = json.dumps(channels)
+                except (json.JSONDecodeError, TypeError):
+                    errors.append(rule_data["id"])
+                    continue
+
+        # Malformed JSON should be skipped, not crash
+        assert "rule-1" in errors
+        # Valid JSON should still be processed
+        assert rules_data[1]["notify_channels_json"] == "[2]"

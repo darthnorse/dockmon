@@ -409,6 +409,18 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
+  // Clean up non-existent channel IDs when editing a rule (#166)
+  // This handles orphaned references from channels deleted before the backend fix
+  useEffect(() => {
+    if (isEditing && configuredChannels.length > 0 && formData.notify_channels.length > 0) {
+      const validChannelIds = new Set(configuredChannels.map(c => c.id))
+      const cleanedChannels = formData.notify_channels.filter(id => validChannelIds.has(id))
+      if (cleanedChannels.length !== formData.notify_channels.length) {
+        setFormData(prev => ({ ...prev, notify_channels: cleanedChannels }))
+      }
+    }
+  }, [isEditing, configuredChannels]) // Only run when channels load, not on every formData change
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError(null)
@@ -678,11 +690,12 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       parts.push(`Suppress during updates: ${formData.suppress_during_updates ? 'Yes' : 'No'}`)
     }
 
-    // Notifications
-    if (formData.notify_channels.length > 0) {
-      const channelNames = formData.notify_channels
-        .map((id) => configuredChannels.find(c => c.id === id)?.name || `Channel ${id}`)
-        .join(', ')
+    // Notifications - filter out channels that no longer exist
+    const existingChannels = formData.notify_channels
+      .map((id) => configuredChannels.find(c => c.id === id))
+      .filter((c): c is NonNullable<typeof c> => c !== undefined)
+    if (existingChannels.length > 0) {
+      const channelNames = existingChannels.map(c => c.name).join(', ')
       parts.push(`Notifications: ${channelNames}`)
     } else {
       parts.push('Notifications: None')

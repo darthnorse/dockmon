@@ -26,6 +26,27 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v2/audit-log", tags=["audit"])
 
 
+def _get_auditable_user_info(current_user: dict) -> tuple[int | None, str]:
+    """Extract user ID and username from auth context for audit logging.
+
+    Handles both session auth and API key auth contexts.
+
+    Args:
+        current_user: Auth context from get_current_user_or_api_key
+
+    Returns:
+        Tuple of (user_id, display_name) where:
+        - Session auth: (user_id, username)
+        - API key auth: (created_by_user_id, "API Key: <name>")
+    """
+    if current_user.get("auth_type") == "api_key":
+        return (
+            current_user.get("created_by_user_id"),
+            f"API Key: {current_user.get('api_key_name', 'unknown')}"
+        )
+    return (current_user.get("user_id"), current_user.get("username", "unknown"))
+
+
 # =============================================================================
 # Constants
 # =============================================================================
@@ -451,11 +472,12 @@ async def update_retention_settings(
             cutoff = datetime.now(timezone.utc) - timedelta(days=request.retention_days)
             entries_to_delete = session.query(AuditLog).filter(AuditLog.created_at < cutoff).count()
 
+        user_id, display_name = _get_auditable_user_info(current_user)
         client_info = get_client_info(req)
         log_audit(
             db=session,
-            user_id=current_user.get('user_id'),
-            username=current_user.get('username', 'unknown'),
+            user_id=user_id,
+            username=display_name,
             action=AuditAction.SETTINGS_CHANGE,
             entity_type=AuditEntityType.SETTINGS,
             entity_name='audit_log_retention_days',
@@ -477,7 +499,7 @@ async def update_retention_settings(
         if entries_to_delete > 0:
             message += f". {entries_to_delete} entries older than {request.retention_days} days will be cleaned up."
 
-        logger.info(f"Audit log retention updated to {request.retention_days} days by {current_user['username']}")
+        logger.info(f"Audit log retention updated to {request.retention_days} days by {display_name}")
 
         return RetentionUpdateResponse(
             retention_days=request.retention_days,
@@ -492,6 +514,8 @@ async def cleanup_old_entries(
     current_user: dict = Depends(get_current_user_or_api_key),
 ):
     """Manually trigger cleanup of old audit log entries. Admin only."""
+    user_id, display_name = _get_auditable_user_info(current_user)
+
     with db.get_session() as session:
         settings = session.query(GlobalSettings).first()
         retention_days = _get_retention_days(settings)
@@ -505,8 +529,8 @@ async def cleanup_old_entries(
         client_info = get_client_info(req)
         log_audit(
             db=session,
-            user_id=current_user.get('user_id'),
-            username=current_user.get('username', 'unknown'),
+            user_id=user_id,
+            username=display_name,
             action=AuditAction.DELETE,
             entity_type=AuditEntityType.SETTINGS,
             entity_name='audit_log_cleanup',
@@ -521,7 +545,7 @@ async def cleanup_old_entries(
         deleted_count = session.query(AuditLog).filter(AuditLog.created_at < cutoff).delete()
         session.commit()
 
-        logger.info(f"Manual audit log cleanup: {deleted_count} entries deleted by {current_user['username']}")
+        logger.info(f"Manual audit log cleanup: {deleted_count} entries deleted by {display_name}")
 
         return {
             "message": f"Cleanup complete. Deleted {deleted_count} entries older than {retention_days} days.",

@@ -30,6 +30,28 @@ from agent.manager import AgentManager
 
 logger = logging.getLogger(__name__)
 
+
+def _get_auditable_user_info(current_user: dict) -> tuple[int | None, str]:
+    """Extract user ID and username from auth context for audit logging.
+
+    Handles both session auth and API key auth contexts.
+
+    Args:
+        current_user: Auth context from get_current_user_or_api_key
+
+    Returns:
+        Tuple of (user_id, display_name) where:
+        - Session auth: (user_id, username)
+        - API key auth: (created_by_user_id, "API Key: <name>")
+    """
+    if current_user.get("auth_type") == "api_key":
+        return (
+            current_user.get("created_by_user_id"),
+            f"API Key: {current_user.get('api_key_name', 'unknown')}"
+        )
+    return (current_user.get("user_id"), current_user.get("username", "unknown"))
+
+
 # Create router
 router = APIRouter(prefix="/api/deployments", tags=["deployments"])
 
@@ -504,7 +526,8 @@ async def deploy_stack(
 
         background_tasks.add_task(execute_compose_deploy)
 
-    logger.info(f"User {current_user['username']} started deployment of '{request.stack_name}' to '{host_name}'")
+    _, display_name = _get_auditable_user_info(current_user)
+    logger.info(f"{display_name} started deployment of '{request.stack_name}' to '{host_name}'")
 
     return DeployStackResponse(
         deployment_id=deployment_id,
@@ -542,12 +565,13 @@ async def create_deployment(
     The stack must exist before creating a deployment.
     """
     try:
+        user_id, display_name = _get_auditable_user_info(current_user)
         deployment_id = await executor.create_deployment(
             host_id=request.host_id,
             stack_name=request.stack_name,
-            user_id=current_user['user_id'],
+            user_id=user_id,
             rollback_on_failure=request.rollback_on_failure,
-            created_by=current_user['username'],
+            created_by=display_name,
         )
 
         # Fetch created deployment
@@ -592,11 +616,12 @@ async def execute_deployment(
         # Check deployment status before executing with row-level lock
         # This prevents race condition where multiple concurrent requests execute same deployment
         db = get_database_manager()
+        user_id, _ = _get_auditable_user_info(current_user)
         with db.get_session() as session:
             # Use with_for_update() to acquire row lock (prevents concurrent modifications)
             deployment = session.query(Deployment).filter_by(
                 id=deployment_id,
-                user_id=current_user['user_id']
+                user_id=user_id
             ).with_for_update().first()
             if not deployment:
                 raise HTTPException(status_code=404, detail="Deployment not found")
@@ -679,11 +704,12 @@ async def list_deployments(
             raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {', '.join(valid_statuses)}")
 
         db = get_database_manager()
+        user_id, _ = _get_auditable_user_info(current_user)
         with db.get_session() as session:
             query = session.query(Deployment)
 
             # CRITICAL: Filter by user_id to prevent users from seeing other users' deployments
-            query = query.filter_by(user_id=current_user['user_id'])
+            query = query.filter_by(user_id=user_id)
 
             if host_id:
                 query = query.filter_by(host_id=host_id)
@@ -830,7 +856,8 @@ async def generate_compose_from_running_containers(
     compose_dict = yaml.safe_load(compose_yaml)
     services = list(compose_dict.get("services", {}).keys())
 
-    logger.info(f"User '{current_user['username']}' generated compose for project '{request.project_name}' ({len(services)} services)")
+    _, display_name = _get_auditable_user_info(current_user)
+    logger.info(f"{display_name} generated compose for project '{request.project_name}' ({len(services)} services)")
 
     return ComposePreviewResponse(
         compose_yaml=compose_yaml,
@@ -850,10 +877,11 @@ async def get_deployment(
     """Get deployment details by ID."""
     try:
         db = get_database_manager()
+        user_id, _ = _get_auditable_user_info(current_user)
         with db.get_session() as session:
             deployment = session.query(Deployment).filter_by(
                 id=deployment_id,
-                user_id=current_user['user_id']
+                user_id=user_id
             ).first()
 
             if not deployment:
@@ -884,12 +912,13 @@ async def update_deployment(
     """
     try:
         db = get_database_manager()
+        user_id, _ = _get_auditable_user_info(current_user)
 
         with db.get_session() as session:
             # Fetch deployment (with authorization check)
             deployment = session.query(Deployment).filter_by(
                 id=deployment_id,
-                user_id=current_user['user_id']
+                user_id=user_id
             ).first()
             if not deployment:
                 raise HTTPException(status_code=404, detail="Deployment not found")
@@ -954,10 +983,11 @@ async def delete_deployment(
     """
     try:
         db = get_database_manager()
+        user_id, _ = _get_auditable_user_info(current_user)
         with db.get_session() as session:
             deployment = session.query(Deployment).filter_by(
                 id=deployment_id,
-                user_id=current_user['user_id']
+                user_id=user_id
             ).first()
 
             if not deployment:
@@ -998,11 +1028,12 @@ async def preview_compose_from_containers(
     """
     db = get_database_manager()
     monitor = get_docker_monitor()
+    user_id, _ = _get_auditable_user_info(current_user)
 
     with db.get_session() as session:
         deployment = session.query(Deployment).filter_by(
             id=deployment_id,
-            user_id=current_user['user_id']
+            user_id=user_id
         ).first()
 
         if not deployment:
@@ -1038,7 +1069,7 @@ async def import_deployment(
     deployment record(s) for each. If compose file has no 'name:' field,
     returns list of known stacks for user to select from.
     """
-    user_id = current_user['user_id']
+    user_id, display_name = _get_auditable_user_info(current_user)
 
     # 1. Validate compose YAML syntax
     try:
@@ -1135,7 +1166,7 @@ async def import_deployment(
         actual_stack_name = await stack_storage.find_stack_by_name(stack_name)
         if actual_stack_name:
             stack_name = actual_stack_name
-            logger.info(f"User '{current_user['username']}' using existing stack '{stack_name}' on filesystem")
+            logger.info(f"{display_name} using existing stack '{stack_name}' on filesystem")
         else:
             # Edge case: stack was deleted between check and import
             await stack_storage.write_stack(
@@ -1143,7 +1174,7 @@ async def import_deployment(
                 compose_yaml=request.compose_content,
                 env_content=request.env_content,
             )
-            logger.info(f"User '{current_user['username']}' created stack '{stack_name}' (use_existing_stack but stack was missing)")
+            logger.info(f"{display_name} created stack '{stack_name}' (use_existing_stack but stack was missing)")
     elif not stack_already_exists:
         # Create new stack
         await stack_storage.write_stack(
@@ -1151,7 +1182,7 @@ async def import_deployment(
             compose_yaml=request.compose_content,
             env_content=request.env_content,
         )
-        logger.info(f"User '{current_user['username']}' created stack '{stack_name}' on filesystem during import")
+        logger.info(f"{display_name} created stack '{stack_name}' on filesystem during import")
     elif request.overwrite_stack:
         # Overwrite existing stack content
         await stack_storage.write_stack(
@@ -1159,7 +1190,7 @@ async def import_deployment(
             compose_yaml=request.compose_content,
             env_content=request.env_content,
         )
-        logger.info(f"User '{current_user['username']}' overwrote existing stack '{stack_name}' on filesystem during import")
+        logger.info(f"{display_name} overwrote existing stack '{stack_name}' on filesystem during import")
 
     # 6. Create deployment for each host
     db = get_database_manager()
@@ -1186,7 +1217,7 @@ async def import_deployment(
                 user_id=user_id,
                 stack_name=stack_name,
                 status='stopped' if import_as_stopped else 'running',
-                created_by=current_user['username'],
+                created_by=display_name,
                 progress_percent=100,
                 committed=True,
                 rollback_on_failure=False,

@@ -39,8 +39,26 @@ ph = PasswordHasher(
     salt_len=16
 )
 
-# Valid roles
-VALID_ROLES = ["admin", "user", "readonly"]
+
+def _get_auditable_user_info(current_user: dict) -> tuple[int | None, str]:
+    """Extract user ID and username from auth context for audit logging.
+
+    Handles both session auth and API key auth contexts.
+
+    Args:
+        current_user: Auth context from get_current_user_or_api_key
+
+    Returns:
+        Tuple of (user_id, display_name) where:
+        - Session auth: (user_id, username)
+        - API key auth: (created_by_user_id, "API Key: <name>")
+    """
+    if current_user.get("auth_type") == "api_key":
+        return (
+            current_user.get("created_by_user_id"),
+            f"API Key: {current_user.get('api_key_name', 'unknown')}"
+        )
+    return (current_user.get("user_id"), current_user.get("username", "unknown"))
 
 
 # ==================== Request/Response Models ====================
@@ -111,24 +129,40 @@ class ResetPasswordRequest(BaseModel):
 
 def _ensure_not_last_admin(session, user_id: int, action: str) -> None:
     """
-    Raise HTTPException if the user is the last admin.
+    Raise HTTPException if the user is the last member of the Administrators group.
+
+    Uses group-based permissions (v2.4.0) - checks Administrators group membership,
+    not the legacy role field.
 
     Args:
         session: Database session
         user_id: ID of the user being modified
-        action: Description for error message (e.g., "delete", "change role of")
+        action: Description for error message (e.g., "delete", "remove from Administrators")
     """
-    user = session.query(User).filter(User.id == user_id).first()
-    if user and user.role == 'admin':
-        admin_count = session.query(User).filter(
-            User.role == 'admin',
-            User.deleted_at.is_(None),
-            User.id != user_id
+    # Check if user is in Administrators group
+    admin_group = session.query(CustomGroup).filter(CustomGroup.name == "Administrators").first()
+    if not admin_group:
+        return  # No Administrators group exists, nothing to protect
+
+    user_is_admin = session.query(UserGroupMembership).filter(
+        UserGroupMembership.user_id == user_id,
+        UserGroupMembership.group_id == admin_group.id
+    ).first() is not None
+
+    if user_is_admin:
+        # Count other active admins (not deleted, not this user)
+        other_admin_count = session.query(UserGroupMembership).join(
+            User, UserGroupMembership.user_id == User.id
+        ).filter(
+            UserGroupMembership.group_id == admin_group.id,
+            UserGroupMembership.user_id != user_id,
+            User.deleted_at.is_(None)
         ).count()
-        if admin_count == 0:
+
+        if other_admin_count == 0:
             raise HTTPException(
                 status_code=400,
-                detail=f"Cannot {action}: this is the last admin user"
+                detail=f"Cannot {action}: this is the last member of the Administrators group"
             )
 
 
@@ -242,6 +276,9 @@ async def create_user(
     - Must specify at least one group
     - Auth provider is 'local'
     """
+    # Get user info for audit (handles both session and API key auth)
+    user_id, display_name = _get_auditable_user_info(current_user)
+
     with db.get_session() as session:
         # Check if username already exists
         existing = session.query(User).filter(User.username == user_data.username).first()
@@ -290,7 +327,7 @@ async def create_user(
             membership = UserGroupMembership(
                 user_id=new_user.id,
                 group_id=group_id,
-                added_by=current_user['user_id'],
+                added_by=user_id,
                 added_at=now,
             )
             session.add(membership)
@@ -298,8 +335,8 @@ async def create_user(
         # Audit log (before commit for atomicity)
         safe_audit_log(
             session,
-            current_user['user_id'],
-            current_user['username'],
+            user_id,
+            display_name,
             AuditAction.CREATE,
             AuditEntityType.USER,
             entity_id=str(new_user.id),
@@ -311,7 +348,7 @@ async def create_user(
         session.commit()
         session.refresh(new_user)
 
-        logger.info(f"User '{user_data.username}' created by '{current_user['username']}' with groups: {group_names}")
+        logger.info(f"User '{user_data.username}' created by {display_name} with groups: {group_names}")
 
         return _user_to_response(new_user, session)
 
@@ -344,6 +381,9 @@ async def update_user(
     Only updates fields that are provided (partial update).
     Cannot change username (use separate endpoint if needed).
     """
+    # Get user info for audit (handles both session and API key auth)
+    user_id, display_name = _get_auditable_user_info(current_user)
+
     with db.get_session() as session:
         user = get_user_or_404(session, user_id)
 
@@ -397,7 +437,7 @@ async def update_user(
                 membership = UserGroupMembership(
                     user_id=user_id,
                     group_id=group_id,
-                    added_by=current_user['user_id'],
+                    added_by=user_id,
                     added_at=now,
                 )
                 session.add(membership)
@@ -413,8 +453,8 @@ async def update_user(
         if changes:
             safe_audit_log(
                 session,
-                current_user['user_id'],
-                current_user['username'],
+                user_id,
+                display_name,
                 AuditAction.UPDATE,
                 AuditEntityType.USER,
                 entity_id=str(user.id),
@@ -426,7 +466,7 @@ async def update_user(
         session.commit()
         session.refresh(user)
 
-        logger.info(f"User '{user.username}' updated by '{current_user['username']}': {changes}")
+        logger.info(f"User '{user.username}' updated by {display_name}: {changes}")
 
         return _user_to_response(user, session)
 
@@ -443,11 +483,15 @@ async def delete_user(
     Preserves audit trail by setting deleted_at timestamp.
     User cannot log in after deletion but records are preserved.
     """
+    # Get user info for audit (handles both session and API key auth)
+    user_id, display_name = _get_auditable_user_info(current_user)
+
     with db.get_session() as session:
         user = get_user_or_404(session, user_id)
 
-        # Prevent self-deletion
-        if user_id == current_user['user_id']:
+        # Prevent self-deletion (only applies to session auth)
+        current_user_id = current_user.get("user_id")
+        if current_user.get("auth_type") != "api_key" and current_user_id == user_id:
             raise HTTPException(
                 status_code=400,
                 detail="Cannot delete your own account"
@@ -465,14 +509,14 @@ async def delete_user(
 
         # Soft delete
         user.deleted_at = datetime.now(timezone.utc)
-        user.deleted_by = current_user['user_id']
+        user.deleted_by = user_id
         user.updated_at = datetime.now(timezone.utc)
 
         # Audit log (before commit for atomicity)
         safe_audit_log(
             session,
-            current_user['user_id'],
-            current_user['username'],
+            user_id,
+            display_name,
             AuditAction.DELETE,
             AuditEntityType.USER,
             entity_id=str(user.id),
@@ -482,7 +526,7 @@ async def delete_user(
 
         session.commit()
 
-        logger.info(f"User '{user.username}' deactivated by admin '{current_user['username']}'")
+        logger.info(f"User '{user.username}' deactivated by {display_name}")
 
         return {"message": f"User '{user.username}' has been deactivated"}
 
@@ -496,6 +540,9 @@ async def reactivate_user(
     """
     Reactivate a soft-deleted user (requires users.manage capability).
     """
+    # Get user info for audit (handles both session and API key auth)
+    user_id, display_name = _get_auditable_user_info(current_user)
+
     with db.get_session() as session:
         user = get_user_or_404(session, user_id)
 
@@ -513,8 +560,8 @@ async def reactivate_user(
         # Audit log (before commit for atomicity)
         safe_audit_log(
             session,
-            current_user['user_id'],
-            current_user['username'],
+            user_id,
+            display_name,
             AuditAction.UPDATE,
             AuditEntityType.USER,
             entity_id=str(user.id),
@@ -526,7 +573,7 @@ async def reactivate_user(
         session.commit()
         session.refresh(user)
 
-        logger.info(f"User '{user.username}' reactivated by '{current_user['username']}'")
+        logger.info(f"User '{user.username}' reactivated by {display_name}")
 
         return _user_to_response(user, session)
 
@@ -546,6 +593,9 @@ async def reset_user_password(
 
     Always sets must_change_password=True so user must change on next login.
     """
+    # Get user info for audit (handles both session and API key auth)
+    user_id, display_name = _get_auditable_user_info(current_user)
+
     with db.get_session() as session:
         user = get_user_or_404(session, user_id)
 
@@ -570,8 +620,8 @@ async def reset_user_password(
         # Audit log (before commit for atomicity)
         safe_audit_log(
             session,
-            current_user['user_id'],
-            current_user['username'],
+            user_id,
+            display_name,
             AuditAction.PASSWORD_CHANGE,
             AuditEntityType.USER,
             entity_id=str(user.id),
@@ -582,7 +632,7 @@ async def reset_user_password(
 
         session.commit()
 
-        logger.info(f"Password reset for user '{user.username}' by admin '{current_user['username']}'")
+        logger.info(f"Password reset for user '{user.username}' by {display_name}")
 
         return {
             "message": f"Password reset for user '{user.username}'",

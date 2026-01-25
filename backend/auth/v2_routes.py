@@ -112,6 +112,63 @@ class UpdateProfileRequest(BaseModel):
     username: str | None = None
 
 
+class LogoutResponse(BaseModel):
+    """Logout response"""
+    message: str
+
+
+class UserGroupInfo(BaseModel):
+    """User's group membership info"""
+    id: int
+    name: str
+
+
+class SessionUserInfo(BaseModel):
+    """User info for session auth"""
+    id: int
+    username: str
+    display_name: str | None = None
+    is_first_login: bool = False
+    must_change_password: bool = False
+    groups: list[UserGroupInfo]
+
+
+class ApiKeyInfo(BaseModel):
+    """API key info for API key auth"""
+    id: int
+    name: str
+    group_id: int
+    group_name: str
+    created_by_username: str | None = None
+
+
+class CurrentUserSessionResponse(BaseModel):
+    """Response for /me endpoint with session auth"""
+    auth_type: str = "session"
+    user: SessionUserInfo
+    capabilities: list[str]
+
+
+class CurrentUserApiKeyResponse(BaseModel):
+    """Response for /me endpoint with API key auth"""
+    auth_type: str = "api_key"
+    api_key: ApiKeyInfo
+    capabilities: list[str]
+
+
+class ChangePasswordResponse(BaseModel):
+    """Change password response"""
+    success: bool
+    message: str
+
+
+class UpdateProfileResponse(BaseModel):
+    """Update profile response"""
+    success: bool
+    message: str
+    changes: dict | None = None
+
+
 @router.post("/login", response_model=LoginResponse)
 async def login_v2(
     credentials: LoginRequest,
@@ -234,12 +291,12 @@ async def login_v2(
         )
 
 
-@router.post("/logout")
+@router.post("/logout", response_model=LogoutResponse)
 async def logout_v2(
     response: Response,
     request: Request,
     session_id: str = Cookie(None)
-) -> dict:
+) -> LogoutResponse:
     """
     Logout user and delete session.
 
@@ -271,41 +328,16 @@ async def logout_v2(
 
     logger.info(f"User '{username}' logged out successfully")
 
-    return {"message": "Logout successful"}
+    return LogoutResponse(message="Logout successful")
 
 
-# Helper function to map user role to scopes
-def _get_user_scopes(user_role: str) -> list[str]:
-    """
-    Map user role to scopes.
-
-    Args:
-        user_role: User role from User.role column
-
-    Returns:
-        List of scopes for this role
-
-    Scope mapping:
-        admin → ["admin"] (full access)
-        user → ["read", "write"] (can manage containers)
-        readonly → ["read"] (view-only)
-        default → ["read"] (safe fallback)
-    """
-    role_map = {
-        "admin": ["admin"],
-        "user": ["read", "write"],
-        "readonly": ["read"]
-    }
-    return role_map.get(user_role, ["read"])  # Safe default
-
-
-# Dependency for protected routes
+# Dependency for protected routes (legacy - prefer get_current_user_or_api_key from api_key_auth)
 async def get_current_user_dependency(
     request: Request,
     session_id: str = Cookie(None),
 ) -> dict:
     """
-    Validate session and return user data with scopes.
+    Validate session and return user data.
 
     SECURITY CHECKS:
     1. Cookie exists
@@ -318,7 +350,7 @@ async def get_current_user_dependency(
         HTTPException: 401 if authentication fails
 
     Returns:
-        Dict with user_id, username, session_id, scopes (derived from role)
+        Dict with user_id, username, auth_type
     """
     if not session_id:
         logger.warning("No session cookie provided")
@@ -337,23 +369,9 @@ async def get_current_user_dependency(
             detail="Invalid or expired session"
         )
 
-    # Derive scopes from User.role (not hardcoded)
-    with db.get_session() as session:
-        user = session.query(User).filter(User.id == session_data["user_id"]).first()
-        if user:
-            user_scopes = _get_user_scopes(user.role)
-            return {
-                **session_data,
-                "auth_type": "session",
-                "scopes": user_scopes
-            }
-
-    # Fallback if user not found (shouldn't happen)
-    logger.warning(f"User {session_data['user_id']} not found in database")
     return {
         **session_data,
         "auth_type": "session",
-        "scopes": ["read"]  # Safe default
     }
 
 
@@ -361,10 +379,10 @@ async def get_current_user_dependency(
 get_current_user = get_current_user_dependency
 
 
-@router.get("/me")
+@router.get("/me", response_model=CurrentUserSessionResponse | CurrentUserApiKeyResponse)
 async def get_current_user_v2(
     current_user: dict = Depends(get_current_user_or_api_key)
-) -> dict:
+) -> CurrentUserSessionResponse | CurrentUserApiKeyResponse:
     """
     Get current authenticated user or API key info.
 
@@ -389,17 +407,17 @@ async def get_current_user_v2(
         group_id = current_user["group_id"]
         capabilities = get_capabilities_for_group(group_id)
 
-        return {
-            "auth_type": "api_key",
-            "api_key": {
-                "id": current_user["api_key_id"],
-                "name": current_user["api_key_name"],
-                "group_id": group_id,
-                "group_name": current_user["group_name"],
-                "created_by_username": current_user["created_by_username"],
-            },
-            "capabilities": capabilities,
-        }
+        return CurrentUserApiKeyResponse(
+            auth_type="api_key",
+            api_key=ApiKeyInfo(
+                id=current_user["api_key_id"],
+                name=current_user["api_key_name"],
+                group_id=group_id,
+                group_name=current_user["group_name"],
+                created_by_username=current_user["created_by_username"],
+            ),
+            capabilities=capabilities,
+        )
 
     else:
         # Session auth - return user info and union of all group capabilities
@@ -411,26 +429,26 @@ async def get_current_user_v2(
         with db.get_session() as session:
             user = session.query(User).filter(User.id == user_id).first()
 
-            return {
-                "auth_type": "session",
-                "user": {
-                    "id": user_id,
-                    "username": current_user["username"],
-                    "display_name": user.display_name if user else None,
-                    "is_first_login": user.is_first_login if user else False,
-                    "must_change_password": user.must_change_password if user else False,
-                    "groups": groups,
-                },
-                "capabilities": capabilities,
-            }
+            return CurrentUserSessionResponse(
+                auth_type="session",
+                user=SessionUserInfo(
+                    id=user_id,
+                    username=current_user["username"],
+                    display_name=user.display_name if user else None,
+                    is_first_login=user.is_first_login if user else False,
+                    must_change_password=user.must_change_password if user else False,
+                    groups=[UserGroupInfo(id=g["id"], name=g["name"]) for g in groups],
+                ),
+                capabilities=capabilities,
+            )
 
 
-@router.post("/change-password")
+@router.post("/change-password", response_model=ChangePasswordResponse)
 async def change_password_v2(
     password_data: ChangePasswordRequest,
     request: Request,
     current_user: dict = Depends(get_current_user_dependency)
-) -> dict:
+) -> ChangePasswordResponse:
     """
     Change user password (v2 cookie-based auth).
 
@@ -480,18 +498,18 @@ async def change_password_v2(
             **get_client_info(request)
         )
 
-    return {
-        "success": True,
-        "message": "Password changed successfully"
-    }
+    return ChangePasswordResponse(
+        success=True,
+        message="Password changed successfully"
+    )
 
 
-@router.post("/update-profile")
+@router.post("/update-profile", response_model=UpdateProfileResponse)
 async def update_profile_v2(
     profile_data: UpdateProfileRequest,
     request: Request,
     current_user: dict = Depends(get_current_user_dependency)
-) -> dict:
+) -> UpdateProfileResponse:
     """
     Update user profile (display name, username).
 
@@ -543,10 +561,11 @@ async def update_profile_v2(
                     **get_client_info(request)
                 )
 
-        return {
-            "success": True,
-            "message": "Profile updated successfully"
-        }
+        return UpdateProfileResponse(
+            success=True,
+            message="Profile updated successfully",
+            changes=changes if changes else None
+        )
     except HTTPException:
         raise
     except Exception as e:

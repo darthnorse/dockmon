@@ -33,6 +33,27 @@ OIDC_HTTP_TIMEOUT = 10.0
 router = APIRouter(prefix="/api/v2/oidc", tags=["oidc-config"])
 
 
+def _get_auditable_user_info(current_user: dict) -> tuple[int | None, str]:
+    """Extract user ID and username from auth context for audit logging.
+
+    Handles both session auth and API key auth contexts.
+
+    Args:
+        current_user: Auth context from get_current_user_or_api_key
+
+    Returns:
+        Tuple of (user_id, display_name) where:
+        - Session auth: (user_id, username)
+        - API key auth: (created_by_user_id, "API Key: <name>")
+    """
+    if current_user.get("auth_type") == "api_key":
+        return (
+            current_user.get("created_by_user_id"),
+            f"API Key: {current_user.get('api_key_name', 'unknown')}"
+        )
+    return (current_user.get("user_id"), current_user.get("username", "unknown"))
+
+
 # ==================== Request/Response Models ====================
 
 class OIDCConfigResponse(BaseModel):
@@ -239,6 +260,9 @@ async def update_oidc_config(
     Only updates fields that are provided (partial update).
     Client secret is encrypted before storage.
     """
+    # Get user info for audit (handles both session and API key auth)
+    user_id, display_name = _get_auditable_user_info(current_user)
+
     with db.get_session() as session:
         config = _get_or_create_config(session)
         changes = {}
@@ -286,8 +310,8 @@ async def update_oidc_config(
         if changes:
             safe_audit_log(
                 session,
-                current_user['user_id'],
-                current_user['username'],
+                user_id,
+                display_name,
                 AuditAction.UPDATE,
                 AuditEntityType.OIDC_CONFIG,
                 entity_id='1',
@@ -299,7 +323,7 @@ async def update_oidc_config(
         session.commit()
         session.refresh(config)
 
-        logger.info(f"OIDC configuration updated by admin '{current_user['username']}'")
+        logger.info(f"OIDC configuration updated by {display_name}")
 
         return _config_to_response(config, session)
 
@@ -407,6 +431,9 @@ async def create_group_mapping(
 
     This follows industry best practice (Kubernetes, AWS, Vault, etc.).
     """
+    # Get user info for audit (handles both session and API key auth)
+    user_id, display_name = _get_auditable_user_info(current_user)
+
     with db.get_session() as session:
         # One-to-one mapping: each OIDC value maps to exactly one DockMon group
         existing = session.query(OIDCGroupMapping).filter(
@@ -434,8 +461,8 @@ async def create_group_mapping(
         # Audit log (before commit for atomicity)
         safe_audit_log(
             session,
-            current_user['user_id'],
-            current_user['username'],
+            user_id,
+            display_name,
             AuditAction.CREATE,
             AuditEntityType.OIDC_CONFIG,
             entity_id=str(mapping.id),
@@ -452,7 +479,7 @@ async def create_group_mapping(
         session.commit()
         session.refresh(mapping)
 
-        logger.info(f"OIDC group mapping '{mapping_data.oidc_value}' -> group {mapping_data.group_id} ('{group.name}') created by admin '{current_user['username']}'")
+        logger.info(f"OIDC group mapping '{mapping_data.oidc_value}' -> group {mapping_data.group_id} ('{group.name}') created by {display_name}")
 
         return _mapping_to_response(mapping, session=session)
 
@@ -467,6 +494,9 @@ async def update_group_mapping(
     """
     Update an OIDC group mapping (admin only).
     """
+    # Get user info for audit (handles both session and API key auth)
+    user_id, display_name = _get_auditable_user_info(current_user)
+
     with db.get_session() as session:
         mapping = session.query(OIDCGroupMapping).filter(OIDCGroupMapping.id == mapping_id).first()
 
@@ -503,8 +533,8 @@ async def update_group_mapping(
         if changes:
             safe_audit_log(
                 session,
-                current_user['user_id'],
-                current_user['username'],
+                user_id,
+                display_name,
                 AuditAction.UPDATE,
                 AuditEntityType.OIDC_CONFIG,
                 entity_id=str(mapping.id),
@@ -516,7 +546,7 @@ async def update_group_mapping(
         session.commit()
         session.refresh(mapping)
 
-        logger.info(f"OIDC group mapping {mapping_id} updated by admin '{current_user['username']}'")
+        logger.info(f"OIDC group mapping {mapping_id} updated by {display_name}")
 
         return _mapping_to_response(mapping, session=session)
 
@@ -530,6 +560,9 @@ async def delete_group_mapping(
     """
     Delete an OIDC group mapping (admin only).
     """
+    # Get user info for audit (handles both session and API key auth)
+    user_id, display_name = _get_auditable_user_info(current_user)
+
     with db.get_session() as session:
         mapping = session.query(OIDCGroupMapping).filter(OIDCGroupMapping.id == mapping_id).first()
 
@@ -543,8 +576,8 @@ async def delete_group_mapping(
         # Audit log (before commit for atomicity)
         safe_audit_log(
             session,
-            current_user['user_id'],
-            current_user['username'],
+            user_id,
+            display_name,
             AuditAction.DELETE,
             AuditEntityType.OIDC_CONFIG,
             entity_id=str(mapping_id),
@@ -555,6 +588,6 @@ async def delete_group_mapping(
 
         session.commit()
 
-        logger.info(f"OIDC group mapping '{oidc_value}' deleted by admin '{current_user['username']}'")
+        logger.info(f"OIDC group mapping '{oidc_value}' deleted by {display_name}")
 
         return {"message": f"Group mapping '{oidc_value}' deleted"}

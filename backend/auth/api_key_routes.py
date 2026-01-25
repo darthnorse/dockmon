@@ -32,6 +32,27 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v2/api-keys", tags=["api-keys"])
 
 
+def _get_auditable_user_info(current_user: dict) -> tuple[int | None, str]:
+    """Extract user ID and username from auth context for audit logging.
+
+    Handles both session auth and API key auth contexts.
+
+    Args:
+        current_user: Auth context from get_current_user_or_api_key
+
+    Returns:
+        Tuple of (user_id, display_name) where:
+        - Session auth: (user_id, username)
+        - API key auth: (created_by_user_id, "API Key: <name>")
+    """
+    if current_user.get("auth_type") == "api_key":
+        return (
+            current_user.get("created_by_user_id"),
+            f"API Key: {current_user.get('api_key_name', 'unknown')}"
+        )
+    return (current_user.get("user_id"), current_user.get("username", "unknown"))
+
+
 # Request/Response Models
 
 class ApiKeyCreateRequest(BaseModel):
@@ -74,10 +95,13 @@ class ApiKeyListItem(BaseModel):
 
 
 class ApiKeyUpdateRequest(BaseModel):
-    """Request to update API key"""
+    """Request to update API key.
+
+    Note: group_id cannot be changed after creation. To use a different group,
+    create a new API key.
+    """
     name: str | None = Field(None, min_length=1, max_length=100)
     description: str | None = Field(None, max_length=500)
-    group_id: int | None = Field(None, description="Reassign to different group")
     allowed_ips: str | None = None
 
 
@@ -141,6 +165,9 @@ async def create_api_key(
     if data.expires_days:
         expires_at = datetime.now(timezone.utc) + timedelta(days=data.expires_days)
 
+    # Get user info for audit (handles both session and API key auth)
+    user_id, display_name = _get_auditable_user_info(current_user)
+
     # Create database record
     with db.get_session() as session:
         # Validate group exists
@@ -150,7 +177,7 @@ async def create_api_key(
 
         api_key = ApiKey(
             group_id=data.group_id,
-            created_by_user_id=current_user["user_id"],
+            created_by_user_id=user_id,
             name=data.name,
             description=data.description,
             key_hash=key_hash,
@@ -174,7 +201,7 @@ async def create_api_key(
             success=True
         )
 
-        logger.info(f"User {current_user['username']} created API key: {api_key.name} (group: {group.name})")
+        logger.info(f"{display_name} created API key: {api_key.name} (group: {group.name})")
 
         return ApiKeyCreateResponse(
             id=api_key.id,
@@ -257,15 +284,16 @@ async def update_api_key(
     request: Request = None
 ):
     """
-    Update API key metadata (name, group, IP restrictions) - v2.4.0 group-based.
+    Update API key metadata (name, description, IP restrictions).
 
-    ## ⚠️ Important
+    ## Important
 
-    - **Cannot change the key itself** - only metadata
+    - **Cannot change the key itself or group** - only metadata
     - Requires `apikeys.manage_other` capability
     - All fields are optional (only update what you provide)
+    - To use a different group, create a new API key
 
-    ## 📝 Example
+    ## Example
 
     ```bash
     curl -X PATCH https://your-dockmon-url/api/v2/api-keys/1 \\
@@ -273,16 +301,14 @@ async def update_api_key(
       -H "Content-Type: application/json" \\
       -d '{
         "name": "Updated Name",
-        "group_id": 2,
         "allowed_ips": "192.168.1.0/24"
       }'
     ```
 
-    ## 🔄 Updatable Fields
+    ## Updatable Fields
 
     - `name` - Display name
     - `description` - Optional description
-    - `group_id` - Reassign to different group
     - `allowed_ips` - Comma-separated IPs/CIDRs (or null to remove)
     """
     with db.get_session() as session:
@@ -300,25 +326,16 @@ async def update_api_key(
             changes.append(f"name: {api_key.name} → {data.name}")
             api_key.name = data.name
         if data.description is not None:
-            changes.append(f"description updated")
+            changes.append("description updated")
             api_key.description = data.description
-        if data.group_id is not None:
-            # Validate new group exists
-            new_group = session.query(CustomGroup).filter(CustomGroup.id == data.group_id).first()
-            if not new_group:
-                raise HTTPException(status_code=400, detail=f"Group with ID {data.group_id} not found")
-            old_group = session.query(CustomGroup).filter(CustomGroup.id == api_key.group_id).first()
-            old_name = old_group.name if old_group else "unknown"
-            changes.append(f"group: {old_name} → {new_group.name}")
-            api_key.group_id = data.group_id
-        # Handle allowed_ips field - need to check if it's explicitly in the request
-        # Pydantic sets it to None when field is sent as null/empty
-        if hasattr(data, 'allowed_ips'):
+        # Handle allowed_ips field - use model_fields_set to detect if explicitly provided
+        # This distinguishes "field not sent" from "field sent as null"
+        if 'allowed_ips' in data.model_fields_set:
             if data.allowed_ips is None or (isinstance(data.allowed_ips, str) and data.allowed_ips.strip() == ""):
-                changes.append(f"allowed_ips cleared (no restrictions)")
+                changes.append("allowed_ips cleared (no restrictions)")
                 api_key.allowed_ips = None
             else:
-                changes.append(f"allowed_ips updated")
+                changes.append("allowed_ips updated")
                 api_key.allowed_ips = data.allowed_ips
 
         api_key.updated_at = datetime.now(timezone.utc)
@@ -333,7 +350,8 @@ async def update_api_key(
             success=True
         )
 
-        logger.info(f"User {current_user['username']} updated API key: {api_key.name}")
+        _, display_name = _get_auditable_user_info(current_user)
+        logger.info(f"{display_name} updated API key: {api_key.name}")
 
         return {"message": "API key updated successfully"}
 
@@ -403,6 +421,7 @@ async def revoke_api_key(
             success=True
         )
 
-        logger.info(f"User {current_user['username']} revoked API key: {api_key.name}")
+        _, display_name = _get_auditable_user_info(current_user)
+        logger.info(f"{display_name} revoked API key: {api_key.name}")
 
         return {"message": "API key revoked successfully"}

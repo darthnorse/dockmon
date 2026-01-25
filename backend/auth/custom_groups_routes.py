@@ -28,6 +28,27 @@ from auth.capabilities import ALL_CAPABILITIES, CAPABILITY_INFO
 router = APIRouter(prefix="/api/v2/groups", tags=["groups"])
 
 
+def _get_auditable_user_info(current_user: dict) -> tuple[int | None, str]:
+    """Extract user ID and username from auth context for audit logging.
+
+    Handles both session auth and API key auth contexts.
+
+    Args:
+        current_user: Auth context from get_current_user_or_api_key
+
+    Returns:
+        Tuple of (user_id, display_name) where:
+        - Session auth: (user_id, username)
+        - API key auth: (created_by_user_id, "API Key: <name>")
+    """
+    if current_user.get("auth_type") == "api_key":
+        return (
+            current_user.get("created_by_user_id"),
+            f"API Key: {current_user.get('api_key_name', 'unknown')}"
+        )
+    return (current_user.get("user_id"), current_user.get("username", "unknown"))
+
+
 # =============================================================================
 # Request/Response Models
 # =============================================================================
@@ -137,8 +158,7 @@ class UpdatePermissionsRequest(BaseModel):
 
 class UpdatePermissionsResponse(BaseModel):
     """Response after updating permissions"""
-    success: bool
-    updated_count: int
+    updated: int  # Number of permissions updated (matches frontend expectation)
     message: str
 
 
@@ -316,7 +336,7 @@ async def create_group(
             )
 
         now = datetime.now(timezone.utc)
-        user_id = current_user.get('user_id')
+        user_id, display_name = _get_auditable_user_info(current_user)
 
         new_group = CustomGroup(
             name=sanitized_name,
@@ -334,7 +354,7 @@ async def create_group(
         log_audit(
             session,
             user_id=user_id,
-            username=current_user.get('username', 'unknown'),
+            username=display_name,
             action='create',
             entity_type='custom_group',
             entity_id=str(new_group.id),
@@ -352,7 +372,7 @@ async def create_group(
             is_system=new_group.is_system,
             member_count=0,
             created_at=_format_datetime(new_group.created_at),
-            created_by=current_user.get('username'),
+            created_by=display_name,
             updated_at=_format_datetime(new_group.updated_at),
         )
 
@@ -442,7 +462,7 @@ async def update_group(
             group.description = sanitized_description
 
         now = datetime.now(timezone.utc)
-        user_id = current_user.get('user_id')
+        user_id, display_name = _get_auditable_user_info(current_user)
 
         group.updated_by = user_id
         group.updated_at = now
@@ -457,7 +477,7 @@ async def update_group(
             log_audit(
                 session,
                 user_id=user_id,
-                username=current_user.get('username', 'unknown'),
+                username=display_name,
                 action='update',
                 entity_type='custom_group',
                 entity_id=str(group.id),
@@ -545,12 +565,13 @@ async def delete_group(
 
         group_name = group.name
         member_count = len(memberships)
+        user_id, display_name = _get_auditable_user_info(current_user)
 
         # Audit log (before commit for atomicity)
         log_audit(
             session,
-            user_id=current_user.get('user_id'),
-            username=current_user.get('username', 'unknown'),
+            user_id=user_id,
+            username=display_name,
             action='delete',
             entity_type='custom_group',
             entity_id=str(group_id),
@@ -618,10 +639,11 @@ async def add_member(
 
         # Add membership
         now = datetime.now(timezone.utc)
+        user_id, display_name = _get_auditable_user_info(current_user)
         membership = UserGroupMembership(
             user_id=request.user_id,
             group_id=group_id,
-            added_by=current_user.get('user_id'),
+            added_by=user_id,
             added_at=now,
         )
 
@@ -630,8 +652,8 @@ async def add_member(
         # Audit log (before commit for atomicity)
         log_audit(
             session,
-            user_id=current_user.get('user_id'),
-            username=current_user.get('username', 'unknown'),
+            user_id=user_id,
+            username=display_name,
             action='add_member',
             entity_type='custom_group',
             entity_id=str(group_id),
@@ -694,18 +716,19 @@ async def remove_member(
 
         # Get username for audit
         user = session.query(User).filter(User.id == user_id).first()
-        username = user.username if user else f"user_{user_id}"
+        member_username = user.username if user else f"user_{user_id}"
+        user_id, display_name = _get_auditable_user_info(current_user)
 
         # Audit log (before commit for atomicity)
         log_audit(
             session,
-            user_id=current_user.get('user_id'),
-            username=current_user.get('username', 'unknown'),
+            user_id=user_id,
+            username=display_name,
             action='remove_member',
             entity_type='custom_group',
             entity_id=str(group_id),
             entity_name=group.name,
-            details={'member_user_id': user_id, 'member_username': username},
+            details={'member_user_id': user_id, 'member_username': member_username},
         )
 
         # Remove membership
@@ -717,7 +740,7 @@ async def remove_member(
 
         return RemoveMemberResponse(
             success=True,
-            message=f"Removed user '{username}' from group '{group.name}'"
+            message=f"Removed user '{member_username}' from group '{group.name}'"
         )
 
 
@@ -863,10 +886,11 @@ async def update_group_permissions(
 
         if changes:
             # Audit log
+            user_id, display_name = _get_auditable_user_info(current_user)
             log_audit(
                 session,
-                user_id=current_user.get('user_id'),
-                username=current_user.get('username', 'unknown'),
+                user_id=user_id,
+                username=display_name,
                 action='update_permissions',
                 entity_type='custom_group',
                 entity_id=str(group_id),
@@ -880,7 +904,6 @@ async def update_group_permissions(
         invalidate_group_permissions_cache()
 
         return UpdatePermissionsResponse(
-            success=True,
-            updated_count=updated_count,
+            updated=updated_count,
             message=f"Updated {updated_count} permission(s) for group '{group.name}'"
         )

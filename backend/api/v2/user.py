@@ -20,6 +20,31 @@ from pydantic import BaseModel, Field
 from auth.api_key_auth import get_current_user_or_api_key as get_current_user
 
 logger = logging.getLogger(__name__)
+
+
+def _require_session_user_id(current_user: dict) -> int:
+    """Extract user_id from session auth context.
+
+    User preferences are only available for session-authenticated users.
+    API keys don't have user preferences - they use group permissions.
+
+    Args:
+        current_user: Auth context from get_current_user_or_api_key
+
+    Returns:
+        user_id for session auth
+
+    Raises:
+        HTTPException: 403 if called with API key auth
+    """
+    if current_user.get("auth_type") == "api_key":
+        raise HTTPException(
+            status_code=403,
+            detail="User preferences are only available for session-authenticated users"
+        )
+    return current_user["user_id"]
+
+
 router = APIRouter(prefix="/api/v2/user", tags=["user-v2"])
 
 # Default time format (12h or 24h) - must match frontend DEFAULT_TIME_FORMAT
@@ -140,7 +165,7 @@ async def get_user_preferences(
     Returns:
         User preferences or defaults if none exist
     """
-    user_id = current_user["user_id"]
+    user_id = _require_session_user_id(current_user)
 
     with db.get_session() as session:
         from sqlalchemy import text
@@ -246,7 +271,7 @@ async def get_user_preferences(
             sidebar_collapsed=user_result.sidebar_collapsed if user_result else False,
             dashboard_layout_v2=dashboard_layout_v2,
             dashboard=dashboard,
-            simplified_workflow=user_result.simplified_workflow if user_result and hasattr(user_result, 'simplified_workflow') else True,
+            simplified_workflow=user_result.simplified_workflow if user_result and user_result.simplified_workflow is not None else True,
             time_format=prefs_data.get("time_format", DEFAULT_TIME_FORMAT),
             host_table_sort=prefs_data.get("host_table_sort"),
             container_table_sort=prefs_data.get("container_table_sort"),
@@ -274,7 +299,7 @@ async def update_user_preferences(
     Returns:
         Success message
     """
-    user_id = current_user["user_id"]
+    user_id = _require_session_user_id(current_user)
 
     with db.get_session() as session:
         from sqlalchemy import text
@@ -482,7 +507,7 @@ async def reset_user_preferences(
     Returns:
         Success message
     """
-    user_id = current_user["user_id"]
+    user_id = _require_session_user_id(current_user)
 
     with db.get_session() as session:
         from sqlalchemy import text

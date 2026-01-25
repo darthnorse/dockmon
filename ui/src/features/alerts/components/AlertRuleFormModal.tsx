@@ -48,7 +48,7 @@ interface AlertRuleFormData {
   container_selector_all: boolean
   container_selector_included: string[]
   container_run_mode: 'all' | 'should_run' | 'on_demand'
-  notify_channels: string[]
+  notify_channels: number[]  // Channel IDs (not type strings) - supports multiple channels per type
   custom_template: string | null
   auto_resolve_updates: boolean
   auto_resolve_on_clear: boolean
@@ -173,17 +173,23 @@ const OPERATORS = [
   { value: '<', label: '< (Less than)' },
 ]
 
-const NOTIFICATION_CHANNELS = [
-  { value: 'pushover', label: 'Pushover', icon: Smartphone },
-  { value: 'telegram', label: 'Telegram', icon: Send },
-  { value: 'discord', label: 'Discord', icon: MessageSquare },
-  { value: 'slack', label: 'Slack', icon: Hash },
-  { value: 'teams', label: 'Microsoft Teams (beta)', icon: Users },
-  { value: 'gotify', label: 'Gotify', icon: Bell },
-  { value: 'ntfy', label: 'ntfy', icon: BellRing },
-  { value: 'smtp', label: 'Email (SMTP)', icon: Mail },
-  { value: 'webhook', label: 'Webhook', icon: Globe },
-]
+// Channel type metadata for icons and labels
+const CHANNEL_TYPE_INFO: Record<string, { label: string; icon: typeof Bell }> = {
+  pushover: { label: 'Pushover', icon: Smartphone },
+  telegram: { label: 'Telegram', icon: Send },
+  discord: { label: 'Discord', icon: MessageSquare },
+  slack: { label: 'Slack', icon: Hash },
+  teams: { label: 'Microsoft Teams', icon: Users },
+  gotify: { label: 'Gotify', icon: Bell },
+  ntfy: { label: 'ntfy', icon: BellRing },
+  smtp: { label: 'Email', icon: Mail },
+  webhook: { label: 'Webhook', icon: Globe },
+}
+
+/** Get icon component for a channel type */
+function getChannelIcon(type: string) {
+  return CHANNEL_TYPE_INFO[type]?.icon || Bell
+}
 
 export function AlertRuleFormModal({ rule, onClose }: Props) {
   const createRule = useCreateAlertRule()
@@ -281,7 +287,11 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       container_selector_all: containerSelector.all,
       container_selector_included: containerSelector.included,
       container_run_mode: containerSelector.should_run === null ? 'all' : containerSelector.should_run ? 'should_run' : 'on_demand',
-      notify_channels: rule?.notify_channels_json ? JSON.parse(rule.notify_channels_json) : [],
+      // Parse channel IDs - filter to numbers only for backward compatibility
+      // (old rules may have type strings like "discord" which we drop - user must re-select)
+      notify_channels: rule?.notify_channels_json
+        ? (JSON.parse(rule.notify_channels_json) as (number | string)[]).filter((v): v is number => typeof v === 'number')
+        : [],
       custom_template: rule?.custom_template !== undefined ? rule.custom_template : null,
       // Auto-resolve defaults to false - user can enable for any alert type
       auto_resolve_updates: rule?.auto_resolve ?? false,
@@ -679,7 +689,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
     // Notifications
     if (formData.notify_channels.length > 0) {
       const channelNames = formData.notify_channels
-        .map((ch: string) => NOTIFICATION_CHANNELS.find(c => c.value === ch)?.label || ch)
+        .map((id) => configuredChannels.find(c => c.id === id)?.name || `Channel ${id}`)
         .join(', ')
       parts.push(`Notifications: ${channelNames}`)
     } else {
@@ -1483,34 +1493,30 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
               </div>
             ) : (
               <div className="grid grid-cols-2 gap-2">
-                {NOTIFICATION_CHANNELS.filter(channel =>
-                  configuredChannels.some(cc => cc.type === channel.value)
-                ).map((channel) => {
-                  const IconComponent = channel.icon
-                  const configuredChannel = configuredChannels.find(cc => cc.type === channel.value)
-                  const isDisabled = configuredChannel && !configuredChannel.enabled
-                  // Check if there are multiple channels of this type
-                  const channelsOfType = configuredChannels.filter(cc => cc.type === channel.value)
-                  const showChannelName = channelsOfType.length > 1 && configuredChannel
+                {/* Render each configured channel individually (supports multiple per type) */}
+                {configuredChannels.map((channel) => {
+                  const IconComponent = getChannelIcon(channel.type)
+                  const typeInfo = CHANNEL_TYPE_INFO[channel.type]
+                  const isDisabled = !channel.enabled
 
                   return (
                     <label
-                      key={channel.value}
+                      key={channel.id}
                       className={`flex items-center gap-2 text-sm p-2 rounded ${
                         isDisabled
                           ? 'text-gray-500 cursor-not-allowed'
                           : 'text-gray-300 hover:bg-gray-800/50 cursor-pointer'
                       }`}
-                      title={isDisabled ? `${channel.label} is disabled` : undefined}
+                      title={isDisabled ? `${channel.name} is disabled` : undefined}
                     >
                       <input
                         type="checkbox"
-                        checked={formData.notify_channels.includes(channel.value)}
+                        checked={formData.notify_channels.includes(channel.id)}
                         onChange={(e) => {
                           if (e.target.checked) {
-                            handleChange('notify_channels', [...formData.notify_channels, channel.value])
+                            handleChange('notify_channels', [...formData.notify_channels, channel.id])
                           } else {
-                            handleChange('notify_channels', formData.notify_channels.filter((ch: string) => ch !== channel.value))
+                            handleChange('notify_channels', formData.notify_channels.filter((id) => id !== channel.id))
                           }
                         }}
                         disabled={isDisabled}
@@ -1518,10 +1524,8 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                       />
                       <IconComponent className="h-4 w-4" />
                       <span className="flex items-center gap-1">
-                        {channel.label}
-                        {showChannelName && (
-                          <span className="text-xs text-gray-500">({configuredChannel.name})</span>
-                        )}
+                        <span>{channel.name}</span>
+                        <span className="text-xs text-gray-500">({typeInfo?.label || channel.type})</span>
                       </span>
                     </label>
                   )

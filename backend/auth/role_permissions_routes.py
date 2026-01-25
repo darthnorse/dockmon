@@ -5,12 +5,12 @@ Provides endpoints for managing role-based permission customization.
 Admin-only endpoints for viewing and modifying what each role can do.
 """
 from datetime import datetime, timezone
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from auth.api_key_auth import require_scope, get_current_user_or_api_key, invalidate_role_permissions_cache
+from auth.api_key_auth import require_capability, get_current_user_or_api_key, invalidate_role_permissions_cache
+from auth.capabilities import CAPABILITY_INFO, ALL_CAPABILITIES
 from auth.shared import db
 from database import RolePermission
 from audit.audit_logger import log_audit
@@ -24,216 +24,6 @@ router = APIRouter(prefix="/api/v2/roles", tags=["roles"])
 # =============================================================================
 
 VALID_ROLES = ['admin', 'user', 'readonly']
-
-# Capability categories and descriptions for UI display
-CAPABILITY_INFO = {
-    # Hosts
-    'hosts.manage': {
-        'category': 'Hosts',
-        'name': 'Manage Hosts',
-        'description': 'Add, edit, and delete Docker hosts',
-    },
-    'hosts.view': {
-        'category': 'Hosts',
-        'name': 'View Hosts',
-        'description': 'View host list and connection status',
-    },
-
-    # Stacks
-    'stacks.edit': {
-        'category': 'Stacks',
-        'name': 'Edit Stacks',
-        'description': 'Create, edit, and delete stack definitions',
-    },
-    'stacks.deploy': {
-        'category': 'Stacks',
-        'name': 'Deploy Stacks',
-        'description': 'Deploy existing stacks to hosts',
-    },
-    'stacks.view': {
-        'category': 'Stacks',
-        'name': 'View Stacks',
-        'description': 'View stack list and contents',
-    },
-    'stacks.view_env': {
-        'category': 'Stacks',
-        'name': 'View Stack Env Files',
-        'description': 'View .env file contents (may contain secrets)',
-    },
-
-    # Containers
-    'containers.operate': {
-        'category': 'Containers',
-        'name': 'Operate Containers',
-        'description': 'Start, stop, and restart containers',
-    },
-    'containers.shell': {
-        'category': 'Containers',
-        'name': 'Shell Access',
-        'description': 'Execute commands in containers (essentially root access)',
-    },
-    'containers.update': {
-        'category': 'Containers',
-        'name': 'Update Containers',
-        'description': 'Trigger container image updates',
-    },
-    'containers.view': {
-        'category': 'Containers',
-        'name': 'View Containers',
-        'description': 'View container list and details',
-    },
-    'containers.logs': {
-        'category': 'Containers',
-        'name': 'View Logs',
-        'description': 'View container log output',
-    },
-    'containers.view_env': {
-        'category': 'Containers',
-        'name': 'View Container Env',
-        'description': 'View container environment variables (may contain secrets)',
-    },
-
-    # Health Checks
-    'healthchecks.manage': {
-        'category': 'Health Checks',
-        'name': 'Manage Health Checks',
-        'description': 'Create, edit, and delete HTTP health checks',
-    },
-    'healthchecks.test': {
-        'category': 'Health Checks',
-        'name': 'Test Health Checks',
-        'description': 'Manually trigger health check tests',
-    },
-    'healthchecks.view': {
-        'category': 'Health Checks',
-        'name': 'View Health Checks',
-        'description': 'View health check configurations and results',
-    },
-
-    # Batch Operations
-    'batch.create': {
-        'category': 'Batch Operations',
-        'name': 'Create Batch Jobs',
-        'description': 'Create bulk container operation jobs',
-    },
-    'batch.view': {
-        'category': 'Batch Operations',
-        'name': 'View Batch Jobs',
-        'description': 'View batch job list and status',
-    },
-
-    # Update Policies
-    'policies.manage': {
-        'category': 'Update Policies',
-        'name': 'Manage Policies',
-        'description': 'Create, edit, and delete auto-update policies',
-    },
-    'policies.view': {
-        'category': 'Update Policies',
-        'name': 'View Policies',
-        'description': 'View auto-update policy configurations',
-    },
-
-    # Alerts
-    'alerts.manage': {
-        'category': 'Alerts',
-        'name': 'Manage Alert Rules',
-        'description': 'Create, edit, and delete alert rules',
-    },
-    'alerts.view': {
-        'category': 'Alerts',
-        'name': 'View Alerts',
-        'description': 'View alert rules and history',
-    },
-
-    # Notifications
-    'notifications.manage': {
-        'category': 'Notifications',
-        'name': 'Manage Channels',
-        'description': 'Create, edit, and delete notification channels',
-    },
-    'notifications.view': {
-        'category': 'Notifications',
-        'name': 'View Channels',
-        'description': 'View notification channel names (not configs)',
-    },
-
-    # Registry
-    'registry.manage': {
-        'category': 'Registry Credentials',
-        'name': 'Manage Credentials',
-        'description': 'Create, edit, and delete registry credentials',
-    },
-    'registry.view': {
-        'category': 'Registry Credentials',
-        'name': 'View Credentials',
-        'description': 'View registry credential details (contains passwords)',
-    },
-
-    # Agents
-    'agents.manage': {
-        'category': 'Agents',
-        'name': 'Manage Agents',
-        'description': 'Register agents and trigger agent updates',
-    },
-    'agents.view': {
-        'category': 'Agents',
-        'name': 'View Agents',
-        'description': 'View agent status and information',
-    },
-
-    # Settings
-    'settings.manage': {
-        'category': 'Settings',
-        'name': 'Manage Settings',
-        'description': 'Edit global application settings',
-    },
-
-    # Users
-    'users.manage': {
-        'category': 'Users',
-        'name': 'Manage Users',
-        'description': 'Create, edit, and delete users',
-    },
-
-    # Audit
-    'audit.view': {
-        'category': 'Audit',
-        'name': 'View Audit Log',
-        'description': 'View the security audit log',
-    },
-
-    # API Keys
-    'apikeys.manage_own': {
-        'category': 'API Keys',
-        'name': 'Manage Own Keys',
-        'description': 'Create and manage personal API keys',
-    },
-    'apikeys.manage_other': {
-        'category': 'API Keys',
-        'name': 'Manage Others Keys',
-        'description': 'Manage API keys of other users',
-    },
-
-    # Tags
-    'tags.manage': {
-        'category': 'Tags',
-        'name': 'Manage Tags',
-        'description': 'Create, edit, and delete tags',
-    },
-    'tags.view': {
-        'category': 'Tags',
-        'name': 'View Tags',
-        'description': 'View tag list',
-    },
-
-    # Events
-    'events.view': {
-        'category': 'Events',
-        'name': 'View Events',
-        'description': 'View container and system event log',
-    },
-}
 
 # Default permissions for reset functionality (same as migration)
 DEFAULT_PERMISSIONS = [
@@ -267,6 +57,8 @@ DEFAULT_PERMISSIONS = [
     ('admin', 'agents.view', True),
     ('admin', 'settings.manage', True),
     ('admin', 'users.manage', True),
+    ('admin', 'oidc.manage', True),
+    ('admin', 'groups.manage', True),
     ('admin', 'audit.view', True),
     ('admin', 'apikeys.manage_own', True),
     ('admin', 'apikeys.manage_other', True),
@@ -321,8 +113,7 @@ for _role, _cap, _allowed in DEFAULT_PERMISSIONS:
         DEFAULT_PERMISSIONS_BY_ROLE[_role] = []
     DEFAULT_PERMISSIONS_BY_ROLE[_role].append((_cap, _allowed))
 
-# Get all capability names
-ALL_CAPABILITIES = list(CAPABILITY_INFO.keys())
+# ALL_CAPABILITIES imported from auth.capabilities
 
 
 # =============================================================================
@@ -374,7 +165,7 @@ class ResetPermissionsResponse(BaseModel):
 
 class ResetPermissionsRequest(BaseModel):
     """Request to reset permissions"""
-    role: Optional[str] = None  # If None, reset all roles
+    role: str | None = None  # If None, reset all roles
 
 
 # =============================================================================
@@ -427,7 +218,7 @@ async def get_capabilities(
     )
 
 
-@router.get("/permissions", response_model=RolePermissionsResponse, dependencies=[Depends(require_scope("admin"))])
+@router.get("/permissions", response_model=RolePermissionsResponse, dependencies=[Depends(require_capability("groups.manage"))])
 async def get_role_permissions(
     current_user: dict = Depends(get_current_user_or_api_key)
 ):
@@ -452,7 +243,7 @@ async def get_role_permissions(
         return RolePermissionsResponse(permissions=permissions)
 
 
-@router.put("/permissions", response_model=UpdatePermissionsResponse, dependencies=[Depends(require_scope("admin"))])
+@router.put("/permissions", response_model=UpdatePermissionsResponse, dependencies=[Depends(require_capability("groups.manage"))])
 async def update_role_permissions(
     request: UpdatePermissionsRequest,
     current_user: dict = Depends(get_current_user_or_api_key)
@@ -526,7 +317,7 @@ async def update_role_permissions(
         )
 
 
-@router.post("/permissions/reset", response_model=ResetPermissionsResponse, dependencies=[Depends(require_scope("admin"))])
+@router.post("/permissions/reset", response_model=ResetPermissionsResponse, dependencies=[Depends(require_capability("groups.manage"))])
 async def reset_role_permissions(
     request: ResetPermissionsRequest,
     current_user: dict = Depends(get_current_user_or_api_key)
@@ -592,7 +383,7 @@ async def reset_role_permissions(
         )
 
 
-@router.get("/permissions/defaults", response_model=RolePermissionsResponse, dependencies=[Depends(require_scope("admin"))])
+@router.get("/permissions/defaults", response_model=RolePermissionsResponse, dependencies=[Depends(require_capability("groups.manage"))])
 async def get_default_permissions(
     current_user: dict = Depends(get_current_user_or_api_key)
 ):

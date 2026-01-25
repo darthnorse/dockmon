@@ -2,26 +2,28 @@
 DockMon User Management Routes - Admin-only User CRUD Operations
 
 Phase 3 of Multi-User Support (v2.3.0)
+Phase 4: Group-based permissions (v2.4.0)
 
 SECURITY:
-- All endpoints require admin role
+- All endpoints require users.manage capability
 - Soft delete preserves audit trail
 - Password changes trigger must_change_password flag
+- Users are assigned to groups for permissions
 """
 
 import logging
 import re
 import secrets
 from datetime import datetime, timezone
-from typing import Optional, List
 
 from fastapi import APIRouter, HTTPException, Request, Depends
 from pydantic import BaseModel, Field, field_validator, EmailStr
 from argon2 import PasswordHasher
 
 from auth.shared import db, safe_audit_log
-from auth.api_key_auth import require_scope, get_current_user_or_api_key
-from database import User
+from auth.api_key_auth import require_capability, get_current_user_or_api_key, invalidate_user_groups_cache
+from auth.utils import format_timestamp, format_timestamp_required, get_user_or_404, validate_group_ids
+from database import User, CustomGroup, UserGroupMembership
 from audit import get_client_info, AuditAction
 from audit.audit_logger import AuditEntityType
 
@@ -43,44 +45,44 @@ VALID_ROLES = ["admin", "user", "readonly"]
 
 # ==================== Request/Response Models ====================
 
+class UserGroupResponse(BaseModel):
+    """Group membership for a user"""
+    id: int
+    name: str
+
+
 class UserResponse(BaseModel):
-    """User data returned to admin"""
+    """User data returned to admin (v2.4.0: includes groups)"""
     id: int
     username: str
-    email: Optional[str] = None
-    display_name: Optional[str] = None
-    role: str
+    email: str | None = None
+    display_name: str | None = None
+    role: str  # Kept for backwards compatibility
+    groups: list[UserGroupResponse]  # New in v2.4.0
     auth_provider: str
     is_first_login: bool
     must_change_password: bool
-    last_login: Optional[str] = None
+    last_login: str | None = None
     created_at: str
     updated_at: str
-    deleted_at: Optional[str] = None
+    deleted_at: str | None = None
     is_deleted: bool
 
 
 class UserListResponse(BaseModel):
     """List of users"""
-    users: List[UserResponse]
+    users: list[UserResponse]
     total: int
 
 
 class CreateUserRequest(BaseModel):
-    """Create a new user"""
+    """Create a new user (v2.4.0: uses group_ids instead of role)"""
     username: str = Field(..., min_length=1, max_length=50)
     password: str = Field(..., min_length=8, max_length=128)
-    email: Optional[EmailStr] = Field(None)
-    display_name: Optional[str] = Field(None, max_length=100)
-    role: str = Field(default="user")
+    email: EmailStr | None = Field(None)
+    display_name: str | None = Field(None, max_length=100)
+    group_ids: list[int] = Field(..., min_length=1, description="List of group IDs to assign user to")
     must_change_password: bool = Field(default=True)
-
-    @field_validator('role')
-    @classmethod
-    def validate_role(cls, v: str) -> str:
-        if v not in VALID_ROLES:
-            raise ValueError(f"Invalid role. Must be one of: {', '.join(VALID_ROLES)}")
-        return v
 
     @field_validator('username')
     @classmethod
@@ -92,38 +94,19 @@ class CreateUserRequest(BaseModel):
 
 
 class UpdateUserRequest(BaseModel):
-    """Update an existing user"""
-    email: Optional[EmailStr] = Field(None)
-    display_name: Optional[str] = Field(None, max_length=100)
-    role: Optional[str] = None
-
-    @field_validator('role')
-    @classmethod
-    def validate_role(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None and v not in VALID_ROLES:
-            raise ValueError(f"Invalid role. Must be one of: {', '.join(VALID_ROLES)}")
-        return v
+    """Update an existing user (v2.4.0: can manage group assignments)"""
+    email: EmailStr | None = Field(None)
+    display_name: str | None = Field(None, max_length=100)
+    group_ids: list[int] | None = Field(None, description="Replace user's group assignments")
 
 
 class ResetPasswordRequest(BaseModel):
     """Admin-initiated password reset"""
-    new_password: Optional[str] = Field(None, min_length=8, max_length=128)
+    new_password: str | None = Field(None, min_length=8, max_length=128)
 
 
 # ==================== Helper Functions ====================
-
-def _format_timestamp(dt: Optional[datetime]) -> Optional[str]:
-    """Format datetime to ISO string with 'Z' suffix for frontend."""
-    if dt is None:
-        return None
-    return dt.isoformat() + 'Z'
-
-
-def _format_timestamp_required(dt: Optional[datetime]) -> str:
-    """Format datetime to ISO string, using now() if None."""
-    if dt is None:
-        return datetime.now(timezone.utc).isoformat() + 'Z'
-    return dt.isoformat() + 'Z'
+# format_timestamp and format_timestamp_required imported from auth.utils
 
 
 def _ensure_not_last_admin(session, user_id: int, action: str) -> None:
@@ -149,34 +132,75 @@ def _ensure_not_last_admin(session, user_id: int, action: str) -> None:
             )
 
 
-def _user_to_response(user: User) -> UserResponse:
-    """Convert User model to response"""
+def _get_user_groups(session, user_id: int) -> list[UserGroupResponse]:
+    """Get groups for a user."""
+    memberships = session.query(UserGroupMembership, CustomGroup).join(
+        CustomGroup, UserGroupMembership.group_id == CustomGroup.id
+    ).filter(UserGroupMembership.user_id == user_id).all()
+
+    return [UserGroupResponse(id=group.id, name=group.name) for _, group in memberships]
+
+
+def _get_all_user_groups(session, user_ids: list[int]) -> dict[int, list[UserGroupResponse]]:
+    """Pre-fetch groups for multiple users in a single query to avoid N+1."""
+    if not user_ids:
+        return {}
+
+    memberships = session.query(UserGroupMembership, CustomGroup).join(
+        CustomGroup, UserGroupMembership.group_id == CustomGroup.id
+    ).filter(UserGroupMembership.user_id.in_(user_ids)).all()
+
+    # Group by user_id
+    groups_by_user: dict[int, list[UserGroupResponse]] = {uid: [] for uid in user_ids}
+    for membership, group in memberships:
+        groups_by_user[membership.user_id].append(
+            UserGroupResponse(id=group.id, name=group.name)
+        )
+
+    return groups_by_user
+
+
+def _user_to_response(
+    user: User,
+    session,
+    groups: list[UserGroupResponse] | None = None
+) -> UserResponse:
+    """Convert User model to response (v2.4.0: includes groups).
+
+    Args:
+        user: User model to convert
+        session: Database session (used if groups not provided)
+        groups: Pre-fetched groups to avoid N+1 query (optional)
+    """
+    if groups is None:
+        groups = _get_user_groups(session, user.id)
     return UserResponse(
         id=user.id,
         username=user.username,
         email=user.email,
         display_name=user.display_name,
-        role=user.role,
+        role=user.role if user.role else 'user',  # Backwards compatibility
+        groups=groups,
         auth_provider=user.auth_provider,
         is_first_login=user.is_first_login,
         must_change_password=user.must_change_password,
-        last_login=_format_timestamp(user.last_login),
-        created_at=_format_timestamp_required(user.created_at),
-        updated_at=_format_timestamp_required(user.updated_at),
-        deleted_at=_format_timestamp(user.deleted_at),
+        last_login=format_timestamp(user.last_login),
+        created_at=format_timestamp_required(user.created_at),
+        updated_at=format_timestamp_required(user.updated_at),
+        deleted_at=format_timestamp(user.deleted_at),
         is_deleted=user.is_deleted
     )
 
 
 # ==================== API Endpoints ====================
 
-@router.get("", response_model=UserListResponse, dependencies=[Depends(require_scope("admin"))])
+@router.get("", response_model=UserListResponse, dependencies=[Depends(require_capability("users.manage"))])
 async def list_users(
     include_deleted: bool = False,
     current_user: dict = Depends(get_current_user_or_api_key)
 ) -> UserListResponse:
     """
-    List all users (admin only).
+    List all users (requires users.manage capability).
 
     Args:
         include_deleted: Include soft-deleted users in the list
@@ -189,24 +213,33 @@ async def list_users(
 
         users = query.order_by(User.created_at.desc()).all()
 
+        # Pre-fetch all groups in a single query to avoid N+1
+        user_ids = [u.id for u in users]
+        groups_by_user = _get_all_user_groups(session, user_ids)
+
         return UserListResponse(
-            users=[_user_to_response(u) for u in users],
+            users=[
+                _user_to_response(u, session, groups=groups_by_user.get(u.id, []))
+                for u in users
+            ],
             total=len(users)
         )
 
 
-@router.post("", response_model=UserResponse, dependencies=[Depends(require_scope("admin"))])
+@router.post("", response_model=UserResponse, dependencies=[Depends(require_capability("users.manage"))])
 async def create_user(
     user_data: CreateUserRequest,
     request: Request,
     current_user: dict = Depends(get_current_user_or_api_key)
 ) -> UserResponse:
     """
-    Create a new user (admin only).
+    Create a new user (requires users.manage capability).
+
+    v2.4.0: Users are assigned to groups instead of roles.
 
     Default behavior:
     - New users must change password on first login
-    - Default role is 'user'
+    - Must specify at least one group
     - Auth provider is 'local'
     """
     with db.get_session() as session:
@@ -227,6 +260,10 @@ async def create_user(
                     detail="Email already in use"
                 )
 
+        # Validate all group_ids exist (uses shared helper)
+        groups = validate_group_ids(session, user_data.group_ids)
+        group_names = [g.name for g in groups]
+
         # Hash password with Argon2id
         password_hash = ph.hash(user_data.password)
 
@@ -236,7 +273,7 @@ async def create_user(
             password_hash=password_hash,
             email=user_data.email,
             display_name=user_data.display_name,
-            role=user_data.role,
+            role='user',  # Default role for backwards compatibility
             auth_provider='local',
             is_first_login=True,
             must_change_password=user_data.must_change_password,
@@ -245,7 +282,18 @@ async def create_user(
         )
 
         session.add(new_user)
-        session.flush()  # Get new_user.id for audit log
+        session.flush()  # Get new_user.id for group memberships
+
+        # Add group memberships
+        now = datetime.now(timezone.utc)
+        for group_id in user_data.group_ids:
+            membership = UserGroupMembership(
+                user_id=new_user.id,
+                group_id=group_id,
+                added_by=current_user['user_id'],
+                added_at=now,
+            )
+            session.add(membership)
 
         # Audit log (before commit for atomicity)
         safe_audit_log(
@@ -256,39 +304,32 @@ async def create_user(
             AuditEntityType.USER,
             entity_id=str(new_user.id),
             entity_name=new_user.username,
-            details={'role': user_data.role, 'must_change_password': user_data.must_change_password},
+            details={'groups': group_names, 'must_change_password': user_data.must_change_password},
             **get_client_info(request)
         )
 
         session.commit()
         session.refresh(new_user)
 
-        logger.info(f"User '{user_data.username}' created by admin '{current_user['username']}'")
+        logger.info(f"User '{user_data.username}' created by '{current_user['username']}' with groups: {group_names}")
 
-        return _user_to_response(new_user)
+        return _user_to_response(new_user, session)
 
 
-@router.get("/{user_id}", response_model=UserResponse, dependencies=[Depends(require_scope("admin"))])
+@router.get("/{user_id}", response_model=UserResponse, dependencies=[Depends(require_capability("users.manage"))])
 async def get_user(
     user_id: int,
     current_user: dict = Depends(get_current_user_or_api_key)
 ) -> UserResponse:
     """
-    Get a specific user by ID (admin only).
+    Get a specific user by ID (requires users.manage capability).
     """
     with db.get_session() as session:
-        user = session.query(User).filter(User.id == user_id).first()
-
-        if not user:
-            raise HTTPException(
-                status_code=404,
-                detail="User not found"
-            )
-
-        return _user_to_response(user)
+        user = get_user_or_404(session, user_id)
+        return _user_to_response(user, session)
 
 
-@router.put("/{user_id}", response_model=UserResponse, dependencies=[Depends(require_scope("admin"))])
+@router.put("/{user_id}", response_model=UserResponse, dependencies=[Depends(require_capability("users.manage"))])
 async def update_user(
     user_id: int,
     user_data: UpdateUserRequest,
@@ -296,19 +337,15 @@ async def update_user(
     current_user: dict = Depends(get_current_user_or_api_key)
 ) -> UserResponse:
     """
-    Update a user (admin only).
+    Update a user (requires users.manage capability).
+
+    v2.4.0: Can manage group assignments via group_ids.
 
     Only updates fields that are provided (partial update).
     Cannot change username (use separate endpoint if needed).
     """
     with db.get_session() as session:
-        user = session.query(User).filter(User.id == user_id).first()
-
-        if not user:
-            raise HTTPException(
-                status_code=404,
-                detail="User not found"
-            )
+        user = get_user_or_404(session, user_id)
 
         changes = {}
 
@@ -333,13 +370,42 @@ async def update_user(
             changes['display_name'] = {'old': user.display_name, 'new': user_data.display_name}
             user.display_name = user_data.display_name if user_data.display_name else None
 
-        # Update role if provided
-        if user_data.role is not None:
-            # Prevent removing the last admin
-            if user.role == 'admin' and user_data.role != 'admin':
-                _ensure_not_last_admin(session, user_id, "change role of")
-            changes['role'] = {'old': user.role, 'new': user_data.role}
-            user.role = user_data.role
+        # Update group assignments if provided (v2.4.0)
+        if user_data.group_ids is not None:
+            if len(user_data.group_ids) == 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="User must belong to at least one group"
+                )
+
+            # Validate all new group_ids exist (uses shared helper)
+            new_groups = validate_group_ids(session, user_data.group_ids)
+            new_group_names = [g.name for g in new_groups]
+
+            # Get current groups for audit log
+            current_groups = _get_user_groups(session, user_id)
+            old_group_names = [g.name for g in current_groups]
+
+            # Remove all existing memberships
+            session.query(UserGroupMembership).filter(
+                UserGroupMembership.user_id == user_id
+            ).delete()
+
+            # Add new memberships
+            now = datetime.now(timezone.utc)
+            for group_id in user_data.group_ids:
+                membership = UserGroupMembership(
+                    user_id=user_id,
+                    group_id=group_id,
+                    added_by=current_user['user_id'],
+                    added_at=now,
+                )
+                session.add(membership)
+
+            changes['groups'] = {'old': old_group_names, 'new': new_group_names}
+
+            # Invalidate cache for this user
+            invalidate_user_groups_cache(user_id)
 
         user.updated_at = datetime.now(timezone.utc)
 
@@ -360,31 +426,25 @@ async def update_user(
         session.commit()
         session.refresh(user)
 
-        logger.info(f"User '{user.username}' updated by admin '{current_user['username']}': {changes}")
+        logger.info(f"User '{user.username}' updated by '{current_user['username']}': {changes}")
 
-        return _user_to_response(user)
+        return _user_to_response(user, session)
 
 
-@router.delete("/{user_id}", dependencies=[Depends(require_scope("admin"))])
+@router.delete("/{user_id}", dependencies=[Depends(require_capability("users.manage"))])
 async def delete_user(
     user_id: int,
     request: Request,
     current_user: dict = Depends(get_current_user_or_api_key)
 ) -> dict:
     """
-    Soft delete a user (admin only).
+    Soft delete a user (requires users.manage capability).
 
     Preserves audit trail by setting deleted_at timestamp.
     User cannot log in after deletion but records are preserved.
     """
     with db.get_session() as session:
-        user = session.query(User).filter(User.id == user_id).first()
-
-        if not user:
-            raise HTTPException(
-                status_code=404,
-                detail="User not found"
-            )
+        user = get_user_or_404(session, user_id)
 
         # Prevent self-deletion
         if user_id == current_user['user_id']:
@@ -427,23 +487,17 @@ async def delete_user(
         return {"message": f"User '{user.username}' has been deactivated"}
 
 
-@router.post("/{user_id}/reactivate", response_model=UserResponse, dependencies=[Depends(require_scope("admin"))])
+@router.post("/{user_id}/reactivate", response_model=UserResponse, dependencies=[Depends(require_capability("users.manage"))])
 async def reactivate_user(
     user_id: int,
     request: Request,
     current_user: dict = Depends(get_current_user_or_api_key)
 ) -> UserResponse:
     """
-    Reactivate a soft-deleted user (admin only).
+    Reactivate a soft-deleted user (requires users.manage capability).
     """
     with db.get_session() as session:
-        user = session.query(User).filter(User.id == user_id).first()
-
-        if not user:
-            raise HTTPException(
-                status_code=404,
-                detail="User not found"
-            )
+        user = get_user_or_404(session, user_id)
 
         if not user.is_deleted:
             raise HTTPException(
@@ -472,12 +526,12 @@ async def reactivate_user(
         session.commit()
         session.refresh(user)
 
-        logger.info(f"User '{user.username}' reactivated by admin '{current_user['username']}'")
+        logger.info(f"User '{user.username}' reactivated by '{current_user['username']}'")
 
-        return _user_to_response(user)
+        return _user_to_response(user, session)
 
 
-@router.post("/{user_id}/reset-password", dependencies=[Depends(require_scope("admin"))])
+@router.post("/{user_id}/reset-password", dependencies=[Depends(require_capability("users.manage"))])
 async def reset_user_password(
     user_id: int,
     password_data: ResetPasswordRequest,
@@ -485,7 +539,7 @@ async def reset_user_password(
     current_user: dict = Depends(get_current_user_or_api_key)
 ) -> dict:
     """
-    Reset a user's password (admin only).
+    Reset a user's password (requires users.manage capability).
 
     If new_password is provided, sets it directly.
     If not provided, generates a random password.
@@ -493,13 +547,7 @@ async def reset_user_password(
     Always sets must_change_password=True so user must change on next login.
     """
     with db.get_session() as session:
-        user = session.query(User).filter(User.id == user_id).first()
-
-        if not user:
-            raise HTTPException(
-                status_code=404,
-                detail="User not found"
-            )
+        user = get_user_or_404(session, user_id)
 
         # Cannot reset OIDC user's password
         if user.is_oidc_user:

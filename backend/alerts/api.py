@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field, ConfigDict, field_serializer
 from database import DatabaseManager, AlertV2, AlertAnnotation
 from alerts.engine import AlertEngine
 from security.rate_limiting import get_rate_limit_dependency
-from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_scope  # v2 hybrid auth (cookies + API keys)
+from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability  # v2 hybrid auth (cookies + API keys)
 
 logger = logging.getLogger(__name__)
 
@@ -194,7 +194,7 @@ async def get_alert(
         )
 
 
-@router.post("/{alert_id}/resolve", response_model=AlertResponse, dependencies=[Depends(get_rate_limit_dependency("alerts_write")), Depends(require_scope("write"))])
+@router.post("/{alert_id}/resolve", response_model=AlertResponse, dependencies=[Depends(get_rate_limit_dependency("alerts_write")), Depends(require_capability("alerts.manage"))])
 async def resolve_alert(
     alert_id: str,
     request: ResolveAlertRequest,
@@ -221,7 +221,7 @@ async def resolve_alert(
         )
 
 
-@router.post("/{alert_id}/snooze", response_model=AlertResponse, dependencies=[Depends(get_rate_limit_dependency("alerts_write")), Depends(require_scope("write"))])
+@router.post("/{alert_id}/snooze", response_model=AlertResponse, dependencies=[Depends(get_rate_limit_dependency("alerts_write")), Depends(require_capability("alerts.manage"))])
 async def snooze_alert(
     alert_id: str,
     request: SnoozeAlertRequest,
@@ -249,7 +249,7 @@ async def snooze_alert(
         )
 
 
-@router.post("/{alert_id}/unsnooze", response_model=AlertResponse, dependencies=[Depends(get_rate_limit_dependency("alerts_write")), Depends(require_scope("write"))])
+@router.post("/{alert_id}/unsnooze", response_model=AlertResponse, dependencies=[Depends(get_rate_limit_dependency("alerts_write")), Depends(require_capability("alerts.manage"))])
 async def unsnooze_alert(
     alert_id: str,
     db: DatabaseManager = Depends(get_db)
@@ -276,7 +276,7 @@ async def unsnooze_alert(
         )
 
 
-@router.post("/{alert_id}/annotations", dependencies=[Depends(get_rate_limit_dependency("alerts_write")), Depends(require_scope("write"))])
+@router.post("/{alert_id}/annotations", dependencies=[Depends(get_rate_limit_dependency("alerts_write")), Depends(require_capability("alerts.manage"))])
 async def add_annotation(
     alert_id: str,
     request: AddAnnotationRequest,

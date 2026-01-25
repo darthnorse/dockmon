@@ -17,7 +17,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, and_, or_, func
 
-from auth.api_key_auth import require_scope, get_current_user_or_api_key
+from auth.api_key_auth import require_capability, get_current_user_or_api_key
 from auth.shared import db
 from database import AuditLog, GlobalSettings
 from audit.audit_logger import AuditAction, AuditEntityType, log_audit, get_client_info
@@ -216,7 +216,7 @@ def _get_retention_days(settings: Optional[GlobalSettings]) -> int:
 # API Endpoints
 # =============================================================================
 
-@router.get("", response_model=AuditLogListResponse, dependencies=[Depends(require_scope("admin"))])
+@router.get("", response_model=AuditLogListResponse, dependencies=[Depends(require_capability("audit.view"))])
 async def list_audit_log(
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE, description="Items per page"),
@@ -261,19 +261,19 @@ async def list_audit_log(
         )
 
 
-@router.get("/actions", response_model=List[str], dependencies=[Depends(require_scope("admin"))])
+@router.get("/actions", response_model=List[str], dependencies=[Depends(require_capability("audit.view"))])
 async def list_audit_actions():
     """List all available audit action types. Admin only."""
     return [action.value for action in AuditAction]
 
 
-@router.get("/entity-types", response_model=List[str], dependencies=[Depends(require_scope("admin"))])
+@router.get("/entity-types", response_model=List[str], dependencies=[Depends(require_capability("audit.view"))])
 async def list_audit_entity_types():
     """List all available audit entity types. Admin only."""
     return [entity.value for entity in AuditEntityType]
 
 
-@router.get("/users", response_model=List[dict], dependencies=[Depends(require_scope("admin"))])
+@router.get("/users", response_model=List[dict], dependencies=[Depends(require_capability("audit.view"))])
 async def list_audit_users():
     """List all users who have entries in the audit log. Admin only."""
     with db.get_session() as session:
@@ -287,7 +287,7 @@ async def list_audit_users():
         return [{"user_id": r.user_id, "username": r.username} for r in result]
 
 
-@router.get("/stats", response_model=AuditLogStatsResponse, dependencies=[Depends(require_scope("admin"))])
+@router.get("/stats", response_model=AuditLogStatsResponse, dependencies=[Depends(require_capability("audit.view"))])
 async def get_audit_stats():
     """Get audit log statistics. Admin only."""
     with db.get_session() as session:
@@ -330,7 +330,7 @@ async def get_audit_stats():
         )
 
 
-@router.get("/export", dependencies=[Depends(require_scope("admin"))])
+@router.get("/export", dependencies=[Depends(require_capability("audit.view"))])
 async def export_audit_log(
     user_id: Optional[int] = Query(None, description="Filter by user ID"),
     username: Optional[str] = Query(None, description="Filter by username (partial match)"),
@@ -408,7 +408,7 @@ async def export_audit_log(
         )
 
 
-@router.get("/retention", response_model=RetentionSettingsResponse, dependencies=[Depends(require_scope("admin"))])
+@router.get("/retention", response_model=RetentionSettingsResponse, dependencies=[Depends(require_capability("settings.manage"))])
 async def get_retention_settings():
     """Get audit log retention settings. Admin only."""
     with db.get_session() as session:
@@ -425,7 +425,7 @@ async def get_retention_settings():
         )
 
 
-@router.put("/retention", response_model=RetentionUpdateResponse, dependencies=[Depends(require_scope("admin"))])
+@router.put("/retention", response_model=RetentionUpdateResponse, dependencies=[Depends(require_capability("settings.manage"))])
 async def update_retention_settings(
     request: UpdateRetentionRequest,
     req: Request,
@@ -486,7 +486,7 @@ async def update_retention_settings(
         )
 
 
-@router.post("/cleanup", response_model=dict, dependencies=[Depends(require_scope("admin"))])
+@router.post("/cleanup", response_model=dict, dependencies=[Depends(require_capability("settings.manage"))])
 async def cleanup_old_entries(
     req: Request,
     current_user: dict = Depends(get_current_user_or_api_key),

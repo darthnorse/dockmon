@@ -48,6 +48,12 @@ def _sanitize_for_log(value: str, max_length: int = 100) -> str:
 # Import shared database instance (single connection pool)
 from auth.shared import db
 from database import User
+from auth.api_key_auth import (
+    get_current_user_or_api_key,
+    get_user_groups,
+    get_capabilities_for_user,
+    get_capabilities_for_group,
+)
 from config.settings import AppConfig
 
 
@@ -357,27 +363,66 @@ get_current_user = get_current_user_dependency
 
 @router.get("/me")
 async def get_current_user_v2(
-    current_user: dict = Depends(get_current_user_dependency)
+    current_user: dict = Depends(get_current_user_or_api_key)
 ) -> dict:
     """
-    Get current authenticated user.
+    Get current authenticated user or API key info.
 
-    Requires valid session cookie.
+    Supports both session cookie auth and API key auth.
+
+    For session auth returns:
+    {
+        "auth_type": "session",
+        "user": { id, username, display_name, groups: [...], ... },
+        "capabilities": [...]
+    }
+
+    For API key auth returns:
+    {
+        "auth_type": "api_key",
+        "api_key": { id, name, group_id, group_name, created_by_username },
+        "capabilities": [...]
+    }
     """
-    # Get user from database to include is_first_login status
-    with db.get_session() as session:
-        user = session.query(User).filter(User.id == current_user["user_id"]).first()
+    if current_user.get("auth_type") == "api_key":
+        # API key auth - return key info and its group's capabilities
+        group_id = current_user["group_id"]
+        capabilities = get_capabilities_for_group(group_id)
 
         return {
-            "user": {
-                "id": current_user["user_id"],
-                "username": current_user["username"],
-                "display_name": user.display_name if user else None,
-                "is_first_login": user.is_first_login if user else False,
-                "must_change_password": user.must_change_password if user else False,
-                "role": user.role if user else "user"
-            }
+            "auth_type": "api_key",
+            "api_key": {
+                "id": current_user["api_key_id"],
+                "name": current_user["api_key_name"],
+                "group_id": group_id,
+                "group_name": current_user["group_name"],
+                "created_by_username": current_user["created_by_username"],
+            },
+            "capabilities": capabilities,
         }
+
+    else:
+        # Session auth - return user info and union of all group capabilities
+        user_id = current_user["user_id"]
+        groups = get_user_groups(user_id)  # Returns [{id, name}, ...]
+        capabilities = get_capabilities_for_user(user_id)  # Union of all groups
+
+        # Get additional user info from database
+        with db.get_session() as session:
+            user = session.query(User).filter(User.id == user_id).first()
+
+            return {
+                "auth_type": "session",
+                "user": {
+                    "id": user_id,
+                    "username": current_user["username"],
+                    "display_name": user.display_name if user else None,
+                    "is_first_login": user.is_first_login if user else False,
+                    "must_change_password": user.must_change_password if user else False,
+                    "groups": groups,
+                },
+                "capabilities": capabilities,
+            }
 
 
 @router.post("/change-password")

@@ -13,10 +13,16 @@ from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import aliased
 
-from auth.api_key_auth import require_scope, get_current_user_or_api_key
+from auth.api_key_auth import (
+    require_capability,
+    get_current_user_or_api_key,
+    invalidate_group_permissions_cache,
+    invalidate_user_groups_cache,
+)
 from auth.shared import db
-from database import CustomGroup, UserGroupMembership, User
+from database import CustomGroup, UserGroupMembership, User, ApiKey, GroupPermission
 from audit.audit_logger import log_audit
+from auth.capabilities import ALL_CAPABILITIES, CAPABILITY_INFO
 
 
 router = APIRouter(prefix="/api/v2/groups", tags=["groups"])
@@ -97,6 +103,40 @@ class RemoveMemberResponse(BaseModel):
 class DeleteGroupResponse(BaseModel):
     """Response when deleting a group"""
     success: bool
+    message: str
+
+
+class GroupPermissionResponse(BaseModel):
+    """Permission for a group"""
+    capability: str
+    allowed: bool
+    category: str
+    display_name: str
+    description: str
+
+
+class GroupPermissionsListResponse(BaseModel):
+    """List of permissions for a group"""
+    group_id: int
+    group_name: str
+    permissions: list[GroupPermissionResponse]
+
+
+class PermissionUpdateRequest(BaseModel):
+    """Request to update a single permission"""
+    capability: str
+    allowed: bool
+
+
+class UpdatePermissionsRequest(BaseModel):
+    """Request to update group permissions"""
+    permissions: list[PermissionUpdateRequest]
+
+
+class UpdatePermissionsResponse(BaseModel):
+    """Response after updating permissions"""
+    success: bool
+    updated_count: int
     message: str
 
 
@@ -200,7 +240,7 @@ def _get_group_members(session, group_id: int) -> list[GroupMemberResponse]:
 # Endpoints
 # =============================================================================
 
-@router.get("", response_model=GroupListResponse, dependencies=[Depends(require_scope("admin"))])
+@router.get("", response_model=GroupListResponse, dependencies=[Depends(require_capability("groups.manage"))])
 async def list_groups(
     current_user: dict = Depends(get_current_user_or_api_key)
 ):
@@ -208,7 +248,7 @@ async def list_groups(
     List all custom groups.
 
     Returns groups with member counts.
-    Admin only.
+    Requires groups.manage capability.
     """
     with db.get_session() as session:
         groups = session.query(CustomGroup).all()
@@ -246,7 +286,7 @@ async def list_groups(
         )
 
 
-@router.post("", response_model=GroupResponse, dependencies=[Depends(require_scope("admin"))])
+@router.post("", response_model=GroupResponse, dependencies=[Depends(require_capability("groups.manage"))])
 async def create_group(
     request: CreateGroupRequest,
     current_user: dict = Depends(get_current_user_or_api_key)
@@ -254,7 +294,7 @@ async def create_group(
     """
     Create a new custom group.
 
-    Admin only.
+    Requires groups.manage capability.
     """
     # Validate and sanitize inputs
     sanitized_name = _validate_group_name(request.name)
@@ -313,7 +353,7 @@ async def create_group(
         )
 
 
-@router.get("/{group_id}", response_model=GroupDetailResponse, dependencies=[Depends(require_scope("admin"))])
+@router.get("/{group_id}", response_model=GroupDetailResponse, dependencies=[Depends(require_capability("groups.manage"))])
 async def get_group(
     group_id: int,
     current_user: dict = Depends(get_current_user_or_api_key)
@@ -321,7 +361,7 @@ async def get_group(
     """
     Get a group with its members.
 
-    Admin only.
+    Requires groups.manage capability.
     """
     with db.get_session() as session:
         # Fetch group with creator username in one query
@@ -349,7 +389,7 @@ async def get_group(
         )
 
 
-@router.put("/{group_id}", response_model=GroupResponse, dependencies=[Depends(require_scope("admin"))])
+@router.put("/{group_id}", response_model=GroupResponse, dependencies=[Depends(require_capability("groups.manage"))])
 async def update_group(
     group_id: int,
     request: UpdateGroupRequest,
@@ -358,7 +398,7 @@ async def update_group(
     """
     Update a group.
 
-    Admin only.
+    Requires groups.manage capability.
     """
     # Validate and sanitize inputs
     sanitized_name = _validate_group_name(request.name) if request.name is not None else None
@@ -434,7 +474,7 @@ async def update_group(
         )
 
 
-@router.delete("/{group_id}", response_model=DeleteGroupResponse, dependencies=[Depends(require_scope("admin"))])
+@router.delete("/{group_id}", response_model=DeleteGroupResponse, dependencies=[Depends(require_capability("groups.manage"))])
 async def delete_group(
     group_id: int,
     current_user: dict = Depends(get_current_user_or_api_key)
@@ -443,7 +483,12 @@ async def delete_group(
     Delete a group.
 
     All memberships are automatically removed (cascade).
-    Admin only.
+    Requires groups.manage capability.
+
+    Blocked if:
+    - Group is a system group (is_system=True)
+    - Group has API keys assigned (would violate FK constraint)
+    - Any user would be left with no groups after deletion
     """
     with db.get_session() as session:
         group = session.query(CustomGroup).filter(CustomGroup.id == group_id).first()
@@ -454,10 +499,46 @@ async def delete_group(
                 detail=f"Group with ID {group_id} not found"
             )
 
+        # Phase 4: Prevent deletion of system groups
+        if group.is_system:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot delete system group '{group.name}'"
+            )
+
+        # Phase 4: Check for API keys (gives friendly error vs raw DB constraint)
+        api_key_count = session.query(ApiKey).filter_by(group_id=group_id).count()
+        if api_key_count > 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot delete group with {api_key_count} API key(s) assigned. "
+                       "Reassign or delete the API keys first."
+            )
+
+        # Phase 4: Check for users who would be left with zero groups
+        memberships = session.query(UserGroupMembership).filter_by(group_id=group_id).all()
+        users_with_only_this_group = []
+
+        for membership in memberships:
+            other_groups = session.query(UserGroupMembership).filter(
+                UserGroupMembership.user_id == membership.user_id,
+                UserGroupMembership.group_id != group_id
+            ).count()
+            if other_groups == 0:
+                user = session.query(User).filter(User.id == membership.user_id).first()
+                if user:
+                    users_with_only_this_group.append(user.username)
+
+        if users_with_only_this_group:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot delete group - these users would have no groups: "
+                       f"{', '.join(users_with_only_this_group)}. "
+                       "Assign them to another group first."
+            )
+
         group_name = group.name
-        member_count = session.query(UserGroupMembership).filter(
-            UserGroupMembership.group_id == group_id
-        ).count()
+        member_count = len(memberships)
 
         # Audit log (before commit for atomicity)
         log_audit(
@@ -475,13 +556,17 @@ async def delete_group(
         session.delete(group)
         session.commit()
 
+        # Phase 4: Invalidate caches
+        invalidate_group_permissions_cache()
+        invalidate_user_groups_cache()  # All users, since we don't know who was affected
+
         return DeleteGroupResponse(
             success=True,
             message=f"Deleted group '{group_name}' with {member_count} member(s)"
         )
 
 
-@router.post("/{group_id}/members", response_model=AddMemberResponse, dependencies=[Depends(require_scope("admin"))])
+@router.post("/{group_id}/members", response_model=AddMemberResponse, dependencies=[Depends(require_capability("groups.manage"))])
 async def add_member(
     group_id: int,
     request: AddMemberRequest,
@@ -490,7 +575,7 @@ async def add_member(
     """
     Add a user to a group.
 
-    Admin only.
+    Requires groups.manage capability.
     """
     with db.get_session() as session:
         # Check group exists
@@ -550,13 +635,16 @@ async def add_member(
 
         session.commit()
 
+        # Phase 4: Invalidate user's group cache
+        invalidate_user_groups_cache(request.user_id)
+
         return AddMemberResponse(
             success=True,
             message=f"Added user '{user.username}' to group '{group.name}'"
         )
 
 
-@router.delete("/{group_id}/members/{user_id}", response_model=RemoveMemberResponse, dependencies=[Depends(require_scope("admin"))])
+@router.delete("/{group_id}/members/{user_id}", response_model=RemoveMemberResponse, dependencies=[Depends(require_capability("groups.manage"))])
 async def remove_member(
     group_id: int,
     user_id: int,
@@ -565,7 +653,9 @@ async def remove_member(
     """
     Remove a user from a group.
 
-    Admin only.
+    Requires groups.manage capability.
+
+    Blocked if this is the user's last group (would leave them with no groups).
     """
     with db.get_session() as session:
         # Check group exists
@@ -588,6 +678,14 @@ async def remove_member(
                 detail=f"User is not a member of group '{group.name}'"
             )
 
+        # Phase 4: Check if this is the user's last group
+        group_count = session.query(UserGroupMembership).filter_by(user_id=user_id).count()
+        if group_count <= 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot remove user from their last group"
+            )
+
         # Get username for audit
         user = session.query(User).filter(User.id == user_id).first()
         username = user.username if user else f"user_{user_id}"
@@ -608,13 +706,16 @@ async def remove_member(
         session.delete(membership)
         session.commit()
 
+        # Phase 4: Invalidate user's group cache
+        invalidate_user_groups_cache(user_id)
+
         return RemoveMemberResponse(
             success=True,
             message=f"Removed user '{username}' from group '{group.name}'"
         )
 
 
-@router.get("/{group_id}/members", response_model=list[GroupMemberResponse], dependencies=[Depends(require_scope("admin"))])
+@router.get("/{group_id}/members", response_model=list[GroupMemberResponse], dependencies=[Depends(require_capability("groups.manage"))])
 async def list_group_members(
     group_id: int,
     current_user: dict = Depends(get_current_user_or_api_key)
@@ -622,7 +723,7 @@ async def list_group_members(
     """
     List all members of a group.
 
-    Admin only.
+    Requires groups.manage capability.
     """
     with db.get_session() as session:
         # Check group exists
@@ -634,3 +735,146 @@ async def list_group_members(
             )
 
         return _get_group_members(session, group_id)
+
+
+# =============================================================================
+# Group Permission Endpoints (Phase 4)
+# =============================================================================
+
+@router.get("/{group_id}/permissions", response_model=GroupPermissionsListResponse, dependencies=[Depends(require_capability("groups.manage"))])
+async def get_group_permissions(
+    group_id: int,
+    current_user: dict = Depends(get_current_user_or_api_key)
+):
+    """
+    Get all permissions for a group.
+
+    Returns all capabilities with their allowed status.
+    Includes capability metadata (category, display_name, description).
+
+    Requires groups.manage capability.
+    """
+    with db.get_session() as session:
+        # Check group exists
+        group = session.query(CustomGroup).filter(CustomGroup.id == group_id).first()
+        if not group:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Group with ID {group_id} not found"
+            )
+
+        # Get existing permissions for this group
+        existing_perms = session.query(GroupPermission).filter_by(group_id=group_id).all()
+        perm_map = {p.capability: p.allowed for p in existing_perms}
+
+        # Build response with all capabilities and their status
+        permissions = []
+        for cap in sorted(ALL_CAPABILITIES):
+            cap_info = CAPABILITY_INFO.get(cap, {})
+            permissions.append(GroupPermissionResponse(
+                capability=cap,
+                allowed=perm_map.get(cap, False),  # Default to False if not set
+                category=cap_info.get('category', 'Other'),
+                display_name=cap_info.get('name', cap),
+                description=cap_info.get('description', ''),
+            ))
+
+        return GroupPermissionsListResponse(
+            group_id=group.id,
+            group_name=group.name,
+            permissions=permissions,
+        )
+
+
+@router.put("/{group_id}/permissions", response_model=UpdatePermissionsResponse, dependencies=[Depends(require_capability("groups.manage"))])
+async def update_group_permissions(
+    group_id: int,
+    request: UpdatePermissionsRequest,
+    current_user: dict = Depends(get_current_user_or_api_key)
+):
+    """
+    Update permissions for a group.
+
+    Accepts a list of permission updates. Each update specifies a capability
+    and whether it should be allowed or denied.
+
+    Requires groups.manage capability.
+    """
+    with db.get_session() as session:
+        # Check group exists
+        group = session.query(CustomGroup).filter(CustomGroup.id == group_id).first()
+        if not group:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Group with ID {group_id} not found"
+            )
+
+        # Validate all capabilities exist
+        for perm_update in request.permissions:
+            if perm_update.capability not in ALL_CAPABILITIES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unknown capability: {perm_update.capability}"
+                )
+
+        now = datetime.now(timezone.utc)
+        updated_count = 0
+        changes = []
+
+        for perm_update in request.permissions:
+            # Check if permission exists
+            existing = session.query(GroupPermission).filter_by(
+                group_id=group_id,
+                capability=perm_update.capability
+            ).first()
+
+            if existing:
+                if existing.allowed != perm_update.allowed:
+                    changes.append({
+                        'capability': perm_update.capability,
+                        'old': existing.allowed,
+                        'new': perm_update.allowed
+                    })
+                    existing.allowed = perm_update.allowed
+                    existing.updated_at = now
+                    updated_count += 1
+            else:
+                # Create new permission
+                new_perm = GroupPermission(
+                    group_id=group_id,
+                    capability=perm_update.capability,
+                    allowed=perm_update.allowed,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(new_perm)
+                changes.append({
+                    'capability': perm_update.capability,
+                    'old': None,
+                    'new': perm_update.allowed
+                })
+                updated_count += 1
+
+        if changes:
+            # Audit log
+            log_audit(
+                session,
+                user_id=current_user.get('user_id'),
+                username=current_user.get('username', 'unknown'),
+                action='update_permissions',
+                entity_type='custom_group',
+                entity_id=str(group_id),
+                entity_name=group.name,
+                details={'changes': changes},
+            )
+
+        session.commit()
+
+        # Invalidate cache after permission changes
+        invalidate_group_permissions_cache()
+
+        return UpdatePermissionsResponse(
+            success=True,
+            updated_count=updated_count,
+            message=f"Updated {updated_count} permission(s) for group '{group.name}'"
+        )

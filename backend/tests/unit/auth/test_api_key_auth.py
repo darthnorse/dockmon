@@ -21,7 +21,6 @@ from auth.api_key_auth import (
     _check_ip_allowed,
     _get_user_scopes,
     get_current_user_or_api_key,
-    require_scope
 )
 from database import ApiKey, User, CustomGroup
 
@@ -280,115 +279,6 @@ class TestGetUserScopes:
         """Unknown role defaults to read scope"""
         assert _get_user_scopes("unknown") == ["read"]
         assert _get_user_scopes("") == ["read"]
-
-
-class TestRequireScope:
-    """Test scope-based authorization decorator (v2.4.0: Group-based)
-
-    require_scope() now uses group-based permissions internally:
-    - "admin" scope maps to users.manage capability
-    - "write" scope maps to containers.operate capability
-    - "read" scope maps to containers.view capability
-    """
-
-    @pytest.mark.asyncio
-    async def test_require_scope_admin_session_user(self):
-        """Session user with admin capability can access admin operations"""
-        current_user = {
-            "user_id": 1,
-            "username": "admin",
-            "auth_type": "session",
-        }
-
-        with patch('auth.api_key_auth.has_capability_for_user', return_value=True):
-            check_admin = require_scope("admin")
-            result = await check_admin(current_user)
-            assert result == current_user
-
-    @pytest.mark.asyncio
-    async def test_require_scope_write_session_user(self):
-        """Session user with write capability can access write operations"""
-        current_user = {
-            "user_id": 2,
-            "username": "user",
-            "auth_type": "session",
-        }
-
-        with patch('auth.api_key_auth.has_capability_for_user', return_value=True):
-            check_write = require_scope("write")
-            result = await check_write(current_user)
-            assert result == current_user
-
-    @pytest.mark.asyncio
-    async def test_require_scope_api_key_with_capability(self):
-        """API key with capability can access operations"""
-        current_user = {
-            "api_key_id": 1,
-            "api_key_name": "Test Key",
-            "group_id": 1,
-            "group_name": "Operators",
-            "auth_type": "api_key",
-        }
-
-        with patch('auth.api_key_auth.has_capability_for_group', return_value=True):
-            check_write = require_scope("write")
-            result = await check_write(current_user)
-            assert result == current_user
-
-    @pytest.mark.asyncio
-    async def test_require_scope_user_denied_admin(self):
-        """User without admin capability denied admin access"""
-        current_user = {
-            "user_id": 2,
-            "username": "user",
-            "auth_type": "session",
-        }
-
-        with patch('auth.api_key_auth.has_capability_for_user', return_value=False):
-            check_admin = require_scope("admin")
-
-            with pytest.raises(HTTPException) as exc_info:
-                await check_admin(current_user)
-
-            assert exc_info.value.status_code == 403
-            assert "admin" in exc_info.value.detail
-
-    @pytest.mark.asyncio
-    async def test_require_scope_readonly_denied_write(self):
-        """Readonly user denied write access"""
-        current_user = {
-            "user_id": 3,
-            "username": "readonly",
-            "auth_type": "session",
-        }
-
-        with patch('auth.api_key_auth.has_capability_for_user', return_value=False):
-            check_write = require_scope("write")
-
-            with pytest.raises(HTTPException) as exc_info:
-                await check_write(current_user)
-
-            assert exc_info.value.status_code == 403
-            assert "write" in exc_info.value.detail
-
-    @pytest.mark.asyncio
-    async def test_require_scope_api_key_denied_without_capability(self):
-        """API key without capability denied access"""
-        current_user = {
-            "api_key_id": 1,
-            "api_key_name": "ReadOnly Key",
-            "group_id": 3,
-            "group_name": "Read Only",
-            "auth_type": "api_key",
-        }
-
-        with patch('auth.api_key_auth.has_capability_for_group', return_value=False):
-            check_write = require_scope("write")
-
-            with pytest.raises(HTTPException) as exc_info:
-                await check_write(current_user)
-
-            assert exc_info.value.status_code == 403
 
 
 class TestGetCurrentUserOrApiKey:

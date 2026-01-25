@@ -9,14 +9,13 @@ Usage:
     from auth.capabilities import ADMIN_CAPABILITIES, OPERATOR_CAPABILITIES, READONLY_CAPABILITIES
 """
 
-from typing import Dict, Set
 
 
 # =============================================================================
 # Capability Definitions with Metadata
 # =============================================================================
 
-CAPABILITY_INFO: Dict[str, Dict[str, str]] = {
+CAPABILITY_INFO: dict[str, dict[str, str]] = {
     # Hosts
     'hosts.manage': {
         'category': 'Hosts',
@@ -186,6 +185,13 @@ CAPABILITY_INFO: Dict[str, Dict[str, str]] = {
         'description': 'Create, edit, and delete users',
     },
 
+    # OIDC (new for v2.4.0)
+    'oidc.manage': {
+        'category': 'OIDC',
+        'name': 'Manage OIDC',
+        'description': 'Configure OIDC provider settings and group mappings',
+    },
+
     # Groups (new for v2.3.0 refactor)
     'groups.manage': {
         'category': 'Groups',
@@ -238,15 +244,15 @@ CAPABILITY_INFO: Dict[str, Dict[str, str]] = {
 # =============================================================================
 
 # All capabilities (for reference and validation)
-ALL_CAPABILITIES: Set[str] = set(CAPABILITY_INFO.keys())
+ALL_CAPABILITIES: set[str] = set(CAPABILITY_INFO.keys())
 
 
 # Administrators group - all capabilities
-ADMIN_CAPABILITIES: Set[str] = ALL_CAPABILITIES.copy()
+ADMIN_CAPABILITIES: set[str] = ALL_CAPABILITIES.copy()
 
 
 # Operators group - can use features but limited config access
-OPERATOR_CAPABILITIES: Set[str] = {
+OPERATOR_CAPABILITIES: set[str] = {
     'hosts.view',
     'stacks.deploy',
     'stacks.view',
@@ -271,7 +277,7 @@ OPERATOR_CAPABILITIES: Set[str] = {
 
 
 # Read Only group - view-only access
-READONLY_CAPABILITIES: Set[str] = {
+READONLY_CAPABILITIES: set[str] = {
     'hosts.view',
     'stacks.view',
     'containers.view',
@@ -293,7 +299,7 @@ READONLY_CAPABILITIES: Set[str] = {
 
 def get_categories() -> list[str]:
     """Get unique list of capability categories in display order."""
-    seen: Set[str] = set()
+    seen: set[str] = set()
     categories: list[str] = []
     for info in CAPABILITY_INFO.values():
         category = info['category']
@@ -303,9 +309,9 @@ def get_categories() -> list[str]:
     return categories
 
 
-def get_capabilities_by_category() -> Dict[str, list[str]]:
+def get_capabilities_by_category() -> dict[str, list[str]]:
     """Get capabilities grouped by category."""
-    result: Dict[str, list[str]] = {}
+    result: dict[str, list[str]] = {}
     for capability, info in CAPABILITY_INFO.items():
         category = info['category']
         if category not in result:

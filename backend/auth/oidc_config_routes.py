@@ -12,14 +12,14 @@ SECURITY:
 
 import logging
 from datetime import datetime, timezone
-from typing import List, Optional
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request, Depends
 from pydantic import BaseModel, Field, field_validator
 
 from auth.shared import db, safe_audit_log
-from auth.api_key_auth import require_scope, get_current_user_or_api_key
+from auth.api_key_auth import require_capability, get_current_user_or_api_key
+from auth.utils import format_timestamp_required, get_group_or_400
 from database import OIDCConfig, OIDCGroupMapping, CustomGroup
 from audit import get_client_info, AuditAction
 from audit.audit_logger import AuditEntityType
@@ -38,31 +38,31 @@ router = APIRouter(prefix="/api/v2/oidc", tags=["oidc-config"])
 class OIDCConfigResponse(BaseModel):
     """OIDC configuration response (admin only)"""
     enabled: bool
-    provider_url: Optional[str] = None
-    client_id: Optional[str] = None
+    provider_url: str | None = None
+    client_id: str | None = None
     # Never return client_secret - only indicate if set
     client_secret_configured: bool
     scopes: str
     claim_for_groups: str
-    default_group_id: Optional[int] = None
-    default_group_name: Optional[str] = None  # For display
+    default_group_id: int | None = None
+    default_group_name: str | None = None  # For display
     created_at: str
     updated_at: str
 
 
 class OIDCConfigUpdateRequest(BaseModel):
     """Update OIDC configuration"""
-    enabled: Optional[bool] = None
-    provider_url: Optional[str] = Field(None, max_length=500)
-    client_id: Optional[str] = Field(None, max_length=200)
-    client_secret: Optional[str] = Field(None, max_length=500)
-    scopes: Optional[str] = Field(None, max_length=500)
-    claim_for_groups: Optional[str] = Field(None, max_length=100)
-    default_group_id: Optional[int] = None
+    enabled: bool | None = None
+    provider_url: str | None = Field(None, max_length=500)
+    client_id: str | None = Field(None, max_length=200)
+    client_secret: str | None = Field(None, max_length=500)
+    scopes: str | None = Field(None, max_length=500)
+    claim_for_groups: str | None = Field(None, max_length=100)
+    default_group_id: int | None = None
 
     @field_validator('provider_url')
     @classmethod
-    def validate_provider_url(cls, v: Optional[str]) -> Optional[str]:
+    def validate_provider_url(cls, v: str | None) -> str | None:
         if v is not None and v:
             if not v.startswith('https://'):
                 raise ValueError("Provider URL must use HTTPS")
@@ -90,22 +90,22 @@ class OIDCGroupMappingCreateRequest(BaseModel):
 
 class OIDCGroupMappingUpdateRequest(BaseModel):
     """Update a group mapping"""
-    oidc_value: Optional[str] = Field(None, min_length=1, max_length=200)
-    group_id: Optional[int] = None
-    priority: Optional[int] = Field(None, ge=0, le=1000)
+    oidc_value: str | None = Field(None, min_length=1, max_length=200)
+    group_id: int | None = None
+    priority: int | None = Field(None, ge=0, le=1000)
 
 
 class OIDCDiscoveryResponse(BaseModel):
     """OIDC provider discovery response"""
     success: bool
     message: str
-    issuer: Optional[str] = None
-    authorization_endpoint: Optional[str] = None
-    token_endpoint: Optional[str] = None
-    userinfo_endpoint: Optional[str] = None
-    end_session_endpoint: Optional[str] = None
-    scopes_supported: Optional[List[str]] = None
-    claims_supported: Optional[List[str]] = None
+    issuer: str | None = None
+    authorization_endpoint: str | None = None
+    token_endpoint: str | None = None
+    userinfo_endpoint: str | None = None
+    end_session_endpoint: str | None = None
+    scopes_supported: list[str] | None = None
+    claims_supported: list[str] | None = None
 
 
 class OIDCStatusResponse(BaseModel):
@@ -115,19 +115,7 @@ class OIDCStatusResponse(BaseModel):
 
 
 # ==================== Helper Functions ====================
-
-def _format_timestamp(dt: Optional[datetime]) -> Optional[str]:
-    """Format datetime to ISO string with 'Z' suffix for frontend."""
-    if dt is None:
-        return None
-    return dt.isoformat() + 'Z'
-
-
-def _format_timestamp_required(dt: Optional[datetime]) -> str:
-    """Format datetime to ISO string, using now() if None."""
-    if dt is None:
-        return datetime.now(timezone.utc).isoformat() + 'Z'
-    return dt.isoformat() + 'Z'
+# format_timestamp_required imported from auth.utils
 
 
 def _config_to_response(config: OIDCConfig, session) -> OIDCConfigResponse:
@@ -148,14 +136,14 @@ def _config_to_response(config: OIDCConfig, session) -> OIDCConfigResponse:
         claim_for_groups=config.claim_for_groups,
         default_group_id=config.default_group_id,
         default_group_name=default_group_name,
-        created_at=_format_timestamp_required(config.created_at),
-        updated_at=_format_timestamp_required(config.updated_at),
+        created_at=format_timestamp_required(config.created_at),
+        updated_at=format_timestamp_required(config.updated_at),
     )
 
 
 def _mapping_to_response(
     mapping: OIDCGroupMapping,
-    group_names: Optional[dict[int, str]] = None,
+    group_names: dict[int, str] | None = None,
     session=None
 ) -> OIDCGroupMappingResponse:
     """Convert OIDCGroupMapping model to response.
@@ -180,7 +168,7 @@ def _mapping_to_response(
         group_id=mapping.group_id,
         group_name=group_name,
         priority=mapping.priority,
-        created_at=_format_timestamp_required(mapping.created_at),
+        created_at=format_timestamp_required(mapping.created_at),
     )
 
 
@@ -227,7 +215,7 @@ async def get_oidc_status() -> OIDCStatusResponse:
 
 # ==================== Admin Endpoints ====================
 
-@router.get("/config", response_model=OIDCConfigResponse, dependencies=[Depends(require_scope("admin"))])
+@router.get("/config", response_model=OIDCConfigResponse, dependencies=[Depends(require_capability("oidc.manage"))])
 async def get_oidc_config(
     current_user: dict = Depends(get_current_user_or_api_key)
 ) -> OIDCConfigResponse:
@@ -239,7 +227,7 @@ async def get_oidc_config(
         return _config_to_response(config, session)
 
 
-@router.put("/config", response_model=OIDCConfigResponse, dependencies=[Depends(require_scope("admin"))])
+@router.put("/config", response_model=OIDCConfigResponse, dependencies=[Depends(require_capability("oidc.manage"))])
 async def update_oidc_config(
     config_data: OIDCConfigUpdateRequest,
     request: Request,
@@ -283,11 +271,9 @@ async def update_oidc_config(
             config.claim_for_groups = config_data.claim_for_groups if config_data.claim_for_groups else 'groups'
 
         if config_data.default_group_id is not None:
-            # Validate group exists (allow setting to None to clear)
+            # Validate group exists (allow setting to None via 0 to clear)
             if config_data.default_group_id != 0:  # 0 means clear the default
-                group = session.query(CustomGroup).filter(CustomGroup.id == config_data.default_group_id).first()
-                if not group:
-                    raise HTTPException(status_code=400, detail=f"Group {config_data.default_group_id} not found")
+                get_group_or_400(session, config_data.default_group_id)
                 changes['default_group_id'] = {'old': config.default_group_id, 'new': config_data.default_group_id}
                 config.default_group_id = config_data.default_group_id
             else:
@@ -318,7 +304,7 @@ async def update_oidc_config(
         return _config_to_response(config, session)
 
 
-@router.post("/discover", response_model=OIDCDiscoveryResponse, dependencies=[Depends(require_scope("admin"))])
+@router.post("/discover", response_model=OIDCDiscoveryResponse, dependencies=[Depends(require_capability("oidc.manage"))])
 async def discover_oidc_provider(
     current_user: dict = Depends(get_current_user_or_api_key)
 ) -> OIDCDiscoveryResponse:
@@ -379,10 +365,10 @@ async def discover_oidc_provider(
 
 # ==================== Group Mapping Endpoints ====================
 
-@router.get("/group-mappings", response_model=List[OIDCGroupMappingResponse], dependencies=[Depends(require_scope("admin"))])
+@router.get("/group-mappings", response_model=list[OIDCGroupMappingResponse], dependencies=[Depends(require_capability("oidc.manage"))])
 async def list_group_mappings(
     current_user: dict = Depends(get_current_user_or_api_key)
-) -> List[OIDCGroupMappingResponse]:
+) -> list[OIDCGroupMappingResponse]:
     """
     List all OIDC group mappings (admin only).
 
@@ -405,7 +391,7 @@ async def list_group_mappings(
         return [_mapping_to_response(m, group_names=group_names) for m in mappings]
 
 
-@router.post("/group-mappings", response_model=OIDCGroupMappingResponse, dependencies=[Depends(require_scope("admin"))])
+@router.post("/group-mappings", response_model=OIDCGroupMappingResponse, dependencies=[Depends(require_capability("oidc.manage"))])
 async def create_group_mapping(
     mapping_data: OIDCGroupMappingCreateRequest,
     request: Request,
@@ -432,13 +418,8 @@ async def create_group_mapping(
                 detail=f"Mapping for '{mapping_data.oidc_value}' already exists. Each OIDC group can only map to one DockMon group."
             )
 
-        # Validate group exists
-        group = session.query(CustomGroup).filter(CustomGroup.id == mapping_data.group_id).first()
-        if not group:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Group {mapping_data.group_id} not found"
-            )
+        # Validate group exists (uses shared helper)
+        group = get_group_or_400(session, mapping_data.group_id)
 
         mapping = OIDCGroupMapping(
             oidc_value=mapping_data.oidc_value,
@@ -476,7 +457,7 @@ async def create_group_mapping(
         return _mapping_to_response(mapping, session=session)
 
 
-@router.put("/group-mappings/{mapping_id}", response_model=OIDCGroupMappingResponse, dependencies=[Depends(require_scope("admin"))])
+@router.put("/group-mappings/{mapping_id}", response_model=OIDCGroupMappingResponse, dependencies=[Depends(require_capability("oidc.manage"))])
 async def update_group_mapping(
     mapping_id: int,
     mapping_data: OIDCGroupMappingUpdateRequest,
@@ -509,13 +490,8 @@ async def update_group_mapping(
             mapping.oidc_value = mapping_data.oidc_value
 
         if mapping_data.group_id is not None:
-            # Validate group exists
-            group = session.query(CustomGroup).filter(CustomGroup.id == mapping_data.group_id).first()
-            if not group:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Group {mapping_data.group_id} not found"
-                )
+            # Validate group exists (uses shared helper)
+            get_group_or_400(session, mapping_data.group_id)
             changes['group_id'] = {'old': mapping.group_id, 'new': mapping_data.group_id}
             mapping.group_id = mapping_data.group_id
 
@@ -545,7 +521,7 @@ async def update_group_mapping(
         return _mapping_to_response(mapping, session=session)
 
 
-@router.delete("/group-mappings/{mapping_id}", dependencies=[Depends(require_scope("admin"))])
+@router.delete("/group-mappings/{mapping_id}", dependencies=[Depends(require_capability("oidc.manage"))])
 async def delete_group_mapping(
     mapping_id: int,
     request: Request,

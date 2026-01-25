@@ -399,84 +399,6 @@ def _get_auth_identifier(current_user: dict, include_group: bool = False) -> str
     return f"User '{current_user.get('username', 'unknown')}'"
 
 
-def require_scope(required_scope: str):
-    """
-    Dependency factory for scope-based authorization.
-
-    DEPRECATED: Use require_capability() instead for fine-grained control.
-    This function is maintained for backwards compatibility.
-
-    v2.4.0: Now uses group-based permissions internally.
-    - "admin" scope maps to users.manage capability
-    - "write" scope maps to containers.operate capability
-    - "read" scope maps to containers.view capability
-
-    Usage:
-        Read operations (GET):
-            No extra dependency needed - authentication is sufficient
-
-        Write operations (POST/PUT/PATCH/DELETE):
-            @app.post("/api/...", dependencies=[Depends(require_scope("write"))])
-
-        Admin operations:
-            @app.post("/api/...", dependencies=[Depends(require_scope("admin"))])
-
-    Args:
-        required_scope: Required scope ("read", "write", or "admin")
-
-    Returns:
-        Dependency function that checks scopes
-
-    Raises:
-        HTTPException: 403 if user lacks required scope
-    """
-    # Map scopes to representative capabilities for backwards compatibility
-    SCOPE_TO_CAPABILITY = {
-        "admin": "users.manage",
-        "write": "containers.operate",
-        "read": "containers.view",
-    }
-
-    async def check_scope(current_user: dict = Depends(get_current_user_or_api_key)):
-        # Get the capability to check based on scope
-        capability = SCOPE_TO_CAPABILITY.get(required_scope)
-        if not capability:
-            logger.warning(f"Unknown scope requested: {required_scope}")
-            raise HTTPException(
-                status_code=403,
-                detail=f"Unknown scope: '{required_scope}'"
-            )
-
-        # Check capability using helper
-        if _check_auth_capability(current_user, capability):
-            return current_user
-
-        # Get identifier for logging
-        identifier = _get_auth_identifier(current_user)
-        logger.warning(f"{identifier} denied scope {required_scope} (capability: {capability})")
-
-        # Audit log scope violation
-        security_audit.log_event(
-            event_type="scope_violation",
-            severity="warning",
-            user_id=current_user.get("user_id") or current_user.get("created_by_user_id"),
-            details={
-                "identifier": identifier,
-                "required_scope": required_scope,
-                "mapped_capability": capability,
-                "auth_type": current_user.get("auth_type"),
-                "group_id": current_user.get("group_id"),
-            }
-        )
-
-        raise HTTPException(
-            status_code=403,
-            detail=f"Insufficient permissions - requires '{required_scope}' scope"
-        )
-
-    return check_scope
-
-
 # ==================== Capability-Based Authorization (v2.3.0) ====================
 #
 # Granular capability system for multi-user support.
@@ -556,6 +478,7 @@ CAPABILITY_SCOPES = {
     'settings.manage': 'admin',
     'users.manage': 'admin',
     'groups.manage': 'admin',
+    'oidc.manage': 'admin',
     'audit.view': 'admin',
     'containers.shell': 'admin',
     'containers.update': 'admin',

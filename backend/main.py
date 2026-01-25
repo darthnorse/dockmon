@@ -72,7 +72,7 @@ from models.request_models import (
 )
 from security.audit import security_audit
 from security.rate_limiting import rate_limiter, rate_limit_auth, rate_limit_hosts, rate_limit_containers, rate_limit_notifications, rate_limit_default
-from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_scope, require_capability, has_capability, _get_user_scopes, CAPABILITY_SCOPES, Capabilities  # v2 hybrid auth (cookies + API keys)
+from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability, has_capability, _get_user_scopes, CAPABILITY_SCOPES, Capabilities  # v2 hybrid auth (cookies + API keys)
 from websocket.connection import ConnectionManager, DateTimeEncoder
 from websocket.rate_limiter import ws_rate_limiter
 from docker_monitor.monitor import DockerMonitor
@@ -704,7 +704,7 @@ async def get_hosts(current_user: dict = Depends(get_current_user)):
 
         return enriched_hosts
 
-@app.post("/api/hosts", tags=["hosts"], dependencies=[Depends(require_scope("admin"))])
+@app.post("/api/hosts", tags=["hosts"], dependencies=[Depends(require_capability("hosts.manage"))])
 async def add_host(config: DockerHostConfig, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_hosts, request: Request = None):
     """Add a new Docker host"""
     try:
@@ -739,7 +739,7 @@ async def add_host(config: DockerHostConfig, current_user: dict = Depends(get_cu
             )
         raise
 
-@app.post("/api/hosts/test-connection", tags=["hosts"], dependencies=[Depends(require_scope("admin"))])
+@app.post("/api/hosts/test-connection", tags=["hosts"], dependencies=[Depends(require_capability("hosts.manage"))])
 async def test_host_connection(config: DockerHostConfig, current_user: dict = Depends(get_current_user)):
     """Test connection to a Docker host without adding it
 
@@ -858,13 +858,13 @@ async def test_host_connection(config: DockerHostConfig, current_user: dict = De
         logger.error(f"Connection test failed for {config.url}: {str(e)}")
         raise HTTPException(status_code=400, detail=f"Connection failed: {str(e)}")
 
-@app.put("/api/hosts/{host_id}", tags=["hosts"], dependencies=[Depends(require_scope("admin"))])
+@app.put("/api/hosts/{host_id}", tags=["hosts"], dependencies=[Depends(require_capability("hosts.manage"))])
 async def update_host(host_id: str, config: DockerHostConfig, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_hosts):
     """Update an existing Docker host"""
     host = monitor.update_host(host_id, config)
     return host
 
-@app.delete("/api/hosts/{host_id}", tags=["hosts"], dependencies=[Depends(require_scope("admin"))])
+@app.delete("/api/hosts/{host_id}", tags=["hosts"], dependencies=[Depends(require_capability("hosts.manage"))])
 async def remove_host(host_id: str, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_hosts):
     """Remove a Docker host"""
     try:
@@ -886,7 +886,7 @@ async def remove_host(host_id: str, current_user: dict = Depends(get_current_use
         logger.error(f"Error removing host {host_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to remove host: {str(e)}")
 
-@app.patch("/api/hosts/{host_id}/tags", tags=["tags"], dependencies=[Depends(require_scope("admin"))])
+@app.patch("/api/hosts/{host_id}/tags", tags=["tags"], dependencies=[Depends(require_capability("tags.manage"))])
 async def update_host_tags(
     host_id: str,
     request: HostTagUpdate,
@@ -1069,7 +1069,7 @@ async def get_host_agent_info(host_id: str, current_user: dict = Depends(get_cur
         }
 
 
-@app.post("/api/hosts/{host_id}/agent/update", tags=["hosts"], dependencies=[Depends(require_scope("write"))])
+@app.post("/api/hosts/{host_id}/agent/update", tags=["hosts"], dependencies=[Depends(require_capability("agents.manage"))])
 async def trigger_agent_update(host_id: str, current_user: dict = Depends(get_current_user)):
     """
     Trigger agent self-update.
@@ -1264,7 +1264,7 @@ async def list_host_images(host_id: str, current_user: dict = Depends(get_curren
         raise HTTPException(status_code=500, detail="Failed to list images")
 
 
-@app.post("/api/hosts/{host_id}/images/prune", tags=["hosts"], dependencies=[Depends(require_scope("write"))])
+@app.post("/api/hosts/{host_id}/images/prune", tags=["hosts"], dependencies=[Depends(require_capability("containers.operate"))])
 async def prune_host_images(host_id: str, current_user: dict = Depends(get_current_user)):
     """
     Prune all unused images on a specific host.
@@ -1398,7 +1398,7 @@ async def list_host_networks(host_id: str, current_user: dict = Depends(get_curr
         raise HTTPException(status_code=500, detail="Failed to list networks")
 
 
-@app.delete("/api/hosts/{host_id}/networks/{network_id}", tags=["hosts"], dependencies=[Depends(require_scope("write"))])
+@app.delete("/api/hosts/{host_id}/networks/{network_id}", tags=["hosts"], dependencies=[Depends(require_capability("containers.operate"))])
 async def delete_host_network(
     host_id: str,
     network_id: str,
@@ -1486,7 +1486,7 @@ async def delete_host_network(
         raise HTTPException(status_code=500, detail="Failed to delete network")
 
 
-@app.post("/api/hosts/{host_id}/networks/prune", tags=["hosts"], dependencies=[Depends(require_scope("write"))])
+@app.post("/api/hosts/{host_id}/networks/prune", tags=["hosts"], dependencies=[Depends(require_capability("containers.operate"))])
 async def prune_host_networks(host_id: str, current_user: dict = Depends(get_current_user)):
     """
     Prune all unused networks on a specific host.
@@ -1609,7 +1609,7 @@ async def list_host_volumes(host_id: str, current_user: dict = Depends(get_curre
         raise HTTPException(status_code=500, detail="Failed to list volumes")
 
 
-@app.delete("/api/hosts/{host_id}/volumes/{volume_name:path}", tags=["hosts"], dependencies=[Depends(require_scope("write"))])
+@app.delete("/api/hosts/{host_id}/volumes/{volume_name:path}", tags=["hosts"], dependencies=[Depends(require_capability("containers.operate"))])
 async def delete_host_volume(
     host_id: str,
     volume_name: str,
@@ -1683,7 +1683,7 @@ async def delete_host_volume(
         raise HTTPException(status_code=500, detail="Failed to delete volume")
 
 
-@app.post("/api/hosts/{host_id}/volumes/prune", tags=["hosts"], dependencies=[Depends(require_scope("write"))])
+@app.post("/api/hosts/{host_id}/volumes/prune", tags=["hosts"], dependencies=[Depends(require_capability("containers.operate"))])
 async def prune_host_volumes(host_id: str, current_user: dict = Depends(get_current_user)):
     """
     Prune all unused volumes on a specific host.
@@ -1740,25 +1740,25 @@ async def get_containers(host_id: Optional[str] = None, current_user: dict = Dep
     can_view_env = has_capability(user_scopes, Capabilities.CONTAINERS_VIEW_ENV)
     return filter_container_env(containers, can_view_env)
 
-@app.post("/api/hosts/{host_id}/containers/{container_id}/restart", tags=["containers"], dependencies=[Depends(require_scope("write"))])
+@app.post("/api/hosts/{host_id}/containers/{container_id}/restart", tags=["containers"], dependencies=[Depends(require_capability("containers.operate"))])
 async def restart_container(host_id: str, container_id: str, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
     """Restart a container"""
     success = await monitor.restart_container(host_id, container_id)
     return {"status": "success" if success else "failed"}
 
-@app.post("/api/hosts/{host_id}/containers/{container_id}/stop", tags=["containers"], dependencies=[Depends(require_scope("write"))])
+@app.post("/api/hosts/{host_id}/containers/{container_id}/stop", tags=["containers"], dependencies=[Depends(require_capability("containers.operate"))])
 async def stop_container(host_id: str, container_id: str, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
     """Stop a container"""
     success = await monitor.stop_container(host_id, container_id)
     return {"status": "success" if success else "failed"}
 
-@app.post("/api/hosts/{host_id}/containers/{container_id}/start", tags=["containers"], dependencies=[Depends(require_scope("write"))])
+@app.post("/api/hosts/{host_id}/containers/{container_id}/start", tags=["containers"], dependencies=[Depends(require_capability("containers.operate"))])
 async def start_container(host_id: str, container_id: str, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
     """Start a container"""
     success = await monitor.start_container(host_id, container_id)
     return {"status": "success" if success else "failed"}
 
-@app.delete("/api/hosts/{host_id}/containers/{container_id}", tags=["containers"], dependencies=[Depends(require_scope("write"))])
+@app.delete("/api/hosts/{host_id}/containers/{container_id}", tags=["containers"], dependencies=[Depends(require_capability("containers.operate"))])
 async def delete_container(
     host_id: str,
     container_id: str,
@@ -1854,7 +1854,7 @@ async def inspect_container(
 # This is more reliable for remote Docker hosts
 
 
-@app.post("/api/hosts/{host_id}/containers/{container_id}/auto-restart", tags=["containers"], dependencies=[Depends(require_scope("write"))])
+@app.post("/api/hosts/{host_id}/containers/{container_id}/auto-restart", tags=["containers"], dependencies=[Depends(require_capability("containers.operate"))])
 async def toggle_auto_restart(host_id: str, container_id: str, request: AutoRestartRequest, current_user: dict = Depends(get_current_user)):
     """Toggle auto-restart for a container"""
     # Normalize to short ID (12 chars) for consistency with monitor's internal tracking
@@ -1862,7 +1862,7 @@ async def toggle_auto_restart(host_id: str, container_id: str, request: AutoRest
     monitor.toggle_auto_restart(host_id, short_id, request.container_name, request.enabled)
     return {"host_id": host_id, "container_id": container_id, "auto_restart": request.enabled}
 
-@app.post("/api/hosts/{host_id}/containers/{container_id}/desired-state", tags=["containers"], dependencies=[Depends(require_scope("write"))])
+@app.post("/api/hosts/{host_id}/containers/{container_id}/desired-state", tags=["containers"], dependencies=[Depends(require_capability("containers.operate"))])
 async def set_desired_state(host_id: str, container_id: str, request: DesiredStateRequest, current_user: dict = Depends(get_current_user)):
     """Set desired state for a container"""
     # Normalize to short ID (12 chars) for consistency
@@ -1870,7 +1870,7 @@ async def set_desired_state(host_id: str, container_id: str, request: DesiredSta
     monitor.set_container_desired_state(host_id, short_id, request.container_name, request.desired_state, request.web_ui_url)
     return {"host_id": host_id, "container_id": container_id, "desired_state": request.desired_state, "web_ui_url": request.web_ui_url}
 
-@app.patch("/api/hosts/{host_id}/containers/{container_id}/tags", tags=["tags"], dependencies=[Depends(require_scope("write"))])
+@app.patch("/api/hosts/{host_id}/containers/{container_id}/tags", tags=["tags"], dependencies=[Depends(require_capability("tags.manage"))])
 async def update_container_tags(
     host_id: str,
     container_id: str,
@@ -2028,7 +2028,7 @@ async def get_container_update_status(
         }
 
 
-@app.get("/api/updates/image-cache", tags=["container-updates"], dependencies=[Depends(require_scope("read"))])
+@app.get("/api/updates/image-cache", tags=["container-updates"], dependencies=[Depends(require_capability("containers.view"))])
 async def get_image_digest_cache(current_user: dict = Depends(get_current_user)):
     """
     Get the current state of the image digest cache.
@@ -2076,7 +2076,7 @@ async def get_image_digest_cache(current_user: dict = Depends(get_current_user))
         }
 
 
-@app.delete("/api/updates/image-cache/{cache_key:path}", tags=["container-updates"], dependencies=[Depends(require_scope("write"))])
+@app.delete("/api/updates/image-cache/{cache_key:path}", tags=["container-updates"], dependencies=[Depends(require_capability("containers.update"))])
 async def delete_image_cache_entry(cache_key: str, current_user: dict = Depends(get_current_user)):
     """
     Delete a specific image cache entry.
@@ -2096,7 +2096,7 @@ async def delete_image_cache_entry(cache_key: str, current_user: dict = Depends(
         return {"message": f"Deleted cache entry: {cache_key}"}
 
 
-@app.post("/api/hosts/{host_id}/containers/{container_id}/check-update", tags=["container-updates"], dependencies=[Depends(require_scope("write"))])
+@app.post("/api/hosts/{host_id}/containers/{container_id}/check-update", tags=["container-updates"], dependencies=[Depends(require_capability("containers.update"))])
 async def check_container_update(
     host_id: str,
     container_id: str,
@@ -2283,7 +2283,7 @@ async def execute_container_update(
         }
 
 
-@app.put("/api/hosts/{host_id}/containers/{container_id}/auto-update-config", tags=["container-updates"], dependencies=[Depends(require_scope("write"))])
+@app.put("/api/hosts/{host_id}/containers/{container_id}/auto-update-config", tags=["container-updates"], dependencies=[Depends(require_capability("containers.update"))])
 async def update_auto_update_config(
     host_id: str,
     container_id: str,
@@ -2412,7 +2412,7 @@ async def update_auto_update_config(
         }
 
 
-@app.post("/api/updates/check-all", tags=["container-updates"], dependencies=[Depends(require_scope("write"))])
+@app.post("/api/updates/check-all", tags=["container-updates"], dependencies=[Depends(require_capability("containers.update"))])
 async def check_all_updates(current_user: dict = Depends(get_current_user)):
     """
     Manually trigger an update check for all containers.
@@ -2425,7 +2425,7 @@ async def check_all_updates(current_user: dict = Depends(get_current_user)):
     return stats
 
 
-@app.post("/api/images/prune", tags=["images"], dependencies=[Depends(require_scope("write"))])
+@app.post("/api/images/prune", tags=["images"], dependencies=[Depends(require_capability("containers.operate"))])
 async def prune_images(current_user: dict = Depends(get_current_user)):
     """
     Manually trigger Docker image pruning.
@@ -2624,7 +2624,7 @@ async def get_update_policies(current_user: dict = Depends(get_current_user)):
         }
 
 
-@app.put("/api/update-policies/{category}/toggle", tags=["container-updates"], dependencies=[Depends(require_scope("admin"))])
+@app.put("/api/update-policies/{category}/toggle", tags=["container-updates"], dependencies=[Depends(require_capability("policies.manage"))])
 async def toggle_update_policy_category(
     category: str,
     enabled: bool = Query(..., description="Enable or disable all patterns in category"),
@@ -2655,7 +2655,7 @@ async def toggle_update_policy_category(
         }
 
 
-@app.post("/api/update-policies/custom", tags=["container-updates"], dependencies=[Depends(require_scope("admin"))])
+@app.post("/api/update-policies/custom", tags=["container-updates"], dependencies=[Depends(require_capability("policies.manage"))])
 async def create_custom_update_policy(
     pattern: str = Query(..., description="Pattern to match against image/container name"),
     action: str = Query("warn", description="Action: 'warn' (show confirmation) or 'ignore' (skip update checks)"),
@@ -2708,7 +2708,7 @@ async def create_custom_update_policy(
         }
 
 
-@app.put("/api/update-policies/{policy_id}/action", tags=["container-updates"], dependencies=[Depends(require_scope("admin"))])
+@app.put("/api/update-policies/{policy_id}/action", tags=["container-updates"], dependencies=[Depends(require_capability("policies.manage"))])
 async def update_policy_action(
     policy_id: int,
     action: str = Query(..., description="Action: 'warn' (show confirmation) or 'ignore' (skip update checks)"),
@@ -2751,7 +2751,7 @@ async def update_policy_action(
         }
 
 
-@app.delete("/api/update-policies/custom/{policy_id}", tags=["container-updates"], dependencies=[Depends(require_scope("admin"))])
+@app.delete("/api/update-policies/custom/{policy_id}", tags=["container-updates"], dependencies=[Depends(require_capability("policies.manage"))])
 async def delete_custom_update_policy(
     policy_id: int,
     current_user: dict = Depends(get_current_user)
@@ -3219,8 +3219,8 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
         "editor_theme": getattr(settings, 'editor_theme', 'aura'),
     }
 
-@app.post("/api/settings", tags=["system"], dependencies=[Depends(require_scope("admin"))])
-@app.put("/api/settings", tags=["system"], dependencies=[Depends(require_scope("admin"))])
+@app.post("/api/settings", tags=["system"], dependencies=[Depends(require_capability("settings.manage"))])
+@app.put("/api/settings", tags=["system"], dependencies=[Depends(require_capability("settings.manage"))])
 async def update_settings(
     settings: GlobalSettingsUpdate,
     current_user: dict = Depends(get_current_user),
@@ -3737,7 +3737,7 @@ async def get_alert_rules_v2(current_user: dict = Depends(get_current_user)):
     }
 
 
-@app.post("/api/alerts/rules", tags=["alerts"], dependencies=[Depends(require_scope("admin"))])
+@app.post("/api/alerts/rules", tags=["alerts"], dependencies=[Depends(require_capability("alerts.manage"))])
 async def create_alert_rule_v2(
     rule: AlertRuleV2Create,
     current_user: dict = Depends(get_current_user),
@@ -3815,7 +3815,7 @@ async def create_alert_rule_v2(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.put("/api/alerts/rules/{rule_id}", tags=["alerts"], dependencies=[Depends(require_scope("admin"))])
+@app.put("/api/alerts/rules/{rule_id}", tags=["alerts"], dependencies=[Depends(require_capability("alerts.manage"))])
 async def update_alert_rule_v2(
     rule_id: str,
     updates: AlertRuleV2Update,
@@ -3853,7 +3853,7 @@ async def update_alert_rule_v2(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.delete("/api/alerts/rules/{rule_id}", tags=["alerts"], dependencies=[Depends(require_scope("admin"))])
+@app.delete("/api/alerts/rules/{rule_id}", tags=["alerts"], dependencies=[Depends(require_capability("alerts.manage"))])
 async def delete_alert_rule_v2(
     rule_id: str,
     current_user: dict = Depends(get_current_user),
@@ -4052,7 +4052,7 @@ async def get_notification_channels(current_user: dict = Depends(get_current_use
         "updated_at": ch.updated_at.isoformat() + 'Z'
     } for ch in channels]
 
-@app.post("/api/notifications/channels", tags=["notifications"], dependencies=[Depends(require_scope("admin"))])
+@app.post("/api/notifications/channels", tags=["notifications"], dependencies=[Depends(require_capability("notifications.manage"))])
 async def create_notification_channel(channel: NotificationChannelCreate, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
     """Create a new notification channel"""
     try:
@@ -4083,7 +4083,7 @@ async def create_notification_channel(channel: NotificationChannelCreate, curren
         logger.error(f"Failed to create notification channel: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
-@app.put("/api/notifications/channels/{channel_id}", tags=["notifications"], dependencies=[Depends(require_scope("admin"))])
+@app.put("/api/notifications/channels/{channel_id}", tags=["notifications"], dependencies=[Depends(require_capability("notifications.manage"))])
 async def update_notification_channel(channel_id: int, updates: NotificationChannelUpdate, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
     """Update a notification channel"""
     try:
@@ -4110,7 +4110,7 @@ async def update_notification_channel(channel_id: int, updates: NotificationChan
 
 # V1 alert system endpoint removed - V2 alerts don't get orphaned when channels are deleted
 
-@app.delete("/api/notifications/channels/{channel_id}", tags=["notifications"], dependencies=[Depends(require_scope("admin"))])
+@app.delete("/api/notifications/channels/{channel_id}", tags=["notifications"], dependencies=[Depends(require_capability("notifications.manage"))])
 async def delete_notification_channel(channel_id: int, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
     """Delete a notification channel"""
     try:
@@ -5067,7 +5067,7 @@ async def get_host_events(host_id: str, limit: int = 50, current_user: dict = De
         logger.error(f"Failed to get events for host {host_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.delete("/api/events/cleanup", tags=["events"], dependencies=[Depends(require_scope("admin"))])
+@app.delete("/api/events/cleanup", tags=["events"], dependencies=[Depends(require_capability("settings.manage"))])
 async def cleanup_old_events(days: int = 30, current_user: dict = Depends(get_current_user)):
     """Clean up old events - DANGEROUS: Can delete audit logs"""
     try:
@@ -5450,7 +5450,7 @@ async def get_agent_status(
         raise HTTPException(status_code=500, detail=f"Failed to get agent status: {str(e)}")
 
 
-@app.post("/api/agent/{agent_id}/migrate-from/{source_host_id}", dependencies=[Depends(require_scope("admin"))])
+@app.post("/api/agent/{agent_id}/migrate-from/{source_host_id}", dependencies=[Depends(require_capability("agents.manage"))])
 async def migrate_agent_from_host(
     agent_id: str,
     source_host_id: str,

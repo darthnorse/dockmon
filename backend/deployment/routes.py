@@ -23,7 +23,7 @@ from database import Deployment, DatabaseManager, DeploymentMetadata, DockerHost
 from deployment import DeploymentExecutor
 from deployment import stack_storage
 from deployment.compose_generator import generate_compose_from_deployment, generate_compose_from_containers
-from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_scope
+from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability
 from utils.keys import parse_composite_key
 from agent.command_executor import get_agent_command_executor, RetryPolicy
 from agent.manager import AgentManager
@@ -275,7 +275,7 @@ def get_docker_monitor():
 
 # ==================== Deployment Endpoints ====================
 
-@router.post("/deploy", response_model=DeployStackResponse, dependencies=[Depends(require_scope("write"))])
+@router.post("/deploy", response_model=DeployStackResponse, dependencies=[Depends(require_capability("stacks.deploy"))])
 async def deploy_stack(
     request: DeployStackRequest,
     background_tasks: BackgroundTasks,
@@ -513,7 +513,7 @@ async def deploy_stack(
     )
 
 
-@router.post("", response_model=DeploymentResponse, status_code=201, dependencies=[Depends(require_scope("write"))])
+@router.post("", response_model=DeploymentResponse, status_code=201, dependencies=[Depends(require_capability("stacks.deploy"))])
 async def create_deployment(
     request: DeploymentCreate,
     background_tasks: BackgroundTasks,
@@ -563,7 +563,7 @@ async def create_deployment(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/{deployment_id}/execute", response_model=DeploymentResponse, dependencies=[Depends(require_scope("write"))])
+@router.post("/{deployment_id}/execute", response_model=DeploymentResponse, dependencies=[Depends(require_capability("stacks.deploy"))])
 async def execute_deployment(
     deployment_id: str,
     background_tasks: BackgroundTasks,
@@ -868,7 +868,7 @@ async def get_deployment(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.put("/{deployment_id}", response_model=DeploymentResponse, dependencies=[Depends(require_scope("write"))])
+@router.put("/{deployment_id}", response_model=DeploymentResponse, dependencies=[Depends(require_capability("stacks.deploy"))])
 async def update_deployment(
     deployment_id: str,
     request: DeploymentUpdate,
@@ -940,7 +940,7 @@ async def update_deployment(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/{deployment_id}", dependencies=[Depends(require_scope("write"))])
+@router.delete("/{deployment_id}", dependencies=[Depends(require_capability("stacks.deploy"))])
 async def delete_deployment(
     deployment_id: str,
     current_user=Depends(get_current_user),
@@ -1026,7 +1026,7 @@ async def preview_compose_from_containers(
         )
 
 
-@router.post("/import", response_model=ImportDeploymentResponse, status_code=201, dependencies=[Depends(require_scope("write"))])
+@router.post("/import", response_model=ImportDeploymentResponse, status_code=201, dependencies=[Depends(require_capability("stacks.deploy"))])
 async def import_deployment(
     request: ImportDeploymentRequest,
     current_user=Depends(get_current_user),

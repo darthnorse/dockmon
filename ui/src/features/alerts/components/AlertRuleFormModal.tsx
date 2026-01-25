@@ -48,7 +48,7 @@ interface AlertRuleFormData {
   container_selector_all: boolean
   container_selector_included: string[]
   container_run_mode: 'all' | 'should_run' | 'on_demand'
-  notify_channels: string[]
+  notify_channels: number[]  // Channel IDs (not type strings) - supports multiple channels per type
   custom_template: string | null
   auto_resolve_updates: boolean
   auto_resolve_on_clear: boolean
@@ -173,17 +173,23 @@ const OPERATORS = [
   { value: '<', label: '< (Less than)' },
 ]
 
-const NOTIFICATION_CHANNELS = [
-  { value: 'pushover', label: 'Pushover', icon: Smartphone },
-  { value: 'telegram', label: 'Telegram', icon: Send },
-  { value: 'discord', label: 'Discord', icon: MessageSquare },
-  { value: 'slack', label: 'Slack', icon: Hash },
-  { value: 'teams', label: 'Microsoft Teams (beta)', icon: Users },
-  { value: 'gotify', label: 'Gotify', icon: Bell },
-  { value: 'ntfy', label: 'ntfy', icon: BellRing },
-  { value: 'smtp', label: 'Email (SMTP)', icon: Mail },
-  { value: 'webhook', label: 'Webhook', icon: Globe },
-]
+// Channel type metadata for icons and labels
+const CHANNEL_TYPE_INFO: Record<string, { label: string; icon: typeof Bell }> = {
+  pushover: { label: 'Pushover', icon: Smartphone },
+  telegram: { label: 'Telegram', icon: Send },
+  discord: { label: 'Discord', icon: MessageSquare },
+  slack: { label: 'Slack', icon: Hash },
+  teams: { label: 'Microsoft Teams', icon: Users },
+  gotify: { label: 'Gotify', icon: Bell },
+  ntfy: { label: 'ntfy', icon: BellRing },
+  smtp: { label: 'Email', icon: Mail },
+  webhook: { label: 'Webhook', icon: Globe },
+}
+
+/** Get icon component for a channel type */
+function getChannelIcon(type: string) {
+  return CHANNEL_TYPE_INFO[type]?.icon || Bell
+}
 
 export function AlertRuleFormModal({ rule, onClose }: Props) {
   const createRule = useCreateAlertRule()
@@ -281,7 +287,11 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       container_selector_all: containerSelector.all,
       container_selector_included: containerSelector.included,
       container_run_mode: containerSelector.should_run === null ? 'all' : containerSelector.should_run ? 'should_run' : 'on_demand',
-      notify_channels: rule?.notify_channels_json ? JSON.parse(rule.notify_channels_json) : [],
+      // Parse channel IDs - filter to numbers only for backward compatibility
+      // (old rules may have type strings like "discord" which we drop - user must re-select)
+      notify_channels: rule?.notify_channels_json
+        ? (JSON.parse(rule.notify_channels_json) as (number | string)[]).filter((v): v is number => typeof v === 'number')
+        : [],
       custom_template: rule?.custom_template !== undefined ? rule.custom_template : null,
       // Auto-resolve defaults to false - user can enable for any alert type
       auto_resolve_updates: rule?.auto_resolve ?? false,
@@ -399,6 +409,18 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
+  // Clean up non-existent channel IDs when editing a rule (#166)
+  // This handles orphaned references from channels deleted before the backend fix
+  useEffect(() => {
+    if (isEditing && configuredChannels.length > 0 && formData.notify_channels.length > 0) {
+      const validChannelIds = new Set(configuredChannels.map(c => c.id))
+      const cleanedChannels = formData.notify_channels.filter(id => validChannelIds.has(id))
+      if (cleanedChannels.length !== formData.notify_channels.length) {
+        setFormData(prev => ({ ...prev, notify_channels: cleanedChannels }))
+      }
+    }
+  }, [isEditing, configuredChannels]) // Only run when channels load, not on every formData change
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError(null)
@@ -467,35 +489,27 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
           requestData.host_selector_json = JSON.stringify({ include: formData.host_selector_ids })
         }
       } else if (formData.scope === 'container') {
+        // Helper to apply should_run filter based on run mode
+        const applyRunModeFilter = (selector: ContainerSelector): ContainerSelector => {
+          if (formData.container_run_mode === 'should_run') {
+            selector.should_run = true
+          } else if (formData.container_run_mode === 'on_demand') {
+            selector.should_run = false
+          }
+          return selector
+        }
+
         // Container scope selectors
         if (selectedTags.length > 0) {
           // Tag-based: containers with ANY of these tags
-          const containerSelector: ContainerSelector = { tags: selectedTags }
-          // Add should_run filter if specified
-          if (formData.container_run_mode === 'should_run') {
-            containerSelector.should_run = true
-          } else if (formData.container_run_mode === 'on_demand') {
-            containerSelector.should_run = false
-          }
-          requestData.container_selector_json = JSON.stringify(containerSelector)
+          const selector = applyRunModeFilter({ tags: selectedTags })
+          requestData.container_selector_json = JSON.stringify(selector)
         } else if (formData.container_selector_all) {
-          const containerSelector: ContainerSelector = { include_all: true }
-          // Add should_run filter if specified
-          if (formData.container_run_mode === 'should_run') {
-            containerSelector.should_run = true
-          } else if (formData.container_run_mode === 'on_demand') {
-            containerSelector.should_run = false
-          }
-          requestData.container_selector_json = JSON.stringify(containerSelector)
+          const selector = applyRunModeFilter({ include_all: true })
+          requestData.container_selector_json = JSON.stringify(selector)
         } else if (formData.container_selector_included.length > 0) {
-          const containerSelector: ContainerSelector = { include: formData.container_selector_included }
-          // Add should_run filter if specified
-          if (formData.container_run_mode === 'should_run') {
-            containerSelector.should_run = true
-          } else if (formData.container_run_mode === 'on_demand') {
-            containerSelector.should_run = false
-          }
-          requestData.container_selector_json = JSON.stringify(containerSelector)
+          const selector = applyRunModeFilter({ include: formData.container_selector_included })
+          requestData.container_selector_json = JSON.stringify(selector)
         }
       }
 
@@ -676,11 +690,12 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       parts.push(`Suppress during updates: ${formData.suppress_during_updates ? 'Yes' : 'No'}`)
     }
 
-    // Notifications
-    if (formData.notify_channels.length > 0) {
-      const channelNames = formData.notify_channels
-        .map((ch: string) => NOTIFICATION_CHANNELS.find(c => c.value === ch)?.label || ch)
-        .join(', ')
+    // Notifications - filter out channels that no longer exist
+    const existingChannels = formData.notify_channels
+      .map((id) => configuredChannels.find(c => c.id === id))
+      .filter((c): c is NonNullable<typeof c> => c !== undefined)
+    if (existingChannels.length > 0) {
+      const channelNames = existingChannels.map(c => c.name).join(', ')
       parts.push(`Notifications: ${channelNames}`)
     } else {
       parts.push('Notifications: None')
@@ -688,6 +703,10 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
 
     return parts
   }
+
+  // Compute button text - avoid nested ternary in JSX
+  const isSaving = createRule.isPending || updateRule.isPending
+  const submitButtonText = isSaving ? 'Saving...' : (isEditing ? 'Update Rule' : 'Create Rule')
 
   return (
     <>
@@ -1483,34 +1502,30 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
               </div>
             ) : (
               <div className="grid grid-cols-2 gap-2">
-                {NOTIFICATION_CHANNELS.filter(channel =>
-                  configuredChannels.some(cc => cc.type === channel.value)
-                ).map((channel) => {
-                  const IconComponent = channel.icon
-                  const configuredChannel = configuredChannels.find(cc => cc.type === channel.value)
-                  const isDisabled = configuredChannel && !configuredChannel.enabled
-                  // Check if there are multiple channels of this type
-                  const channelsOfType = configuredChannels.filter(cc => cc.type === channel.value)
-                  const showChannelName = channelsOfType.length > 1 && configuredChannel
+                {/* Render each configured channel individually (supports multiple per type) */}
+                {configuredChannels.map((channel) => {
+                  const IconComponent = getChannelIcon(channel.type)
+                  const typeInfo = CHANNEL_TYPE_INFO[channel.type]
+                  const isDisabled = !channel.enabled
 
                   return (
                     <label
-                      key={channel.value}
+                      key={channel.id}
                       className={`flex items-center gap-2 text-sm p-2 rounded ${
                         isDisabled
                           ? 'text-gray-500 cursor-not-allowed'
                           : 'text-gray-300 hover:bg-gray-800/50 cursor-pointer'
                       }`}
-                      title={isDisabled ? `${channel.label} is disabled` : undefined}
+                      title={isDisabled ? `${channel.name} is disabled` : undefined}
                     >
                       <input
                         type="checkbox"
-                        checked={formData.notify_channels.includes(channel.value)}
+                        checked={formData.notify_channels.includes(channel.id)}
                         onChange={(e) => {
                           if (e.target.checked) {
-                            handleChange('notify_channels', [...formData.notify_channels, channel.value])
+                            handleChange('notify_channels', [...formData.notify_channels, channel.id])
                           } else {
-                            handleChange('notify_channels', formData.notify_channels.filter((ch: string) => ch !== channel.value))
+                            handleChange('notify_channels', formData.notify_channels.filter((id) => id !== channel.id))
                           }
                         }}
                         disabled={isDisabled}
@@ -1518,10 +1533,8 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                       />
                       <IconComponent className="h-4 w-4" />
                       <span className="flex items-center gap-1">
-                        {channel.label}
-                        {showChannelName && (
-                          <span className="text-xs text-gray-500">({configuredChannel.name})</span>
-                        )}
+                        <span>{channel.name}</span>
+                        <span className="text-xs text-gray-500">({typeInfo?.label || channel.type})</span>
                       </span>
                     </label>
                   )
@@ -1555,18 +1568,18 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
               </label>
 
               {formData.custom_template !== null && formData.custom_template !== undefined && (
-                <textarea
-                  value={formData.custom_template}
-                  onChange={(e) => handleChange('custom_template', e.target.value)}
-                  rows={6}
-                  placeholder="Enter custom template or leave empty to use category default..."
-                  className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white font-mono text-sm placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
-              )}
-              {formData.custom_template !== null && formData.custom_template !== undefined && (
-                <p className="mt-2 text-xs text-gray-400">
-                  Leave empty to use the category-specific template from Settings. Use variables like {'{CONTAINER_NAME}'}.
-                </p>
+                <>
+                  <textarea
+                    value={formData.custom_template}
+                    onChange={(e) => handleChange('custom_template', e.target.value)}
+                    rows={6}
+                    placeholder="Enter custom template or leave empty to use category default..."
+                    className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white font-mono text-sm placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                  <p className="mt-2 text-xs text-gray-400">
+                    Leave empty to use the category-specific template from Settings. Use variables like {'{CONTAINER_NAME}'}.
+                  </p>
+                </>
               )}
             </div>
           </div>
@@ -1617,14 +1630,10 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                 form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
               }
             }}
-            disabled={createRule.isPending || updateRule.isPending}
+            disabled={isSaving}
             className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
           >
-            {createRule.isPending || updateRule.isPending
-              ? 'Saving...'
-              : isEditing
-                ? 'Update Rule'
-                : 'Create Rule'}
+            {submitButtonText}
           </button>
         </div>
         </div>

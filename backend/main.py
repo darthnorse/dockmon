@@ -589,7 +589,7 @@ async def verify_session_auth(request: Request):
 
 
 
-@app.get("/api/hosts", tags=["hosts"])
+@app.get("/api/hosts", tags=["hosts"], dependencies=[Depends(require_capability("hosts.view"))])
 async def get_hosts(current_user: dict = Depends(get_current_user)):
     """Get all configured Docker hosts
 
@@ -942,7 +942,7 @@ async def update_host_tags(
 
     return {"tags": updated_tags}
 
-@app.get("/api/hosts/{host_id}/metrics", tags=["hosts"])
+@app.get("/api/hosts/{host_id}/metrics", tags=["hosts"], dependencies=[Depends(require_capability("hosts.view"))])
 async def get_host_metrics(host_id: str, current_user: dict = Depends(get_current_user)):
     """Get aggregated metrics for a Docker host (CPU, RAM, Network)"""
     try:
@@ -1028,7 +1028,7 @@ async def get_host_metrics(host_id: str, current_user: dict = Depends(get_curren
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/hosts/{host_id}/agent", tags=["hosts"])
+@app.get("/api/hosts/{host_id}/agent", tags=["hosts"], dependencies=[Depends(require_capability("agents.view"))])
 async def get_host_agent_info(host_id: str, current_user: dict = Depends(get_current_user)):
     """
     Get agent info for a host including update availability.
@@ -1201,7 +1201,7 @@ async def trigger_agent_update(host_id: str, current_user: dict = Depends(get_cu
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/hosts/{host_id}/images", tags=["hosts"])
+@app.get("/api/hosts/{host_id}/images", tags=["hosts"], dependencies=[Depends(require_capability("containers.view"))])
 async def list_host_images(host_id: str, current_user: dict = Depends(get_current_user)):
     """
     List all Docker images on a host with usage information.
@@ -1331,7 +1331,7 @@ async def prune_host_images(host_id: str, current_user: dict = Depends(get_curre
 BUILTIN_NETWORKS = frozenset(['bridge', 'host', 'none'])
 
 
-@app.get("/api/hosts/{host_id}/networks", tags=["hosts"])
+@app.get("/api/hosts/{host_id}/networks", tags=["hosts"], dependencies=[Depends(require_capability("containers.view"))])
 async def list_host_networks(host_id: str, current_user: dict = Depends(get_current_user)):
     """
     List all Docker networks on a host with connected container info.
@@ -1546,7 +1546,7 @@ async def prune_host_networks(host_id: str, current_user: dict = Depends(get_cur
         raise HTTPException(status_code=500, detail="Failed to prune networks")
 
 
-@app.get("/api/hosts/{host_id}/volumes", tags=["hosts"])
+@app.get("/api/hosts/{host_id}/volumes", tags=["hosts"], dependencies=[Depends(require_capability("containers.view"))])
 async def list_host_volumes(host_id: str, current_user: dict = Depends(get_current_user)):
     """
     List all Docker volumes on a host with usage information.
@@ -1745,7 +1745,7 @@ async def prune_host_volumes(host_id: str, current_user: dict = Depends(get_curr
         raise HTTPException(status_code=500, detail="Failed to prune volumes")
 
 
-@app.get("/api/containers", tags=["containers"])
+@app.get("/api/containers", tags=["containers"], dependencies=[Depends(require_capability("containers.view"))])
 async def get_containers(host_id: Optional[str] = None, current_user: dict = Depends(get_current_user)):
     """Get all containers.
 
@@ -1810,7 +1810,7 @@ async def delete_container(
     # Delegate to monitor (which delegates to operations module)
     return await monitor.delete_container(host_id, container_id, container_name, removeVolumes)
 
-@app.get("/api/hosts/{host_id}/containers/{container_id}/logs", tags=["containers"])
+@app.get("/api/hosts/{host_id}/containers/{container_id}/logs", tags=["containers"], dependencies=[Depends(require_capability("containers.logs"))])
 async def get_container_logs(
     host_id: str,
     container_id: str,
@@ -1833,7 +1833,7 @@ async def get_container_logs(
     # Delegate to operations (handles agent routing)
     return await monitor.operations.get_container_logs(host_id, container_id, tail, since)
 
-@app.get("/api/hosts/{host_id}/containers/{container_id}/inspect", tags=["containers"])
+@app.get("/api/hosts/{host_id}/containers/{container_id}/inspect", tags=["containers"], dependencies=[Depends(require_capability("containers.view"))])
 async def inspect_container(
     host_id: str,
     container_id: str,
@@ -1929,7 +1929,7 @@ async def update_container_tags(
 
 # ==================== Container Updates ====================
 
-@app.get("/api/hosts/{host_id}/containers/{container_id}/update-status", tags=["container-updates"])
+@app.get("/api/hosts/{host_id}/containers/{container_id}/update-status", tags=["container-updates"], dependencies=[Depends(require_capability("containers.view"))])
 async def get_container_update_status(
     host_id: str,
     container_id: str,
@@ -2464,7 +2464,7 @@ async def prune_images(current_user: dict = Depends(get_current_user)):
     return {"removed": removed_count}
 
 
-@app.get("/api/updates/summary", tags=["container-updates"])
+@app.get("/api/updates/summary", tags=["container-updates"], dependencies=[Depends(require_capability("containers.view"))])
 async def get_updates_summary(current_user: dict = Depends(get_current_user)):
     """
     Get summary of available container updates.
@@ -2516,7 +2516,7 @@ async def get_updates_summary(current_user: dict = Depends(get_current_user)):
         }
 
 
-@app.get("/api/auto-update-configs", tags=["container-updates"])
+@app.get("/api/auto-update-configs", tags=["container-updates"], dependencies=[Depends(require_capability("containers.view"))])
 async def get_all_auto_update_configs(current_user: dict = Depends(get_current_user)):
     """
     Get all auto-update configurations for all containers (batch endpoint).
@@ -2545,7 +2545,7 @@ async def get_all_auto_update_configs(current_user: dict = Depends(get_current_u
         }
 
 
-@app.get("/api/deployment-metadata", tags=["container-updates"])
+@app.get("/api/deployment-metadata", tags=["container-updates"], dependencies=[Depends(require_capability("containers.view"))])
 async def get_all_deployment_metadata(current_user: dict = Depends(get_current_user)):
     """
     Get deployment metadata for all containers (batch endpoint).
@@ -2583,7 +2583,7 @@ async def get_all_deployment_metadata(current_user: dict = Depends(get_current_u
         }
 
 
-@app.get("/api/health-check-configs", tags=["container-health"])
+@app.get("/api/health-check-configs", tags=["container-health"], dependencies=[Depends(require_capability("healthchecks.view"))])
 async def get_all_health_check_configs(current_user: dict = Depends(get_current_user)):
     """
     Get all HTTP health check configurations for all containers (batch endpoint).
@@ -2616,7 +2616,7 @@ async def get_all_health_check_configs(current_user: dict = Depends(get_current_
 
 # ==================== Update Policy Endpoints ====================
 
-@app.get("/api/update-policies", tags=["container-updates"])
+@app.get("/api/update-policies", tags=["container-updates"], dependencies=[Depends(require_capability("policies.view"))])
 async def get_update_policies(current_user: dict = Depends(get_current_user)):
     """
     Get all update validation policies.
@@ -2809,7 +2809,7 @@ async def delete_custom_update_policy(
         }
 
 
-@app.put("/api/hosts/{host_id}/containers/{container_id}/update-policy", tags=["container-updates"])
+@app.put("/api/hosts/{host_id}/containers/{container_id}/update-policy", tags=["container-updates"], dependencies=[Depends(require_capability("policies.manage"))])
 async def set_container_update_policy(
     host_id: str,
     container_id: str,
@@ -2871,7 +2871,7 @@ async def set_container_update_policy(
         }
 
 
-@app.get("/api/tags/suggest", tags=["tags"])
+@app.get("/api/tags/suggest", tags=["tags"], dependencies=[Depends(require_capability("tags.view"))])
 async def suggest_tags(
     q: str = "",
     limit: int = 20,
@@ -2949,7 +2949,7 @@ async def suggest_tags(
 
     return {"tags": result_tags}
 
-@app.get("/api/hosts/tags/suggest", tags=["tags"])
+@app.get("/api/hosts/tags/suggest", tags=["tags"], dependencies=[Depends(require_capability("tags.view"))])
 async def suggest_host_tags(
     q: str = "",
     limit: int = 20,
@@ -3098,7 +3098,7 @@ async def validate_batch_update(request: dict, current_user: dict = Depends(get_
     }
 
 
-@app.get("/api/batch/{job_id}", tags=["batch-operations"])
+@app.get("/api/batch/{job_id}", tags=["batch-operations"], dependencies=[Depends(require_capability("batch.view"))])
 async def get_batch_job(job_id: str, current_user: dict = Depends(get_current_user)):
     """Get status and results of a batch job"""
     if not batch_manager:
@@ -3111,12 +3111,12 @@ async def get_batch_job(job_id: str, current_user: dict = Depends(get_current_us
 
     return job_status
 
-@app.get("/api/rate-limit/stats", tags=["system"])
+@app.get("/api/rate-limit/stats", tags=["system"], dependencies=[Depends(require_capability("settings.manage"))])
 async def get_rate_limit_stats(current_user: dict = Depends(get_current_user)):
     """Get rate limiter statistics - admin only"""
     return rate_limiter.get_stats()
 
-@app.get("/api/security/audit", tags=["system"])
+@app.get("/api/security/audit", tags=["system"], dependencies=[Depends(require_capability("audit.view"))])
 async def get_security_audit_stats(current_user: dict = Depends(get_current_user), request: Request = None):
     """Get security audit statistics - admin only"""
     if request:
@@ -3720,7 +3720,7 @@ async def test_http_health_check(
 # IMPORTANT: These routes must be defined BEFORE the alerts_router is registered
 # Otherwise FastAPI will match /api/alerts/ before /api/alerts/rules
 
-@app.get("/api/alerts/rules", tags=["alerts"])
+@app.get("/api/alerts/rules", tags=["alerts"], dependencies=[Depends(require_capability("alerts.view"))])
 async def get_alert_rules_v2(current_user: dict = Depends(get_current_user)):
     """Get all alert rules (v2)"""
     from models.settings_models import AlertRuleV2Create
@@ -3917,7 +3917,7 @@ async def delete_alert_rule_v2(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.patch("/api/alerts/rules/{rule_id}/toggle", tags=["alerts"])
+@app.patch("/api/alerts/rules/{rule_id}/toggle", tags=["alerts"], dependencies=[Depends(require_capability("alerts.manage"))])
 async def toggle_alert_rule_v2(
     rule_id: str,
     current_user: dict = Depends(get_current_user)
@@ -3954,7 +3954,7 @@ app.include_router(alerts_router)  # Alert instances (not rules - rules are defi
 
 # ==================== Blackout Window Routes ====================
 
-@app.get("/api/blackout/status", tags=["alerts"])
+@app.get("/api/blackout/status", tags=["alerts"], dependencies=[Depends(require_capability("alerts.view"))])
 async def get_blackout_status(current_user: dict = Depends(get_current_user)):
     """Get current blackout window status"""
     try:
@@ -3970,7 +3970,7 @@ async def get_blackout_status(current_user: dict = Depends(get_current_user)):
 # ==================== Notification Channel Routes ====================
 
 
-@app.get("/api/notifications/template-variables", tags=["notifications"])
+@app.get("/api/notifications/template-variables", tags=["notifications"], dependencies=[Depends(require_capability("notifications.view"))])
 async def get_template_variables(current_user: dict = Depends(get_current_user)):
     """Get available template variables for notification messages and default templates"""
     # Get built-in default templates from notification service
@@ -4059,7 +4059,7 @@ Rule: {RULE_NAME}""",
         }
     }
 
-@app.get("/api/notifications/channels", tags=["notifications"])
+@app.get("/api/notifications/channels", tags=["notifications"], dependencies=[Depends(require_capability("notifications.view"))])
 async def get_notification_channels(current_user: dict = Depends(get_current_user)):
     """Get all notification channels.
 
@@ -4161,7 +4161,7 @@ async def delete_notification_channel(channel_id: int, current_user: dict = Depe
         logger.error(f"Failed to delete notification channel: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
-@app.post("/api/notifications/channels/{channel_id}/test", tags=["notifications"])
+@app.post("/api/notifications/channels/{channel_id}/test", tags=["notifications"], dependencies=[Depends(require_capability("notifications.manage"))])
 async def test_notification_channel(channel_id: int, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
     """Test a notification channel"""
     try:
@@ -4176,7 +4176,7 @@ async def test_notification_channel(channel_id: int, current_user: dict = Depend
         logger.error(f"Failed to test notification channel: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/notifications/channels/{channel_id}/dependent-alerts", tags=["notifications"])
+@app.get("/api/notifications/channels/{channel_id}/dependent-alerts", tags=["notifications"], dependencies=[Depends(require_capability("notifications.view"))])
 async def get_dependent_alerts(channel_id: int, current_user: dict = Depends(get_current_user)):
     """
     Get alert rules that depend on this notification channel.
@@ -4223,7 +4223,7 @@ async def get_dependent_alerts(channel_id: int, current_user: dict = Depends(get
 
 # ==================== Event Log Routes ====================
 
-@app.get("/api/events", tags=["events"])
+@app.get("/api/events", tags=["events"], dependencies=[Depends(require_capability("events.view"))])
 async def get_events(
     category: Optional[List[str]] = Query(None),
     event_type: Optional[str] = None,
@@ -4341,7 +4341,7 @@ async def get_events(
         logger.error(f"Failed to get events: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/events/{event_id}", tags=["events"])
+@app.get("/api/events/{event_id}", tags=["events"], dependencies=[Depends(require_capability("events.view"))])
 async def get_event_by_id(
     event_id: int,
     current_user: dict = Depends(get_current_user),
@@ -4378,7 +4378,7 @@ async def get_event_by_id(
         logger.error(f"Failed to get event: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/events/correlation/{correlation_id}", tags=["events"])
+@app.get("/api/events/correlation/{correlation_id}", tags=["events"], dependencies=[Depends(require_capability("events.view"))])
 async def get_events_by_correlation(
     correlation_id: str,
     current_user: dict = Depends(get_current_user),
@@ -4705,7 +4705,7 @@ async def dismiss_agent_update(request: Request, current_user: dict = Depends(ge
 
 # ==================== Phase 4c: Dashboard Hosts with Stats ====================
 
-@app.get("/api/dashboard/hosts", tags=["dashboard"])
+@app.get("/api/dashboard/hosts", tags=["dashboard"], dependencies=[Depends(require_capability("hosts.view"))])
 async def get_dashboard_hosts(
     group_by: Optional[str] = None,
     search: Optional[str] = None,
@@ -4882,7 +4882,7 @@ _dashboard_summary_cache = {
     "timestamp": None
 }
 
-@app.get("/api/dashboard/summary", tags=["dashboard"])
+@app.get("/api/dashboard/summary", tags=["dashboard"], dependencies=[Depends(require_capability("containers.view"))])
 async def get_dashboard_summary(current_user: dict = Depends(get_current_user)):
     """
     Get aggregated dashboard summary for external integrations (Homepage, Grafana, etc.)
@@ -4983,7 +4983,7 @@ async def get_dashboard_summary(current_user: dict = Depends(get_current_user)):
 # Note: Main /api/events endpoints are defined earlier (lines 1185-1367) with full feature set
 # including rate limiting. Additional event endpoints below:
 
-@app.get("/api/events/statistics", tags=["events"])
+@app.get("/api/events/statistics", tags=["events"], dependencies=[Depends(require_capability("events.view"))])
 async def get_event_statistics(start_date: Optional[str] = None,
                              end_date: Optional[str] = None,
                              current_user: dict = Depends(get_current_user)):
@@ -5017,7 +5017,7 @@ async def get_event_statistics(start_date: Optional[str] = None,
         logger.error(f"Failed to get event statistics: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/hosts/{host_id}/events/container/{container_id}", tags=["events"])
+@app.get("/api/hosts/{host_id}/events/container/{container_id}", tags=["events"], dependencies=[Depends(require_capability("events.view"))])
 async def get_container_events(host_id: str, container_id: str, limit: int = 50, current_user: dict = Depends(get_current_user)):
     """Get events for a specific container"""
     try:
@@ -5059,7 +5059,7 @@ async def get_container_events(host_id: str, container_id: str, limit: int = 50,
         logger.error(f"Failed to get events for container {container_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/events/host/{host_id}", tags=["events"])
+@app.get("/api/events/host/{host_id}", tags=["events"], dependencies=[Depends(require_capability("events.view"))])
 async def get_host_events(host_id: str, limit: int = 50, current_user: dict = Depends(get_current_user)):
     """Get events for a specific host"""
     try:
@@ -5363,7 +5363,7 @@ async def delete_registry_credential(
 
 # ==================== Agent Management Routes (v2.2.0) ====================
 
-@app.post("/api/agent/generate-token")
+@app.post("/api/agent/generate-token", dependencies=[Depends(require_capability("agents.manage"))])
 async def generate_agent_registration_token(
     request: Request,
     body: GenerateTokenRequest = GenerateTokenRequest(),
@@ -5396,7 +5396,7 @@ async def generate_agent_registration_token(
         raise HTTPException(status_code=500, detail=f"Failed to generate token: {str(e)}")
 
 
-@app.get("/api/agent/list")
+@app.get("/api/agent/list", dependencies=[Depends(require_capability("agents.view"))])
 async def list_agents(
     request: Request,
     current_user: dict = Depends(get_current_user)
@@ -5438,7 +5438,7 @@ async def list_agents(
         raise HTTPException(status_code=500, detail=f"Failed to list agents: {str(e)}")
 
 
-@app.get("/api/agent/{agent_id}/status")
+@app.get("/api/agent/{agent_id}/status", dependencies=[Depends(require_capability("agents.view"))])
 async def get_agent_status(
     agent_id: str,
     request: Request,

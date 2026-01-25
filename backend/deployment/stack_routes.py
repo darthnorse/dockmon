@@ -17,7 +17,7 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 
-from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability, has_capability, Capabilities
+from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability, check_auth_capability, Capabilities
 from database import DatabaseManager, StackMetadata
 from deployment import stack_storage
 from deployment.container_utils import scan_deployed_stacks
@@ -119,7 +119,7 @@ class StackResponse(BaseModel):
 
 # ==================== Endpoints ====================
 
-@router.get("", response_model=List[StackListItem])
+@router.get("", response_model=List[StackListItem], dependencies=[Depends(require_capability("stacks.view"))])
 async def list_stacks(user=Depends(get_current_user)):
     """
     List all stacks with deployed_to information.
@@ -152,7 +152,7 @@ async def list_stacks(user=Depends(get_current_user)):
     return result
 
 
-@router.get("/{name}", response_model=StackResponse)
+@router.get("/{name}", response_model=StackResponse, dependencies=[Depends(require_capability("stacks.view"))])
 async def get_stack(name: str, user=Depends(get_current_user)):
     """
     Get a stack by name with its content.
@@ -179,9 +179,8 @@ async def get_stack(name: str, user=Depends(get_current_user)):
             for h in deployed_stacks[name].hosts
         ]
 
-    # Filter env_content for users without stacks.view_env capability (v2.3.0+)
-    user_scopes = user.get("scopes", [])
-    can_view_env = has_capability(user_scopes, Capabilities.STACKS_VIEW_ENV)
+    # Filter env_content for users without stacks.view_env capability
+    can_view_env = check_auth_capability(user, Capabilities.STACKS_VIEW_ENV)
 
     return StackResponse(
         name=name,
@@ -344,11 +343,10 @@ async def rename_stack(name: str, request: StackRename, user=Depends(get_current
     # Read content for response
     compose_yaml, env_content = await stack_storage.read_stack(request.new_name)
 
-    # Filter env_content for users without stacks.view_env capability (v2.3.0+)
-    user_scopes = user.get("scopes", [])
-    can_view_env = has_capability(user_scopes, Capabilities.STACKS_VIEW_ENV)
+    # Filter env_content for users without stacks.view_env capability
+    can_view_env = check_auth_capability(user, Capabilities.STACKS_VIEW_ENV)
 
-    logger.info(f"User {user['username']} renamed stack '{name}' to '{request.new_name}'")
+    logger.info(f"User {user.get('username', 'unknown')} renamed stack '{name}' to '{request.new_name}'")
 
     # New stack has no deployed containers (they still have old name in labels)
     return StackResponse(
@@ -414,11 +412,10 @@ async def copy_stack_endpoint(name: str, request: StackCopy, user=Depends(get_cu
     # Read content for response
     compose_yaml, env_content = await stack_storage.read_stack(request.dest_name)
 
-    # Filter env_content for users without stacks.view_env capability (v2.3.0+)
-    user_scopes = user.get("scopes", [])
-    can_view_env = has_capability(user_scopes, Capabilities.STACKS_VIEW_ENV)
+    # Filter env_content for users without stacks.view_env capability
+    can_view_env = check_auth_capability(user, Capabilities.STACKS_VIEW_ENV)
 
-    logger.info(f"User {user['username']} copied stack '{name}' to '{request.dest_name}'")
+    logger.info(f"User {user.get('username', 'unknown')} copied stack '{name}' to '{request.dest_name}'")
 
     return StackResponse(
         name=request.dest_name,

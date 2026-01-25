@@ -672,7 +672,7 @@ async def execute_deployment(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("", response_model=List[DeploymentResponse])
+@router.get("", response_model=List[DeploymentResponse], dependencies=[Depends(require_capability("stacks.view"))])
 async def list_deployments(
     host_id: Optional[str] = None,
     status: Optional[str] = None,
@@ -730,7 +730,7 @@ async def list_deployments(
 # NOTE: Static routes MUST be defined BEFORE path parameter routes (/{deployment_id})
 # to ensure FastAPI matches them first.
 
-@router.get("/known-stacks", response_model=List[KnownStack])
+@router.get("/known-stacks", response_model=List[KnownStack], dependencies=[Depends(require_capability("stacks.view"))])
 async def get_known_stacks(
     current_user=Depends(get_current_user),
 ):
@@ -765,7 +765,7 @@ def _get_container_project(container) -> str | None:
     return labels.get('com.docker.compose.project')
 
 
-@router.get("/running-projects", response_model=List[RunningProject])
+@router.get("/running-projects", response_model=List[RunningProject], dependencies=[Depends(require_capability("stacks.view"))])
 async def list_running_projects(
     current_user=Depends(get_current_user),
 ):
@@ -817,7 +817,7 @@ async def list_running_projects(
     return result
 
 
-@router.post("/generate-from-containers", response_model=ComposePreviewResponse)
+@router.post("/generate-from-containers", response_model=ComposePreviewResponse, dependencies=[Depends(require_capability("stacks.edit"))])
 async def generate_compose_from_running_containers(
     request: GenerateFromContainersRequest,
     current_user=Depends(get_current_user),
@@ -869,7 +869,7 @@ async def generate_compose_from_running_containers(
 # ==================== Deployment CRUD (Path Parameter Routes) ====================
 # NOTE: These routes with /{deployment_id} MUST come AFTER all static routes above.
 
-@router.get("/{deployment_id}", response_model=DeploymentResponse)
+@router.get("/{deployment_id}", response_model=DeploymentResponse, dependencies=[Depends(require_capability("stacks.view"))])
 async def get_deployment(
     deployment_id: str,
     current_user=Depends(get_current_user),
@@ -1016,7 +1016,7 @@ async def delete_deployment(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/{deployment_id}/compose-preview", response_model=ComposePreviewResponse)
+@router.get("/{deployment_id}/compose-preview", response_model=ComposePreviewResponse, dependencies=[Depends(require_capability("stacks.view"))])
 async def preview_compose_from_containers(
     deployment_id: str,
     current_user=Depends(get_current_user),
@@ -1253,7 +1253,7 @@ async def import_deployment(
 
 # ==================== Scan Compose Dirs Endpoint ====================
 
-@router.post("/scan-compose-dirs/{host_id}", response_model=ScanComposeDirsResponse)
+@router.post("/scan-compose-dirs/{host_id}", response_model=ScanComposeDirsResponse, dependencies=[Depends(require_capability("stacks.view"))])
 async def scan_compose_dirs(
     host_id: str,
     request: Optional[ScanComposeDirsRequest] = None,
@@ -1469,7 +1469,7 @@ async def _scan_agent_dirs(host_id: str, request: Optional[ScanComposeDirsReques
 
 # ==================== Read Compose File Endpoint ====================
 
-@router.post("/read-compose-file/{host_id}", response_model=ReadComposeFileResponse)
+@router.post("/read-compose-file/{host_id}", response_model=ReadComposeFileResponse, dependencies=[Depends(require_capability("stacks.view_env"))])
 async def read_compose_file(
     host_id: str,
     request: ReadComposeFileRequest,

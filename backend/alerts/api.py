@@ -112,7 +112,7 @@ def get_alert_engine(db: DatabaseManager = Depends(get_db)) -> AlertEngine:
 
 # ==================== Alert Endpoints ====================
 
-@router.get("/", response_model=AlertListResponse, dependencies=[Depends(get_rate_limit_dependency("alerts"))])
+@router.get("/", response_model=AlertListResponse, dependencies=[Depends(get_rate_limit_dependency("alerts")), Depends(require_capability("alerts.view"))])
 async def list_alerts(
     state: Optional[str] = Query(None, pattern="^(open|snoozed|resolved)$"),
     severity: Optional[str] = Query(None, pattern="^(info|warning|error|critical)$"),
@@ -174,7 +174,7 @@ async def list_alerts(
         )
 
 
-@router.get("/{alert_id}", response_model=AlertResponse, dependencies=[Depends(get_rate_limit_dependency("alerts"))])
+@router.get("/{alert_id}", response_model=AlertResponse, dependencies=[Depends(get_rate_limit_dependency("alerts")), Depends(require_capability("alerts.view"))])
 async def get_alert(
     alert_id: str,
     db: DatabaseManager = Depends(get_db)
@@ -303,7 +303,7 @@ async def add_annotation(
         return {"status": "success", "annotation_id": annotation.id}
 
 
-@router.get("/{alert_id}/annotations", dependencies=[Depends(get_rate_limit_dependency("alerts"))])
+@router.get("/{alert_id}/annotations", dependencies=[Depends(get_rate_limit_dependency("alerts")), Depends(require_capability("alerts.view"))])
 async def get_annotations(
     alert_id: str,
     db: DatabaseManager = Depends(get_db)
@@ -334,7 +334,7 @@ async def get_annotations(
 
 # ==================== Statistics ====================
 
-@router.get("/stats/", dependencies=[Depends(get_rate_limit_dependency("alerts"))])
+@router.get("/stats/", dependencies=[Depends(get_rate_limit_dependency("alerts")), Depends(require_capability("alerts.view"))])
 async def get_alert_stats(
     db: DatabaseManager = Depends(get_db)
 ):

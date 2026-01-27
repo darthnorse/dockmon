@@ -331,10 +331,13 @@ export function GroupPermissionsSettings() {
             <DialogDescription>
               Copy all permissions from another group to{' '}
               <strong>{groups.find((g) => g.id === copyTargetGroupId)?.name}</strong>.
-              This will overwrite all current permissions for this group.
             </DialogDescription>
           </DialogHeader>
-          <div className="py-4">
+          <div className="flex items-start gap-2 rounded-md border border-yellow-700 bg-yellow-900/20 p-3 text-sm text-yellow-300">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>This will overwrite all current permissions for this group.</span>
+          </div>
+          <div className="py-2">
             <Select value={copySourceGroupId} onValueChange={setCopySourceGroupId}>
               <SelectTrigger>
                 <SelectValue placeholder="Select source group">

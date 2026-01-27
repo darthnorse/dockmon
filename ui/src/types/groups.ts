@@ -26,17 +26,26 @@ export interface Group {
   updated_at: string
 }
 
-// Group permission (capability assigned to a group)
-export interface GroupPermission {
+// Group permission with metadata (from backend)
+export interface GroupPermissionResponse {
   capability: string
   allowed: boolean
+  category: string
+  display_name: string
+  description: string
 }
 
-// Group permissions response
+// Group permissions list response (GET /v2/groups/{id}/permissions)
 export interface GroupPermissionsResponse {
   group_id: number
   group_name: string
-  permissions: Record<string, boolean>  // capability -> allowed
+  permissions: GroupPermissionResponse[]
+}
+
+// Update group permissions response
+export interface UpdatePermissionsResponse {
+  updated: number
+  message: string
 }
 
 // Update group permissions request
@@ -58,6 +67,7 @@ export interface GroupDetail {
   id: number
   name: string
   description: string | null
+  is_system: boolean  // System groups cannot be deleted
   members: GroupMember[]
   created_at: string
   created_by: string | null
@@ -101,4 +111,16 @@ export interface RemoveMemberResponse {
 export interface DeleteGroupResponse {
   success: boolean
   message: string
+}
+
+// All group permissions response (bulk endpoint)
+export interface AllGroupPermissionsResponse {
+  permissions: Record<number, Record<string, boolean>>
+}
+
+// Copy permissions response (may include warning)
+export interface CopyPermissionsResponse {
+  copied: number
+  message: string
+  warning?: string
 }

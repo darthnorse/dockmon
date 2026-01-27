@@ -714,9 +714,10 @@ async def remove_member(
                 detail="Cannot remove user from their last group"
             )
 
-        # Get username for audit
-        user = session.query(User).filter(User.id == user_id).first()
-        member_username = user.username if user else f"user_{user_id}"
+        # Get username for audit - save member_user_id before _get_auditable_user_info overwrites user_id
+        member_user_id = user_id
+        user = session.query(User).filter(User.id == member_user_id).first()
+        member_username = user.username if user else f"user_{member_user_id}"
         user_id, display_name = _get_auditable_user_info(current_user)
 
         # Audit log (before commit for atomicity)
@@ -728,15 +729,15 @@ async def remove_member(
             entity_type='custom_group',
             entity_id=str(group_id),
             entity_name=group.name,
-            details={'member_user_id': user_id, 'member_username': member_username},
+            details={'member_user_id': member_user_id, 'member_username': member_username},
         )
 
         # Remove membership
         session.delete(membership)
         session.commit()
 
-        # Phase 4: Invalidate user's group cache
-        invalidate_user_groups_cache(user_id)
+        # Invalidate removed member's group cache
+        invalidate_user_groups_cache(member_user_id)
 
         return RemoveMemberResponse(
             success=True,
@@ -769,6 +770,45 @@ async def list_group_members(
 # =============================================================================
 # Group Permission Endpoints (Phase 4)
 # =============================================================================
+
+class AllGroupPermissionsResponse(BaseModel):
+    """All groups with their permissions - bulk endpoint to avoid N+1 queries"""
+    permissions: dict[int, dict[str, bool]]  # group_id -> {capability: allowed}
+
+
+@router.get("/permissions/all", response_model=AllGroupPermissionsResponse, dependencies=[Depends(require_capability("groups.manage"))])
+async def get_all_group_permissions(
+    current_user: dict = Depends(get_current_user_or_api_key)
+):
+    """
+    Get all permissions for all groups in a single request.
+
+    Returns a map of group_id -> {capability: allowed}.
+    This eliminates N+1 queries when loading the permissions matrix.
+
+    Requires groups.manage capability.
+    """
+    with db.get_session() as session:
+        # Get all groups
+        groups = session.query(CustomGroup).all()
+
+        # Get all permissions in one query
+        all_permissions = session.query(GroupPermission).all()
+
+        # Build permission map: group_id -> {capability: allowed}
+        result: dict[int, dict[str, bool]] = {}
+
+        # Initialize all groups with empty permission dicts
+        for group in groups:
+            result[group.id] = {}
+
+        # Populate with actual permissions
+        for perm in all_permissions:
+            if perm.group_id in result:
+                result[perm.group_id][perm.capability] = perm.allowed
+
+        return AllGroupPermissionsResponse(permissions=result)
+
 
 @router.get("/{group_id}/permissions", response_model=GroupPermissionsListResponse, dependencies=[Depends(require_capability("groups.manage"))])
 async def get_group_permissions(
@@ -906,4 +946,96 @@ async def update_group_permissions(
         return UpdatePermissionsResponse(
             updated=updated_count,
             message=f"Updated {updated_count} permission(s) for group '{group.name}'"
+        )
+
+
+class CopyPermissionsResponse(BaseModel):
+    """Response for copy permissions operation"""
+    copied: int
+    message: str
+    warning: Optional[str] = None
+
+
+@router.post("/{target_group_id}/permissions/copy-from/{source_group_id}", response_model=CopyPermissionsResponse, dependencies=[Depends(require_capability("groups.manage"))])
+async def copy_group_permissions(
+    target_group_id: int,
+    source_group_id: int,
+    current_user: dict = Depends(get_current_user_or_api_key)
+):
+    """
+    Copy all permissions from source group to target group.
+
+    This replaces all permissions on the target group with those from the source.
+    Requires groups.manage capability.
+    """
+    with db.get_session() as session:
+        # Check both groups exist
+        target_group = session.query(CustomGroup).filter(CustomGroup.id == target_group_id).first()
+        if not target_group:
+            raise HTTPException(status_code=404, detail=f"Target group with ID {target_group_id} not found")
+
+        source_group = session.query(CustomGroup).filter(CustomGroup.id == source_group_id).first()
+        if not source_group:
+            raise HTTPException(status_code=404, detail=f"Source group with ID {source_group_id} not found")
+
+        if target_group_id == source_group_id:
+            raise HTTPException(status_code=400, detail="Cannot copy permissions to the same group")
+
+        # Get source permissions
+        source_permissions = session.query(GroupPermission).filter(
+            GroupPermission.group_id == source_group_id
+        ).all()
+
+        # Check for empty source and build warning
+        warning = None
+        if not source_permissions:
+            warning = f"Source group '{source_group.name}' has no permissions. Target group permissions have been cleared."
+
+        # Delete existing target permissions
+        session.query(GroupPermission).filter(
+            GroupPermission.group_id == target_group_id
+        ).delete()
+
+        # Copy permissions from source to target
+        now = datetime.now(timezone.utc)
+        copied_count = 0
+
+        for source_perm in source_permissions:
+            new_perm = GroupPermission(
+                group_id=target_group_id,
+                capability=source_perm.capability,
+                allowed=source_perm.allowed,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(new_perm)
+            copied_count += 1
+
+        # Audit log
+        user_id, display_name = _get_auditable_user_info(current_user)
+        log_audit(
+            session,
+            user_id=user_id,
+            username=display_name,
+            action='copy_permissions',
+            entity_type='custom_group',
+            entity_id=str(target_group_id),
+            entity_name=target_group.name,
+            details={
+                'source_group_id': source_group_id,
+                'source_group_name': source_group.name,
+                'copied_count': copied_count,
+                'warning': warning,
+            },
+        )
+
+        session.commit()
+
+        # Invalidate cache after permission changes
+        invalidate_group_permissions_cache()
+
+        return CopyPermissionsResponse(
+            copied=copied_count,
+            message=f"Copied {copied_count} permission(s) from '{source_group.name}' to '{target_group.name}'",
+            warning=warning,
         )

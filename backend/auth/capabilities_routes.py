@@ -3,9 +3,10 @@ Capabilities API - Returns available capabilities for the permissions UI
 
 Group-Based Permissions Refactor (v2.4.0)
 """
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
+from auth.api_key_auth import get_current_user_or_api_key
 from auth.capabilities import CAPABILITY_INFO, get_categories
 
 
@@ -26,7 +27,7 @@ class CapabilitiesResponse(BaseModel):
     categories: list[str]
 
 
-@router.get("", response_model=CapabilitiesResponse)
+@router.get("", response_model=CapabilitiesResponse, dependencies=[Depends(get_current_user_or_api_key)])
 async def get_capabilities():
     """
     Get all available capabilities with metadata.

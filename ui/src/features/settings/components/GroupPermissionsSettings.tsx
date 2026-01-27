@@ -337,7 +337,12 @@ export function GroupPermissionsSettings() {
           <div className="py-4">
             <Select value={copySourceGroupId} onValueChange={setCopySourceGroupId}>
               <SelectTrigger>
-                <SelectValue placeholder="Select source group" />
+                <SelectValue placeholder="Select source group">
+                  {copySourceGroupId && (() => {
+                    const selectedGroup = groups.find((g) => g.id.toString() === copySourceGroupId)
+                    return selectedGroup ? `${selectedGroup.name}${selectedGroup.is_system ? ' (System)' : ''}` : ''
+                  })()}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {groups

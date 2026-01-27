@@ -20,6 +20,9 @@ import type {
   DeleteGroupResponse,
   GroupPermissionsResponse,
   UpdateGroupPermissionsRequest,
+  UpdatePermissionsResponse,
+  AllGroupPermissionsResponse,
+  CopyPermissionsResponse,
 } from '@/types/groups'
 import { toast } from 'sonner'
 
@@ -169,54 +172,23 @@ export function useGroupPermissions(groupId: number | null) {
 }
 
 /**
- * Backend permission response format (array of objects with metadata)
- */
-interface BackendPermissionItem {
-  capability: string
-  allowed: boolean
-  category: string
-  display_name: string
-  description: string
-}
-
-interface BackendPermissionsResponse {
-  group_id: number
-  group_name: string
-  permissions: BackendPermissionItem[]
-}
-
-/**
  * Fetch permissions for all groups (for permission matrix view)
+ * Uses bulk endpoint to avoid N+1 query problem
  */
 export function useAllGroupPermissions() {
   return useQuery({
     queryKey: [...PERMISSIONS_QUERY_KEY, 'all'],
     queryFn: async () => {
-      // Get all groups first
-      const groupsResponse = await apiClient.get<GroupListResponse>('/v2/groups')
-      const groups = groupsResponse.groups || []
+      // Fetch groups and all permissions in parallel
+      const [groupsResponse, permissionsResponse] = await Promise.all([
+        apiClient.get<GroupListResponse>('/v2/groups'),
+        apiClient.get<AllGroupPermissionsResponse>('/v2/groups/permissions/all'),
+      ])
 
-      // Fetch permissions for each group in parallel
-      const permissionPromises = groups.map((group) =>
-        apiClient
-          .get<BackendPermissionsResponse>(`/v2/groups/${group.id}/permissions`)
-          .then((res) => {
-            // Transform backend list format to frontend dictionary format
-            const permsDict: Record<string, boolean> = {}
-            for (const perm of res.permissions) {
-              permsDict[perm.capability] = perm.allowed
-            }
-            return { groupId: group.id, permissions: permsDict }
-          })
-      )
-      const results = await Promise.all(permissionPromises)
-
-      const permissionsMap: Record<number, Record<string, boolean>> = {}
-      results.forEach((r) => {
-        permissionsMap[r.groupId] = r.permissions
-      })
-
-      return { groups, permissions: permissionsMap }
+      return {
+        groups: groupsResponse.groups || [],
+        permissions: permissionsResponse.permissions,
+      }
     },
     staleTime: 30 * 1000,
   })
@@ -230,7 +202,7 @@ export function useUpdateGroupPermissions() {
 
   return useMutation({
     mutationFn: ({ groupId, request }: { groupId: number; request: UpdateGroupPermissionsRequest }) =>
-      apiClient.put<{ updated: number; message: string }>(`/v2/groups/${groupId}/permissions`, request),
+      apiClient.put<UpdatePermissionsResponse>(`/v2/groups/${groupId}/permissions`, request),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: PERMISSIONS_QUERY_KEY })
       toast.success(data.message || 'Permissions updated successfully')
@@ -249,10 +221,15 @@ export function useCopyGroupPermissions() {
 
   return useMutation({
     mutationFn: ({ targetGroupId, sourceGroupId }: { targetGroupId: number; sourceGroupId: number }) =>
-      apiClient.post<{ message: string }>(`/v2/groups/${targetGroupId}/permissions/copy-from/${sourceGroupId}`, {}),
+      apiClient.post<CopyPermissionsResponse>(`/v2/groups/${targetGroupId}/permissions/copy-from/${sourceGroupId}`, {}),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: PERMISSIONS_QUERY_KEY })
-      toast.success(data.message || 'Permissions copied successfully')
+      // Show warning if present (e.g., copying from empty source group)
+      if (data.warning) {
+        toast.warning(data.warning)
+      } else {
+        toast.success(data.message || 'Permissions copied successfully')
+      }
     },
     onError: (error: Error) => {
       toast.error(error.message || 'Failed to copy permissions')

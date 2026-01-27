@@ -26,32 +26,38 @@ interface Tab {
   id: TabId
   label: string
   icon: LucideIcon
-  adminOnly?: boolean
+  // Capabilities required to see this tab (any of these grants access)
+  capabilities?: string[]
 }
 
 const TABS: Tab[] = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { id: 'alerts', label: 'Alerts', icon: AlertTriangle },
-  { id: 'notifications', label: 'Notifications', icon: Bell },
-  { id: 'updates', label: 'Container Updates', icon: Package },
-  { id: 'events', label: 'Events', icon: ScrollText },
-  { id: 'api-keys', label: 'API Keys', icon: Key },
-  { id: 'users', label: 'Users', icon: Users, adminOnly: true },
-  { id: 'groups', label: 'Groups', icon: UserSquare2, adminOnly: true },
-  { id: 'permissions', label: 'Permissions', icon: Shield, adminOnly: true },
-  { id: 'oidc', label: 'OIDC', icon: KeyRound, adminOnly: true },
-  { id: 'audit-log', label: 'Audit Log', icon: ClipboardList, adminOnly: true },
-  { id: 'system', label: 'System', icon: Settings },
+  { id: 'alerts', label: 'Alerts', icon: AlertTriangle, capabilities: ['alerts.view', 'alerts.manage'] },
+  { id: 'notifications', label: 'Notifications', icon: Bell, capabilities: ['notifications.view', 'notifications.manage'] },
+  { id: 'updates', label: 'Container Updates', icon: Package, capabilities: ['policies.view', 'policies.manage'] },
+  { id: 'events', label: 'Events', icon: ScrollText, capabilities: ['events.view'] },
+  { id: 'api-keys', label: 'API Keys', icon: Key, capabilities: ['apikeys.manage_own', 'apikeys.manage_other'] },
+  { id: 'users', label: 'Users', icon: Users, capabilities: ['users.manage'] },
+  { id: 'groups', label: 'Groups', icon: UserSquare2, capabilities: ['groups.manage'] },
+  { id: 'permissions', label: 'Permissions', icon: Shield, capabilities: ['groups.manage'] },
+  { id: 'oidc', label: 'OIDC', icon: KeyRound, capabilities: ['oidc.manage'] },
+  { id: 'audit-log', label: 'Audit Log', icon: ClipboardList, capabilities: ['audit.view'] },
+  { id: 'system', label: 'System', icon: Settings, capabilities: ['settings.manage'] },
 ]
 
 export function SettingsPage() {
-  const { isAdmin } = useAuth()
+  const { hasCapability } = useAuth()
   const [activeTab, setActiveTab] = useState<TabId>('dashboard')
 
-  // Filter tabs based on user role
+  // Filter tabs based on user capabilities
   const visibleTabs = useMemo(
-    () => TABS.filter((tab) => !tab.adminOnly || isAdmin),
-    [isAdmin]
+    () => TABS.filter((tab) => {
+      // No capabilities required = visible to all
+      if (!tab.capabilities || tab.capabilities.length === 0) return true
+      // User has at least one of the required capabilities
+      return tab.capabilities.some((cap) => hasCapability(cap))
+    }),
+    [hasCapability]
   )
 
   return (
@@ -90,7 +96,7 @@ export function SettingsPage() {
       <div className="flex-1 overflow-auto">
         <div className="container mx-auto max-w-4xl px-3 sm:px-4 md:px-6 py-4 sm:py-6">
           {activeTab === 'dashboard' && <DashboardSettings />}
-          {activeTab === 'alerts' && (
+          {activeTab === 'alerts' && (hasCapability('alerts.view') || hasCapability('alerts.manage')) && (
             <div className="space-y-8">
               <div>
                 <h2 className="mb-4 text-lg font-semibold text-white">Blackout Windows</h2>
@@ -102,16 +108,16 @@ export function SettingsPage() {
               </div>
             </div>
           )}
-          {activeTab === 'notifications' && <NotificationChannelsSection />}
-          {activeTab === 'updates' && <ContainerUpdatesSettings />}
-          {activeTab === 'events' && <EventsSettings />}
-          {activeTab === 'api-keys' && <ApiKeysSettings />}
-          {activeTab === 'users' && isAdmin && <UsersSettings />}
-          {activeTab === 'groups' && isAdmin && <GroupsSettings />}
-          {activeTab === 'permissions' && isAdmin && <GroupPermissionsSettings />}
-          {activeTab === 'oidc' && isAdmin && <OIDCSettings />}
-          {activeTab === 'audit-log' && isAdmin && <AuditLogSettings />}
-          {activeTab === 'system' && <SystemSettings />}
+          {activeTab === 'notifications' && (hasCapability('notifications.view') || hasCapability('notifications.manage')) && <NotificationChannelsSection />}
+          {activeTab === 'updates' && (hasCapability('policies.view') || hasCapability('policies.manage')) && <ContainerUpdatesSettings />}
+          {activeTab === 'events' && hasCapability('events.view') && <EventsSettings />}
+          {activeTab === 'api-keys' && (hasCapability('apikeys.manage_own') || hasCapability('apikeys.manage_other')) && <ApiKeysSettings />}
+          {activeTab === 'users' && hasCapability('users.manage') && <UsersSettings />}
+          {activeTab === 'groups' && hasCapability('groups.manage') && <GroupsSettings />}
+          {activeTab === 'permissions' && hasCapability('groups.manage') && <GroupPermissionsSettings />}
+          {activeTab === 'oidc' && hasCapability('oidc.manage') && <OIDCSettings />}
+          {activeTab === 'audit-log' && hasCapability('audit.view') && <AuditLogSettings />}
+          {activeTab === 'system' && hasCapability('settings.manage') && <SystemSettings />}
         </div>
       </div>
     </div>

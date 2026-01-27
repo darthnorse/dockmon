@@ -79,6 +79,7 @@ ALL_CAPABILITIES = [
     'agents.manage', 'agents.view',
     'settings.manage',
     'users.manage',
+    'oidc.manage',
     'groups.manage',
     'audit.view',
     'apikeys.manage_other', 'apikeys.manage_own',

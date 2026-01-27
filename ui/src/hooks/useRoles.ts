@@ -31,10 +31,11 @@ export function useCapabilities() {
   return useQuery({
     queryKey: CAPABILITIES_QUERY_KEY,
     queryFn: async () => {
-      const response = await apiClient.get<CapabilitiesResponse>('/v2/roles/capabilities')
+      const response = await apiClient.get<CapabilitiesResponse>('/v2/capabilities')
       return response
     },
-    staleTime: 5 * 60 * 1000, // 5 minutes - capabilities rarely change
+    staleTime: Infinity, // Capabilities never change at runtime - cache indefinitely
+    gcTime: Infinity,
   })
 }
 

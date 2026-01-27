@@ -517,7 +517,9 @@ app.include_router(oidc_auth_router)  # OIDC authentication flow
 
 # Custom groups routes - group-based permission management
 from auth.custom_groups_routes import router as custom_groups_router
+from auth.capabilities_routes import router as capabilities_router
 app.include_router(custom_groups_router)  # Custom group management (admin only)
+app.include_router(capabilities_router)  # Capabilities metadata for permissions UI
 
 # Audit log routes (v2.3.0 Phase 6) - audit log viewer and management
 from audit.audit_routes import router as audit_routes_router
@@ -5595,6 +5597,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
 
     # Get user_id for capability-based filtering
     user_id = session_data.get("user_id")
+    can_view_env = user_id is not None and has_capability_for_user(user_id, Capabilities.CONTAINERS_VIEW_ENV)
 
     logger.debug(f"WebSocket authenticated for user: {session_data.get('username')}")
 

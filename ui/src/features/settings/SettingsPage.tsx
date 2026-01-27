@@ -15,12 +15,12 @@ import { ApiKeysSettings } from './components/ApiKeysSettings'
 import { EventsSettings } from './components/EventsSettings'
 import { UsersSettings } from './components/UsersSettings'
 import { OIDCSettings } from './components/OIDCSettings'
-import { RolesSettings } from './components/RolesSettings'
 import { GroupsSettings } from './components/GroupsSettings'
+import { GroupPermissionsSettings } from './components/GroupPermissionsSettings'
 import { AuditLogSettings } from './components/AuditLogSettings'
 import { useAuth } from '@/features/auth/AuthContext'
 
-type TabId = 'dashboard' | 'alerts' | 'notifications' | 'updates' | 'events' | 'api-keys' | 'users' | 'roles' | 'groups' | 'oidc' | 'audit-log' | 'system'
+type TabId = 'dashboard' | 'alerts' | 'notifications' | 'updates' | 'events' | 'api-keys' | 'users' | 'groups' | 'permissions' | 'oidc' | 'audit-log' | 'system'
 
 interface Tab {
   id: TabId
@@ -37,8 +37,8 @@ const TABS: Tab[] = [
   { id: 'events', label: 'Events', icon: ScrollText },
   { id: 'api-keys', label: 'API Keys', icon: Key },
   { id: 'users', label: 'Users', icon: Users, adminOnly: true },
-  { id: 'roles', label: 'Roles', icon: Shield, adminOnly: true },
   { id: 'groups', label: 'Groups', icon: UserSquare2, adminOnly: true },
+  { id: 'permissions', label: 'Permissions', icon: Shield, adminOnly: true },
   { id: 'oidc', label: 'OIDC', icon: KeyRound, adminOnly: true },
   { id: 'audit-log', label: 'Audit Log', icon: ClipboardList, adminOnly: true },
   { id: 'system', label: 'System', icon: Settings },
@@ -107,8 +107,8 @@ export function SettingsPage() {
           {activeTab === 'events' && <EventsSettings />}
           {activeTab === 'api-keys' && <ApiKeysSettings />}
           {activeTab === 'users' && isAdmin && <UsersSettings />}
-          {activeTab === 'roles' && isAdmin && <RolesSettings />}
           {activeTab === 'groups' && isAdmin && <GroupsSettings />}
+          {activeTab === 'permissions' && isAdmin && <GroupPermissionsSettings />}
           {activeTab === 'oidc' && isAdmin && <OIDCSettings />}
           {activeTab === 'audit-log' && isAdmin && <AuditLogSettings />}
           {activeTab === 'system' && <SystemSettings />}

@@ -74,11 +74,11 @@ function LoginRoute() {
 
 // App routes
 function AppRoutes() {
-  const { isFirstLogin, mustChangePassword } = useAuth()
+  const { mustChangePassword } = useAuth()
   const [showPasswordDialog, setShowPasswordDialog] = useState(false)
 
-  // Password change is required for first login OR when admin forces password reset
-  const passwordChangeRequired = isFirstLogin || mustChangePassword
+  // Password change is required when admin forces it OR for the very first user (setup wizard)
+  const passwordChangeRequired = mustChangePassword
 
   // Show password change dialog when first login or forced password change is detected
   useEffect(() => {

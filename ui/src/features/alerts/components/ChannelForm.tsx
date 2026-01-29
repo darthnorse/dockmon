@@ -16,6 +16,7 @@ interface Props {
   onTest?: (data: ChannelCreateRequest) => void
   isSubmitting?: boolean
   isTesting?: boolean
+  disabled?: boolean
 }
 
 const CHANNEL_TYPES = [
@@ -30,7 +31,7 @@ const CHANNEL_TYPES = [
   { value: 'webhook', label: 'Webhook', icon: Webhook },
 ]
 
-export function ChannelForm({ channel, onSubmit, onCancel, onTest, isSubmitting, isTesting }: Props) {
+export function ChannelForm({ channel, onSubmit, onCancel, onTest, isSubmitting, isTesting, disabled }: Props) {
   const isEditing = !!channel
 
   const [formData, setFormData] = useState<ChannelCreateRequest>({
@@ -176,6 +177,7 @@ export function ChannelForm({ channel, onSubmit, onCancel, onTest, isSubmitting,
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
+      <fieldset disabled={disabled} className="space-y-6 disabled:opacity-60">
       {/* Basic Info */}
       <div className="space-y-4">
         <div>
@@ -601,6 +603,7 @@ export function ChannelForm({ channel, onSubmit, onCancel, onTest, isSubmitting,
           {isSubmitting ? 'Saving...' : isEditing ? 'Update Channel' : 'Create Channel'}
         </button>
       </div>
+      </fieldset>
     </form>
   )
 }

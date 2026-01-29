@@ -7,6 +7,7 @@ import { useState } from 'react'
 import { useGlobalSettings, useUpdateGlobalSettings } from '@/hooks/useSettings'
 import { Plus, Trash2, Edit, Power, PowerOff, Moon } from 'lucide-react'
 import { toast } from 'sonner'
+import { useAuth } from '@/features/auth/AuthContext'
 
 interface BlackoutWindow {
   name: string
@@ -19,6 +20,8 @@ interface BlackoutWindow {
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 
 export function BlackoutWindowsSection() {
+  const { hasCapability } = useAuth()
+  const canManage = hasCapability('alerts.manage')
   const { data: settings } = useGlobalSettings()
   const updateSettings = useUpdateGlobalSettings()
 
@@ -120,7 +123,7 @@ export function BlackoutWindowsSection() {
 
   if (view === 'create' || view === 'edit') {
     return (
-      <div>
+      <fieldset disabled={!canManage} className="disabled:opacity-60">
         <div className="mb-4">
           <button
             onClick={handleCancel}
@@ -204,18 +207,18 @@ export function BlackoutWindowsSection() {
             <button
               onClick={view === 'create' ? handleCreate : handleUpdate}
               disabled={!formData.name || formData.days.length === 0 || updateSettings.isPending}
-              className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
             >
               {updateSettings.isPending ? 'Saving...' : view === 'create' ? 'Create Window' : 'Update Window'}
             </button>
           </div>
         </div>
-      </div>
+      </fieldset>
     )
   }
 
   return (
-    <div className="space-y-4">
+    <fieldset disabled={!canManage} className="space-y-4 disabled:opacity-60">
       <div className="flex items-center justify-between">
         <p className="text-xs text-gray-400">
           Suppress alert notifications during scheduled maintenance windows
@@ -292,6 +295,6 @@ export function BlackoutWindowsSection() {
           ))}
         </div>
       )}
-    </div>
+    </fieldset>
   )
 }

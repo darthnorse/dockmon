@@ -7,8 +7,11 @@ import { useState, useEffect } from 'react'
 import { useGlobalSettings, useUpdateGlobalSettings } from '@/hooks/useSettings'
 import { toast } from 'sonner'
 import { ToggleSwitch } from './ToggleSwitch'
+import { useAuth } from '@/features/auth/AuthContext'
 
 export function SystemSettings() {
+  const { hasCapability } = useAuth()
+  const canManage = hasCapability('settings.manage')
   const { data: settings } = useGlobalSettings()
   const updateSettings = useUpdateGlobalSettings()
 
@@ -143,7 +146,7 @@ export function SystemSettings() {
   }
 
   return (
-    <div className="space-y-6">
+    <fieldset disabled={!canManage} className="space-y-6 disabled:opacity-60">
       {/* External Access */}
       <div>
         <div className="mb-4">
@@ -275,6 +278,7 @@ export function SystemSettings() {
             description="Automatically restart containers that stop unexpectedly (can be overridden per container)"
             checked={defaultAutoRestart}
             onChange={handleDefaultAutoRestartToggle}
+            disabled={!canManage}
           />
         </div>
       </div>
@@ -344,6 +348,6 @@ export function SystemSettings() {
           </div>
         </div>
       </div>
-    </div>
+    </fieldset>
   )
 }

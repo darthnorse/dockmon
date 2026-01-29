@@ -7,10 +7,13 @@ import { useState, useEffect } from 'react'
 import { useGlobalSettings, useUpdateGlobalSettings, useTemplateVariables } from '@/hooks/useSettings'
 import { toast } from 'sonner'
 import { RotateCcw, Copy, Check } from 'lucide-react'
+import { useAuth } from '@/features/auth/AuthContext'
 
 type TemplateType = 'default' | 'metric' | 'state_change' | 'health' | 'update'
 
 export function AlertTemplateSettings() {
+  const { hasCapability } = useAuth()
+  const canManage = hasCapability('alerts.manage')
   const { data: settings } = useGlobalSettings()
   const { data: variables } = useTemplateVariables()
   const updateSettings = useUpdateGlobalSettings()
@@ -92,7 +95,7 @@ export function AlertTemplateSettings() {
   ]
 
   return (
-    <div className="space-y-6">
+    <fieldset disabled={!canManage} className="space-y-6 disabled:opacity-60">
       {/* Template Category Tabs */}
       <div>
         <div className="mb-4">
@@ -152,7 +155,7 @@ export function AlertTemplateSettings() {
         <button
           onClick={handleSave}
           disabled={!hasChanges || updateSettings.isPending}
-          className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
         >
           {updateSettings.isPending ? 'Saving...' : 'Save All Templates'}
         </button>
@@ -196,6 +199,6 @@ export function AlertTemplateSettings() {
           ))}
         </div>
       </div>
-    </div>
+    </fieldset>
   )
 }

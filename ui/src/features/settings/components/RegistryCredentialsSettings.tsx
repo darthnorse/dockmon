@@ -13,8 +13,11 @@ import {
   useDeleteRegistryCredential,
 } from '@/hooks/useRegistryCredentials'
 import type { RegistryCredential } from '@/types/api'
+import { useAuth } from '@/features/auth/AuthContext'
 
 export function RegistryCredentialsSettings() {
+  const { hasCapability } = useAuth()
+  const canManage = hasCapability('policies.manage')
   const { data: credentials, isLoading } = useRegistryCredentials()
   const [showAddModal, setShowAddModal] = useState(false)
   const [editingCredential, setEditingCredential] = useState<RegistryCredential | null>(null)
@@ -72,14 +75,16 @@ export function RegistryCredentialsSettings() {
                       <div className="flex gap-2">
                         <button
                           onClick={() => setEditingCredential(cred)}
-                          className="p-1 text-gray-400 hover:text-blue-400 transition-colors"
+                          disabled={!canManage}
+                          className="p-1 text-gray-400 hover:text-blue-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                           title="Edit credential"
                         >
                           <Edit2 className="h-4 w-4" />
                         </button>
                         <button
                           onClick={() => setDeletingId(cred.id)}
-                          className="p-1 text-gray-400 hover:text-red-400 transition-colors"
+                          disabled={!canManage}
+                          className="p-1 text-gray-400 hover:text-red-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                           title="Delete credential"
                         >
                           <Trash2 className="h-4 w-4" />
@@ -103,7 +108,7 @@ export function RegistryCredentialsSettings() {
 
       {/* Add Credential Button */}
       <div className="mt-4">
-        <Button onClick={() => setShowAddModal(true)} variant="outline" size="sm">
+        <Button onClick={() => setShowAddModal(true)} variant="outline" size="sm" disabled={!canManage}>
           <Plus className="h-4 w-4 mr-2" />
           Add Credential
         </Button>
@@ -113,6 +118,7 @@ export function RegistryCredentialsSettings() {
       {(showAddModal || editingCredential) && (
         <CredentialModal
           credential={editingCredential}
+          disabled={!canManage}
           onClose={() => {
             setShowAddModal(false)
             setEditingCredential(null)
@@ -136,10 +142,11 @@ export function RegistryCredentialsSettings() {
 
 interface CredentialModalProps {
   credential: RegistryCredential | null
+  disabled?: boolean
   onClose: () => void
 }
 
-function CredentialModal({ credential, onClose }: CredentialModalProps) {
+function CredentialModal({ credential, disabled, onClose }: CredentialModalProps) {
   const createMutation = useCreateRegistryCredential()
   const updateMutation = useUpdateRegistryCredential()
 
@@ -190,6 +197,7 @@ function CredentialModal({ credential, onClose }: CredentialModalProps) {
         </div>
 
         <form onSubmit={handleSubmit} className="px-6 py-4 space-y-4">
+          <fieldset disabled={disabled} className="space-y-4 disabled:opacity-60">
           {/* Registry URL */}
           <div>
             <label htmlFor="registry-url" className="block text-sm font-medium text-gray-300 mb-2">
@@ -251,6 +259,7 @@ function CredentialModal({ credential, onClose }: CredentialModalProps) {
               Cancel
             </Button>
           </div>
+          </fieldset>
         </form>
       </div>
     </div>

@@ -1390,7 +1390,7 @@ class DockerMonitor:
                 return
 
             # Get host name for logging
-            host_name = self.hosts.get(host_id).name if host_id in self.hosts else host_id[:8]
+            host_name = self.hosts.get(host_id).name if host_id in self.hosts else host_id
 
             # Only log important events
             important_events = ['create', 'start', 'stop', 'die', 'kill', 'destroy', 'pause', 'unpause', 'restart', 'oom', 'health_status']
@@ -1403,8 +1403,9 @@ class DockerMonitor:
             # - start for container started
             # - restart for container restarted (emitted after restart completes)
             # - oom, health_status for their respective conditions
+            # - destroy for container removed (clears pending alerts, Issue #160)
             logger.debug(f"V2 alert check: alert_evaluation_service={self.alert_evaluation_service is not None}, action={action}")
-            if self.alert_evaluation_service and action in ['die', 'oom', 'health_status', 'start', 'restart']:
+            if self.alert_evaluation_service and action in ['die', 'oom', 'health_status', 'start', 'restart', 'destroy']:
                 logger.debug(f"V2: Processing {action} event for {container_name} ({container_id[:12]}) on {host_name} ({host_id[:8]})")
 
                 # Parse timestamp
@@ -1454,20 +1455,25 @@ class DockerMonitor:
                 elif action == 'oom':
                     bus_event_type = BusEventType.CONTAINER_DIED
                     new_state = "oom"
+                elif action == 'destroy':
+                    # Container removed - clears pending alerts (Issue #160)
+                    bus_event_type = BusEventType.CONTAINER_DELETED
 
                 # Get old state from container state tracking (with lock to prevent race with polling loop)
                 container_key = make_composite_key(host_id, container_id)
                 async with self._state_lock:
                     old_state = self._container_states.get(container_key)
                     # Update state tracking immediately so polling loop doesn't think there's drift
-                    if new_state:
+                    if action == 'destroy':
+                        # Container removed - clean up state tracking to prevent memory leak
+                        self._container_states.pop(container_key, None)
+                        self._container_state_timestamps.pop(container_key, None)
+                        self._container_state_sources.pop(container_key, None)
+                    elif new_state:
                         # Update state with timestamp and source tracking (Issue #3 fix)
                         self._container_states[container_key] = new_state
                         self._container_state_timestamps[container_key] = datetime.now(timezone.utc)
                         self._container_state_sources[container_key] = 'event'
-
-                # Get host name
-                host_name = self.hosts.get(host_id).name if host_id in self.hosts else host_id
 
                 # Emit event via EventBus (in background to not block event monitoring)
                 if bus_event_type:

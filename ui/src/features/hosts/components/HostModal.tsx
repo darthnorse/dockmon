@@ -52,6 +52,7 @@ import { useAllContainers } from '@/lib/stats/StatsProvider'
 import { useQuery } from '@tanstack/react-query'
 import { useGlobalSettings } from '@/hooks/useSettings'
 import { cn } from '@/lib/utils'
+import { useAuth } from '@/features/auth/AuthContext'
 
 type InstallMethod = 'docker' | 'systemd'
 
@@ -94,6 +95,10 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
   const [copied, setCopied] = useState<string | null>(null)
   const [installMethod, setInstallMethod] = useState<InstallMethod>('docker')
   const [multiUse, setMultiUse] = useState(false)
+
+  const { hasCapability } = useAuth()
+  const canManageHosts = hasCapability('hosts.manage')
+  const canManageAgents = hasCapability('agents.manage')
 
   const addMutation = useAddHost()
   const updateMutation = useUpdateHost()
@@ -375,7 +380,7 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
 
           <Button
             onClick={() => generateToken.mutate({ multiUse })}
-            disabled={generateToken.isPending}
+            disabled={!canManageAgents || generateToken.isPending}
           >
             {generateToken.isPending ? 'Generating Token...' : 'Generate Registration Token'}
           </Button>
@@ -525,7 +530,7 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
   const remoteTabContent = (
     <div className="p-6">
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-        {/* Host Name */}
+        <fieldset disabled={!canManageHosts} className="space-y-4 disabled:opacity-60">
         <div>
           <label htmlFor="name" className="block text-sm font-medium mb-1">
             Host Name <span className="text-destructive">*</span>
@@ -746,6 +751,8 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
           />
         </div>
 
+        </fieldset>
+
         {/* Footer Actions */}
         <div className="flex justify-between gap-2 pt-4 border-t">
           {host ? (
@@ -753,7 +760,7 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
               type="button"
               variant="outline"
               onClick={handleDeleteClick}
-              disabled={deleteMutation.isPending}
+              disabled={!canManageHosts || deleteMutation.isPending}
               className="text-red-500 hover:text-red-600 hover:bg-red-50"
               data-testid="host-modal-delete"
             >
@@ -768,7 +775,7 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
             <Button type="button" variant="outline" onClick={onClose} data-testid="host-modal-cancel">
               Cancel
             </Button>
-            <Button type="submit" disabled={isSubmitting} data-testid="host-modal-save">
+            <Button type="submit" disabled={!canManageHosts || isSubmitting} data-testid="host-modal-save">
               {isSubmitting ? 'Saving...' : host ? 'Update Host' : 'Add Host'}
             </Button>
           </div>

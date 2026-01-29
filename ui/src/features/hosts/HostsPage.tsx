@@ -22,9 +22,12 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { HostTable } from './components/HostTable'
 import { HostModal } from './components/HostModal'
+import { useAuth } from '@/features/auth/AuthContext'
 import type { Host } from '@/types/api'
 
 export function HostsPage() {
+  const { hasCapability } = useAuth()
+  const canManage = hasCapability('hosts.manage')
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [selectedHost, setSelectedHost] = useState<Host | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
@@ -54,7 +57,7 @@ export function HostsPage() {
             Manage your Docker hosts and connections
           </p>
         </div>
-        <Button onClick={handleAddHost} className="flex items-center gap-2 w-full sm:w-auto" data-testid="add-host-button">
+        <Button onClick={handleAddHost} disabled={!canManage} className="flex items-center gap-2 w-full sm:w-auto" data-testid="add-host-button">
           <Plus className="h-4 w-4" />
           Add Host
         </Button>

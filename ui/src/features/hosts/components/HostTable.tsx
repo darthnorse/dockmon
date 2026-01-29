@@ -57,6 +57,7 @@ import { useSimplifiedWorkflow, useUserPreferences, useUpdatePreferences } from 
 import { useHostAlertCounts, type AlertSeverityCounts } from '@/features/alerts/hooks/useAlerts'
 import { useQueryClient } from '@tanstack/react-query'
 import { useGlobalSettings } from '@/hooks/useSettings'
+import { useAuth } from '@/features/auth/AuthContext'
 
 // Status icon component
 function StatusIcon({ status }: { status: string }) {
@@ -320,6 +321,8 @@ interface HostTableProps {
 }
 
 export function HostTable({ onEditHost }: HostTableProps = {}) {
+  const { hasCapability } = useAuth()
+  const canManage = hasCapability('hosts.manage')
   const { data: hosts = [], isLoading, error } = useHosts()
   const queryClient = useQueryClient()
   const { data: preferences } = useUserPreferences()
@@ -440,7 +443,8 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
                 type="checkbox"
                 checked={allCurrentSelected}
                 onChange={() => toggleSelectAll(table)}
-                className="h-4 w-4 rounded border-border text-primary focus:ring-primary cursor-pointer"
+                disabled={!canManage}
+                className="h-4 w-4 rounded border-border text-primary focus:ring-primary cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
               />
             </div>
           )
@@ -452,7 +456,8 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
               checked={selectedHostIds.has(row.original.id)}
               onChange={() => toggleHostSelection(row.original.id)}
               onClick={(e) => e.stopPropagation()}
-              className="h-4 w-4 rounded border-border text-primary focus:ring-primary cursor-pointer"
+              disabled={!canManage}
+              className="h-4 w-4 rounded border-border text-primary focus:ring-primary cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             />
           </div>
         ),
@@ -610,6 +615,7 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
               size="icon"
               className="h-8 w-8"
               title="Edit Host"
+              disabled={!canManage}
               onClick={() => {
                 onEditHost?.(row.original)
               }}
@@ -620,7 +626,7 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
         ),
       },
     ],
-    [selectedHostIds, toggleHostSelection, toggleSelectAll, onEditHost, alertCounts, simplifiedWorkflow, setSelectedHostId, setModalOpen]
+    [selectedHostIds, toggleHostSelection, toggleSelectAll, onEditHost, alertCounts, simplifiedWorkflow, setSelectedHostId, setModalOpen, canManage]
   )
 
   const table = useReactTable({

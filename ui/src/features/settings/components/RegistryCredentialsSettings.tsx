@@ -17,11 +17,14 @@ import { useAuth } from '@/features/auth/AuthContext'
 
 export function RegistryCredentialsSettings() {
   const { hasCapability } = useAuth()
+  const canView = hasCapability('registry.view')
   const canManage = hasCapability('registry.manage')
   const { data: credentials, isLoading } = useRegistryCredentials()
   const [showAddModal, setShowAddModal] = useState(false)
   const [editingCredential, setEditingCredential] = useState<RegistryCredential | null>(null)
   const [deletingId, setDeletingId] = useState<number | null>(null)
+
+  if (!canView) return null
 
   return (
     <div>

@@ -36,7 +36,7 @@ const TABS: Tab[] = [
   { id: 'notifications', label: 'Notifications', icon: Bell, capabilities: ['notifications.view', 'notifications.manage'] },
   { id: 'updates', label: 'Container Updates', icon: Package, capabilities: ['policies.view', 'policies.manage'] },
   { id: 'events', label: 'Events', icon: ScrollText, capabilities: ['events.view'] },
-  { id: 'api-keys', label: 'API Keys', icon: Key, capabilities: ['apikeys.manage_own', 'apikeys.manage_other'] },
+  { id: 'api-keys', label: 'API Keys', icon: Key, capabilities: ['apikeys.manage_other'] },
   { id: 'users', label: 'Users', icon: Users, capabilities: ['users.manage'] },
   { id: 'groups', label: 'Groups', icon: UserSquare2, capabilities: ['groups.manage'] },
   { id: 'permissions', label: 'Permissions', icon: Shield, capabilities: ['groups.manage'] },
@@ -111,7 +111,7 @@ export function SettingsPage() {
           {activeTab === 'notifications' && (hasCapability('notifications.view') || hasCapability('notifications.manage')) && <NotificationChannelsSection />}
           {activeTab === 'updates' && (hasCapability('policies.view') || hasCapability('policies.manage')) && <ContainerUpdatesSettings />}
           {activeTab === 'events' && hasCapability('events.view') && <EventsSettings />}
-          {activeTab === 'api-keys' && (hasCapability('apikeys.manage_own') || hasCapability('apikeys.manage_other')) && <ApiKeysSettings />}
+          {activeTab === 'api-keys' && hasCapability('apikeys.manage_other') && <ApiKeysSettings />}
           {activeTab === 'users' && hasCapability('users.manage') && <UsersSettings />}
           {activeTab === 'groups' && hasCapability('groups.manage') && <GroupsSettings />}
           {activeTab === 'permissions' && hasCapability('groups.manage') && <GroupPermissionsSettings />}

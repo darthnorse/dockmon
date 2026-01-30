@@ -54,6 +54,7 @@ export function BulkActionBar({
   const canOperate = hasCapability('containers.operate')
   const canUpdate = hasCapability('containers.update')
   const canManageTags = hasCapability('tags.manage')
+  const canBatch = hasCapability('batch.create')
 
   // Tag state
   const [tagMode, setTagMode] = useState<TagMode>('add')
@@ -263,7 +264,7 @@ export function BulkActionBar({
 
               <div className="p-3 space-y-3">
                 {/* Row 1: Start, Stop, Restart, Delete */}
-                <fieldset disabled={!canOperate} className="disabled:opacity-60">
+                <fieldset disabled={!canOperate || !canBatch} className="disabled:opacity-60">
                 <div className="flex gap-2">
                   <Button
                     variant="outline"
@@ -308,7 +309,7 @@ export function BulkActionBar({
                 <div className="h-px bg-border" />
 
                 {/* Row 2: Check Updates, Update Containers */}
-                <fieldset disabled={!canUpdate} className="disabled:opacity-60">
+                <fieldset disabled={!canUpdate || !canBatch} className="disabled:opacity-60">
                 <div className="flex gap-2">
                   <Button
                     variant="outline"
@@ -341,7 +342,7 @@ export function BulkActionBar({
 
               <div className="p-3 space-y-3 min-w-[400px]">
                   {/* Auto-Restart */}
-                  <fieldset disabled={!canOperate} className="disabled:opacity-60">
+                  <fieldset disabled={!canOperate || !canBatch} className="disabled:opacity-60">
                   <div className="space-y-2">
                     <div className="flex items-center gap-1.5">
                       <span className="text-xs font-medium text-muted-foreground">Set Auto-Restart</span>
@@ -389,7 +390,7 @@ export function BulkActionBar({
                   </fieldset>
 
                   {/* Auto-Update */}
-                  <fieldset disabled={!canUpdate} className="disabled:opacity-60">
+                  <fieldset disabled={!canUpdate || !canBatch} className="disabled:opacity-60">
                   <div className="space-y-2">
                     <div className="flex items-center gap-1.5">
                       <span className="text-xs font-medium text-muted-foreground">Set Auto-Update</span>
@@ -448,7 +449,7 @@ export function BulkActionBar({
                   </fieldset>
 
                   {/* Desired State */}
-                  <fieldset disabled={!canOperate} className="disabled:opacity-60">
+                  <fieldset disabled={!canOperate || !canBatch} className="disabled:opacity-60">
                   <div className="space-y-2">
                     <div className="flex items-center gap-1.5">
                       <span className="text-xs font-medium text-muted-foreground">Desired State</span>
@@ -503,7 +504,7 @@ export function BulkActionBar({
                 Tags
               </div>
 
-              <fieldset disabled={!canManageTags} className="p-3 space-y-3 min-w-[500px] disabled:opacity-60">
+              <fieldset disabled={!canManageTags || !canBatch} className="p-3 space-y-3 min-w-[500px] disabled:opacity-60">
                   {/* Tag mode selector */}
                   <div className="flex items-center gap-3">
                     <span className="text-xs font-medium text-muted-foreground">Action:</span>

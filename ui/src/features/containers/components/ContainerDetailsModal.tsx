@@ -52,6 +52,7 @@ export function ContainerDetailsModal({
   const canOperate = hasCapability('containers.operate')
   const canViewLogs = hasCapability('containers.logs')
   const canShell = hasCapability('containers.shell')
+  const canViewHealthChecks = hasCapability('healthchecks.view')
   const queryClient = useQueryClient()
   const { containerStats } = useStatsContext()
   const { updateContainerId } = useContainerModal()
@@ -270,11 +271,11 @@ export function ContainerDetailsModal({
       label: 'Updates',
       content: <ContainerUpdatesTab container={container} />,
     },
-    {
+    ...(canViewHealthChecks ? [{
       id: 'health',
       label: 'Health Check',
       content: <ContainerHealthCheckTab container={container} />,
-    },
+    }] : []),
   ]
 
   return (

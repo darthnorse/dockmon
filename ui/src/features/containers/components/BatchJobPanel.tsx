@@ -6,6 +6,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { debug } from '@/lib/debug'
 import { useTimeFormat } from '@/lib/hooks/useUserPreferences'
 import { formatTime } from '@/lib/utils/timeFormat'
+import { useAuth } from '@/features/auth/AuthContext'
 import type { WebSocketMessage } from '@/lib/websocket/useWebSocket'
 
 interface BatchJobStatus {
@@ -45,6 +46,8 @@ interface BatchJobPanelProps {
 }
 
 export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkActionBarOpen = false }: BatchJobPanelProps) {
+  const { hasCapability } = useAuth()
+  const canViewBatch = hasCapability('batch.view')
   const { timeFormat } = useTimeFormat()
   const [job, setJob] = useState<BatchJobStatus | null>(null)
   const [loading, setLoading] = useState(false)
@@ -55,7 +58,7 @@ export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkAc
 
   // Fetch initial job status
   useEffect(() => {
-    if (!jobId) {
+    if (!jobId || !canViewBatch) {
       setJob(null)
       return
     }
@@ -86,11 +89,11 @@ export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkAc
     return () => {
       cancelled = true
     }
-  }, [jobId])
+  }, [jobId, canViewBatch])
 
   // Handle WebSocket messages
   const handleMessage = useCallback((message: WebSocketMessage) => {
-    if (!jobId) return
+    if (!jobId || !canViewBatch) return
 
     // Handle batch job updates
     if (message.type === 'batch_job_update' && message.data && typeof message.data === 'object') {
@@ -187,7 +190,7 @@ export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkAc
         })
       }
     }
-  }, [jobId, queryClient, onJobComplete])
+  }, [jobId, canViewBatch, queryClient, onJobComplete])
 
   // Subscribe to WebSocket messages
   useEffect(() => {
@@ -216,6 +219,27 @@ export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkAc
 
   // Only unmount if no job is being tracked
   if (!jobId) return null
+
+  if (!canViewBatch) {
+    if (!isVisible) return null
+    return (
+      <div
+        className={`fixed right-0 w-96 bg-surface-1 border-l border-t border-border shadow-xl flex flex-col z-40 transition-all duration-200 ${
+          bulkActionBarOpen ? 'bottom-[280px]' : 'bottom-0'
+        }`}
+      >
+        <div className="px-4 py-3 border-b border-border flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-foreground">Batch Operation</h3>
+          <button onClick={handleClose} className="p-1 hover:bg-surface-2 rounded transition-colors" title="Close">
+            <X className="h-4 w-4 text-muted-foreground" />
+          </button>
+        </div>
+        <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+          You do not have permission to view batch job status.
+        </div>
+      </div>
+    )
+  }
 
   // If job exists but panel is hidden, keep mounted but don't render anything
   // This ensures WebSocket handler stays alive to receive job completion

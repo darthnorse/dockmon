@@ -29,15 +29,18 @@ export interface ContainerHealthCheckTabProps {
 
 function ContainerHealthCheckTabInternal({ container }: ContainerHealthCheckTabProps) {
   const { hasCapability } = useAuth()
+  const canViewHC = hasCapability('healthchecks.view')
   const canManageHC = hasCapability('healthchecks.manage')
   const canTestHC = hasCapability('healthchecks.test')
   const { timeFormat } = useTimeFormat()
+
   // CRITICAL: Always use 12-char short ID for API calls (backend expects short IDs)
   const containerShortId = container.id.slice(0, 12)
 
+  // Pass undefined when no view permission to prevent fetching
   const { data: healthCheck, isLoading } = useContainerHealthCheck(
-    container.host_id,
-    containerShortId
+    canViewHC ? container.host_id : undefined,
+    canViewHC ? containerShortId : undefined
   )
   const updateHealthCheck = useUpdateHealthCheck()
   const testHealthCheck = useTestHealthCheck()
@@ -77,6 +80,14 @@ function ContainerHealthCheckTabInternal({ container }: ContainerHealthCheckTabP
       setRestartRetryDelaySeconds(healthCheck.restart_retry_delay_seconds ?? 120)  // v2.0.2+
     }
   }, [healthCheck])
+
+  if (!canViewHC) {
+    return (
+      <div className="flex items-center justify-center h-64 text-muted-foreground">
+        You do not have permission to view health checks.
+      </div>
+    )
+  }
 
   const handleTest = async () => {
     if (!container.host_id) {

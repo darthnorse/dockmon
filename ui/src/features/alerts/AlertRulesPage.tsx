@@ -10,8 +10,11 @@ import { useAlertRules, useDeleteAlertRule, useToggleAlertRule } from './hooks/u
 import type { AlertRule } from '@/types/alerts'
 import { Plus, Settings, Trash2, Power, PowerOff, Edit, AlertTriangle } from 'lucide-react'
 import { AlertRuleFormModal } from './components/AlertRuleFormModal'
+import { useAuth } from '@/features/auth/AuthContext'
 
 export function AlertRulesPage() {
+  const { hasCapability } = useAuth()
+  const canManage = hasCapability('alerts.manage')
   const [searchParams, setSearchParams] = useSearchParams()
   const { data: rulesData, isLoading } = useAlertRules()
   const deleteRule = useDeleteAlertRule()
@@ -86,7 +89,8 @@ export function AlertRulesPage() {
 
         <button
           onClick={() => setShowCreateModal(true)}
-          className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground transition-colors hover:bg-primary/90"
+          disabled={!canManage}
+          className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-60"
         >
           <Plus className="h-4 w-4" />
           Create Rule
@@ -154,35 +158,37 @@ export function AlertRulesPage() {
                     </div>
 
                     {/* Actions */}
-                    <div className="flex items-center gap-2 ml-4">
-                      <button
-                        onClick={() => handleToggleEnabled(rule)}
-                        className={`rounded-md p-2 transition-colors ${
-                          rule.enabled
-                            ? 'text-green-500 hover:bg-gray-800'
-                            : 'text-gray-500 hover:bg-gray-800 hover:text-gray-300'
-                        }`}
-                        title={rule.enabled ? 'Disable rule' : 'Enable rule'}
-                      >
-                        {rule.enabled ? <Power className="h-4 w-4" /> : <PowerOff className="h-4 w-4" />}
-                      </button>
+                    <fieldset disabled={!canManage} className="disabled:opacity-60 ml-4">
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => handleToggleEnabled(rule)}
+                          className={`rounded-md p-2 transition-colors ${
+                            rule.enabled
+                              ? 'text-green-500 hover:bg-gray-800'
+                              : 'text-gray-500 hover:bg-gray-800 hover:text-gray-300'
+                          }`}
+                          title={rule.enabled ? 'Disable rule' : 'Enable rule'}
+                        >
+                          {rule.enabled ? <Power className="h-4 w-4" /> : <PowerOff className="h-4 w-4" />}
+                        </button>
 
-                      <button
-                        onClick={() => setEditingRule(rule)}
-                        className="rounded-md p-2 text-gray-400 transition-colors hover:bg-gray-800 hover:text-white"
-                        title="Edit rule"
-                      >
-                        <Edit className="h-4 w-4" />
-                      </button>
+                        <button
+                          onClick={() => setEditingRule(rule)}
+                          className="rounded-md p-2 text-gray-400 transition-colors hover:bg-gray-800 hover:text-white"
+                          title="Edit rule"
+                        >
+                          <Edit className="h-4 w-4" />
+                        </button>
 
-                      <button
-                        onClick={() => setDeletingRuleId(rule.id)}
-                        className="rounded-md p-2 text-gray-400 transition-colors hover:bg-gray-800 hover:text-red-400"
-                        title="Delete rule"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    </div>
+                        <button
+                          onClick={() => setDeletingRuleId(rule.id)}
+                          className="rounded-md p-2 text-gray-400 transition-colors hover:bg-gray-800 hover:text-red-400"
+                          title="Delete rule"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </fieldset>
                   </div>
                 </div>
               ))}
@@ -227,7 +233,7 @@ export function AlertRulesPage() {
               </button>
               <button
                 onClick={handleDelete}
-                disabled={deleteRule.isPending}
+                disabled={!canManage || deleteRule.isPending}
                 className="rounded-md bg-red-600 px-4 py-2 text-white transition-colors hover:bg-red-700 disabled:opacity-50"
               >
                 {deleteRule.isPending ? 'Deleting...' : 'Delete Rule'}

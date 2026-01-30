@@ -576,6 +576,8 @@ export function ChannelForm({ channel, onSubmit, onCancel, onTest, isSubmitting,
         </label>
       </div>
 
+      </fieldset>
+
       {/* Actions */}
       <div className="flex items-center justify-end gap-3 pt-4 border-t border-gray-700">
         <button
@@ -585,25 +587,26 @@ export function ChannelForm({ channel, onSubmit, onCancel, onTest, isSubmitting,
         >
           Cancel
         </button>
-        {onTest && (
+        <fieldset disabled={disabled} className="inline-flex gap-3 disabled:opacity-60">
+          {onTest && (
+            <button
+              type="button"
+              onClick={handleTestClick}
+              disabled={isTesting}
+              className="rounded-md bg-gray-700 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-gray-600 disabled:opacity-50"
+            >
+              {isTesting ? 'Testing...' : 'Test Configuration'}
+            </button>
+          )}
           <button
-            type="button"
-            onClick={handleTestClick}
-            disabled={isTesting}
-            className="rounded-md bg-gray-700 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-gray-600 disabled:opacity-50"
+            type="submit"
+            disabled={isSubmitting}
+            className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
           >
-            {isTesting ? 'Testing...' : 'Test Configuration'}
+            {isSubmitting ? 'Saving...' : isEditing ? 'Update Channel' : 'Create Channel'}
           </button>
-        )}
-        <button
-          type="submit"
-          disabled={isSubmitting}
-          className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
-        >
-          {isSubmitting ? 'Saving...' : isEditing ? 'Update Channel' : 'Create Channel'}
-        </button>
+        </fieldset>
       </div>
-      </fieldset>
     </form>
   )
 }

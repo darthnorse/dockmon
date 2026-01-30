@@ -15,6 +15,7 @@ import type { Host } from '@/types/api'
 import type { Container } from '@/features/containers/types'
 import { apiClient } from '@/lib/api/client'
 import { NoChannelsConfirmModal } from './NoChannelsConfirmModal'
+import { useAuth } from '@/features/auth/AuthContext'
 
 interface Props {
   rule?: AlertRule | null
@@ -192,6 +193,8 @@ function getChannelIcon(type: string) {
 }
 
 export function AlertRuleFormModal({ rule, onClose }: Props) {
+  const { hasCapability } = useAuth()
+  const canManage = hasCapability('alerts.manage')
   const createRule = useCreateAlertRule()
   const updateRule = useUpdateAlertRule()
   const isEditing = !!rule
@@ -734,7 +737,8 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
         {/* Form - 2 Column Layout */}
         <form onSubmit={handleSubmit} className="flex">
           {/* Left Column - Form Fields */}
-          <div className="flex-1 p-6 space-y-6 border-r border-gray-700">
+          <fieldset disabled={!canManage} className="flex-1 disabled:opacity-60">
+          <div className="p-6 space-y-6 border-r border-gray-700">
             {error && (
               <div className="rounded-md bg-red-500/10 border border-red-500/20 px-4 py-3 text-sm text-red-400">
                 {error}
@@ -1598,6 +1602,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
             </label>
           </div>
           </div>
+          </fieldset>
 
           {/* Right Column - Summary */}
           <div className="w-80 p-6 bg-gray-800/30">
@@ -1630,7 +1635,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                 form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
               }
             }}
-            disabled={isSaving}
+            disabled={!canManage || isSaving}
             className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
           >
             {submitButtonText}

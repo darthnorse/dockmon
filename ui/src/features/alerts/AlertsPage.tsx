@@ -8,8 +8,9 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAlerts, useAlertStats, useResolveAlert, useSnoozeAlert } from './hooks/useAlerts'
 import type { AlertFilters, AlertState, AlertSeverity, AlertScope } from '@/types/alerts'
-import { AlertTriangle, Bell, CheckCircle2, Clock, ChevronLeft, ChevronRight, AlertCircle, Info, ChevronDown, Settings } from 'lucide-react'
+import { AlertTriangle, Bell, CheckCircle2, Clock, ChevronLeft, ChevronRight, AlertCircle, Info, ChevronDown, Settings, LucideIcon } from 'lucide-react'
 import { AlertDetailsDrawer } from './components/AlertDetailsDrawer'
+import { useAuth } from '@/features/auth/AuthContext'
 
 const SNOOZE_DURATIONS = [
   { label: '15 minutes', value: 15 },
@@ -18,7 +19,7 @@ const SNOOZE_DURATIONS = [
   { label: '24 hours', value: 1440 },
 ]
 
-const STATE_OPTIONS: { value: AlertState; label: string; icon: any }[] = [
+const STATE_OPTIONS: { value: AlertState; label: string; icon: LucideIcon }[] = [
   { value: 'open', label: 'Open', icon: AlertCircle },
   { value: 'snoozed', label: 'Snoozed', icon: Clock },
   { value: 'resolved', label: 'Resolved', icon: CheckCircle2 },
@@ -37,6 +38,8 @@ const SCOPE_OPTIONS: { value: AlertScope; label: string }[] = [
 ]
 
 export function AlertsPage() {
+  const { hasCapability } = useAuth()
+  const canManage = hasCapability('alerts.manage')
   const [filters, setFilters] = useState<AlertFilters>({
     state: 'open', // Default to showing only open alerts
     page: 1,
@@ -282,6 +285,7 @@ export function AlertsPage() {
                 type="checkbox"
                 checked={selectedAlertIds.size === alerts.length && alerts.length > 0}
                 onChange={(e) => handleSelectAll(e.target.checked)}
+                disabled={!canManage}
                 className="h-4 w-4 rounded border-gray-600 bg-gray-800 text-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-0"
               />
               <div className="ml-6 flex-1 text-sm font-medium text-gray-400">Alert</div>
@@ -317,6 +321,7 @@ export function AlertsPage() {
                         e.stopPropagation()
                         handleSelectAlert(alert.id, e.target.checked)
                       }}
+                      disabled={!canManage}
                       className="h-4 w-4 mt-1 rounded border-gray-600 bg-gray-800 text-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-0"
                     />
                   </div>
@@ -393,43 +398,45 @@ export function AlertsPage() {
               {selectedAlertIds.size} alert{selectedAlertIds.size !== 1 ? 's' : ''} selected
             </div>
             <div className="flex items-center gap-3">
-              {/* Snooze Dropdown */}
-              <div className="relative">
+              <fieldset disabled={!canManage} className="flex items-center gap-3 disabled:opacity-60">
+                {/* Snooze Dropdown */}
+                <div className="relative">
+                  <button
+                    onClick={() => setShowSnoozeMenu(!showSnoozeMenu)}
+                    className="flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700"
+                  >
+                    <Clock className="h-4 w-4" />
+                    <span>Snooze</span>
+                    <ChevronDown className="h-4 w-4" />
+                  </button>
+
+                  {showSnoozeMenu && (
+                    <>
+                      <div className="fixed inset-0 z-[45]" onClick={() => setShowSnoozeMenu(false)} />
+                      <div className="absolute bottom-full left-0 mb-2 w-48 rounded-lg bg-gray-800 shadow-xl border border-gray-700 py-1 z-[46]">
+                        {SNOOZE_DURATIONS.map((duration) => (
+                          <button
+                            key={duration.value}
+                            onClick={() => handleBulkSnooze(duration.value)}
+                            className="w-full px-4 py-2 text-left text-sm text-gray-300 transition-colors hover:bg-gray-700"
+                          >
+                            {duration.label}
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                {/* Resolve Button */}
                 <button
-                  onClick={() => setShowSnoozeMenu(!showSnoozeMenu)}
-                  className="flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700"
+                  onClick={() => setShowResolveConfirm(true)}
+                  className="flex items-center gap-2 rounded-md bg-green-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-green-700"
                 >
-                  <Clock className="h-4 w-4" />
-                  <span>Snooze</span>
-                  <ChevronDown className="h-4 w-4" />
+                  <CheckCircle2 className="h-4 w-4" />
+                  <span>Resolve</span>
                 </button>
-
-                {showSnoozeMenu && (
-                  <>
-                    <div className="fixed inset-0 z-[45]" onClick={() => setShowSnoozeMenu(false)} />
-                    <div className="absolute bottom-full left-0 mb-2 w-48 rounded-lg bg-gray-800 shadow-xl border border-gray-700 py-1 z-[46]">
-                      {SNOOZE_DURATIONS.map((duration) => (
-                        <button
-                          key={duration.value}
-                          onClick={() => handleBulkSnooze(duration.value)}
-                          className="w-full px-4 py-2 text-left text-sm text-gray-300 transition-colors hover:bg-gray-700"
-                        >
-                          {duration.label}
-                        </button>
-                      ))}
-                    </div>
-                  </>
-                )}
-              </div>
-
-              {/* Resolve Button */}
-              <button
-                onClick={() => setShowResolveConfirm(true)}
-                className="flex items-center gap-2 rounded-md bg-green-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-green-700"
-              >
-                <CheckCircle2 className="h-4 w-4" />
-                <span>Resolve</span>
-              </button>
+              </fieldset>
 
               {/* Cancel Button */}
               <button
@@ -467,7 +474,7 @@ export function AlertsPage() {
               </button>
               <button
                 onClick={handleBulkResolve}
-                disabled={resolveAlert.isPending}
+                disabled={!canManage || resolveAlert.isPending}
                 className="px-4 py-2 rounded-md bg-green-600 text-white hover:bg-green-700 transition-colors disabled:opacity-50"
               >
                 {resolveAlert.isPending ? 'Resolving...' : 'Resolve Alerts'}

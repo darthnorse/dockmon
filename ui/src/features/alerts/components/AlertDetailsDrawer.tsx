@@ -11,6 +11,7 @@ import { useAlert, useAlertAnnotations, useResolveAlert, useSnoozeAlert, useUnsn
 import { useTimeFormat } from '@/lib/hooks/useUserPreferences'
 import { formatDateTime as formatDateTimeUtil } from '@/lib/utils/timeFormat'
 import type { AlertSeverity, AlertState } from '@/types/alerts'
+import { useAuth } from '@/features/auth/AuthContext'
 
 interface AlertDetailsDrawerProps {
   alertId: string
@@ -27,6 +28,8 @@ const SNOOZE_DURATIONS = [
 
 export function AlertDetailsDrawer({ alertId, onClose }: AlertDetailsDrawerProps) {
   const navigate = useNavigate()
+  const { hasCapability } = useAuth()
+  const canManage = hasCapability('alerts.manage')
   const { timeFormat } = useTimeFormat()
   const { data: alert, isLoading } = useAlert(alertId)
   const { data: annotationsData } = useAlertAnnotations(alertId)
@@ -385,43 +388,48 @@ export function AlertDetailsDrawer({ alertId, onClose }: AlertDetailsDrawerProps
                   Annotations ({annotations.length})
                 </h4>
                 {alert.state !== 'resolved' && (
-                  <button
-                    onClick={() => setShowAnnotationForm(!showAnnotationForm)}
-                    className="text-sm text-blue-400 hover:text-blue-300"
-                  >
-                    Add Note
-                  </button>
+                  <fieldset disabled={!canManage} className="disabled:opacity-60">
+                    <button
+                      onClick={() => setShowAnnotationForm(!showAnnotationForm)}
+                      className="text-sm text-blue-400 hover:text-blue-300"
+                    >
+                      Add Note
+                    </button>
+                  </fieldset>
                 )}
               </div>
 
               {/* Add Annotation Form */}
               {showAnnotationForm && (
                 <div className="mb-4 rounded-lg bg-gray-900/50 p-3">
-                  <textarea
-                    value={annotationText}
-                    onChange={(e) => setAnnotationText(e.target.value)}
-                    placeholder="Add a note about this alert..."
-                    className="mb-2 w-full rounded-md bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    rows={3}
-                  />
-                  <div className="flex justify-end gap-2">
-                    <button
-                      onClick={() => {
-                        setShowAnnotationForm(false)
-                        setAnnotationText('')
-                      }}
-                      className="rounded-md px-3 py-1.5 text-sm text-gray-400 hover:text-white"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      onClick={handleAddAnnotation}
-                      disabled={!annotationText.trim()}
-                      className="rounded-md bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      Add Note
-                    </button>
-                  </div>
+                  <fieldset disabled={!canManage} className="disabled:opacity-60">
+                    <textarea
+                      value={annotationText}
+                      onChange={(e) => setAnnotationText(e.target.value)}
+                      placeholder="Add a note about this alert..."
+                      className="mb-2 w-full rounded-md bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      rows={3}
+                    />
+                    <div className="flex justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowAnnotationForm(false)
+                          setAnnotationText('')
+                        }}
+                        className="rounded-md px-3 py-1.5 text-sm text-gray-400 hover:text-white"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={handleAddAnnotation}
+                        disabled={!annotationText.trim()}
+                        className="rounded-md bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        Add Note
+                      </button>
+                    </div>
+                  </fieldset>
                 </div>
               )}
 
@@ -449,6 +457,7 @@ export function AlertDetailsDrawer({ alertId, onClose }: AlertDetailsDrawerProps
 
           {/* Actions Footer */}
           {alert.state !== 'resolved' && (
+            <fieldset disabled={!canManage} className="disabled:opacity-60">
             <div className="border-t border-gray-800 px-6 py-4">
               <div className="flex gap-3">
                 {alert.state === 'snoozed' ? (
@@ -504,6 +513,7 @@ export function AlertDetailsDrawer({ alertId, onClose }: AlertDetailsDrawerProps
                 </button>
               </div>
             </div>
+            </fieldset>
           )}
         </div>
       </div>
@@ -534,7 +544,7 @@ export function AlertDetailsDrawer({ alertId, onClose }: AlertDetailsDrawerProps
               </button>
               <button
                 onClick={handleResolve}
-                disabled={resolveAlert.isPending}
+                disabled={!canManage || resolveAlert.isPending}
                 className="px-4 py-2 rounded-lg bg-green-600 hover:bg-green-700 text-white transition-colors text-sm disabled:opacity-50"
               >
                 {resolveAlert.isPending ? 'Resolving...' : 'Resolve Alert'}

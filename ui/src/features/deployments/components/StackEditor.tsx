@@ -64,6 +64,7 @@ import { DeploymentProgress } from './DeploymentProgress'
 import { validateStackName, MAX_STACK_NAME_LENGTH } from '../types'
 import type { DeployedHost } from '../types'
 import { handleApiError, getErrorMessage } from '../utils'
+import { useAuth } from '@/features/auth/AuthContext'
 
 // Base path for stack storage (matches backend STACKS_DIR)
 const STACKS_BASE_PATH = '/app/data/stacks'
@@ -83,6 +84,10 @@ export function StackEditor({
   deployedTo,
   onStackChange,
 }: StackEditorProps) {
+  const { hasCapability } = useAuth()
+  const canEdit = hasCapability('stacks.edit')
+  const canDeploy = hasCapability('stacks.deploy')
+
   // Data hooks
   const createStack = useCreateStack()
   const updateStack = useUpdateStack()
@@ -446,7 +451,7 @@ export function StackEditor({
         {/* Stack name header */}
         <div className="flex items-center gap-2 mb-3 shrink-0">
           {isEditingName || isCreateMode ? (
-            <div className="flex-1 flex items-center gap-2">
+            <fieldset disabled={!canEdit} className="flex-1 flex items-center gap-2 disabled:opacity-60">
               <Input
                 value={stackName}
                 onChange={(e) => setStackName(e.target.value.toLowerCase())}
@@ -475,7 +480,7 @@ export function StackEditor({
                   </Button>
                 </>
               )}
-            </div>
+            </fieldset>
           ) : (
             <>
               <h3 className="font-semibold text-lg font-mono">{stackName}</h3>
@@ -483,6 +488,7 @@ export function StackEditor({
                 variant="ghost"
                 size="icon"
                 onClick={startEditingName}
+                disabled={!canEdit}
                 title="Rename"
                 className="ml-1"
               >
@@ -549,7 +555,7 @@ export function StackEditor({
           </div>
 
           {/* Tab content */}
-          <div className="flex-1 min-h-0 flex flex-col">
+          <fieldset disabled={!canEdit} className="flex-1 min-h-0 flex flex-col disabled:opacity-60">
             {activeTab === 'compose' && (
               <ConfigurationEditor
                 ref={configEditorRef}
@@ -569,12 +575,12 @@ export function StackEditor({
                 fillHeight
               />
             )}
-          </div>
+          </fieldset>
         </div>
 
         {/* Deploy section (only for existing stacks) */}
         {!isCreateMode && (
-          <div className="pt-3 mt-3 border-t shrink-0">
+          <fieldset disabled={!canDeploy} className="pt-3 mt-3 border-t shrink-0 disabled:opacity-60">
             <Label className="text-sm font-medium mb-2 block">Deploy to Host</Label>
             <div className="flex gap-2">
               <Select value={hostId} onValueChange={setHostId}>
@@ -606,12 +612,12 @@ export function StackEditor({
                 {isRedeploy ? 'Redeploy' : 'Deploy'}
               </Button>
             </div>
-          </div>
+          </fieldset>
         )}
 
         {/* Action buttons */}
         <div className="flex items-center justify-between pt-3 mt-3 border-t shrink-0">
-          <div className="flex gap-2">
+          <fieldset disabled={!canEdit} className="flex items-center gap-1 disabled:opacity-60">
             {!isCreateMode && (
               <>
                 <Button
@@ -636,14 +642,16 @@ export function StackEditor({
                 </Button>
               </>
             )}
-          </div>
+          </fieldset>
 
-          <Button
-            onClick={handleSave}
-            disabled={isSubmitting || (!isCreateMode && !hasChanges)}
-          >
-            {getSaveButtonText()}
-          </Button>
+          <fieldset disabled={!canEdit} className="disabled:opacity-60">
+            <Button
+              onClick={handleSave}
+              disabled={isSubmitting || (!isCreateMode && !hasChanges)}
+            >
+              {getSaveButtonText()}
+            </Button>
+          </fieldset>
         </div>
       </div>
 
@@ -664,12 +672,14 @@ export function StackEditor({
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleDelete}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              Delete
-            </AlertDialogAction>
+            <fieldset disabled={!canEdit} className="disabled:opacity-60">
+              <AlertDialogAction
+                onClick={handleDelete}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              >
+                Delete
+              </AlertDialogAction>
+            </fieldset>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -687,30 +697,34 @@ export function StackEditor({
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label htmlFor="copy-dest-name">New Stack Name</Label>
-              <Input
-                id="copy-dest-name"
-                value={copyDestName}
-                onChange={(e) => setCopyDestName(e.target.value.toLowerCase())}
-                placeholder="my-stack-copy"
-                className="font-mono"
-                maxLength={MAX_STACK_NAME_LENGTH}
-              />
-              <p className="text-xs text-muted-foreground">
-                Lowercase letters, numbers, hyphens, and underscores only
-              </p>
+          <fieldset disabled={!canEdit} className="space-y-4 disabled:opacity-60">
+            <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <Label htmlFor="copy-dest-name">New Stack Name</Label>
+                <Input
+                  id="copy-dest-name"
+                  value={copyDestName}
+                  onChange={(e) => setCopyDestName(e.target.value.toLowerCase())}
+                  placeholder="my-stack-copy"
+                  className="font-mono"
+                  maxLength={MAX_STACK_NAME_LENGTH}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Lowercase letters, numbers, hyphens, and underscores only
+                </p>
+              </div>
             </div>
-          </div>
+          </fieldset>
 
           <div className="flex justify-end gap-2">
             <Button variant="outline" onClick={() => setActiveDialog(null)}>
               Cancel
             </Button>
-            <Button onClick={handleCopy} disabled={!copyDestName.trim() || isSubmitting}>
-              {isSubmitting ? 'Copying...' : 'Clone Stack'}
-            </Button>
+            <fieldset disabled={!canEdit} className="disabled:opacity-60">
+              <Button onClick={handleCopy} disabled={!copyDestName.trim() || isSubmitting}>
+                {isSubmitting ? 'Copying...' : 'Clone Stack'}
+              </Button>
+            </fieldset>
           </div>
         </DialogContent>
       </Dialog>
@@ -730,9 +744,11 @@ export function StackEditor({
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleSaveAndDeploy}>
-              Save & Deploy
-            </AlertDialogAction>
+            <fieldset disabled={!canEdit || !canDeploy} className="disabled:opacity-60">
+              <AlertDialogAction onClick={handleSaveAndDeploy}>
+                Save & Deploy
+              </AlertDialogAction>
+            </fieldset>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

@@ -66,6 +66,7 @@ import {
   Container,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { useAuth } from '@/features/auth/AuthContext'
 
 type ImportStep = 'input' | 'select-name' | 'stack-exists' | 'success'
 type ImportMethod = 'paste' | 'browse' | 'running'
@@ -81,6 +82,10 @@ export function ImportStackModal({
   onClose,
   onSuccess,
 }: ImportStackModalProps) {
+  const { hasCapability } = useAuth()
+  const canEdit = hasCapability('stacks.edit')
+  const canDeploy = hasCapability('stacks.deploy')
+
   // Step and method state
   const [step, setStep] = useState<ImportStep>('input')
   const [method, setMethod] = useState<ImportMethod>('paste')
@@ -532,7 +537,7 @@ export function ImportStackModal({
         </DialogHeader>
 
         {step === 'input' && (
-          <div className="space-y-4">
+          <fieldset disabled={!canDeploy} className="space-y-4 disabled:opacity-60">
             {/* Method Toggle */}
             <div className="flex gap-2 p-1 bg-muted rounded-lg">
               <button
@@ -936,17 +941,17 @@ export function ImportStackModal({
               {method === 'running' && (
                 <Button
                   onClick={handleImportFromRunning}
-                  disabled={importDeployment.isPending || !selectedRunningProject || !generatedCompose}
+                  disabled={importDeployment.isPending || !selectedRunningProject || !generatedCompose || !canEdit}
                 >
                   {importDeployment.isPending ? 'Importing...' : 'Import Stack'}
                 </Button>
               )}
             </DialogFooter>
-          </div>
+          </fieldset>
         )}
 
         {step === 'select-name' && (
-          <div className="space-y-4">
+          <fieldset disabled={!canDeploy} className="space-y-4 disabled:opacity-60">
             <Alert>
               <AlertDescription>
                 The compose file doesn&apos;t have a{' '}
@@ -1011,11 +1016,11 @@ export function ImportStackModal({
                 {importDeployment.isPending ? 'Importing...' : 'Import Stack'}
               </Button>
             </DialogFooter>
-          </div>
+          </fieldset>
         )}
 
         {step === 'stack-exists' && existingStackName && (
-          <div className="space-y-4">
+          <fieldset disabled={!canDeploy} className="space-y-4 disabled:opacity-60">
             <Alert>
               <AlertDescription>
                 A stack named <strong>"{existingStackName}"</strong> already exists on the filesystem.
@@ -1091,7 +1096,7 @@ export function ImportStackModal({
                 Back
               </Button>
             </DialogFooter>
-          </div>
+          </fieldset>
         )}
 
         {step === 'success' && (

@@ -10,6 +10,7 @@
  */
 
 import { useEffect, useState, useMemo } from 'react'
+import { useAuth } from '@/features/auth/AuthContext'
 import { Circle, Cpu, MemoryStick, Network } from 'lucide-react'
 import { useContainer, useContainerSparklines } from '@/lib/stats/StatsProvider'
 import { ResponsiveMiniChart } from '@/lib/charts/ResponsiveMiniChart'
@@ -25,6 +26,8 @@ interface ContainerOverviewTabProps {
 }
 
 export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOverviewTabProps) {
+  const { hasCapability } = useAuth()
+  const canOperate = hasCapability('containers.operate')
   const container = useContainer(containerId)
   const sparklines = useContainerSparklines(containerId)
   const [uptime, setUptime] = useState<string>('')
@@ -201,7 +204,7 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
       </div>
 
       {/* Controls Section */}
-      <div className="border-t border-border pt-4 space-y-4">
+      <fieldset disabled={!canOperate} className="border-t border-border pt-4 space-y-4 disabled:opacity-60">
         <h4 className="text-sm font-medium text-foreground mb-3">Controls</h4>
 
         {/* Auto-Restart Checkbox */}
@@ -262,7 +265,7 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
             </button>
           </div>
         </div>
-      </div>
+      </fieldset>
 
       {/* Information Section */}
       <div className="border-t border-border pt-4 space-y-2">

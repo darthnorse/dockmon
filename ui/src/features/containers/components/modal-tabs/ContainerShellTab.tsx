@@ -5,6 +5,7 @@
  */
 
 import { useEffect, useRef, useState, useCallback } from 'react'
+import { useAuth } from '@/features/auth/AuthContext'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
@@ -25,6 +26,8 @@ export function ContainerShellTab({
   containerName,
   isRunning,
 }: ContainerShellTabProps) {
+  const { hasCapability } = useAuth()
+  const canOperate = hasCapability('containers.operate')
   const terminalRef = useRef<HTMLDivElement>(null)
   const terminalInstance = useRef<Terminal | null>(null)
   const fitAddon = useRef<FitAddon | null>(null)
@@ -182,18 +185,18 @@ export function ContainerShellTab({
     }
   }, [containerId, cleanup])
 
-  // Cleanup when container stops running
+  // Cleanup when container stops running or permission revoked
   useEffect(() => {
-    if (!isRunning) {
+    if (!isRunning || !canOperate) {
       cleanup()
       setIsConnected(false)
       setError(null)
     }
-  }, [isRunning, cleanup])
+  }, [isRunning, canOperate, cleanup])
 
   // Auto-connect on mount (only once per container)
   useEffect(() => {
-    if (isRunning && !hasConnectedOnce.current) {
+    if (canOperate && isRunning && !hasConnectedOnce.current) {
       hasConnectedOnce.current = true
       const timer = setTimeout(() => {
         connect()
@@ -201,7 +204,24 @@ export function ContainerShellTab({
       return () => clearTimeout(timer)
     }
     return undefined
-  }, [isRunning, connect])
+  }, [canOperate, isRunning, connect])
+
+  // Permission denied - no shell access
+  if (!canOperate) {
+    return (
+      <div className="h-full flex items-center justify-center">
+        <div className="text-center space-y-4">
+          <AlertCircle className="h-12 w-12 text-muted-foreground mx-auto" />
+          <div>
+            <h3 className="font-medium">Permission Denied</h3>
+            <p className="text-sm text-muted-foreground mt-1">
+              You do not have permission to access the container shell.
+            </p>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   // Show error if container not running
   if (!isRunning) {

@@ -9,11 +9,12 @@
  */
 
 import { useState, useRef, useEffect } from 'react'
-import { X, Tag, Info } from 'lucide-react'
+import { X, Tag, Info, Check } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { apiClient } from '@/lib/api/client'
 import { debug } from '@/lib/debug'
 import { validateTagSuggestionsResponse } from '@/lib/validation/tags'
+import { useAuth } from '@/features/auth/AuthContext'
 import type { Container } from '../types'
 
 interface BulkActionBarProps {
@@ -49,6 +50,11 @@ export function BulkActionBar({
   onAutoUpdateUpdate,
   onDesiredStateUpdate
 }: BulkActionBarProps) {
+  const { hasCapability } = useAuth()
+  const canOperate = hasCapability('containers.operate')
+  const canUpdate = hasCapability('containers.update')
+  const canManageTags = hasCapability('tags.manage')
+
   // Tag state
   const [tagMode, setTagMode] = useState<TagMode>('add')
   const [inputValue, setInputValue] = useState('')
@@ -239,8 +245,8 @@ export function BulkActionBar({
         <div className="flex items-center justify-between gap-4">
           {/* Left: Selection count */}
           <div className="flex items-center gap-2">
-            <div className="flex items-center justify-center h-6 w-6 rounded-full bg-primary text-primary-foreground text-xs font-medium">
-              ✓
+            <div className="flex items-center justify-center h-6 w-6 rounded-full bg-primary text-primary-foreground">
+              <Check className="h-3.5 w-3.5" />
             </div>
             <span className="text-sm font-medium text-foreground">
               {selectedCount} container{selectedCount !== 1 ? 's' : ''} selected
@@ -257,6 +263,7 @@ export function BulkActionBar({
 
               <div className="p-3 space-y-3">
                 {/* Row 1: Start, Stop, Restart, Delete */}
+                <fieldset disabled={!canOperate} className="disabled:opacity-60">
                 <div className="flex gap-2">
                   <Button
                     variant="outline"
@@ -295,11 +302,13 @@ export function BulkActionBar({
                     Delete
                   </Button>
                 </div>
+                </fieldset>
 
                 {/* Separator */}
                 <div className="h-px bg-border" />
 
                 {/* Row 2: Check Updates, Update Containers */}
+                <fieldset disabled={!canUpdate} className="disabled:opacity-60">
                 <div className="flex gap-2">
                   <Button
                     variant="outline"
@@ -320,6 +329,7 @@ export function BulkActionBar({
                     Update Containers
                   </Button>
                 </div>
+                </fieldset>
               </div>
             </div>
 
@@ -331,6 +341,7 @@ export function BulkActionBar({
 
               <div className="p-3 space-y-3 min-w-[400px]">
                   {/* Auto-Restart */}
+                  <fieldset disabled={!canOperate} className="disabled:opacity-60">
                   <div className="space-y-2">
                     <div className="flex items-center gap-1.5">
                       <span className="text-xs font-medium text-muted-foreground">Set Auto-Restart</span>
@@ -375,8 +386,10 @@ export function BulkActionBar({
                       </Button>
                     </div>
                   </div>
+                  </fieldset>
 
                   {/* Auto-Update */}
+                  <fieldset disabled={!canUpdate} className="disabled:opacity-60">
                   <div className="space-y-2">
                     <div className="flex items-center gap-1.5">
                       <span className="text-xs font-medium text-muted-foreground">Set Auto-Update</span>
@@ -432,8 +445,10 @@ export function BulkActionBar({
                       </Button>
                     </div>
                   </div>
+                  </fieldset>
 
                   {/* Desired State */}
+                  <fieldset disabled={!canOperate} className="disabled:opacity-60">
                   <div className="space-y-2">
                     <div className="flex items-center gap-1.5">
                       <span className="text-xs font-medium text-muted-foreground">Desired State</span>
@@ -478,6 +493,7 @@ export function BulkActionBar({
                       </Button>
                     </div>
                   </div>
+                  </fieldset>
                 </div>
             </div>
 
@@ -487,7 +503,7 @@ export function BulkActionBar({
                 Tags
               </div>
 
-              <div className="p-3 space-y-3 min-w-[500px]">
+              <fieldset disabled={!canManageTags} className="p-3 space-y-3 min-w-[500px] disabled:opacity-60">
                   {/* Tag mode selector */}
                   <div className="flex items-center gap-3">
                     <span className="text-xs font-medium text-muted-foreground">Action:</span>
@@ -639,7 +655,7 @@ export function BulkActionBar({
                       )}
                     </div>
                   </div>
-                </div>
+                </fieldset>
             </div>
 
             {/* Clear selection button */}

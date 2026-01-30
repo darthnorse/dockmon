@@ -6,6 +6,7 @@
  */
 
 import { memo, useState, useEffect } from 'react'
+import { useAuth } from '@/features/auth/AuthContext'
 import { Package, RefreshCw, Check, AlertCircle, Download, Shield, ExternalLink, Edit2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
@@ -28,11 +29,14 @@ export interface ContainerUpdatesTabProps {
 }
 
 function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
+  const { hasCapability } = useAuth()
+  const canUpdate = hasCapability('containers.update')
+  const canManagePolicy = hasCapability('policies.manage')
   const { timeFormat } = useTimeFormat()
   // CRITICAL: Always use 12-char short ID for API calls (backend expects short IDs)
   const containerShortId = container.id.slice(0, 12)
 
-  const { data: updateStatus, isLoading, error } = useContainerUpdateStatus(
+  const { data: updateStatus, isLoading } = useContainerUpdateStatus(
     container.host_id,
     containerShortId
   )
@@ -75,11 +79,6 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
       setRegistryPageUrl(updateStatus.registry_page_url || '')  // v2.0.2+
     }
   }, [updateStatus])
-
-  // Log any errors for debugging
-  if (error) {
-    console.error('Error fetching update status:', error)
-  }
 
   const handleCheckNow = async () => {
     if (!container.host_id) {
@@ -393,7 +392,7 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
         </div>
 
         <div className="flex flex-col items-end gap-2">
-          <div className="flex gap-2">
+          <fieldset disabled={!canUpdate} className="flex gap-2 disabled:opacity-60">
             {hasUpdate && (
               <Button
                 onClick={handleUpdateNow}
@@ -430,7 +429,7 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
                 </>
               )}
             </Button>
-          </div>
+          </fieldset>
           {updateStatus && (
             <p className="text-xs text-muted-foreground">
               Last checked: {lastChecked}
@@ -563,7 +562,7 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
       </div>
 
       {/* Changelog & Registry Links (v2.0.2+) */}
-      <div className="border-t pt-6">
+      <fieldset disabled={!canUpdate} className="border-t pt-6 disabled:opacity-60">
         <h4 className="text-lg font-medium text-foreground mb-4">Resource Links</h4>
 
         <div className="grid grid-cols-2 gap-6">
@@ -698,7 +697,7 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
           </p>
           </div>
         </div>
-      </div>
+      </fieldset>
 
       {/* Settings */}
       <div className="space-y-4 border-t pt-6">
@@ -706,6 +705,7 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
 
         <div className="space-y-4">
           {/* Auto-update toggle */}
+          <fieldset disabled={!canUpdate} className="disabled:opacity-60">
           <div className="flex items-start justify-between py-4">
             <div className="flex-1 mr-4">
               <label htmlFor="auto-update" className="text-sm font-medium cursor-pointer">
@@ -841,8 +841,10 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
               </label>
             </div>
           </div>
+          </fieldset>
 
           {/* Update policy selector */}
+          <fieldset disabled={!canManagePolicy} className="disabled:opacity-60">
           <div className="flex items-start justify-between py-4 border-t">
             <div className="flex-1 mr-4">
               <label htmlFor="update-policy" className="text-sm font-medium flex items-center gap-2">
@@ -872,6 +874,7 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
               </SelectContent>
             </Select>
           </div>
+          </fieldset>
         </div>
       </div>
 

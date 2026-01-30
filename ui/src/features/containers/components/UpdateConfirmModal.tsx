@@ -1,3 +1,4 @@
+import { useAuth } from '@/features/auth/AuthContext'
 import type { Container } from '../types'
 import { makeCompositeKey } from '@/lib/utils/containerKeys'
 
@@ -14,6 +15,9 @@ export function UpdateConfirmModal({
   onConfirm,
   containers,
 }: UpdateConfirmModalProps) {
+  const { hasCapability } = useAuth()
+  const canUpdate = hasCapability('containers.update')
+
   if (!isOpen) return null
 
   return (
@@ -71,12 +75,14 @@ export function UpdateConfirmModal({
           >
             Cancel
           </button>
-          <button
-            onClick={onConfirm}
-            className="px-4 py-2 text-sm font-medium rounded transition-colors bg-primary text-primary-foreground hover:bg-primary/90"
-          >
-            Update {containers.length} Container{containers.length !== 1 ? 's' : ''}
-          </button>
+          <fieldset disabled={!canUpdate} className="disabled:opacity-60">
+            <button
+              onClick={onConfirm}
+              className="px-4 py-2 text-sm font-medium rounded transition-colors bg-primary text-primary-foreground hover:bg-primary/90"
+            >
+              Update {containers.length} Container{containers.length !== 1 ? 's' : ''}
+            </button>
+          </fieldset>
         </div>
       </div>
     </div>

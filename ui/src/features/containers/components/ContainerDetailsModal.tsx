@@ -10,6 +10,7 @@
  */
 
 import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useAuth } from '@/features/auth/AuthContext'
 import { X, Play, RotateCw, Circle, Trash2 } from 'lucide-react'
 import { Tabs } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
@@ -47,6 +48,8 @@ export function ContainerDetailsModal({
   onClose,
   initialTab = 'info',
 }: ContainerDetailsModalProps) {
+  const { hasCapability } = useAuth()
+  const canOperate = hasCapability('containers.operate')
   const queryClient = useQueryClient()
   const { containerStats } = useStatsContext()
   const { updateContainerId } = useContainerModal()
@@ -351,47 +354,49 @@ export function ContainerDetailsModal({
 
           {/* Action Buttons */}
           <div className="flex items-center gap-2">
-            {!isRunning ? (
-              <Button
-                variant="default"
-                size="sm"
-                onClick={handleStart}
-                disabled={isPerformingAction}
-              >
-                <Play className="w-4 h-4 mr-2" />
-                Start
-              </Button>
-            ) : (
+            <fieldset disabled={!canOperate} className="flex items-center gap-2 disabled:opacity-60">
+              {!isRunning ? (
+                <Button
+                  variant="default"
+                  size="sm"
+                  onClick={handleStart}
+                  disabled={isPerformingAction}
+                >
+                  <Play className="w-4 h-4 mr-2" />
+                  Start
+                </Button>
+              ) : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleStop}
+                  disabled={isPerformingAction}
+                  className="border-red-500/50 text-red-400 hover:bg-red-500/10"
+                >
+                  <Circle className="w-4 h-4 mr-2" />
+                  Stop
+                </Button>
+              )}
               <Button
                 variant="outline"
                 size="sm"
-                onClick={handleStop}
+                onClick={handleRestart}
                 disabled={isPerformingAction}
-                className="border-red-500/50 text-red-400 hover:bg-red-500/10"
               >
-                <Circle className="w-4 h-4 mr-2" />
-                Stop
+                <RotateCw className="w-4 h-4 mr-2" />
+                Restart
               </Button>
-            )}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleRestart}
-              disabled={isPerformingAction}
-            >
-              <RotateCw className="w-4 h-4 mr-2" />
-              Restart
-            </Button>
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={() => setShowDeleteDialog(true)}
-              disabled={isPerformingAction || container.name.toLowerCase() === 'dockmon' || container.name.toLowerCase().startsWith('dockmon-')}
-              className="bg-red-600 hover:bg-red-700 text-white"
-            >
-              <Trash2 className="w-4 h-4 mr-2" />
-              Delete
-            </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => setShowDeleteDialog(true)}
+                disabled={isPerformingAction || container.name.toLowerCase() === 'dockmon' || container.name.toLowerCase().startsWith('dockmon-')}
+                className="bg-red-600 hover:bg-red-700 text-white"
+              >
+                <Trash2 className="w-4 h-4 mr-2" />
+                Delete
+              </Button>
+            </fieldset>
             <Button
               variant="ghost"
               size="icon"

@@ -29,6 +29,7 @@ interface ContainerDrawerProps {
 export function ContainerDrawer({ isOpen, onClose, containerId, onExpand }: ContainerDrawerProps) {
   const { hasCapability } = useAuth()
   const canOperate = hasCapability('containers.operate')
+  const canViewLogs = hasCapability('containers.logs')
   const [activeTab, setActiveTab] = useState('overview')
   const [isActionLoading, setIsActionLoading] = useState(false)
   const container = useContainer(containerId)
@@ -108,11 +109,11 @@ export function ContainerDrawer({ isOpen, onClose, containerId, onExpand }: Cont
         </div>
       ),
     },
-    {
+    ...(canViewLogs ? [{
       id: 'logs',
       label: 'Logs',
       content: <ContainerLogsTab containerId={containerId} />,
-    },
+    }] : []),
   ]
 
   return (

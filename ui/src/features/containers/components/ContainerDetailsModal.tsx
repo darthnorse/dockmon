@@ -50,6 +50,8 @@ export function ContainerDetailsModal({
 }: ContainerDetailsModalProps) {
   const { hasCapability } = useAuth()
   const canOperate = hasCapability('containers.operate')
+  const canViewLogs = hasCapability('containers.logs')
+  const canShell = hasCapability('containers.shell')
   const queryClient = useQueryClient()
   const { containerStats } = useStatsContext()
   const { updateContainerId } = useContainerModal()
@@ -189,43 +191,16 @@ export function ContainerDetailsModal({
 
   const isRunning = container.state === 'running'
 
-  const handleStart = async () => {
+  const handleAction = async (action: 'start' | 'stop' | 'restart') => {
     setIsPerformingAction(true)
     try {
       // CRITICAL: Use current tracked containerId, not container.id which may be stale from fallback
       const { hostId, containerId: currentId } = parseCompositeKey(containerId!)
-      await apiClient.post(`/hosts/${hostId}/containers/${currentId}/start`)
-      toast.success(`Started ${container.name}`)
+      await apiClient.post(`/hosts/${hostId}/containers/${currentId}/${action}`)
+      const labels = { start: 'Started', stop: 'Stopped', restart: 'Restarting' } as const
+      toast.success(`${labels[action]} ${container.name}`)
     } catch (error) {
-      toast.error(`Failed to start container: ${error instanceof Error ? error.message : 'Unknown error'}`)
-    } finally {
-      setIsPerformingAction(false)
-    }
-  }
-
-  const handleStop = async () => {
-    setIsPerformingAction(true)
-    try {
-      // CRITICAL: Use current tracked containerId, not container.id which may be stale from fallback
-      const { hostId, containerId: currentId } = parseCompositeKey(containerId!)
-      await apiClient.post(`/hosts/${hostId}/containers/${currentId}/stop`)
-      toast.success(`Stopped ${container.name}`)
-    } catch (error) {
-      toast.error(`Failed to stop container: ${error instanceof Error ? error.message : 'Unknown error'}`)
-    } finally {
-      setIsPerformingAction(false)
-    }
-  }
-
-  const handleRestart = async () => {
-    setIsPerformingAction(true)
-    try {
-      // CRITICAL: Use current tracked containerId, not container.id which may be stale from fallback
-      const { hostId, containerId: currentId } = parseCompositeKey(containerId!)
-      await apiClient.post(`/hosts/${hostId}/containers/${currentId}/restart`)
-      toast.success(`Restarting ${container.name}`)
-    } catch (error) {
-      toast.error(`Failed to restart container: ${error instanceof Error ? error.message : 'Unknown error'}`)
+      toast.error(`Failed to ${action} container: ${error instanceof Error ? error.message : 'Unknown error'}`)
     } finally {
       setIsPerformingAction(false)
     }
@@ -247,7 +222,6 @@ export function ContainerDetailsModal({
       setIsPerformingAction(false)
     }
   }
-
 
   const getStatusColor = () => {
     switch (container.state.toLowerCase()) {
@@ -271,16 +245,16 @@ export function ContainerDetailsModal({
       label: 'Info',
       content: <ContainerInfoTab container={container} />,
     },
-    {
+    ...(canViewLogs ? [{
       id: 'logs',
       label: 'Logs',
       content: <ContainerModalLogsTab hostId={container.host_id!} containerId={container.id} containerName={container.name} />,
-    },
-    {
+    }] : []),
+    ...(canShell ? [{
       id: 'shell',
       label: 'Shell',
       content: <ContainerShellTab hostId={container.host_id!} containerId={container.id} containerName={container.name} isRunning={isRunning} />,
-    },
+    }] : []),
     {
       id: 'events',
       label: 'Events',
@@ -359,7 +333,7 @@ export function ContainerDetailsModal({
                 <Button
                   variant="default"
                   size="sm"
-                  onClick={handleStart}
+                  onClick={() => handleAction('start')}
                   disabled={isPerformingAction}
                 >
                   <Play className="w-4 h-4 mr-2" />
@@ -369,7 +343,7 @@ export function ContainerDetailsModal({
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={handleStop}
+                  onClick={() => handleAction('stop')}
                   disabled={isPerformingAction}
                   className="border-red-500/50 text-red-400 hover:bg-red-500/10"
                 >
@@ -380,7 +354,7 @@ export function ContainerDetailsModal({
               <Button
                 variant="outline"
                 size="sm"
-                onClick={handleRestart}
+                onClick={() => handleAction('restart')}
                 disabled={isPerformingAction}
               >
                 <RotateCw className="w-4 h-4 mr-2" />

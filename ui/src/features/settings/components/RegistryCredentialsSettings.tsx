@@ -17,7 +17,7 @@ import { useAuth } from '@/features/auth/AuthContext'
 
 export function RegistryCredentialsSettings() {
   const { hasCapability } = useAuth()
-  const canManage = hasCapability('policies.manage')
+  const canManage = hasCapability('registry.manage')
   const { data: credentials, isLoading } = useRegistryCredentials()
   const [showAddModal, setShowAddModal] = useState(false)
   const [editingCredential, setEditingCredential] = useState<RegistryCredential | null>(null)
@@ -26,8 +26,8 @@ export function RegistryCredentialsSettings() {
   return (
     <div>
       <div className="mb-4">
-        <h3 className="text-lg font-semibold text-white">Registry Credentials</h3>
-        <p className="text-xs text-gray-400 mt-1">
+        <h3 className="text-lg font-semibold text-foreground">Registry Credentials</h3>
+        <p className="text-xs text-muted-foreground mt-1">
           Configure credentials for private container registries
         </p>
       </div>
@@ -47,49 +47,47 @@ export function RegistryCredentialsSettings() {
       </div>
 
       {/* Credentials Table */}
-      <div className="rounded-md border border-gray-700 bg-gray-800/50">
+      <div className="rounded-md border border-border bg-surface-1">
         {isLoading ? (
-          <div className="px-4 py-8 text-center text-sm text-gray-400">
+          <div className="px-4 py-8 text-center text-sm text-muted-foreground">
             Loading credentials...
           </div>
         ) : credentials && credentials.length > 0 ? (
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead>
-                <tr className="border-b border-gray-700 text-left">
-                  <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase">Registry URL</th>
-                  <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase">Username</th>
-                  <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase">Created</th>
-                  <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase w-24">Actions</th>
+                <tr className="border-b border-border text-left">
+                  <th className="px-4 py-3 text-xs font-medium text-muted-foreground uppercase">Registry URL</th>
+                  <th className="px-4 py-3 text-xs font-medium text-muted-foreground uppercase">Username</th>
+                  <th className="px-4 py-3 text-xs font-medium text-muted-foreground uppercase">Created</th>
+                  <th className="px-4 py-3 text-xs font-medium text-muted-foreground uppercase w-24">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {credentials.map((cred) => (
-                  <tr key={cred.id} className="border-b border-gray-700/50 last:border-0 hover:bg-gray-700/30">
-                    <td className="px-4 py-3 text-sm text-white font-mono">{cred.registry_url}</td>
-                    <td className="px-4 py-3 text-sm text-gray-300">{cred.username}</td>
-                    <td className="px-4 py-3 text-sm text-gray-400">
+                  <tr key={cred.id} className="border-b border-border/50 last:border-0 hover:bg-muted/30">
+                    <td className="px-4 py-3 text-sm text-foreground font-mono">{cred.registry_url}</td>
+                    <td className="px-4 py-3 text-sm text-muted-foreground">{cred.username}</td>
+                    <td className="px-4 py-3 text-sm text-muted-foreground">
                       {new Date(cred.created_at).toLocaleDateString()}
                     </td>
                     <td className="px-4 py-3">
-                      <div className="flex gap-2">
+                      <fieldset disabled={!canManage} className="flex gap-2 disabled:opacity-60">
                         <button
                           onClick={() => setEditingCredential(cred)}
-                          disabled={!canManage}
-                          className="p-1 text-gray-400 hover:text-blue-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                          className="p-1 text-muted-foreground hover:text-primary transition-colors"
                           title="Edit credential"
                         >
                           <Edit2 className="h-4 w-4" />
                         </button>
                         <button
                           onClick={() => setDeletingId(cred.id)}
-                          disabled={!canManage}
-                          className="p-1 text-gray-400 hover:text-red-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                          className="p-1 text-muted-foreground hover:text-danger transition-colors"
                           title="Delete credential"
                         >
                           <Trash2 className="h-4 w-4" />
                         </button>
-                      </div>
+                      </fieldset>
                     </td>
                   </tr>
                 ))}
@@ -98,8 +96,8 @@ export function RegistryCredentialsSettings() {
           </div>
         ) : (
           <div className="px-4 py-8 text-center">
-            <p className="text-sm text-gray-400">No registry credentials configured</p>
-            <p className="text-xs text-gray-500 mt-1">
+            <p className="text-sm text-muted-foreground">No registry credentials configured</p>
+            <p className="text-xs text-muted-foreground/70 mt-1">
               Add credentials to authenticate with private container registries
             </p>
           </div>
@@ -131,6 +129,7 @@ export function RegistryCredentialsSettings() {
         <DeleteConfirmationDialog
           credentialId={deletingId}
           registryUrl={credentials?.find((c) => c.id === deletingId)?.registry_url || ''}
+          disabled={!canManage}
           onClose={() => setDeletingId(null)}
         />
       )}
@@ -187,11 +186,11 @@ function CredentialModal({ credential, disabled, onClose }: CredentialModalProps
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
       <div
-        className="bg-gray-800 rounded-lg shadow-xl max-w-md w-full mx-4 border border-gray-700"
+        className="bg-surface rounded-lg shadow-xl max-w-md w-full mx-4 border border-border"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="px-6 py-4 border-b border-gray-700">
-          <h3 className="text-lg font-semibold text-white">
+        <div className="px-6 py-4 border-b border-border">
+          <h3 className="text-lg font-semibold text-foreground">
             {isEditing ? 'Edit Registry Credential' : 'Add Registry Credential'}
           </h3>
         </div>
@@ -200,7 +199,7 @@ function CredentialModal({ credential, disabled, onClose }: CredentialModalProps
           <fieldset disabled={disabled} className="space-y-4 disabled:opacity-60">
           {/* Registry URL */}
           <div>
-            <label htmlFor="registry-url" className="block text-sm font-medium text-gray-300 mb-2">
+            <label htmlFor="registry-url" className="block text-sm font-medium text-muted-foreground mb-2">
               Registry URL
             </label>
             <input
@@ -210,17 +209,17 @@ function CredentialModal({ credential, disabled, onClose }: CredentialModalProps
               onChange={(e) => setRegistryUrl(e.target.value)}
               disabled={isEditing}
               placeholder="e.g., ghcr.io, registry.example.com"
-              className="w-full rounded-md border border-gray-700 bg-gray-900 px-3 py-2 text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full rounded-md border border-border bg-surface-1 px-3 py-2 text-foreground placeholder-muted-foreground/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50 disabled:cursor-not-allowed"
               required={!isEditing}
             />
             {isEditing && (
-              <p className="text-xs text-gray-500 mt-1">Registry URL cannot be changed</p>
+              <p className="text-xs text-muted-foreground/70 mt-1">Registry URL cannot be changed</p>
             )}
           </div>
 
           {/* Username */}
           <div>
-            <label htmlFor="username" className="block text-sm font-medium text-gray-300 mb-2">
+            <label htmlFor="username" className="block text-sm font-medium text-muted-foreground mb-2">
               Username
             </label>
             <input
@@ -229,14 +228,14 @@ function CredentialModal({ credential, disabled, onClose }: CredentialModalProps
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               placeholder="Registry username"
-              className="w-full rounded-md border border-gray-700 bg-gray-900 px-3 py-2 text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded-md border border-border bg-surface-1 px-3 py-2 text-foreground placeholder-muted-foreground/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
               required={!isEditing}
             />
           </div>
 
           {/* Password */}
           <div>
-            <label htmlFor="password" className="block text-sm font-medium text-gray-300 mb-2">
+            <label htmlFor="password" className="block text-sm font-medium text-muted-foreground mb-2">
               {isEditing ? 'New Password (optional)' : 'Password'}
             </label>
             <input
@@ -245,7 +244,7 @@ function CredentialModal({ credential, disabled, onClose }: CredentialModalProps
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder={isEditing ? 'Leave blank to keep current password' : 'Password or access token'}
-              className="w-full rounded-md border border-gray-700 bg-gray-900 px-3 py-2 text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded-md border border-border bg-surface-1 px-3 py-2 text-foreground placeholder-muted-foreground/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
               required={!isEditing}
             />
           </div>
@@ -271,10 +270,11 @@ function CredentialModal({ credential, disabled, onClose }: CredentialModalProps
 interface DeleteConfirmationDialogProps {
   credentialId: number
   registryUrl: string
+  disabled?: boolean
   onClose: () => void
 }
 
-function DeleteConfirmationDialog({ credentialId, registryUrl, onClose }: DeleteConfirmationDialogProps) {
+function DeleteConfirmationDialog({ credentialId, registryUrl, disabled, onClose }: DeleteConfirmationDialogProps) {
   const deleteMutation = useDeleteRegistryCredential()
 
   const handleDelete = async () => {
@@ -285,24 +285,24 @@ function DeleteConfirmationDialog({ credentialId, registryUrl, onClose }: Delete
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
       <div
-        className="bg-gray-800 rounded-lg shadow-xl max-w-md w-full mx-4 border border-gray-700"
+        className="bg-surface rounded-lg shadow-xl max-w-md w-full mx-4 border border-border"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="px-6 py-4 border-b border-gray-700">
-          <h3 className="text-lg font-semibold text-white">Delete Registry Credential</h3>
+        <div className="px-6 py-4 border-b border-border">
+          <h3 className="text-lg font-semibold text-foreground">Delete Registry Credential</h3>
         </div>
 
         <div className="px-6 py-4">
-          <p className="text-sm text-gray-300">
+          <p className="text-sm text-muted-foreground">
             Are you sure you want to delete the credentials for{' '}
-            <span className="font-mono text-white">{registryUrl}</span>?
+            <span className="font-mono text-foreground">{registryUrl}</span>?
           </p>
-          <p className="text-xs text-gray-400 mt-2">
+          <p className="text-xs text-muted-foreground/70 mt-2">
             Update checks for containers using this registry will fail if authentication is required.
           </p>
         </div>
 
-        <div className="px-6 py-4 border-t border-gray-700 flex gap-3">
+        <fieldset disabled={disabled} className="px-6 py-4 border-t border-border flex gap-3 disabled:opacity-60">
           <Button
             onClick={handleDelete}
             disabled={deleteMutation.isPending}
@@ -314,7 +314,7 @@ function DeleteConfirmationDialog({ credentialId, registryUrl, onClose }: Delete
           <Button variant="outline" onClick={onClose} disabled={deleteMutation.isPending}>
             Cancel
           </Button>
-        </div>
+        </fieldset>
       </div>
     </div>
   )

@@ -87,6 +87,7 @@ export function StackEditor({
   const { hasCapability } = useAuth()
   const canEdit = hasCapability('stacks.edit')
   const canDeploy = hasCapability('stacks.deploy')
+  const canViewEnv = hasCapability('stacks.view_env')
 
   // Data hooks
   const createStack = useCreateStack()
@@ -124,6 +125,13 @@ export function StackEditor({
 
   // Tab state
   const [activeTab, setActiveTab] = useState<'compose' | 'env'>('compose')
+
+  // Reset to compose if env tab becomes unavailable
+  useEffect(() => {
+    if (activeTab === 'env' && !canViewEnv) {
+      setActiveTab('compose')
+    }
+  }, [activeTab, canViewEnv])
 
   // Errors
   const [errors, setErrors] = useState<Record<string, string>>({})
@@ -544,14 +552,16 @@ export function StackEditor({
             >
               Compose
             </Button>
-            <Button
-              type="button"
-              variant={activeTab === 'env' ? 'default' : 'ghost'}
-              size="sm"
-              onClick={() => setActiveTab('env')}
-            >
-              Environment
-            </Button>
+            {canViewEnv && (
+              <Button
+                type="button"
+                variant={activeTab === 'env' ? 'default' : 'ghost'}
+                size="sm"
+                onClick={() => setActiveTab('env')}
+              >
+                Environment
+              </Button>
+            )}
           </div>
 
           {/* Tab content */}
@@ -567,7 +577,7 @@ export function StackEditor({
               />
             )}
 
-            {activeTab === 'env' && (
+            {canViewEnv && activeTab === 'env' && (
               <ConfigurationEditor
                 type="env"
                 value={envContent}

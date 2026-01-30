@@ -27,7 +27,7 @@ export function ContainerShellTab({
   isRunning,
 }: ContainerShellTabProps) {
   const { hasCapability } = useAuth()
-  const canOperate = hasCapability('containers.operate')
+  const canShell = hasCapability('containers.shell')
   const terminalRef = useRef<HTMLDivElement>(null)
   const terminalInstance = useRef<Terminal | null>(null)
   const fitAddon = useRef<FitAddon | null>(null)
@@ -187,16 +187,16 @@ export function ContainerShellTab({
 
   // Cleanup when container stops running or permission revoked
   useEffect(() => {
-    if (!isRunning || !canOperate) {
+    if (!isRunning || !canShell) {
       cleanup()
       setIsConnected(false)
       setError(null)
     }
-  }, [isRunning, canOperate, cleanup])
+  }, [isRunning, canShell, cleanup])
 
   // Auto-connect on mount (only once per container)
   useEffect(() => {
-    if (canOperate && isRunning && !hasConnectedOnce.current) {
+    if (canShell && isRunning && !hasConnectedOnce.current) {
       hasConnectedOnce.current = true
       const timer = setTimeout(() => {
         connect()
@@ -204,10 +204,10 @@ export function ContainerShellTab({
       return () => clearTimeout(timer)
     }
     return undefined
-  }, [canOperate, isRunning, connect])
+  }, [canShell, isRunning, connect])
 
   // Permission denied - no shell access
-  if (!canOperate) {
+  if (!canShell) {
     return (
       <div className="h-full flex items-center justify-center">
         <div className="text-center space-y-4">

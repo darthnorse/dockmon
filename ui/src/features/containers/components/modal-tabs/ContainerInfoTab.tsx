@@ -40,6 +40,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
   const { hasCapability } = useAuth()
   const canOperate = hasCapability('containers.operate')
   const canManageTags = hasCapability('tags.manage')
+  const canViewEnv = hasCapability('containers.view_env')
   // CRITICAL: Always use 12-char short ID for API calls (backend expects short IDs)
   const containerShortId = container.id.slice(0, 12)
 
@@ -137,8 +138,8 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
     return `${(bytesPerSec / (k * k)).toFixed(2)} MB/s`
   }
 
-  // Filter out common system env vars for cleaner display
-  const filteredEnv = container.env
+  // Filter out common system env vars for cleaner display (skip if user can't view env)
+  const filteredEnv = canViewEnv && container.env
     ? Object.entries(container.env).filter(([key]) => {
         // Show app-specific variables, hide common system paths
         return !['PATH', 'HOME', 'HOSTNAME', 'TERM'].includes(key)

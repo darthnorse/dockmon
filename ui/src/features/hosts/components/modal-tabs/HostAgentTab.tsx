@@ -25,6 +25,7 @@ import { apiClient } from '@/lib/api/client'
 import { cn } from '@/lib/utils'
 import { useTimeFormat } from '@/lib/hooks/useUserPreferences'
 import { formatDateTime } from '@/lib/utils/timeFormat'
+import { useAuth } from '@/features/auth/AuthContext'
 
 interface HostAgentTabProps {
   hostId: string
@@ -44,6 +45,8 @@ interface AgentInfo {
 }
 
 export function HostAgentTab({ hostId }: HostAgentTabProps) {
+  const { hasCapability } = useAuth()
+  const canManageAgents = hasCapability('agents.manage')
   const { timeFormat } = useTimeFormat()
   const queryClient = useQueryClient()
   const [updateTriggered, setUpdateTriggered] = useState(false)
@@ -191,7 +194,7 @@ export function HostAgentTab({ hostId }: HostAgentTabProps) {
                   {!agent.is_container_mode && (
                     <Button
                       onClick={() => triggerUpdate.mutate()}
-                      disabled={triggerUpdate.isPending}
+                      disabled={!canManageAgents || triggerUpdate.isPending}
                       size="sm"
                     >
                       {triggerUpdate.isPending ? (

@@ -3242,6 +3242,8 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
         "external_url_from_env": AppConfig.EXTERNAL_URL,  # Show env var value for UI placeholder
         # Editor theme preference (v2.2.8+)
         "editor_theme": getattr(settings, 'editor_theme', 'aura'),
+        # Session timeout
+        "session_timeout_hours": getattr(settings, 'session_timeout_hours', 24),
     }
 
 @app.post("/api/settings", tags=["system"], dependencies=[Depends(require_capability("settings.manage"))])
@@ -3277,6 +3279,12 @@ async def update_settings(
         logger.info(f"Host stats collection {'enabled' if updated.show_host_stats else 'disabled'}")
     if 'show_container_stats' in validated_dict and old_show_container_stats != updated.show_container_stats:
         logger.info(f"Container stats collection {'enabled' if updated.show_container_stats else 'disabled'}")
+
+    # Invalidate session timeout cache so change takes effect immediately
+    if 'session_timeout_hours' in validated_dict:
+        from auth.cookie_sessions import invalidate_session_timeout_cache
+        invalidate_session_timeout_cache()
+        logger.info(f"Session timeout updated to {updated.session_timeout_hours}h")
 
     # Reload event suppression patterns if updated
     if 'event_suppression_patterns' in validated_dict:
@@ -3331,6 +3339,8 @@ async def update_settings(
         "external_url_from_env": AppConfig.EXTERNAL_URL,
         # Editor theme preference (v2.2.8+)
         "editor_theme": getattr(updated, 'editor_theme', 'aura'),
+        # Session timeout
+        "session_timeout_hours": getattr(updated, 'session_timeout_hours', 24),
     }
 
 

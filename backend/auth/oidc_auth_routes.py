@@ -36,7 +36,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.exc import IntegrityError
 
 from auth.shared import db, safe_audit_log
-from auth.cookie_sessions import cookie_session_manager
+from auth.cookie_sessions import cookie_session_manager, get_session_cookie_max_age
 from auth.api_key_auth import invalidate_user_groups_cache
 from config.settings import AppConfig
 from database import User, OIDCConfig, OIDCGroupMapping, PendingOIDCAuth, CustomGroup, UserGroupMembership
@@ -50,9 +50,6 @@ router = APIRouter(prefix="/api/v2/auth/oidc", tags=["oidc-auth"])
 
 # Pending auth request expiry time
 PENDING_AUTH_EXPIRY_MINUTES = 10
-
-# Session cookie duration (matches v2_routes.py)
-SESSION_MAX_AGE_SECONDS = 86400 * 7  # 7 days
 
 # HTTP client timeout for OIDC provider requests
 OIDC_HTTP_TIMEOUT = 10.0
@@ -668,7 +665,7 @@ async def oidc_callback(
                 httponly=True,
                 secure=not AppConfig.REVERSE_PROXY_MODE,
                 samesite="lax",
-                max_age=SESSION_MAX_AGE_SECONDS,
+                max_age=get_session_cookie_max_age(),
                 path="/",
                 domain=None
             )

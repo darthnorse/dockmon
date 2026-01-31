@@ -391,90 +391,63 @@ def test_container_metadata(test_host):
     }
 
 
-@pytest.fixture
-def test_api_key_read(test_db: Session):
+def _create_test_api_key(session: Session, username: str, key_name: str) -> str:
     """
-    Create a read-only API key for testing authenticated endpoints.
+    Create a test API key with full admin permissions.
 
-    Returns:
-        str: The raw API key token (unhashed) for use in Authorization header
+    Returns the raw API key token for use in Authorization header.
     """
-    from database import ApiKey, User
+    from database import ApiKey, User, CustomGroup, GroupPermission
+    from auth.capabilities import ALL_CAPABILITIES
     import secrets
     import hashlib
 
-    # First create a test user (ApiKey requires user_id)
+    # Ensure admin group with all permissions exists
+    group = session.query(CustomGroup).filter(CustomGroup.name == 'Administrators').first()
+    if not group:
+        group = CustomGroup(name='Administrators', description='Full access', is_system=True)
+        session.add(group)
+        session.flush()
+        for cap in ALL_CAPABILITIES:
+            session.add(GroupPermission(group_id=group.id, capability=cap, allowed=True))
+        session.flush()
+
     user = User(
-        username="test_api_user",
+        username=username,
         password_hash="$2b$12$test_hash_not_real",
         created_at=datetime.now(timezone.utc)
     )
-    test_db.add(user)
-    test_db.flush()  # Get user.id without committing
+    session.add(user)
+    session.flush()
 
-    # Generate a test API key (must start with "dockmon_" prefix)
     raw_key = f"dockmon_{secrets.token_hex(16)}"
-
-    # Hash it for storage (same as production)
     key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
 
     api_key = ApiKey(
-        user_id=user.id,
-        name="Test Read Key",
+        created_by_user_id=user.id,
+        group_id=group.id,
+        name=key_name,
         key_hash=key_hash,
-        key_prefix=raw_key[:12],  # First 12 chars for UI display ("dockmon_xxxx")
-        scopes="read",  # Comma-separated string, not list
+        key_prefix=raw_key[:12],
         created_at=datetime.now(timezone.utc),
         updated_at=datetime.now(timezone.utc),
-        revoked_at=None  # None means active
     )
-    test_db.add(api_key)
-    test_db.commit()
+    session.add(api_key)
+    session.commit()
 
     return raw_key
+
+
+@pytest.fixture
+def test_api_key_read(test_db: Session):
+    """Create an API key for testing authenticated endpoints (read)."""
+    return _create_test_api_key(test_db, "test_api_user", "Test Read Key")
 
 
 @pytest.fixture
 def test_api_key_write(test_db: Session):
-    """
-    Create a write-enabled API key for testing authenticated endpoints.
-
-    Returns:
-        str: The raw API key token (unhashed) for use in Authorization header
-    """
-    from database import ApiKey, User
-    import secrets
-    import hashlib
-
-    # First create a test user (ApiKey requires user_id)
-    user = User(
-        username="test_api_write_user",
-        password_hash="$2b$12$test_hash_not_real",
-        created_at=datetime.now(timezone.utc)
-    )
-    test_db.add(user)
-    test_db.flush()  # Get user.id without committing
-
-    # Generate a test API key (must start with "dockmon_" prefix)
-    raw_key = f"dockmon_{secrets.token_hex(16)}"
-
-    # Hash it for storage (same as production)
-    key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
-
-    api_key = ApiKey(
-        user_id=user.id,
-        name="Test Write Key",
-        key_hash=key_hash,
-        key_prefix=raw_key[:12],  # First 12 chars for UI display
-        scopes="read,write",  # Write-enabled
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
-        revoked_at=None
-    )
-    test_db.add(api_key)
-    test_db.commit()
-
-    return raw_key
+    """Create an API key for testing authenticated endpoints (write)."""
+    return _create_test_api_key(test_db, "test_api_write_user", "Test Write Key")
 
 
 @pytest.fixture

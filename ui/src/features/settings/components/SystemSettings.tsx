@@ -7,6 +7,7 @@ import { useState, useEffect } from 'react'
 import { useGlobalSettings, useUpdateGlobalSettings } from '@/hooks/useSettings'
 import { toast } from 'sonner'
 import { ToggleSwitch } from './ToggleSwitch'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useAuth } from '@/features/auth/AuthContext'
 
 export function SystemSettings() {
@@ -174,6 +175,51 @@ export function SystemSettings() {
                   Environment default: {settings.external_url_from_env}
                 </span>
               )}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Security */}
+      <div>
+        <div className="mb-4">
+          <h3 className="text-lg font-semibold text-white">Security</h3>
+          <p className="text-xs text-gray-400 mt-1">Authentication and session settings</p>
+        </div>
+        <div className="space-y-4">
+          <div>
+            <label htmlFor="session-timeout" className="block text-sm font-medium text-gray-300 mb-2">
+              Session Timeout
+            </label>
+            <Select
+              value={String(settings?.session_timeout_hours ?? 24)}
+              onValueChange={async (v) => {
+                const value = Number(v)
+                try {
+                  await updateSettings.mutateAsync({ session_timeout_hours: value })
+                  toast.success('Session timeout updated')
+                } catch (error) {
+                  toast.error('Failed to update session timeout')
+                }
+              }}
+            >
+              <SelectTrigger id="session-timeout" className="w-full max-w-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="1">1 hour</SelectItem>
+                <SelectItem value="4">4 hours</SelectItem>
+                <SelectItem value="8">8 hours</SelectItem>
+                <SelectItem value="12">12 hours</SelectItem>
+                <SelectItem value="24">24 hours</SelectItem>
+                <SelectItem value="48">48 hours</SelectItem>
+                <SelectItem value="168">7 days</SelectItem>
+                <SelectItem value="720">30 days</SelectItem>
+                <SelectItem value="0">Never</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="mt-1 text-xs text-gray-400">
+              How long login sessions remain valid. Changes take effect immediately for all sessions.
             </p>
           </div>
         </div>

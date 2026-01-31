@@ -18,6 +18,7 @@ MEMORY SAFETY:
 import logging
 import secrets
 import threading
+import time
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
@@ -39,7 +40,6 @@ def _load_or_generate_secret() -> str:
         Session secret key
     """
     import json
-    from datetime import datetime, timedelta, timezone
 
     secret_file = os.getenv('SESSION_SECRET_FILE', '/app/data/.session_secret')
     rotation_days = int(os.getenv('SESSION_SECRET_ROTATION_DAYS', '90'))
@@ -123,6 +123,50 @@ SECRET_KEY = os.getenv('SESSION_SECRET_KEY') or _load_or_generate_secret()
 COOKIE_SIGNER = URLSafeTimedSerializer(SECRET_KEY, salt="dockmon-session")
 
 
+_session_timeout_cache: dict = {"value": 24, "expires_at": 0.0}
+_SESSION_TIMEOUT_CACHE_TTL = 60  # seconds
+
+
+def get_session_timeout_hours() -> int:
+    """
+    Read session_timeout_hours from GlobalSettings in the database.
+    Returns 0 for never-expire, or positive int for hours.
+    Cached for 60 seconds to avoid a DB query on every authenticated request.
+    Falls back to 24h default if DB read fails.
+    """
+    now = time.monotonic()
+    if now < _session_timeout_cache["expires_at"]:
+        return _session_timeout_cache["value"]
+
+    try:
+        # Local import to avoid circular imports (cookie_sessions loads early in boot)
+        from database import DatabaseManager
+        db = DatabaseManager()
+        settings = db.get_settings()
+        if settings and settings.session_timeout_hours is not None:
+            _session_timeout_cache["value"] = settings.session_timeout_hours
+            _session_timeout_cache["expires_at"] = now + _SESSION_TIMEOUT_CACHE_TTL
+            return settings.session_timeout_hours
+    except Exception as e:
+        logger.debug(f"Failed to read session_timeout_hours from DB, using fallback: {e}")
+
+    _session_timeout_cache["expires_at"] = now + _SESSION_TIMEOUT_CACHE_TTL
+    return _session_timeout_cache["value"]
+
+
+def invalidate_session_timeout_cache():
+    """Force re-read of session_timeout_hours from DB on next access."""
+    _session_timeout_cache["expires_at"] = 0.0
+
+
+def get_session_cookie_max_age() -> int:
+    """Return cookie max_age in seconds based on DB session timeout setting."""
+    hours = get_session_timeout_hours()
+    if hours == 0:
+        return 86400 * 400  # ~400 days (browser max)
+    return hours * 3600
+
+
 class CookieSessionManager:
     """
     Manages cookie-based sessions with security hardening.
@@ -131,16 +175,17 @@ class CookieSessionManager:
     and validates them server-side.
     """
 
-    def __init__(self, session_timeout_hours: int = 24, max_sessions: int = 10000):
+    def __init__(self, max_sessions: int = 10000):
         """
         Initialize session manager.
 
+        Session timeout is read dynamically from GlobalSettings via
+        get_session_timeout_hours() (cached with 60s TTL).
+
         Args:
-            session_timeout_hours: Session expiry time (default 24 hours)
             max_sessions: Maximum concurrent sessions (default 10,000)
         """
         self.sessions: Dict[str, dict] = {}
-        self.session_timeout = timedelta(hours=session_timeout_hours)
         self.max_sessions = max_sessions
         self._sessions_lock = threading.Lock()
         self._shutdown_event = threading.Event()
@@ -152,7 +197,7 @@ class CookieSessionManager:
             name="SessionCleanup"
         )
         self._cleanup_thread.start()
-        logger.info(f"Cookie session manager initialized (timeout: {session_timeout_hours}h, max: {max_sessions})")
+        logger.info(f"Cookie session manager initialized (max: {max_sessions})")
 
     def _periodic_cleanup(self):
         """
@@ -189,11 +234,15 @@ class CookieSessionManager:
         session_id = secrets.token_urlsafe(32)
         now = datetime.now(timezone.utc)
 
+        # Read timeout outside lock to avoid DB I/O while holding lock
+        timeout_hours = get_session_timeout_hours()
+        capacity_timeout = timedelta(hours=timeout_hours) if timeout_hours > 0 else None
+
         with self._sessions_lock:
             # Check if at capacity
             if len(self.sessions) >= self.max_sessions:
-                # Try cleanup first
-                expired = self._cleanup_expired_sessions_unsafe()
+                # Try cleanup first (only if sessions can expire)
+                expired = self._cleanup_expired_sessions_unsafe(capacity_timeout) if capacity_timeout else 0
                 if expired > 0:
                     logger.info(f"Session limit reached, cleaned {expired} expired sessions")
 
@@ -243,12 +292,21 @@ class CookieSessionManager:
             return None
 
         # 1. Verify signature and extract session ID
+        # Use dynamic timeout from DB (0 = never expire)
+        timeout_hours = get_session_timeout_hours()
+        never_expire = timeout_hours == 0
+        dynamic_timeout = timedelta(hours=timeout_hours) if not never_expire else None
+
         try:
-            max_age = max_age_seconds or int(self.session_timeout.total_seconds())
-            session_id = COOKIE_SIGNER.loads(
-                signed_token,
-                max_age=max_age
-            )
+            if never_expire:
+                # Skip signature max_age check for "never expire"
+                session_id = COOKIE_SIGNER.loads(signed_token)
+            else:
+                max_age = max_age_seconds or int(dynamic_timeout.total_seconds())
+                session_id = COOKIE_SIGNER.loads(
+                    signed_token,
+                    max_age=max_age
+                )
         except SignatureExpired:
             logger.warning(f"Session token expired for IP {client_ip}")
             return None
@@ -266,7 +324,7 @@ class CookieSessionManager:
             now = datetime.now(timezone.utc)
 
             # 3. Check expiry (belt and suspenders with cookie max_age)
-            if now - session["created_at"] > self.session_timeout:
+            if not never_expire and now - session["created_at"] > dynamic_timeout:
                 del self.sessions[session_id]
                 logger.info(f"Session {session_id[:8]}... expired for user '{session['username']}'")
                 return None
@@ -314,9 +372,12 @@ class CookieSessionManager:
 
         return False
 
-    def _cleanup_expired_sessions_unsafe(self) -> int:
+    def _cleanup_expired_sessions_unsafe(self, dynamic_timeout: timedelta) -> int:
         """
         Remove expired sessions (UNSAFE - must be called with lock held).
+
+        Args:
+            dynamic_timeout: Timeout duration (caller reads from DB outside lock)
 
         Returns:
             Number of sessions deleted
@@ -328,7 +389,7 @@ class CookieSessionManager:
         expired = []
 
         for session_id, data in self.sessions.items():
-            if now - data["created_at"] > self.session_timeout:
+            if now - data["created_at"] > dynamic_timeout:
                 expired.append(session_id)
 
         for session_id in expired:
@@ -340,13 +401,20 @@ class CookieSessionManager:
         """
         Remove all expired sessions (thread-safe).
 
+        Reads timeout from DB outside the lock, then acquires lock for cleanup.
+
         Returns:
             Number of sessions deleted
 
         MEMORY SAFETY: Prevents memory leak from abandoned sessions
         """
+        timeout_hours = get_session_timeout_hours()
+        if timeout_hours == 0:
+            return 0  # Never expire - skip cleanup
+
+        dynamic_timeout = timedelta(hours=timeout_hours)
         with self._sessions_lock:
-            return self._cleanup_expired_sessions_unsafe()
+            return self._cleanup_expired_sessions_unsafe(dynamic_timeout)
 
     def get_active_session_count(self) -> int:
         """Get number of active sessions."""
@@ -365,6 +433,5 @@ class CookieSessionManager:
         logger.info(f"Session manager shutdown complete ({self.get_active_session_count()} active sessions)")
 
 
-# Global instance
-from config.settings import AppConfig
-cookie_session_manager = CookieSessionManager(session_timeout_hours=AppConfig.SESSION_TIMEOUT_HOURS)
+# Global instance (timeout read dynamically from DB via get_session_timeout_hours())
+cookie_session_manager = CookieSessionManager()

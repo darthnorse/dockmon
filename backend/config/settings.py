@@ -258,7 +258,6 @@ class AppConfig:
 
     # Authentication
     CREDENTIALS_FILE = os.getenv('DOCKMON_CREDENTIALS_FILE', DEFAULT_CREDENTIALS_FILE)
-    SESSION_TIMEOUT_HOURS = _safe_int('DOCKMON_SESSION_TIMEOUT_HOURS', 24, min_val=1, max_val=8760)  # Max 1 year
 
     # Rate limiting
     RATE_LIMITS = RateLimitConfig.get_limits()
@@ -279,6 +278,6 @@ class AppConfig:
                 f"Must be one of {allowed_levels}"
             )
 
-        # PORT and SESSION_TIMEOUT_HOURS already validated by _safe_int()
+        # PORT already validated by _safe_int()
 
         return True

@@ -38,7 +38,7 @@ SCHEMA CHANGES:
    - oidc_group_mappings (OIDC to DockMon group mapping)
 
 4. Modified tables:
-   - global_settings: Add audit_log_retention_days
+   - global_settings: Add audit_log_retention_days, session_timeout_hours
    - custom_groups: Add is_system column
    - oidc_config: Add default_group_id column
    - api_keys: Add group_id, created_by_user_id columns
@@ -237,6 +237,15 @@ def upgrade():
         op.add_column(
             'global_settings',
             sa.Column('audit_log_retention_days', sa.Integer(), nullable=False, server_default='90')
+        )
+
+    # =========================================================================
+    # 3b. GLOBAL_SETTINGS - Add session_timeout_hours
+    # =========================================================================
+    if table_exists('global_settings') and not column_exists('global_settings', 'session_timeout_hours'):
+        op.add_column(
+            'global_settings',
+            sa.Column('session_timeout_hours', sa.Integer(), nullable=False, server_default='24')
         )
 
     # =========================================================================
@@ -585,6 +594,9 @@ def downgrade():
     # =========================================================================
     if table_exists('global_settings') and column_exists('global_settings', 'audit_log_retention_days'):
         op.drop_column('global_settings', 'audit_log_retention_days')
+
+    if table_exists('global_settings') and column_exists('global_settings', 'session_timeout_hours'):
+        op.drop_column('global_settings', 'session_timeout_hours')
 
     # =========================================================================
     # 7. REMOVE AUDIT COLUMNS from 8 tables

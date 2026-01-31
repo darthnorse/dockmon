@@ -716,6 +716,9 @@ class GlobalSettings(Base):
     # Available: 'github-dark', 'vscode-dark', 'dracula', 'material-dark', 'nord'
     editor_theme = Column(Text, default='aura')
 
+    # Session timeout (0 = never expires, 1-8760 hours)
+    session_timeout_hours = Column(Integer, default=24)
+
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
 class ContainerUpdate(Base):
@@ -3336,7 +3339,9 @@ class DatabaseManager:
                     # External URL for notification action links (v2.2.0+)
                     'external_url',
                     # Editor theme preference (v2.2.8+)
-                    'editor_theme'
+                    'editor_theme',
+                    # Session timeout
+                    'session_timeout_hours'
                 }
 
                 for key, value in updates.items():

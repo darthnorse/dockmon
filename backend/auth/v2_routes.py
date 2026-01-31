@@ -18,7 +18,7 @@ from argon2.exceptions import VerifyMismatchError, InvalidHashError
 
 from typing import Callable
 
-from auth.cookie_sessions import cookie_session_manager
+from auth.cookie_sessions import cookie_session_manager, get_session_cookie_max_age
 from security.rate_limiting import rate_limit_auth
 from audit import log_login, log_logout, log_login_failure, AuditAction
 from audit.audit_logger import get_client_info, log_audit, AuditEntityType
@@ -271,7 +271,7 @@ async def login_v2(
             httponly=True,          # Prevents XSS
             secure=not AppConfig.REVERSE_PROXY_MODE,  # HTTPS mode unless reverse proxy
             samesite="lax",         # CSRF protection (allows same-origin GET requests)
-            max_age=86400 * 7,      # 7 days
+            max_age=get_session_cookie_max_age(),
             path="/",               # Available to all routes
             domain=None             # Let browser use request host (handles ports correctly)
         )

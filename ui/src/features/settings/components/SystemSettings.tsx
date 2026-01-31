@@ -10,6 +10,16 @@ import { ToggleSwitch } from './ToggleSwitch'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useAuth } from '@/features/auth/AuthContext'
 
+const SESSION_TIMEOUT_OPTIONS = [
+  { value: '24', label: '24 hours' },
+  { value: '168', label: '7 days' },
+  { value: '720', label: '30 days' },
+  { value: '2160', label: '3 months' },
+  { value: '4320', label: '6 months' },
+  { value: '8760', label: '12 months' },
+  { value: '0', label: 'Never' },
+]
+
 export function SystemSettings() {
   const { hasCapability } = useAuth()
   const canManage = hasCapability('settings.manage')
@@ -204,18 +214,14 @@ export function SystemSettings() {
               }}
             >
               <SelectTrigger id="session-timeout" className="w-full max-w-xs">
-                <SelectValue />
+                <SelectValue>
+                  {SESSION_TIMEOUT_OPTIONS.find(o => o.value === String(settings?.session_timeout_hours ?? 24))?.label ?? '24 hours'}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="1">1 hour</SelectItem>
-                <SelectItem value="4">4 hours</SelectItem>
-                <SelectItem value="8">8 hours</SelectItem>
-                <SelectItem value="12">12 hours</SelectItem>
-                <SelectItem value="24">24 hours</SelectItem>
-                <SelectItem value="48">48 hours</SelectItem>
-                <SelectItem value="168">7 days</SelectItem>
-                <SelectItem value="720">30 days</SelectItem>
-                <SelectItem value="0">Never</SelectItem>
+                {SESSION_TIMEOUT_OPTIONS.map(o => (
+                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                ))}
               </SelectContent>
             </Select>
             <p className="mt-1 text-xs text-gray-400">

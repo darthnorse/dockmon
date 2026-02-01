@@ -36,6 +36,7 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
 import { useSidebarCollapsed } from '@/lib/hooks/useUserPreferences'
+import { useAuth } from '@/features/auth/AuthContext'
 import { UserMenu } from './UserMenu'
 import { DockMonUpdateBanner } from './DockMonUpdateBanner'
 import { AgentUpdateBanner } from './AgentUpdateBanner'
@@ -45,16 +46,17 @@ interface NavItem {
   icon: LucideIcon
   path: string
   badge?: number
+  capability?: string
 }
 
 const navigationItems: NavItem[] = [
   { label: 'Dashboard', icon: LayoutDashboard, path: '/' },
-  { label: 'Hosts', icon: Server, path: '/hosts' },
-  { label: 'Containers', icon: Container, path: '/containers' },
-  { label: 'Stacks', icon: Layers, path: '/stacks' },
-  { label: 'Container Logs', icon: FileText, path: '/logs' },
-  { label: 'Events', icon: Activity, path: '/events' },
-  { label: 'Alerts', icon: Bell, path: '/alerts' },
+  { label: 'Hosts', icon: Server, path: '/hosts', capability: 'hosts.view' },
+  { label: 'Containers', icon: Container, path: '/containers', capability: 'containers.view' },
+  { label: 'Stacks', icon: Layers, path: '/stacks', capability: 'stacks.view' },
+  { label: 'Container Logs', icon: FileText, path: '/logs', capability: 'containers.view' },
+  { label: 'Events', icon: Activity, path: '/events', capability: 'events.view' },
+  { label: 'Alerts', icon: Bell, path: '/alerts', capability: 'alerts.view' },
   { label: 'Settings', icon: Settings, path: '/settings' },
 ]
 
@@ -66,6 +68,11 @@ interface SidebarProps {
 export function Sidebar({ isMobileMenuOpen = false, onMobileClose }: SidebarProps) {
   const { status: wsStatus } = useWebSocketContext()
   const { isCollapsed, setCollapsed } = useSidebarCollapsed()
+  const { hasCapability } = useAuth()
+
+  const visibleNavItems = navigationItems.filter(
+    (item) => !item.capability || hasCapability(item.capability)
+  )
 
   // Notify AppLayout when collapsed state changes (for layout adjustments)
   useEffect(() => {
@@ -150,7 +157,7 @@ export function Sidebar({ isMobileMenuOpen = false, onMobileClose }: SidebarProp
 
       {/* Navigation Items */}
       <nav className="flex flex-col gap-1 p-3" role="navigation">
-        {navigationItems.map((item) => {
+        {visibleNavItems.map((item) => {
           const Icon = item.icon
 
           return (

@@ -5728,7 +5728,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
             # Handle different message types
             if message.get("type") == "subscribe_stats":
                 container_id = message.get("container_id")
-                if container_id:
+                if container_id and "containers.view" in user_caps:
                     await monitor.realtime.subscribe_to_stats(websocket, container_id)
                     # Find the host and start monitoring
                     # CRITICAL: Use async wrapper to prevent blocking event loop

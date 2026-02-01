@@ -286,6 +286,7 @@ class DockerMonitor:
         self.last_reconnect_attempt: Dict[str, float] = {}  # Track last attempt time per host
         self.manager = ConnectionManager()
         self.realtime = RealtimeMonitor()  # Real-time monitoring
+        self.realtime.connection_manager = self.manager
         self.event_logger = EventLogger(self.db, self.manager)  # Event logging service with WebSocket support
         self.notification_service = NotificationService(self.db, self.event_logger)  # Notification service (v1 - for channels only)
         self._container_states: Dict[str, str] = {}  # Track container states for change detection

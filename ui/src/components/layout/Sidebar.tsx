@@ -54,7 +54,7 @@ const navigationItems: NavItem[] = [
   { label: 'Hosts', icon: Server, path: '/hosts', capability: 'hosts.view' },
   { label: 'Containers', icon: Container, path: '/containers', capability: 'containers.view' },
   { label: 'Stacks', icon: Layers, path: '/stacks', capability: 'stacks.view' },
-  { label: 'Container Logs', icon: FileText, path: '/logs', capability: 'containers.view' },
+  { label: 'Container Logs', icon: FileText, path: '/logs', capability: 'containers.logs' },
   { label: 'Events', icon: Activity, path: '/events', capability: 'events.view' },
   { label: 'Alerts', icon: Bell, path: '/alerts', capability: 'alerts.view' },
   { label: 'Settings', icon: Settings, path: '/settings' },

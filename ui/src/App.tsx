@@ -44,6 +44,15 @@ const queryClient = new QueryClient({
   },
 })
 
+// Capability-gated route wrapper — redirects to / if user lacks the required capability
+function RequireCapability({ capability, children }: { capability: string; children: React.ReactNode }) {
+  const { hasCapability } = useAuth()
+  if (!hasCapability(capability)) {
+    return <Navigate to="/" replace />
+  }
+  return <>{children}</>
+}
+
 // Protected route wrapper
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth()
@@ -118,15 +127,15 @@ function AppRoutes() {
         }
       >
         <Route path="/" element={<DashboardPage />} />
-        <Route path="/containers" element={<ContainersPage />} />
-        <Route path="/stacks" element={<StacksPage />} />
+        <Route path="/containers" element={<RequireCapability capability="containers.view"><ContainersPage /></RequireCapability>} />
+        <Route path="/stacks" element={<RequireCapability capability="stacks.view"><StacksPage /></RequireCapability>} />
         {/* Redirect old /deployments route to /stacks */}
         <Route path="/deployments" element={<Navigate to="/stacks" replace />} />
-        <Route path="/hosts" element={<HostsPage />} />
-        <Route path="/logs" element={<ContainerLogsPage />} />
-        <Route path="/events" element={<EventsPage />} />
-        <Route path="/alerts" element={<AlertsPage />} />
-        <Route path="/alerts/rules" element={<AlertRulesPage />} />
+        <Route path="/hosts" element={<RequireCapability capability="hosts.view"><HostsPage /></RequireCapability>} />
+        <Route path="/logs" element={<RequireCapability capability="containers.logs"><ContainerLogsPage /></RequireCapability>} />
+        <Route path="/events" element={<RequireCapability capability="events.view"><EventsPage /></RequireCapability>} />
+        <Route path="/alerts" element={<RequireCapability capability="alerts.view"><AlertsPage /></RequireCapability>} />
+        <Route path="/alerts/rules" element={<RequireCapability capability="alerts.manage"><AlertRulesPage /></RequireCapability>} />
         <Route path="/settings" element={<SettingsPage />} />
       </Route>
 

@@ -72,7 +72,7 @@ from models.request_models import (
 )
 from security.audit import security_audit
 from security.rate_limiting import rate_limiter, rate_limit_auth, rate_limit_hosts, rate_limit_containers, rate_limit_notifications, rate_limit_default
-from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability, check_auth_capability, has_capability_for_user, Capabilities
+from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability, check_auth_capability, has_capability_for_user, get_capabilities_for_user, Capabilities
 from websocket.connection import ConnectionManager, DateTimeEncoder
 from websocket.rate_limiter import ws_rate_limiter
 from docker_monitor.monitor import DockerMonitor
@@ -5607,6 +5607,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
 
     # Get user_id for capability-based filtering
     user_id = session_data.get("user_id")
+    user_caps = set(get_capabilities_for_user(user_id)) if user_id else set()
     can_view_env = user_id is not None and has_capability_for_user(user_id, Capabilities.CONTAINERS_VIEW_ENV)
 
     logger.debug(f"WebSocket authenticated for user: {session_data.get('username')}")
@@ -5614,7 +5615,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
     try:
         # Accept connection and subscribe to events
         # Pass user_id for per-connection capability filtering
-        await monitor.manager.connect(websocket, user_id=user_id)
+        await monitor.manager.connect(websocket, user_id=user_id, capabilities=user_caps)
         await monitor.realtime.subscribe_to_events(websocket)
 
         # Event-driven stats control: Start stats streams when first viewer connects
@@ -5673,8 +5674,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
         initial_state = {
             "type": "initial_state",
             "data": {
-                "hosts": [h.dict() for h in monitor.hosts.values()],
-                "containers": filter_container_env(containers_data, can_view_env),
+                "hosts": [h.dict() for h in monitor.hosts.values()] if "hosts.view" in user_caps else [],
+                "containers": filter_container_env(containers_data, can_view_env) if "containers.view" in user_caps else [],
                 "settings": settings_dict,
                 "blackout": {
                     "is_active": is_blackout,
@@ -5686,27 +5687,27 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
 
         # Send immediate containers_update with stats/sparklines so frontend doesn't wait for next poll
         # This eliminates the 5-10 second delay when opening container drawers on page load
-        containers = await monitor.get_containers()
-        broadcast_data = {
-            "timestamp": datetime.now(timezone.utc).isoformat() + 'Z',
-            "containers": filter_container_env(containers, can_view_env)
-        }
+        if "containers.view" in user_caps:
+            broadcast_data = {
+                "timestamp": datetime.now(timezone.utc).isoformat() + 'Z',
+                "containers": filter_container_env(containers_data, can_view_env)
+            }
 
-        # Include sparklines if available
-        if hasattr(monitor, 'container_stats_history'):
-            container_sparklines = {}
-            for container in containers:
-                # Use composite key with SHORT ID: host_id:container_id (12 chars)
-                container_key = make_composite_key(container.host_id, container.short_id)
-                sparklines = monitor.container_stats_history.get_sparklines(container_key, num_points=30)
-                container_sparklines[container_key] = sparklines
-            broadcast_data["container_sparklines"] = container_sparklines
+            # Include sparklines if available
+            if hasattr(monitor, 'container_stats_history'):
+                container_sparklines = {}
+                for container in containers_data:
+                    # Use composite key with SHORT ID: host_id:container_id (12 chars)
+                    container_key = make_composite_key(container.host_id, container.short_id)
+                    sparklines = monitor.container_stats_history.get_sparklines(container_key, num_points=30)
+                    container_sparklines[container_key] = sparklines
+                broadcast_data["container_sparklines"] = container_sparklines
 
-        containers_update = {
-            "type": "containers_update",
-            "data": broadcast_data
-        }
-        await websocket.send_text(json.dumps(containers_update, cls=DateTimeEncoder))
+            containers_update = {
+                "type": "containers_update",
+                "data": broadcast_data
+            }
+            await websocket.send_text(json.dumps(containers_update, cls=DateTimeEncoder))
 
         while True:
             # Keep connection alive and handle incoming messages

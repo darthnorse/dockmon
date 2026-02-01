@@ -28,6 +28,17 @@ from auth.capabilities import ALL_CAPABILITIES, CAPABILITY_INFO
 router = APIRouter(prefix="/api/v2/groups", tags=["groups"])
 
 
+async def _refresh_ws_capabilities(user_id: int | None = None):
+    """Refresh cached WS capabilities. If user_id given, refresh only that user."""
+    # Local import to avoid circular dependency (main imports this module)
+    from main import monitor
+    if monitor and monitor.manager:
+        if user_id is not None:
+            await monitor.manager.refresh_capabilities_for_user(user_id)
+        else:
+            await monitor.manager.refresh_all_capabilities()
+
+
 def _get_auditable_user_info(current_user: dict) -> tuple[int | None, str]:
     """Extract user ID and username from auth context for audit logging.
 
@@ -586,6 +597,7 @@ async def delete_group(
         # Phase 4: Invalidate caches
         invalidate_group_permissions_cache()
         invalidate_user_groups_cache()  # All users, since we don't know who was affected
+        await _refresh_ws_capabilities()
 
         return DeleteGroupResponse(
             success=True,
@@ -665,6 +677,7 @@ async def add_member(
 
         # Phase 4: Invalidate user's group cache
         invalidate_user_groups_cache(request.user_id)
+        await _refresh_ws_capabilities(request.user_id)
 
         return AddMemberResponse(
             success=True,
@@ -738,6 +751,7 @@ async def remove_member(
 
         # Invalidate removed member's group cache
         invalidate_user_groups_cache(member_user_id)
+        await _refresh_ws_capabilities(member_user_id)
 
         return RemoveMemberResponse(
             success=True,
@@ -942,6 +956,7 @@ async def update_group_permissions(
 
         # Invalidate cache after permission changes
         invalidate_group_permissions_cache()
+        await _refresh_ws_capabilities()
 
         return UpdatePermissionsResponse(
             updated=updated_count,
@@ -1033,6 +1048,7 @@ async def copy_group_permissions(
 
         # Invalidate cache after permission changes
         invalidate_group_permissions_cache()
+        await _refresh_ws_capabilities()
 
         return CopyPermissionsResponse(
             copied=copied_count,

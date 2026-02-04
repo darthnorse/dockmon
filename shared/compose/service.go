@@ -271,13 +271,36 @@ func (s *Service) createComposeService(ctx context.Context, req DeployRequest) (
 // (written by WriteEnvFile before this is called).
 func (s *Service) loadProject(ctx context.Context, composeFile, projectName string, profiles []string) (*types.Project, error) {
 	workingDir := filepath.Dir(composeFile)
+	envFile := filepath.Join(workingDir, ".env")
 
-	projectOpts, err := cli.NewProjectOptions(
-		[]string{composeFile},
+	// Build project options
+	opts := []cli.ProjectOptionsFn{
 		cli.WithWorkingDirectory(workingDir),
 		cli.WithName(projectName),
 		cli.WithProfiles(profiles),
-		cli.WithDotEnv, // Loads .env from workingDir automatically
+	}
+
+	// Load .env file manually and pass via WithEnv for reliable interpolation
+	// This bypasses compose-go's WithDotEnv which can have issues with file loading
+	if _, err := os.Stat(envFile); err == nil {
+		s.logInfo("Loading .env file for compose", logrus.Fields{"path": envFile})
+
+		envVars, loadErr := loadEnvFile(envFile)
+		if loadErr != nil {
+			s.logWarn("Failed to parse .env file", logrus.Fields{"error": loadErr.Error()})
+		} else {
+			s.logInfo("Loaded env vars from .env", logrus.Fields{"count": len(envVars)})
+			if len(envVars) > 0 {
+				opts = append(opts, cli.WithEnv(envVars))
+			}
+		}
+	} else {
+		s.logDebug("No .env file found", logrus.Fields{"path": envFile})
+	}
+
+	projectOpts, err := cli.NewProjectOptions(
+		[]string{composeFile},
+		opts...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create project options: %w", err)
@@ -289,6 +312,36 @@ func (s *Service) loadProject(ctx context.Context, composeFile, projectName stri
 	}
 
 	return project, nil
+}
+
+// loadEnvFile reads a .env file and returns KEY=VALUE strings for compose interpolation
+func loadEnvFile(path string) ([]string, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	var envVars []string
+	scanner := bufio.NewScanner(strings.NewReader(string(content)))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+
+		// Skip empty lines and comments
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		// Must have KEY=VALUE format
+		idx := strings.Index(line, "=")
+		if idx <= 0 {
+			continue
+		}
+
+		// Add the full KEY=VALUE string
+		envVars = append(envVars, line)
+	}
+
+	return envVars, scanner.Err()
 }
 
 // applyComposeLabels sets the required CustomLabels for compose to track containers

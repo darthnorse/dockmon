@@ -23,7 +23,7 @@ from updates.update_executor import UpdateExecutor
 def docker_client():
     """Get Docker client"""
     try:
-        return docker.from_env()
+        return docker.from_env(version="auto")
     except Exception as e:
         pytest.skip(f"Docker not available: {e}")
 

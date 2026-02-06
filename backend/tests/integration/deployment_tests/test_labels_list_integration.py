@@ -12,7 +12,7 @@ import pytest
 @pytest.fixture
 def docker_client():
     """Get Docker client for integration tests"""
-    return docker.from_env()
+    return docker.from_env(version="auto")
 
 
 class TestLabelsListConversion:

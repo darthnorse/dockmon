@@ -76,7 +76,7 @@ def ensure_docker_images():
     - Rate limit safe: Only pulls when actually missing
     """
     try:
-        client = docker.from_env()
+        client = docker.from_env(version="auto")
 
         for image_name in REQUIRED_IMAGES:
             try:

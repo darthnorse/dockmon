@@ -18,6 +18,7 @@ from database import DatabaseManager, DockerHostDB
 from models.docker_models import DockerHost, Container, derive_container_tags
 from event_bus import Event, EventType as BusEventType, get_event_bus
 from stats_client import get_stats_client
+from utils.async_docker import async_docker_call, async_client_ping
 from utils.keys import make_composite_key
 from utils.ip_extraction import extract_container_ips
 from utils.cache import async_ttl_cache
@@ -249,7 +250,7 @@ class ContainerDiscovery:
                 db_host = session.query(DockerHostDB).filter_by(id=host_id).first()
 
             if host.url.startswith("unix://"):
-                client = docker.DockerClient(base_url=host.url)
+                client = await async_docker_call(docker.DockerClient, base_url=host.url, version="auto")
             elif db_host and db_host.tls_cert and db_host.tls_key and db_host.tls_ca:
                 # Reconnect with TLS using certs from database
                 logger.debug(f"Reconnecting to {host.name} with TLS")
@@ -288,20 +289,23 @@ class ContainerDiscovery:
                     verify=bool(db_host.tls_ca)
                 )
 
-                client = docker.DockerClient(
+                client = await async_docker_call(
+                    docker.DockerClient,
                     base_url=host.url,
                     tls=tls_config,
-                    timeout=self.settings.connection_timeout
+                    timeout=self.settings.connection_timeout,
+                    version="auto",
                 )
             else:
                 # Reconnect without TLS
-                client = docker.DockerClient(
+                client = await async_docker_call(
+                    docker.DockerClient,
                     base_url=host.url,
-                    timeout=self.settings.connection_timeout
+                    timeout=self.settings.connection_timeout,
+                    version="auto",
                 )
 
             # Test the connection
-            from utils.async_docker import async_client_ping
             await async_client_ping(client)
             # Connection successful - add to clients
             self.clients[host_id] = client

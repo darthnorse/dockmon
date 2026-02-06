@@ -79,7 +79,7 @@ from docker_monitor.monitor import DockerMonitor
 from batch_manager import BatchJobManager
 from utils.keys import make_composite_key
 from utils.encryption import encrypt_password, decrypt_password
-from utils.async_docker import async_docker_call
+from utils.async_docker import async_docker_call, async_client_ping, async_client_version
 from utils.base_path import get_base_path
 from utils.response_filtering import filter_container_env, filter_container_inspect_env, filter_ws_container_message
 from updates.container_validator import ContainerValidator, ValidationResult
@@ -727,7 +727,7 @@ async def get_hosts(current_user: dict = Depends(get_current_user)):
 async def add_host(config: DockerHostConfig, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_hosts, request: Request = None):
     """Add a new Docker host"""
     try:
-        host = monitor.add_host(config)
+        host = await asyncio.to_thread(monitor.add_host, config)
 
         # Security audit log - successful privileged action
         if request:
@@ -837,14 +837,14 @@ async def test_host_connection(config: DockerHostConfig, current_user: dict = De
             kwargs['tls'] = tls
 
         # Create Docker client
-        client = docker.DockerClient(base_url=config.url, **kwargs)
+        client = await async_docker_call(docker.DockerClient, base_url=config.url, version="auto", **kwargs)
 
         try:
             # Test connection by pinging
-            info = client.ping()
+            info = await async_client_ping(client)
 
             # Get some basic info
-            version_info = client.version()
+            version_info = await async_client_version(client)
 
             logger.info(f"Connection test successful for {config.url}")
             return {
@@ -880,7 +880,7 @@ async def test_host_connection(config: DockerHostConfig, current_user: dict = De
 @app.put("/api/hosts/{host_id}", tags=["hosts"], dependencies=[Depends(require_capability("hosts.manage"))])
 async def update_host(host_id: str, config: DockerHostConfig, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_hosts):
     """Update an existing Docker host"""
-    host = monitor.update_host(host_id, config)
+    host = await asyncio.to_thread(monitor.update_host, host_id, config)
     return host
 
 @app.delete("/api/hosts/{host_id}", tags=["hosts"], dependencies=[Depends(require_capability("hosts.manage"))])

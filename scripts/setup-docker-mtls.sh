@@ -458,8 +458,8 @@ openssl x509 -req -days $DAYS_VALID -sha256 -in client.csr -CA ca.pem -CAkey ca-
 rm -f *.csr *.cnf ca.srl
 
 # Set appropriate permissions
-chmod 400 *-key.pem
 chmod 444 *.pem
+chmod 400 *-key.pem
 
 print_info "Certificates generated successfully!"
 echo ""

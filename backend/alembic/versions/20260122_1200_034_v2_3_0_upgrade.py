@@ -55,8 +55,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = '033_v2_3_0'
-down_revision = '032_v2_2_8'
+revision = '034_v2_3_0'
+down_revision = '033_v2_2_9'
 branch_labels = None
 depends_on = None
 

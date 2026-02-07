@@ -2,7 +2,7 @@
 
 A comprehensive Docker container monitoring and management platform with real-time monitoring, intelligent auto-restart, multi-channel alerting, and complete event logging.
 
-![DockMon](https://img.shields.io/badge/DockMon-v2.2.8-blue.svg)
+![DockMon](https://img.shields.io/badge/DockMon-v2.2.9-blue.svg)
 ![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)
 ![React](https://img.shields.io/badge/React-18.3-61DAFB?logo=react&logoColor=white)

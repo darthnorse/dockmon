@@ -57,8 +57,7 @@ func LoadFromEnv() (*Config, error) {
 		DockerCertPath:   os.Getenv("DOCKER_CERT_PATH"),
 		DockerTLSVerify:  getEnvBool("DOCKER_TLS_VERIFY", false),
 
-		// Agent identity
-		AgentVersion:     getEnvOrDefault("AGENT_VERSION", "1.0.3"),
+		// Protocol
 		ProtoVersion:     getEnvOrDefault("PROTO_VERSION", "1.0"),
 
 		// Reconnection (exponential backoff: 1s → 60s)

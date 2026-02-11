@@ -17,7 +17,7 @@ from database import DatabaseManager
 from event_logger import EventLogger, EventSeverity, EventType
 from auth.session_manager import session_manager
 from utils.keys import make_composite_key, parse_composite_key
-from utils.async_docker import async_docker_call
+from utils.async_docker import async_docker_call, async_containers_list
 from updates.dockmon_update_checker import get_dockmon_update_checker
 
 logger = logging.getLogger(__name__)
@@ -146,8 +146,7 @@ class PeriodicJobsManager:
         if self.monitor:
             for host_id, client in self.monitor.clients.items():
                 try:
-                    # Fetch all containers on this host in one call
-                    containers = await async_docker_call(client.containers.list, all=True)
+                    containers = await async_containers_list(client, all=True)
                     # Store SHORT IDs (12 chars) in set for fast lookup
                     existing_containers_by_host[host_id] = {c.id[:12] for c in containers}
                     logger.debug(f"Found {len(existing_containers_by_host[host_id])} containers on host {host_id}")
@@ -786,8 +785,7 @@ class PeriodicJobsManager:
             # Check all hosts
             for host_id, client in self.monitor.clients.items():
                 try:
-                    # Get all containers (including stopped)
-                    containers = await async_docker_call(client.containers.list, all=True)
+                    containers = await async_containers_list(client, all=True)
 
                     for container in containers:
                         # Check if this is a backup container (pattern: {name}-dockmon-backup-{timestamp})
@@ -885,8 +883,7 @@ class PeriodicJobsManager:
             # Process each host
             for host_id, client in self.monitor.clients.items():
                 try:
-                    # Get all containers (including stopped) to check which images are in use
-                    containers = await async_docker_call(client.containers.list, all=True)
+                    containers = await async_containers_list(client, all=True)
                     images_in_use = {c.image.id for c in containers}
                     logger.debug(f"Host {host_id}: Found {len(images_in_use)} images in use by containers")
 

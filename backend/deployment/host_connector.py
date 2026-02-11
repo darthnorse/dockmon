@@ -14,7 +14,7 @@ from typing import Dict, Any, List, Optional, Callable
 import logging
 
 from database import DatabaseManager
-from utils.async_docker import async_docker_call
+from utils.async_docker import async_docker_call, async_containers_list
 from utils.container_health import wait_for_container_health
 from utils.image_pull_progress import ImagePullProgress
 from utils.network_helpers import manually_connect_networks
@@ -539,7 +539,8 @@ class DirectDockerConnector(HostConnector):
         Raises ValidationError if any port is in use.
         """
         client = self._get_client()
-        containers = await async_docker_call(client.containers.list)
+        # Only running containers (no all=True) — stopped containers don't bind host ports
+        containers = await async_containers_list(client)
 
         # Check each requested port
         for port_spec, host_port in ports.items():

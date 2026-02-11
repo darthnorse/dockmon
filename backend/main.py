@@ -79,7 +79,7 @@ from docker_monitor.monitor import DockerMonitor
 from batch_manager import BatchJobManager
 from utils.keys import make_composite_key
 from utils.encryption import encrypt_password, decrypt_password
-from utils.async_docker import async_docker_call, async_client_ping, async_client_version
+from utils.async_docker import async_docker_call, async_client_ping, async_client_version, async_containers_list
 from utils.base_path import get_base_path
 from utils.response_filtering import filter_container_env, filter_container_inspect_env, filter_ws_container_message
 from updates.container_validator import ContainerValidator, ValidationResult
@@ -956,9 +956,8 @@ async def get_host_metrics(host_id: str, current_user: dict = Depends(get_curren
         if not client:
             raise HTTPException(status_code=503, detail="Host client not available")
 
-        # Get all running containers on this host (async to prevent event loop blocking)
-        containers = await async_docker_call(
-            client.containers.list,
+        containers = await async_containers_list(
+            client,
             filters={'status': 'running'}
         )
 
@@ -1237,8 +1236,7 @@ async def list_host_images(host_id: str, current_user: dict = Depends(get_curren
         # Get all images
         images = await async_docker_call(client.images.list, all=True)
 
-        # Get all containers to determine image usage
-        containers = await async_docker_call(client.containers.list, all=True)
+        containers = await async_containers_list(client, all=True)
 
         # Build image usage map: image_id -> list of {id, name} objects
         image_usage: dict = defaultdict(list)
@@ -1580,8 +1578,7 @@ async def list_host_volumes(host_id: str, current_user: dict = Depends(get_curre
         # Get all volumes
         volumes = await async_docker_call(client.volumes.list)
 
-        # Get all containers to determine volume usage
-        containers = await async_docker_call(client.containers.list, all=True)
+        containers = await async_containers_list(client, all=True)
 
         # Build volume usage map: volume_name -> list of {id, name} objects
         volume_usage: dict = defaultdict(list)
@@ -1667,8 +1664,7 @@ async def delete_host_volume(
         # Get the volume
         volume = await async_docker_call(client.volumes.get, volume_name)
 
-        # Check if volume is in use by getting containers
-        containers = await async_docker_call(client.containers.list, all=True)
+        containers = await async_containers_list(client, all=True)
         using_containers = []
         for container in containers:
             mounts = container.attrs.get('Mounts', [])

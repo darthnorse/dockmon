@@ -68,6 +68,12 @@ async def async_containers_list(client, **kwargs) -> List:
     """
     List containers asynchronously.
 
+    Defaults ignore_removed=True to skip ghost containers that appear in
+    Docker's list endpoint but 404 on inspect. Without this, a single ghost
+    container crashes the entire list operation. (Issue #174)
+
+    Pass ignore_removed=False to override if you need to detect ghost containers.
+
     Args:
         client: Docker client instance
         **kwargs: Arguments to pass to containers.list() (e.g., all=True)
@@ -79,6 +85,7 @@ async def async_containers_list(client, **kwargs) -> List:
         all_containers = await async_containers_list(client, all=True)
         running = await async_containers_list(client, filters={'status': 'running'})
     """
+    kwargs.setdefault('ignore_removed', True)
     return await async_docker_call(client.containers.list, **kwargs)
 
 

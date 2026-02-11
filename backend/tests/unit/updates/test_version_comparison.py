@@ -1,8 +1,9 @@
 """
 Unit tests for version parsing and comparison in UpdateChecker.
 
-Tests the _parse_version_from_tag() and _is_downgrade() methods used to
-detect and suppress false positive updates (Issue #147).
+Tests the _parse_version_from_tag(), _extract_version_from_tag(), and
+_is_downgrade() methods used for version display (Issue #178) and
+downgrade suppression (Issue #147).
 """
 
 import pytest
@@ -141,3 +142,58 @@ class TestDowngradeDetectionIntegration:
 
         assert current_ver is None
         assert latest_ver is None
+
+
+class TestExtractVersionFromTag:
+    """Tests for _extract_version_from_tag() - Issue #178 fallback for notification variables."""
+
+    def test_simple_semver(self, checker):
+        assert checker._extract_version_from_tag("nginx:1.25.3") == "1.25.3"
+
+    def test_semver_with_suffix(self, checker):
+        assert checker._extract_version_from_tag("nextcloud:32.0.3-fpm-alpine") == "32.0.3"
+
+    def test_v_prefix_stripped(self, checker):
+        """v-prefix is stripped to match OCI label format (e.g., '2.1.0' not 'v2.1.0')."""
+        assert checker._extract_version_from_tag("app:v2.1.0") == "2.1.0"
+
+    def test_v_prefix_major_minor_only(self, checker):
+        assert checker._extract_version_from_tag("app:v7.2") == "7.2"
+
+    def test_major_minor_only(self, checker):
+        assert checker._extract_version_from_tag("redis:7.2") == "7.2"
+
+    def test_four_part_version(self, checker):
+        assert checker._extract_version_from_tag("app:1.2.3.4") == "1.2.3.4"
+
+    def test_registry_prefix(self, checker):
+        assert checker._extract_version_from_tag("ghcr.io/org/app:3.1.4") == "3.1.4"
+
+    def test_latest_returns_none(self, checker):
+        assert checker._extract_version_from_tag("nginx:latest") is None
+
+    def test_stable_returns_none(self, checker):
+        assert checker._extract_version_from_tag("app:stable") is None
+
+    def test_alpine_returns_none(self, checker):
+        assert checker._extract_version_from_tag("nginx:alpine") is None
+
+    def test_no_tag_returns_none(self, checker):
+        assert checker._extract_version_from_tag("nginx") is None
+
+    def test_empty_returns_none(self, checker):
+        assert checker._extract_version_from_tag("") is None
+
+    def test_none_returns_none(self, checker):
+        assert checker._extract_version_from_tag(None) is None
+
+    def test_registry_with_port(self, checker):
+        assert checker._extract_version_from_tag("myregistry.local:5000/app:2.0.0") == "2.0.0"
+
+    def test_registry_with_port_no_tag(self, checker):
+        """Registry port should not be extracted as a version."""
+        assert checker._extract_version_from_tag("myregistry.local:5000/app") is None
+
+    def test_major_only_returns_none(self, checker):
+        """Single number tags like 'redis:7' are ambiguous, not useful as version display."""
+        assert checker._extract_version_from_tag("redis:7") is None

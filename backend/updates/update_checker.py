@@ -343,6 +343,12 @@ class UpdateChecker:
         # Extract latest version from OCI labels
         latest_version = latest_manifest_labels.get("org.opencontainers.image.version")
 
+        # Fallback to image tag when OCI version label is missing (Issue #178)
+        if not current_version:
+            current_version = self._extract_version_from_tag(image)
+        if not latest_version:
+            latest_version = self._extract_version_from_tag(floating_tag)
+
         if current_version or latest_version:
             logger.debug(f"Version info: current={current_version}, latest={latest_version}")
 
@@ -440,6 +446,20 @@ class UpdateChecker:
                 return True
 
         return False
+
+    def _extract_version_from_tag(self, image_ref: str) -> Optional[str]:
+        """
+        Extract version string from an image reference tag.
+
+        Used as fallback when OCI version label is missing.
+        Returns the version portion only (e.g., "nginx:1.25.3-alpine" -> "1.25.3").
+        Returns None for non-version tags like "latest", "stable", "edge".
+        """
+        if not image_ref or ":" not in image_ref:
+            return None
+        tag = image_ref.rsplit(":", 1)[1]
+        version_match = re.match(r"v?(\d+(?:\.\d+)+)", tag)
+        return version_match.group(1) if version_match else None
 
     def _parse_version_from_tag(self, tag: str) -> Optional[Tuple[int, int, int]]:
         """

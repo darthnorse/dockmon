@@ -31,6 +31,7 @@ from agent.models import AgentRegistrationRequest
 from database import (
     Agent,
     ContainerHttpHealthCheck,
+    ContainerUpdate,
     DatabaseManager,
 )
 from event_bus import Event, EventType, get_event_bus
@@ -1081,13 +1082,39 @@ class AgentWebSocketHandler:
                     f"Dependent containers failed to recreate: {failed_dependents}"
                 )
 
-            # Build composite keys for event emission
             new_composite_key = make_composite_key(host_id, new_container_id)
 
-            # Emit event_bus event for other subscribers
-            # (event_logger, notification system, etc.)
+            # Query by old key — the executor hasn't migrated the record yet
+            old_composite_key = make_composite_key(host_id, old_container_id)
+            update_info = {}
+            try:
+                with self.db_manager.get_session() as session:
+                    update_record = session.query(ContainerUpdate).filter_by(
+                        container_id=old_composite_key
+                    ).first()
+                    if update_record:
+                        update_info = {
+                            "previous_image": update_record.current_image,
+                            "new_image": update_record.latest_image,
+                            "current_version": update_record.current_version,
+                            "latest_version": update_record.latest_version,
+                            "current_digest": update_record.current_digest,
+                            "latest_digest": update_record.latest_digest,
+                            "changelog_url": update_record.changelog_url,
+                        }
+            except Exception as e:
+                logger.debug(f"Could not look up update record for version data: {e}")
+
             try:
                 if self.monitor:
+                    event_data = {
+                        "old_container_id": old_container_id,
+                        "new_container_id": new_container_id,
+                        "failed_dependents": failed_dependents,
+                        "source": "agent",
+                        **update_info,
+                    }
+
                     event = Event(
                         event_type=EventType.UPDATE_COMPLETED,
                         scope_type='container',
@@ -1095,12 +1122,7 @@ class AgentWebSocketHandler:
                         scope_name=container_name,
                         host_id=host_id,
                         host_name=self.agent_hostname or self.agent_id,
-                        data={
-                            "old_container_id": old_container_id,
-                            "new_container_id": new_container_id,
-                            "failed_dependents": failed_dependents,
-                            "source": "agent",
-                        }
+                        data=event_data,
                     )
                     await get_event_bus(self.monitor).emit(event)
             except Exception as e:

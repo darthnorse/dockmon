@@ -68,9 +68,11 @@ class UpdateEventEmitter:
         container_name: str,
         previous_image: str,
         new_image: str,
-        previous_digest: str = None,
-        new_digest: str = None,
-        changelog_url: str = None
+        current_digest: Optional[str] = None,
+        latest_digest: Optional[str] = None,
+        changelog_url: Optional[str] = None,
+        current_version: Optional[str] = None,
+        latest_version: Optional[str] = None,
     ):
         """Emit UPDATE_COMPLETED event."""
         try:
@@ -85,9 +87,11 @@ class UpdateEventEmitter:
                 data={
                     'previous_image': previous_image,
                     'new_image': new_image,
-                    'current_digest': previous_digest,
-                    'latest_digest': new_digest,
+                    'current_digest': current_digest,
+                    'latest_digest': latest_digest,
                     'changelog_url': changelog_url,
+                    'current_version': current_version,
+                    'latest_version': latest_version,
                 }
             ))
         except Exception as e:

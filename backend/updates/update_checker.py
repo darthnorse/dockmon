@@ -28,6 +28,7 @@ from event_bus import Event, EventType, get_event_bus
 from utils.keys import make_composite_key
 from utils.encryption import decrypt_password
 from utils.container_id import normalize_container_id
+from utils.async_docker import async_docker_call
 
 logger = logging.getLogger(__name__)
 
@@ -562,7 +563,6 @@ class UpdateChecker:
                 return None
 
             # Get container and extract digest (use async wrapper to prevent event loop blocking)
-            from utils.async_docker import async_docker_call
             logger.debug(f"[{container_name}] Fetching container with ID: {container['id']}")
             dc = await async_docker_call(client.containers.get, container["id"])
             logger.debug(f"[{container_name}] Got container object, fetching image...")
@@ -588,22 +588,25 @@ class UpdateChecker:
 
     async def _get_container_image_version(self, container: Dict) -> Optional[str]:
         """
-        Get the OCI version label from the running container's local image.
+        Get the OCI version label from the container or its local image.
 
-        This inspects the local Docker image (not the registry) to get the version
-        of the image that's actually running.
-
-        Args:
-            container: Container dict with host_id and id
+        Checks container labels first (works for all hosts including agent-monitored),
+        then falls back to Docker API image inspection.
 
         Returns:
             Version string from org.opencontainers.image.version label or None
         """
+        # Container labels include inherited image labels (Config.Labels),
+        # so the OCI version is available without Docker API access.
+        container_labels = container.get("labels") or {}
+        version = container_labels.get("org.opencontainers.image.version")
+        if version:
+            return version
+
         if not self.monitor:
             return None
 
         try:
-            # Get Docker client for this host
             host_id = container.get("host_id")
             if not host_id:
                 return None
@@ -612,19 +615,9 @@ class UpdateChecker:
             if not client:
                 return None
 
-            # Get container's image (use async wrapper)
-            from utils.async_docker import async_docker_call
             dc = await async_docker_call(client.containers.get, container["id"])
-            image = dc.image
-
-            # Extract OCI version label from image config
-            labels = image.attrs.get("Config", {}).get("Labels", {}) or {}
-            version = labels.get("org.opencontainers.image.version")
-
-            if version:
-                logger.debug(f"Got version from local image: {version}")
-
-            return version
+            image_labels = dc.image.attrs.get("Config", {}).get("Labels", {}) or {}
+            return image_labels.get("org.opencontainers.image.version")
 
         except Exception as e:
             logger.warning(f"Error getting container image version: {e}")

@@ -308,14 +308,16 @@ class UpdateExecutor:
             if result.success:
                 # Emit completion event
                 await self.event_emitter.emit_completed(
-                    host_id,
-                    result.new_container_id or container_id,
-                    container_name,
-                    update_record.current_image,
-                    update_record.latest_image,
-                    update_record.current_digest,
-                    update_record.latest_digest,
-                    update_record.changelog_url
+                    host_id=host_id,
+                    container_id=result.new_container_id or container_id,
+                    container_name=container_name,
+                    previous_image=update_record.current_image,
+                    new_image=update_record.latest_image,
+                    current_digest=update_record.current_digest,
+                    latest_digest=update_record.latest_digest,
+                    changelog_url=update_record.changelog_url,
+                    current_version=update_record.current_version,
+                    latest_version=update_record.latest_version,
                 )
 
                 # Emit warning if dependent containers failed

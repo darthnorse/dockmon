@@ -75,21 +75,10 @@ def upgrade() -> None:
             sa.text("UPDATE global_settings SET health_check_timeout_seconds = 60 WHERE health_check_timeout_seconds = 10")
         )
 
-    # Change 6: Update app_version
-    op.execute(
-        sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-        .bindparams(version='2.0.2', id=1)
-    )
 
 
 def downgrade() -> None:
     """Remove v2.0.2 features"""
-    # Reverse order of upgrade
-    op.execute(
-        sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-        .bindparams(version='2.0.1', id=1)
-    )
-
     # Note: We do NOT downgrade health_check_timeout_seconds from 60s → 10s
     # because 10s was causing critical bugs (containers timing out too quickly).
     # Users who downgrade will keep the 60s timeout (safer behavior).

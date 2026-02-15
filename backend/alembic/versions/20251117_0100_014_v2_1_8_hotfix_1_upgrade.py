@@ -13,7 +13,6 @@ CHANGES IN v2.1.8-hotfix.1:
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy import inspect, text
-from sqlalchemy.orm import Session
 
 # revision identifiers, used by Alembic.
 revision = '014_v2_1_8_hotfix_1'
@@ -94,11 +93,6 @@ def upgrade() -> None:
                               nullable=False,
                               server_default='0')
 
-    # Update app_version
-    op.execute(
-        sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-        .bindparams(version='2.1.8-hotfix.1', id=1)
-    )
 
 
 def downgrade() -> None:
@@ -106,8 +100,3 @@ def downgrade() -> None:
     if column_exists('tag_assignments', 'order_index'):
         op.drop_column('tag_assignments', 'order_index')
 
-    # Revert app_version
-    op.execute(
-        sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-        .bindparams(version='2.1.8', id=1)
-    )

@@ -34,7 +34,7 @@ def table_exists(table_name: str) -> bool:
 
 
 def upgrade():
-    """Clean up orphaned alerts and update app_version"""
+    """Clean up orphaned alerts"""
 
     # Clean up orphaned alerts (alerts with rule_id=NULL)
     # These were created when rules were deleted before this fix
@@ -46,19 +46,8 @@ def upgrade():
         # Note: rowcount may not be available on all backends, but SQLite supports it
         print(f"Cleaned up orphaned alerts (rule_id IS NULL)")
 
-    # Update app_version
-    if table_exists('global_settings'):
-        op.execute(
-            sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-            .bindparams(version='2.2.6', id=1)
-        )
 
 
 def downgrade():
-    """Downgrade app_version to v2.2.5"""
-    # Note: Cannot restore deleted orphaned alerts, but they were invalid anyway
-    if table_exists('global_settings'):
-        op.execute(
-            sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-            .bindparams(version='2.2.5', id=1)
-        )
+    """No-op: version is now injected at build time via /app/VERSION"""
+    pass

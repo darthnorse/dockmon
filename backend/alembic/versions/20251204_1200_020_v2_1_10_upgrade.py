@@ -88,16 +88,8 @@ def upgrade():
     else:
         print("  All default update policies already exist")
 
-    # Update app version
-    bind.execute(
-        sa.text("UPDATE global_settings SET app_version = '2.1.10' WHERE id = 1")
-    )
 
 
 def downgrade():
-    # Downgrade just reverts the version - we don't remove policies
-    # as they may have been customized by the user
-    bind = op.get_bind()
-    bind.execute(
-        sa.text("UPDATE global_settings SET app_version = '2.1.9' WHERE id = 1")
-    )
+    """No-op: version is now injected at build time via /app/VERSION"""
+    pass

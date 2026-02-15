@@ -93,12 +93,6 @@ def upgrade():
                 WHERE container_http_health_checks.container_name IS NULL
             """))
 
-    # Update app_version
-    if table_exists('global_settings'):
-        op.execute(
-            sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-            .bindparams(version='2.2.3', id=1)
-        )
 
 
 def downgrade():
@@ -112,9 +106,3 @@ def downgrade():
         if column_exists('container_http_health_checks', 'container_name'):
             op.drop_column('container_http_health_checks', 'container_name')
 
-    # Downgrade app_version
-    if table_exists('global_settings'):
-        op.execute(
-            sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-            .bindparams(version='2.2.2', id=1)
-        )

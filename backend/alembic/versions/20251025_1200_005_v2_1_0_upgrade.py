@@ -226,25 +226,14 @@ def upgrade() -> None:
                 sa.Column('image_prune_grace_hours', sa.Integer(), server_default='48', nullable=False)
             )
 
-    # Change 6: Update app_version
-    if table_exists('global_settings'):
-        op.execute(
-            sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-            .bindparams(version='2.1.0', id=1)
-        )
 
 
 def downgrade() -> None:
     """Remove v2.1.0 deployment and image pruning features"""
 
     # Reverse order of upgrade
+    # Remove image pruning columns
     if table_exists('global_settings'):
-        op.execute(
-            sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-            .bindparams(version='2.0.3', id=1)
-        )
-
-        # Remove image pruning columns
         if column_exists('global_settings', 'image_prune_grace_hours'):
             op.drop_column('global_settings', 'image_prune_grace_hours')
 

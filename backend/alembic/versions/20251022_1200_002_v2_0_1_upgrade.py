@@ -113,11 +113,6 @@ def upgrade() -> None:
         )
     )
 
-    # ==================== global_settings: Update app_version ====================
-    op.execute(
-        sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-        .bindparams(version='2.0.1', id=1)
-    )
 
 
 def downgrade() -> None:
@@ -157,8 +152,3 @@ def downgrade() -> None:
     op.drop_column('global_settings', 'last_dockmon_update_check_at')
     op.drop_column('global_settings', 'latest_available_version')
 
-    # Revert app_version to 2.0.0
-    op.execute(
-        sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-        .bindparams(version='2.0.0', id=1)
-    )

@@ -283,13 +283,6 @@ def upgrade() -> None:
                 sa.Column('dismissed_agent_update_version', sa.Text(), nullable=True)
             )
 
-    # Change 11: Update app_version
-    if table_exists('global_settings'):
-        op.execute(
-            sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-            .bindparams(version='2.2.0-beta1', id=1)
-        )
-
     # Change 12: Add action column to update_policies table
     # Allows patterns to specify 'warn' (require confirmation) or 'ignore' (skip from update checks)
     if table_exists('update_policies'):
@@ -338,12 +331,6 @@ def downgrade() -> None:
         if column_exists('global_settings', 'external_url'):
             with op.batch_alter_table('global_settings') as batch_op:
                 batch_op.drop_column('external_url')
-
-    if table_exists('global_settings'):
-        op.execute(
-            sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-            .bindparams(version='2.1.9', id=1)
-        )
 
     # Remove agent update dismissal from user_prefs
     if table_exists('user_prefs'):

@@ -62,11 +62,6 @@ def upgrade():
                 WHERE editor_theme IS NULL
             """))
 
-        # Update app_version
-        op.execute(
-            sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-            .bindparams(version='2.2.8', id=1)
-        )
 
 
 def downgrade():
@@ -75,9 +70,3 @@ def downgrade():
     if table_exists('global_settings'):
         if column_exists('global_settings', 'editor_theme'):
             op.drop_column('global_settings', 'editor_theme')
-
-        # Downgrade app_version
-        op.execute(
-            sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-            .bindparams(version='2.2.7', id=1)
-        )

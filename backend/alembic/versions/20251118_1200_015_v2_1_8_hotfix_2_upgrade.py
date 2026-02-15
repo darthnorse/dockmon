@@ -46,21 +46,10 @@ def upgrade() -> None:
             sa.Column('updated_at', sa.DateTime(), nullable=False),
         )
 
-    # Update app_version
-    op.execute(
-        sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-        .bindparams(version='2.1.8-hotfix.2', id=1)
-    )
 
 
 def downgrade() -> None:
     """Remove image_digest_cache table"""
-
-    # Revert app_version
-    op.execute(
-        sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-        .bindparams(version='2.1.8-hotfix.1', id=1)
-    )
 
     # Drop table
     if table_exists('image_digest_cache'):

@@ -143,12 +143,8 @@ def upgrade() -> None:
 
     helper.add_columns_if_missing('global_settings', global_settings_columns)
 
-    # Set version and upgrade notice for v1→v2 upgrades
+    # Set upgrade notice for v1→v2 upgrades
     if is_v1_upgrade:
-        op.execute(
-            sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-            .bindparams(version='2.0.0', id=1)
-        )
         op.execute(
             sa.text("UPDATE global_settings SET upgrade_notice_dismissed = :dismissed WHERE id = :id")
             .bindparams(dismissed=0, id=1)

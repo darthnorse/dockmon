@@ -40,21 +40,10 @@ def upgrade() -> None:
         op.add_column('docker_hosts',
             sa.Column('is_podman', sa.Boolean(), server_default='0', nullable=False))
 
-    # Update app_version
-    op.execute(
-        sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-        .bindparams(version='2.1.8-hotfix.3', id=1)
-    )
 
 
 def downgrade() -> None:
     """Remove is_podman column from docker_hosts"""
-
-    # Revert app_version
-    op.execute(
-        sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-        .bindparams(version='2.1.8-hotfix.2', id=1)
-    )
 
     # Drop column
     if column_exists('docker_hosts', 'is_podman'):

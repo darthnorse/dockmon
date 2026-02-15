@@ -28,9 +28,6 @@ Bug Fixes:
 
 No schema changes - version bump only.
 """
-from alembic import op
-import sqlalchemy as sa
-
 # revision identifiers, used by Alembic.
 revision = '017_v2_1_9_beta1'
 down_revision = '016_v2_1_8_hotfix_3'
@@ -38,19 +35,11 @@ branch_labels = None
 depends_on = None
 
 
-def upgrade() -> None:
-    """Upgrade to v2.1.9-beta1 (version bump only, no schema changes)"""
-    # Update app_version to 2.1.9-beta1
-    op.execute(
-        sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-        .bindparams(version='2.1.9-beta1', id=1)
-    )
+def upgrade():
+    """No-op: version is now injected at build time via /app/VERSION"""
+    pass
 
 
-def downgrade() -> None:
-    """Downgrade from v2.1.9-beta1 to v2.1.8-hotfix.3"""
-    # Revert app_version
-    op.execute(
-        sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-        .bindparams(version='2.1.8-hotfix.3', id=1)
-    )
+def downgrade():
+    """No-op: version is now injected at build time via /app/VERSION"""
+    pass

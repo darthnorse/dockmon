@@ -19,10 +19,6 @@ CHANGES IN v2.2.1:
 
 NO SCHEMA CHANGES - Version bump only.
 """
-from alembic import op
-import sqlalchemy as sa
-
-
 # revision identifiers, used by Alembic.
 revision = '025_v2_2_1'
 down_revision = '024_v2_2_0'
@@ -31,10 +27,10 @@ depends_on = None
 
 
 def upgrade():
-    """No schema changes in v2.2.1"""
+    """No-op: version is now injected at build time via /app/VERSION"""
     pass
 
 
 def downgrade():
-    """No schema changes in v2.2.1"""
+    """No-op: version is now injected at build time via /app/VERSION"""
     pass

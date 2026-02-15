@@ -51,12 +51,6 @@ def upgrade() -> None:
         if 'latest_version' not in columns:
             op.add_column('container_updates', sa.Column('latest_version', sa.Text(), nullable=True))
 
-    # Update app_version
-    if table_exists('global_settings'):
-        op.execute(
-            sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-            .bindparams(version='2.1.5', id=1)
-        )
 
 
 def downgrade() -> None:
@@ -74,9 +68,3 @@ def downgrade() -> None:
         if 'current_version' in columns:
             op.drop_column('container_updates', 'current_version')
 
-    # Revert app_version
-    if table_exists('global_settings'):
-        op.execute(
-            sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-            .bindparams(version='2.1.4', id=1)
-        )

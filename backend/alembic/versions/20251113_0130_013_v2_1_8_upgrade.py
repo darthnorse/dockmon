@@ -95,23 +95,10 @@ def upgrade() -> None:
         op.create_index('idx_api_keys_user_id', 'api_keys', ['user_id'])
         op.create_index('idx_api_keys_key_hash', 'api_keys', ['key_hash'])
 
-    # 3. Update app_version
-    if table_exists('global_settings'):
-        op.execute(
-            sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-            .bindparams(version='2.1.8', id=1)
-        )
 
 
 def downgrade() -> None:
     """Downgrade from v2.1.8"""
-
-    # Reverse order of upgrade
-    if table_exists('global_settings'):
-        op.execute(
-            sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-            .bindparams(version='2.1.7', id=1)
-        )
 
     # Drop indexes and table
     if table_exists('api_keys'):

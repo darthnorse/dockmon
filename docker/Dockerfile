@@ -48,6 +48,8 @@ RUN npm run build
 # Stage 3: Final image with Python + Go binary + built React app
 FROM python:3.13-alpine
 
+ARG APP_VERSION=dev
+
 # OCI Image labels (https://github.com/opencontainers/image-spec/blob/main/annotations.md)
 LABEL org.opencontainers.image.title="DockMon"
 LABEL org.opencontainers.image.description="Self-hosted Docker monitoring and management platform with multi-host support, container updates, health checks, and alerts"
@@ -57,6 +59,7 @@ LABEL org.opencontainers.image.url="https://github.com/darthnorse/dockmon"
 LABEL org.opencontainers.image.documentation="https://github.com/darthnorse/dockmon"
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.vendor="darthnorse"
+LABEL org.opencontainers.image.version="${APP_VERSION}"
 
 # Install runtime dependencies and build dependencies (temporarily for Python packages with C extensions)
 RUN apk upgrade --no-cache \
@@ -99,6 +102,9 @@ RUN pip install --no-cache-dir -r /app/backend/requirements.txt \
 
 # Copy backend code
 COPY backend/ /app/backend/
+
+# Write build-time version file
+RUN echo "${APP_VERSION}" > /app/VERSION
 
 # Copy built React frontend from frontend-builder stage
 COPY --from=frontend-builder /build/dist /usr/share/nginx/html/

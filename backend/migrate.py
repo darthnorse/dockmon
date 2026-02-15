@@ -29,6 +29,10 @@ import os
 import logging
 import shutil
 from sqlalchemy import create_engine, text, inspect
+from sqlalchemy.orm import Session
+
+from database import GlobalSettings
+from utils.version import get_app_version
 
 # Configure logging
 logging.basicConfig(
@@ -210,7 +214,6 @@ def _validate_schema(engine, version: str):
             'container_updates_columns': ['registry_page_url', 'registry_page_source'],
             'container_http_health_checks_columns': ['max_restart_attempts', 'restart_retry_delay_seconds'],
         },
-        # '004_v2_0_3': No schema changes - security/correctness fixes only (app_version update)
         '005_v2_1_0': {
             'tables': ['deployments', 'deployment_containers', 'deployment_templates', 'deployment_metadata'],
             # Note: deployments table columns validated implicitly via table existence
@@ -259,6 +262,17 @@ def _validate_schema(engine, version: str):
     logger.info(f"Schema validation passed for version: {version}")
 
 
+def _sync_app_version(engine):
+    """Sync app_version in GlobalSettings from the VERSION file."""
+    app_version = get_app_version()
+    with Session(engine) as session:
+        settings = session.query(GlobalSettings).first()
+        if settings and settings.app_version != app_version:
+            settings.app_version = app_version
+            session.commit()
+            logger.info(f"Updated app_version to {app_version}")
+
+
 def _handle_fresh_install(engine, alembic_cfg) -> bool:
     """
     Handle fresh installation: Create tables with latest schema, stamp as HEAD.
@@ -273,10 +287,8 @@ def _handle_fresh_install(engine, alembic_cfg) -> bool:
     Returns:
         True on success, False on failure
     """
-    from database import Base, GlobalSettings
+    from database import Base
     from alembic import command
-    from sqlalchemy.orm import Session
-    import re
 
     logger.info("Fresh installation detected")
 
@@ -289,23 +301,18 @@ def _handle_fresh_install(engine, alembic_cfg) -> bool:
         # Get HEAD revision
         head_revision = _get_head_revision(alembic_cfg)
 
-        # Initialize GlobalSettings.app_version to match HEAD revision
-        # Parse version from revision ID (e.g., "002_v2_0_1" -> "2.0.1")
-        version_match = re.search(r'_v(\d+)_(\d+)_(\d+)', head_revision)
-        if version_match:
-            app_version = f"{version_match.group(1)}.{version_match.group(2)}.{version_match.group(3)}"
-            logger.info(f"Initializing app_version to {app_version}")
+        # Initialize GlobalSettings.app_version from VERSION file
+        app_version = get_app_version()
+        logger.info(f"Initializing app_version to {app_version}")
 
-            with Session(engine) as session:
-                settings = session.query(GlobalSettings).first()
-                if not settings:
-                    settings = GlobalSettings()
-                    session.add(settings)
-                settings.app_version = app_version
-                session.commit()
-                logger.info(f"GlobalSettings.app_version set to {app_version}")
-        else:
-            logger.warning(f"Could not parse version from revision ID: {head_revision}")
+        with Session(engine) as session:
+            settings = session.query(GlobalSettings).first()
+            if not settings:
+                settings = GlobalSettings()
+                session.add(settings)
+            settings.app_version = app_version
+            session.commit()
+            logger.info(f"GlobalSettings.app_version set to {app_version}")
 
         # Stamp database as HEAD without running migrations
         logger.info(f"Stamping database at version: {head_revision}")
@@ -368,6 +375,9 @@ def _handle_v1_upgrade(engine, alembic_cfg, db_path: str) -> bool:
             # Clean up V1 alert tables (legacy cleanup)
             _cleanup_v1_tables(engine)
 
+            # Sync app_version from VERSION file
+            _sync_app_version(engine)
+
             # Clean up backup on success
             try:
                 os.remove(backup_path)
@@ -427,6 +437,9 @@ def _handle_upgrade(engine, alembic_cfg, db_path: str) -> bool:
             # Clean up V1 alert tables if they still exist (legacy cleanup)
             _cleanup_v1_tables(engine)
 
+            # Sync app_version from VERSION file
+            _sync_app_version(engine)
+
             return True
 
         # Show migration plan
@@ -462,6 +475,9 @@ def _handle_upgrade(engine, alembic_cfg, db_path: str) -> bool:
 
             # Clean up V1 alert tables (legacy cleanup)
             _cleanup_v1_tables(engine)
+
+            # Sync app_version from VERSION file
+            _sync_app_version(engine)
 
             # Clean up backup on success
             try:

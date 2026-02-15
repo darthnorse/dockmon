@@ -248,12 +248,6 @@ def upgrade():
     # Drop templates table entirely
     op.drop_table('deployment_templates')
 
-    # Update app_version to 2.2.7
-    connection.execute(
-        sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id"),
-        {"version": "2.2.7", "id": 1}
-    )
-
     logger.info("Phase 2 complete: Schema updated")
     logger.info("Migration to filesystem storage complete!")
 

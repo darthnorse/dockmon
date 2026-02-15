@@ -72,12 +72,6 @@ def upgrade() -> None:
         if column_exists('registration_tokens', 'used'):
             op.drop_column('registration_tokens', 'used')
 
-    # Update app_version
-    if table_exists('global_settings'):
-        op.execute(
-            sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-            .bindparams(version='2.2.0-beta3', id=1)
-        )
 
 
 def downgrade() -> None:
@@ -106,8 +100,3 @@ def downgrade() -> None:
         if column_exists('registration_tokens', 'max_uses'):
             op.drop_column('registration_tokens', 'max_uses')
 
-    if table_exists('global_settings'):
-        op.execute(
-            sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-            .bindparams(version='2.2.0-beta2', id=1)
-        )

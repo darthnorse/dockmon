@@ -12,10 +12,6 @@ CHANGES IN v2.2.4:
 
 NO SCHEMA CHANGES - Frontend cache invalidation fix only.
 """
-from alembic import op
-import sqlalchemy as sa
-
-
 # revision identifiers, used by Alembic.
 revision = '028_v2_2_4'
 down_revision = '027_v2_2_3'
@@ -23,26 +19,11 @@ branch_labels = None
 depends_on = None
 
 
-def table_exists(table_name: str) -> bool:
-    """Check if a table exists in the database"""
-    bind = op.get_bind()
-    inspector = sa.inspect(bind)
-    return table_name in inspector.get_table_names()
-
-
 def upgrade():
-    """Update app_version to v2.2.4"""
-    if table_exists('global_settings'):
-        op.execute(
-            sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-            .bindparams(version='2.2.4', id=1)
-        )
+    """No-op: version is now injected at build time via /app/VERSION"""
+    pass
 
 
 def downgrade():
-    """Downgrade app_version to v2.2.3"""
-    if table_exists('global_settings'):
-        op.execute(
-            sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-            .bindparams(version='2.2.3', id=1)
-        )
+    """No-op: version is now injected at build time via /app/VERSION"""
+    pass

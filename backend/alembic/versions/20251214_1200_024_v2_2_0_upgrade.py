@@ -161,12 +161,6 @@ def upgrade() -> None:
                 notification_cooldown_seconds = COALESCE(notification_cooldown_seconds, 300)
         """))
 
-    # Update app_version
-    if table_exists('global_settings'):
-        op.execute(
-            sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-            .bindparams(version='2.2.0', id=1)
-        )
 
 
 def downgrade() -> None:
@@ -187,9 +181,3 @@ def downgrade() -> None:
         if column_exists('alert_rules_v2', 'auto_resolve_on_clear'):
             op.drop_column('alert_rules_v2', 'auto_resolve_on_clear')
 
-    # Downgrade app_version
-    if table_exists('global_settings'):
-        op.execute(
-            sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-            .bindparams(version='2.2.0-beta3', id=1)
-        )

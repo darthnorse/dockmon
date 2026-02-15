@@ -613,11 +613,11 @@ class NotificationService:
             if not smtp_host:
                 logger.error("SMTP config missing smtp_host")
                 return False
-            if not smtp_user:
-                logger.error("SMTP config missing smtp_user")
+            if smtp_user and not smtp_password:
+                logger.error("SMTP config missing smtp_password (required when smtp_user is set)")
                 return False
-            if not smtp_password:
-                logger.error("SMTP config missing smtp_password")
+            if smtp_password and not smtp_user:
+                logger.error("SMTP config missing smtp_user (required when smtp_password is set)")
                 return False
             if not from_email:
                 logger.error("SMTP config missing from_email")
@@ -722,7 +722,10 @@ class NotificationService:
                 }
 
             async with aiosmtplib.SMTP(**smtp_kwargs) as smtp:
-                await smtp.login(smtp_user, smtp_password)
+                if smtp_user and smtp_password:
+                    await smtp.login(smtp_user, smtp_password)
+                else:
+                    logger.debug("SMTP auth skipped - no credentials provided")
                 await smtp.send_message(msg)
 
             logger.info(f"SMTP notification sent successfully to {to_email}")

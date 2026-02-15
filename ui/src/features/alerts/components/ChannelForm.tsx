@@ -122,11 +122,11 @@ export function ChannelForm({ channel, onSubmit, onCancel, onTest, isSubmitting,
         if (!formData.config.smtp_host) {
           newErrors['config.smtp_host'] = 'SMTP host is required'
         }
-        if (!formData.config.smtp_user) {
-          newErrors['config.smtp_user'] = 'SMTP user is required'
+        if (formData.config.smtp_user && !formData.config.smtp_password) {
+          newErrors['config.smtp_password'] = 'SMTP password is required when user is set'
         }
-        if (!formData.config.smtp_password) {
-          newErrors['config.smtp_password'] = 'SMTP password is required'
+        if (formData.config.smtp_password && !formData.config.smtp_user) {
+          newErrors['config.smtp_user'] = 'SMTP user is required when password is set'
         }
         if (!formData.config.from_email) {
           newErrors['config.from_email'] = 'From email is required'
@@ -430,7 +430,7 @@ export function ChannelForm({ channel, onSubmit, onCancel, onTest, isSubmitting,
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">SMTP User *</label>
+                <label className="block text-sm font-medium text-gray-300 mb-1">SMTP User</label>
                 <input
                   type="text"
                   value={formData.config.smtp_user || ''}
@@ -441,7 +441,7 @@ export function ChannelForm({ channel, onSubmit, onCancel, onTest, isSubmitting,
                 {errors['config.smtp_user'] && <p className="mt-1 text-xs text-red-400">{errors['config.smtp_user']}</p>}
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">SMTP Password *</label>
+                <label className="block text-sm font-medium text-gray-300 mb-1">SMTP Password</label>
                 <input
                   type="password"
                   value={formData.config.smtp_password || ''}

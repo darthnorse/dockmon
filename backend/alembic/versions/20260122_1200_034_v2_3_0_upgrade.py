@@ -1,7 +1,7 @@
 """v2.3.0 Multi-User Support & Group-Based Permissions
 
-Revision ID: 033_v2_3_0
-Revises: 032_v2_2_8
+Revision ID: 034_v2_3_0
+Revises: 033_v2_2_9
 Create Date: 2026-01-22
 
 CHANGES IN v2.3.0:
@@ -518,15 +518,6 @@ def upgrade():
                     VALUES (:user_id, :group_id, :now)
                 """), {'user_id': first_user, 'group_id': admin_group_id, 'now': now})
 
-    # =========================================================================
-    # 12. UPDATE APP VERSION
-    # =========================================================================
-    if table_exists('global_settings'):
-        bind.execute(
-            sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-            .bindparams(version='2.3.0', id=1)
-        )
-
 
 def downgrade():
     """Revert v2.3.0 schema changes"""
@@ -633,11 +624,3 @@ def downgrade():
                 if column_exists('users', col_name):
                     batch_op.drop_column(col_name)
 
-    # =========================================================================
-    # 9. DOWNGRADE APP VERSION
-    # =========================================================================
-    if table_exists('global_settings'):
-        bind.execute(
-            sa.text("UPDATE global_settings SET app_version = :version WHERE id = :id")
-            .bindparams(version='2.2.8', id=1)
-        )

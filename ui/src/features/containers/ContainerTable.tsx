@@ -775,15 +775,6 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
     }
   }
 
-  // Handle legacy propHostId (integrate into new filter system)
-  useEffect(() => {
-    if (propHostId && !filters.selectedHostIds.includes(propHostId)) {
-      const params = new URLSearchParams(searchParams)
-      params.set('host', propHostId)
-      setSearchParams(params, { replace: true })
-    }
-    // Note: setSearchParams is stable, searchParams changes are captured via filters.selectedHostIds
-  }, [propHostId, filters.selectedHostIds])
 
   // Fetch containers with stats
   const { data, isLoading, error } = useQuery<Container[]>({
@@ -831,8 +822,11 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
     if (!data) return []
 
     return data.filter((container) => {
-      // Host filter (multi-select)
-      if (filters.selectedHostIds.length > 0 && (!container.host_id || !filters.selectedHostIds.includes(container.host_id))) {
+      // Host filter (prop-based for embedded tables, URL-based for main table)
+      if (propHostId && container.host_id !== propHostId) {
+        return false
+      }
+      if (!propHostId && filters.selectedHostIds.length > 0 && (!container.host_id || !filters.selectedHostIds.includes(container.host_id))) {
         return false
       }
 

@@ -513,12 +513,9 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
           }
           return (
             <div className="flex flex-col gap-0.5">
-              {ips.slice(0, 2).map((ip) => (
+              {ips.map((ip) => (
                 <span key={ip} className="text-sm text-muted-foreground">{ip}</span>
               ))}
-              {ips.length > 2 && (
-                <span className="text-xs text-muted-foreground" title={ips.slice(2).join(', ')}>+{ips.length - 2} more</span>
-              )}
             </div>
           )
         },

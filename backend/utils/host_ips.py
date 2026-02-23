@@ -104,7 +104,8 @@ def filter_docker_network_ips(ips: list[str], docker_client) -> list[str]:
                 subnet = config.get('Subnet')
                 if subnet:
                     subnets.append(ipaddress.ip_network(subnet, strict=False))
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Failed to query Docker networks for IP filtering: {e}")
         return ips
 
     if not subnets:

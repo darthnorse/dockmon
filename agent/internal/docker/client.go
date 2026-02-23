@@ -220,6 +220,60 @@ func GetHostIPsFromProc(procPath string) []string {
 	return ips
 }
 
+// FilterDockerNetworkIPs removes IPs that fall within Docker/Podman network subnets.
+// Queries the Docker daemon for all network subnets and filters out any detected IPs
+// that belong to them (bridge gateways, container IPs, etc.).
+// Returns the original list unchanged if the Docker query fails.
+func (c *Client) FilterDockerNetworkIPs(ctx context.Context, ips []string) []string {
+	if len(ips) == 0 {
+		return ips
+	}
+
+	networks, err := c.cli.NetworkList(ctx, network.ListOptions{})
+	if err != nil {
+		c.log.WithError(err).Debug("Failed to list networks for IP filtering, returning all IPs")
+		return ips
+	}
+
+	var subnets []*net.IPNet
+	for _, n := range networks {
+		for _, cfg := range n.IPAM.Config {
+			if cfg.Subnet == "" {
+				continue
+			}
+			_, subnet, err := net.ParseCIDR(cfg.Subnet)
+			if err != nil {
+				continue
+			}
+			subnets = append(subnets, subnet)
+		}
+	}
+
+	if len(subnets) == 0 {
+		return ips
+	}
+
+	var filtered []string
+	for _, ipStr := range ips {
+		ip := net.ParseIP(ipStr)
+		if ip == nil {
+			continue
+		}
+		inDockerNetwork := false
+		for _, subnet := range subnets {
+			if subnet.Contains(ip) {
+				inDockerNetwork = true
+				break
+			}
+		}
+		if !inDockerNetwork {
+			filtered = append(filtered, ipStr)
+		}
+	}
+
+	return filtered
+}
+
 // GetEngineID returns the unique Docker engine ID
 func (c *Client) GetEngineID(ctx context.Context) (string, error) {
 	info, err := c.cli.Info(ctx)

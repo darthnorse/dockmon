@@ -6,58 +6,22 @@
 
 import { Server } from 'lucide-react'
 import { DrawerSection } from '@/components/ui/drawer'
-
-interface Host {
-  id: string
-  name: string
-  url: string
-  status: 'online' | 'offline' | 'degraded'
-  tags?: string[]
-  description?: string
-  daemon_started_at?: string | null
-  os_version?: string | null
-  docker_version?: string | null
-  is_podman?: boolean
-  connection_type?: 'agent' | 'remote'
-  host_ip?: string | null
-}
+import { IpChip } from '@/components/shared/IpChip'
+import type { Host } from '@/types/api'
+import { formatUptime } from '@/lib/utils/formatting'
 
 interface HostOverviewSectionProps {
   host: Host
 }
 
-function formatUptime(daemonStartedAt?: string | null): string | null {
-  if (!daemonStartedAt) return null
-
-  try {
-    const startTime = new Date(daemonStartedAt)
-    const now = new Date()
-    const diffMs = now.getTime() - startTime.getTime()
-
-    const days = Math.floor(diffMs / (1000 * 60 * 60 * 24))
-    const hours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60))
-    const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60))
-
-    if (days > 0) {
-      return `${days}d ${hours}h`
-    } else if (hours > 0) {
-      return `${hours}h ${minutes}m`
-    } else {
-      return `${minutes}m`
-    }
-  } catch {
-    return null
-  }
-}
-
 export function HostOverviewSection({ host }: HostOverviewSectionProps) {
-  const statusColors = {
+  const statusColors: Record<string, string> = {
     online: 'bg-green-500',
     offline: 'bg-red-500',
     degraded: 'bg-yellow-500',
   }
 
-  const statusLabels = {
+  const statusLabels: Record<string, string> = {
     online: 'Online',
     offline: 'Offline',
     degraded: 'Degraded',
@@ -74,9 +38,9 @@ export function HostOverviewSection({ host }: HostOverviewSectionProps) {
           <div className="flex-1 min-w-0">
             <h3 className="text-lg font-semibold truncate">{host.name}</h3>
             <div className="flex items-center gap-2 mt-1">
-              <span className={`w-2 h-2 rounded-full ${statusColors[host.status]}`} />
+              <span className={`w-2 h-2 rounded-full ${statusColors[host.status] ?? 'bg-gray-500'}`} />
               <span className="text-sm text-muted-foreground">
-                {statusLabels[host.status]}
+                {statusLabels[host.status] ?? 'Unknown'}
               </span>
             </div>
           </div>
@@ -85,11 +49,14 @@ export function HostOverviewSection({ host }: HostOverviewSectionProps) {
         {/* URL/IP and Uptime */}
         <div className="grid grid-cols-2 gap-4">
           <div>
-            {/* Show IP for agent hosts with host_ip, URL for others */}
-            {host.connection_type === 'agent' && host.host_ip ? (
+            {host.host_ips && host.host_ips.length > 0 ? (
               <>
-                <label className="text-xs font-medium text-muted-foreground">IP Address</label>
-                <p className="text-sm mt-1">{host.host_ip}</p>
+                <label className="text-xs font-medium text-muted-foreground">IP Addresses</label>
+                <div className="flex flex-wrap gap-1.5 mt-1">
+                  {host.host_ips.map((ip) => (
+                    <IpChip key={ip} ip={ip} />
+                  ))}
+                </div>
               </>
             ) : (
               <>
@@ -98,12 +65,15 @@ export function HostOverviewSection({ host }: HostOverviewSectionProps) {
               </>
             )}
           </div>
-          {formatUptime(host.daemon_started_at) && (
-            <div>
-              <label className="text-xs font-medium text-muted-foreground">Uptime</label>
-              <p className="text-sm mt-1">{formatUptime(host.daemon_started_at)}</p>
-            </div>
-          )}
+          {(() => {
+            const uptime = formatUptime(host.daemon_started_at)
+            return uptime ? (
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Uptime</label>
+                <p className="text-sm mt-1">{uptime}</p>
+              </div>
+            ) : null
+          })()}
         </div>
 
         {/* System Info */}

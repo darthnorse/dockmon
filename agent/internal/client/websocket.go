@@ -350,11 +350,19 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 		regMsg["total_memory"] = systemInfo.TotalMemory
 		regMsg["num_cpus"] = systemInfo.NumCPUs
 
-		// Only include host_ip for systemd agents (not running in a container)
-		// Container agents would report Docker network IPs which aren't useful
-		if c.myContainerID == "" && systemInfo.HostIP != "" {
-			regMsg["host_ip"] = systemInfo.HostIP
-			c.log.WithField("host_ip", systemInfo.HostIP).Info("Added host IP to registration (systemd mode)")
+		// Collect host IPs from all available sources
+		var hostIPs []string
+		if c.myContainerID == "" {
+			// Systemd agent: use net.Interfaces() results from GetSystemInfo()
+			hostIPs = systemInfo.HostIPs
+		} else {
+			// Container agent: try /host/proc/net/fib_trie for real host IPs
+			hostIPs = docker.GetHostIPsFromProc("/host/proc")
+		}
+		if len(hostIPs) > 0 {
+			regMsg["host_ips"] = hostIPs
+			regMsg["host_ip"] = hostIPs[0] // backward compat for backends without host_ips support (Issue #181)
+			c.log.WithField("host_ips", hostIPs).Info("Added host IPs to registration")
 		}
 
 		c.log.Info("Added system information to registration message")
@@ -368,7 +376,7 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 		return fmt.Errorf("failed to marshal registration: %w", err)
 	}
 
-	c.log.WithField("message", string(data)).Info("Sending registration message to backend")
+	c.log.Debug("Sending registration message to backend")
 
 	// Set write deadline for registration message
 	c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))

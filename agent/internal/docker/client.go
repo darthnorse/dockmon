@@ -83,8 +83,8 @@ func (c *Client) RawClient() *client.Client {
 
 // SystemInfo contains Docker host system information
 type SystemInfo struct {
-	Hostname        string // Docker host's hostname (not container hostname)
-	HostIP          string // Primary host IP (for systemd agents only)
+	Hostname        string   // Docker host's hostname (not container hostname)
+	HostIPs         []string // All non-loopback host IPs
 	OSType          string
 	OSVersion       string
 	KernelVersion   string
@@ -94,14 +94,17 @@ type SystemInfo struct {
 	NumCPUs         int
 }
 
-// GetHostIP detects the primary non-loopback IPv4 address of the host.
-// Filters out Docker/container-related interfaces (docker0, veth*, br-*).
-// Returns empty string if no suitable IP is found.
-func GetHostIP() string {
+// GetHostIPs detects all non-loopback IPv4 addresses of the host.
+// Filters out Docker/container/overlay network interfaces.
+// Returns nil if no suitable IPs are found.
+func GetHostIPs() []string {
 	interfaces, err := net.Interfaces()
 	if err != nil {
-		return ""
+		return nil
 	}
+
+	seen := make(map[string]bool)
+	var ips []string
 
 	for _, iface := range interfaces {
 		// Skip loopback, down interfaces, and Docker-related interfaces
@@ -113,11 +116,17 @@ func GetHostIP() string {
 		}
 
 		name := iface.Name
-		// Skip Docker/container interfaces
-		if name == "docker0" || name == "docker_gwbridge" ||
+		if name == "docker0" || name == "docker_gwbridge" || name == "cni0" ||
 			strings.HasPrefix(name, "veth") ||
 			strings.HasPrefix(name, "br-") ||
-			strings.HasPrefix(name, "virbr") {
+			strings.HasPrefix(name, "virbr") ||
+			strings.HasPrefix(name, "flannel") ||
+			strings.HasPrefix(name, "cali") ||
+			strings.HasPrefix(name, "cni-") ||
+			strings.HasPrefix(name, "weave") ||
+			strings.HasPrefix(name, "podman") ||
+			strings.HasPrefix(name, "vxlan") ||
+			strings.HasPrefix(name, "tunl") {
 			continue
 		}
 
@@ -135,17 +144,80 @@ func GetHostIP() string {
 				ip = v.IP
 			}
 
-			// Skip loopback and non-IPv4
-			if ip == nil || ip.IsLoopback() || ip.To4() == nil {
+			if ip == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.To4() == nil {
 				continue
 			}
 
-			// Found a valid IPv4 address
-			return ip.String()
+			ipStr := ip.String()
+			if !seen[ipStr] {
+				seen[ipStr] = true
+				ips = append(ips, ipStr)
+			}
 		}
 	}
 
-	return ""
+	return ips
+}
+
+// GetHostIPsFromProc parses /proc/net/fib_trie (or /host/proc/net/fib_trie)
+// for /32 host LOCAL entries to detect host IP addresses.
+// Filters out 127.x (loopback) and 169.254.x (link-local).
+func GetHostIPsFromProc(procPath string) []string {
+	fibPath := procPath + "/net/fib_trie"
+	data, err := os.ReadFile(fibPath)
+	if err != nil {
+		return nil
+	}
+
+	seen := make(map[string]bool)
+	var ips []string
+	var lastIP string
+
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+
+		// Match lines like "|-- X.X.X.X"
+		if strings.HasPrefix(line, "|-- ") {
+			lastIP = strings.TrimPrefix(line, "|-- ")
+			continue
+		}
+		// Also match lines like "+-- X.X.X.X" at root level
+		if strings.HasPrefix(line, "+-- ") {
+			candidate := strings.TrimPrefix(line, "+-- ")
+			// fib_trie root entries have format "X.X.X.X/N" - skip these
+			if strings.Contains(candidate, "/") {
+				lastIP = ""
+				continue
+			}
+			lastIP = candidate
+			continue
+		}
+
+		if lastIP != "" && strings.Contains(line, "/32 host LOCAL") {
+			if strings.HasPrefix(lastIP, "127.") || strings.HasPrefix(lastIP, "169.254.") {
+				lastIP = ""
+				continue
+			}
+			if net.ParseIP(lastIP) == nil {
+				lastIP = ""
+				continue
+			}
+			if !seen[lastIP] {
+				seen[lastIP] = true
+				ips = append(ips, lastIP)
+			}
+			lastIP = ""
+			continue
+		}
+
+		// Reset candidate on non-matching lines (but only if it's a substantive line)
+		if len(line) > 0 && !strings.HasPrefix(line, "|") && !strings.HasPrefix(line, "+") {
+			lastIP = ""
+		}
+	}
+
+	return ips
 }
 
 // GetEngineID returns the unique Docker engine ID
@@ -174,7 +246,7 @@ func (c *Client) GetSystemInfo(ctx context.Context) (*SystemInfo, error) {
 
 	sysInfo := &SystemInfo{
 		Hostname:      info.Name, // Docker host's actual hostname
-		HostIP:        GetHostIP(),
+		HostIPs:       GetHostIPs(),
 		OSType:        info.OSType,
 		OSVersion:     info.OperatingSystem,
 		KernelVersion: info.KernelVersion,
@@ -662,14 +734,14 @@ func parseContainerIDFromCgroup(data string) string {
 	// systemd:   0::/system.slice/docker-abc123.scope
 	// podman:    0::/user.slice/user-1000.slice/user@1000.service/user.slice/libpod-abc123.scope
 
-	lines := splitLines(data)
+	lines := strings.Split(data, "\n")
 	for _, line := range lines {
 		if len(line) == 0 {
 			continue
 		}
 
 		// Method 1: Try /docker/ prefix (cgroup v1/v2)
-		dockerIdx := findString(line, "/docker/")
+		dockerIdx := strings.Index(line, "/docker/")
 		if dockerIdx != -1 {
 			idStart := dockerIdx + len("/docker/")
 			if idStart < len(line) {
@@ -685,7 +757,7 @@ func parseContainerIDFromCgroup(data string) string {
 		}
 
 		// Method 2: Try docker-<id>.scope pattern (systemd cgroup v2)
-		scopeIdx := findString(line, "docker-")
+		scopeIdx := strings.Index(line, "docker-")
 		if scopeIdx != -1 {
 			idStart := scopeIdx + len("docker-")
 			if idStart < len(line) {
@@ -704,7 +776,7 @@ func parseContainerIDFromCgroup(data string) string {
 		}
 
 		// Method 3: Try /libpod-<id>.scope pattern (Podman)
-		podmanIdx := findString(line, "/libpod-")
+		podmanIdx := strings.Index(line, "/libpod-")
 		if podmanIdx != -1 {
 			idStart := podmanIdx + len("/libpod-")
 			if idStart < len(line) {
@@ -722,44 +794,6 @@ func parseContainerIDFromCgroup(data string) string {
 	}
 
 	return ""
-}
-
-// Helper functions to avoid importing strings package
-func splitLines(s string) []string {
-	var lines []string
-	start := 0
-	for i := 0; i < len(s); i++ {
-		if s[i] == '\n' {
-			lines = append(lines, s[start:i])
-			start = i + 1
-		}
-	}
-	if start < len(s) {
-		lines = append(lines, s[start:])
-	}
-	return lines
-}
-
-func findString(s, substr string) int {
-	if len(substr) == 0 {
-		return 0
-	}
-	if len(substr) > len(s) {
-		return -1
-	}
-	for i := 0; i <= len(s)-len(substr); i++ {
-		match := true
-		for j := 0; j < len(substr); j++ {
-			if s[i+j] != substr[j] {
-				match = false
-				break
-			}
-		}
-		if match {
-			return i
-		}
-	}
-	return -1
 }
 
 // normalizeImageID converts a Docker image ID to 12-char short format.

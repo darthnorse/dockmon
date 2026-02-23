@@ -582,10 +582,7 @@ services:
 		ProjectName:    projectName,
 		ComposeContent: composeContent,
 		Action:         "up",
-		Environment: map[string]string{
-			"IMAGE_NAME": "nginx:alpine",
-			"TEST_VAR":   "custom_value",
-		},
+		EnvFileContent: "IMAGE_NAME=nginx:alpine\nTEST_VAR=custom_value",
 	}
 
 	result := handler.DeployCompose(ctx, req)

@@ -14,7 +14,7 @@ export function IpChip({ ip, size = 'md' }: IpChipProps) {
     : 'text-sm px-2'
 
   return (
-    <span className={`font-mono bg-muted py-0.5 rounded ${sizeClasses}`}>
+    <span className={`font-mono bg-muted/30 py-0.5 rounded ${sizeClasses}`}>
       {ip}
     </span>
   )

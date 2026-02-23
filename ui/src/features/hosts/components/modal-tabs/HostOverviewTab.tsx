@@ -21,7 +21,6 @@ import { useHostEvents } from '@/hooks/useEvents'
 import { apiClient } from '@/lib/api/client'
 import { useTimeFormat } from '@/lib/hooks/useUserPreferences'
 import { formatTime } from '@/lib/utils/timeFormat'
-import { IpChip } from '@/components/shared/IpChip'
 import type { Host } from '@/types/api'
 import { useAuth } from '@/features/auth/AuthContext'
 
@@ -183,9 +182,9 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
                 {host.host_ips && host.host_ips.length > 0 ? (
                   <div className="flex flex-col sm:flex-row sm:justify-between gap-1 sm:gap-2 text-sm">
                     <span className="text-muted-foreground">IP Addresses</span>
-                    <div className="flex flex-wrap gap-1.5">
+                    <div className="flex flex-col gap-0.5">
                       {host.host_ips.map((ip) => (
-                        <IpChip key={ip} ip={ip} size="sm" />
+                        <span key={ip} className="text-sm text-muted-foreground">{ip}</span>
                       ))}
                     </div>
                   </div>

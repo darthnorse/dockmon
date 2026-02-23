@@ -84,6 +84,32 @@ def get_host_ips_from_fib_trie(proc_path: str = "/proc") -> list[str]:
     return ips
 
 
+def filter_docker_network_ips(ips: list[str], docker_client) -> list[str]:
+    """Remove IPs that fall within Docker/Podman network subnets.
+
+    Queries the Docker daemon for all network subnets and filters out any
+    detected IPs that belong to them (bridge gateways, container IPs, etc.).
+    Returns the original list unchanged if the Docker query fails.
+    """
+    if not ips:
+        return ips
+
+    subnets = []
+    try:
+        for network in docker_client.networks.list():
+            for config in network.attrs.get('IPAM', {}).get('Config', []):
+                subnet = config.get('Subnet')
+                if subnet:
+                    subnets.append(ipaddress.ip_network(subnet, strict=False))
+    except Exception:
+        return ips
+
+    if not subnets:
+        return ips
+
+    return [ip for ip in ips if not any(ipaddress.ip_address(ip) in subnet for subnet in subnets)]
+
+
 def deserialize_host_ips(db_value: Optional[str]) -> list[str]:
     """Deserialize host_ip column value to a list of IPs.
 

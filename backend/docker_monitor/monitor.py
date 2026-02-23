@@ -35,7 +35,7 @@ from docker_monitor.operations import ContainerOperations
 from docker_monitor.periodic_jobs import PeriodicJobsManager
 from auth.session_manager import session_manager
 from utils.keys import make_composite_key
-from utils.host_ips import get_host_ips_from_fib_trie, serialize_host_ips
+from utils.host_ips import get_host_ips_from_fib_trie, filter_docker_network_ips, serialize_host_ips
 
 
 def _detect_host_proc_path() -> str:
@@ -490,7 +490,7 @@ class DockerMonitor:
                             # Detect host IPs via fib_trie for local hosts only (Issue #181)
                             if db_host.connection_type == 'local':
                                 proc_path = _detect_host_proc_path()
-                                host_ips = get_host_ips_from_fib_trie(proc_path)
+                                host_ips = filter_docker_network_ips(get_host_ips_from_fib_trie(proc_path), client)
                                 if host_ips:
                                     db_host.host_ip = serialize_host_ips(host_ips)
                             if engine_id:
@@ -536,7 +536,7 @@ class DockerMonitor:
                 # Detect host IPs via fib_trie for local hosts (Issue #181)
                 if connection_type == 'local':
                     proc_path = _detect_host_proc_path()
-                    host_ips = get_host_ips_from_fib_trie(proc_path)
+                    host_ips = filter_docker_network_ips(get_host_ips_from_fib_trie(proc_path), client)
                     if host_ips:
                         self.db.update_host(host.id, {'host_ip': serialize_host_ips(host_ips)})
                         logger.info(f"Detected host IPs for {host.name}: {host_ips}")

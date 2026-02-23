@@ -94,6 +94,7 @@ import { makeCompositeKey } from '@/lib/utils/containerKeys'
 import { formatBytes } from '@/lib/utils/formatting'
 import { useContainerModal } from '@/providers'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
+import { HostDetailsModal } from '@/features/hosts/components/HostDetailsModal'
 
 /**
  * Update badge component showing if updates are available
@@ -491,6 +492,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   const [batchJobId, setBatchJobId] = useState<string | null>(null)
   const [showJobPanel, setShowJobPanel] = useState(false)
   const [expandedTagsContainerId, setExpandedTagsContainerId] = useState<string | null>(null)
+  const [hostModalHostId, setHostModalHostId] = useState<string | null>(null)
 
   const queryClient = useQueryClient()
 
@@ -1131,8 +1133,15 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
           return row.original.host_id === filterValue
         },
         cell: ({ row }) => {
-          const { host_name } = row.original
-          return <div className="text-sm">{host_name || 'localhost'}</div>
+          const { host_name, host_id } = row.original
+          return (
+            <button
+              className="text-sm text-left hover:text-primary transition-colors cursor-pointer"
+              onClick={() => host_id && setHostModalHostId(host_id)}
+            >
+              {host_name || 'localhost'}
+            </button>
+          )
         },
       },
       // 7. IP Address (Docker network IPs)
@@ -2025,6 +2034,14 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
       {selectedAlertId && (
         <AlertDetailsDrawer alertId={selectedAlertId} onClose={() => setSelectedAlertId(null)} />
       )}
+
+      {/* Host Details Modal */}
+      <HostDetailsModal
+        hostId={hostModalHostId}
+        host={hosts?.find(h => h.id === hostModalHostId) ?? null}
+        open={!!hostModalHostId}
+        onClose={() => setHostModalHostId(null)}
+      />
     </div>
   )
 }

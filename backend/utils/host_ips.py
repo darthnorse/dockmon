@@ -29,20 +29,12 @@ def get_host_ips_from_fib_trie(proc_path: str = "/proc") -> list[str]:
     Follows the same algorithm as the Go agent's GetHostIPsFromProc().
     Filters out 127.x (loopback) and 169.254.x (link-local).
 
-    When proc_path is a mounted host proc (e.g. /host/proc), uses PID 1's
-    net directory to read the host's network namespace instead of the
-    container's (since /proc/net resolves via /proc/self/net which is
-    namespace-specific).
-
     Args:
         proc_path: Path to proc filesystem ("/proc" or "/host/proc")
 
     Returns:
         List of detected IPv4 addresses, deduplicated.
     """
-    # /proc/net is namespace-specific (symlink to /proc/self/net). When reading
-    # from a mounted host proc inside a container, use PID 1's net directory
-    # to access the host's network namespace.
     if proc_path != "/proc":
         fib_path = os.path.join(proc_path, "1", "net", "fib_trie")
     else:

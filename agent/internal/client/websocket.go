@@ -353,12 +353,9 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 		// Collect host IPs from all available sources
 		var hostIPs []string
 		if c.myContainerID == "" {
-			// Systemd agent: use net.Interfaces() results from GetSystemInfo()
 			hostIPs = systemInfo.HostIPs
 		} else {
-			// Container agent: try /host/proc/net/fib_trie for real host IPs
 			hostIPs = docker.GetHostIPsFromProc("/host/proc")
-			// Filter out Docker network IPs (bridge gateways, container IPs)
 			hostIPs = c.docker.FilterDockerNetworkIPs(context.Background(), hostIPs)
 		}
 		if len(hostIPs) > 0 {

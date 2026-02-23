@@ -162,14 +162,7 @@ func GetHostIPs() []string {
 // GetHostIPsFromProc parses /proc/net/fib_trie for /32 host LOCAL entries
 // to detect host IP addresses. Filters out 127.x (loopback) and 169.254.x
 // (link-local).
-//
-// When procPath is a mounted host proc (e.g. /host/proc), uses PID 1's net
-// directory to read the host's network namespace instead of the container's
-// (since /proc/net resolves via /proc/self/net which is namespace-specific).
 func GetHostIPsFromProc(procPath string) []string {
-	// /proc/net is namespace-specific (symlink to /proc/self/net). When reading
-	// from a mounted host proc inside a container, use PID 1's net directory
-	// to access the host's network namespace.
 	var fibPath string
 	if procPath != "/proc" {
 		fibPath = procPath + "/1/net/fib_trie"

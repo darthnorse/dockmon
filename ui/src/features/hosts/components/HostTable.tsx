@@ -47,6 +47,7 @@ import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { TagChip } from '@/components/TagChip'
 import { formatUptime } from '@/lib/utils/formatting'
+import { IpChip } from '@/components/shared/IpChip'
 import { useHosts } from '../hooks/useHosts'
 import type { Host } from '@/types/api'
 import { HostDrawer } from './drawer/HostDrawer'
@@ -517,10 +518,13 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
             return <span className="text-sm text-muted-foreground">-</span>
           }
           return (
-            <div className="flex flex-col gap-0.5">
-              {ips.map((ip) => (
-                <span key={ip} className="text-sm text-muted-foreground">{ip}</span>
+            <div className="flex flex-wrap gap-1 items-center">
+              {ips.slice(0, 2).map((ip) => (
+                <IpChip key={ip} ip={ip} size="sm" />
               ))}
+              {ips.length > 2 && (
+                <span className="text-xs text-muted-foreground" title={ips.slice(2).join(', ')}>+{ips.length - 2}</span>
+              )}
             </div>
           )
         },

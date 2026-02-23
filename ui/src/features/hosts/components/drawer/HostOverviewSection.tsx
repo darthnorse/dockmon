@@ -6,6 +6,7 @@
 
 import { Server } from 'lucide-react'
 import { DrawerSection } from '@/components/ui/drawer'
+import { IpChip } from '@/components/shared/IpChip'
 import type { Host } from '@/types/api'
 import { formatUptime } from '@/lib/utils/formatting'
 
@@ -51,9 +52,9 @@ export function HostOverviewSection({ host }: HostOverviewSectionProps) {
             {host.host_ips && host.host_ips.length > 0 ? (
               <>
                 <label className="text-xs font-medium text-muted-foreground">IP Addresses</label>
-                <div className="flex flex-col gap-0.5 mt-1">
+                <div className="flex flex-wrap gap-1.5 mt-1">
                   {host.host_ips.map((ip) => (
-                    <span key={ip} className="text-sm text-muted-foreground">{ip}</span>
+                    <IpChip key={ip} ip={ip} />
                   ))}
                 </div>
               </>

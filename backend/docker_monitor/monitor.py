@@ -39,8 +39,8 @@ from utils.host_ips import get_host_ips_from_fib_trie, filter_docker_network_ips
 
 
 def _detect_host_proc_path() -> str:
-    """Return /host/proc if the fib_trie mount is available, else /proc."""
-    return "/host/proc" if os.path.exists("/host/proc/net/fib_trie") else "/proc"
+    """Return /host/proc if the host proc mount is available, else /proc."""
+    return "/host/proc" if os.path.exists("/host/proc/1/net/fib_trie") else "/proc"
 
 
 logger = logging.getLogger(__name__)

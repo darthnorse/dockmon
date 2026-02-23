@@ -46,6 +46,8 @@ import {
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { TagChip } from '@/components/TagChip'
+import { formatUptime } from '@/lib/utils/formatting'
+import { IpChip } from '@/components/shared/IpChip'
 import { useHosts } from '../hooks/useHosts'
 import type { Host } from '@/types/api'
 import { HostDrawer } from './drawer/HostDrawer'
@@ -285,34 +287,9 @@ function AlertSeverityCountsComponent({
 }
 
 
-// Uptime component - Shows time since Docker daemon started
 function Uptime({ daemonStartedAt }: { daemonStartedAt?: string | null | undefined }) {
-  if (!daemonStartedAt) {
-    return <span className="text-sm text-muted-foreground">-</span>
-  }
-
-  try {
-    const startTime = new Date(daemonStartedAt)
-    const now = new Date()
-    const diffMs = now.getTime() - startTime.getTime()
-
-    const days = Math.floor(diffMs / (1000 * 60 * 60 * 24))
-    const hours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60))
-    const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60))
-
-    let uptimeStr = ''
-    if (days > 0) {
-      uptimeStr = `${days}d ${hours}h`
-    } else if (hours > 0) {
-      uptimeStr = `${hours}h ${minutes}m`
-    } else {
-      uptimeStr = `${minutes}m`
-    }
-
-    return <span className="text-sm text-muted-foreground">{uptimeStr}</span>
-  } catch {
-    return <span className="text-sm text-muted-foreground">-</span>
-  }
+  const uptime = formatUptime(daemonStartedAt)
+  return <span className="text-sm text-muted-foreground">{uptime ?? '-'}</span>
 }
 
 interface HostTableProps {
@@ -526,7 +503,29 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
         },
       },
 
-      // 3. Containers
+      // 3. IP Addresses
+      {
+        accessorKey: 'host_ips',
+        header: 'IP',
+        cell: ({ row }) => {
+          const ips = row.original.host_ips
+          if (!ips || ips.length === 0) {
+            return <span className="text-sm text-muted-foreground">-</span>
+          }
+          return (
+            <div className="flex flex-wrap gap-1 items-center">
+              {ips.slice(0, 2).map((ip) => (
+                <IpChip key={ip} ip={ip} size="sm" />
+              ))}
+              {ips.length > 2 && (
+                <span className="text-xs text-muted-foreground" title={ips.slice(2).join(', ')}>+{ips.length - 2}</span>
+              )}
+            </div>
+          )
+        },
+      },
+
+      // 4. Containers
       {
         accessorKey: 'container_count',
         header: ({ column }) => (

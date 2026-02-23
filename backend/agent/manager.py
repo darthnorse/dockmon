@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
 from database import RegistrationToken, Agent, DockerHostDB, DatabaseManager
+from utils.host_ips import serialize_registration_host_ip
 
 logger = logging.getLogger(__name__)
 
@@ -244,8 +245,9 @@ class AgentManager:
                             host.total_memory = registration_data.get("total_memory")
                         if registration_data.get("num_cpus"):
                             host.num_cpus = registration_data.get("num_cpus")
-                        if registration_data.get("host_ip"):
-                            host.host_ip = registration_data.get("host_ip")
+                        host_ip_value = serialize_registration_host_ip(registration_data)
+                        if host_ip_value:
+                            host.host_ip = host_ip_value
 
                     # Capture IDs before commit (for monitor notification)
                     agent_id = existing_agent.id
@@ -372,7 +374,7 @@ class AgentManager:
                     daemon_started_at=registration_data.get("daemon_started_at"),
                     total_memory=registration_data.get("total_memory"),
                     num_cpus=registration_data.get("num_cpus"),
-                    host_ip=registration_data.get("host_ip"),  # For systemd agents only
+                    host_ip=serialize_registration_host_ip(registration_data),
                 )
                 reg_session.add(host)
                 reg_session.flush()  # Ensure host exists before creating agent
@@ -534,7 +536,7 @@ class AgentManager:
                     daemon_started_at=registration_data.get("daemon_started_at") or existing_host.daemon_started_at,
                     total_memory=registration_data.get("total_memory") or existing_host.total_memory,
                     num_cpus=registration_data.get("num_cpus") or existing_host.num_cpus,
-                    host_ip=registration_data.get("host_ip"),  # For systemd agents only
+                    host_ip=serialize_registration_host_ip(registration_data) or existing_host.host_ip,
                 )
                 session.add(new_host)
                 session.flush()

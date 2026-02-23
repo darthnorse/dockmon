@@ -35,6 +35,12 @@ from docker_monitor.operations import ContainerOperations
 from docker_monitor.periodic_jobs import PeriodicJobsManager
 from auth.session_manager import session_manager
 from utils.keys import make_composite_key
+from utils.host_ips import get_host_ips_from_fib_trie, serialize_host_ips
+
+
+def _detect_host_proc_path() -> str:
+    """Return /host/proc if the fib_trie mount is available, else /proc."""
+    return "/host/proc" if os.path.exists("/host/proc/net/fib_trie") else "/proc"
 
 
 logger = logging.getLogger(__name__)
@@ -481,6 +487,12 @@ class DockerMonitor:
                                 db_host.num_cpus = num_cpus
                             # Always update is_podman (Issue #20)
                             db_host.is_podman = is_podman
+                            # Detect host IPs via fib_trie for local hosts only (Issue #181)
+                            if db_host.connection_type == 'local':
+                                proc_path = _detect_host_proc_path()
+                                host_ips = get_host_ips_from_fib_trie(proc_path)
+                                if host_ips:
+                                    db_host.host_ip = serialize_host_ips(host_ips)
                             if engine_id:
                                 db_host.engine_id = engine_id
                             session.commit()
@@ -521,6 +533,13 @@ class DockerMonitor:
                     'engine_id': engine_id,
                     'connection_type': connection_type
                 })
+                # Detect host IPs via fib_trie for local hosts (Issue #181)
+                if connection_type == 'local':
+                    proc_path = _detect_host_proc_path()
+                    host_ips = get_host_ips_from_fib_trie(proc_path)
+                    if host_ips:
+                        self.db.update_host(host.id, {'host_ip': serialize_host_ips(host_ips)})
+                        logger.info(f"Detected host IPs for {host.name}: {host_ips}")
 
             # Register host with stats and event services
             # Only register if we're adding a NEW host (not during startup/reconnect)

@@ -7,8 +7,9 @@ These models provide:
 - DoS protection (length limits)
 - Clear error messages for invalid data
 """
+import ipaddress
 import re
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 
@@ -50,8 +51,9 @@ class AgentRegistrationRequest(BaseModel):
     agent_os: Optional[str] = Field(None, max_length=20, description="Agent OS (GOOS: linux, darwin, windows)")
     agent_arch: Optional[str] = Field(None, max_length=20, description="Agent architecture (GOARCH: amd64, arm64, arm)")
 
-    # Host network info (systemd agents only - container agents would report Docker network IPs)
+    # Host network info
     host_ip: Optional[str] = Field(None, max_length=45, description="Host IP address (IPv4 or IPv6)")
+    host_ips: Optional[List[str]] = Field(None, max_length=50, description="All host IP addresses (max 50 items)")
 
     @field_validator('hostname', 'os_version', 'kernel_version', 'docker_version', 'os_type', 'agent_os', 'agent_arch', 'host_ip')
     @classmethod
@@ -69,13 +71,28 @@ class AgentRegistrationRequest(BaseModel):
         - etc.
         """
         if v:
-            # Remove < > to prevent HTML/script injection
             v = re.sub(r'[<>]', '', v)
-            # Keep only printable characters plus common whitespace
             v = ''.join(c for c in v if c.isprintable() or c in '\n\r\t')
-            # Strip leading/trailing whitespace
             v = v.strip()
         return v
+
+    @field_validator('host_ips')
+    @classmethod
+    def sanitize_host_ips(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        """Sanitize and validate host_ips list items."""
+        if v is None:
+            return v
+        sanitized = []
+        for item in v:
+            if not item:
+                continue
+            item = re.sub(r'[<>]', '', item).strip()
+            try:
+                ipaddress.ip_address(item)
+            except ValueError:
+                continue
+            sanitized.append(item)
+        return sanitized if sanitized else None
 
     @field_validator('daemon_started_at')
     @classmethod

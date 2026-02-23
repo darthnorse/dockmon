@@ -81,6 +81,7 @@ from utils.keys import make_composite_key
 from utils.encryption import encrypt_password, decrypt_password
 from utils.async_docker import async_docker_call, async_client_ping, async_client_version, async_containers_list
 from utils.base_path import get_base_path
+from utils.host_ips import deserialize_host_ips
 from updates.container_validator import ContainerValidator, ValidationResult
 from agent.manager import AgentManager
 from agent import handle_agent_websocket
@@ -95,6 +96,14 @@ logger = logging.getLogger(__name__)
 
 
 # ==================== Helper Functions ====================
+
+
+def _enrich_host_ips(host_dict: dict, db_host_ip: Optional[str]) -> None:
+    """Deserialize host_ip DB column and set host_ips + host_ip on a host dict."""
+    ips = deserialize_host_ips(db_host_ip)
+    host_dict['host_ips'] = ips
+    host_dict['host_ip'] = ips[0] if ips else None
+
 
 def is_compose_container(labels: Dict[str, str]) -> bool:
     """
@@ -599,7 +608,7 @@ async def get_hosts(current_user: dict = Depends(get_current_user)):
                     host_dict['daemon_started_at'] = db_host.daemon_started_at
                     host_dict['total_memory'] = db_host.total_memory
                     host_dict['num_cpus'] = db_host.num_cpus
-                    host_dict['host_ip'] = db_host.host_ip  # For systemd agents only
+                    _enrich_host_ips(host_dict, db_host.host_ip)
 
                 # Override status with real-time connection state
                 host_dict['status'] = 'online' if is_connected else 'offline'
@@ -625,6 +634,8 @@ async def get_hosts(current_user: dict = Depends(get_current_user)):
                     url = host_dict.get('url', '')
                     host_dict['connection_type'] = 'local' if url.startswith('unix://') else 'remote'
                 host_dict['agent'] = None
+                if db_host:
+                    _enrich_host_ips(host_dict, db_host.host_ip)
 
             enriched_hosts.append(host_dict)
 
@@ -649,11 +660,12 @@ async def get_hosts(current_user: dict = Depends(get_current_user)):
                     'daemon_started_at': agent_host.daemon_started_at,
                     'total_memory': agent_host.total_memory,
                     'num_cpus': agent_host.num_cpus,
-                    'host_ip': agent_host.host_ip,  # For systemd agents only
                     'tags': agent_host.tags or [],
                     'container_count': 0,  # Will be populated by stats
                     'last_checked': agent_host.updated_at.isoformat() + 'Z' if agent_host.updated_at else None,
                 }
+
+                _enrich_host_ips(host_dict, agent_host.host_ip)
 
                 if agent:
                     is_connected = agent_connection_manager.is_connected(agent.id)

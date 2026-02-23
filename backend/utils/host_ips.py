@@ -100,7 +100,7 @@ def filter_docker_network_ips(ips: list[str], docker_client) -> list[str]:
     subnets = []
     try:
         for network in docker_client.networks.list():
-            for config in network.attrs.get('IPAM', {}).get('Config', []):
+            for config in (network.attrs.get('IPAM', {}).get('Config') or []):
                 subnet = config.get('Subnet')
                 if subnet:
                     subnets.append(ipaddress.ip_network(subnet, strict=False))

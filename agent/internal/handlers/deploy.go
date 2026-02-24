@@ -40,6 +40,7 @@ type DeployComposeRequest struct {
 // This wraps the shared compose.DeployResult for backward compatibility
 type DeployComposeResult struct {
 	DeploymentID   string                          `json:"deployment_id"`
+	Action         string                          `json:"action"`
 	Success        bool                            `json:"success"`
 	PartialSuccess bool                            `json:"partial_success,omitempty"`
 	Services       map[string]compose.ServiceResult `json:"services,omitempty"`
@@ -73,7 +74,14 @@ func NewDeployHandler(
 }
 
 // DeployCompose handles the deploy_compose command
-func (h *DeployHandler) DeployCompose(ctx context.Context, req DeployComposeRequest) *DeployComposeResult {
+func (h *DeployHandler) DeployCompose(ctx context.Context, req DeployComposeRequest) (result *DeployComposeResult) {
+	// Ensure Action is set on every return path
+	defer func() {
+		if result != nil {
+			result.Action = req.Action
+		}
+	}()
+
 	h.log.WithFields(logrus.Fields{
 		"deployment_id": req.DeploymentID,
 		"project_name":  req.ProjectName,
@@ -115,16 +123,17 @@ func (h *DeployHandler) DeployCompose(ctx context.Context, req DeployComposeRequ
 	}
 
 	// Execute deployment using shared package
-	result := svc.Deploy(ctx, sharedReq)
+	sharedResult := svc.Deploy(ctx, sharedReq)
 
 	// Convert result back to agent format
-	return h.convertResult(result)
+	return h.convertResult(sharedResult)
 }
 
 // convertResult converts shared compose result to agent format
 func (h *DeployHandler) convertResult(result *compose.DeployResult) *DeployComposeResult {
 	agentResult := &DeployComposeResult{
 		DeploymentID:   result.DeploymentID,
+		Action:         result.Action,
 		Success:        result.Success,
 		PartialSuccess: result.PartialSuccess,
 		Services:       result.Services,

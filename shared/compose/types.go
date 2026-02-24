@@ -63,6 +63,7 @@ type RegistryCredential struct {
 // DeployResult is returned from a compose deployment
 type DeployResult struct {
 	DeploymentID   string                   `json:"deployment_id"`
+	Action         string                   `json:"action"`
 	Success        bool                     `json:"success"`
 	PartialSuccess bool                     `json:"partial_success,omitempty"`
 	Services       map[string]ServiceResult `json:"services,omitempty"`

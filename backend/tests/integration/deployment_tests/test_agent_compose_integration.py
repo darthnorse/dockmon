@@ -280,13 +280,13 @@ class TestProgressHandling:
 
     @pytest.mark.asyncio
     async def test_full_progress_flow(self, executor):
-        """Should handle full progress flow from starting to completed"""
+        """Should handle full progress flow with granular shared compose stages"""
         progress_events = [
-            {"deployment_id": "deploy-123", "stage": "starting", "message": "Starting deployment..."},
-            {"deployment_id": "deploy-123", "stage": "executing", "message": "Running compose up..."},
+            {"deployment_id": "deploy-123", "stage": "validating", "message": "Validating compose file..."},
+            {"deployment_id": "deploy-123", "stage": "pulling_image", "message": "Pulling nginx:alpine..."},
             {
                 "deployment_id": "deploy-123",
-                "stage": "executing",
+                "stage": "creating",
                 "message": "Deploying services (1/2 running)",
                 "services": [
                     {"name": "web", "status": "running", "image": "nginx:alpine"},
@@ -295,14 +295,14 @@ class TestProgressHandling:
             },
             {
                 "deployment_id": "deploy-123",
-                "stage": "executing",
+                "stage": "starting",
                 "message": "Deploying services (2/2 running)",
                 "services": [
                     {"name": "web", "status": "running", "image": "nginx:alpine"},
                     {"name": "db", "status": "running", "image": "postgres:15"},
                 ],
             },
-            {"deployment_id": "deploy-123", "stage": "waiting_for_health", "message": "Waiting for services to be healthy..."},
+            {"deployment_id": "deploy-123", "stage": "health_check", "message": "Waiting for services to be healthy..."},
         ]
 
         progress_values = []
@@ -319,11 +319,11 @@ class TestProgressHandling:
 
         # Verify progress increases over time
         assert len(progress_values) == 5
-        assert progress_values[0] == 20  # starting
-        assert progress_values[1] == 50  # executing
-        assert progress_values[2] == 70  # 1/2 running = 50 + 20
-        assert progress_values[3] == 90  # 2/2 running = 50 + 40
-        assert progress_values[4] == 80  # waiting_for_health
+        assert progress_values[0] == 5   # validating
+        assert progress_values[1] == 40  # pulling_image
+        assert progress_values[2] == 70  # 1/2 running = 50 + 20 (service override)
+        assert progress_values[3] == 90  # 2/2 running = 50 + 40 (service override)
+        assert progress_values[4] == 90  # health_check
 
     @pytest.mark.asyncio
     async def test_service_progress_emission(self, executor):

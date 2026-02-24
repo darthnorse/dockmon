@@ -98,7 +98,14 @@ func NewService(dockerClient *client.Client, log *logrus.Logger, opts ...Option)
 }
 
 // Deploy executes a compose deployment
-func (s *Service) Deploy(ctx context.Context, req DeployRequest) *DeployResult {
+func (s *Service) Deploy(ctx context.Context, req DeployRequest) (result *DeployResult) {
+	// Ensure Action is set on every return path
+	defer func() {
+		if result != nil {
+			result.Action = req.Action
+		}
+	}()
+
 	// Default to standard stacks directory if not specified
 	stacksDir := req.StacksDir
 	if stacksDir == "" {
@@ -802,7 +809,7 @@ func (s *Service) failResult(deploymentID, errorMsg string) *DeployResult {
 	return &DeployResult{
 		DeploymentID: deploymentID,
 		Success:      false,
-		Error:        CategorizeError(fmt.Errorf("%s", errorMsg)),
+		Error:        NewInternalError(errorMsg),
 	}
 }
 

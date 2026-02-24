@@ -16,7 +16,6 @@ Benefits:
 - Debugging (standard compose commands work for troubleshooting)
 """
 
-import asyncio
 import json
 import logging
 import yaml
@@ -112,12 +111,7 @@ def container_params_to_compose(params: Dict[str, Any]) -> str:
 
     # Environment variables
     if params.get("environment"):
-        env = params["environment"]
-        # Convert dict to list format for compose
-        if isinstance(env, dict):
-            service_config["environment"] = env
-        else:
-            service_config["environment"] = env
+        service_config["environment"] = params["environment"]
 
     # Restart policy
     if params.get("restart_policy"):
@@ -212,7 +206,7 @@ class AgentDeploymentExecutor:
     def _get_agent_manager(self):
         """Get or create AgentManager instance."""
         if self._agent_manager is None:
-            from agent.manager import AgentManager
+            from agent.manager import AgentManager  # Local import to avoid circular dependency
             self._agent_manager = AgentManager()
         return self._agent_manager
 
@@ -243,6 +237,8 @@ class AgentDeploymentExecutor:
         project_name: str,
         env_file_content: Optional[str] = None,
         profiles: Optional[list[str]] = None,
+        action: str = "up",
+        remove_volumes: bool = False,
         force_recreate: bool = False,
         pull_images: bool = False,
         wait_for_healthy: bool = False,
@@ -264,6 +260,8 @@ class AgentDeploymentExecutor:
             project_name: Compose project name
             env_file_content: Optional raw .env file content (written to temp dir for env_file: .env)
             profiles: Optional list of compose profiles to activate
+            action: Compose action - "up", "down", or "restart" (default: "up")
+            remove_volumes: Remove volumes on down (default: False)
             force_recreate: Force recreate containers even if unchanged
             pull_images: Pull images before starting (for redeploy)
             wait_for_healthy: Whether to wait for health checks
@@ -275,18 +273,16 @@ class AgentDeploymentExecutor:
         Raises:
             ValueError: If compose content is invalid (e.g., has build: directive)
         """
-        # Validate compose content BEFORE sending to agent (fail fast)
-        is_valid, error = validate_compose_for_agent(compose_content)
-        if not is_valid:
-            logger.error(f"Compose validation failed for deployment {deployment_id}: {error}")
-            # Transient deployments (format: host_id:stack_name:uuid) don't have DB records
-            # Broadcast error via WebSocket instead of trying to update non-existent record
-            await self._report_deployment_status(
-                deployment_id, "failed", f"Validation failed: {error}", error=error
-            )
-            return False
+        # Skip validation for "down" - no need to check build directives
+        if action != "down":
+            is_valid, error = validate_compose_for_agent(compose_content)
+            if not is_valid:
+                logger.error(f"Compose validation failed for deployment {deployment_id}: {error}")
+                await self._report_deployment_status(
+                    deployment_id, "failed", f"Validation failed: {error}", error=error
+                )
+                return False
 
-        # Get agent ID for this host
         try:
             agent_id = self._get_agent_id_for_host(host_id)
         except ValueError as e:
@@ -307,7 +303,6 @@ class AgentDeploymentExecutor:
         except Exception as e:
             logger.warning(f"Failed to get registry credentials for compose deployment: {e}")
 
-        # Build deploy_compose command
         command = {
             "type": "command",
             "command": "deploy_compose",
@@ -316,7 +311,8 @@ class AgentDeploymentExecutor:
                 "project_name": project_name,
                 "compose_content": compose_content,
                 "env_file_content": env_file_content or "",
-                "action": "up",
+                "action": action,
+                "remove_volumes": remove_volumes,
                 "profiles": profiles or [],
                 "force_recreate": force_recreate,
                 "pull_images": pull_images,
@@ -331,13 +327,11 @@ class AgentDeploymentExecutor:
             f"to agent {agent_id} (project: {project_name})"
         )
 
-        # Update deployment status to pulling/executing
         await self._report_deployment_status(
             deployment_id, "pulling_image", "Sending to agent...", progress=10
         )
 
-        # Execute command with retry policy
-        # Compose deployments can take a long time (image pulls, etc.)
+        # Long timeout: compose deployments involve image pulls, health checks, etc.
         executor = self._get_command_executor()
         retry_policy = RetryPolicy(
             max_attempts=1,  # No retry for deployments - let user retry manually
@@ -376,6 +370,8 @@ class AgentDeploymentExecutor:
         """
         Teardown deployment via agent using compose down.
 
+        Delegates to deploy() with action="down".
+
         Args:
             host_id: Docker host ID
             deployment_id: Deployment composite ID
@@ -388,47 +384,15 @@ class AgentDeploymentExecutor:
         Returns:
             True if teardown succeeded, False if it failed
         """
-        # Get agent ID for this host
-        try:
-            agent_id = self._get_agent_id_for_host(host_id)
-        except ValueError as e:
-            logger.error(f"Failed to get agent for host {host_id}: {e}")
-            return False
-
-        # Build deploy_compose command for down
-        command = {
-            "type": "command",
-            "command": "deploy_compose",
-            "payload": {
-                "deployment_id": deployment_id,
-                "project_name": project_name,
-                "compose_content": compose_content,
-                "action": "down",
-                "remove_volumes": remove_volumes,
-                "profiles": profiles or [],
-            }
-        }
-
-        logger.info(
-            f"Sending compose down command for deployment {deployment_id} "
-            f"to agent {agent_id} (remove_volumes={remove_volumes})"
+        return await self.deploy(
+            host_id=host_id,
+            deployment_id=deployment_id,
+            compose_content=compose_content,
+            project_name=project_name,
+            profiles=profiles,
+            action="down",
+            remove_volumes=remove_volumes,
         )
-
-        # Execute command
-        executor = self._get_command_executor()
-        result = await executor.execute_command(
-            agent_id,
-            command,
-            timeout=300.0,  # 5 minutes timeout for compose down
-        )
-
-        if not result.success:
-            error_msg = result.error or "Unknown error during teardown"
-            logger.error(f"Teardown {deployment_id} failed: {error_msg}")
-            return False
-
-        logger.info(f"Teardown {deployment_id} command accepted by agent")
-        return True
 
     async def handle_deploy_progress(self, payload: Dict[str, Any]) -> None:
         """
@@ -456,11 +420,19 @@ class AgentDeploymentExecutor:
             logger.warning("Received deploy_progress without deployment_id")
             return
 
-        # Map agent stages to deployment statuses
+        # Map agent stages to deployment statuses.
+        # Includes both legacy agent stages and granular shared compose stages.
         status_map = {
-            "starting": "pulling_image",
             "executing": "creating",
-            "waiting_for_health": "starting",  # Phase 3: health check waiting
+            "waiting_for_health": "starting",
+            "validating": "pulling_image",
+            "parsing": "pulling_image",
+            "creating_networks": "creating",
+            "creating_volumes": "creating",
+            "pulling_image": "pulling_image",
+            "creating": "creating",
+            "starting": "starting",
+            "health_check": "starting",
             "completed": "running",
             "failed": "failed",
         }
@@ -468,16 +440,23 @@ class AgentDeploymentExecutor:
 
         # Estimate progress based on stage
         progress_map = {
-            "starting": 20,
             "executing": 50,
-            "waiting_for_health": 80,  # Phase 3: health check waiting
+            "waiting_for_health": 80,
+            "validating": 5,
+            "parsing": 10,
+            "creating_networks": 15,
+            "creating_volumes": 20,
+            "pulling_image": 40,
+            "creating": 65,
+            "starting": 80,
+            "health_check": 90,
             "completed": 100,
             "failed": 100,
         }
         progress = progress_map.get(stage, 50)
 
         # If we have service-level progress, calculate more accurate progress
-        if services and len(services) > 0:
+        if services:
             running_count = sum(1 for s in services if s.get("status") == "running")
             total_count = len(services)
             # Map 0-100% of services running to 50-90% overall progress
@@ -546,62 +525,60 @@ class AgentDeploymentExecutor:
         # Check if this is a persistent deployment (exists in database)
         is_persistent = await self._is_persistent_deployment(deployment_id)
 
-        if not is_persistent:
-            # Transient deployment - broadcast completion directly to WebSocket
-            if success:
+        # Default to "up" for backward compatibility with agents that predate the action field
+        action = payload.get("action", "up")
+
+        if success:
+            status = "stopped" if action == "down" else "running"
+            msg = "Stack stopped" if action == "down" else "Deployment completed"
+
+            if not is_persistent:
                 await self._broadcast_transient_complete(
-                    deployment_id, "running", "Deployment completed"
-                )
-            elif partial_success:
-                error_details = self._build_partial_failure_message(
-                    services, failed_services, error
-                )
-                await self._broadcast_transient_complete(
-                    deployment_id, "partial", "Partial deployment - some services failed", error_details
+                    deployment_id, status, msg
                 )
             else:
-                await self._broadcast_transient_complete(
-                    deployment_id, "failed", "Deployment failed", error or "Deployment failed"
+                if action != "down":
+                    await self._link_containers_to_deployment(deployment_id, services)
+                await self._update_deployment_status(
+                    deployment_id, status, progress=100, stage=msg
                 )
-            return
-
-        # Persistent deployment - update database
-        if success:
-            # Full success - all services running
-            await self._link_containers_to_deployment(deployment_id, services)
-            await self._update_deployment_status(
-                deployment_id, "running", progress=100, stage="Deployment completed"
-            )
 
         elif partial_success:
-            # Partial success - some services running, others failed
-            # Still link the successful containers (don't lose working services)
-            running_services = {
-                name: svc for name, svc in services.items()
-                if name not in failed_services
-            }
-            if running_services:
-                await self._link_containers_to_deployment(deployment_id, running_services)
-
-            # Build detailed error message with per-service status
             error_details = self._build_partial_failure_message(
                 services, failed_services, error
             )
 
-            # Mark as partial (some services running but not complete)
-            await self._update_deployment_status(
-                deployment_id,
-                "partial",
-                progress=100,
-                stage="Partial deployment - some services failed",
-                error_message=error_details
-            )
+            if not is_persistent:
+                await self._broadcast_transient_complete(
+                    deployment_id, "partial", "Partial deployment - some services failed", error_details
+                )
+            else:
+                # Still link the successful containers (don't lose working services)
+                running_services = {
+                    name: svc for name, svc in services.items()
+                    if name not in failed_services
+                }
+                if running_services:
+                    await self._link_containers_to_deployment(deployment_id, running_services)
+
+                await self._update_deployment_status(
+                    deployment_id,
+                    "partial",
+                    progress=100,
+                    stage="Partial deployment - some services failed",
+                    error_message=error_details
+                )
 
         else:
-            # Full failure - no services running
-            await self._update_deployment_status(
-                deployment_id, "failed", error_message=error or "Deployment failed"
-            )
+            # Full failure
+            if not is_persistent:
+                await self._broadcast_transient_complete(
+                    deployment_id, "failed", "Deployment failed", error or "Deployment failed"
+                )
+            else:
+                await self._update_deployment_status(
+                    deployment_id, "failed", error_message=error or "Deployment failed"
+                )
 
     def _build_partial_failure_message(
         self,
@@ -780,7 +757,7 @@ class AgentDeploymentExecutor:
                 deployment.current_stage = stage
             if error_message is not None:
                 deployment.error_message = error_message
-            if status in ("running", "partial", "failed", "rolled_back"):
+            if status in ("running", "stopped", "partial", "failed", "rolled_back"):
                 deployment.completed_at = datetime.now(timezone.utc)
 
             session.commit()
@@ -806,6 +783,7 @@ class AgentDeploymentExecutor:
         #                   deployment_failed, deployment_rolled_back
         status_to_event = {
             "running": "deployment_completed",
+            "stopped": "deployment_completed",  # Successful teardown is a completion state
             "partial": "deployment_completed",  # Partial is still a completion state
             "failed": "deployment_failed",
             "rolled_back": "deployment_rolled_back",
@@ -927,6 +905,14 @@ class AgentDeploymentExecutor:
             deployment = session.query(Deployment).filter_by(id=deployment_id).first()
             return deployment is not None
 
+    @staticmethod
+    def _parse_transient_id(deployment_id: str) -> tuple[str, str]:
+        """Parse transient deployment ID into (host_id, stack_name)."""
+        parts = deployment_id.split(':')
+        host_id = parts[0] if len(parts) > 0 else ""
+        stack_name = parts[1] if len(parts) > 1 else ""
+        return host_id, stack_name
+
     async def _broadcast_transient_progress(
         self,
         deployment_id: str,
@@ -943,10 +929,7 @@ class AgentDeploymentExecutor:
             progress: Progress percentage (0-100)
             message: Human-readable stage description
         """
-        # Parse deployment_id to extract host_id and stack_name
-        parts = deployment_id.split(':')
-        host_id = parts[0] if len(parts) > 0 else ""
-        stack_name = parts[1] if len(parts) > 1 else ""
+        host_id, stack_name = self._parse_transient_id(deployment_id)
 
         payload = {
             "type": "deployment_progress",
@@ -979,17 +962,14 @@ class AgentDeploymentExecutor:
 
         Args:
             deployment_id: Transient deployment ID ({host_id}:{stack_name}:{uuid})
-            status: Final status (running, partial, failed)
+            status: Final status (running, stopped, partial, failed)
             message: Human-readable completion message
             error: Optional error message if failed
         """
-        # Parse deployment_id to extract host_id and stack_name
-        parts = deployment_id.split(':')
-        host_id = parts[0] if len(parts) > 0 else ""
-        stack_name = parts[1] if len(parts) > 1 else ""
+        host_id, stack_name = self._parse_transient_id(deployment_id)
 
         # Map status to event type
-        event_type = "deployment_completed" if status in ("running", "partial") else "deployment_failed"
+        event_type = "deployment_completed" if status in ("running", "partial", "stopped") else "deployment_failed"
 
         payload = {
             "type": event_type,
@@ -1032,7 +1012,6 @@ def get_agent_deployment_executor(monitor=None) -> AgentDeploymentExecutor:
     global _agent_deployment_executor_instance
 
     if _agent_deployment_executor_instance is None:
-        from database import DatabaseManager
         _agent_deployment_executor_instance = AgentDeploymentExecutor(
             monitor=monitor,
             database_manager=DatabaseManager()

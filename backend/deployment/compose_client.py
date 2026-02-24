@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import os
+import socket
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
@@ -109,8 +110,6 @@ class ComposeClient:
             True if service is healthy and ready for deployments
         """
         try:
-            import socket
-
             # Quick socket connectivity test
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             sock.settimeout(timeout)
@@ -388,6 +387,10 @@ class ComposeClient:
     ) -> Dict[str, Any]:
         """Build request payload for compose service."""
         effective_stacks_dir = stacks_dir or os.getenv("STACKS_DIR") or DEFAULT_STACKS_DIR
+        # Only apply HOST_STACKS_DIR for local deployments — it maps
+        # container-internal paths to host paths on the same machine.
+        # For mTLS remote hosts the Docker engine is a different machine entirely.
+        effective_host_stacks_dir = os.getenv("HOST_STACKS_DIR", "") if not docker_host else ""
 
         request: Dict[str, Any] = {
             "deployment_id": deployment_id,
@@ -403,6 +406,7 @@ class ComposeClient:
             "health_timeout": health_timeout,
             "timeout": timeout,
             "stacks_dir": effective_stacks_dir,
+            "host_stacks_dir": effective_host_stacks_dir,
         }
 
         if docker_host:

@@ -12,10 +12,11 @@ import (
 
 // DeployHandler manages compose deployments using Docker Compose Go library
 type DeployHandler struct {
-	dockerClient *docker.Client
-	log          *logrus.Logger
-	sendEvent    func(msgType string, payload interface{}) error
-	stacksDir    string // Persistent stack directory for compose deployments
+	dockerClient  *docker.Client
+	log           *logrus.Logger
+	sendEvent     func(msgType string, payload interface{}) error
+	stacksDir     string // Persistent stack directory for compose deployments
+	hostStacksDir string // Host-side stacks path for resolving relative bind mounts
 }
 
 // DeployComposeRequest is sent from backend to agent
@@ -53,6 +54,7 @@ func NewDeployHandler(
 	log *logrus.Logger,
 	sendEvent func(string, interface{}) error,
 	stacksDir string,
+	hostStacksDir string,
 ) (*DeployHandler, error) {
 	// Test that we can create a compose service (validates library availability)
 	if err := compose.TestComposeLibrary(); err != nil {
@@ -62,10 +64,11 @@ func NewDeployHandler(
 	log.WithField("stacks_dir", stacksDir).Info("Deploy handler initialized using Docker Compose Go library")
 
 	return &DeployHandler{
-		dockerClient: dockerClient,
-		log:          log,
-		sendEvent:    sendEvent,
-		stacksDir:    stacksDir,
+		dockerClient:  dockerClient,
+		log:           log,
+		sendEvent:     sendEvent,
+		stacksDir:     stacksDir,
+		hostStacksDir: hostStacksDir,
 	}, nil
 }
 
@@ -108,6 +111,7 @@ func (h *DeployHandler) DeployCompose(ctx context.Context, req DeployComposeRequ
 		HealthTimeout:       req.HealthTimeout,
 		RegistryCredentials: req.RegistryCredentials,
 		StacksDir:           h.stacksDir,
+		HostStacksDir:       h.hostStacksDir,
 	}
 
 	// Execute deployment using shared package

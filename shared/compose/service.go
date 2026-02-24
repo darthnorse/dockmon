@@ -106,10 +106,11 @@ func (s *Service) Deploy(ctx context.Context, req DeployRequest) *DeployResult {
 	}
 
 	s.logInfo("Starting compose deployment", logrus.Fields{
-		"deployment_id": req.DeploymentID,
-		"project_name":  req.ProjectName,
-		"action":        req.Action,
-		"stacks_dir":    stacksDir,
+		"deployment_id":  req.DeploymentID,
+		"project_name":   req.ProjectName,
+		"action":         req.Action,
+		"stacks_dir":     stacksDir,
+		"host_stacks_dir": req.HostStacksDir,
 	})
 
 	s.sendProgress(ProgressEvent{
@@ -269,13 +270,21 @@ func (s *Service) createComposeService(ctx context.Context, req DeployRequest) (
 // loadProject loads a compose project from file content.
 // Environment variables are loaded from .env file in the working directory
 // (written by WriteEnvFile before this is called).
-func (s *Service) loadProject(ctx context.Context, composeFile, projectName string, profiles []string) (*types.Project, error) {
+func (s *Service) loadProject(ctx context.Context, composeFile, projectName string, profiles []string, hostWorkingDir string) (*types.Project, error) {
 	workingDir := filepath.Dir(composeFile)
 	envFile := filepath.Join(workingDir, ".env")
 
+	// Use host path for WithWorkingDirectory if provided.
+	// This makes Docker Compose resolve relative bind mount sources (e.g., ./data)
+	// against the host filesystem path instead of the container-internal path.
+	resolveDir := workingDir
+	if hostWorkingDir != "" {
+		resolveDir = hostWorkingDir
+	}
+
 	// Build project options
 	opts := []cli.ProjectOptionsFn{
-		cli.WithWorkingDirectory(workingDir),
+		cli.WithWorkingDirectory(resolveDir),
 		cli.WithName(projectName),
 		cli.WithProfiles(profiles),
 	}
@@ -439,7 +448,20 @@ func (s *Service) runComposeUp(ctx context.Context, req DeployRequest, composeFi
 	defer cli.Client().Close()
 	defer tlsFiles.Cleanup(s.log)
 
-	project, err := s.loadProject(ctx, composeFile, req.ProjectName, req.Profiles)
+	// Compute host-side working directory for bind mount resolution.
+	// Only applies when HostStacksDir is configured (containerized deployments)
+	// AND the Docker engine is local. For mTLS remote hosts the engine is on
+	// a different machine, so local host paths are meaningless.
+	var hostWorkingDir string
+	if req.HostStacksDir != "" && req.DockerHost == "" {
+		hostWorkingDir = filepath.Join(req.HostStacksDir, req.ProjectName)
+		s.logInfo("Using host-side working directory for bind mount resolution", logrus.Fields{
+			"host_working_dir":      hostWorkingDir,
+			"container_working_dir": filepath.Dir(composeFile),
+		})
+	}
+
+	project, err := s.loadProject(ctx, composeFile, req.ProjectName, req.Profiles, hostWorkingDir)
 	if err != nil {
 		return s.failResult(req.DeploymentID, fmt.Sprintf("Failed to load compose project: %v", err))
 	}

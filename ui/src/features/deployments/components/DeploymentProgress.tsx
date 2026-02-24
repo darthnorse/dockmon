@@ -18,11 +18,13 @@ import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
 import { useTimeFormat } from '@/lib/hooks/useUserPreferences'
 import { formatTime } from '@/lib/utils/timeFormat'
 import type { WebSocketMessage } from '@/lib/websocket/useWebSocket'
+import type { StackAction } from '../hooks/useDeployments'
 
 interface DeploymentProgressProps {
   deploymentId: string | null
   stackName: string
   hostName: string
+  action?: StackAction
   onBack: () => void
   onComplete: () => void
 }
@@ -51,8 +53,34 @@ function isDeploymentMatch(messageId: string | undefined, targetId: string): boo
   return false
 }
 
-// Map backend status to display info
-function getStatusDisplay(status: string): { label: string; type: 'info' | 'success' | 'error' } {
+const ACTION_TEXT: Record<StackAction, {
+  progress: string
+  complete: string
+  failed: string
+  logStart: string
+}> = {
+  up: {
+    progress: 'Deploying...',
+    complete: 'Deployment Complete',
+    failed: 'Deployment Failed',
+    logStart: 'Starting deployment',
+  },
+  down: {
+    progress: 'Stopping...',
+    complete: 'Stack Stopped',
+    failed: 'Stop Failed',
+    logStart: 'Stopping stack',
+  },
+  restart: {
+    progress: 'Restarting...',
+    complete: 'Restart Complete',
+    failed: 'Restart Failed',
+    logStart: 'Restarting stack',
+  },
+}
+
+function getStatusDisplay(status: string, action: StackAction = 'up'): { label: string; type: 'info' | 'success' | 'error' } {
+  const text = ACTION_TEXT[action]
   switch (status) {
     case 'pending':
       return { label: 'Pending...', type: 'info' }
@@ -65,13 +93,12 @@ function getStatusDisplay(status: string): { label: string; type: 'info' | 'succ
     case 'starting':
       return { label: 'Starting containers...', type: 'info' }
     case 'running':
-      return { label: 'Deployment complete', type: 'success' }
+    case 'stopped':
+      return { label: text.complete, type: 'success' }
     case 'partial':
       return { label: 'Partially deployed', type: 'error' }
     case 'failed':
-      return { label: 'Deployment failed', type: 'error' }
-    case 'stopped':
-      return { label: 'Stopped', type: 'info' }
+      return { label: text.failed, type: 'error' }
     case 'rolled_back':
       return { label: 'Rolled back', type: 'error' }
     default:
@@ -83,6 +110,7 @@ export function DeploymentProgress({
   deploymentId,
   stackName,
   hostName,
+  action = 'up',
   onBack,
   onComplete,
 }: DeploymentProgressProps) {
@@ -102,28 +130,24 @@ export function DeploymentProgress({
   const hasLoggedStartRef = useRef(false)
   const lastLoggedMessageRef = useRef<string>('')
 
-  // Keep statusRef in sync
   useEffect(() => {
     statusRef.current = status
   }, [status])
 
-  // Auto-scroll logs
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [logs])
 
-  // Add log entry
   const addLog = useCallback((message: string, type: LogEntry['type'] = 'info') => {
     setLogs((prev) => [...prev, { id: generateLogId(), timestamp: new Date(), message, type }])
   }, [])
 
-  // Subscribe to WebSocket messages
   useEffect(() => {
     if (!deploymentId) return
 
-    // Only log start message once
     if (!hasLoggedStartRef.current) {
-      addLog(`Starting deployment of "${stackName}" to ${hostName}...`)
+      const actionText = ACTION_TEXT[action]
+      addLog(`${actionText.logStart} of "${stackName}" on ${hostName}...`)
       hasLoggedStartRef.current = true
     }
 
@@ -151,24 +175,18 @@ export function DeploymentProgress({
           error?: string
         }
 
-        // Check if this message is for our deployment
         if (!isDeploymentMatch(msg.deployment_id, deploymentId)) {
           return
         }
 
         const { status: newStatus, progress: progressData, error: errorMsg } = msg
 
-        // Update progress percentage
         if (progressData) {
           setProgress(progressData.overall_percent || 0)
 
-          // Log detailed progress message from backend (e.g., "Pulling image(s): linuxserver/radarr:latest")
-          // Only log if we have a meaningful stage message that's different from generic status
           if (progressData.stage && progressData.stage.length > 0) {
             const stageMsg = progressData.stage
-            // Avoid logging generic messages that just repeat status
             const isDetailedMessage = !['Pending...', 'Pulling images...', 'Creating containers...', 'Starting containers...'].includes(stageMsg)
-            // Avoid duplicate log entries if backend sends same message multiple times
             const isDuplicate = stageMsg === lastLoggedMessageRef.current
             if (isDetailedMessage && !isDuplicate) {
               lastLoggedMessageRef.current = stageMsg
@@ -177,18 +195,16 @@ export function DeploymentProgress({
           }
         }
 
-        // Update status (only process changes)
         if (newStatus) {
           const prevStatus = statusRef.current
 
-          // Only process if status actually changed
           if (newStatus !== prevStatus) {
             setStatus(newStatus)
 
-            // For terminal states, log the status change
-            const isTerminal = newStatus === 'running' || newStatus === 'partial' || newStatus === 'failed' || newStatus === 'rolled_back'
+            const TERMINAL_STATES = new Set(['running', 'stopped', 'partial', 'failed', 'rolled_back'])
+            const isTerminal = TERMINAL_STATES.has(newStatus)
             if (isTerminal) {
-              const display = getStatusDisplay(newStatus)
+              const display = getStatusDisplay(newStatus, action)
               addLog(display.label, display.type)
               setIsComplete(true)
               setProgress(100)
@@ -196,7 +212,6 @@ export function DeploymentProgress({
           }
         }
 
-        // Handle error - show full error message
         if (errorMsg) {
           setError(errorMsg)
           addLog(`Error: ${errorMsg}`, 'error')
@@ -223,11 +238,12 @@ export function DeploymentProgress({
     })
 
     return cleanup
-  }, [deploymentId, stackName, hostName, addMessageHandler, addLog])
+  }, [deploymentId, stackName, hostName, action, addMessageHandler, addLog])
 
-  const statusDisplay = getStatusDisplay(status)
+  const actionText = ACTION_TEXT[action]
+  const statusDisplay = getStatusDisplay(status, action)
   const isError = status === 'failed' || status === 'partial'
-  const isSuccess = status === 'running'
+  const isSuccess = status === 'running' || status === 'stopped'
 
   return (
     <div className="flex flex-col h-full">
@@ -235,7 +251,7 @@ export function DeploymentProgress({
       <div className="flex items-center justify-between mb-4 shrink-0">
         <div>
           <h3 className="font-semibold text-lg">
-            {isComplete ? (isSuccess ? 'Deployment Complete' : 'Deployment Finished') : 'Deploying...'}
+            {isComplete ? (isSuccess ? actionText.complete : actionText.failed) : actionText.progress}
           </h3>
           <p className="text-sm text-muted-foreground">
             {stackName} → {hostName}

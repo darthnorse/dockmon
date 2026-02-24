@@ -13,7 +13,7 @@ import os
 import uuid
 import yaml
 from datetime import datetime, timezone
-from typing import List, Optional, Dict
+from typing import List, Literal, Optional, Dict
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ConfigDict
@@ -27,6 +27,9 @@ from auth.api_key_auth import get_current_user_or_api_key as get_current_user, r
 from utils.keys import parse_composite_key
 from agent.command_executor import get_agent_command_executor, RetryPolicy
 from agent.manager import AgentManager
+from deployment.compose_client import ComposeClient, ComposeServiceError, ComposeServiceUnavailable
+from deployment.stack_executor import _get_host_connection_info
+from deployment.agent_executor import get_agent_deployment_executor
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +137,7 @@ class DeployStackRequest(BaseModel):
     """
     stack_name: str = Field(..., description="Name of the stack to deploy (must exist in /api/stacks)")
     host_id: str = Field(..., description="UUID of the Docker host to deploy to")
+    action: Literal['up', 'down', 'restart'] = Field("up", description="Action: up, down, restart")
     force_recreate: bool = Field(
         True,
         description="Force recreate containers even if unchanged (default: true)"
@@ -141,6 +145,10 @@ class DeployStackRequest(BaseModel):
     pull_images: bool = Field(
         True,
         description="Pull latest images before starting (default: true)"
+    )
+    remove_volumes: bool = Field(
+        False,
+        description="Remove volumes on down (destructive)"
     )
 
 
@@ -295,6 +303,13 @@ def get_docker_monitor():
     return _docker_monitor
 
 
+# Action-aware messages for deployment progress broadcasting
+_DEPLOY_ACTION_MESSAGES = {
+    'up': {'start': 'Starting deployment...', 'complete': 'Deployment complete'},
+    'down': {'start': 'Stopping stack...', 'complete': 'Stack stopped'},
+    'restart': {'start': 'Restarting stack...', 'complete': 'Restart complete'},
+}
+
 # ==================== Deployment Endpoints ====================
 
 @router.post("/deploy", response_model=DeployStackResponse, dependencies=[Depends(require_capability("stacks.deploy"))])
@@ -321,10 +336,6 @@ async def deploy_stack(
     in the stacks list is derived from running container labels, not from
     deployment records.
     """
-    from deployment.compose_client import ComposeClient, ComposeServiceError, ComposeServiceUnavailable
-    from deployment.stack_executor import _get_host_connection_info
-    from deployment.agent_executor import get_agent_deployment_executor
-
     # Validate stack exists
     if not await stack_storage.stack_exists(request.stack_name):
         raise HTTPException(status_code=404, detail=f"Stack '{request.stack_name}' not found")
@@ -355,23 +366,31 @@ async def deploy_stack(
         except Exception as e:
             logger.error(f"Error broadcasting deployment event: {e}")
 
-    # Route based on connection type
+    action_msgs = _DEPLOY_ACTION_MESSAGES[request.action]
+
+    def make_event(event_type, status, stage='', progress=0, error=None):
+        """Build deployment broadcast event payload."""
+        payload = {
+            'type': event_type,
+            'deployment_id': deployment_id,
+            'host_id': request.host_id,
+            'name': request.stack_name,
+            'status': status,
+            'progress': {
+                'overall_percent': progress,
+                'stage': stage,
+            },
+        }
+        if error:
+            payload['error'] = error
+        return payload
+
     if connection_type == 'agent':
-        # Execute deployment via agent
         async def execute_agent_deploy():
             try:
-                # Send initial progress
-                await broadcast_event({
-                    'type': 'deployment_progress',
-                    'deployment_id': deployment_id,
-                    'host_id': request.host_id,
-                    'name': request.stack_name,
-                    'status': 'pending',
-                    'progress': {
-                        'overall_percent': 0,
-                        'stage': 'Starting deployment via agent...',
-                    },
-                })
+                await broadcast_event(make_event(
+                    'deployment_progress', 'pending', stage=action_msgs['start'],
+                ))
 
                 executor = get_agent_deployment_executor(docker_monitor)
                 success = await executor.deploy(
@@ -380,6 +399,8 @@ async def deploy_stack(
                     compose_content=compose_yaml,
                     project_name=request.stack_name,
                     env_file_content=env_content,
+                    action=request.action,
+                    remove_volumes=request.remove_volumes,
                     force_recreate=request.force_recreate,
                     pull_images=request.pull_images,
                     wait_for_healthy=True,
@@ -395,62 +416,38 @@ async def deploy_stack(
                     logger.error(f"Stack deployment to agent failed for '{host_name}'")
 
             except Exception as e:
-                await broadcast_event({
-                    'type': 'deployment_failed',
-                    'deployment_id': deployment_id,
-                    'host_id': request.host_id,
-                    'name': request.stack_name,
-                    'status': 'failed',
-                    'error': str(e),
-                })
+                await broadcast_event(make_event(
+                    'deployment_failed', 'failed', error=str(e),
+                ))
                 logger.error(f"Agent deployment failed: {e}", exc_info=True)
 
         background_tasks.add_task(execute_agent_deploy)
 
     else:
-        # Execute deployment via local compose service (for local and mTLS hosts)
         async def execute_compose_deploy():
             client = ComposeClient()
 
             try:
-                # Get host connection info
                 host_info = _get_host_connection_info(request.host_id)
 
-                # Progress callback that broadcasts to WebSocket
                 async def on_progress(event):
-                    await broadcast_event({
-                        'type': 'deployment_progress',
-                        'deployment_id': deployment_id,
-                        'host_id': request.host_id,
-                        'name': request.stack_name,
-                        'status': 'in_progress',
-                        'progress': {
-                            'overall_percent': event.progress,
-                            'stage': event.message,
-                        },
-                    })
+                    await broadcast_event(make_event(
+                        'deployment_progress', 'in_progress',
+                        stage=event.message, progress=event.progress,
+                    ))
 
-                # Send initial progress
-                await broadcast_event({
-                    'type': 'deployment_progress',
-                    'deployment_id': deployment_id,
-                    'host_id': request.host_id,
-                    'name': request.stack_name,
-                    'status': 'pending',
-                    'progress': {
-                        'overall_percent': 0,
-                        'stage': 'Starting deployment...',
-                    },
-                })
+                await broadcast_event(make_event(
+                    'deployment_progress', 'pending', stage=action_msgs['start'],
+                ))
 
-                # Execute deployment
                 result = await client.deploy_with_progress(
                     deployment_id=deployment_id,
                     project_name=request.stack_name,
                     compose_yaml=compose_yaml,
                     progress_callback=on_progress,
-                    action="up",
+                    action=request.action,
                     env_file_content=env_content,
+                    remove_volumes=request.remove_volumes,
                     force_recreate=request.force_recreate,
                     pull_images=request.pull_images,
                     wait_for_healthy=True,
@@ -463,71 +460,46 @@ async def deploy_stack(
                 )
 
                 if result.success or result.partial_success:
-                    status = "running" if result.success else "partial"
-                    await broadcast_event({
-                        'type': 'deployment_completed',
-                        'deployment_id': deployment_id,
-                        'host_id': request.host_id,
-                        'name': request.stack_name,
-                        'status': status,
-                        'progress': {
-                            'overall_percent': 100,
-                            'stage': 'Deployment complete',
-                        },
-                    })
-                    logger.info(f"Stack '{request.stack_name}' deployed to '{host_name}'")
+                    # Map success status based on action
+                    if request.action == 'down':
+                        status = "stopped" if result.success else "failed"
+                    else:
+                        status = "running" if result.success else "partial"
+                    await broadcast_event(make_event(
+                        'deployment_completed', status,
+                        stage=action_msgs['complete'], progress=100,
+                    ))
+                    logger.info(f"Stack '{request.stack_name}' {request.action} completed on '{host_name}'")
                 else:
-                    await broadcast_event({
-                        'type': 'deployment_failed',
-                        'deployment_id': deployment_id,
-                        'host_id': request.host_id,
-                        'name': request.stack_name,
-                        'status': 'failed',
-                        'error': result.error or 'Deployment failed',
-                        'progress': {
-                            'overall_percent': 0,
-                            'stage': 'Failed',
-                        },
-                    })
+                    await broadcast_event(make_event(
+                        'deployment_failed', 'failed',
+                        stage='Failed', error=result.error or 'Deployment failed',
+                    ))
                     logger.error(f"Stack deployment failed: {result.error}")
 
             except ComposeServiceUnavailable as e:
-                await broadcast_event({
-                    'type': 'deployment_failed',
-                    'deployment_id': deployment_id,
-                    'host_id': request.host_id,
-                    'name': request.stack_name,
-                    'status': 'failed',
-                    'error': 'Compose service unavailable. Ensure compose-service is running.',
-                })
+                await broadcast_event(make_event(
+                    'deployment_failed', 'failed',
+                    error='Compose service unavailable. Ensure compose-service is running.',
+                ))
                 logger.error(f"Compose service unavailable: {e}")
 
             except ComposeServiceError as e:
-                await broadcast_event({
-                    'type': 'deployment_failed',
-                    'deployment_id': deployment_id,
-                    'host_id': request.host_id,
-                    'name': request.stack_name,
-                    'status': 'failed',
-                    'error': str(e.message),
-                })
+                await broadcast_event(make_event(
+                    'deployment_failed', 'failed', error=str(e.message),
+                ))
                 logger.error(f"Compose service error: {e.message}")
 
             except Exception as e:
-                await broadcast_event({
-                    'type': 'deployment_failed',
-                    'deployment_id': deployment_id,
-                    'host_id': request.host_id,
-                    'name': request.stack_name,
-                    'status': 'failed',
-                    'error': str(e),
-                })
+                await broadcast_event(make_event(
+                    'deployment_failed', 'failed', error=str(e),
+                ))
                 logger.error(f"Deployment failed: {e}", exc_info=True)
 
         background_tasks.add_task(execute_compose_deploy)
 
     _, display_name = _get_auditable_user_info(current_user)
-    logger.info(f"{display_name} started deployment of '{request.stack_name}' to '{host_name}'")
+    logger.info(f"{display_name} started {request.action} of '{request.stack_name}' on '{host_name}'")
 
     return DeployStackResponse(
         deployment_id=deployment_id,

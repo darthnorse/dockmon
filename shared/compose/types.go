@@ -34,6 +34,13 @@ type DeployRequest struct {
 	// If empty, defaults to /app/data/stacks (compose-service) or $DATA_PATH/stacks (agent).
 	StacksDir string `json:"stacks_dir,omitempty"`
 
+	// Host-side path corresponding to StacksDir, for resolving relative bind mounts.
+	// When running inside a container, StacksDir is a container-internal path
+	// (e.g., /app/data/stacks) but Docker resolves bind mount sources as host paths.
+	// Set HOST_STACKS_DIR to the host equivalent (e.g., /opt/dockmon/data/stacks).
+	// If empty, StacksDir is used as-is (correct for systemd/non-container deployments).
+	HostStacksDir string `json:"host_stacks_dir,omitempty"`
+
 	// Docker connection (determines local vs remote)
 	// Empty DockerHost means use local socket
 	DockerHost string `json:"docker_host,omitempty"` // e.g., "tcp://192.168.1.100:2376"

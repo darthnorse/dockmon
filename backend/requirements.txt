@@ -3,7 +3,7 @@ uvicorn[standard]==0.34.0
 docker==7.1.0
 pydantic==2.10.6
 email-validator==2.3.0
-python-multipart==0.0.20
+python-multipart==0.0.22
 aiohttp==3.13.3
 aiofiles==25.1.0
 httpx==0.28.1
@@ -14,7 +14,7 @@ bcrypt==4.2.1
 argon2-cffi==23.1.0
 itsdangerous==2.1.2
 aiosmtplib==3.0.2
-cryptography==46.0.3
+cryptography==46.0.5
 packaging==25.0
 python-dateutil==2.9.0.post0
 cronsim==2.7

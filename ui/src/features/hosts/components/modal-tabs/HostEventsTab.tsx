@@ -10,6 +10,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Calendar, AlertCircle, X, ArrowUpDown, Search, Check, Download, Bell } from 'lucide-react'
 import { useHostEvents } from '@/hooks/useEvents'
 import { EventRow } from '@/features/events/components/EventRow'
+import { apiClient } from '@/lib/api/client'
 
 interface HostEventsTabProps {
   hostId: string
@@ -49,7 +50,7 @@ export function HostEventsTab({ hostId }: HostEventsTabProps) {
   // Fetch containers for this host
   const { data: allContainers = [] } = useQuery<any[]>({
     queryKey: ['containers'],
-    queryFn: () => fetch('/api/containers').then((res) => res.json()),
+    queryFn: () => apiClient.get('/containers'),
   })
 
   // Filter to only show containers from this host

@@ -5,8 +5,9 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { Alert, AlertListResponse, AlertFilters, AlertStats, AlertAnnotation } from '@/types/alerts'
 import type { EventsResponse } from '@/types/events'
+import { apiClient } from '@/lib/api/client'
 
-const API_BASE = '/api/alerts'
+const API_BASE = '/alerts'
 
 // Fetch alerts with filters
 export function useAlerts(filters: AlertFilters = {}, options = {}) {
@@ -23,9 +24,7 @@ export function useAlerts(filters: AlertFilters = {}, options = {}) {
   return useQuery<AlertListResponse>({
     queryKey: ['alerts', filters],
     queryFn: async () => {
-      const res = await fetch(`${API_BASE}/?${queryParams}`)
-      if (!res.ok) throw new Error('Failed to fetch alerts')
-      return res.json()
+      return apiClient.get<AlertListResponse>(`${API_BASE}/?${queryParams}`)
     },
     staleTime: 30000, // Cache for 30s
     ...options,
@@ -38,9 +37,7 @@ export function useAlert(alertId: string | null) {
     queryKey: ['alert', alertId],
     queryFn: async () => {
       if (!alertId) throw new Error('Alert ID required')
-      const res = await fetch(`${API_BASE}/${alertId}`)
-      if (!res.ok) throw new Error('Failed to fetch alert')
-      return res.json()
+      return apiClient.get<Alert>(`${API_BASE}/${alertId}`)
     },
     enabled: !!alertId,
     staleTime: 30000, // Cache for 30s
@@ -52,9 +49,7 @@ export function useAlertStats() {
   return useQuery<AlertStats>({
     queryKey: ['alert-stats'],
     queryFn: async () => {
-      const res = await fetch(`${API_BASE}/stats/`)
-      if (!res.ok) throw new Error('Failed to fetch alert stats')
-      return res.json()
+      return apiClient.get<AlertStats>(`${API_BASE}/stats/`)
     },
     staleTime: 30000, // Cache for 30s
     refetchInterval: 30000, // Refresh every 30 seconds
@@ -82,9 +77,7 @@ export function useAlertCounts(scope_type: 'container' | 'host') {
       queryParams.append('scope_type', scope_type)
       queryParams.append('page_size', '500') // Large limit to get all alerts in one request
 
-      const res = await fetch(`${API_BASE}/?${queryParams}`)
-      if (!res.ok) throw new Error('Failed to fetch alert counts')
-      const data: AlertListResponse = await res.json()
+      const data = await apiClient.get<AlertListResponse>(`${API_BASE}/?${queryParams}`)
 
       // Build a Map of scope_id -> severity breakdown
       const counts = new Map<string, AlertSeverityCounts>()
@@ -133,9 +126,7 @@ export function useAlertAnnotations(alertId: string | null) {
     queryKey: ['alert-annotations', alertId],
     queryFn: async () => {
       if (!alertId) throw new Error('Alert ID required')
-      const res = await fetch(`${API_BASE}/${alertId}/annotations`)
-      if (!res.ok) throw new Error('Failed to fetch annotations')
-      return res.json()
+      return apiClient.get<{ annotations: AlertAnnotation[] }>(`${API_BASE}/${alertId}/annotations`)
     },
     enabled: !!alertId,
     staleTime: 60000, // Cache for 60s (annotations rarely change)
@@ -148,13 +139,7 @@ export function useResolveAlert() {
 
   return useMutation({
     mutationFn: async ({ alertId, reason }: { alertId: string; reason?: string }) => {
-      const res = await fetch(`${API_BASE}/${alertId}/resolve`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reason: reason || 'Manually resolved' }),
-      })
-      if (!res.ok) throw new Error('Failed to resolve alert')
-      return res.json()
+      return apiClient.post(`${API_BASE}/${alertId}/resolve`, { reason: reason || 'Manually resolved' })
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['alerts'] })
@@ -171,13 +156,7 @@ export function useSnoozeAlert() {
 
   return useMutation({
     mutationFn: async ({ alertId, durationMinutes }: { alertId: string; durationMinutes: number }) => {
-      const res = await fetch(`${API_BASE}/${alertId}/snooze`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ duration_minutes: durationMinutes }),
-      })
-      if (!res.ok) throw new Error('Failed to snooze alert')
-      return res.json()
+      return apiClient.post(`${API_BASE}/${alertId}/snooze`, { duration_minutes: durationMinutes })
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['alerts'] })
@@ -194,11 +173,7 @@ export function useUnsnoozeAlert() {
 
   return useMutation({
     mutationFn: async (alertId: string) => {
-      const res = await fetch(`${API_BASE}/${alertId}/unsnooze`, {
-        method: 'POST',
-      })
-      if (!res.ok) throw new Error('Failed to unsnooze alert')
-      return res.json()
+      return apiClient.post(`${API_BASE}/${alertId}/unsnooze`)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['alerts'] })
@@ -215,15 +190,9 @@ export function useAddAnnotation() {
 
   return useMutation({
     mutationFn: async ({ alertId, text, user }: { alertId: string; text: string; user?: string }) => {
-      const res = await fetch(`${API_BASE}/${alertId}/annotations`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, user }),
-      })
-      if (!res.ok) throw new Error('Failed to add annotation')
-      return res.json()
+      return apiClient.post(`${API_BASE}/${alertId}/annotations`, { text, user })
     },
-    onSuccess: (_, variables) => {
+    onSuccess: (_, variables: { alertId: string; text: string; user?: string }) => {
       queryClient.invalidateQueries({ queryKey: ['alert-annotations', variables.alertId] })
     },
   })
@@ -268,12 +237,7 @@ export function useAlertEvents(alert: Alert | null | undefined) {
       queryParams.append('limit', '50')
       queryParams.append('sort_order', 'desc')
 
-      const res = await fetch(`/api/events?${queryParams}`)
-      if (!res.ok) {
-        const errorText = await res.text()
-        throw new Error(`Failed to fetch alert events: ${errorText}`)
-      }
-      return res.json()
+      return apiClient.get<EventsResponse>(`/events?${queryParams}`)
     },
     enabled: !!alert && !!alert.scope_id,
     staleTime: 60000, // Cache for 60s (historical events are stable)

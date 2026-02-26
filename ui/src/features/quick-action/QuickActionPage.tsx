@@ -16,6 +16,7 @@ import { useState, useEffect } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { Container, ArrowRight, CheckCircle2, XCircle, Loader2, Clock, AlertTriangle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { apiClient, ApiError } from '@/lib/api/client'
 
 interface TokenInfo {
   valid: boolean
@@ -70,19 +71,7 @@ export function QuickActionPage() {
 
   const validateToken = async () => {
     try {
-      const response = await fetch(`/api/v2/action-tokens/${encodeURIComponent(token!)}/info`, {
-        credentials: 'include'  // Include session cookie
-      })
-
-      // If not authenticated, redirect to login with return URL
-      if (response.status === 401) {
-        const returnUrl = encodeURIComponent(window.location.pathname + window.location.search)
-        navigate(`/login?redirect=${returnUrl}`)
-        return
-      }
-
-      const data: TokenInfo = await response.json()
-
+      const data = await apiClient.get<TokenInfo>(`/v2/action-tokens/${encodeURIComponent(token!)}/info`)
       setTokenInfo(data)
 
       if (data.valid) {
@@ -92,6 +81,11 @@ export function QuickActionPage() {
         setErrorMessage(getErrorMessage(data.reason))
       }
     } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        const returnUrl = encodeURIComponent(window.location.pathname + window.location.search)
+        navigate(`/login?redirect=${returnUrl}`)
+        return
+      }
       setState('invalid')
       setErrorMessage('Failed to validate token')
     }
@@ -104,20 +98,8 @@ export function QuickActionPage() {
 
     try {
       // Step 1: Consume the token (validates and marks as used)
-      const consumeResponse = await fetch(`/api/v2/action-tokens/${encodeURIComponent(token!)}/consume`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ confirmed: true }),
-      })
+      const consumeData = await apiClient.post<any>(`/v2/action-tokens/${encodeURIComponent(token!)}/consume`, { confirmed: true })
 
-      if (consumeResponse.status === 401) {
-        const returnUrl = encodeURIComponent(window.location.pathname + window.location.search)
-        navigate(`/login?redirect=${returnUrl}`)
-        return
-      }
-
-      const consumeData = await consumeResponse.json()
       if (!consumeData.success) {
         setState('error')
         setErrorMessage(consumeData.error || 'Token validation failed')
@@ -132,21 +114,9 @@ export function QuickActionPage() {
         return
       }
 
-      const updateResponse = await fetch(
-        `/api/hosts/${encodeURIComponent(host_id)}/containers/${encodeURIComponent(container_id)}/execute-update?force=true`,
-        {
-          method: 'POST',
-          credentials: 'include',
-        }
+      const updateData = await apiClient.post<any>(
+        `/hosts/${encodeURIComponent(host_id)}/containers/${encodeURIComponent(container_id)}/execute-update?force=true`
       )
-
-      if (updateResponse.status === 401) {
-        const returnUrl = encodeURIComponent(window.location.pathname + window.location.search)
-        navigate(`/login?redirect=${returnUrl}`)
-        return
-      }
-
-      const updateData = await updateResponse.json()
 
       if (updateData.status === 'success') {
         setExecuteResult({
@@ -164,6 +134,11 @@ export function QuickActionPage() {
         setErrorMessage(updateData.detail || updateData.message || 'Update failed')
       }
     } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        const returnUrl = encodeURIComponent(window.location.pathname + window.location.search)
+        navigate(`/login?redirect=${returnUrl}`)
+        return
+      }
       setState('error')
       setErrorMessage('Failed to execute action')
     }

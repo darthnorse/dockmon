@@ -14,7 +14,7 @@ func TestDeployComposeRequest(t *testing.T) {
 		DeploymentID:   "test-deployment-123",
 		ProjectName:    "test-project",
 		ComposeContent: "services:\n  web:\n    image: nginx:alpine",
-		Environment:    map[string]string{"FOO": "bar"},
+		EnvFileContent: "FOO=bar",
 		Action:         "up",
 		RemoveVolumes:  false,
 	}

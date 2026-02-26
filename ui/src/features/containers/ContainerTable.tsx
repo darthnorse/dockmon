@@ -93,6 +93,7 @@ import { makeCompositeKey } from '@/lib/utils/containerKeys'
 import { formatBytes } from '@/lib/utils/formatting'
 import { useContainerModal } from '@/providers'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
+import { HostDetailsModal } from '@/features/hosts/components/HostDetailsModal'
 
 /**
  * Update badge component showing if updates are available
@@ -488,6 +489,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   const [batchJobId, setBatchJobId] = useState<string | null>(null)
   const [showJobPanel, setShowJobPanel] = useState(false)
   const [expandedTagsContainerId, setExpandedTagsContainerId] = useState<string | null>(null)
+  const [hostModalHostId, setHostModalHostId] = useState<string | null>(null)
 
   const queryClient = useQueryClient()
 
@@ -773,15 +775,6 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
     }
   }
 
-  // Handle legacy propHostId (integrate into new filter system)
-  useEffect(() => {
-    if (propHostId && !filters.selectedHostIds.includes(propHostId)) {
-      const params = new URLSearchParams(searchParams)
-      params.set('host', propHostId)
-      setSearchParams(params, { replace: true })
-    }
-    // Note: setSearchParams is stable, searchParams changes are captured via filters.selectedHostIds
-  }, [propHostId, filters.selectedHostIds])
 
   // Fetch containers with stats
   const { data, isLoading, error } = useQuery<Container[]>({
@@ -829,8 +822,11 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
     if (!data) return []
 
     return data.filter((container) => {
-      // Host filter (multi-select)
-      if (filters.selectedHostIds.length > 0 && (!container.host_id || !filters.selectedHostIds.includes(container.host_id))) {
+      // Host filter (prop-based for embedded tables, URL-based for main table)
+      if (propHostId && container.host_id !== propHostId) {
+        return false
+      }
+      if (!propHostId && filters.selectedHostIds.length > 0 && (!container.host_id || !filters.selectedHostIds.includes(container.host_id))) {
         return false
       }
 
@@ -1128,8 +1124,15 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
           return row.original.host_id === filterValue
         },
         cell: ({ row }) => {
-          const { host_name } = row.original
-          return <div className="text-sm">{host_name || 'localhost'}</div>
+          const { host_name, host_id } = row.original
+          return (
+            <button
+              className="text-sm text-left hover:text-primary transition-colors cursor-pointer"
+              onClick={(e) => { e.stopPropagation(); host_id && setHostModalHostId(host_id) }}
+            >
+              {host_name || 'localhost'}
+            </button>
+          )
         },
       },
       // 7. IP Address (Docker network IPs)
@@ -2020,6 +2023,14 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
       {selectedAlertId && (
         <AlertDetailsDrawer alertId={selectedAlertId} onClose={() => setSelectedAlertId(null)} />
       )}
+
+      {/* Host Details Modal */}
+      <HostDetailsModal
+        hostId={hostModalHostId}
+        host={hosts?.find(h => h.id === hostModalHostId) ?? null}
+        open={!!hostModalHostId}
+        onClose={() => setHostModalHostId(null)}
+      />
     </div>
   )
 }

@@ -280,13 +280,13 @@ class TestProgressHandling:
 
     @pytest.mark.asyncio
     async def test_full_progress_flow(self, executor):
-        """Should handle full progress flow from starting to completed"""
+        """Should handle full progress flow with granular shared compose stages"""
         progress_events = [
-            {"deployment_id": "deploy-123", "stage": "starting", "message": "Starting deployment..."},
-            {"deployment_id": "deploy-123", "stage": "executing", "message": "Running compose up..."},
+            {"deployment_id": "deploy-123", "stage": "validating", "message": "Validating compose file..."},
+            {"deployment_id": "deploy-123", "stage": "pulling_image", "message": "Pulling nginx:alpine..."},
             {
                 "deployment_id": "deploy-123",
-                "stage": "executing",
+                "stage": "creating",
                 "message": "Deploying services (1/2 running)",
                 "services": [
                     {"name": "web", "status": "running", "image": "nginx:alpine"},
@@ -295,14 +295,14 @@ class TestProgressHandling:
             },
             {
                 "deployment_id": "deploy-123",
-                "stage": "executing",
+                "stage": "starting",
                 "message": "Deploying services (2/2 running)",
                 "services": [
                     {"name": "web", "status": "running", "image": "nginx:alpine"},
                     {"name": "db", "status": "running", "image": "postgres:15"},
                 ],
             },
-            {"deployment_id": "deploy-123", "stage": "waiting_for_health", "message": "Waiting for services to be healthy..."},
+            {"deployment_id": "deploy-123", "stage": "health_check", "message": "Waiting for services to be healthy..."},
         ]
 
         progress_values = []
@@ -319,11 +319,11 @@ class TestProgressHandling:
 
         # Verify progress increases over time
         assert len(progress_values) == 5
-        assert progress_values[0] == 20  # starting
-        assert progress_values[1] == 50  # executing
-        assert progress_values[2] == 70  # 1/2 running = 50 + 20
-        assert progress_values[3] == 90  # 2/2 running = 50 + 40
-        assert progress_values[4] == 80  # waiting_for_health
+        assert progress_values[0] == 5   # validating
+        assert progress_values[1] == 40  # pulling_image
+        assert progress_values[2] == 70  # 1/2 running = 50 + 20 (service override)
+        assert progress_values[3] == 90  # 2/2 running = 50 + 40 (service override)
+        assert progress_values[4] == 90  # health_check
 
     @pytest.mark.asyncio
     async def test_service_progress_emission(self, executor):
@@ -432,6 +432,157 @@ class TestDeployCompleteHandling:
 
                 # Should update status to partial
                 mock_update.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_down_action_sets_stopped_status(self, executor):
+        """Should set status to 'stopped' when action is 'down'"""
+        payload = {
+            "deployment_id": "deploy-123",
+            "action": "down",
+            "success": True,
+            "services": {},
+        }
+
+        with patch.object(executor, '_update_deployment_status', new_callable=AsyncMock) as mock_update:
+            await executor.handle_deploy_complete(payload)
+
+            mock_update.assert_called_once()
+            call_args = mock_update.call_args
+            status = call_args[0][1] if len(call_args[0]) > 1 else call_args.kwargs.get("status")
+            assert status == "stopped"
+            stage = call_args.kwargs.get("stage", "")
+            assert "stopped" in stage.lower()
+
+    @pytest.mark.asyncio
+    async def test_up_action_sets_running_status(self, executor):
+        """Should set status to 'running' when action is 'up'"""
+        payload = {
+            "deployment_id": "deploy-123",
+            "action": "up",
+            "success": True,
+            "services": {
+                "web": {
+                    "container_id": "abc123def456",
+                    "container_name": "test_web_1",
+                    "image": "nginx:alpine",
+                    "status": "running",
+                },
+            },
+        }
+
+        with patch.object(executor, '_link_containers_to_deployment', new_callable=AsyncMock) as mock_link:
+            with patch.object(executor, '_update_deployment_status', new_callable=AsyncMock) as mock_update:
+                await executor.handle_deploy_complete(payload)
+
+                mock_link.assert_called_once()
+                mock_update.assert_called_once()
+                call_args = mock_update.call_args
+                status = call_args[0][1] if len(call_args[0]) > 1 else call_args.kwargs.get("status")
+                assert status == "running"
+
+    @pytest.mark.asyncio
+    async def test_restart_action_sets_running_status(self, executor):
+        """Should set status to 'running' when action is 'restart'"""
+        payload = {
+            "deployment_id": "deploy-123",
+            "action": "restart",
+            "success": True,
+            "services": {
+                "web": {
+                    "container_id": "abc123def456",
+                    "container_name": "test_web_1",
+                    "image": "nginx:alpine",
+                    "status": "running",
+                },
+            },
+        }
+
+        with patch.object(executor, '_link_containers_to_deployment', new_callable=AsyncMock) as mock_link:
+            with patch.object(executor, '_update_deployment_status', new_callable=AsyncMock) as mock_update:
+                await executor.handle_deploy_complete(payload)
+
+                mock_link.assert_called_once()
+                mock_update.assert_called_once()
+                call_args = mock_update.call_args
+                status = call_args[0][1] if len(call_args[0]) > 1 else call_args.kwargs.get("status")
+                assert status == "running"
+
+    @pytest.mark.asyncio
+    async def test_missing_action_defaults_to_up(self, executor):
+        """Should default to 'up' (running) when action field is absent (backward compat)"""
+        payload = {
+            "deployment_id": "deploy-123",
+            "success": True,
+            "services": {
+                "web": {
+                    "container_id": "abc123def456",
+                    "container_name": "test_web_1",
+                    "image": "nginx:alpine",
+                    "status": "running",
+                },
+            },
+        }
+
+        with patch.object(executor, '_link_containers_to_deployment', new_callable=AsyncMock):
+            with patch.object(executor, '_update_deployment_status', new_callable=AsyncMock) as mock_update:
+                await executor.handle_deploy_complete(payload)
+
+                call_args = mock_update.call_args
+                status = call_args[0][1] if len(call_args[0]) > 1 else call_args.kwargs.get("status")
+                assert status == "running"
+
+    @pytest.mark.asyncio
+    async def test_down_action_skips_container_linking(self, executor):
+        """Should not link containers when action is 'down' (no containers to link)"""
+        payload = {
+            "deployment_id": "deploy-123",
+            "action": "down",
+            "success": True,
+            "services": {},
+        }
+
+        with patch.object(executor, '_link_containers_to_deployment', new_callable=AsyncMock) as mock_link:
+            with patch.object(executor, '_update_deployment_status', new_callable=AsyncMock):
+                await executor.handle_deploy_complete(payload)
+
+                mock_link.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_down_action_transient_broadcasts_stopped(self, executor):
+        """Should broadcast 'stopped' status for transient down deployments"""
+        payload = {
+            "deployment_id": "deploy-123",
+            "action": "down",
+            "success": True,
+            "services": {},
+        }
+
+        with patch.object(executor, '_is_persistent_deployment', new_callable=AsyncMock, return_value=False):
+            with patch.object(executor, '_broadcast_transient_complete', new_callable=AsyncMock) as mock_broadcast:
+                await executor.handle_deploy_complete(payload)
+
+                mock_broadcast.assert_called_once()
+                call_args = mock_broadcast.call_args
+                status = call_args[0][1] if len(call_args[0]) > 1 else call_args.kwargs.get("status")
+                assert status == "stopped"
+
+    @pytest.mark.asyncio
+    async def test_failed_down_sets_failed_status(self, executor):
+        """Should set status to 'failed' even when action is 'down' if deployment failed"""
+        payload = {
+            "deployment_id": "deploy-123",
+            "action": "down",
+            "success": False,
+            "error": "Compose down failed: network in use",
+        }
+
+        with patch.object(executor, '_update_deployment_status', new_callable=AsyncMock) as mock_update:
+            await executor.handle_deploy_complete(payload)
+
+            mock_update.assert_called_once()
+            call_args = mock_update.call_args
+            status = call_args[0][1] if len(call_args[0]) > 1 else call_args.kwargs.get("status")
+            assert status == "failed"
 
 
 class TestEdgeCases:

@@ -59,3 +59,30 @@ export function formatMemory(bytes: number): string {
 export function pluralize(count: number, singular: string, plural?: string): string {
   return count === 1 ? singular : (plural ?? singular + 's')
 }
+
+/**
+ * Format a daemon start timestamp into a human-readable uptime string.
+ *
+ * @param daemonStartedAt - ISO timestamp of when the Docker daemon started
+ * @returns Formatted uptime: "5d 3h", "2h 15m", "42m", or null if unavailable
+ */
+export function formatUptime(daemonStartedAt?: string | null): string | null {
+  if (!daemonStartedAt) return null
+
+  try {
+    const startTime = new Date(daemonStartedAt)
+    const now = new Date()
+    const diffMs = now.getTime() - startTime.getTime()
+    if (diffMs < 0) return null
+
+    const days = Math.floor(diffMs / (1000 * 60 * 60 * 24))
+    const hours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60))
+    const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60))
+
+    if (days > 0) return `${days}d ${hours}h`
+    if (hours > 0) return `${hours}h ${minutes}m`
+    return `${minutes}m`
+  } catch {
+    return null
+  }
+}

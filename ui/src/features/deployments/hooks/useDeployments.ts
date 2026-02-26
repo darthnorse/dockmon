@@ -18,35 +18,45 @@ import type {
   RunningProject,
 } from '../types'
 
+export type StackAction = 'up' | 'down' | 'restart'
+
+interface StackActionParams {
+  stack_name: string
+  host_id: string
+  action: StackAction
+  remove_volumes?: boolean
+}
+
 /**
- * Deploy a stack to a host (fire and forget - no persistent tracking)
+ * Perform a stack action (up, down, restart) on a host.
  *
  * This is a simplified deployment flow:
- * 1. Call POST /api/deployments/deploy with stack_name and host_id
+ * 1. Call POST /api/deployments/deploy with stack_name, host_id, and action
  * 2. Returns a transient deployment_id for progress tracking
  * 3. No deployment record persisted after completion
  */
-export function useDeployStack() {
+export function useStackAction() {
   const queryClient = useQueryClient()
 
   return useMutation({
     mutationFn: async ({
       stack_name,
       host_id,
-    }: {
-      stack_name: string
-      host_id: string
-    }): Promise<{ deployment_id: string }> => {
+      action,
+      remove_volumes,
+    }: StackActionParams): Promise<{ deployment_id: string }> => {
       try {
         const response = await apiClient.post<{ deployment_id: string }>('/deployments/deploy', {
           stack_name,
           host_id,
-          force_recreate: true,
-          pull_images: true,
+          action,
+          force_recreate: action === 'up',
+          pull_images: action === 'up',
+          remove_volumes,
         })
         return response
       } catch (error: any) {
-        throw new Error(error.data?.detail || error.message || 'Failed to deploy stack')
+        throw new Error(error.data?.detail || error.message || 'Failed to perform stack action')
       }
     },
     onSuccess: () => {
@@ -54,9 +64,27 @@ export function useDeployStack() {
       queryClient.invalidateQueries({ queryKey: ['stacks'] })
     },
     onError: (error: Error) => {
-      toast.error(`Failed to deploy: ${error.message}`)
+      toast.error(`Failed: ${error.message}`)
     },
   })
+}
+
+/**
+ * Deploy a stack to a host (fire and forget - no persistent tracking)
+ *
+ * Convenience wrapper around useStackAction for deploy/redeploy (action="up").
+ */
+export function useDeployStack() {
+  const stackAction = useStackAction()
+
+  // Spread base mutation state, override mutate/mutateAsync to default action to 'up'
+  return {
+    ...stackAction,
+    mutateAsync: ({ stack_name, host_id }: { stack_name: string; host_id: string }) =>
+      stackAction.mutateAsync({ stack_name, host_id, action: 'up' }),
+    mutate: ({ stack_name, host_id }: { stack_name: string; host_id: string }) =>
+      stackAction.mutate({ stack_name, host_id, action: 'up' }),
+  }
 }
 
 // ==================== Import Stack Hooks ====================

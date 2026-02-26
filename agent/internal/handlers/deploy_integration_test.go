@@ -12,6 +12,7 @@ import (
 
 	"github.com/darthnorse/dockmon-agent/internal/config"
 	"github.com/darthnorse/dockmon-agent/internal/docker"
+	"github.com/darthnorse/dockmon-shared/compose"
 	"github.com/docker/compose/v2/pkg/api"
 	"github.com/sirupsen/logrus"
 )
@@ -67,7 +68,7 @@ func createTestHandler(t *testing.T) (*DeployHandler, *docker.Client) {
 	// Use temp directory for test stacks
 	stacksDir := t.TempDir()
 
-	handler, err := NewDeployHandler(ctx, dockerClient, log, sendEvent, stacksDir)
+	handler, err := NewDeployHandler(ctx, dockerClient, log, sendEvent, stacksDir, "")
 	if err != nil {
 		dockerClient.Close()
 		t.Fatalf("Failed to create deploy handler: %v", err)
@@ -455,7 +456,7 @@ func TestIntegration_IsContainerHealthy(t *testing.T) {
 	handler, dockerClient := createTestHandler(t)
 	defer dockerClient.Close()
 
-	// Test the isContainerHealthy method with various container states
+	// Test the IsContainerHealthy function with various container states
 	tests := []struct {
 		name     string
 		c        api.ContainerSummary
@@ -490,9 +491,9 @@ func TestIntegration_IsContainerHealthy(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := handler.isContainerHealthy(tt.c)
+			result := compose.IsContainerHealthy(tt.c)
 			if result != tt.expected {
-				t.Errorf("isContainerHealthy() = %v, expected %v", result, tt.expected)
+				t.Errorf("IsContainerHealthy() = %v, expected %v", result, tt.expected)
 			}
 		})
 	}
@@ -582,10 +583,7 @@ services:
 		ProjectName:    projectName,
 		ComposeContent: composeContent,
 		Action:         "up",
-		Environment: map[string]string{
-			"IMAGE_NAME": "nginx:alpine",
-			"TEST_VAR":   "custom_value",
-		},
+		EnvFileContent: "IMAGE_NAME=nginx:alpine\nTEST_VAR=custom_value",
 	}
 
 	result := handler.DeployCompose(ctx, req)
@@ -599,7 +597,7 @@ services:
 
 func TestIntegration_ServiceProgressJson(t *testing.T) {
 	// Test that ServiceStatus serializes correctly
-	services := []ServiceStatus{
+	services := []compose.ServiceStatus{
 		{
 			Name:    "web",
 			Status:  "running",
@@ -622,7 +620,7 @@ func TestIntegration_ServiceProgressJson(t *testing.T) {
 	t.Logf("Serialized: %s", string(data))
 
 	// Verify it deserializes correctly
-	var parsed []ServiceStatus
+	var parsed []compose.ServiceStatus
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		t.Fatalf("Failed to unmarshal: %v", err)
 	}

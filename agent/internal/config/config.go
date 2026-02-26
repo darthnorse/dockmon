@@ -37,6 +37,8 @@ type Config struct {
 
 	// Stack storage - persistent directory for compose deployments
 	StacksDir        string
+	// Host-side stacks path for resolving relative bind mounts in containerized agents
+	HostStacksDir    string
 
 	// Logging
 	LogLevel         string
@@ -78,6 +80,7 @@ func LoadFromEnv() (*Config, error) {
 
 	// Stack storage directory - default to $DATA_PATH/stacks, allow override with AGENT_STACKS_DIR
 	cfg.StacksDir = getEnvOrDefault("AGENT_STACKS_DIR", filepath.Join(cfg.DataPath, "stacks"))
+	cfg.HostStacksDir = os.Getenv("HOST_STACKS_DIR")
 
 	// Validation
 	if cfg.DockMonURL == "" {

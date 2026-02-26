@@ -38,6 +38,14 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
 # Runtime stage
 FROM alpine:3.19
 
+ARG VERSION=dev
+LABEL org.opencontainers.image.title="DockMon Agent"
+LABEL org.opencontainers.image.description="Remote monitoring agent for DockMon"
+LABEL org.opencontainers.image.version="${VERSION}"
+LABEL org.opencontainers.image.source="https://github.com/darthnorse/dockmon"
+LABEL org.opencontainers.image.licenses="MIT"
+LABEL org.opencontainers.image.vendor="darthnorse"
+
 # Install runtime dependencies
 RUN apk add --no-cache ca-certificates tzdata
 

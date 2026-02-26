@@ -29,6 +29,14 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
 # Runtime stage
 FROM alpine:3.21
 
+ARG VERSION=dev
+LABEL org.opencontainers.image.title="DockMon Agent"
+LABEL org.opencontainers.image.description="Remote monitoring agent for DockMon"
+LABEL org.opencontainers.image.version="${VERSION}"
+LABEL org.opencontainers.image.source="https://github.com/darthnorse/dockmon"
+LABEL org.opencontainers.image.licenses="MIT"
+LABEL org.opencontainers.image.vendor="darthnorse"
+
 # Install runtime dependencies (su-exec for dropping privileges)
 RUN apk upgrade --no-cache && apk add --no-cache ca-certificates tzdata su-exec
 

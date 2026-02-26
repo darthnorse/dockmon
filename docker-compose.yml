@@ -29,9 +29,19 @@ services:
       # Leave empty/commented for development (auto-detects localhost)
       # - DOCKMON_CORS_ORIGINS=https://dockmon.yourcompany.com
       - DOCKMON_CORS_ORIGINS=
+
+      # Required for stacks with relative bind mounts (e.g., ./data:/app/data).
+      # Set to the HOST path that maps to the dockmon_data volume's stacks/ directory.
+      # Example: If using a bind mount (-v /opt/dockmon/data:/app/data), set:
+      # - HOST_STACKS_DIR=/opt/dockmon/data/stacks
+      # Not needed for systemd agents (paths are already host paths).
+      # Does not help mTLS remote hosts (different machine entirely).
+      # - HOST_STACKS_DIR=
     volumes:
       - dockmon_data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock  # For local Docker monitoring (auto-configured on first run)
+      # Optional: Mount host proc for CPU/memory stats and IP detection (local host only; agent-based hosts detect IPs independently)
+      # - /proc:/host/proc:ro
     logging:
       driver: "json-file"
       options:

@@ -19,6 +19,8 @@ import {
   X,
   FolderOpen,
   Rocket,
+  RefreshCw,
+  Square,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -58,7 +60,8 @@ import {
   useDeleteStack,
   useCopyStack,
 } from '../hooks/useStacks'
-import { useDeployStack } from '../hooks/useDeployments'
+import { useStackAction } from '../hooks/useDeployments'
+import type { StackAction } from '../hooks/useDeployments'
 import { ConfigurationEditor, ConfigurationEditorHandle } from './ConfigurationEditor'
 import { DeploymentProgress } from './DeploymentProgress'
 import { validateStackName, MAX_STACK_NAME_LENGTH } from '../types'
@@ -68,7 +71,12 @@ import { handleApiError, getErrorMessage } from '../utils'
 // Base path for stack storage (matches backend STACKS_DIR)
 const STACKS_BASE_PATH = '/app/data/stacks'
 
-type DialogType = 'delete' | 'copy' | 'save-changes' | null
+type DialogType = 'delete' | 'copy' | 'save-changes' | 'remove-confirm' | null
+
+interface PendingActionState {
+  action: StackAction
+  removeVolumes: boolean
+}
 
 interface StackEditorProps {
   selectedStackName: string | null
@@ -89,7 +97,7 @@ export function StackEditor({
   const renameStack = useRenameStack()
   const deleteStack = useDeleteStack()
   const copyStack = useCopyStack()
-  const deployStack = useDeployStack()
+  const stackAction = useStackAction()
 
   // Fetch selected stack content
   const { data: selectedStack, isLoading: stackLoading } = useStack(selectedStackName)
@@ -112,10 +120,12 @@ export function StackEditor({
   const [isDeploying, setIsDeploying] = useState(false)
   const [activeDeploymentId, setActiveDeploymentId] = useState<string | null>(null)
   const [deployingHostName, setDeployingHostName] = useState('')
+  const [activeAction, setActiveAction] = useState<StackAction>('up')
 
   // Dialog state
   const [activeDialog, setActiveDialog] = useState<DialogType>(null)
   const [copyDestName, setCopyDestName] = useState('')
+  const [pendingAction, setPendingAction] = useState<PendingActionState | null>(null)
 
   // Tab state
   const [activeTab, setActiveTab] = useState<'compose' | 'env'>('compose')
@@ -139,7 +149,7 @@ export function StackEditor({
     renameStack.isPending ||
     deleteStack.isPending ||
     copyStack.isPending ||
-    deployStack.isPending
+    stackAction.isPending
 
   // Sort hosts alphabetically
   const sortedHosts = useMemo(
@@ -233,9 +243,8 @@ export function StackEditor({
     return Object.keys(newErrors).length === 0
   }
 
-  // Save stack (create or update)
-  const handleSave = async () => {
-    if (!validateForm()) return
+  const handleSave = async (): Promise<boolean> => {
+    if (!validateForm()) return false
 
     try {
       if (isCreateMode) {
@@ -271,6 +280,7 @@ export function StackEditor({
       setOriginalCompose(composeYaml)
       setOriginalEnv(envContent)
       setIsEditingName(false)
+      return true
     } catch (error: unknown) {
       const errorMessage = getErrorMessage(error)
       if (errorMessage.includes('already exists')) {
@@ -278,6 +288,7 @@ export function StackEditor({
       } else {
         handleApiError(error, 'save')
       }
+      return false
     }
   }
 
@@ -322,45 +333,69 @@ export function StackEditor({
     }
   }
 
-  // Execute deployment and switch to progress view
-  const executeDeployment = async (deployStackName: string) => {
+  // Execute stack action and switch to progress view
+  const executeDeployment = async (
+    deployStackName: string,
+    action: StackAction = 'up',
+    removeVolumes = false,
+  ) => {
     const host = sortedHosts.find((h) => h.id === hostId)
     const hostName = host?.name || hostId.slice(0, 8)
 
     try {
-      const result = await deployStack.mutateAsync({
+      const result = await stackAction.mutateAsync({
         stack_name: deployStackName,
         host_id: hostId,
+        action,
+        remove_volumes: removeVolumes,
       })
 
+      setActiveAction(action)
       setActiveDeploymentId(result.deployment_id)
       setDeployingHostName(hostName)
       setIsDeploying(true)
     } catch (error: unknown) {
-      handleApiError(error, 'deploy')
+      const actionLabel = { down: 'stop', restart: 'restart', up: 'deploy' }[action]
+      handleApiError(error, actionLabel)
     }
   }
 
-  // Deploy stack
-  const handleDeploy = async () => {
+  // Execute a stack action with unsaved-changes check and remove confirmation
+  const handleAction = async (action: StackAction = 'up', removeVolumes = false) => {
     if (!selectedStackName || selectedStackName === '__new__' || !hostId) return
 
     if (hasChanges) {
+      setPendingAction({ action, removeVolumes })
       setActiveDialog('save-changes')
       return
     }
 
-    await executeDeployment(selectedStackName)
+    // Destructive remove always requires confirmation
+    if (removeVolumes) {
+      setActiveDialog('remove-confirm')
+      return
+    }
+
+    await executeDeployment(selectedStackName, action, removeVolumes)
   }
 
-  // Deploy after saving changes
+  // Deploy stack (convenience for deploy button)
+  const handleDeploy = () => handleAction('up')
+
+  // Save changes, then either show remove-confirm dialog or execute the pending action
   const handleSaveAndDeploy = async () => {
+    const actionToExecute = pendingAction ?? { action: 'up' as StackAction, removeVolumes: false }
     setActiveDialog(null)
-    await handleSave()
-    if (selectedStackName && hostId) {
-      const deployStackName = hasNameChange ? stackName.trim() : selectedStackName
-      await executeDeployment(deployStackName)
+    setPendingAction(null)
+    const saved = await handleSave()
+    if (!saved || !selectedStackName || !hostId) return
+    // Destructive remove requires confirmation even after saving
+    if (actionToExecute.removeVolumes) {
+      setActiveDialog('remove-confirm')
+      return
     }
+    const deployStackName = hasNameChange ? stackName.trim() : selectedStackName
+    await executeDeployment(deployStackName, actionToExecute.action, actionToExecute.removeVolumes)
   }
 
   // Name editing handlers
@@ -387,18 +422,12 @@ export function StackEditor({
     setActiveDialog('copy')
   }
 
-  // Go back from deployment progress to editor
-  const handleBackFromDeployment = () => {
+  // Reset deployment progress state (used by both back and complete actions)
+  const resetDeploymentState = () => {
     setIsDeploying(false)
     setActiveDeploymentId(null)
     setDeployingHostName('')
-  }
-
-  // Deployment completed
-  const handleDeploymentComplete = () => {
-    setIsDeploying(false)
-    setActiveDeploymentId(null)
-    setDeployingHostName('')
+    setActiveAction('up')
   }
 
   // Determine save button text
@@ -425,8 +454,9 @@ export function StackEditor({
         deploymentId={activeDeploymentId}
         stackName={stackName || selectedStackName || ''}
         hostName={deployingHostName}
-        onBack={handleBackFromDeployment}
-        onComplete={handleDeploymentComplete}
+        action={activeAction}
+        onBack={resetDeploymentState}
+        onComplete={resetDeploymentState}
       />
     )
   }
@@ -605,6 +635,40 @@ export function StackEditor({
                 <Rocket className="h-4 w-4" />
                 {isRedeploy ? 'Redeploy' : 'Deploy'}
               </Button>
+              {isRedeploy && (
+                <>
+                  <Button
+                    variant="outline"
+                    onClick={() => handleAction('restart')}
+                    disabled={!hostId || isSubmitting}
+                    className="gap-2"
+                    title="Restart stack (down then up, no image pull)"
+                  >
+                    <RefreshCw className="h-4 w-4" />
+                    Restart
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={() => handleAction('down')}
+                    disabled={!hostId || isSubmitting}
+                    className="gap-2"
+                    title="Stop and remove containers and networks"
+                  >
+                    <Square className="h-4 w-4" />
+                    Stop
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={() => handleAction('down', true)}
+                    disabled={!hostId || isSubmitting}
+                    className="gap-2 text-destructive border-destructive/50 hover:bg-destructive/10"
+                    title="Stop, remove containers, networks, and volumes"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    Remove
+                  </Button>
+                </>
+              )}
             </div>
           </div>
         )}
@@ -714,6 +778,36 @@ export function StackEditor({
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Remove Confirmation */}
+      <AlertDialog
+        open={activeDialog === 'remove-confirm'}
+        onOpenChange={(open) => !open && setActiveDialog(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove Stack</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to remove stack "<strong>{selectedStackName}</strong>"
+              from <strong>{sortedHosts.find((h) => h.id === hostId)?.name || hostId}</strong>?
+              This will stop and remove all containers, networks, <strong>and volumes</strong>.
+              Data stored in volumes will be permanently lost. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                setActiveDialog(null)
+                executeDeployment(selectedStackName, 'down', true)
+              }}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Remove
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Save Changes Before Deploy */}
       <AlertDialog

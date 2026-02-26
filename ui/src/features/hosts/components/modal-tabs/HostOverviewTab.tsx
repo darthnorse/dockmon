@@ -174,11 +174,14 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
             <div>
               <h4 className="text-base sm:text-lg font-medium text-foreground mb-3">Host Information</h4>
               <div className="space-y-2">
-                {/* Show IP for agent hosts (systemd mode), URL for others */}
-                {host.connection_type === 'agent' && host.host_ip ? (
+                {host.host_ips && host.host_ips.length > 0 ? (
                   <div className="flex flex-col sm:flex-row sm:justify-between gap-1 sm:gap-2 text-sm">
-                    <span className="text-muted-foreground">IP Address</span>
-                    <span className="font-mono text-xs break-all">{host.host_ip}</span>
+                    <span className="text-muted-foreground">IP Addresses</span>
+                    <div className="flex flex-col gap-0.5">
+                      {host.host_ips.map((ip) => (
+                        <span key={ip} className="text-sm text-muted-foreground">{ip}</span>
+                      ))}
+                    </div>
                   </div>
                 ) : (
                   <div className="flex flex-col sm:flex-row sm:justify-between gap-1 sm:gap-2 text-sm">

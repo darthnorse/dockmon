@@ -6,13 +6,12 @@
 
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { toast } from 'sonner'
+import { apiClient } from '@/lib/api/client'
 import type {
   RegistrationTokenResponse,
   AgentListResponse,
   AgentStatusResponse,
 } from '../types'
-
-const API_BASE = '/api'
 
 /**
  * Generate a registration token for agent installation
@@ -20,21 +19,14 @@ const API_BASE = '/api'
 export function useGenerateToken() {
   return useMutation({
     mutationFn: async (options?: { multiUse?: boolean }): Promise<RegistrationTokenResponse> => {
-      const response = await fetch(`${API_BASE}/agent/generate-token`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ multi_use: options?.multiUse ?? false }),
-      })
-
-      if (!response.ok) {
-        const error = await response.text()
-        throw new Error(error || 'Failed to generate token')
+      try {
+        const response = await apiClient.post<RegistrationTokenResponse>('/agent/generate-token', {
+          multi_use: options?.multiUse ?? false
+        })
+        return response
+      } catch (error: any) {
+        throw new Error(error.data?.detail || error.message || 'Failed to generate token')
       }
-
-      return response.json()
     },
     onSuccess: (data) => {
       const message = data.multi_use
@@ -55,15 +47,12 @@ export function useAgents() {
   return useQuery({
     queryKey: ['agents'],
     queryFn: async (): Promise<AgentListResponse> => {
-      const response = await fetch(`${API_BASE}/agent/list`, {
-        credentials: 'include',
-      })
-
-      if (!response.ok) {
-        throw new Error(`Failed to fetch agents: ${response.statusText}`)
+      try {
+        const response = await apiClient.get<AgentListResponse>('/agent/list')
+        return response
+      } catch (error: any) {
+        throw new Error(error.data?.detail || error.message || 'Failed to fetch agents')
       }
-
-      return response.json()
     },
     // Refetch every 10 seconds to keep agent status up-to-date
     refetchInterval: 10000,
@@ -79,18 +68,15 @@ export function useAgentStatus(agentId: string | null) {
     queryFn: async (): Promise<AgentStatusResponse> => {
       if (!agentId) throw new Error('Agent ID is required')
 
-      const response = await fetch(`${API_BASE}/agent/${agentId}/status`, {
-        credentials: 'include',
-      })
-
-      if (!response.ok) {
-        if (response.status === 404) {
+      try {
+        const response = await apiClient.get<AgentStatusResponse>(`/agent/${agentId}/status`)
+        return response
+      } catch (error: any) {
+        if (error.status === 404) {
           throw new Error('Agent not found')
         }
-        throw new Error(`Failed to fetch agent status: ${response.statusText}`)
+        throw new Error(error.data?.detail || error.message || 'Failed to fetch agent status')
       }
-
-      return response.json()
     },
     enabled: !!agentId,
     // Refetch every 5 seconds for individual agent status

@@ -347,10 +347,9 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
         // Use different endpoints based on scope to get only relevant tags
         // For containers, include derived tags from Docker labels
         const endpoint = formData.scope === 'host'
-          ? `/api/hosts/tags/suggest?q=${tagSearchInput}&limit=50`
-          : `/api/tags/suggest?q=${tagSearchInput}&limit=50&include_derived=true`
-        const res = await fetch(endpoint)
-        const data = await res.json()
+          ? `/hosts/tags/suggest?q=${tagSearchInput}&limit=50`
+          : `/tags/suggest?q=${tagSearchInput}&limit=50&include_derived=true`
+        const data = await apiClient.get<any>(endpoint)
         // Tags API returns objects with {name, source, color} when include_derived=true
         const tags: TagWithSource[] = Array.isArray(data.tags)
           ? data.tags.map((t: string | TagWithSource) =>

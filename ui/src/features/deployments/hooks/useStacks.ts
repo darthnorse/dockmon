@@ -7,16 +7,13 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
+import { apiClient } from '@/lib/api/client'
 import type {
   Stack,
   StackListItem,
   CreateStackRequest,
   UpdateStackRequest,
-  RenameStackRequest,
-  CopyStackRequest,
 } from '../types'
-
-const API_BASE = '/api'
 
 /**
  * Fetch all stacks (list view - without content)
@@ -25,15 +22,12 @@ export function useStacks() {
   return useQuery({
     queryKey: ['stacks'],
     queryFn: async () => {
-      const response = await fetch(`${API_BASE}/stacks`, {
-        credentials: 'include',
-      })
-
-      if (!response.ok) {
-        throw new Error(`Failed to fetch stacks: ${response.statusText}`)
+      try {
+        const response = await apiClient.get<StackListItem[]>('/stacks')
+        return response
+      } catch (error: any) {
+        throw new Error(error.data?.detail || error.message || 'Failed to fetch stacks')
       }
-
-      return response.json() as Promise<StackListItem[]>
     },
   })
 }
@@ -47,18 +41,15 @@ export function useStack(name: string | null) {
     queryFn: async () => {
       if (!name) throw new Error('Stack name is required')
 
-      const response = await fetch(`${API_BASE}/stacks/${encodeURIComponent(name)}`, {
-        credentials: 'include',
-      })
-
-      if (!response.ok) {
-        if (response.status === 404) {
+      try {
+        const response = await apiClient.get<Stack>(`/stacks/${encodeURIComponent(name)}`)
+        return response
+      } catch (error: any) {
+        if (error.status === 404) {
           throw new Error('Stack not found')
         }
-        throw new Error(`Failed to fetch stack: ${response.statusText}`)
+        throw new Error(error.data?.detail || error.message || 'Failed to fetch stack')
       }
-
-      return response.json() as Promise<Stack>
     },
     enabled: !!name,
   })
@@ -72,21 +63,12 @@ export function useCreateStack() {
 
   return useMutation({
     mutationFn: async (request: CreateStackRequest) => {
-      const response = await fetch(`${API_BASE}/stacks`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        credentials: 'include',
-        body: JSON.stringify(request),
-      })
-
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({ detail: response.statusText }))
-        throw new Error(error.detail || 'Failed to create stack')
+      try {
+        const response = await apiClient.post<Stack>('/stacks', request)
+        return response
+      } catch (error: any) {
+        throw new Error(error.data?.detail || error.message || 'Failed to create stack')
       }
-
-      return response.json() as Promise<Stack>
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['stacks'] })
@@ -106,21 +88,12 @@ export function useUpdateStack() {
 
   return useMutation({
     mutationFn: async ({ name, ...request }: UpdateStackRequest & { name: string }) => {
-      const response = await fetch(`${API_BASE}/stacks/${encodeURIComponent(name)}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        credentials: 'include',
-        body: JSON.stringify(request),
-      })
-
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({ detail: response.statusText }))
-        throw new Error(error.detail || 'Failed to update stack')
+      try {
+        const response = await apiClient.put<Stack>(`/stacks/${encodeURIComponent(name)}`, request)
+        return response
+      } catch (error: any) {
+        throw new Error(error.data?.detail || error.message || 'Failed to update stack')
       }
-
-      return response.json() as Promise<Stack>
     },
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['stacks'] })
@@ -141,18 +114,12 @@ export function useDeleteStack() {
 
   return useMutation({
     mutationFn: async (name: string) => {
-      const response = await fetch(`${API_BASE}/stacks/${encodeURIComponent(name)}`, {
-        method: 'DELETE',
-        credentials: 'include',
-      })
-
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({ detail: response.statusText }))
-        throw new Error(error.detail || 'Failed to delete stack')
+      try {
+        await apiClient.delete(`/stacks/${encodeURIComponent(name)}`)
+        return { success: true }
+      } catch (error: any) {
+        throw new Error(error.data?.detail || error.message || 'Failed to delete stack')
       }
-
-      // DELETE returns 204 No Content
-      return { success: true }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['stacks'] })
@@ -175,21 +142,12 @@ export function useRenameStack() {
 
   return useMutation({
     mutationFn: async ({ name, new_name }: { name: string; new_name: string }) => {
-      const response = await fetch(`${API_BASE}/stacks/${encodeURIComponent(name)}/rename`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        credentials: 'include',
-        body: JSON.stringify({ new_name } as RenameStackRequest),
-      })
-
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({ detail: response.statusText }))
-        throw new Error(error.detail || 'Failed to rename stack')
+      try {
+        const response = await apiClient.put<Stack>(`/stacks/${encodeURIComponent(name)}/rename`, { new_name })
+        return response
+      } catch (error: any) {
+        throw new Error(error.data?.detail || error.message || 'Failed to rename stack')
       }
-
-      return response.json() as Promise<Stack>
     },
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['stacks'] })
@@ -214,21 +172,12 @@ export function useCopyStack() {
 
   return useMutation({
     mutationFn: async ({ name, dest_name }: { name: string; dest_name: string }) => {
-      const response = await fetch(`${API_BASE}/stacks/${encodeURIComponent(name)}/copy`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        credentials: 'include',
-        body: JSON.stringify({ dest_name } as CopyStackRequest),
-      })
-
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({ detail: response.statusText }))
-        throw new Error(error.detail || 'Failed to copy stack')
+      try {
+        const response = await apiClient.post<Stack>(`/stacks/${encodeURIComponent(name)}/copy`, { dest_name })
+        return response
+      } catch (error: any) {
+        throw new Error(error.data?.detail || error.message || 'Failed to copy stack')
       }
-
-      return response.json() as Promise<Stack>
     },
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['stacks'] })

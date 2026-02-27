@@ -319,6 +319,10 @@ func (c *Client) GetSystemInfo(ctx context.Context) (*SystemInfo, error) {
 	networks, err := c.cli.NetworkList(ctx, network.ListOptions{})
 	if err == nil {
 		for _, network := range networks {
+			if network.Name == "nat" {
+				sysInfo.DaemonStartedAt = network.Created.Format("2006-01-02T15:04:05.999999999Z07:00")
+				break
+			}
 			if network.Name == "bridge" {
 				sysInfo.DaemonStartedAt = network.Created.Format("2006-01-02T15:04:05.999999999Z07:00")
 				break

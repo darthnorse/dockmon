@@ -296,7 +296,7 @@ func (h *SelfUpdateHandler) performNativeSelfUpdate(ctx context.Context, req Sel
 	// The stopSignal only closes the WebSocket connection, but main.go waits on sigChan
 	// Send SIGTERM to ourselves to trigger proper shutdown
 	h.log.Info("Sending SIGTERM to self for native restart")
-	syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
+	os.Exit(0)
 
 	return nil
 }

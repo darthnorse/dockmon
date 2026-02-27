@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -134,6 +135,9 @@ func getEnvDuration(key string, defaultValue time.Duration) time.Duration {
 // Checks common locations for Docker and Podman in order of preference.
 func detectContainerSocket() string {
 	// Common socket paths in order of preference
+	if runtime.GOOS == "windows" {
+		return "npipe:////./pipe/docker_engine"
+	}
 	sockets := []string{
 		"/var/run/docker.sock",     // Docker (most common)
 		"/run/docker.sock",         // Docker (alternative location)

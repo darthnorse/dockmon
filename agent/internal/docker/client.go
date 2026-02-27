@@ -337,6 +337,14 @@ func (c *Client) GetSystemInfo(ctx context.Context) (*SystemInfo, error) {
 // GetMyContainerID attempts to determine the agent's own container ID
 // by reading /proc/self/cgroup
 func (c *Client) GetMyContainerID(ctx context.Context) (string, error) {
+	// first use hostname
+	hostname, err := os.Hostname()
+	if err != nil {
+		c.log.Warn("Could not determine os.Hostname()")
+	} else if len(hostname) >= 12 {
+		return hostname[:12], nil
+	}
+
 	// Read cgroup file to get container ID
 	data, err := os.ReadFile("/proc/self/cgroup")
 	if err != nil {

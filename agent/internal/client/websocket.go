@@ -944,6 +944,27 @@ func (c *WebSocketClient) handleContainerOperation(ctx context.Context, msg *typ
 			response["container"] = containerJSON
 		}
 
+	case "kill":
+		err = c.docker.KillContainer(ctx, containerID)
+		if err == nil {
+			response["success"] = true
+			response["container_id"] = containerID
+			response["status"] = "killed"
+		}
+
+	case "rename":
+		newName, _ := payload["new_name"].(string)
+		if newName == "" {
+			err = fmt.Errorf("new_name is required for rename action")
+		} else {
+			err = c.docker.RenameContainer(ctx, containerID, newName)
+			if err == nil {
+				response["success"] = true
+				response["container_id"] = containerID
+				response["status"] = "renamed"
+			}
+		}
+
 	default:
 		err = fmt.Errorf("unknown action: %s", action)
 	}

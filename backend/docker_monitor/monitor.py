@@ -1345,6 +1345,14 @@ class DockerMonitor:
         """Start a specific container"""
         return await self.operations.start_container(host_id, container_id)
 
+    async def kill_container(self, host_id: str, container_id: str) -> bool:
+        """Kill a specific container (SIGKILL)"""
+        return await self.operations.kill_container(host_id, container_id)
+
+    async def rename_container(self, host_id: str, container_id: str, new_name: str) -> bool:
+        """Rename a specific container"""
+        return await self.operations.rename_container(host_id, container_id, new_name)
+
     async def delete_container(self, host_id: str, container_id: str, container_name: str, remove_volumes: bool = False) -> dict:
         """Delete a specific container"""
         return await self.operations.delete_container(host_id, container_id, container_name, remove_volumes)

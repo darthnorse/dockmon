@@ -11,9 +11,10 @@
 
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { useAuth } from '@/features/auth/AuthContext'
-import { X, Play, RotateCw, Circle, Trash2 } from 'lucide-react'
+import { X, Play, RotateCw, Circle, Trash2, Skull, PenLine } from 'lucide-react'
 import { Tabs } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
+import { ConfirmModal } from '@/components/shared/ConfirmModal'
 import type { Container } from '../types'
 import { toast } from 'sonner'
 import { apiClient } from '@/lib/api/client'
@@ -62,6 +63,10 @@ export function ContainerDetailsModal({
   const [isPerformingAction, setIsPerformingAction] = useState(false)
   const [fallbackContainer, setFallbackContainer] = useState<Container | null>(null)
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
+  const [showKillConfirm, setShowKillConfirm] = useState(false)
+  const [showRenameDialog, setShowRenameDialog] = useState(false)
+  const [renameValue, setRenameValue] = useState('')
+  const [renameError, setRenameError] = useState('')
 
   // Self-fetch container if not provided externally
   // This decouples the modal from the provider's data sources
@@ -171,6 +176,8 @@ export function ContainerDetailsModal({
   useEffect(() => {
     const handleEscape = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && open) {
+        // Let sub-dialogs handle their own ESC
+        if (showRenameDialog || showKillConfirm) return
         e.stopImmediatePropagation()
         onClose()
       }
@@ -186,11 +193,14 @@ export function ContainerDetailsModal({
       document.removeEventListener('keydown', handleEscape, true)
       document.body.style.overflow = ''
     }
-  }, [open, onClose])
+  }, [open, onClose, showRenameDialog, showKillConfirm])
 
   if (!open || !containerId || !container) return null
 
   const isRunning = container.state === 'running'
+  const isKillable = container.state === 'running' || container.state === 'paused' || container.state === 'restarting'
+  const nameLower = container.name.toLowerCase()
+  const isDockMon = nameLower === 'dockmon' || nameLower.startsWith('dockmon-')
 
   const handleAction = async (action: 'start' | 'stop' | 'restart') => {
     setIsPerformingAction(true)
@@ -219,6 +229,51 @@ export function ContainerDetailsModal({
       onClose()
     } catch (error) {
       toast.error(`Failed to delete container: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    } finally {
+      setIsPerformingAction(false)
+    }
+  }
+
+  const handleKill = async () => {
+    setIsPerformingAction(true)
+    try {
+      const { hostId, containerId: currentId } = parseCompositeKey(containerId!)
+      await apiClient.post(`/hosts/${hostId}/containers/${currentId}/kill`)
+      toast.success(`Killed ${container.name}`)
+    } catch (error) {
+      toast.error(`Failed to kill container: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    } finally {
+      setIsPerformingAction(false)
+    }
+  }
+
+  const validateContainerName = (name: string): string => {
+    if (!name) return ''
+    if (name.length > 255) return 'Name must be 255 characters or fewer'
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(name)) {
+      return 'Must start with alphanumeric and contain only alphanumeric, underscore, period, or hyphen'
+    }
+    return ''
+  }
+
+  const handleRename = async () => {
+    const trimmed = renameValue.trim()
+    if (!trimmed) return
+    const error = validateContainerName(trimmed)
+    if (error) {
+      setRenameError(error)
+      return
+    }
+    setIsPerformingAction(true)
+    try {
+      const { hostId, containerId: currentId } = parseCompositeKey(containerId!)
+      await apiClient.post(`/hosts/${hostId}/containers/${currentId}/rename`, { name: trimmed })
+      toast.success(`Renamed container to ${trimmed}`)
+      setShowRenameDialog(false)
+      setRenameValue('')
+      setRenameError('')
+    } catch (error) {
+      toast.error(`Failed to rename container: ${error instanceof Error ? error.message : 'Unknown error'}`)
     } finally {
       setIsPerformingAction(false)
     }
@@ -361,11 +416,37 @@ export function ContainerDetailsModal({
                 <RotateCw className="w-4 h-4 mr-2" />
                 Restart
               </Button>
+              {isKillable && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowKillConfirm(true)}
+                  disabled={isPerformingAction || isDockMon}
+                  className="border-red-700/50 text-red-500 hover:bg-red-700/10"
+                  title="Force kill (SIGKILL) - for unresponsive containers"
+                >
+                  <Skull className="w-4 h-4 mr-2" />
+                  Kill
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setRenameValue(container.name)
+                  setRenameError('')
+                  setShowRenameDialog(true)
+                }}
+                disabled={isPerformingAction || isDockMon}
+              >
+                <PenLine className="w-4 h-4 mr-2" />
+                Rename
+              </Button>
               <Button
                 variant="destructive"
                 size="sm"
                 onClick={() => setShowDeleteDialog(true)}
-                disabled={isPerformingAction || container.name.toLowerCase() === 'dockmon' || container.name.toLowerCase().startsWith('dockmon-')}
+                disabled={isPerformingAction || isDockMon}
                 className="bg-red-600 hover:bg-red-700 text-white"
               >
                 <Trash2 className="w-4 h-4 mr-2" />
@@ -398,8 +479,80 @@ export function ContainerDetailsModal({
         onConfirm={handleDelete}
         containerName={container.name}
         containerImage={container.image}
-        isDockMon={container.name.toLowerCase() === 'dockmon' || container.name.toLowerCase().startsWith('dockmon-')}
+        isDockMon={isDockMon}
       />
+
+      {/* Rename Dialog */}
+      {showRenameDialog && (
+        <>
+          <div
+            className="fixed inset-0 bg-black/50 z-[60]"
+            onClick={() => setShowRenameDialog(false)}
+          />
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+            <div
+              className="bg-surface border border-border rounded-lg shadow-xl w-full max-w-md p-6"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h3 className="text-lg font-semibold mb-4">Rename Container</h3>
+              <input
+                type="text"
+                value={renameValue}
+                onChange={(e) => {
+                  setRenameValue(e.target.value)
+                  setRenameError(validateContainerName(e.target.value.trim()))
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !renameError) handleRename()
+                  if (e.key === 'Escape') setShowRenameDialog(false)
+                }}
+                className={`w-full px-3 py-2 bg-background border rounded-md text-foreground focus:outline-none focus:ring-2 focus:ring-primary ${renameError ? 'border-red-500' : 'border-border'}`}
+                placeholder="New container name"
+                autoFocus
+                maxLength={255}
+              />
+              {renameError && (
+                <p className="text-xs text-red-400 mt-1">{renameError}</p>
+              )}
+              <div className="flex justify-end gap-2 mt-4">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowRenameDialog(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="default"
+                  size="sm"
+                  onClick={handleRename}
+                  disabled={!renameValue.trim() || !!renameError || renameValue.trim() === container.name || isPerformingAction}
+                >
+                  Rename
+                </Button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Kill Confirmation Dialog */}
+      <ConfirmModal
+        isOpen={showKillConfirm}
+        onClose={() => setShowKillConfirm(false)}
+        onConfirm={() => {
+          setShowKillConfirm(false)
+          handleKill()
+        }}
+        title="Kill Container"
+        description={`This sends SIGKILL to ${container.name}, terminating it immediately with no chance for graceful shutdown. This may cause data loss or corruption.`}
+        confirmText="Kill Container"
+        variant="danger"
+      >
+        <p className="text-sm text-muted-foreground">
+          Use this only for unresponsive containers that will not stop gracefully.
+        </p>
+      </ConfirmModal>
     </>
   )
 }

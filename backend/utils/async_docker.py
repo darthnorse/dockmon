@@ -175,3 +175,25 @@ async def async_container_restart(container, timeout: int = 10) -> None:
         timeout: Seconds to wait before killing (default: 10)
     """
     await async_docker_call(container.restart, timeout=timeout)
+
+
+async def async_container_kill(container, signal: str = "SIGKILL") -> None:
+    """
+    Kill a container asynchronously (sends signal, default SIGKILL).
+
+    Args:
+        container: Container object to kill
+        signal: Signal to send (default: SIGKILL)
+    """
+    await async_docker_call(container.kill, signal=signal)
+
+
+async def async_container_rename(container, name: str) -> None:
+    """
+    Rename a container asynchronously.
+
+    Args:
+        container: Container object to rename
+        name: New name for the container
+    """
+    await async_docker_call(container.rename, name=name)

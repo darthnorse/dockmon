@@ -1154,10 +1154,15 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
             return <span className="text-xs text-muted-foreground">-</span>
           }
 
-          // Display all ports as comma-separated list
+          // Display all ports sorted by host port (low to high)
+          const sorted = [...container.ports].sort((a, b) => {
+            const portA = parseInt(a) || 0
+            const portB = parseInt(b) || 0
+            return portA - portB
+          })
           return (
             <div className="text-xs text-muted-foreground">
-              {container.ports.join(', ')}
+              {sorted.join(', ')}
             </div>
           )
         },

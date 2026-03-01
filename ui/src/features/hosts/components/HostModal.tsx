@@ -217,7 +217,7 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
   -e DOCKMON_URL=${dockmonUrl} \\
   -e REGISTRATION_TOKEN=${token} \\
   -e TZ=${timezone} \\${isHttps ? '\n  -e INSECURE_SKIP_VERIFY=true \\' : ''}
-  ghcr.io/darthnorse/dockmon-agent:1.0.4`
+  ghcr.io/darthnorse/dockmon-agent:latest`
     : ''
 
   const systemdInstallCommand = token

@@ -277,21 +277,17 @@ func (s *Service) createComposeService(ctx context.Context, req DeployRequest) (
 // loadProject loads a compose project from file content.
 // Environment variables are loaded from .env file in the working directory
 // (written by WriteEnvFile before this is called).
+//
+// When hostWorkingDir is set (containerized deployments with HOST_STACKS_DIR),
+// the project is loaded using the container-internal working directory so that
+// env_file paths resolve correctly inside the container. Bind mount sources are
+// then rewritten to host paths in a post-processing step.
 func (s *Service) loadProject(ctx context.Context, composeFile, projectName string, profiles []string, hostWorkingDir string) (*types.Project, error) {
 	workingDir := filepath.Dir(composeFile)
 	envFile := filepath.Join(workingDir, ".env")
 
-	// Use host path for WithWorkingDirectory if provided.
-	// This makes Docker Compose resolve relative bind mount sources (e.g., ./data)
-	// against the host filesystem path instead of the container-internal path.
-	resolveDir := workingDir
-	if hostWorkingDir != "" {
-		resolveDir = hostWorkingDir
-	}
-
-	// Build project options
 	opts := []cli.ProjectOptionsFn{
-		cli.WithWorkingDirectory(resolveDir),
+		cli.WithWorkingDirectory(workingDir),
 		cli.WithName(projectName),
 		cli.WithProfiles(profiles),
 	}
@@ -327,7 +323,51 @@ func (s *Service) loadProject(ctx context.Context, composeFile, projectName stri
 		return nil, fmt.Errorf("failed to load compose project: %w", err)
 	}
 
+	if hostWorkingDir != "" {
+		s.rewriteBindMountPaths(project, workingDir, hostWorkingDir)
+		// Set host path so applyComposeLabels writes the correct WorkingDirLabel
+		project.WorkingDir = hostWorkingDir
+	}
+
 	return project, nil
+}
+
+// rewriteBindMountPaths rewrites bind mount source paths from container-internal
+// paths to host filesystem paths. compose-go resolves relative paths against the
+// container-internal working directory, but the Docker daemon needs host paths
+// for bind mounts. Non-matching absolute paths and non-bind volumes are unchanged.
+func (s *Service) rewriteBindMountPaths(project *types.Project, containerWorkingDir, hostWorkingDir string) {
+	// Match against the parent (stacks) directory to handle both ./data and ../sibling paths.
+	containerStacksDir := filepath.Dir(containerWorkingDir)
+	hostStacksDir := filepath.Dir(hostWorkingDir)
+
+	containerPrefix := containerStacksDir + "/"
+	rewritten := 0
+	for name, svc := range project.Services {
+		modified := false
+		for j, vol := range svc.Volumes {
+			if vol.Type != types.VolumeTypeBind {
+				continue
+			}
+			if strings.HasPrefix(vol.Source, containerPrefix) {
+				relPath := vol.Source[len(containerStacksDir):]
+				svc.Volumes[j].Source = hostStacksDir + relPath
+				modified = true
+				rewritten++
+			}
+		}
+		if modified {
+			project.Services[name] = svc
+		}
+	}
+
+	if rewritten > 0 {
+		s.logInfo("Rewrote bind mount paths for host filesystem", logrus.Fields{
+			"count":                rewritten,
+			"container_stacks_dir": containerStacksDir,
+			"host_stacks_dir":     hostStacksDir,
+		})
+	}
 }
 
 // loadEnvFile reads a .env file and returns KEY=VALUE strings for compose interpolation

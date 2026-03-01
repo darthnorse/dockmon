@@ -5,7 +5,10 @@ import path from 'path'
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react()],
-  base: process.env.BASE_PATH || '/',
+  // Use relative base path when no explicit BASE_PATH is provided.
+  // This allows the compiled assets to be loaded correctly under any subpath (like /dockers/)
+  // where the html file is served, without needing it to be built identically to the subpath.
+  base: process.env.BASE_PATH || '',
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

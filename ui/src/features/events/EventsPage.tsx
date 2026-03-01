@@ -5,7 +5,8 @@
  */
 
 import { useState, useRef, useEffect, useMemo } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
+import { apiClient } from '@/lib/api/client'
 import { useEvents } from '@/hooks/useEvents'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
 import type { EventFilters, EventSeverity, EventCategory } from '@/types/events'
@@ -67,9 +68,10 @@ export function EventsPage() {
   }, [pageSize])
 
   const { data: hosts = [] } = useHosts()
-  const { data: containers = [] } = useQuery<any[]>({
+  // Fetch all containers for the filters
+  const { data: allContainers = [] } = useQuery<any[]>({
     queryKey: ['containers'],
-    queryFn: () => fetch('/api/containers').then((res) => res.json()),
+    queryFn: () => apiClient.get('/containers'),
   })
   const { data: eventsData, isLoading } = useEvents(filters, {
     refetchInterval: 30000,
@@ -79,10 +81,9 @@ export function EventsPage() {
   useEffect(() => {
     const fetchSortOrder = async () => {
       try {
-        const res = await fetch('/api/user/event-sort-order')
-        const data = await res.json()
-        if (data.sort_order) {
-          setSortOrder(data.sort_order)
+        const res = await apiClient.get<{ sort_order?: 'asc' | 'desc' }>('/user/event-sort-order')
+        if (res?.sort_order) {
+          setSortOrder(res.sort_order)
         }
       } catch (err) {
         // Silently fail - will use default sort order
@@ -98,8 +99,8 @@ export function EventsPage() {
 
   // Find selected container/host for modals
   const selectedContainer = useMemo(
-    () => containers.find((c) => makeCompositeKey(c) === selectedContainerId),
-    [containers, selectedContainerId]
+    () => allContainers.find((c) => makeCompositeKey(c) === selectedContainerId),
+    [allContainers, selectedContainerId]
   )
   const selectedHost = useMemo(
     () => hosts.find((h) => h.id === selectedHostId),
@@ -114,7 +115,7 @@ export function EventsPage() {
   )
 
   // Filter containers based on search and selected hosts
-  const filteredContainers = containers.filter((c) => {
+  const filteredContainers = allContainers.filter((c) => {
     // If hosts are selected, only show containers from those hosts
     if (selectedHostIds.length > 0 && !selectedHostIds.includes(c.host_id)) {
       return false
@@ -160,23 +161,25 @@ export function EventsPage() {
     updateFilter('search', searchInput || undefined)
   }
 
+  // Save sort preference to backend when it changes
+  const saveSortPreference = useMutation({
+    mutationFn: (newSortOrder: 'asc' | 'desc') =>
+      apiClient.post('/user/event-sort-order', { sort_order: newSortOrder }),
+    onSuccess: () => {
+      // Don't need to do anything immediately on success,
+      // as the state is already updated optimally
+    },
+    onError: (error) => {
+      console.error('Failed to save sort preference:', error)
+      // Optionally could revert to previous state here if needed
+    }
+  })
+
   const toggleSortOrder = async () => {
     const newOrder = sortOrder === 'desc' ? 'asc' : 'desc'
     setSortOrder(newOrder)
-
-    // Save sort order preference
-    try {
-      await fetch('/api/user/event-sort-order', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sort_order: newOrder }),
-      })
-
-      // Invalidate and refetch events query to apply new sort order
-      queryClient.invalidateQueries({ queryKey: ['events'] })
-    } catch (err) {
-      console.error('Failed to save sort order:', err)
-    }
+    saveSortPreference.mutate(newOrder)
+    queryClient.invalidateQueries({ queryKey: ['events'] })
   }
 
   const resetFilters = () => {

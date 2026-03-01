@@ -6,6 +6,7 @@
 
 import { useQuery, UseQueryResult } from '@tanstack/react-query'
 import type { Event, EventsResponse, EventFilters } from '@/types/events'
+import { apiClient } from '@/lib/api/client'
 
 async function fetchEvents(filters: EventFilters = {}): Promise<EventsResponse> {
   const params = new URLSearchParams()
@@ -35,13 +36,7 @@ async function fetchEvents(filters: EventFilters = {}): Promise<EventsResponse> 
   if (filters.limit !== undefined) params.set('limit', filters.limit.toString())
   if (filters.offset !== undefined) params.set('offset', filters.offset.toString())
 
-  const response = await fetch(`/api/events?${params.toString()}`)
-
-  if (!response.ok) {
-    throw new Error(`Failed to fetch events: ${response.statusText}`)
-  }
-
-  return response.json()
+  return apiClient.get<EventsResponse>(`/events?${params.toString()}`)
 }
 
 export function useEvents(
@@ -68,13 +63,8 @@ export function useHostEvents(
     queryFn: async () => {
       if (!hostId) throw new Error('Host ID is required')
 
-      const response = await fetch(`/api/events/host/${hostId}?limit=${limit}`)
+      const data = await apiClient.get<EventsResponse>(`/events/host/${hostId}?limit=${limit}`)
 
-      if (!response.ok) {
-        throw new Error(`Failed to fetch host events: ${response.statusText}`)
-      }
-
-      const data = await response.json()
       return {
         events: data.events,
         total_count: data.total_count,
@@ -100,15 +90,10 @@ export function useContainerEvents(
         throw new Error('Host ID and Container ID are required')
       }
 
-      const response = await fetch(
-        `/api/hosts/${hostId}/events/container/${containerId}?limit=${limit}`
+      const data = await apiClient.get<EventsResponse>(
+        `/hosts/${hostId}/events/container/${containerId}?limit=${limit}`
       )
 
-      if (!response.ok) {
-        throw new Error(`Failed to fetch container events: ${response.statusText}`)
-      }
-
-      const data = await response.json()
       return {
         events: data.events,
         total_count: data.total_count,
@@ -128,13 +113,7 @@ export function useEvent(eventId: number | undefined): UseQueryResult<Event, Err
     queryFn: async () => {
       if (!eventId) throw new Error('Event ID is required')
 
-      const response = await fetch(`/api/events/${eventId}`)
-
-      if (!response.ok) {
-        throw new Error(`Failed to fetch event: ${response.statusText}`)
-      }
-
-      return response.json()
+      return apiClient.get<Event>(`/events/${eventId}`)
     },
     enabled: !!eventId,
   })
@@ -151,13 +130,8 @@ export function useCorrelatedEvents(
     queryFn: async () => {
       if (!correlationId) throw new Error('Correlation ID is required')
 
-      const response = await fetch(`/api/events/correlation/${correlationId}`)
+      const data = await apiClient.get<any>(`/events/correlation/${correlationId}`)
 
-      if (!response.ok) {
-        throw new Error(`Failed to fetch correlated events: ${response.statusText}`)
-      }
-
-      const data = await response.json()
       return {
         events: data.events,
         total_count: data.count,

@@ -4,16 +4,8 @@ on:
   push:
     tags:
       - 'agent-v*'  # Agent releases use agent-v* pattern (e.g., agent-v1.0.0)
-    branches:
-      - dev
-      - main
-      - 'feature/**'
-      - 'feat/**'
   release:
     types: [published]
-  pull_request:
-    paths:
-      - 'agent/**'
   workflow_dispatch:
 
 env:

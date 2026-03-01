@@ -68,7 +68,8 @@ from models.settings_models import GlobalSettings, AlertRule, AlertRuleV2Create,
 from models.request_models import (
     AutoRestartRequest, DesiredStateRequest, AlertRuleCreate, AlertRuleUpdate,
     NotificationChannelCreate, NotificationChannelUpdate, EventLogFilter, BatchJobCreate,
-    ContainerTagUpdate, HostTagUpdate, HttpHealthCheckConfig, GenerateTokenRequest
+    ContainerTagUpdate, HostTagUpdate, HttpHealthCheckConfig, GenerateTokenRequest,
+    RenameContainerRequest
 )
 from security.audit import security_audit
 from security.rate_limiting import rate_limiter, rate_limit_auth, rate_limit_hosts, rate_limit_containers, rate_limit_notifications, rate_limit_default
@@ -1720,19 +1721,36 @@ async def get_containers(host_id: Optional[str] = None, current_user: dict = Dep
 @app.post("/api/hosts/{host_id}/containers/{container_id}/restart", tags=["containers"], dependencies=[Depends(require_scope("write"))])
 async def restart_container(host_id: str, container_id: str, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
     """Restart a container"""
+    container_id = normalize_container_id(container_id)
     success = await monitor.restart_container(host_id, container_id)
     return {"status": "success" if success else "failed"}
 
 @app.post("/api/hosts/{host_id}/containers/{container_id}/stop", tags=["containers"], dependencies=[Depends(require_scope("write"))])
 async def stop_container(host_id: str, container_id: str, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
     """Stop a container"""
+    container_id = normalize_container_id(container_id)
     success = await monitor.stop_container(host_id, container_id)
     return {"status": "success" if success else "failed"}
 
 @app.post("/api/hosts/{host_id}/containers/{container_id}/start", tags=["containers"], dependencies=[Depends(require_scope("write"))])
 async def start_container(host_id: str, container_id: str, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
     """Start a container"""
+    container_id = normalize_container_id(container_id)
     success = await monitor.start_container(host_id, container_id)
+    return {"status": "success" if success else "failed"}
+
+@app.post("/api/hosts/{host_id}/containers/{container_id}/kill", tags=["containers"], dependencies=[Depends(require_scope("write"))])
+async def kill_container(host_id: str, container_id: str, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
+    """Kill a container (SIGKILL) - for unresponsive containers that won't stop gracefully"""
+    container_id = normalize_container_id(container_id)
+    success = await monitor.kill_container(host_id, container_id)
+    return {"status": "success" if success else "failed"}
+
+@app.post("/api/hosts/{host_id}/containers/{container_id}/rename", tags=["containers"], dependencies=[Depends(require_scope("write"))])
+async def rename_container(host_id: str, container_id: str, body: RenameContainerRequest, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
+    """Rename a container"""
+    container_id = normalize_container_id(container_id)
+    success = await monitor.rename_container(host_id, container_id, body.name)
     return {"status": "success" if success else "failed"}
 
 @app.delete("/api/hosts/{host_id}/containers/{container_id}", tags=["containers"], dependencies=[Depends(require_scope("write"))])

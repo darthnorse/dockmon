@@ -530,3 +530,22 @@ class HttpHealthCheckConfig(BaseModel):
                     raise ValueError(f'Invalid status code: {part}')
 
         return v
+
+
+class RenameContainerRequest(BaseModel):
+    """Request model for renaming a container"""
+    name: str = Field(..., min_length=1, max_length=255)
+
+    @field_validator('name')
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        """Validate container name matches Docker naming rules."""
+        v = v.strip()
+        if not v:
+            raise ValueError('Container name cannot be empty')
+        if not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_.-]*', v):
+            raise ValueError(
+                'Container name must start with an alphanumeric character '
+                'and contain only alphanumeric characters, underscores, periods, or hyphens'
+            )
+        return v

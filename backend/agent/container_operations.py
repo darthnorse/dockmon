@@ -232,6 +232,100 @@ class AgentContainerOperations:
 
         return self._handle_operation_result(result, "restart", host_id, container_id)
 
+    async def kill_container(self, host_id: str, container_id: str) -> bool:
+        """
+        Kill a container via agent (SIGKILL).
+
+        Args:
+            host_id: Docker host ID
+            container_id: Container ID
+
+        Returns:
+            True if killed successfully
+
+        Raises:
+            HTTPException: If safety check fails, agent not found, or command fails
+        """
+        # Safety check: prevent killing DockMon itself
+        if await self._is_dockmon_container(host_id, container_id):
+            raise HTTPException(
+                status_code=403,
+                detail="Cannot kill DockMon itself. Please stop manually via Docker CLI."
+            )
+
+        # Get agent for this host
+        agent_id = self._get_agent_for_host(host_id)
+        if not agent_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No agent registered for host {host_id}"
+            )
+
+        # Send kill command
+        command = {
+            "type": "container_operation",
+            "payload": {
+                "action": "kill",
+                "container_id": container_id
+            }
+        }
+
+        result = await self.command_executor.execute_command(
+            agent_id,
+            command,
+            timeout=30.0
+        )
+
+        return self._handle_operation_result(result, "kill", host_id, container_id)
+
+    async def rename_container(self, host_id: str, container_id: str, new_name: str) -> bool:
+        """
+        Rename a container via agent.
+
+        Args:
+            host_id: Docker host ID
+            container_id: Container ID
+            new_name: New container name
+
+        Returns:
+            True if renamed successfully
+
+        Raises:
+            HTTPException: If safety check fails, agent not found, or command fails
+        """
+        # Safety check: prevent renaming DockMon itself
+        if await self._is_dockmon_container(host_id, container_id):
+            raise HTTPException(
+                status_code=403,
+                detail="Cannot rename DockMon itself."
+            )
+
+        # Get agent for this host
+        agent_id = self._get_agent_for_host(host_id)
+        if not agent_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No agent registered for host {host_id}"
+            )
+
+        # Send rename command
+        command = {
+            "type": "container_operation",
+            "payload": {
+                "action": "rename",
+                "container_id": container_id,
+                "new_name": new_name
+            }
+        }
+
+        result = await self.command_executor.execute_command(
+            agent_id,
+            command,
+            timeout=30.0
+        )
+
+        return self._handle_operation_result(result, "rename", host_id, container_id)
+
     async def remove_container(self, host_id: str, container_id: str, force: bool = False) -> bool:
         """
         Remove a container via agent.

@@ -10,6 +10,10 @@ import (
 	"sync"
 	"time"
 
+	"runtime"
+	"github.com/shirou/gopsutil/v3/cpu"
+	"github.com/shirou/gopsutil/v3/mem"
+	"github.com/shirou/gopsutil/v3/net"
 	"github.com/sirupsen/logrus"
 )
 
@@ -129,6 +133,9 @@ func (h *HostStatsHandler) collect() {
 
 // calculateCPUPercent reads /proc/stat (or /host/proc/stat) and calculates CPU usage percentage
 func (h *HostStatsHandler) calculateCPUPercent() float64 {
+	if runtime.GOOS == "windows" {
+		return h.calculateCPUPercentWindows()
+	}
 	statPath := filepath.Join(h.procPath, "stat")
 	file, err := os.Open(statPath)
 	if err != nil {
@@ -193,6 +200,9 @@ func (h *HostStatsHandler) calculateCPUPercent() float64 {
 
 // calculateMemPercent reads /proc/meminfo (or /host/proc/meminfo) and calculates memory usage percentage
 func (h *HostStatsHandler) calculateMemPercent() float64 {
+	if runtime.GOOS == "windows" {
+		return h.calculateMemPercentWindows()
+	}
 	meminfoPath := filepath.Join(h.procPath, "meminfo")
 	file, err := os.Open(meminfoPath)
 	if err != nil {
@@ -272,6 +282,9 @@ func (h *HostStatsHandler) calculateNetBytesPerSec(now time.Time) float64 {
 }
 
 func (h *HostStatsHandler) readNetStats() map[string]netStats {
+	if runtime.GOOS == "windows" {
+		return h.readNetStatsWindows()
+	}
 	result := make(map[string]netStats)
 
 	netPath := filepath.Join(h.sysPath, "class", "net")
@@ -370,4 +383,49 @@ func (h *HostStatsHandler) readNetStat(iface, stat string) uint64 {
 func parseUint(s string) uint64 {
 	v, _ := strconv.ParseUint(s, 10, 64)
 	return v
+}
+
+// Windows-specific implementations using gopsutil (native Windows APIs)
+
+func (h *HostStatsHandler) calculateCPUPercentWindows() float64 {
+	percents, err := cpu.Percent(0, false)
+	if err != nil {
+		h.log.Errorf("Failed to get CPU stats on Windows: %v", err)
+		return 0
+	}
+	if len(percents) == 0 {
+		return 0
+	}
+	return percents[0]
+}
+
+func (h *HostStatsHandler) calculateMemPercentWindows() float64 {
+	v, err := mem.VirtualMemory()
+	if err != nil {
+		h.log.Errorf("Failed to get memory stats on Windows: %v", err)
+		return 0
+	}
+	return v.UsedPercent
+}
+
+func (h *HostStatsHandler) readNetStatsWindows() map[string]netStats {
+	result := make(map[string]netStats)
+
+	stats, err := net.IOCounters(false)
+	if err != nil {
+		h.log.Errorf("Failed to get network stats on Windows: %v", err)
+		return result
+	}
+
+	for _, s := range stats {
+		if strings.HasPrefix(s.Name, "vEthernet") || strings.HasPrefix(s.Name, "Loopback") {
+			continue
+		}
+		result[s.Name] = netStats{
+			rxBytes: s.BytesRecv,
+			txBytes: s.BytesSent,
+		}
+	}
+
+	return result
 }

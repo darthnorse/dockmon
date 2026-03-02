@@ -99,6 +99,14 @@ func NewWebSocketClient(
 		log.Info("Host stats handler initialized (container mode with /host/proc mount)")
 	}
 
+	if client.hostStatsHandler == nil && runtime.GOOS == "windows" {
+		client.hostStatsHandler = handlers.NewHostStatsHandler(
+			log,
+			client.sendJSON,
+		)
+		log.Info("Host stats handler windows-mode initialized (shirou/gopsutil)")
+	}
+
 	// Initialize update handler with sendEvent callback
 	client.updateHandler = handlers.NewUpdateHandler(
 		dockerClient,

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"runtime"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -319,6 +320,10 @@ func (c *Client) GetSystemInfo(ctx context.Context) (*SystemInfo, error) {
 	networks, err := c.cli.NetworkList(ctx, network.ListOptions{})
 	if err == nil {
 		for _, network := range networks {
+			if network.Name == "nat" {
+				sysInfo.DaemonStartedAt = network.Created.Format("2006-01-02T15:04:05.999999999Z07:00")
+				break
+			}
 			if network.Name == "bridge" {
 				sysInfo.DaemonStartedAt = network.Created.Format("2006-01-02T15:04:05.999999999Z07:00")
 				break
@@ -333,6 +338,16 @@ func (c *Client) GetSystemInfo(ctx context.Context) (*SystemInfo, error) {
 // GetMyContainerID attempts to determine the agent's own container ID
 // by reading /proc/self/cgroup
 func (c *Client) GetMyContainerID(ctx context.Context) (string, error) {
+
+	// by default, containers get the container ID as hostname, as a truncated version of the full ID
+	if runtime.GOOS == "windows" {
+		hostname, err := os.Hostname()
+		if err == nil && len(hostname) >= 12 {
+			return hostname[:12], nil
+		}
+		return "", fmt.Errorf("failed to detect container-id via hostname: %w", err)
+	}
+
 	// Read cgroup file to get container ID
 	data, err := os.ReadFile("/proc/self/cgroup")
 	if err != nil {

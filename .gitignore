@@ -78,6 +78,7 @@ build/
 
 # IDE
 .vscode/
+.vs/
 .idea/
 *.swp
 *.swo

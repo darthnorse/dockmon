@@ -382,10 +382,12 @@ async def update_user(
     Cannot change username (use separate endpoint if needed).
     """
     # Get user info for audit (handles both session and API key auth)
+    # NOTE: user_id path param = target; audit user_id = acting user
+    target_user_id = user_id
     user_id, display_name = _get_auditable_user_info(current_user)
 
     with db.get_session() as session:
-        user = get_user_or_404(session, user_id)
+        user = get_user_or_404(session, target_user_id)
 
         changes = {}
 
@@ -395,7 +397,7 @@ async def update_user(
             if user_data.email:
                 existing = session.query(User).filter(
                     User.email == user_data.email,
-                    User.id != user_id
+                    User.id != target_user_id
                 ).first()
                 if existing:
                     raise HTTPException(
@@ -423,19 +425,19 @@ async def update_user(
             new_group_names = [g.name for g in new_groups]
 
             # Get current groups for audit log
-            current_groups = _get_user_groups(session, user_id)
+            current_groups = _get_user_groups(session, target_user_id)
             old_group_names = [g.name for g in current_groups]
 
             # Remove all existing memberships
             session.query(UserGroupMembership).filter(
-                UserGroupMembership.user_id == user_id
+                UserGroupMembership.user_id == target_user_id
             ).delete()
 
             # Add new memberships
             now = datetime.now(timezone.utc)
             for group_id in user_data.group_ids:
                 membership = UserGroupMembership(
-                    user_id=user_id,
+                    user_id=target_user_id,
                     group_id=group_id,
                     added_by=user_id,
                     added_at=now,
@@ -445,7 +447,7 @@ async def update_user(
             changes['groups'] = {'old': old_group_names, 'new': new_group_names}
 
             # Invalidate cache for this user
-            invalidate_user_groups_cache(user_id)
+            invalidate_user_groups_cache(target_user_id)
 
         user.updated_at = datetime.now(timezone.utc)
 
@@ -484,21 +486,22 @@ async def delete_user(
     User cannot log in after deletion but records are preserved.
     """
     # Get user info for audit (handles both session and API key auth)
+    # NOTE: user_id path param = target; audit user_id = acting user
+    target_user_id = user_id
     user_id, display_name = _get_auditable_user_info(current_user)
 
     with db.get_session() as session:
-        user = get_user_or_404(session, user_id)
+        user = get_user_or_404(session, target_user_id)
 
         # Prevent self-deletion (only applies to session auth)
-        current_user_id = current_user.get("user_id")
-        if current_user.get("auth_type") != "api_key" and current_user_id == user_id:
+        if current_user.get("auth_type") != "api_key" and user_id == target_user_id:
             raise HTTPException(
                 status_code=400,
                 detail="Cannot delete your own account"
             )
 
         # Prevent deleting the last admin
-        _ensure_not_last_admin(session, user_id, "delete")
+        _ensure_not_last_admin(session, target_user_id, "delete")
 
         # Check if already deleted
         if user.is_deleted:
@@ -541,10 +544,12 @@ async def reactivate_user(
     Reactivate a soft-deleted user (requires users.manage capability).
     """
     # Get user info for audit (handles both session and API key auth)
+    # NOTE: user_id path param = target; audit user_id = acting user
+    target_user_id = user_id
     user_id, display_name = _get_auditable_user_info(current_user)
 
     with db.get_session() as session:
-        user = get_user_or_404(session, user_id)
+        user = get_user_or_404(session, target_user_id)
 
         if not user.is_deleted:
             raise HTTPException(
@@ -594,10 +599,12 @@ async def reset_user_password(
     Always sets must_change_password=True so user must change on next login.
     """
     # Get user info for audit (handles both session and API key auth)
+    # NOTE: user_id path param = target; audit user_id = acting user
+    target_user_id = user_id
     user_id, display_name = _get_auditable_user_info(current_user)
 
     with db.get_session() as session:
-        user = get_user_or_404(session, user_id)
+        user = get_user_or_404(session, target_user_id)
 
         # Cannot reset OIDC user's password
         if user.is_oidc_user:

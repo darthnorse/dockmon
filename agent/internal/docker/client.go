@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"runtime"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -337,12 +338,14 @@ func (c *Client) GetSystemInfo(ctx context.Context) (*SystemInfo, error) {
 // GetMyContainerID attempts to determine the agent's own container ID
 // by reading /proc/self/cgroup
 func (c *Client) GetMyContainerID(ctx context.Context) (string, error) {
-	// first use hostname
-	hostname, err := os.Hostname()
-	if err != nil {
-		c.log.Warn("Could not determine os.Hostname()")
-	} else if len(hostname) >= 12 {
-		return hostname[:12], nil
+
+	// by default, containers get the container ID as hostname, as a truncated version of the full ID
+	if runtime.GOOS == "windows" {
+		hostname, err := os.Hostname()
+		if err == nil && len(hostname) >= 12 {
+			return hostname[:12], nil
+		}
+		return "", fmt.Errorf("failed to detect container-id via hostname: %w", err)
 	}
 
 	// Read cgroup file to get container ID

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -295,8 +296,14 @@ func (h *SelfUpdateHandler) performNativeSelfUpdate(ctx context.Context, req Sel
 	// For native mode, we need to actually exit the process so systemd restarts us
 	// The stopSignal only closes the WebSocket connection, but main.go waits on sigChan
 	// Send SIGTERM to ourselves to trigger proper shutdown
-	h.log.Info("Sending SIGTERM to self for native restart")
-	os.Exit(0)
+	if runtime.GOOS == "windows" {
+		h.log.Info("exiting for native restart")
+		os.Exit(0)
+	} else {
+		h.log.Info("Sending SIGTERM to self for native restart")
+		p, _ := os.FindProcess(os.Getpid())
+		p.Signal(syscall.SIGTERM)
+	}
 
 	return nil
 }

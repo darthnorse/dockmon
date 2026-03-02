@@ -15,6 +15,7 @@ import secrets
 import bcrypt
 import uuid
 
+from auth.capabilities import ALL_CAPABILITIES, OPERATOR_CAPABILITIES, READONLY_CAPABILITIES
 from utils.keys import make_composite_key
 
 logger = logging.getLogger(__name__)
@@ -1815,6 +1816,8 @@ class DatabaseManager:
             # Initialize default update validation policies if none exist
             self._seed_update_policies(session)
 
+            self._ensure_default_groups(session)
+
     def _seed_update_policies(self, session):
         """
         Seed default update validation policies if they don't exist.
@@ -1879,6 +1882,85 @@ class DatabaseManager:
         if inserted > 0:
             session.commit()
             logger.info(f"Seeded {inserted} missing default update validation policies")
+
+    def _ensure_default_groups(self, session):
+        """
+        Ensure default system groups, permissions, and admin membership exist.
+
+        This matches the v2.3.0 Alembic migration 034 behavior - it defensively
+        seeds missing data without affecting existing records. This handles
+        fresh installs where Base.metadata.create_all() + stamp HEAD skips
+        migration data seeding.
+        """
+        admin_exists = session.query(CustomGroup).filter_by(name='Administrators').first()
+        if not admin_exists:
+            admin_group = CustomGroup(
+                name='Administrators',
+                description='Full access to all features',
+                is_system=True,
+            )
+            operators_group = CustomGroup(
+                name='Operators',
+                description='Can operate containers and deploy stacks, limited configuration access',
+                is_system=True,
+            )
+            readonly_group = CustomGroup(
+                name='Read Only',
+                description='View-only access to all features',
+                is_system=True,
+            )
+            session.add_all([admin_group, operators_group, readonly_group])
+            session.flush()  # Need IDs assigned before FK references below
+            logger.info("Created default system groups: Administrators, Operators, Read Only")
+        else:
+            admin_group = admin_exists
+            operators_group = session.query(CustomGroup).filter_by(name='Operators').first()
+            readonly_group = session.query(CustomGroup).filter_by(name='Read Only').first()
+
+        if not admin_group or not operators_group or not readonly_group:
+            logger.warning("Could not find all default groups - skipping permission seeding")
+            return
+
+        group_caps = [
+            (admin_group, ALL_CAPABILITIES),
+            (operators_group, OPERATOR_CAPABILITIES),
+            (readonly_group, READONLY_CAPABILITIES),
+        ]
+        for group, capabilities in group_caps:
+            existing_caps = set(
+                row.capability
+                for row in session.query(GroupPermission.capability).filter_by(group_id=group.id).all()
+            )
+            missing_caps = capabilities - existing_caps
+            for cap in sorted(missing_caps):
+                session.add(GroupPermission(
+                    group_id=group.id,
+                    capability=cap,
+                    allowed=True,
+                ))
+            if missing_caps:
+                logger.info(f"Seeded {len(missing_caps)} missing permissions for group '{group.name}'")
+
+        existing_membership = session.query(UserGroupMembership).filter_by(
+            user_id=1, group_id=admin_group.id
+        ).first()
+        if not existing_membership:
+            first_user = session.query(User).filter_by(id=1).first()
+            if first_user:
+                session.add(UserGroupMembership(
+                    user_id=first_user.id,
+                    group_id=admin_group.id,
+                ))
+                logger.info(f"Assigned user '{first_user.username}' to Administrators group")
+
+        oidc_config = session.query(OIDCConfig).filter(
+            OIDCConfig.default_group_id.is_(None)
+        ).first()
+        if oidc_config:
+            oidc_config.default_group_id = readonly_group.id
+            logger.info("Set OIDC default group to 'Read Only'")
+
+        session.commit()
 
     def get_session(self) -> Session:
         """Get a database session"""
@@ -3940,17 +4022,21 @@ class DatabaseManager:
     def get_or_create_default_user(self) -> None:
         """Create default admin user if no users exist"""
         with self.get_session() as session:
-            # Check if ANY user exists (not just 'admin')
             user_count = session.query(User).count()
             if user_count == 0:
-                # Only create default admin user if no users exist at all
                 user = User(
                     username="admin",
-                    password_hash=self._hash_password("dockmon123"),  # Default password
+                    password_hash=self._hash_password("dockmon123"),
                     is_first_login=True,
                     must_change_password=True
                 )
                 session.add(user)
+                session.flush()
+
+                admin_group = session.query(CustomGroup).filter_by(name='Administrators').first()
+                if admin_group:
+                    session.add(UserGroupMembership(user_id=user.id, group_id=admin_group.id))
+
                 session.commit()
                 logger.info("Created default admin user")
 

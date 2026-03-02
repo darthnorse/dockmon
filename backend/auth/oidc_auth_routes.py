@@ -314,7 +314,7 @@ async def oidc_authorize(
             'response_type': 'code',
             'client_id': config.client_id,
             'redirect_uri': redirect_uri,
-            'scope': config.scopes,
+            'scope': ' '.join(s.strip() for s in config.scopes.replace(',', ' ').split() if s.strip()),
             'state': state,
             'nonce': nonce,
         }
@@ -412,6 +412,8 @@ async def oidc_callback(
             if not access_token:
                 raise ValueError("No access_token in response")
 
+            logger.info(f"OIDC token response keys: {list(tokens.keys())}, scope: {tokens.get('scope', 'not returned')}")
+
             # Decode and validate ID token (nonce validation for replay protection)
             id_token_claims = None
             if id_token:
@@ -443,6 +445,7 @@ async def oidc_callback(
                 raise ValueError("No userinfo endpoint and no ID token")
 
             # Extract user info
+            logger.info(f"OIDC userinfo/claims keys: {list(userinfo.keys())}")
             oidc_subject = userinfo.get('sub')
             email = userinfo.get('email')
             preferred_username = userinfo.get('preferred_username', email)
@@ -498,6 +501,12 @@ async def oidc_callback(
                 user.last_login = now
                 user.updated_at = now
 
+                # Sync profile from OIDC provider
+                if name and user.display_name != name:
+                    user.display_name = name
+                if email and user.email != email:
+                    user.email = email
+
                 # Audit group sync if changes occurred (before commit for atomicity)
                 if added_groups or removed_groups:
                     safe_audit_log(
@@ -521,6 +530,23 @@ async def oidc_callback(
 
                 # Invalidate user's group cache after sync
                 invalidate_user_groups_cache(user.id)
+
+                # Block login if user has no groups (deny access)
+                if not new_group_ids:
+                    logger.warning(f"OIDC login blocked: user '{user.username}' has no group memberships")
+                    safe_audit_log(
+                        session,
+                        user.id,
+                        user.username,
+                        AuditAction.LOGIN_FAILED,
+                        AuditEntityType.SESSION,
+                        details={'reason': 'no_matching_groups', 'oidc_groups': oidc_groups},
+                        **get_client_info(request)
+                    )
+                    session.commit()
+                    return RedirectResponse(
+                        url="/login?error=oidc_error&message=You+are+not+authorized+to+access+DockMon"
+                    )
 
             else:
                 # New OIDC user - check for email conflict

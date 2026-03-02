@@ -87,10 +87,10 @@ class DashboardPreferences(BaseModel):
     compactHostOrder: Optional[list[str]] = Field(default=None)  # Host order for compact view (non-grouped)
     containerSortKey: str = Field(default="state", pattern="^(name|state|cpu|memory|start_time)$")
     hostContainerSorts: Dict[str, str] = Field(default_factory=dict)  # Per-host container sort preferences
-    hostCardLayout: Optional[list[Dict[str, Any]]] = Field(default=None)  # Expanded mode layout (ungrouped)
-    hostCardLayoutStandard: Optional[list[Dict[str, Any]]] = Field(default=None)  # Standard mode layout (ungrouped)
-    hostCardLayoutGroupedStandard: Optional[list[Dict[str, Any]]] = Field(default=None)  # Standard mode layout (grouped by tags)
-    hostCardLayoutGroupedExpanded: Optional[list[Dict[str, Any]]] = Field(default=None)  # Expanded mode layout (grouped by tags)
+    hostCardLayout: Optional[Dict[str, Any]] = Field(default=None)  # Expanded mode layout (ungrouped) - Responsive Layouts object
+    hostCardLayoutStandard: Optional[Dict[str, Any]] = Field(default=None)  # Standard mode layout (ungrouped) - Responsive Layouts object
+    hostCardLayoutGroupedStandard: Optional[Dict[str, Any]] = Field(default=None)  # Standard mode layout (grouped by tags) - Responsive Layouts object
+    hostCardLayoutGroupedExpanded: Optional[Dict[str, Any]] = Field(default=None)  # Expanded mode layout (grouped by tags) - Responsive Layouts object
     tagGroupOrder: Optional[list[str]] = Field(default=None)  # User-defined order of tag groups
     groupLayouts: Dict[str, Any] = Field(default_factory=dict)  # Dynamic group layouts/orders: supports both Layout[] and string[]
     showKpiBar: bool = Field(default=True)
@@ -241,9 +241,9 @@ async def get_user_preferences(
         if container_sort_key == "status":
             container_sort_key = "state"
 
-        # Helper to validate layout fields - must be list or None
+        # Helper to validate layout fields - accepts list (legacy) or dict (Responsive Layouts)
         def validate_layout(value):
-            return value if isinstance(value, list) else None
+            return value if isinstance(value, (list, dict)) else None
 
         dashboard = DashboardPreferences(
             enableCustomLayout=dashboard_prefs.get("enableCustomLayout", True),

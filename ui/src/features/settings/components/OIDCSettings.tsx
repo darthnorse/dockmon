@@ -65,8 +65,8 @@ const DEFAULT_GROUPS_CLAIM = 'groups'
 const NO_DEFAULT_GROUP = '__none__' // Sentinel value for "no default group"
 
 export function OIDCSettings() {
-  const { data: config, isLoading: configLoading, refetch: refetchConfig } = useOIDCConfig()
-  const { data: mappings, isLoading: mappingsLoading, refetch: refetchMappings } = useOIDCGroupMappings()
+  const { data: config, isLoading: configLoading } = useOIDCConfig()
+  const { data: mappings, isLoading: mappingsLoading } = useOIDCGroupMappings()
   const { data: groupsData } = useGroups()
   const updateConfig = useUpdateOIDCConfig()
   const discoverOIDC = useDiscoverOIDC()
@@ -105,7 +105,7 @@ export function OIDCSettings() {
       setClientId(config.client_id || '')
       setScopes(config.scopes || DEFAULT_SCOPES)
       setClaimForGroups(config.claim_for_groups || DEFAULT_GROUPS_CLAIM)
-      setDefaultGroupId(config.default_group_id?.toString() || NO_DEFAULT_GROUP)
+      setDefaultGroupId(config.default_group_id ? config.default_group_id.toString() : NO_DEFAULT_GROUP)
       setSsoDefault(config.sso_default)
       // Don't sync client_secret - it's never returned
     }
@@ -126,7 +126,7 @@ export function OIDCSettings() {
       clientSecret !== '' ||
       scopes !== (config.scopes || DEFAULT_SCOPES) ||
       claimForGroups !== (config.claim_for_groups || DEFAULT_GROUPS_CLAIM) ||
-      defaultGroupId !== (config.default_group_id?.toString() || NO_DEFAULT_GROUP) ||
+      defaultGroupId !== (config.default_group_id ? config.default_group_id.toString() : NO_DEFAULT_GROUP) ||
       ssoDefault !== config.sso_default
     )
   }, [config, enabled, providerUrl, clientId, clientSecret, scopes, claimForGroups, defaultGroupId, ssoDefault])
@@ -139,7 +139,7 @@ export function OIDCSettings() {
     if (clientSecret) data.client_secret = clientSecret
     if (scopes !== (config?.scopes || DEFAULT_SCOPES)) data.scopes = scopes || null
     if (claimForGroups !== (config?.claim_for_groups || DEFAULT_GROUPS_CLAIM)) data.claim_for_groups = claimForGroups || null
-    if (defaultGroupId !== (config?.default_group_id?.toString() || NO_DEFAULT_GROUP)) {
+    if (defaultGroupId !== (config?.default_group_id ? config.default_group_id.toString() : NO_DEFAULT_GROUP)) {
       data.default_group_id = defaultGroupId && defaultGroupId !== NO_DEFAULT_GROUP ? parseInt(defaultGroupId, 10) : 0
     }
     if (ssoDefault !== config?.sso_default) data.sso_default = ssoDefault
@@ -372,16 +372,6 @@ export function OIDCSettings() {
             >
               <ExternalLink className="mr-2 h-4 w-4" />
               {discoverOIDC.isPending ? 'Testing...' : 'Test Connection'}
-            </Button>
-            <Button
-              variant="ghost"
-              onClick={() => {
-                refetchConfig()
-                refetchMappings()
-              }}
-            >
-              <RefreshCw className="mr-2 h-4 w-4" />
-              Refresh
             </Button>
           </div>
         </div>
@@ -652,7 +642,12 @@ function GroupMappingModal({ isOpen, onClose, mapping, groups, onSubmit, isSubmi
               <Label htmlFor="dockmon-group">DockMon Group</Label>
               <Select value={groupId} onValueChange={setGroupId}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Select a group" />
+                  <SelectValue placeholder="Select a group">
+                    {(() => {
+                      const g = groups.find((gr) => gr.id.toString() === groupId)
+                      return g ? `${g.name}${g.is_system ? ' (System)' : ''}` : groupId
+                    })()}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   {groups.map((group) => (

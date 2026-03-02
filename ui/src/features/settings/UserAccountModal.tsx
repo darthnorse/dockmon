@@ -30,6 +30,7 @@ export function UserAccountModal({ isOpen, onClose }: UserAccountModalProps) {
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const isOIDC = user?.auth_provider === 'oidc'
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -112,75 +113,87 @@ export function UserAccountModal({ isOpen, onClose }: UserAccountModalProps) {
               </div>
             )}
 
-            {/* Display Name */}
-            <div>
-              <label htmlFor="displayName" className="block text-sm font-medium mb-1">
-                Display Name
-              </label>
-              <Input
-                id="displayName"
-                type="text"
-                value={displayName}
-                onChange={(e) => {
-                  setDisplayName(e.target.value)
-                  if (error || success) {
-                    setError(null)
-                    setSuccess(null)
-                  }
-                }}
-                disabled={isSubmitting}
-                placeholder="Optional friendly name"
-              />
-              <p className="text-xs text-muted-foreground mt-1">
-                This is how your name will be displayed
-              </p>
-            </div>
+            {isOIDC ? (
+              <div className="rounded-lg border-l-4 border-primary bg-primary/10 p-3 text-sm text-muted-foreground">
+                Your account is managed by your SSO provider. Profile changes must be made there.
+              </div>
+            ) : (
+              <>
+                {/* Display Name */}
+                <div>
+                  <label htmlFor="displayName" className="block text-sm font-medium mb-1">
+                    Display Name
+                  </label>
+                  <Input
+                    id="displayName"
+                    type="text"
+                    value={displayName}
+                    onChange={(e) => {
+                      setDisplayName(e.target.value)
+                      if (error || success) {
+                        setError(null)
+                        setSuccess(null)
+                      }
+                    }}
+                    disabled={isSubmitting}
+                    placeholder="Optional friendly name"
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    This is how your name will be displayed
+                  </p>
+                </div>
 
-            {/* Username */}
-            <div>
-              <label htmlFor="username" className="block text-sm font-medium mb-1">
-                Username <span className="text-destructive">*</span>
-              </label>
-              <Input
-                id="username"
-                type="text"
-                value={username}
-                onChange={(e) => {
-                  setUsername(e.target.value)
-                  if (error || success) {
-                    setError(null)
-                    setSuccess(null)
-                  }
-                }}
-                disabled={isSubmitting}
-                required
-              />
-              <p className="text-xs text-muted-foreground mt-1">
-                Used for logging in
-              </p>
-            </div>
+                {/* Username */}
+                <div>
+                  <label htmlFor="username" className="block text-sm font-medium mb-1">
+                    Username <span className="text-destructive">*</span>
+                  </label>
+                  <Input
+                    id="username"
+                    type="text"
+                    value={username}
+                    onChange={(e) => {
+                      setUsername(e.target.value)
+                      if (error || success) {
+                        setError(null)
+                        setSuccess(null)
+                      }
+                    }}
+                    disabled={isSubmitting}
+                    required
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Used for logging in
+                  </p>
+                </div>
 
-            {/* Save Button */}
-            <Button
-              type="submit"
-              disabled={isSubmitting}
-              className="w-full"
-            >
-              {isSubmitting ? 'Saving...' : 'Save Changes'}
-            </Button>
+                {/* Save Button */}
+                <Button
+                  type="submit"
+                  disabled={isSubmitting}
+                  className="w-full"
+                >
+                  {isSubmitting ? 'Saving...' : 'Save Changes'}
+                </Button>
+              </>
+            )}
           </form>
 
-          {/* Divider */}
-          <div className="my-4 border-t border-border" />
+          {!isOIDC && (
+            <>
+              {/* Divider */}
+              <div className="my-4 border-t border-border" />
 
-          {/* Password Change Button */}
-          <Button
-            variant="outline"
-            className="w-full"
-            onClick={() => setShowPasswordModal(true)}
-          >
-            Change Password
-          </Button>
+              {/* Password Change Button */}
+              <Button
+                variant="outline"
+                className="w-full"
+                onClick={() => setShowPasswordModal(true)}
+              >
+                Change Password
+              </Button>
+            </>
+          )}
         </div>
       </div>
 

@@ -1955,8 +1955,11 @@ class DatabaseManager:
                 ))
                 logger.info(f"Assigned user '{first_user.username}' to Administrators group")
 
+        # Only set OIDC default group for freshly created configs (no provider URL yet)
+        # Don't overwrite NULL for existing configs where admin explicitly chose "Deny Access"
         oidc_config = session.query(OIDCConfig).filter(
-            OIDCConfig.default_group_id.is_(None)
+            OIDCConfig.default_group_id.is_(None),
+            OIDCConfig.provider_url.is_(None),
         ).first()
         if oidc_config:
             oidc_config.default_group_id = readonly_group.id

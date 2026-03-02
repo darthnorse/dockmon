@@ -10,6 +10,7 @@ SECURITY IMPROVEMENTS over v1:
 """
 
 import logging
+import httpx
 from fastapi import APIRouter, HTTPException, Response, Cookie, Request, Depends
 from pydantic import BaseModel
 import argon2
@@ -47,7 +48,7 @@ def _sanitize_for_log(value: str, max_length: int = 100) -> str:
 
 # Import shared database instance (single connection pool)
 from auth.shared import db
-from database import User
+from database import User, OIDCConfig
 from auth.api_key_auth import (
     get_current_user_or_api_key,
     get_user_groups,
@@ -55,6 +56,7 @@ from auth.api_key_auth import (
     get_capabilities_for_group,
 )
 from config.settings import AppConfig
+from utils.base_path import get_base_path
 
 
 def safe_audit_log(audit_func: Callable, *args, **kwargs) -> None:
@@ -115,6 +117,7 @@ class UpdateProfileRequest(BaseModel):
 class LogoutResponse(BaseModel):
     """Logout response"""
     message: str
+    oidc_logout_url: str | None = None
 
 
 class UserGroupInfo(BaseModel):
@@ -130,6 +133,7 @@ class SessionUserInfo(BaseModel):
     display_name: str | None = None
     is_first_login: bool = False
     must_change_password: bool = False
+    auth_provider: str = 'local'
     groups: list[UserGroupInfo]
 
 
@@ -300,10 +304,13 @@ async def logout_v2(
     """
     Logout user and delete session.
 
-    SECURITY: Session is deleted server-side
+    SECURITY: Session is deleted server-side.
+    For OIDC users, returns the provider's end_session_endpoint URL
+    so the frontend can redirect to end the provider session too.
     """
     user_id = None
     username = "unknown"
+    is_oidc_user = False
 
     if session_id:
         # Get user info from session before deleting
@@ -321,14 +328,38 @@ async def logout_v2(
         path="/"
     )
 
-    # Audit: Log logout
+    # Check if OIDC user and build provider logout URL
+    oidc_logout_url = None
     if user_id:
         with db.get_session() as session:
             safe_audit_log(log_logout, session, user_id, username, request)
 
-    logger.info(f"User '{username}' logged out successfully")
+            user = session.query(User).filter(User.id == user_id).first()
+            if user and user.auth_provider == 'oidc':
+                is_oidc_user = True
+                config = session.query(OIDCConfig).filter(OIDCConfig.id == 1).first()
+                if config and config.enabled and config.provider_url:
+                    try:
+                        provider_url = config.provider_url.rstrip('/')
+                        if provider_url.endswith('/.well-known/openid-configuration'):
+                            provider_url = provider_url[:-len('/.well-known/openid-configuration')]
+                        discovery_url = f"{provider_url}/.well-known/openid-configuration"
+                        async with httpx.AsyncClient(timeout=5.0) as client:
+                            resp = await client.get(discovery_url)
+                            if resp.status_code == 200:
+                                end_session = resp.json().get('end_session_endpoint')
+                                if end_session:
+                                    scheme = request.headers.get('X-Forwarded-Proto', request.url.scheme)
+                                    host = request.headers.get('X-Forwarded-Host', request.headers.get('Host', request.url.netloc))
+                                    base_path = get_base_path().rstrip('/')
+                                    post_logout_uri = f"{scheme}://{host}{base_path}/login"
+                                    oidc_logout_url = f"{end_session}?post_logout_redirect_uri={post_logout_uri}"
+                    except Exception as e:
+                        logger.warning(f"Failed to fetch OIDC end_session_endpoint: {e}")
 
-    return LogoutResponse(message="Logout successful")
+    logger.info(f"User '{username}' logged out successfully (oidc={is_oidc_user})")
+
+    return LogoutResponse(message="Logout successful", oidc_logout_url=oidc_logout_url)
 
 
 # Dependency for protected routes (legacy - prefer get_current_user_or_api_key from api_key_auth)
@@ -437,6 +468,7 @@ async def get_current_user_v2(
                     display_name=user.display_name if user else None,
                     is_first_login=user.is_first_login if user else False,
                     must_change_password=user.must_change_password if user else False,
+                    auth_provider=user.auth_provider if user else 'local',
                     groups=[UserGroupInfo(id=g["id"], name=g["name"]) for g in groups],
                 ),
                 capabilities=capabilities,

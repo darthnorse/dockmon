@@ -63,13 +63,13 @@ export function UserMenu({ isCollapsed }: UserMenuProps) {
           title="User Menu"
         >
           <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary mt-0.5">
-            {user?.username?.charAt(0).toUpperCase() || 'U'}
+            {(user?.display_name || user?.username)?.charAt(0).toUpperCase() || 'U'}
           </div>
           {!isCollapsed && (
             <div className="flex-1 overflow-hidden text-left">
-              <p className="truncate text-sm font-medium leading-8">{user?.username || 'User'}</p>
-              {user?.display_name && (
-                <p className="truncate text-xs text-muted-foreground">{user.display_name}</p>
+              <p className="truncate text-sm font-medium leading-8">{user?.display_name || user?.username || 'User'}</p>
+              {user?.display_name && user?.username && user.display_name !== user.username && user?.auth_provider !== 'oidc' && (
+                <p className="truncate text-xs text-muted-foreground">{user.username}</p>
               )}
               <a
                 href={githubReleasesUrl}

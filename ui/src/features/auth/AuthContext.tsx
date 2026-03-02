@@ -14,6 +14,7 @@
 
 import { createContext, useContext, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
 import { authApi } from './api'
 import type { LoginRequest } from '@/types/api'
 
@@ -28,6 +29,7 @@ interface AuthUser {
   display_name?: string | null
   is_first_login?: boolean
   must_change_password?: boolean
+  auth_provider?: string
   groups: AuthUserGroup[]
 }
 
@@ -48,6 +50,7 @@ const AuthContext = createContext<AuthContextValue | null>(null)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
 
   // Query current user (validates session cookie)
   const { data, isLoading, isError } = useQuery({
@@ -73,9 +76,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Logout mutation
   const logoutMutation = useMutation({
     mutationFn: authApi.logout,
-    onSuccess: () => {
-      // Clear all queries on logout
+    onSuccess: (response) => {
       queryClient.clear()
+      if (response?.oidc_logout_url) {
+        // Redirect to OIDC provider to end their session too
+        window.location.href = response.oidc_logout_url
+      } else {
+        navigate('/login', { replace: true })
+      }
     },
   })
 

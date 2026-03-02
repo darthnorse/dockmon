@@ -312,7 +312,7 @@ async def update_oidc_config(
                 changes['default_group_id'] = {'old': config.default_group_id, 'new': config_data.default_group_id}
                 config.default_group_id = config_data.default_group_id
             else:
-                # Setting to 0 clears the default group
+                # Setting to 0 clears the default group (deny access)
                 changes['default_group_id'] = {'old': config.default_group_id, 'new': None}
                 config.default_group_id = None
 
